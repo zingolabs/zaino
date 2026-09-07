@@ -109,7 +109,7 @@ mod tests {
     use super::*;
     use crate::mock::MockChain;
     use zaino_primitives::types::{
-        Block, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height, TreeSize,
+        Block, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
     };
 
     fn height(h: u32) -> Height {
@@ -135,11 +135,7 @@ mod tests {
                 solution: EquihashSolution::Regtest([0; 36]),
             },
             transactions: vec![],
-            chain_metadata: ChainMetadata {
-                sapling_tree_size: TreeSize::ZERO,
-                orchard_tree_size: TreeSize::ZERO,
-                ironwood_tree_size: TreeSize::ZERO,
-            },
+            chain_metadata: ChainMetadata::ZERO,
         }
     }
 

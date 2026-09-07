@@ -1075,15 +1075,8 @@ impl ProptestMockchain {
         let block = zebra_chain::block::Block::zcash_deserialize(bytes)
             .map_err(|error| format!("proptest block did not deserialize: {error}"))?;
         // The proptest chains carry no commitment trees, so every pool is empty.
-        zaino_convert_zebra::block_from_zebra(
-            &block,
-            zaino_primitives::types::ChainMetadata {
-                sapling_tree_size: zaino_primitives::types::TreeSize::ZERO,
-                orchard_tree_size: zaino_primitives::types::TreeSize::ZERO,
-                ironwood_tree_size: zaino_primitives::types::TreeSize::ZERO,
-            },
-        )
-        .map_err(|error| format!("proptest block did not convert: {error}"))
+        zaino_convert_zebra::block_from_zebra(&block, zaino_primitives::types::ChainMetadata::ZERO)
+            .map_err(|error| format!("proptest block did not convert: {error}"))
     }
 
     fn serialize(block: &zebra_chain::block::Block) -> Result<Vec<u8>, String> {
