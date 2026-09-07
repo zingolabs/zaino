@@ -536,6 +536,24 @@ deployment = "pending"
     }
 
     #[test]
+    fn rejects_rc_tag_without_an_rc_ordinal() {
+        // An `[[rc]]` tag must carry the `cycle-<N>-rc.<M>` ordinal the
+        // renderer orders candidates by; a bare git-refname-shaped string is
+        // not a release candidate and must be rejected at parse time rather
+        // than silently scoring as rc 0.
+        let input = r#"
+[[rc]]
+tag = "nightly_build"
+sha = "dd73705"
+deployment = "pending"
+"#;
+        assert!(matches!(
+            CycleStatus::parse_toml(input),
+            Err(CycleStatusError::InvalidRcTag { value, .. }) if value == "nightly_build"
+        ));
+    }
+
+    #[test]
     fn deployment_status_parse_round_trips_and_has_glyphs() {
         for status in [
             DeploymentStatus::Passed,

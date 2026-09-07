@@ -386,6 +386,62 @@ mod tests {
     }
 
     #[test]
+    fn rename_to_pr_leaves_consumed_changesets_alone() {
+        // A random-slug changeset already stamped `consumed_in` is shipped
+        // provenance: it belongs to a past cycle, not to this PR, so the
+        // rename must skip it — renaming would orphan the slug the ledger
+        // recorded.
+        let store = Arc::new(MapChangesetStore::new());
+        store
+            .write(&slug("wandering-quokka"), "[empty]\nreason = \"mine\"\n")
+            .expect("seed author");
+        store
+            .write(
+                &slug("brisk-heron"),
+                "consumed_in = \"cycle-1\"\n[empty]\nreason = \"shipped\"\n",
+            )
+            .expect("seed consumed");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+
+        assert_eq!(as_strs(&renamed), ["pr-1501"]);
+        assert_eq!(slugs_in(&store), ["brisk-heron", "pr-1501"]);
+    }
+
+    #[test]
+    fn rename_to_pr_leaves_ledger_known_changesets_alone() {
+        // Same as above, but the shipped mark lives only in the ledger (the
+        // per-file `consumed_in` has not backported yet).
+        let store = Arc::new(MapChangesetStore::new());
+        store
+            .write(&slug("wandering-quokka"), "[empty]\nreason = \"mine\"\n")
+            .expect("seed author");
+        store
+            .write(
+                &slug("brisk-heron"),
+                &format!("id = \"{SAMPLE_UID}\"\n[empty]\nreason = \"shipped\"\n"),
+            )
+            .expect("seed ledger-known");
+        let mut ledger = relman_core::types::ConsumedLedger::default();
+        ledger.insert(
+            uid(SAMPLE_UID),
+            cycle("cycle-1"),
+            Some("brisk-heron".to_owned()),
+        );
+        let svc = service_with_ledger(
+            store.clone(),
+            vec![slug("unused-source")],
+            Arc::new(MapConsumedLedgerStore::with_ledger(ledger)),
+        );
+
+        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+
+        assert_eq!(as_strs(&renamed), ["pr-1501"]);
+        assert_eq!(slugs_in(&store), ["brisk-heron", "pr-1501"]);
+    }
+
+    #[test]
     fn rename_to_pr_errors_when_target_already_exists() {
         let store = Arc::new(MapChangesetStore::new());
         store

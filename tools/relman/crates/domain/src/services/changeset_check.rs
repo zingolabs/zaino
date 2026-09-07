@@ -364,6 +364,48 @@ description = "Touched a non-target crate."
     }
 
     #[test]
+    fn deleted_changeset_in_diff_does_not_abort_the_check() {
+        // The PR deletes an obsolete `.changesets/old-slug.toml` (so the path is
+        // in the diff but absent from the store) and touches A source. The check
+        // must still reach a verdict — A is uncovered — rather than abort on the
+        // missing file.
+        let svc = service(
+            vec![
+                "packages/zaino-state/src/lib.rs",
+                ".changesets/old-slug.toml",
+            ],
+            Arc::new(MapChangesetStore::new()),
+        );
+        let report = svc
+            .check("dev")
+            .expect("a deleted changeset path must not abort the check");
+        let a_uncovered = match report.violations.as_slice() {
+            [Violation::NoChangesetForTouchedTargets] => true,
+            [Violation::TargetUncovered(name)] => name == &crate_name("zaino-state"),
+            _ => false,
+        };
+        assert!(
+            a_uncovered,
+            "expected A uncovered, got {:?}",
+            report.violations
+        );
+    }
+
+    #[test]
+    fn pr_that_only_prunes_changesets_is_ok() {
+        // A PR whose whole diff is the removal of stale changeset files touches
+        // no target, so it passes.
+        let svc = service(
+            vec![".changesets/old-a.toml", ".changesets/old-b.toml"],
+            Arc::new(MapChangesetStore::new()),
+        );
+        let report = svc
+            .check("dev")
+            .expect("deleted changeset paths must not abort the check");
+        assert!(report.is_ok(), "expected ok, got {:?}", report.violations);
+    }
+
+    #[test]
     fn accumulated_changeset_not_in_diff_does_not_cover() {
         // The store holds an accumulated changeset covering A (left by a
         // previously-merged PR) plus this PR's own changeset covering only B.

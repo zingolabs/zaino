@@ -64,3 +64,17 @@ pub fn publish_plan(plan: &PublishPlan) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod publish_plan {
+    use super::*;
+
+    /// Every stdout line of `publish-plan` is parsed by CI as `<crate> <version>`,
+    /// so an empty plan must render as no lines at all — exactly as `tag_plan`
+    /// does — never as a prose sentence a shell loop would read as a crate name.
+    #[test]
+    fn renders_nothing_for_an_empty_plan() {
+        assert_eq!(publish_plan(&PublishPlan::default()), "");
+        assert_eq!(tag_plan(&TagPlan::default()), "");
+    }
+}

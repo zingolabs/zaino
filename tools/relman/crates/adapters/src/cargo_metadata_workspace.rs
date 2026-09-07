@@ -212,6 +212,59 @@ mod tests {
         );
     }
 
+    /// Every workspace member that a governed target depends on through a
+    /// `path` + `version` requirement is published alongside it, so it must be
+    /// governed too; otherwise `cargo publish` of the dependent resolves the
+    /// requirement against crates.io, where the ungoverned crate is absent or
+    /// stale, and nothing in relman notices the gap beforehand.
+    #[test]
+    fn every_published_dependency_of_a_governed_target_is_governed() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+        let config =
+            relman_config::load(&repo_root.join("relman.toml")).expect("repo relman.toml loads");
+        let governed: BTreeSet<CrateName> = config
+            .targets()
+            .iter()
+            .map(|target| target.name().clone())
+            .collect();
+
+        let metadata = MetadataCommand::new()
+            .manifest_path(repo_root.join("Cargo.toml"))
+            .no_deps()
+            .exec()
+            .expect("cargo metadata --no-deps over the repo root");
+        let members: BTreeSet<_> = metadata.workspace_members.iter().collect();
+        let member_names: BTreeSet<&str> = metadata
+            .packages
+            .iter()
+            .filter(|package| members.contains(&package.id))
+            .map(|package| package.name.as_str())
+            .collect();
+
+        let mut ungoverned: BTreeSet<String> = BTreeSet::new();
+        for package in &metadata.packages {
+            if !members.contains(&package.id) || !governed.contains(&name(&package.name)) {
+                continue;
+            }
+            for dep in &package.dependencies {
+                let published_edge = dep.kind != DependencyKind::Development
+                    && dep.path.is_some()
+                    && dep.req != semver::VersionReq::STAR;
+                if published_edge
+                    && member_names.contains(dep.name.as_str())
+                    && !governed.contains(&name(&dep.name))
+                {
+                    ungoverned.insert(format!("{} -> {}", package.name, dep.name));
+                }
+            }
+        }
+        assert!(
+            ungoverned.is_empty(),
+            "governed targets depend on workspace crates relman.toml does not govern:\n{}",
+            ungoverned.into_iter().collect::<Vec<_>>().join("\n")
+        );
+    }
+
     #[test]
     fn missing_governed_target_errors() {
         let tmp = tempfile::tempdir().expect("temp dir");

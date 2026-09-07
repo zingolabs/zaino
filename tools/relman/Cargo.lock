@@ -452,6 +452,7 @@ dependencies = [
  "relman-config",
  "relman-core",
  "relman-domain",
+ "tempfile",
 ]
 
 [[package]]
@@ -460,6 +461,7 @@ version = "0.1.0"
 dependencies = [
  "cargo_metadata",
  "rand",
+ "relman-config",
  "relman-core",
  "semver",
  "tempfile",
