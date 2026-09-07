@@ -428,12 +428,11 @@ mod wallet {
     /// non-finalised chain and again after a seam-deep advance lands it in
     /// the finalised DB.
     ///
-    /// Runs on the `fast-test-seam` image: at the operational depth of 1001 a
-    /// `SEAM_ADVANCE` of 105 buries nothing, both reads come from the
-    /// non-finalised cache, and the comparison below holds trivially. The
-    /// `wait_for_finalised` check makes that failure mode loud instead. The
-    /// footprint override buys the validator cores for `SEAM_ADVANCE` shielded
-    /// coinbase blocks (~105 halo2 proofs).
+    /// - `fast-test-seam` image: at the shipped depth (1001) `SEAM_ADVANCE` buries nothing
+    ///   → both reads come from the non-finalised cache, compare passes vacuously
+    /// - `wait_for_finalised` = the loud check against exactly that
+    /// - Advance mined to `FILLER_ADDRESS`: on this file's `FUND` coinbase it is
+    ///   `SEAM_ADVANCE` halo2 proofs, past the tier's cap on the two cores it reserves
     #[rstest]
     #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
     #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
@@ -506,7 +505,7 @@ mod wallet {
 
         // The load-bearing advance: push the send below the seam so it crosses
         // the finalised floor (`tip - seam`) into the finalized DB.
-        let tip = validator.generate_blocks(SEAM_ADVANCE).await?;
+        let tip = validator.generate_blocks(SEAM_ADVANCE).to(FILLER_ADDRESS).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
         // Without this the test is vacuous: it would compare two reads that
