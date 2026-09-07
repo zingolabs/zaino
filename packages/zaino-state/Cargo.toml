@@ -11,12 +11,7 @@ version = "0.7.0"
 [features]
 default = []
 
-# TEST-ONLY: shrink the finalised/non-finalised seam to the tractable
-# `FAST_TEST_MAX_NONFINALISED_DEPTH` so cross-crate live tests can exercise
-# finalisation/eviction with small chains. MUST appear only in `[dev-dependencies]`
-# of the live-test crates — never a normal/shipped dependency: resolver = "2" keeps
-# dev-dependency features out of production dependency graphs, and `default-members`
-# excludes the live-test crates from production builds.
+# TEST-ONLY. switches non-finalized depth to 100 from 1001 so NFS tests dont need to mine 1k+ blocks
 fast-test-seam = []
 
 # Prometheus metrics emission (gauge! calls in sync paths).

@@ -1,6 +1,6 @@
 [package]
 name = "e2e"
-description = "End-to-end live tests: a zcash-devtool wallet client driving Zaino through its gRPC surface to a live validator."
+description = "End-to-end live tests: an in-process zingo wallet client driving Zaino over its gRPC surface to a live validator, on the ztest k8s harness."
 version = "0.2.0"
 authors.workspace = true
 repository.workspace = true
@@ -12,52 +12,15 @@ publish = false
 [features]
 default = []
 
-# Single non-default gate for every devtool-incompatible / heavy test (the
-# finalization heavies, send_to_all, monitor_unverified_mempool, the
-# test-vector builder, address_deltas). They compile by default but are
-# `#[ignore]`'d unless this feature is on; run them with
-# `--features devtool-incompatible`. Each gated test's doc comment explains
-# why it's here.
-devtool-incompatible = []
-
 [dependencies]
-# Zaino test harness + packages, sourced from the root workspace manifest.
-zaino-testutils = { workspace = true }
-zaino-state = { workspace = true, features = ["test_dependencies"] }
-
-# Zaino's versioned encoding, and the store types the vector tests decode into.
-# Named directly: `zaino-state` no longer re-exports either.
-zaino-encoding = { workspace = true }
-zaino-chain-store-zainodb = { workspace = true }
-zaino-common = { workspace = true }
-zaino-proto = { workspace = true }
-zainod = { workspace = true }
-
-# zcash_local_net drives the zcash-devtool wallet client.
-zcash_local_net = { workspace = true }
-
-# Zebra
-zebra-chain = { workspace = true }
-zebra-rpc = { workspace = true }
-zebra-state = { workspace = true }
-
-# Runtime / misc
-tokio = { workspace = true }
-zcash_primitives = { workspace = true }
-futures = { workspace = true }
-hex = { workspace = true }
-corez = { workspace = true }
-tower = { workspace = true }
+ztest = { workspace = true }
+anyhow = { workspace = true }
 serde_json = { workspace = true }
-zaino-consensus.workspace = true
 
 [dev-dependencies]
-zaino-primitives.workspace = true
-# The served JSON schema. These tests compare Zaino's domain answers against a
-# raw JSON-RPC oracle, so they render the domain side through the same wire
-# types the server uses.
-zaino-serve = { workspace = true }
-# Enable the tractable seam depth (fast-test-seam) so this crate's live tests can
-# exercise finalisation/eviction at small chain heights. Dev-dependency only — the
-# feature must never reach a shipped build (see the zaino-state feature comment).
-zaino-state = { workspace = true, features = ["fast-test-seam"] }
+zaino-testutils = { workspace = true }
+ztest = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+rstest = { workspace = true }

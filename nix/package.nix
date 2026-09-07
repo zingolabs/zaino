@@ -9,7 +9,7 @@
 , withTls ? true
 , gitCommit ? "unknown"
 , gitBranch ? "unknown"
-, rocksdb_8_11
+, rocksdb
 }:
 
 let
@@ -49,15 +49,15 @@ let
 
     # stdenv.cc.cc.lib provides libstdc++.so.6 / libgcc_s.so.1 that
     # rocksdb's C++ code transitively needs at runtime.
-    buildInputs = [ rocksdb_8_11 stdenv.cc.cc.lib ];
+    buildInputs = [ rocksdb stdenv.cc.cc.lib ];
 
     env = {
       PROTOC = "${protobuf}/bin/protoc";
       PROTOC_INCLUDE = "${protobuf}/include";
 
       # Use nixpkgs' librocksdb instead of librocksdb-sys's bundled C++ compile.
-      ROCKSDB_LIB_DIR = "${rocksdb_8_11}/lib";
-      ROCKSDB_INCLUDE_DIR = "${rocksdb_8_11}/include";
+      ROCKSDB_LIB_DIR = "${rocksdb}/lib";
+      ROCKSDB_INCLUDE_DIR = "${rocksdb}/include";
 
       ZAINO_GIT_COMMIT_ID = gitCommit;
       ZAINO_GIT_BRANCH = gitBranch;

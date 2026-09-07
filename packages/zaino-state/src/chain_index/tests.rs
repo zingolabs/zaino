@@ -52,10 +52,40 @@ use crate::{
 ///   immediately active (`active_height = tip_height = 200` for the 201-block
 ///   vector); the tip doesn't move during the test. Indexer's finalised sync
 ///   target is `finalized_height_floor(200) = 100`.
+/// - `StaticDeepFinalised` → `Static`'s source, but with the finalised DB seeded to
+///   [`DEEP_FINALISED_SEED_TIP`] instead of the floor. `finalized_height_floor` is a
+///   *lower* bound on the finalised tip, not a ceiling — `sync_to_height` short-circuits
+///   on a DB already at or above its target — so this is a state the indexer serves
+///   normally. It is the only mode in which the finalised index holds a transparent
+///   spend: the corpus creates its first at height 102, two blocks above the deepest
+///   floor a 201-block chain can reach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MockchainMode {
     Active,
     Static,
+    StaticDeepFinalised,
+}
+
+/// Finalised-DB tip for [`MockchainMode::StaticDeepFinalised`]: above the corpus's
+/// earliest transparent spends and below its latest, so a scoped lookup can tell the two
+/// apart.
+const DEEP_FINALISED_SEED_TIP: u32 = 150;
+
+fn mockchain_source(mode: MockchainMode, blocks: Vec<vectors::TestVectorBlockData>) -> MockSource {
+    match mode {
+        MockchainMode::Active => build_active_mockchain_source(150, blocks),
+        MockchainMode::Static | MockchainMode::StaticDeepFinalised => {
+            build_mockchain_source(blocks)
+        }
+    }
+}
+
+/// Height the mode's cached finalised seed DB is synced to.
+fn finalised_seed_tip(mode: MockchainMode, active_height: u32) -> u32 {
+    match mode {
+        MockchainMode::Active | MockchainMode::Static => finalized_height_floor(active_height).0,
+        MockchainMode::StaticDeepFinalised => DEEP_FINALISED_SEED_TIP,
+    }
 }
 
 async fn load_test_vectors_and_sync_chain_index(
@@ -105,10 +135,7 @@ async fn load_with_settings(
 
     let blocks = load_test_vectors().unwrap().blocks;
 
-    let source = match mode {
-        MockchainMode::Active => build_active_mockchain_source(150, blocks.clone()),
-        MockchainMode::Static => build_mockchain_source(blocks.clone()),
-    };
+    let source = mockchain_source(mode, blocks.clone());
 
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
@@ -183,8 +210,9 @@ async fn load_with_settings(
 }
 
 /// Process-wide cached, fully-synced v1 finalised-state databases — one per
-/// `MockchainMode`. The two modes target different heights (Active → 50,
-/// Static → 100), so they need distinct seeds.
+/// `MockchainMode`. The modes target different heights (Active → 50,
+/// Static → 100, StaticDeepFinalised → [`DEEP_FINALISED_SEED_TIP`]), so they
+/// need distinct seeds.
 ///
 /// Built lazily on first call via `tokio::sync::OnceCell`, which serialises
 /// the build under concurrent test access. Each test still gets an isolated
@@ -192,19 +220,18 @@ async fn load_with_settings(
 /// `copy_dir_recursive`); the seed itself is never mutated after first build.
 static V1_SEED_ACTIVE: OnceCell<TempDir> = OnceCell::const_new();
 static V1_SEED_STATIC: OnceCell<TempDir> = OnceCell::const_new();
+static V1_SEED_STATIC_DEEP_FINALISED: OnceCell<TempDir> = OnceCell::const_new();
 
 async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
     let cell = match mode {
         MockchainMode::Active => &V1_SEED_ACTIVE,
         MockchainMode::Static => &V1_SEED_STATIC,
+        MockchainMode::StaticDeepFinalised => &V1_SEED_STATIC_DEEP_FINALISED,
     };
     cell.get_or_init(|| async move {
         let blocks = load_test_vectors().unwrap().blocks;
-        let source = match mode {
-            MockchainMode::Active => build_active_mockchain_source(150, blocks.clone()),
-            MockchainMode::Static => build_mockchain_source(blocks.clone()),
-        };
-        let target = finalized_height_floor(source.source().active_height()).0;
+        let source = mockchain_source(mode, blocks.clone());
+        let target = finalised_seed_tip(mode, source.source().active_height());
 
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
         let config = ChainIndexConfig {

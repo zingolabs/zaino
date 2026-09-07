@@ -237,6 +237,14 @@ and this library adheres to Rust's notion of
   gates code (ADR-0001, ADR-0005).
 
 ### Fixed
+- `GetBlock` and `GetBlockNullifiers` served every pool unconditionally, while
+  `GetBlockRange`/`GetBlockRangeNullifiers` honoured the request's `poolTypes`
+  and default to the legacy shielded-only set. The same height therefore came
+  back with different contents depending on which RPC asked for it — a
+  transparent-only transaction was present in the single-block form and absent
+  from the range form. `BlockID` carries no `poolTypes` field, so both
+  single-block RPCs now serve the unfiltered default, matching both the range
+  form and lightwalletd.
 - JSON-RPC responses are read against a 32 MiB cap, chunk-wise. Every response
   is deserialized into memory, so an uncapped read let a compromised,
   misconfigured or impersonated validator exhaust Zaino's memory with one reply.
@@ -260,6 +268,8 @@ and this library adheres to Rust's notion of
 - `getblockdeltas` is served on zebrad-backed deployments. zebrad does not
   implement the method, and the read-state derivation that answered it had been
   omitted on the mistaken reasoning that the validator already provided it.
+- added `getaddressdeltas` stub to json-rpc server
+- Errors relayed from backing validator properly propagate the error message
 - `getblockchaininfo` and `z_getblock` work against zebra 6.0, which serialises
   the deferred-development-fund value pool as `lockbox` where zcashd calls it
   `deferred`.

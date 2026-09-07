@@ -378,10 +378,15 @@ impl ChainIndexError {
         }
     }
 
+    /// The validator's own message is carried into `message`, not just `source`:
+    /// only `message` crosses the gRPC boundary, so dropping it leaves a caller
+    /// unable to tell a rejected transaction from an unreachable node.
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
+        let message =
+            format!("InternalServerError: error receiving data from backing node: {value}");
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
-            message: "InternalServerError: error receiving data from backing node".to_string(),
+            message,
             source: Some(Box::new(value)),
         }
     }
