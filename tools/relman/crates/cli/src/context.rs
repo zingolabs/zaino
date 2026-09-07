@@ -2,13 +2,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use relman_core::ports::{
-    About, ApplyBump, Changelog, ChangesetCheck, Changesets, ReleaseArtifacts, Versions,
+    ApplyBump, Changelog, ChangesetCheck, Changesets, ReleaseArtifacts, Versions,
 };
 
-/// The driving ports the CLI needs, injected by the binary's composition
-/// root. Add a field per port as relman grows.
+/// The repo-bound driving ports the CLI needs, injected by the binary's
+/// composition root. Add a field per port as relman grows; `about` is not
+/// here because it needs no repository.
 pub struct Ctx {
-    pub about: Arc<dyn About>,
     pub changesets: Arc<dyn Changesets>,
     pub changeset_check: Arc<dyn ChangesetCheck>,
     pub versions: Arc<dyn Versions>,

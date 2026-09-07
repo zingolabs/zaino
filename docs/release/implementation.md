@@ -40,7 +40,7 @@ applies `relman`'s outputs as side-effects on the outside world.
 | ----------------- | ----- | -------- | ------- |
 | `changeset new [--empty <reason>]` | — | a `.changesets/<slug>.toml` scaffold | working tree |
 | `changeset check` | git diff vs base, `.changesets/`, crate graph | pass/fail + diagnostics (enforcement) | nothing (read-only) |
-| `changeset rename --pr <N>` | `.changesets/` | renamed `pr-<N>.toml` | working tree |
+| `changeset rename --pr <N> [--base <REF>]` | `.changesets/`, the PR's diff against `<REF>` | renamed `pr-<N>.toml` | working tree |
 | `derive` | `.changesets/`, all `Cargo.toml`, crate graph | per-crate next-version table (highest-`kind` + pre-1.0 map + transitive) | nothing (read-only) |
 | `bump` | derive output | edited `Cargo.toml` versions + root `[workspace.dependencies]` pins (via `toml_edit`, format-preserving) | working tree |
 | `changelog` | `.changesets/`, derive output | per-crate + workspace changelog edits | working tree |

@@ -171,10 +171,8 @@ fn rc_label(tag: &str) -> &str {
 /// The numeric `<M>` of a prerelease tag's `rc.<M>` suffix, for ordering RCs by
 /// recency independent of the input order. A tag with no parseable suffix
 /// sorts as `0`.
-fn rc_number(tag: &str) -> u32 {
-    tag.rfind("-rc.")
-        .and_then(|idx| tag[idx + 4..].parse().ok())
-        .unwrap_or(0)
+fn rc_number(tag: &Tag) -> u32 {
+    tag.rc_ordinal().unwrap_or(0)
 }
 
 /// The most recent release-candidate tag in `status` — the `[[rc]]` entry with
@@ -184,7 +182,7 @@ fn latest_rc_tag(status: &CycleStatus) -> Option<&Tag> {
     status
         .rc()
         .iter()
-        .max_by_key(|entry| rc_number(entry.tag().as_str()))
+        .max_by_key(|entry| rc_number(entry.tag()))
         .map(|entry| entry.tag())
 }
 

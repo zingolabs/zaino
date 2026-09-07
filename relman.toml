@@ -6,9 +6,12 @@
 # and the publish plan covers exactly this set. No `cargo metadata` heuristic
 # decides governance — this file does.
 #
-# Target set: the 17 crates.io-published packages (docs/release/
+# Target set: the 23 crates.io-published packages (docs/release/
 # pipeline.md § Context). The internal-only crates
 # (live-tests/{e2e,clientless,zaino-testutils}) are deliberately absent.
+# Every workspace crate a target depends on through a path + version
+# requirement is itself a target: `cargo publish` resolves that requirement
+# against crates.io, so an ungoverned dependency would never be released.
 
 [options]
 changesets_dir      = ".changesets"
@@ -89,3 +92,27 @@ path = "packages/zaino-mempool-service"
 [[target]]
 name = "zaino-status"
 path = "packages/zaino-status"
+
+[[target]]
+name = "zaino-encoding"
+path = "packages/zaino-encoding"
+
+[[target]]
+name = "zaino-source-macros"
+path = "packages/zaino-source-macros"
+
+[[target]]
+name = "zaino-chain-head"
+path = "packages/zaino-chain-head"
+
+[[target]]
+name = "zaino-chain-head-service"
+path = "packages/zaino-chain-head-service"
+
+[[target]]
+name = "zaino-chain-store"
+path = "packages/zaino-chain-store"
+
+[[target]]
+name = "zaino-chain-store-zainodb"
+path = "packages/zaino-chain-store-zainodb"

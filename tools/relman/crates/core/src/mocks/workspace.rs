@@ -46,4 +46,8 @@ impl Workspace for MapWorkspace {
     ) -> Result<BTreeMap<CrateName, Vec<(CrateName, semver::VersionReq)>>, WorkspaceError> {
         Ok(self.internal_deps.clone())
     }
+
+    fn refresh_lockfile(&self) -> Result<(), WorkspaceError> {
+        Ok(())
+    }
 }

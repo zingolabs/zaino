@@ -385,6 +385,12 @@ impl RawRcEntry {
             value: self.tag.clone(),
             source,
         })?;
+        if tag.rc_ordinal().is_none() {
+            return Err(CycleStatusError::InvalidRcTag {
+                value: self.tag.clone(),
+                source: InvalidTag::MissingRcOrdinal,
+            });
+        }
         let sha = Commit::parse(&self.sha).map_err(|source| CycleStatusError::InvalidRcSha {
             value: self.sha.clone(),
             source,

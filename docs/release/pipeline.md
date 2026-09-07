@@ -46,11 +46,13 @@ landed. We do not cherry-pick from `dev` to cut releases — a release is always
 a **prefix** of `dev`'s history (the hotfix path, below, is the sole, contained
 exception).
 
-There are 17 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
+There are 23 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
 `zaino-proto`, `zaino-common`, `zaino-primitives`, `zaino-address`,
-`zaino-source`, `zaino-rpc`, `zaino-convert-zebra`, `zaino-source-zebra-rpc`,
-`zaino-source-zebra-readstate`, `zaino-source-zebra`, `zaino-consensus`,
-`zaino-mempool`, `zaino-mempool-service`, `zaino-status`) and 3 internal-only
+`zaino-source`, `zaino-source-macros`, `zaino-rpc`, `zaino-convert-zebra`,
+`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`, `zaino-source-zebra`,
+`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status`,
+`zaino-encoding`, `zaino-chain-head`, `zaino-chain-head-service`,
+`zaino-chain-store`, `zaino-chain-store-zainodb`) and 3 internal-only
 (`e2e`, `clientless`, `zaino-testutils`). Each public crate is versioned and
 released **independently**. The authoritative, machine-read list of governed
 targets is [`relman.toml`](../../../relman.toml) at the repo root; this prose
@@ -1014,7 +1016,7 @@ From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/
 > This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
 
 **Authoritative crate list (this repo)**: [Context](#context) enumerates the
-**17 crates.io-published packages** and **3 internal-only packages** (`e2e`,
+**23 crates.io-published packages** and **3 internal-only packages** (`e2e`,
 `clientless`, `zaino-testutils`), mirroring the machine-read
 [`relman.toml`](../../../relman.toml). This list has grown since ADR 003:
 `zaino-fetch` was **deleted** and the source stack (`zaino-source*`,

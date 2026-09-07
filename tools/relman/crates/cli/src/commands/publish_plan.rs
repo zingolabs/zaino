@@ -21,6 +21,11 @@ pub enum PublishPlanCommandError {
 pub fn run(_args: &Args, ctx: &Ctx) -> Result<(), PublishPlanCommandError> {
     crate::warn::unfilled_templates(ctx);
     let plan = ctx.release_artifacts.publish_plan()?;
+    // The note goes to stderr: stdout is the machine-read plan, one crate per
+    // line, and an empty plan must leave it empty.
+    if plan.is_empty() {
+        eprintln!("relman: nothing to publish (no changesets affect a governed target)");
+    }
     print!("{}", format::publish_plan(&plan));
     Ok(())
 }

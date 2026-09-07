@@ -12,6 +12,9 @@
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Slug(String);
 
+/// The changeset-file extension; only `*.toml` under the changesets dir count as changeset files.
+const CHANGESET_EXT: &str = "toml";
+
 /// Why a string was rejected as a [`Slug`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidSlug {
@@ -60,6 +63,21 @@ impl Slug {
     /// The changeset file name this slug maps to: `<slug>.toml`.
     pub fn file_name(&self) -> String {
         format!("{}.toml", self.0)
+    }
+
+    /// The slug of `file` when it is a `*.toml` under `changesets_dir` whose stem is a valid slug.
+    pub fn of_changeset_file(
+        file: &std::path::Path,
+        changesets_dir: &std::path::Path,
+    ) -> Option<Self> {
+        if !file.starts_with(changesets_dir) {
+            return None;
+        }
+        if file.extension().and_then(|e| e.to_str()) != Some(CHANGESET_EXT) {
+            return None;
+        }
+        let stem = file.file_stem().and_then(|s| s.to_str())?;
+        Self::parse(stem).ok()
     }
 
     /// The canonical changeset slug for PR number `pr`, `index`-th file.

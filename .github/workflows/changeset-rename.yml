@@ -80,6 +80,13 @@ jobs:
           # Push with the App token (see the mint step above) so the resulting
           # synchronize re-runs the dev-gate on the canonical pr-<N> changeset.
           token: ${{ steps.app-token.outputs.token }}
+          # Full history so the merge-base with the base branch is available:
+          # relman renames only the changesets this PR's diff added.
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        if: steps.guard.outputs.same_repo == 'true'
+        run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
 
       - name: Rename changeset(s) to pr-<N> and push if changed
         if: steps.guard.outputs.same_repo == 'true'
@@ -88,12 +95,15 @@ jobs:
           # script — a branch name is attacker-controlled and inlining it risks
           # script injection (actionlint expression check).
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           # relman runs from the repo root (discovers relman.toml upward) and only
-          # edits the working tree; committing/pushing is this workflow's job.
+          # edits the working tree; committing/pushing is this workflow's job. It
+          # renames only the author changesets in this PR's diff against the
+          # base, never files inherited from it or already shipped.
           cargo run -q --manifest-path tools/relman/Cargo.toml -- \
-            changeset rename --pr "${{ github.event.number }}"
+            changeset rename --pr "${{ github.event.number }}" --base "origin/${BASE_REF}"
 
           if [ -z "$(git status --porcelain .changesets/)" ]; then
             echo "Changesets already canonically named; nothing to commit."

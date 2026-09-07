@@ -53,11 +53,9 @@ pub fn tag_plan(plan: &TagPlan) -> String {
     out
 }
 
-/// Render a publish plan: one `crate version` per line, in publish order.
+/// Render a publish plan: one `crate version` per line, in publish order, and
+/// nothing at all for an empty plan, since CI parses every line as a crate.
 pub fn publish_plan(plan: &PublishPlan) -> String {
-    if plan.is_empty() {
-        return "relman: nothing to publish (no changesets affect a governed target)\n".to_owned();
-    }
     let mut out = String::new();
     for (name, version) in plan.entries() {
         out.push_str(&format!("{name} {version}\n"));
