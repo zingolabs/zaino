@@ -1,36 +1,21 @@
 //! Holds streaming response types.
 
-use tokio_stream::wrappers::ReceiverStream;
 use zaino_proto::proto::{
     compact_formats::{CompactBlock, CompactTx},
     service::{Address, GetAddressUtxosReply, RawTransaction, SubtreeRoot},
 };
 
-/// A stream of `Result<T, tonic::Status>` items read from a tokio mpsc receiver.
-#[derive(Debug)]
-pub struct ChannelStream<T> {
-    inner: ReceiverStream<Result<T, tonic::Status>>,
-}
-
-impl<T> ChannelStream<T> {
-    /// Wraps the receiving half of an mpsc channel as a stream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<T, tonic::Status>>) -> Self {
-        ChannelStream {
-            inner: ReceiverStream::new(rx),
-        }
-    }
-}
-
-impl<T> futures::Stream for ChannelStream<T> {
-    type Item = Result<T, tonic::Status>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        std::pin::Pin::new(&mut self.inner).poll_next(cx)
-    }
-}
+/// A stream of `Result<T, tonic::Status>` items read from a tokio mpsc channel.
+///
+/// # Temporary home
+///
+/// Defined in `zaino-chain-store-zainodb` and re-exported here, which is the
+/// wrong way round: this is a serving type and it has no business in a storage
+/// crate. It is there because the finalised store's legacy compact-block stream
+/// still returns one, and two structurally identical types would mean a
+/// pointless conversion at that seam. The definition comes back here when that
+/// method is deleted.
+pub use zaino_chain_store_zainodb::stream::ChannelStream;
 
 /// Stream of `RawTransaction` items, output type of get_taddress_txids.
 pub type RawTransactionStream = ChannelStream<RawTransaction>;

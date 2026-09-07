@@ -1,31 +1,51 @@
 # Zaino
+
 Zaino is an indexer for the Zcash blockchain implemented in Rust.
 
-Zaino provides all necessary functionality for "light" clients (wallets and other applications that don't rely on the complete history of blockchain) and "full" clients / wallets and block explorers providing access to both the finalized chain and the non-finalized best chain and mempool held by either a Zebra or Zcashd full validator.
+Zaino provides all necessary functionality for "light" clients (wallets and other applications that don't rely on the complete history of blockchain) and "full" clients / wallets and block explorers providing access to both the finalized chain and the non-finalized best chain and mempool held by a Zebra full validator.
 
+## Release pipeline
+
+Zaino ships through a gated pipeline (`dev → rc → release-ready → stable`); the
+gates, tags, and blessing flow are specified in the
+[release decision record](./docs/release/pipeline.md).
+
+| Gate | Workflow |
+| ---- | -------- |
+| Changeset check (`dev`-gate) | [![changeset-check](https://github.com/zingolabs/zaino/actions/workflows/changeset-check.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/changeset-check.yml) |
+| RC gate (nightly) | [![rc-gate](https://github.com/zingolabs/zaino/actions/workflows/rc-gate.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/rc-gate.yml) |
+| Blessing (release) | [![blessing](https://github.com/zingolabs/zaino/actions/workflows/blessing.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/blessing.yml) |
+
+Latest cycle tags:
+[![latest RC](https://img.shields.io/github/v/tag/zingolabs/zaino?filter=cycle-*-rc.*&label=latest%20RC)](https://github.com/zingolabs/zaino/tags)
+[![latest release](https://img.shields.io/github/v/tag/zingolabs/zaino?filter=cycle-*%2C!*-rc.*&label=latest%20release)](https://github.com/zingolabs/zaino/tags)
+
+The "latest RC" badge shows the newest `cycle-<N>-rc.<M>` prerelease tag; "latest
+release" filters those out to show the newest blessed `cycle-<N>` tag. (Both use
+shields.io tag filtering; if a shields update ever stops distinguishing the two,
+fall back to a single unfiltered `github/v/tag` "latest cycle tag" badge.)
 
 ### Motivations
-With the ongoing Zcashd deprecation project, there is a push to transition to a modern, Rust-based software stack for the Zcash ecosystem. By implementing Zaino in Rust, we aim to modernize the codebase, enhance performance and improve overall security. This work will build on the foundations laid down by [Librustzcash](https://github.com/zcash/librustzcash) and [Zebra](https://github.com/ZcashFoundation/zebra), helping to ensure that the Zcash infrastructure remains robust and maintainable for the future.
+With the ongoing legacy-full-node deprecation project, there is a push to transition to a modern, Rust-based software stack for the Zcash ecosystem. By implementing Zaino in Rust, we aim to modernize the codebase, enhance performance and improve overall security. This work will build on the foundations laid down by [Librustzcash](https://github.com/zcash/librustzcash) and [Zebra](https://github.com/ZcashFoundation/zebra), helping to ensure that the Zcash infrastructure remains robust and maintainable for the future.
 
-Due to current potential data leaks / security weaknesses highlighted in [revised-nym-for-zcash-network-level-privacy](https://forum.zcashcommunity.com/t/revised-nym-for-zcash-network-level-privacy/46688) and [wallet-threat-model](https://zcash.readthedocs.io/en/master/rtd_pages/wallet_threat_model.html), there is a need to use anonymous transport protocols (such as Nym or Tor) to obfuscate clients' identities from Zcash's indexing servers ([Lightwalletd](https://github.com/zcash/lightwalletd), [Zcashd](https://github.com/zcash/zcash), Zaino). As Nym has chosen Rust as their primary SDK ([Nym-SDK](https://github.com/nymtech/nym)), and Tor is currently implementing Rust support ([Arti](https://gitlab.torproject.org/tpo/core/arti)), Rust is a straightforward and well-suited choice for this software.
+Due to current potential data leaks / security weaknesses highlighted in [revised-nym-for-zcash-network-level-privacy](https://forum.zcashcommunity.com/t/revised-nym-for-zcash-network-level-privacy/46688) and [wallet-threat-model](https://zcash.readthedocs.io/en/master/rtd_pages/wallet_threat_model.html), there is a need to use anonymous transport protocols (such as Nym or Tor) to obfuscate clients' identities from Zcash's indexing servers ([Lightwalletd](https://github.com/zcash/lightwalletd), [the legacy Zcash full node](https://github.com/zcash/zcash), Zaino). As Nym has chosen Rust as their primary SDK ([Nym-SDK](https://github.com/nymtech/nym)), and Tor is currently implementing Rust support ([Arti](https://gitlab.torproject.org/tpo/core/arti)), Rust is a straightforward and well-suited choice for this software.
 
 Zebra has been designed to allow direct read access to the finalized state and RPC access to the non-finalized state through its ReadStateService. Integrating directly with this service enables efficient access to chain data and allows new indices to be offered with minimal development.
 
-Separation of validation and indexing functionality serves several purposes. First, by removing indexing functionality from the Validator (Zebra) will lead to a smaller and more maintainable codebase. Second, by moving all indexing functionality away from Zebra into Zaino will unify this paradigm and simplify Zcash's security model. Separating these concerns (consensus node and blockchain indexing) serves to create a clear trust boundary between the Indexer and Validator allowing the Indexer to take on this responsibility. Historically, this had been the case for "light" clients/wallets using [Lightwalletd](https://github.com/zcash/lightwalletd) as opposed to "full-node" client/wallets and block explorers that were directly served by the [Zcashd full node](https://github.com/zcash/zcash).
-
+Separation of validation and indexing functionality serves several purposes. First, by removing indexing functionality from the Validator (Zebra) will lead to a smaller and more maintainable codebase. Second, by moving all indexing functionality away from Zebra into Zaino will unify this paradigm and simplify Zcash's security model. Separating these concerns (consensus node and blockchain indexing) serves to create a clear trust boundary between the Indexer and Validator allowing the Indexer to take on this responsibility. Historically, this had been the case for "light" clients/wallets using [Lightwalletd](https://github.com/zcash/lightwalletd) as opposed to "full-node" client/wallets and block explorers that were directly served by the [the legacy Zcash full node](https://github.com/zcash/zcash).
 
 ### Goals
+
 Our primary goal with Zaino is to serve all non-miner clients -such as wallets and block explorers- in a manner that prioritizes security and privacy while also ensuring the time efficiency critical to a stable currency. We are committed to ensuring that these clients can access all necessary blockchain data and services without exposing sensitive information or being vulnerable to attacks. By implementing robust security measures and privacy protections, Zaino will enable users to interact with the Zcash network confidently and securely.
 
-To facilitate a smooth transition for existing users and developers, Zaino is designed (where possible) to maintain backward compatibility with Lightwalletd and Zcashd. This means that applications and services currently relying on these platforms can switch to Zaino with minimal adjustments. By providing compatible APIs and interfaces, we aim to reduce friction in adoption and ensure that the broader Zcash ecosystem can benefit from Zaino's enhancements without significant rewrites or learning curves.
+To facilitate a smooth transition for existing users and developers, Zaino is designed (where possible) to maintain backward compatibility with Lightwalletd and the legacy Zcash full node. This means that applications and services currently relying on these platforms can switch to Zaino with minimal adjustments. By providing compatible APIs and interfaces, we aim to reduce friction in adoption and ensure that the broader Zcash ecosystem can benefit from Zaino's enhancements without significant rewrites or learning curves.
 
 ### Scope
-Zaino will implement a comprehensive RPC API to serve all non-miner client requests effectively. This API will encompass all functionality currently in the LightWallet gRPC service ([CompactTxStreamer](https://github.com/zcash/librustzcash/blob/main/zcash_client_backend/proto/service.proto)), currently served by Lightwalletd, and a subset of the [Zcash RPCs](https://zcash.github.io/rpc/) required by wallets and block explorers, currently served by Zcashd. Zaino will unify these two RPC services and provide a single, straightforward interface for Zcash clients and service providers to access the data and services they require.
+Zaino will implement a comprehensive RPC API to serve all non-miner client requests effectively. This API will encompass all functionality currently in the LightWallet gRPC service ([CompactTxStreamer](https://github.com/zcash/librustzcash/blob/main/zcash_client_backend/proto/service.proto)), currently served by Lightwalletd, and a subset of the [Zcash RPCs](https://zcash.github.io/rpc/) required by wallets and block explorers, currently served by the legacy Zcash full node. Zaino will unify these two RPC services and provide a single, straightforward interface for Zcash clients and service providers to access the data and services they require.
 
 In addition to the RPC API, Zaino will offer a client library allowing developers to integrate Zaino's functionality directly into their Rust applications. Along with the RemoteReadStateService mentioned below, this will allow both local and remote access to the data and services provided by Zaino without the overhead of using an RPC protocol, and also allows Zebra to stay insulated from directly interfacing with client software.
 
 Currently Zebra's `ReadStateService` only enables direct access to chain data (both Zebra and any process interfacing with the `ReadStateService` must be running on the same hardware). Zaino will extend this functionality, using a Hyper wrapper, to allow Zebra and Zaino (or software built using Zaino's `IndexerStateService` as its backend) to run on different hardware and should enable a much greater range of deployment strategies (eg. running validator, indexer or wallet processes on separate hardware). It should be noted that this will primarily be designed as a remote link between Zebra and Zaino and it is not intended for developers to directly interface with this service, but instead to use functionality exposed by the client library in Zaino (`IndexerStateService`).
-
 
 ## Project Structure
 
@@ -33,6 +53,7 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 packages/                          Cargo workspace member crates, in dependency order
   zaino-status/                      How a component reports whether it is working
   zaino-consensus/                   Zcash consensus constants and protocol limits
+  zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
   zaino-address/                     Zcash address classification
   zaino-source/                      Driven ports: one trait per chain question
@@ -47,20 +68,19 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-proto/                       Protocol buffer definitions
   zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
   zaino-chain-head-service/          Non-finalised chain head: the runtime
+  zaino-chain-store/                 Finalised state: vocabulary and ports
+  zaino-chain-store-zainodb/         Finalised state: the LMDB implementation
   zaino-state/                       Chain state and indexer service library
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
   zaino-bench/                       Benchmark harness (sync time, connection ceiling, serve rate)
 
-live-tests/                        Live-test suite — root-workspace members, run against zcashd/zebrad
+live-tests/                        Live-test suite — standalone workspace, run on the ztest k8s harness
   e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
   clientless/                        Clientless partition (Zaino services -> live validator, no client)
   zaino-testutils/                   Shared test harness and utilities
-  test_binaries/                     Symlinked zcashd/zebrad/zcash-cli binaries
-  test_environment/                  Container build context
-    Containerfile                      CI/test container image definition
-    entrypoint.sh                      Container entrypoint (binary symlink setup)
-    test-container-permissions.sh      Container permission / volume-mount tests
+  test_environment/                  CI build-environment image context
+    Containerfile                      Rust toolchain + protoc + RocksDB + cargo-nextest (no validators)
 
 docs/                              Architecture diagrams, specs, and usage guides
 tools/                             Development tools, shell helpers, makefiles
@@ -68,14 +88,12 @@ tools/                             Development tools, shell helpers, makefiles
   makefiles/                         cargo-make task definitions (lints, rocksdb, notify)
 .github/                           CI workflows and issue templates
 .githooks/                         Git hooks (pre-push)
-.config/containers.conf            Rootless podman defaults (userns, security)
 
 Cargo.toml                         Top-level workspace manifest
 Cargo.lock                         Resolved dependency graph (committed)
 Makefile.toml                      cargo-make task definitions
 rust-toolchain.toml                Pinned Rust toolchain
 deny.toml                          cargo-deny policy (licenses, advisories)
-.env.testing-artifacts             Version pins for test container (Rust, zcashd, zebrad)
 
 Dockerfile                         Production container image
 entrypoint.sh                      Production container entrypoint
@@ -115,23 +133,26 @@ connection.
 
 ## Running tests
 
-The test suites run inside a **podman** container via `makers` (cargo-make):
+Production-crate tests run on your host; the live suites run on a Kubernetes
+cluster via [`ztest`](https://crates.io/crates/ztest_cli):
 
 ```sh
-makers test            # packages/* tests that need no live validator (default)
-makers test live       # both live partitions (clientless + e2e) + combined summary
-makers test all        # everything: packages then live
+cargo nextest run                          # packages/*, no live validator
+cd live-tests && ztest run -p clientless -p e2e   # both live partitions
 ```
 
-zcashd-backed tests are **off by default**; add `--with-zcashd` to include them
-(there is no implicit or env-var path — see docs/adr/0005). On lower-resource machines you
-may hit occasional contention flakes under full parallelism — re-run, or lower
-`test-threads` in the nextest config. See [docs/testing.md](./docs/testing.md)
-for full instructions.
+The live suites need the `ztest` CLI and a registered cluster
+(`cargo install ztest_cli`, then `kind create cluster` and `ztest cluster
+setup`) — see [docs/testing.md](./docs/testing.md) for the full setup.
+
+On lower-resource machines you may hit occasional contention flakes under full
+parallelism — re-run, or lower `--test-threads`.
 
 ## Documentation
+
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
 - [Testing](./docs/testing.md): Holds instructions for running tests.
+- [Live-test guidelines](./live-tests/CLAUDE.md): The rules for writing live tests — the live oracle, QoS tiers, parameterization.
 - [Live Service System Architecture](./docs/zaino_live_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino live service.
 - [Library System Architecture](./docs/zaino_lib_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino client library.
 - [ZainoD (Live Service) Internal Architecture](./docs/zaino_serve_architecture_v020.pdf): Holds an internal Zaino system architecture diagram.
@@ -143,13 +164,13 @@ for full instructions.
 ### Architecture Decision Records
 Decisions that shape the codebase, with the reasoning that produced them. Read
 these before changing the structure they describe.
-- [ADR-0001](./docs/adr/0001-zcashd-support-feature-gate.md) / [ADR-0005](./docs/adr/0005-zcashd-support-default-off.md): the `zcashd_support` feature gate, and why it is opt-in.
-- [ADR-0002](./docs/adr/0002-live-tests-rejoin-root-workspace.md), [ADR-0003](./docs/adr/0003-live-test-taxonomy-and-two-crate-split.md), [ADR-0004](./docs/adr/0004-rename-integration-partition-to-clientless.md): the live-test suite's workspace membership, taxonomy and naming.
 - [ADR-0006](./docs/adr/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
 - [ADR-0007](./docs/adr/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
 - [ADR-0008](./docs/adr/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
 - [ADR-0009](./docs/adr/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
+- [ADR-0010](./docs/adr/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
 - [ADR-0011](./docs/adr/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
+- [ADR-0012](./docs/adr/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
 
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
@@ -168,14 +189,18 @@ mistakes its design is trying to prevent.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
+- [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
+- [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
+- [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
 - [`zaino-bench`](./packages/zaino-bench/usage.md): measuring sync time, connection ceiling, and serve rate on a running node.
 
 
 ## Security Vulnerability Disclosure
+
 If you believe you have discovered a security issue, and it is time sensitive, please contact us online on Matrix. See our [CONTRIBUTING.md document](./CONTRIBUTING.md) for contact points.
 Otherwise you can send an email to:
 zingodisclosure@proton.me
 
-
 ## License
+
 This project is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). See the [LICENSE](./LICENSE) file for details.

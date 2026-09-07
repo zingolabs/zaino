@@ -1,0 +1,59 @@
+# Gate suite membership — the single source of truth for which tests constitute
+# each nextest-realized gate. Authored HERE; read by whatever runs the suite
+# (`ztest`, a self-hosted fleet, or CI). The runner resolves a gate name to its
+# `filterset` and executes it; it owns no membership policy. See
+# docs/release/pipeline.md § "Suite membership".
+#
+#   filterset  — one cargo-nextest --filterset expression for the whole tier.
+#   extends    — inherit the named tier's selection (the cumulative property):
+#                the runner runs this tier's filterset UNIONED with the parent's.
+#
+# NOTE: no consumer reads this yet — it is wired when the runner lands. It is
+# committed now as the authored decision, so the categorization is data (one
+# file) rather than scattered across workflow YAML.
+#
+# ---- classification basis (first cut, 2026-08) ------------------------------
+# The dev/rc split follows the dev-gate's two hard constraints: a wall-clock
+# ceiling (~10-15 min, INCLUDING any fixture/snapshot provisioning) and
+# non-flakiness. EVERY clientless/e2e binary launches a real validator, so the
+# hermetic base of dev-gate is the production (default-member) crates; a live
+# binary earns a dev-gate slot only as a curated smoke.
+#
+# dev-gate smoke — small, regtest-mined, no snapshot dependency, deterministic:
+#   clientless::test_vectors, clientless::validator_heights,
+#   clientless::compact_block_consistency, e2e::compact_block_wire
+#
+# rc-gate — heavy, or depends on a provisioned testnet snapshot, or large:
+#   clientless::fetch_service (~35 tests), clientless::state_service (~75;
+#   cached-testnet + regtest mix), clientless::the_pub_testnet_ironwood_boundary
+#   (loads a local testnet snapshot; SKIPS without one -> no pre-merge signal),
+#   e2e::test_vectors, e2e::ironwood_activation, e2e::devtool (~170 tests).
+#   The caches are LOCAL snapshot dirs (deterministic, not network-flaky); the
+#   reason these are rc-tier is snapshot-provisioning cost, not flakiness.
+#
+# DISABLED debt (not a tier decision): clientless::chain_cache hangs pending
+#   chain-index integration -> zingolabs/zaino#1312. Excluded from BOTH tiers
+#   until fixed, tracked as disabled, never relabelled up a tier to hide a hang.
+#
+# zcashd_support feature axis (orthogonal): clientless::json_server and
+#   e2e::devtool_zcashd are `#![cfg(feature = "zcashd_support")]`; the default
+#   --no-default-features build holds zero of their tests. They run only in a
+#   zcashd-feature build (rc-tier by size there); the filtersets below target
+#   the default build and do not touch them.
+#
+# Deltas from today's CI-PR set: state_service, fetch_service, and
+#   the_pub_testnet_ironwood_boundary move OUT of pre-merge (size / snapshot
+#   dependency); e2e::compact_block_wire moves IN (small regtest smoke, formerly
+#   lumped into the capacity-excluded e2e group, zingolabs/zaino#1308). A finer
+#   within-binary split (keeping the regtest subset of state_service /
+#   fetch_service as smoke) is deferred to per-test filtersets once real
+#   wall-clock data exists.
+# -----------------------------------------------------------------------------
+
+[dev-gate]
+filterset = "(!package(clientless) & !package(e2e)) | binary_id(=clientless::test_vectors) | binary_id(=clientless::validator_heights) | binary_id(=clientless::compact_block_consistency) | binary_id(=e2e::compact_block_wire)"
+
+[rc-gate]
+extends = "dev-gate"
+# The full live suite minus the disabled-for-hang binary (zingolabs/zaino#1312).
+filterset = "(package(clientless) | package(e2e)) & !binary_id(=clientless::chain_cache)"

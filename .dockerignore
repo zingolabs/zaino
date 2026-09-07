@@ -3,6 +3,15 @@ target/
 **/target/
 **/*.rs.bk
 
+# Nix build outputs (dangling store symlinks; must never enter the context)
+result
+result-*
+
+# direnv cache: filenames embed a per-eval env hash, so leaving this in the
+# context rotates the content-addressed image tag on every `direnv reload`.
+.direnv/
+.envrc
+
 # VCS / CI
 .git/
 .gitignore

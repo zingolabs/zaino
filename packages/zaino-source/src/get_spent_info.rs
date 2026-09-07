@@ -16,7 +16,7 @@ pub enum GetSpentInfoError {
     ///
     /// Covers three cases the interface does not distinguish: the output is
     /// unspent, the output is unknown, and the node has no spent index to
-    /// consult. zcashd collapses all three into `-5 Unable to get spent info`,
+    /// consult. the legacy full node collapses all three into `-5 Unable to get spent info`,
     /// and nothing in the reply tells them apart, so neither can this.
     #[error("Unable to get spent info")]
     NotSpent,
@@ -32,7 +32,7 @@ pub enum GetSpentInfoError {
 
 /// Locate the transaction that spent a transparent output.
 ///
-/// Maps to `getspentinfo`, which is a **zcashd-only** method: zebrad does not
+/// Maps to `getspentinfo`, which is a **legacy-only** method: zebrad does not
 /// implement it, and a zebrad-backed deployment answers every call with
 /// [`Unsupported`](GetSpentInfoError::Unsupported).
 ///
@@ -41,10 +41,10 @@ pub enum GetSpentInfoError {
 /// Deliberately *not* `Result<Option<SpentInfo>, _>`, which is the shape its
 /// neighbour [`GetTxOut`](crate::GetTxOut) correctly has. `gettxout` has a null
 /// answer in the interface — an unspent output is a successful query returning
-/// JSON `null`. `getspentinfo` has no such answer: zcashd reports "not spent"
+/// JSON `null`. `getspentinfo` has no such answer: the legacy full node reports "not spent"
 /// as an error, and a client keys on the code. Modelling absence as `None` here
 /// would force every consumer to invent a code on the way out, which is exactly
-/// how this method came to report `-8` for a condition zcashd reports as `-5`.
+/// how this method came to report `-8` for a condition the legacy full node reports as `-5`.
 ///
 /// # TODO: Zaino could answer this itself, and does not
 ///
@@ -52,7 +52,7 @@ pub enum GetSpentInfoError {
 /// `getspentinfo` was added, and no version of Zaino has ever answered it from
 /// its own index. That is a problem now that zebrad is the supported backend,
 /// because zebrad will never implement it: as things stand the method dies with
-/// zcashd, even though Zaino is meant to take over from zcashd.
+/// the legacy full node, even though Zaino is meant to take over from the legacy full node.
 ///
 /// Zaino already indexes most of what the answer needs.
 /// `FinalisedStateReader::get_outpoint_spender` (zaino-state, DB v1.2 and up)

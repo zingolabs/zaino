@@ -634,7 +634,7 @@ pub(crate) fn parse_address_deltas(
                 index: as_u32(field(d, "index")?)?,
                 height: as_height(field(d, "height")?)?,
                 address: TransparentAddress::new(as_str(field(d, "address")?)?.to_owned()),
-                // zcashd emits `blockindex`; a validator that does not is
+                // the legacy full node emits `blockindex`; a validator that does not is
                 // reported as not knowing it rather than as position zero.
                 block_index: match opt_field(d, "blockindex") {
                     Some(v) => Some(as_u32(v)?),
@@ -891,7 +891,7 @@ pub(crate) fn parse_blockchain_info(
 /// Chainwork as reported in `getblockchaininfo`, where the two validators
 /// disagree on both the encoding and whether they track it at all.
 ///
-/// zcashd sends a hex string. Zebra types the field as a 64-bit integer, so it
+/// the legacy full node sends a hex string. Zebra types the field as a 64-bit integer, so it
 /// arrives as a JSON number, and hardcodes it to zero because it does not store
 /// cumulative work per height. Zero is not a possible amount of work for a real
 /// chain, so it is read as "not reported" rather than as a value a consumer

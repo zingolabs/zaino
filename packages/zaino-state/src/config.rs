@@ -52,7 +52,7 @@ impl std::fmt::Display for DonationAddress {
 pub enum ValidatorConnectionType {
     /// JSON-RPC connection (formerly `Fetch`).
     ///
-    /// Compatible with Zcashd, Zebra, or another Zaino instance.
+    /// Compatible with Zebra or another Zaino instance.
     Rpc,
     /// Direct Zebra `ReadStateService` connection (formerly `State`).
     ///
@@ -284,6 +284,43 @@ impl ChainIndexConfig {
             ephemeral: common.ephemeral_finalised_state,
             mempool: common.mempool.clone(),
         }
+    }
+
+    /// What every chain store is configured from.
+    ///
+    /// A projection rather than the whole config: the store has no business
+    /// knowing the mempool's bounds, and `zaino-chain-store` does not depend on
+    /// `zaino-mempool`. The two travel together here only because one service
+    /// config is the source of both.
+    ///
+    /// `ephemeral` and the configured path collapse into one `Option<PathBuf>`
+    /// here, which is where the contradiction between them stops being
+    /// expressible: below this point there is no flag to disagree with a path.
+    pub fn chain_store_config(&self) -> zaino_chain_store::ChainStoreConfig {
+        let mut config = if self.ephemeral {
+            zaino_chain_store::ChainStoreConfig::default()
+        } else {
+            zaino_chain_store::ChainStoreConfig::at_path(self.storage.database.path.clone())
+        };
+
+        // The service config's `db_version` is a plain `u32` read from TOML, so
+        // zero is expressible here even though it names no schema. Falling back
+        // to the default rather than failing keeps this a projection: an
+        // unusable version is `spawn`'s to reject, with the message that names
+        // the versions it does support.
+        if let Some(major) = std::num::NonZeroU32::new(self.db_version) {
+            config.set_target_schema_major(major);
+        }
+        config
+    }
+
+    /// What ZainoDB is configured from beyond [`Self::chain_store_config`].
+    ///
+    /// Separate because it is a different crate's type, and because these are
+    /// the two things a domain crate cannot name: an LMDB budget and a
+    /// `zebra-chain` network.
+    pub fn zainodb_config(&self) -> zaino_chain_store_zainodb::ZainoDbConfig {
+        zaino_chain_store_zainodb::ZainoDbConfig::from_storage(&self.storage, self.network.clone())
     }
 }
 

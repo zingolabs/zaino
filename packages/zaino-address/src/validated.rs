@@ -9,11 +9,11 @@
 ///
 /// Emitted at runtime via `tracing::warn!` by [`super::z_validate_address`] and
 /// referenced from doc comments on the RPC methods that expose it.
-pub const DEPRECATION_NOTICE: &str = "z_validateaddress is deprecated: delegating address validation to a non-client actor encourages information leakage. This service is only offered for bugwards compatibility with zcashd, and WILL BE REMOVED.";
+pub const DEPRECATION_NOTICE: &str = "z_validateaddress is deprecated: delegating address validation to a non-client actor encourages information leakage. This service is only offered for bugwards compatibility with the legacy full node, and WILL BE REMOVED.";
 
 /// The result of the `validateaddress` RPC.
 ///
-/// zcashd's `validateaddress` recognises transparent addresses only; a
+/// the legacy full node's `validateaddress` recognises transparent addresses only; a
 /// well-formed shielded address is reported invalid rather than described.
 /// Zaino matches that.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,12 +71,12 @@ pub enum ZValidatedAddress {
         address: String,
         /// The diversifier `d`.
         diversifier: [u8; 11],
-        /// The diversified transmission key `pk_d`, in zcashd's big-endian
+        /// The diversified transmission key `pk_d`, in the legacy full node's big-endian
         /// byte order (see [`super::sapling_key_bytes`]).
         diversified_transmission_key: [u8; 32],
     },
 
-    /// Unified address. zcashd reports no components for these, and neither
+    /// Unified address. the legacy full node reports no components for these, and neither
     /// does Zaino.
     Unified {
         /// The address, re-encoded for the queried network.

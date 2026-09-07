@@ -118,7 +118,7 @@ race this rework closed. See `packages/zaino-mempool/docs/mempool_lifecycle.md`.
 ### Protocol-correct internally, wire shape at the boundary
 
 Entries hold the full unmined transaction and mirror what the validator stores per
-unconfirmed transaction (Zebra `VerifiedUnminedTx` / zcashd `nHeight`): the
+unconfirmed transaction (Zebra `VerifiedUnminedTx` / the legacy full node `nHeight`): the
 tip-at-entry height, sourced from the validator, not derived.
 
 The entry carries **no** parsed or wire form — not a `Transaction`, not a compact

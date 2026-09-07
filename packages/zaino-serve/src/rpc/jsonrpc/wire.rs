@@ -1,6 +1,6 @@
 //! The served JSON-RPC schema.
 //!
-//! Zaino's JSON-RPC responses are a *wire contract*: zcashd's exact field
+//! Zaino's JSON-RPC responses are a *wire contract*: the legacy full node's exact field
 //! names, its hex encodings, its byte orders. That contract belongs to the
 //! serving adapter, not to the business layer — `zaino-state` returns domain
 //! types, and this module is where they become JSON.
@@ -27,7 +27,7 @@
 //!
 //! Where Zebra already defines the served shape and serializes it correctly, we
 //! reuse Zebra's type rather than reimplementing its serde. Only the
-//! zcashd-only methods — the ones Zebra has no type for — need a wire type in
+//! legacy-only methods — the ones Zebra has no type for — need a wire type in
 //! this module.
 //!
 //! # Provenance
