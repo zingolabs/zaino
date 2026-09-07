@@ -1,92 +1,16 @@
 # syntax=docker/dockerfile:1.4
-# Begin storing hash-object for this file
+#
+# The zaino CI build environment: a Rust toolchain image (protoc, RocksDB,
+# cargo-nextest) used as the `container:` for the GitHub Actions jobs. It ships
+# **no** validator binaries — the live-test suites get their validators from the
+# ztest Kubernetes harness, not from this image. See docs/testing.md.
 
-########################
-# === GLOBAL ARGS ===
-########################
 ARG RUST_VERSION
-ARG ZEBRA_VERSION
-ARG DEVTOOL_VERSION
 ARG UID=1000
 ARG GID=${UID}
 ARG USER=container_user
 ARG HOME="/home/container_user"
 ARG CARGO_HOME="/usr/local/cargo"
-
-########################
-# === DOWNLOADERS ===
-########################
-
-FROM docker.io/zfnd/zebra:${ZEBRA_VERSION} AS zebra-downloader
-
-
-########################
-# === BUILDERS ===
-########################
-
-FROM docker.io/library/rust:${RUST_VERSION}-trixie AS zebra-builder
-
-ARG ZEBRA_VERSION
-# Git ref resolved from ZEBRA_VERSION by the workbench `get-zebra-git-ref`
-# bin: ZEBRA_VERSION is the Docker Hub tag (bare, e.g. "6.0.0-rc.0") while
-# zebra's git release tags carry a `v` prefix. Both build entry points
-# (build-image.sh, build-n-push-ci-image.yaml) resolve and pass it; the
-# bare-ZEBRA_VERSION fallback only serves hand-run builds that pin a branch
-# or SHA.
-ARG ZEBRA_GIT_REF
-# Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
-# together with the base image (query with `apt-cache policy <pkg>`).
-# --no-install-recommends (DL3015): ca-certificates is already present in the
-# rust base, and the dropped recommends are llvm/dev/32-bit extras that the
-# cargo build does not need.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git=1:2.47.3-0+deb13u1 \
-    clang=1:19.0-63 \
-    cmake=3.31.6-2 \
-    pkg-config=1.8.1-4 \
-    protobuf-compiler=3.21.12-11+deb13u1 \
-    libstdc++6=14.2.0-19
-WORKDIR /zebra
-# Single RUN (DL3059): clone, checkout, build, and stage the binary.
-RUN git clone https://github.com/ZcashFoundation/zebra . \
-    && git checkout "${ZEBRA_GIT_REF:-$ZEBRA_VERSION}" \
-    && cargo build --release --bin zebrad \
-    && cp target/release/zebrad /tmp/zebrad
-
-FROM docker.io/library/rust:${RUST_VERSION}-trixie AS devtool-builder
-
-ARG DEVTOOL_VERSION
-# Resolved commit SHA of DEVTOOL_VERSION (a branch, hence moving). It seeds
-# the cache key of the build RUN below: a branch name alone never changes, so
-# without this the layer is reused even after the branch advances, baking a
-# stale binary. build-image.sh resolves it via `git ls-remote`; empty (e.g.
-# DEVTOOL_VERSION already a SHA) falls back to checking out DEVTOOL_VERSION.
-ARG DEVTOOL_REV
-# Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
-# together with the base image (query with `apt-cache policy <pkg>`).
-# git/pkg-config as for zebra-builder; protobuf-compiler for
-# tonic-build; libsqlite3-dev for the zcash_client_sqlite wallet database.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git=1:2.47.3-0+deb13u1 \
-    pkg-config=1.8.1-4 \
-    protobuf-compiler=3.21.12-11+deb13u1 \
-    libsqlite3-dev=3.46.1-7+deb13u1
-WORKDIR /devtool
-# Single RUN (DL3059): clone, checkout, build, and stage the binary. The
-# image's default toolchain builds it (the source tree's
-# rust-toolchain.toml is removed so rustup does not fetch another one).
-# `regtest_support` is the feature e2e' regtest clients require.
-# Checking out the resolved SHA (falling back to the branch) makes this layer
-# rebuild whenever DEVTOOL_REV changes.
-RUN git clone https://github.com/zingolabs/zcash-devtool . \
-    && git checkout "${DEVTOOL_REV:-$DEVTOOL_VERSION}" \
-    && rm -f rust-toolchain.toml \
-    && cargo build --release --features regtest_support \
-    && cp target/release/zcash-devtool /tmp/zcash-devtool
-
-########################
-# === BASE RUNTIME IMAGE ===
-########################
 
 FROM docker.io/library/rust:${RUST_VERSION}-trixie AS base
 
@@ -102,7 +26,6 @@ ENV CARGO_TERM_COLOR=always
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
 ENV PROTOC=/usr/bin/protoc
 ENV ROCKSDB_LIB_DIR=/usr/lib/x86_64-linux-gnu
-
 
 LABEL maintainer="nachog00"
 LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
@@ -121,8 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create container_user. The GID may already belong to a base-image group
 # (e.g. on macOS hosts the caller's primary group is `staff`, GID 20, which
 # collides with Debian's `dialout`); `--non-unique` lets the `container_user`
-# group share that GID so later `--chown=container_user:container_user` COPYs
-# still resolve the group by name.
+# group share that GID so later name-based ownership still resolves.
 RUN groupadd --non-unique --gid ${GID} ${USER} && \
     useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
 
@@ -131,46 +53,19 @@ RUN groupadd --non-unique --gid ${GID} ${USER} && \
 # toolchain under a point-release identity (e.g. "1.92.0-x86_64-unknown-linux-gnu")
 # that does not match rust-toolchain.toml's channel-style `channel = "1.92"` —
 # without this line rustup would re-download the whole toolchain on every
-# container start. RUST_VERSION is the canonical source from
-# .env.testing-artifacts, also used in the FROM clause above.
+# container start. RUST_VERSION is the canonical source, from rust-toolchain.toml
+# via the workbench `get-rust-version` bin, also used in the FROM clause above.
 RUN rustup toolchain install ${RUST_VERSION} --profile minimal \
         --component rustfmt --component clippy && \
     rustup default ${RUST_VERSION}
 
-# Create user-owned runtime directories
-RUN mkdir -p ${HOME}/artifacts ${HOME}/bin ${CARGO_HOME} && \
+RUN mkdir -p ${CARGO_HOME} && \
     chown -R ${UID}:${GID} ${HOME} ${CARGO_HOME}
 
-# Copy and prepare entrypoint script
-COPY --chown=${UID}:${GID} --chmod=0755 entrypoint.sh ${HOME}/bin/entrypoint.sh
-
-WORKDIR ${HOME}/zaino
 USER ${USER}
 
-########################
-# === FINAL TARGETS ===
-########################
+# cargo-nextest is the workspace test runner CI drives (`cargo nextest
+# archive`/`run`), installed as container_user into the user-writable CARGO_HOME.
+RUN cargo install cargo-nextest --locked --root "${CARGO_HOME}"
 
-FROM base AS final-prebuilt
-ARG ZEBRA_VERSION
-ARG DEVTOOL_VERSION
-LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-LABEL org.zaino.test-artifacts.versions.devtool="${DEVTOOL_VERSION}"
-COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
-COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}"
-
-ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
-CMD ["/bin/bash"]
-
-FROM base AS final-zebrad-source
-ARG ZEBRA_VERSION
-ARG DEVTOOL_VERSION
-LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
-LABEL org.zaino.test-artifacts.versions.devtool="${DEVTOOL_VERSION}"
-COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
-COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}"
-
-ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
-CMD ["/bin/bash"]
+WORKDIR ${HOME}/zaino

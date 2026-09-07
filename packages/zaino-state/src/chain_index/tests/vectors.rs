@@ -1,5 +1,6 @@
 //! Test vector creation and validity tests, MockchainSource creation.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::sync::Arc;
@@ -171,37 +172,169 @@ pub(crate) fn build_active_mockchain_source(
 
 // ***** Tests *****
 
-#[tokio::test(flavor = "multi_thread")]
-async fn vectors_can_be_loaded_and_deserialised() {
+/// Tip of the frozen corpus. Every consuming suite's height arithmetic
+/// (`finalized_height_floor(200) = 100`, the 150-block active-height fixtures)
+/// is derived from this, so a truncated corpus must fail loudly here rather
+/// than silently shorten every other test's chain.
+const CORPUS_TIP_HEIGHT: u32 = 200;
+
+#[test]
+fn vectors_can_be_loaded_and_deserialised() {
+    let TestVectorData { blocks, .. } = load_test_vectors().unwrap();
+
+    assert_eq!(
+        blocks.len() as u32,
+        CORPUS_TIP_HEIGHT + 1,
+        "corpus must be the genesis-rooted {}-block chain the consuming suites assume",
+        CORPUS_TIP_HEIGHT + 1
+    );
+
+    for (expected_height, block) in blocks.iter().enumerate() {
+        assert_eq!(
+            block.height, expected_height as u32,
+            "chain height continuity check failed at index {expected_height}"
+        );
+        assert!(
+            !block.sapling_tree_state.is_empty() && !block.orchard_tree_state.is_empty(),
+            "block {} carries an empty treestate blob; `get_tree_state` parity tests would \
+             assert nothing",
+            block.height
+        );
+    }
+
+    for pair in blocks.windows(2) {
+        let (parent, child) = (&pair[0], &pair[1]);
+        assert_eq!(
+            child.zebra_block.header.previous_block_hash,
+            parent.zebra_block.hash(),
+            "block {} does not link to its parent — the corpus is not one chain",
+            child.height
+        );
+
+        // An append-only note commitment tree changes its root exactly when it
+        // grows, so a root that moves without the size moving (or vice versa)
+        // means the roots and the blocks came from different captures.
+        assert!(
+            child.sapling_tree_size >= parent.sapling_tree_size,
+            "sapling tree shrank at height {}",
+            child.height
+        );
+        assert_eq!(
+            child.sapling_root != parent.sapling_root,
+            child.sapling_tree_size != parent.sapling_tree_size,
+            "sapling root and size disagree about growth at height {}",
+            child.height
+        );
+        assert!(
+            child.orchard_tree_size >= parent.orchard_tree_size,
+            "orchard tree shrank at height {}",
+            child.height
+        );
+        assert_eq!(
+            child.orchard_root != parent.orchard_root,
+            child.orchard_tree_size != parent.orchard_tree_size,
+            "orchard root and size disagree about growth at height {}",
+            child.height
+        );
+    }
+
+    let tip = blocks.last().expect("corpus length asserted above");
+    assert!(
+        tip.sapling_tree_size > 0 && tip.orchard_tree_size > 0,
+        "corpus must carry both sapling and orchard activity (sapling {}, orchard {}) — the \
+         mixed-pool shape is what the compact-block and treestate suites read it for",
+        tip.sapling_tree_size,
+        tip.orchard_tree_size
+    );
+}
+
+#[test]
+fn wallet_vectors_agree_with_chain() {
     let TestVectorData {
         blocks,
         faucet,
         recipient,
     } = load_test_vectors().unwrap();
 
-    // Chech block data..
-    assert!(
-        !blocks.is_empty(),
-        "expected at least one block in test-vectors"
-    );
-    let mut expected_height: u32 = 0;
-    for TestVectorBlockData { height, .. } in &blocks {
-        // println!("Checking block at height {h}");
-
-        assert_eq!(
-            expected_height, *height,
-            "Chain height continuity check failed at height {height}"
+    let mut txids_by_height: HashMap<u32, Vec<String>> = HashMap::new();
+    for block in &blocks {
+        txids_by_height.insert(
+            block.height,
+            block
+                .zebra_block
+                .transactions
+                .iter()
+                .map(|tx| tx.hash().to_string())
+                .collect(),
         );
-        expected_height = *height + 1;
     }
 
-    // check taddrs.
+    let faucet_address = assert_wallet_vector_consistent("faucet", &faucet, &txids_by_height);
+    let recipient_address =
+        assert_wallet_vector_consistent("recipient", &recipient, &txids_by_height);
 
-    println!("\nFaucet UTXO address:");
-    let (addr, _hash, _outindex, _script, _value, _height) = faucet.utxos[0].into_parts();
-    println!("addr: {addr}");
+    assert_ne!(
+        faucet_address, recipient_address,
+        "the two wallet vectors must describe different addresses"
+    );
+}
 
-    println!("\nRecipient UTXO address:");
-    let (addr, _hash, _outindex, _script, _value, _height) = recipient.utxos[0].into_parts();
-    println!("addr: {addr}");
+/// Asserts one wallet's `(txids, utxos, balance)` triple is internally coherent
+/// and anchored in the block vectors, returning the single address it covers.
+fn assert_wallet_vector_consistent(
+    label: &str,
+    client: &TestVectorClientData,
+    txids_by_height: &HashMap<u32, Vec<String>>,
+) -> String {
+    assert!(
+        !client.txids.is_empty(),
+        "{label} txid vector is empty; the address-history suites would pass vacuously"
+    );
+    assert!(
+        !client.utxos.is_empty(),
+        "{label} utxo vector is empty; the utxo suites would pass vacuously"
+    );
+
+    let mut addresses = std::collections::HashSet::new();
+    let mut total: u64 = 0;
+    for utxo in &client.utxos {
+        let (address, txid, _output_index, _script, satoshis, height) = utxo.into_parts();
+        addresses.insert(address.to_string());
+        total = total
+            .checked_add(satoshis)
+            .expect("corpus utxo values must not overflow a u64 balance");
+
+        let txid = txid.to_string();
+        assert!(
+            client.txids.contains(&txid),
+            "{label} utxo {txid} is absent from the same wallet's txid vector"
+        );
+        let block_txids = txids_by_height.get(&height.0).unwrap_or_else(|| {
+            panic!(
+                "{label} utxo {txid} names height {}, outside the corpus",
+                height.0
+            )
+        });
+        assert!(
+            block_txids.contains(&txid),
+            "{label} utxo {txid} is not in block {} — the wallet and block vectors are from \
+             different captures",
+            height.0
+        );
+    }
+
+    assert_eq!(
+        client.balance, total,
+        "{label} balance must equal the sum of its utxos"
+    );
+    assert_eq!(
+        addresses.len(),
+        1,
+        "{label} vectors must cover exactly one transparent address, found {addresses:?}"
+    );
+
+    addresses
+        .into_iter()
+        .next()
+        .expect("single-address invariant asserted above")
 }

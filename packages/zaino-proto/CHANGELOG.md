@@ -8,9 +8,18 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `ShieldedProtocol::Ironwood` (wire value `2`), so `GetSubtreeRoots` can name
+  the Ironwood pool. The value matches `zcash_client_backend`'s.
 ### Changed
-### Deprecated
+- The vendored `lightwallet-protocol` subtree is pulled to upstream **v0.5.0**
+  (`ac7cee05`) — it had been stuck at v0.4.0 with later releases hand-copied in.
+  The subtree is also re-recorded at its real prefix
+  (`packages/zaino-proto/lightwallet-protocol`), which the crate's move under
+  `packages/` had broken, so `git subtree pull` works again.
 ### Removed
+- **Breaking** — `CompactBlock::proto_version`. Upstream v0.5.0 removed the
+  field and reserved its tag; Zaino only ever wrote `0` to it.
+### Deprecated
 ### Fixed
 
 ## [0.4.0] - 2026-08-14

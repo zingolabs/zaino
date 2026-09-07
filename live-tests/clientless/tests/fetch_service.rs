@@ -1,675 +1,594 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
+use std::time::Duration;
+
+use anyhow::{Context, Result};
 use clientless::rpc::z_validate_address::run_z_validate_for;
-use futures::StreamExt as _;
-use zaino_address::ValidatedAddress;
-use zaino_proto::proto::compact_formats::CompactBlock;
-use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
-use zaino_serve::rpc::jsonrpc::wire::{
-    block_header::GetBlockHeader, block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
-};
-use zaino_state::{LightWalletIndexer, NodeBackedIndexerServiceSubscriber, ZcashIndexer};
-use zaino_status::{Status, StatusType};
-use zaino_testutils::ValidatorOracle;
-use zaino_testutils::{Rpc, TestManager, ValidatorExt, ValidatorKind};
-use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
-use zebra_rpc::methods::{GetBlock, GetBlockHash};
-
-async fn launch_fetch_service<V: ValidatorExt>(
-    validator: &ValidatorKind,
-    chain_cache: Option<std::path::PathBuf>,
-) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, chain_cache).await;
-    assert_eq!(fetch_service_subscriber.status(), StatusType::Ready);
-    dbg!(fetch_service_subscriber.data.clone());
-    dbg!(fetch_service_subscriber.get_info().await.unwrap());
-    dbg!(
-        fetch_service_subscriber
-            .get_blockchain_info()
-            .await
-            .unwrap()
-            .blocks
-    );
-
-    test_manager.close().await;
-}
-
-/// Fetch block 1 at the given `getblock` verbosity (0 = hex encoded data,
-/// 1 = JSON object).
-#[allow(deprecated)]
-async fn fetch_service_get_block_at_verbosity<V: ValidatorExt>(
-    validator: &ValidatorKind,
-    verbosity: u8,
-) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    dbg!(fetch_service_subscriber
-        .z_get_block("1".to_string(), Some(verbosity))
-        .await
-        .unwrap());
-
-    test_manager.close().await;
-}
-
-async fn fetch_service_get_block_raw<V: ValidatorExt>(validator: &ValidatorKind) {
-    fetch_service_get_block_at_verbosity::<V>(validator, 0).await;
-}
-
-async fn fetch_service_get_block_object<V: ValidatorExt>(validator: &ValidatorKind) {
-    fetch_service_get_block_at_verbosity::<V>(validator, 1).await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_latest_block<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
-        .await;
-
-    let json_service = test_manager.full_node_jsonrpc_connector().await;
-
-    let fetch_service_get_latest_block =
-        dbg!(fetch_service_subscriber.get_latest_block().await.unwrap());
-
-    let json_service_blockchain_info = json_service.get("getblockchaininfo").await;
-
-    // The validator writes its tip hash in display order; `BlockId.hash` is
-    // internal order, so it is reversed on the way in.
-    let mut tip_hash = <[u8; 32]>::try_from(
-        hex::decode(
-            json_service_blockchain_info["bestblockhash"]
-                .as_str()
-                .expect("a best block hash"),
-        )
-        .expect("a hex best block hash")
-        .as_slice(),
-    )
-    .expect("a 32-byte best block hash");
-    tip_hash.reverse();
-
-    let json_service_get_latest_block = dbg!(BlockId {
-        height: json_service_blockchain_info["blocks"]
-            .as_u64()
-            .expect("a chain height"),
-        hash: tip_hash.to_vec(),
-    });
-
-    assert_eq!(fetch_service_get_latest_block.height, 3);
-    assert_eq!(
-        fetch_service_get_latest_block,
-        json_service_get_latest_block
-    );
-
-    test_manager.close().await;
-}
-
-/// Launch a fetch-backend manager, run `fetch_query` against the Zaino
-/// `FetchService` subscriber and `rpc_query` against the validator's JSON-RPC,
-/// then assert the two results are equal. Collapses the
-/// `assert_fetch_service_*_matches_rpc` helpers that differ only by the query.
-#[allow(deprecated)]
-async fn assert_subscriber_matches_rpc<V, T, FFut, RFut>(
-    validator: &ValidatorKind,
-    fetch_query: impl FnOnce(NodeBackedIndexerServiceSubscriber) -> FFut,
-    rpc_query: impl FnOnce(ValidatorOracle) -> RFut,
-) where
-    V: ValidatorExt,
-    T: std::fmt::Debug + PartialEq,
-    FFut: std::future::Future<Output = T>,
-    RFut: std::future::Future<Output = T>,
-{
-    let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-    let from_fetch = fetch_query(fetch_service_subscriber).await;
-    let jsonrpc_client = test_manager.full_node_jsonrpc_connector().await;
-    let from_rpc = rpc_query(jsonrpc_client).await;
-    assert_eq!(from_fetch, from_rpc);
-}
-
-#[allow(deprecated)]
-async fn assert_fetch_service_difficulty_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
-    assert_subscriber_matches_rpc::<V, _, _, _>(
-        validator,
-        |sub| async move { sub.get_difficulty().await.unwrap() },
-        |client| async move {
-            client
-                .get("getdifficulty")
-                .await
-                .as_f64()
-                .expect("a difficulty")
-        },
-    )
-    .await;
-}
-
-/// Every `getmininginfo` field the validator reports must match what Zaino
-/// serves.
-///
-/// Compared key by key over the validator's own response rather than as whole
-/// objects. Zaino additionally emits the legacy-only local-miner fields
-/// (`genproclimit`, `localsolps`, `generate`, `pooledtx`, `errorstimestamp`) as
-/// explicit JSON `null`, where zebrad omits the keys — long-standing behaviour
-/// of this response type, and a client asking a legacy-shaped interface gets a
-/// legacy-shaped answer. What must not differ is any value the validator
-/// actually sent.
-#[allow(deprecated)]
-async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    let served = serde_json::to_value(GetMiningInfoWire::from_domain(
-        fetch_service_subscriber.get_mining_info().await.unwrap(),
-    ))
-    .unwrap();
-
-    let reported = test_manager
-        .full_node_jsonrpc_connector()
-        .await
-        .get("getmininginfo")
-        .await;
-
-    for (field, expected) in reported
-        .as_object()
-        .expect("getmininginfo returns an object")
-    {
-        assert_eq!(
-            &served[field], expected,
-            "`{field}` differs from the validator's own getmininginfo"
-        );
-    }
-}
-
-#[allow(deprecated)]
-async fn assert_fetch_service_peerinfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
-    assert_subscriber_matches_rpc::<V, _, _, _>(
-        validator,
-        |sub| async move {
-            serde_json::to_value(GetPeerInfo::from_domain(sub.get_peer_info().await.unwrap()))
-                .unwrap()
-        },
-        |client| async move { client.get("getpeerinfo").await },
-    )
-    .await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_block_subsidy<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    // getblocksubsidy is a pure function of (height, network schedule): the
-    // validator never reads the chain for an explicit height, so no mining is
-    // needed — heights far past the tip answer identically. Sweep through the
-    // first halving boundary plus a margin on both validators.
-    let height_limit = fetch_service_subscriber
-        .network()
-        .height_for_first_halving()
-        .0
-        + 10;
-
-    let jsonrpc_client = test_manager.full_node_jsonrpc_connector().await;
-
-    for height in 0..height_limit {
-        let fetch_service_get_block_subsidy = fetch_service_subscriber
-            .get_block_subsidy(height)
-            .await
-            .unwrap();
-
-        let rpc_block_subsidy_response = jsonrpc_client
-            .call("getblocksubsidy", vec![serde_json::json!(height)])
-            .await;
-        assert_eq!(
-            serde_json::to_value(GetBlockSubsidy::from_domain(
-                fetch_service_get_block_subsidy
-            ))
-            .unwrap(),
-            rpc_block_subsidy_response
-        );
-    }
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_block<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    let block_id = BlockId {
-        height: 1,
-        hash: Vec::new(),
-    };
-
-    let fetch_service_get_block = dbg!(fetch_service_subscriber
-        .get_block(block_id.clone())
-        .await
-        .unwrap());
-
-    assert_eq!(fetch_service_get_block.height, block_id.height);
-    let block_id_by_hash = BlockId {
-        height: 0,
-        hash: fetch_service_get_block.hash.clone(),
-    };
-    let fetch_service_get_block_by_hash = fetch_service_subscriber
-        .get_block(block_id_by_hash.clone())
-        .await
-        .unwrap();
-    assert_eq!(fetch_service_get_block_by_hash.hash, block_id_by_hash.hash);
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_block_header<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    const BLOCK_LIMIT: u32 = 10;
-
-    let jsonrpc_client = test_manager.full_node_jsonrpc_connector().await;
-
-    test_manager
-        .generate_blocks_and_check_each(
-            BLOCK_LIMIT,
-            &fetch_service_subscriber,
-            &fetch_service_subscriber,
-            async |i| {
-                let block = fetch_service_subscriber
-                    .z_get_block(i.to_string(), Some(1))
-                    .await
-                    .unwrap();
-
-                let block_hash = match block {
-                    GetBlock::Object(block) => block.hash(),
-                    GetBlock::Raw(_) => panic!("Expected block object"),
-                };
-
-                let fetch_service_get_block_header = GetBlockHeader::compact_from_domain(
-                    fetch_service_subscriber
-                        .get_raw_block_header(block_hash.to_string())
-                        .await
-                        .unwrap(),
-                );
-
-                let rpc_block_header_response = jsonrpc_client
-                    .call(
-                        "getblockheader",
-                        vec![
-                            serde_json::json!(block_hash.to_string()),
-                            serde_json::json!(false),
-                        ],
-                    )
-                    .await;
-
-                let fetch_service_get_block_header_verbose = GetBlockHeader::verbose_from_domain(
-                    fetch_service_subscriber
-                        .get_block_header(block_hash.to_string())
-                        .await
-                        .unwrap(),
-                );
-
-                let rpc_block_header_response_verbose = jsonrpc_client
-                    .call(
-                        "getblockheader",
-                        vec![
-                            serde_json::json!(block_hash.to_string()),
-                            serde_json::json!(true),
-                        ],
-                    )
-                    .await;
-
-                assert_eq!(
-                    serde_json::to_value(fetch_service_get_block_header).unwrap(),
-                    rpc_block_header_response
-                );
-                assert_eq!(
-                    serde_json::to_value(fetch_service_get_block_header_verbose).unwrap(),
-                    rpc_block_header_response_verbose
-                );
-            },
-        )
-        .await;
-}
-
-/// Launch a fetch-backend manager and mine 5 blocks, leaving the chain tip at
-/// height 7 (a fresh regtest launch starts at height 2).
-#[allow(deprecated)]
-async fn launch_and_mine_five_blocks<V: ValidatorExt>(
-    validator: &ValidatorKind,
-) -> (TestManager<V, Rpc>, NodeBackedIndexerServiceSubscriber) {
-    let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(5, &fetch_service_subscriber)
-        .await;
-
-    (test_manager, fetch_service_subscriber)
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_best_blockhash<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        launch_and_mine_five_blocks::<V>(validator).await;
-
-    let inspected_block: GetBlock = fetch_service_subscriber
-        // Some(verbosity) : 1 for JSON Object, 2 for tx data as JSON instead of hex
-        .z_get_block("7".to_string(), Some(1))
-        .await
-        .unwrap();
-
-    let ret = match inspected_block {
-        GetBlock::Object(obj) => Some(obj.hash()),
-        _ => None,
-    };
-
-    let fetch_service_get_best_blockhash: GetBlockHash =
-        dbg!(fetch_service_subscriber.get_best_blockhash().await.unwrap());
-
-    assert_eq!(
-        fetch_service_get_best_blockhash.hash(),
-        ret.expect("ret to be Some(GetBlockHash) not None")
-    );
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_block_count<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        launch_and_mine_five_blocks::<V>(validator).await;
-
-    let block_id = BlockId {
-        height: 7,
-        hash: Vec::new(),
-    };
-
-    let fetch_service_get_block_count =
-        dbg!(fetch_service_subscriber.get_block_count().await.unwrap());
-
-    assert_eq!(fetch_service_get_block_count.0 as u64, block_id.height);
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    // scriptpubkey: "76a914000000000000000000000000000000000000000088ac"
-    let expected_validation = ValidatedAddress::Transparent {
-        address: "tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string(),
-        is_script: false,
-    };
-    let fetch_service_validate_address = fetch_service_subscriber
-        .validate_address("tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string())
-        .await
-        .unwrap();
-
-    assert_eq!(fetch_service_validate_address, expected_validation);
-
-    // scriptpubkey: "a914000000000000000000000000000000000000000087"
-    let expected_validation_script = ValidatedAddress::Transparent {
-        address: "t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string(),
-        is_script: true,
-    };
-
-    let fetch_service_validate_address_script = fetch_service_subscriber
-        .validate_address("t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string())
-        .await
-        .unwrap();
-
-    assert_eq!(
-        fetch_service_validate_address_script,
-        expected_validation_script
-    );
-
-    test_manager.close().await;
-}
-
-/// Launch a fetch-backend manager and run the shared `z_validate_address`
-/// suite against its subscriber.
-async fn z_validate<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    run_z_validate_for(&fetch_service_subscriber).await;
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_block_nullifiers<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    let block_id = BlockId {
-        height: 1,
-        hash: Vec::new(),
-    };
-
-    let fetch_service_get_block_nullifiers = dbg!(fetch_service_subscriber
-        .get_block_nullifiers(block_id.clone())
-        .await
-        .unwrap());
-
-    assert_eq!(fetch_service_get_block_nullifiers.height, block_id.height);
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_block_range<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(10, &fetch_service_subscriber)
-        .await;
-
-    let fetch_blocks =
-        zaino_testutils::collect_block_range(&fetch_service_subscriber, 1, 10, vec![]).await;
-
-    dbg!(fetch_blocks);
-
-    test_manager.close().await;
-}
-
-// TODO(#1088): replace deprecated nullifier-range client usage.
-#[allow(deprecated)]
-async fn fetch_service_get_block_range_nullifiers<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(10, &fetch_service_subscriber)
-        .await;
-
-    let block_range = BlockRange {
-        start: Some(BlockId {
-            height: 1,
-            hash: Vec::new(),
-        }),
-        end: Some(BlockId {
-            height: 10,
-            hash: Vec::new(),
-        }),
-        pool_types: zaino_testutils::all_pools_i32(),
-    };
-
-    let fetch_service_stream = fetch_service_subscriber
-        .get_block_range_nullifiers(block_range.clone())
-        .await
-        .unwrap();
-    let fetch_service_compact_blocks: Vec<_> = fetch_service_stream.collect().await;
-
-    let fetch_nullifiers: Vec<CompactBlock> = fetch_service_compact_blocks
-        .into_iter()
-        .filter_map(|result| result.ok())
-        .collect();
-
-    dbg!(fetch_nullifiers);
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_tree_state<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    let chain_height = dbg!(fetch_service_subscriber.chain_height().await.unwrap()).0;
-
-    let block_id = BlockId {
-        height: chain_height as u64,
-        hash: Vec::new(),
-    };
-
-    dbg!(fetch_service_subscriber
-        .get_tree_state(block_id)
-        .await
-        .unwrap());
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_latest_tree_state<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    dbg!(fetch_service_subscriber
-        .get_latest_tree_state()
-        .await
-        .unwrap());
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_subtree_roots<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    let subtree_roots_arg = GetSubtreeRootsArg {
-        start_index: 0,
-        shielded_protocol: 1,
-        max_entries: 0,
-    };
-
-    let fetch_service_stream = fetch_service_subscriber
-        .get_subtree_roots(subtree_roots_arg)
-        .await
-        .unwrap();
-    let fetch_service_roots: Vec<_> = fetch_service_stream.collect().await;
-
-    let fetch_roots: Vec<_> = fetch_service_roots
-        .into_iter()
-        .filter_map(|result| result.ok())
-        .collect();
-
-    dbg!(fetch_roots);
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn fetch_service_get_lightd_info<V: ValidatorExt>(validator: &ValidatorKind) {
-    let (mut test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    dbg!(fetch_service_subscriber.get_lightd_info().await.unwrap());
-
-    test_manager.close().await;
-}
-
-#[allow(deprecated)]
-async fn assert_fetch_service_getnetworksols_matches_rpc<V: ValidatorExt>(
-    validator: &ValidatorKind,
-) {
-    assert_subscriber_matches_rpc::<V, _, _, _>(
-        validator,
-        |sub| async move { sub.get_network_sol_ps(None, None).await.unwrap() },
-        |client| async move {
-            client
-                .get("getnetworksolps")
-                .await
-                .as_u64()
-                .expect("a solution rate")
-        },
-    )
-    .await;
-}
-
-mod zebrad {
-
+use rstest::rstest;
+use serde_json::{json, Value};
+use zaino_testutils::{assert_json_equal_ignoring, assert_rpc_parity};
+use ztest::prelude::*;
+
+const READY: Duration = Duration::from_secs(60);
+
+/// Blocks each `get` test mines to reach the two-block chain the pre-ztest
+/// harness left at launch, which these assertions were written against.
+/// `TestEnv::build` already mines one warm-up block per regtest validator.
+const BASELINE: u32 = 1;
+
+mod launch {
     use super::*;
-    use zcash_local_net::validator::zebrad::Zebrad;
 
-    mod launch {
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn regtest_no_cache<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let _validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
 
-        use super::*;
-
-        #[tokio::test(flavor = "multi_thread")]
-        pub(crate) async fn regtest_no_cache() {
-            launch_fetch_service::<Zebrad>(&ValidatorKind::Zebrad, None).await;
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        #[ignore = "We no longer use chain caches. See zebrad::launch::regtest_no_cache."]
-        pub(crate) async fn regtest_with_cache() {
-            launch_fetch_service::<Zebrad>(
-                &ValidatorKind::Zebrad,
-                zaino_testutils::ZEBRAD_CHAIN_CACHE_DIR.clone(),
-            )
-            .await;
-        }
-    }
-
-    mod validation {
-
-        use super::*;
-
-        #[tokio::test(flavor = "multi_thread")]
-        pub(crate) async fn validate_address() {
-            fetch_service_validate_address::<Zebrad>(&ValidatorKind::Zebrad).await;
-        }
-
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        pub(crate) async fn z_validate_address() {
-            z_validate::<Zebrad>(&ValidatorKind::Zebrad).await;
-        }
-    }
-
-    mod get {
-        use super::*;
-
-        zaino_testutils::validator_tests!(
-            Zebrad,
-            ValidatorKind::Zebrad,
-            block_raw => fetch_service_get_block_raw,
-            block_object => fetch_service_get_block_object,
-            latest_block => fetch_service_get_latest_block,
-            block => fetch_service_get_block,
-            block_header => fetch_service_get_block_header,
-            difficulty => assert_fetch_service_difficulty_matches_rpc,
-            mining_info => assert_fetch_service_mininginfo_matches_rpc,
-            peer_info => assert_fetch_service_peerinfo_matches_rpc,
-            block_subsidy => fetch_service_get_block_subsidy,
-            best_blockhash => fetch_service_get_best_blockhash,
-            block_count => fetch_service_get_block_count,
-            block_nullifiers => fetch_service_get_block_nullifiers,
-            block_range => fetch_service_get_block_range,
-            block_range_nullifiers => fetch_service_get_block_range_nullifiers,
-            tree_state => fetch_service_get_tree_state,
-            latest_tree_state => fetch_service_get_latest_tree_state,
-            subtree_roots => fetch_service_get_subtree_roots,
-            lightd_info => fetch_service_get_lightd_info,
-            get_network_sol_ps => assert_fetch_service_getnetworksols_matches_rpc,
+        let info = indexer.indexer_info().await?;
+        assert!(
+            !info.chain_name.is_empty(),
+            "indexer chain_name must be set: {info:?}"
         );
+        Ok(())
+    }
+}
+
+mod validation {
+    use super::*;
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn validate_address<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let _validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let irpc = indexer.json_rpc().await?;
+        for (addr, is_script) in [
+            ("tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma", false),
+            ("t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2", true),
+        ] {
+            let i = irpc.call_value("validateaddress", json!([addr])).await?;
+            assert_eq!(
+                i.get("isvalid").and_then(Value::as_bool),
+                Some(true),
+                "{addr} isvalid"
+            );
+            assert_eq!(
+                i.get("address").and_then(Value::as_str),
+                Some(addr),
+                "{addr} address echo"
+            );
+            assert_eq!(
+                i.get("isscript").and_then(Value::as_bool),
+                Some(is_script),
+                "{addr} isscript"
+            );
+        }
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    pub(crate) async fn z_validate_address<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let _validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let irpc = indexer.json_rpc().await?;
+        run_z_validate_for(&irpc).await
+    }
+}
+
+mod get {
+    use super::*;
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_raw<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let _block = indexer
+            .json_rpc()
+            .await?
+            .call_value("getblock", json!(["1", 0]))
+            .await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_object<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let _block = indexer
+            .json_rpc()
+            .await?
+            .call_value("getblock", json!(["1", 1]))
+            .await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn latest_block<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let indexer_tip = indexer.latest_block_height().await?;
+        let validator_tip = validator.chain_height().await?;
+        assert_eq!(
+            indexer_tip, validator_tip,
+            "indexer tip ({indexer_tip}) must equal validator tip ({validator_tip})"
+        );
+
+        let indexer_best_hash = indexer
+            .json_rpc()
+            .await?
+            .call_value("getbestblockhash", json!([]))
+            .await?;
+        let validator_best_hash = validator
+            .json_rpc()
+            .await?
+            .call_value("getbestblockhash", json!([]))
+            .await?;
+        assert_eq!(
+            indexer_best_hash, validator_best_hash,
+            "indexer best block hash must equal validator best block hash"
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let by_height = indexer.get_block(BlockHeight::from(1u32)).await?;
+        assert_eq!(by_height.height, 1, "get_block(1).height");
+        assert_eq!(by_height.hash.len(), 32, "block hash must be 32 bytes");
+        let hash_bytes: [u8; 32] = by_height
+            .hash
+            .clone()
+            .try_into()
+            .ok()
+            .context("block hash must be 32 bytes")?;
+        let by_hash = indexer.get_block_by_hash(BlockHash(hash_bytes)).await?;
+        assert_eq!(
+            by_height.height, by_hash.height,
+            "by-hash height round-trip"
+        );
+        assert_eq!(by_height.hash, by_hash.hash, "by-hash hash round-trip");
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_header<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let vrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        for i in 0u32..10 {
+            let tip = validator.generate_blocks(BASELINE + 1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            let blk = vrpc
+                .call_value("getblock", json!([i.to_string(), 1]))
+                .await?;
+            let hash = blk
+                .get("hash")
+                .and_then(Value::as_str)
+                .with_context(|| format!("getblock({i},1).hash missing"))?
+                .to_string();
+            for verbose in [false, true] {
+                let params = format!(r#"["{hash}", {verbose}]"#);
+                assert_rpc_parity("getblockheader", &params, &vrpc, &irpc, &[]).await?;
+            }
+        }
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn difficulty<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let vrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        assert_rpc_parity("getdifficulty", "", &vrpc, &irpc, &[]).await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn mining_info<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let ignore: &[&str] = &[
+            "difficulty",
+            "errors",
+            "errorstimestamp",
+            "genproclimit",
+            "localsolps",
+            "pooledtx",
+            "generate",
+        ];
+
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let v = validator
+            .json_rpc()
+            .await?
+            .call_value("getmininginfo", json!([]))
+            .await?;
+        let i = indexer
+            .json_rpc()
+            .await?
+            .call_value("getmininginfo", json!([]))
+            .await?;
+        assert_json_equal_ignoring("getmininginfo", v, i, ignore);
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn peer_info<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let vrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        assert_rpc_parity("getpeerinfo", "", &vrpc, &irpc, &[]).await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_subsidy<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        // getblocksubsidy is a pure function of (height, network schedule): the
+        // validator never reads the chain for an explicit height, so no mining is
+        // needed — heights far past the tip answer identically. Sweep through the
+        // first halving boundary plus a margin on both validators.
+        let block_limit = match validator.chain_config().await?.first_halving_height {
+            Some(first_halving) => u32::from(first_halving) + 10,
+            None => 10,
+        };
+        let tip = validator.generate_blocks(BASELINE + block_limit).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let vrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        for height in 0u32..block_limit {
+            let params = format!("[{height}]");
+            assert_rpc_parity("getblocksubsidy", &params, &vrpc, &irpc, &[]).await?;
+        }
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn best_blockhash<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 5).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let tip = u32::from(validator.chain_height().await?);
+        let irpc = indexer.json_rpc().await?;
+        let block = irpc
+            .call_value("getblock", json!([tip.to_string(), 1]))
+            .await?;
+        let block_hash = block
+            .get("hash")
+            .and_then(Value::as_str)
+            .context("getblock.hash missing")?;
+        let best_hash = irpc
+            .call_value("getbestblockhash", json!([]))
+            .await?
+            .as_str()
+            .context("getbestblockhash returned non-string")?
+            .to_string();
+        assert_eq!(
+            block_hash, best_hash,
+            "getblock(tip).hash must equal getbestblockhash"
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_count<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 5).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let vrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        let count = assert_rpc_parity("getblockcount", "", &vrpc, &irpc, &[]).await?;
+        assert_eq!(
+            count.as_u64(),
+            Some(u64::from(u32::from(tip))),
+            "getblockcount must equal the validator's tip"
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_nullifiers<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 3).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let cb = indexer
+            .get_block_nullifiers(BlockHeight::from(1u32))
+            .await?;
+        assert_eq!(
+            cb.height, 1,
+            "GetBlockNullifiers must return the requested height"
+        );
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_range<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 10).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let _blocks = indexer
+            .get_block_range(BlockHeight::from(1u32), BlockHeight::from(10u32))
+            .await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn block_range_nullifiers<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 10).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let _blocks = indexer
+            .get_block_range_nullifiers(BlockHeight::from(1u32), BlockHeight::from(10u32))
+            .await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn tree_state<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let chain_tip = validator.chain_height().await?;
+        let _ts = indexer.get_tree_state(chain_tip).await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn latest_tree_state<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let _ts = indexer.get_latest_tree_state().await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn subtree_roots<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE + 1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let _roots = indexer
+            .get_subtree_roots(0, ShieldedProtocol::Sapling, 0)
+            .await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn lightd_info<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let _info = indexer.indexer_info().await?;
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    pub(crate) async fn get_network_sol_ps<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let tip = validator.generate_blocks(BASELINE).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let vrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        assert_rpc_parity("getnetworksolps", "", &vrpc, &irpc, &[]).await?;
+        Ok(())
     }
 }
