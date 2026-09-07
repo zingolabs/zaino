@@ -785,9 +785,16 @@ pub(crate) fn parse_subtree_roots(
 /// yet, and an empty tree has a well-defined root.
 fn parse_tree_roots_inner(value: &serde_json::Value) -> Result<TreeRoots, ParseError> {
     Ok(TreeRoots {
-        sapling: sapling_pool_root(opt_field(value, "sapling"))?,
-        orchard: orchard_shaped_pool_root(opt_field(value, "orchard"))?,
-        ironwood: orchard_shaped_pool_root(opt_field(value, "ironwood"))?,
+        sapling: pool_root::<sapling_crypto::Node>(opt_field(value, "sapling"), |r| r.to_bytes())?,
+        // Orchard and Ironwood share a node type and a root representation, so
+        // they share this reader — they differ only in which field they read.
+        orchard: pool_root::<zebra_chain::orchard::tree::Node>(opt_field(value, "orchard"), |r| {
+            r.to_repr()
+        })?,
+        ironwood: pool_root::<zebra_chain::orchard::tree::Node>(
+            opt_field(value, "ironwood"),
+            |r| r.to_repr(),
+        )?,
     })
 }
 
@@ -812,28 +819,24 @@ fn pool_final_state(pool: Option<&serde_json::Value>) -> Result<Option<Vec<u8>>,
     }
 }
 
-fn sapling_pool_root(pool: Option<&serde_json::Value>) -> Result<Option<TreeRootInfo>, ParseError> {
-    let Some(bytes) = pool_final_state(pool)? else {
-        return Ok(None);
-    };
-    let tree = read_tree::<sapling_crypto::Node>(&bytes)?;
-    Ok(Some(TreeRootInfo {
-        root: TreeRoot::new(tree.root().to_bytes()),
-        size: TreeSize::new(tree.size() as u64),
-    }))
-}
-
-/// Orchard and Ironwood share a node type and a root representation, so they
-/// share this reader — the pools differ only in which field they came from.
-fn orchard_shaped_pool_root(
+/// Read one pool's final-state tree and turn its root into a [`TreeRootInfo`].
+///
+/// The pools differ only in the tree node type `N` and in how that node's root
+/// is turned into its 32 bytes, so `root_bytes` supplies that last step per
+/// pool (`Node::to_bytes` for Sapling, `Node::to_repr` for Orchard/Ironwood).
+fn pool_root<N>(
     pool: Option<&serde_json::Value>,
-) -> Result<Option<TreeRootInfo>, ParseError> {
+    root_bytes: impl FnOnce(N) -> [u8; 32],
+) -> Result<Option<TreeRootInfo>, ParseError>
+where
+    N: incrementalmerkletree::Hashable + Clone + zcash_primitives::merkle_tree::HashSer,
+{
     let Some(bytes) = pool_final_state(pool)? else {
         return Ok(None);
     };
-    let tree = read_tree::<zebra_chain::orchard::tree::Node>(&bytes)?;
+    let tree = read_tree::<N>(&bytes)?;
     Ok(Some(TreeRootInfo {
-        root: TreeRoot::new(tree.root().to_repr()),
+        root: TreeRoot::new(root_bytes(tree.root())),
         size: TreeSize::new(tree.size() as u64),
     }))
 }
