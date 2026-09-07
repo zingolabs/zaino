@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use relman_config::ReleaseConfig;
@@ -7,10 +7,6 @@ use relman_core::ports::{ChangesetCheck, ChangesetStore, CheckError, CheckReport
 use relman_core::types::{
     Changeset, ChangesetError, ConsumedLedger, CrateName, Slug, StoredChangeset,
 };
-
-/// The changeset-file extension. Only `*.toml` under the changesets dir count as
-/// this-PR changeset files.
-const TOML_EXT: &str = "toml";
 
 /// Enforces the `dev`-gate rule: a PR touching a governed target's source must
 /// carry a covering changeset **in its own diff**. Implements the
@@ -47,19 +43,6 @@ impl ChangesetCheckService {
         }
     }
 
-    /// The slug of a changed path iff it is a this-PR changeset file: a
-    /// `*.toml` under the configured changesets dir whose stem is a valid slug.
-    fn changeset_slug(&self, file: &Path, changesets_dir: &Path) -> Option<Slug> {
-        if !file.starts_with(changesets_dir) {
-            return None;
-        }
-        if file.extension().and_then(|e| e.to_str()) != Some(TOML_EXT) {
-            return None;
-        }
-        let stem = file.file_stem().and_then(|s| s.to_str())?;
-        Slug::parse(stem).ok()
-    }
-
     /// The set of targets whose source `files` touch, sorted by name for
     /// deterministic violation ordering.
     fn touched_targets(&self, files: &[PathBuf]) -> Vec<CrateName> {
@@ -80,12 +63,15 @@ impl ChangesetCheck for ChangesetCheckService {
         let changesets_dir = self.config.options().changesets_dir().as_path();
 
         // Partition the diff into this-PR changeset files (by slug) and
-        // everything else (candidate source files).
+        // everything else (candidate source files). A changeset path the PR
+        // deleted is in the diff but not in the store; it is not a this-PR
+        // changeset and covers nothing.
         let mut pr_changeset_slugs: Vec<Slug> = Vec::new();
         let mut source_files: Vec<PathBuf> = Vec::new();
         for file in changed {
-            match self.changeset_slug(&file, changesets_dir) {
-                Some(slug) => pr_changeset_slugs.push(slug),
+            match Slug::of_changeset_file(&file, changesets_dir) {
+                Some(slug) if self.store.exists(&slug)? => pr_changeset_slugs.push(slug),
+                Some(_deleted) => {}
                 None => source_files.push(file),
             }
         }

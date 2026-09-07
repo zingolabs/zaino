@@ -330,8 +330,8 @@ path = "../escape"
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../relman.toml");
         let config = load(&manifest).expect("repo relman.toml should parse");
 
-        // The 17 crates.io-published targets from the release ADR § Context.
-        assert_eq!(config.targets().len(), 17);
+        // The 23 crates.io-published targets from the release ADR § Context.
+        assert_eq!(config.targets().len(), 23);
         for name in [
             "zainod",
             "zaino-serve",
@@ -350,6 +350,12 @@ path = "../escape"
             "zaino-mempool",
             "zaino-mempool-service",
             "zaino-status",
+            "zaino-encoding",
+            "zaino-source-macros",
+            "zaino-chain-head",
+            "zaino-chain-head-service",
+            "zaino-chain-store",
+            "zaino-chain-store-zainodb",
         ] {
             let crate_name = CrateName::parse(name).expect("governed name is valid");
             assert!(

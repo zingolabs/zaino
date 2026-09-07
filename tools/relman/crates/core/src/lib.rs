@@ -11,6 +11,8 @@
 //! - [`mocks`] — in-memory port implementations for tests, behind the
 //!   `test-support` feature.
 
+#![forbid(unsafe_code)]
+
 pub mod ports;
 pub mod types;
 

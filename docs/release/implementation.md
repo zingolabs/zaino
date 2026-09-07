@@ -40,12 +40,12 @@ applies `relman`'s outputs as side-effects on the outside world.
 | ----------------- | ----- | -------- | ------- |
 | `changeset new [--empty <reason>]` | — | a `.changesets/<slug>.toml` scaffold | working tree |
 | `changeset check` | git diff vs base, `.changesets/`, crate graph | pass/fail + diagnostics (enforcement) | nothing (read-only) |
-| `changeset rename --pr <N>` | `.changesets/` | renamed `pr-<N>.toml` | working tree |
+| `changeset rename --pr <N> [--base <REF>]` | `.changesets/`, the PR's diff against `<REF>` | renamed `pr-<N>.toml` | working tree |
 | `derive` | `.changesets/`, all `Cargo.toml`, crate graph | per-crate next-version table (highest-`kind` + pre-1.0 map + transitive) | nothing (read-only) |
 | `bump` | derive output | edited `Cargo.toml` versions + root `[workspace.dependencies]` pins (via `toml_edit`, format-preserving) | working tree |
 | `changelog` | `.changesets/`, derive output | per-crate + workspace changelog edits | working tree |
 | `pr-body` | derive output, deployment status input | rendered release-PR description | stdout/file |
-| `tags` | derive output, cycle id | the tag set to apply (`<crate>-vX.Y.Z`, `cycle-<id>`, `cycle-<id>-rc.N`) | stdout/file |
+| `tags` | derive output, cycle id | the tag set to apply (`<crate>-X.Y.Z`, `cycle-<id>`, `cycle-<id>-rc.N`) | stdout/file |
 | `publish-plan` | crate graph, crates.io state (reuse `workbench check-published-versions`) | topo-ordered publish list, skipping unchanged | stdout/file |
 | `changeset clear` (release consume) | `.changesets/` | empties `.changesets/` | working tree |
 
@@ -266,8 +266,11 @@ Every path below is inert until the repo variable `RELMAN_PIPELINE_ACTIVE`
 is `true`; `RELMAN_PUBLISH_DRY_RUN` additionally downgrades publishing to
 advisory.
 
-1. **Merge/push to `stable`** → `blessing` publishes to crates.io, tags, cuts
-   the GitHub Release. `stable` is protected; the release App bypasses the
+1. **Merge of the release PR (`release-ready` → `stable`)** → `blessing`
+   publishes to crates.io, tags, cuts the GitHub Release. Blessing checks
+   that provenance (the pushed commit is the merge of a PR from
+   `release-ready`) and that the pusher is not its own App; any other push
+   to `stable` is carried back by the backport sentinel but never released. `stable` is protected; the release App bypasses the
    protection by design.
 2. **`rc-gate` nightly cron** advances the rc frontier when the gate condition
    holds. Its `workflow_dispatch` input `force=true` bypasses the gate and is

@@ -5,6 +5,8 @@
 //! Only the binary's composition root names these; the domain depends on the
 //! port traits, never on this crate.
 
+#![forbid(unsafe_code)]
+
 mod cargo_metadata_workspace;
 mod fs_changelog_store;
 mod fs_changeset_store;

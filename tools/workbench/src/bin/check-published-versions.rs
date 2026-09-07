@@ -17,7 +17,7 @@
 //! `--mode advisory` reports violations as warnings and exits 0 (feature
 //! branches, where unbumped-but-changed crates are the normal
 //! bump-at-release state). `--mode blocking` reports them as errors and
-//! exits 1 (`rc/**` and `stable` release gates).
+//! exits 1 (the `stable` release gate and blessing's pre-flight).
 //!
 //! Std-only by crate design: network, extraction, and diffing go through
 //! `curl`, `tar`, and `diff` subprocesses.

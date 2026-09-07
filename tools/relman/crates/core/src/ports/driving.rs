@@ -45,6 +45,9 @@ pub enum ChangesetsError {
     /// A consumed-ledger store operation failed while recording shipped ids.
     #[error("consumed-ledger store operation failed")]
     Ledger(#[from] ConsumedLedgerStoreError),
+    /// Querying version control for the PR's changed files failed.
+    #[error("version-control query failed")]
+    Vcs(#[from] VcsError),
     /// Every candidate slug collided with an existing file within the retry
     /// budget — vanishingly unlikely, so it signals an exhausted or degenerate
     /// slug source rather than ordinary contention.
@@ -93,15 +96,18 @@ pub trait Changesets: Send + Sync {
     /// name(s), returning the new slug(s).
     ///
     /// Backs the `relman changeset rename --pr <N>` step the PR-gate bot runs.
-    /// "This PR's files" are the changesets whose slug is *not* already a
-    /// [canonical PR name](Slug::is_canonical_pr) — the author's random slug(s);
-    /// accumulated `pr-*` files from earlier merged PRs are left untouched. The
-    /// non-canonical sources are renamed in sorted order: the first becomes
-    /// `pr-<pr>`, the second `pr-<pr>-2`, and so on
-    /// ([`Slug::for_pr`](crate::types::Slug::for_pr)). A pre-existing target
-    /// name is an error. Zero author files is a no-op returning an empty vec —
-    /// the bot may safely re-run, since renaming is idempotent once canonical.
-    fn rename_to_pr(&self, pr: u32) -> Result<Vec<Slug>, ChangesetsError>;
+    /// "This PR's files" are the changesets that appear in the PR's diff
+    /// against `base` and whose slug is *not* already a
+    /// [canonical PR name](Slug::is_canonical_pr) — the author's random slug(s).
+    /// Accumulated `pr-*` files from earlier merged PRs, non-canonical files the
+    /// PR merely inherited from `base`, and already-shipped changesets (marked
+    /// `consumed_in` or recorded in the ledger) are left untouched. The sources
+    /// are renamed in sorted order: the first becomes `pr-<pr>`, the second
+    /// `pr-<pr>-2`, and so on ([`Slug::for_pr`](crate::types::Slug::for_pr)). A
+    /// pre-existing target name is an error. Zero author files is a no-op
+    /// returning an empty vec — the bot may safely re-run, since renaming is
+    /// idempotent once canonical.
+    fn rename_to_pr(&self, pr: u32, base: &str) -> Result<Vec<Slug>, ChangesetsError>;
 
     /// The slugs of every *pending* (not-yet-consumed) changeset in the store,
     /// sorted. A read-only listing that mutates nothing, backing the dry run of
@@ -308,6 +314,9 @@ pub enum ApplyError {
     /// Editing one of the manifests failed.
     #[error("manifest edit failed")]
     Manifest(#[from] ManifestError),
+    /// Refreshing the workspace lockfile after the manifest edits failed.
+    #[error("lockfile refresh failed")]
+    Workspace(#[from] WorkspaceError),
 }
 
 /// Inbound port: mechanically apply a derived [`BumpTable`] to the workspace
@@ -465,7 +474,7 @@ pub trait ReleaseArtifacts: Send + Sync {
     /// - `rc = Some(n)` (a soak/prerelease cut): a single `cycle-<id>-rc.<n>`
     ///   prerelease tag.
     /// - `rc = None` (a blessing): the `cycle-<id>` period tag followed by one
-    ///   `<crate>-v<next>` provenance tag per bumping crate, in config order.
+    ///   `<crate>-<next>` provenance tag per bumping crate, in config order.
     fn tags(&self, cycle: &CycleId, rc: Option<u32>) -> Result<TagPlan, ArtifactError>;
 
     /// The rendered release-PR body for `cycle`.

@@ -41,7 +41,14 @@ pub enum InvalidTag {
     /// The name contained `..`, which git rejects in a ref.
     #[error("tag name must not contain '..'")]
     DoubleDot,
+    /// The name was expected to be a release-candidate tag but carries no
+    /// numeric `-rc.<M>` suffix.
+    #[error("tag name carries no numeric '-rc.<M>' suffix")]
+    MissingRcOrdinal,
 }
+
+/// The separator a release-candidate tag places before its ordinal.
+const RC_SEPARATOR: &str = "-rc.";
 
 impl Tag {
     /// Wrap a string produced from already-validated parts. Private: the only
@@ -67,7 +74,16 @@ impl Tag {
     /// The soak-prerelease tag `"cycle-{id}-rc.{n}"` (e.g.
     /// `cycle-2026-08-15-rc.6`) applied to each release-candidate cut.
     pub fn cycle_rc(cycle: &CycleId, n: u32) -> Self {
-        Self::from_valid(format!("cycle-{cycle}-rc.{n}"))
+        Self::from_valid(format!("cycle-{cycle}{RC_SEPARATOR}{n}"))
+    }
+
+    /// The numeric `<M>` of a `-rc.<M>` suffix, or `None` when the tag is not a release candidate.
+    pub fn rc_ordinal(&self) -> Option<u32> {
+        let (_, ordinal) = self.0.rsplit_once(RC_SEPARATOR)?;
+        if ordinal.is_empty() || !ordinal.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        ordinal.parse().ok()
     }
 
     /// Parse an arbitrary string as a git tag name, enforcing the invariants
@@ -143,6 +159,23 @@ mod tests {
             "v1.2.3",
         ] {
             assert_eq!(Tag::parse(raw).expect("valid").as_str(), raw);
+        }
+    }
+
+    #[test]
+    fn rc_ordinal_reads_only_a_numeric_rc_suffix() {
+        assert_eq!(
+            Tag::cycle_rc(&cycle_id("2026-08-15"), 6).rc_ordinal(),
+            Some(6)
+        );
+        for raw in [
+            "cycle-1",
+            "nightly_build",
+            "cycle-1-rc.",
+            "cycle-1-rc.x",
+            "rc.3",
+        ] {
+            assert_eq!(Tag::parse(raw).expect("valid").rc_ordinal(), None, "{raw}");
         }
     }
 

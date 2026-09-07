@@ -1,10 +1,9 @@
 use clap::Args as ClapArgs;
 
-use crate::commands::changeset::ChangesetCommandError;
-use crate::context::Ctx;
+use relman_core::ports::Violation;
 
-/// The default base ref: PRs are gated against `dev`.
-const DEFAULT_BASE: &str = "dev";
+use crate::commands::changeset::{ChangesetCommandError, DEFAULT_BASE};
+use crate::context::Ctx;
 
 /// `relman changeset check [--base <REF>]`.
 #[derive(ClapArgs)]
@@ -23,7 +22,16 @@ pub fn run(args: &Args, ctx: &Ctx) -> Result<(), ChangesetCommandError> {
     for violation in &report.violations {
         eprintln!("relman: {}", violation.message());
     }
-    Err(ChangesetCommandError::CheckFailed {
-        count: report.violations.len(),
-    })
+    let count = report.violations.len();
+    let malformed = report.violations.iter().any(|violation| {
+        matches!(
+            violation,
+            Violation::ChangesetParse { .. } | Violation::UnknownTargetInChangeset(_)
+        )
+    });
+    if malformed {
+        Err(ChangesetCommandError::CheckMalformed { count })
+    } else {
+        Err(ChangesetCommandError::CheckFailed { count })
+    }
 }

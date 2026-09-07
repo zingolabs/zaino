@@ -1,8 +1,10 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use relman_core::ports::{
     ChangesetStore, Changesets, ChangesetsError, ConsumedLedgerStore, NewChangeset, SlugSource,
-    UidSource,
+    UidSource, Vcs,
 };
 use relman_core::types::{CONSUMED_IN_KEY, Changeset, CycleId, Slug, StoredChangeset, Uid};
 
@@ -51,7 +53,7 @@ const TEMPLATE: &str = "\
 /// Its whole job: mint an immutable id, pick a slug that doesn't already exist,
 /// render the requested shape (id-stamped) to TOML text, write it, and return
 /// the chosen slug.
-pub struct ChangesetService {
+pub struct ChangesetService<V: Vcs> {
     store: Arc<dyn ChangesetStore>,
     slugs: Arc<dyn SlugSource>,
     uids: Arc<dyn UidSource>,
@@ -59,21 +61,48 @@ pub struct ChangesetService {
     /// each newly-consumed changeset's id here so a later derivation on `dev` can
     /// exclude it by id even before the per-file `consumed_in` mark backports.
     ledger: Arc<dyn ConsumedLedgerStore>,
+    /// The version-control view, so [`rename_to_pr`](Changesets::rename_to_pr)
+    /// renames only the changesets the PR itself added.
+    vcs: V,
+    /// The repo-relative changesets directory the diff's paths are matched
+    /// against.
+    changesets_dir: PathBuf,
 }
 
-impl ChangesetService {
+impl<V: Vcs> ChangesetService<V> {
     pub fn new(
         store: Arc<dyn ChangesetStore>,
         slugs: Arc<dyn SlugSource>,
         uids: Arc<dyn UidSource>,
         ledger: Arc<dyn ConsumedLedgerStore>,
+        vcs: V,
+        changesets_dir: PathBuf,
     ) -> Self {
         Self {
             store,
             slugs,
             uids,
             ledger,
+            vcs,
+            changesets_dir,
         }
+    }
+
+    /// Whether the changeset at `slug` has already shipped, by its in-file mark
+    /// or by its id in the ledger.
+    fn is_shipped(
+        &self,
+        slug: &Slug,
+        raw: &str,
+        ledger: &relman_core::types::ConsumedLedger,
+    ) -> Result<bool, ChangesetsError> {
+        let consumed =
+            StoredChangeset::consumed_marker(raw).map_err(|e| Self::parse_error(slug, e))?;
+        if consumed.is_some() {
+            return Ok(true);
+        }
+        let id = StoredChangeset::id_marker(raw).map_err(|e| Self::parse_error(slug, e))?;
+        Ok(id.is_some_and(|id| ledger.contains(&id)))
     }
 
     /// Map a changeset-parse failure to a [`ChangesetsError::Parse`] carrying
@@ -99,7 +128,7 @@ impl ChangesetService {
     }
 }
 
-impl Changesets for ChangesetService {
+impl<V: Vcs> Changesets for ChangesetService<V> {
     fn new(&self, req: NewChangeset) -> Result<Slug, ChangesetsError> {
         // Every changeset gets an immutable id at creation — before it is
         // written — so its identity is stamped from birth regardless of shape.
@@ -121,16 +150,30 @@ impl Changesets for ChangesetService {
         Ok(slugs)
     }
 
-    fn rename_to_pr(&self, pr: u32) -> Result<Vec<Slug>, ChangesetsError> {
-        // Only the author's random-slug files belong to this PR; accumulated
-        // `pr-*` files from earlier merged PRs are already canonical and left
-        // alone. Sort for deterministic ordinal assignment.
-        let mut sources: Vec<Slug> = self
-            .store
-            .list()?
-            .into_iter()
-            .filter(|slug| !slug.is_canonical_pr())
+    fn rename_to_pr(&self, pr: u32, base: &str) -> Result<Vec<Slug>, ChangesetsError> {
+        // Only the author's random-slug files that this PR itself added belong
+        // to it: accumulated `pr-*` files are already canonical, a non-canonical
+        // file inherited from `base` belongs to whichever PR merged it, and a
+        // shipped changeset is ledger provenance whose slug must not move.
+        let in_diff: HashSet<Slug> = self
+            .vcs
+            .changed_files(base)?
+            .iter()
+            .filter_map(|file| Slug::of_changeset_file(file, &self.changesets_dir))
             .collect();
+        let ledger = self.ledger.read()?;
+        let mut sources: Vec<Slug> = Vec::new();
+        for slug in self.store.list()? {
+            if slug.is_canonical_pr() || !in_diff.contains(&slug) {
+                continue;
+            }
+            let raw = self.store.read(&slug)?;
+            if self.is_shipped(&slug, &raw, &ledger)? {
+                continue;
+            }
+            sources.push(slug);
+        }
+        // Sort for deterministic ordinal assignment.
         sources.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
         let mut renamed = Vec::with_capacity(sources.len());
@@ -224,10 +267,13 @@ fn stamp_consumed(raw: &str, cycle: &CycleId) -> Result<String, toml_edit::TomlE
 mod tests {
     use super::*;
     use relman_core::mocks::{
-        MapChangesetStore, MapConsumedLedgerStore, SequenceSlugSource, SequenceUidSource,
+        MapChangesetStore, MapConsumedLedgerStore, SequenceSlugSource, SequenceUidSource, StubVcs,
     };
     use relman_core::ports::{ChangesetStoreError, ConsumedLedgerStore};
     use relman_core::types::{ChangesetError, Description};
+
+    /// The repo-relative changesets directory the test diffs are rooted at.
+    const CHANGESETS_DIR: &str = ".changesets";
 
     /// A canonical UUIDv7 the test uid source hands out, so a created changeset's
     /// id is deterministic.
@@ -241,7 +287,8 @@ mod tests {
         Uid::parse(raw).expect("valid test uid")
     }
 
-    fn service(store: Arc<dyn ChangesetStore>, slugs: Vec<Slug>) -> ChangesetService {
+    /// A service whose PR diff contains every changeset currently in `store`.
+    fn service(store: Arc<dyn ChangesetStore>, slugs: Vec<Slug>) -> ChangesetService<StubVcs> {
         service_with_ledger(store, slugs, Arc::new(MapConsumedLedgerStore::new()))
     }
 
@@ -251,12 +298,35 @@ mod tests {
         store: Arc<dyn ChangesetStore>,
         slugs: Vec<Slug>,
         ledger: Arc<dyn ConsumedLedgerStore>,
-    ) -> ChangesetService {
+    ) -> ChangesetService<StubVcs> {
+        let in_diff: Vec<String> = store
+            .list()
+            .expect("list store")
+            .iter()
+            .map(|slug| format!("{CHANGESETS_DIR}/{}", slug.file_name()))
+            .collect();
+        service_with_diff(
+            store,
+            slugs,
+            ledger,
+            in_diff.iter().map(String::as_str).collect(),
+        )
+    }
+
+    /// As [`service_with_ledger`], with an explicit PR diff.
+    fn service_with_diff(
+        store: Arc<dyn ChangesetStore>,
+        slugs: Vec<Slug>,
+        ledger: Arc<dyn ConsumedLedgerStore>,
+        in_diff: Vec<&str>,
+    ) -> ChangesetService<StubVcs> {
         ChangesetService::new(
             store,
             Arc::new(SequenceSlugSource::new(slugs)),
             Arc::new(SequenceUidSource::new(vec![uid(SAMPLE_UID)])),
             ledger,
+            StubVcs::new(in_diff.into_iter().map(PathBuf::from).collect()),
+            PathBuf::from(CHANGESETS_DIR),
         )
     }
 
@@ -355,15 +425,17 @@ mod tests {
     fn rename_to_pr_renames_only_the_author_file() {
         let store = Arc::new(MapChangesetStore::new());
         store
-            .write(&slug("wandering-quokka"), "[empty]\n")
+            .write(&slug("wandering-quokka"), "[empty]\nreason = \"seed\"\n")
             .expect("seed author");
         // An accumulated changeset from an earlier merged PR — already canonical.
         store
-            .write(&slug("pr-1490"), "[empty]\n")
+            .write(&slug("pr-1490"), "[empty]\nreason = \"seed\"\n")
             .expect("seed accumulated");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
-        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+        let renamed = svc
+            .rename_to_pr(1501, "dev")
+            .expect("rename should succeed");
 
         assert_eq!(as_strs(&renamed), ["pr-1501"]);
         assert_eq!(slugs_in(&store), ["pr-1490", "pr-1501"]);
@@ -373,16 +445,50 @@ mod tests {
     fn rename_to_pr_numbers_multiple_author_files_deterministically() {
         let store = Arc::new(MapChangesetStore::new());
         store
-            .write(&slug("wandering-quokka"), "a")
+            .write(&slug("wandering-quokka"), "[empty]\nreason = \"a\"\n")
             .expect("seed one");
-        store.write(&slug("brisk-heron"), "b").expect("seed two");
+        store
+            .write(&slug("brisk-heron"), "[empty]\nreason = \"b\"\n")
+            .expect("seed two");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
-        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+        let renamed = svc
+            .rename_to_pr(1501, "dev")
+            .expect("rename should succeed");
 
         // Sorted sources: brisk-heron < wandering-quokka, so brisk-heron is first.
         assert_eq!(as_strs(&renamed), ["pr-1501", "pr-1501-2"]);
         assert_eq!(slugs_in(&store), ["pr-1501", "pr-1501-2"]);
+    }
+
+    #[test]
+    fn rename_to_pr_ignores_non_canonical_files_outside_the_diff() {
+        // `brisk-heron` is a random-slug changeset the PR inherited from `dev`
+        // (a fork PR merged without the rename bot); only `wandering-quokka`
+        // is in this PR's diff, so only it is renamed.
+        let store = Arc::new(MapChangesetStore::new());
+        store
+            .write(&slug("wandering-quokka"), "[empty]\nreason = \"mine\"\n")
+            .expect("seed author");
+        store
+            .write(&slug("brisk-heron"), "[empty]\nreason = \"inherited\"\n")
+            .expect("seed inherited");
+        let svc = service_with_diff(
+            store.clone(),
+            vec![slug("unused-source")],
+            Arc::new(MapConsumedLedgerStore::new()),
+            vec![
+                ".changesets/wandering-quokka.toml",
+                "packages/zainod/src/lib.rs",
+            ],
+        );
+
+        let renamed = svc
+            .rename_to_pr(1501, "dev")
+            .expect("rename should succeed");
+
+        assert_eq!(as_strs(&renamed), ["pr-1501"]);
+        assert_eq!(slugs_in(&store), ["brisk-heron", "pr-1501"]);
     }
 
     #[test]
@@ -403,7 +509,9 @@ mod tests {
             .expect("seed consumed");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
-        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+        let renamed = svc
+            .rename_to_pr(1501, "dev")
+            .expect("rename should succeed");
 
         assert_eq!(as_strs(&renamed), ["pr-1501"]);
         assert_eq!(slugs_in(&store), ["brisk-heron", "pr-1501"]);
@@ -435,7 +543,9 @@ mod tests {
             Arc::new(MapConsumedLedgerStore::with_ledger(ledger)),
         );
 
-        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+        let renamed = svc
+            .rename_to_pr(1501, "dev")
+            .expect("rename should succeed");
 
         assert_eq!(as_strs(&renamed), ["pr-1501"]);
         assert_eq!(slugs_in(&store), ["brisk-heron", "pr-1501"]);
@@ -445,16 +555,16 @@ mod tests {
     fn rename_to_pr_errors_when_target_already_exists() {
         let store = Arc::new(MapChangesetStore::new());
         store
-            .write(&slug("wandering-quokka"), "a")
+            .write(&slug("wandering-quokka"), "[empty]\nreason = \"a\"\n")
             .expect("seed author");
         // A stale `pr-1501` already occupies the canonical target.
         store
-            .write(&slug("pr-1501"), "occupied")
+            .write(&slug("pr-1501"), "[empty]\nreason = \"occupied\"\n")
             .expect("seed target");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
         let err = svc
-            .rename_to_pr(1501)
+            .rename_to_pr(1501, "dev")
             .expect_err("colliding target must error");
         assert!(matches!(
             err,
@@ -466,14 +576,14 @@ mod tests {
     fn rename_to_pr_is_a_noop_without_author_files() {
         let store = Arc::new(MapChangesetStore::new());
         store
-            .write(&slug("pr-1490"), "a")
+            .write(&slug("pr-1490"), "[empty]\nreason = \"a\"\n")
             .expect("seed accumulated");
         store
-            .write(&slug("pr-1491"), "b")
+            .write(&slug("pr-1491"), "[empty]\nreason = \"b\"\n")
             .expect("seed accumulated");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
-        let renamed = svc.rename_to_pr(1501).expect("no-op should succeed");
+        let renamed = svc.rename_to_pr(1501, "dev").expect("no-op should succeed");
 
         assert!(renamed.is_empty());
         assert_eq!(slugs_in(&store), ["pr-1490", "pr-1491"]);
@@ -483,9 +593,11 @@ mod tests {
     fn clear_empties_the_store_and_reports_removed() {
         let store = Arc::new(MapChangesetStore::new());
         store
-            .write(&slug("wandering-quokka"), "a")
+            .write(&slug("wandering-quokka"), "[empty]\nreason = \"a\"\n")
             .expect("seed one");
-        store.write(&slug("pr-1490"), "b").expect("seed two");
+        store
+            .write(&slug("pr-1490"), "[empty]\nreason = \"b\"\n")
+            .expect("seed two");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
         let removed = svc.clear().expect("clear should succeed");

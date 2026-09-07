@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::process::Command;
 
 use cargo_metadata::{DependencyKind, MetadataCommand};
 use relman_core::ports::{Workspace, WorkspaceError};
@@ -111,6 +112,32 @@ impl Workspace for CargoMetadataWorkspace {
             }
         }
         Ok(edges)
+    }
+
+    fn refresh_lockfile(&self) -> Result<(), WorkspaceError> {
+        // `--workspace` rewrites only the members' own lock entries, leaving
+        // every third-party pin as it was; `--offline` keeps the refresh from
+        // touching the registry, which the member-only update never needs.
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let output = Command::new(cargo)
+            .arg("update")
+            .arg("--workspace")
+            .arg("--offline")
+            .arg("--manifest-path")
+            .arg(&self.manifest_path)
+            .output()
+            .map_err(|err| WorkspaceError::Backend {
+                message: format!("failed to run cargo update: {err}"),
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(WorkspaceError::Backend {
+            message: format!(
+                "cargo update --workspace failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        })
     }
 }
 
@@ -262,6 +289,29 @@ mod tests {
             ungoverned.is_empty(),
             "governed targets depend on workspace crates relman.toml does not govern:\n{}",
             ungoverned.into_iter().collect::<Vec<_>>().join("\n")
+        );
+    }
+
+    #[test]
+    fn refresh_lockfile_records_a_changed_member_version() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        build_workspace(tmp.path(), "0.3");
+        let adapter = adapter(tmp.path());
+        adapter
+            .versions()
+            .expect("first metadata run writes Cargo.lock");
+
+        write_member(
+            tmp.path(),
+            "dependency",
+            "[package]\nname = \"dependency\"\nversion = \"0.3.2\"\nedition = \"2021\"\n",
+        );
+        adapter.refresh_lockfile().expect("refresh succeeds");
+
+        let lock = fs::read_to_string(tmp.path().join("Cargo.lock")).expect("read lock");
+        assert!(
+            lock.contains("version = \"0.3.2\""),
+            "lock not refreshed:\n{lock}"
         );
     }
 

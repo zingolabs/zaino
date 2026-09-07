@@ -261,6 +261,9 @@ pub trait Workspace: Send + Sync {
     fn internal_deps(
         &self,
     ) -> Result<BTreeMap<CrateName, Vec<(CrateName, semver::VersionReq)>>, WorkspaceError>;
+
+    /// Bring the workspace lockfile back in step with the member manifests after their versions changed.
+    fn refresh_lockfile(&self) -> Result<(), WorkspaceError>;
 }
 
 /// Everything that can go wrong applying a derived bump to a manifest.

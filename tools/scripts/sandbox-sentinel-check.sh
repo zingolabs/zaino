@@ -4,13 +4,13 @@
 #
 #   - dev    <- current branch tip (has the new relman + workflows + the
 #              changeset-check `sync/stable-to-dev` exemption)
-#   - stable <- tip + one `chore(release):` commit, so `stable \ dev` is
-#              non-empty and the push to stable fires the sentinel.
+#   - stable <- tip + one empty commit, so `stable \ dev` is non-empty and the
+#              push to stable fires the sentinel.
 #
-# Why the `chore(release):` prefix: a push to stable also triggers the blessing
-# workflow, whose job guard skips `chore(release):`-prefixed commits — so only
-# the sentinel runs. It is also the most faithful input: the sentinel exists to
-# backport exactly the blessing's release commit.
+# The push to stable also triggers the blessing workflow, but its provenance
+# guard releases only the merge of the release PR (release-ready -> stable);
+# a direct push like this one is skipped with a warning, so only the sentinel
+# does any work.
 #
 # SENSITIVE — run manually. It toggles branch-protection rulesets and
 # force-pushes protected branches. Safe only because the sandbox is a throwaway
@@ -21,28 +21,21 @@
 # configured (they are). Run from the repo root on `feat/release-pipeline`.
 set -euo pipefail
 
-REMOTE="${REMOTE:-sandbox}"
-REPO="${REPO:-nachog00/zaino-pipeline-sandbox}"
-# Ruleset ids for this sandbox (see: gh api repos/$REPO/rulesets).
-DEV_RULESET="${DEV_RULESET:-21067396}"
-STABLE_RULESET="${STABLE_RULESET:-21067400}"
+# shellcheck source=tools/scripts/sandbox-common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/sandbox-common.sh"
 
 tip="$(git rev-parse HEAD)"
 echo "Deploying ${tip:0:12} to ${REPO} dev + stable ..."
-
-set_enforcement() { # <ruleset-id> <active|disabled>
-  gh api -X PUT "repos/${REPO}/rulesets/${1}" -f "enforcement=${2}" \
-    --jq '.name + " -> " + .enforcement'
-}
 
 # 1. Drop protection so the divergent reset can force-push.
 set_enforcement "$DEV_RULESET" disabled
 set_enforcement "$STABLE_RULESET" disabled
 
 # 2. Mint the stable tip inline (no branch switch, no working-tree churn): the
-#    current tree, parented on the tip, as a `chore(release):` commit.
+#    current tree, parented on the tip, as a commit that stands in for a
+#    release commit the sentinel must carry back.
 stable_tip="$(git commit-tree "$(git rev-parse 'HEAD^{tree}')" -p "$tip" \
-  -m 'chore(release): cycle-test release commit (sandbox sentinel test)')"
+  -m 'test: stand-in release commit (sandbox sentinel test)')"
 
 git push -f "$REMOTE" "${tip}:refs/heads/dev"
 git push -f "$REMOTE" "${stable_tip}:refs/heads/stable"

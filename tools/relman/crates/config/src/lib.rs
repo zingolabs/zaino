@@ -6,6 +6,8 @@
 //! defaults and parse-don't-validate so invalid input fails at [`load`], not
 //! deep in a later slice. The typed result is [`ReleaseConfig`].
 
+#![forbid(unsafe_code)]
+
 mod config;
 mod error;
 mod load;

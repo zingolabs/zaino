@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use relman_config::ReleaseConfig;
-use relman_core::ports::{ApplyBump, ApplyError, ManifestEditor};
+use relman_core::ports::{ApplyBump, ApplyError, ManifestEditor, Workspace};
 use relman_core::types::{BumpTable, CrateBump};
 
 /// The `Cargo.toml` file name, joined onto a target's directory to reach its
@@ -20,16 +20,24 @@ const MANIFEST_NAME: &str = "Cargo.toml";
 ///    `[workspace.dependencies]` — how a bumped crate's new version reaches its
 ///    dependents (a crate not centrally pinned is simply skipped).
 ///
+/// It then refreshes the workspace lockfile through the [`Workspace`] port, so
+/// the tree it leaves behind passes the `--locked` checks that follow.
+///
 /// Every referenced crate is resolved against the config *before* any edit, so
 /// a bump naming an unknown target fails without leaving a half-edited tree.
-pub struct BumpService {
+pub struct BumpService<W: Workspace> {
     config: ReleaseConfig,
     editor: Arc<dyn ManifestEditor>,
+    workspace: Arc<W>,
 }
 
-impl BumpService {
-    pub fn new(config: ReleaseConfig, editor: Arc<dyn ManifestEditor>) -> Self {
-        Self { config, editor }
+impl<W: Workspace> BumpService<W> {
+    pub fn new(config: ReleaseConfig, editor: Arc<dyn ManifestEditor>, workspace: Arc<W>) -> Self {
+        Self {
+            config,
+            editor,
+            workspace,
+        }
     }
 
     /// Resolve `bump`'s crate to its manifest path, erroring if it is not a
@@ -46,7 +54,7 @@ impl BumpService {
     }
 }
 
-impl ApplyBump for BumpService {
+impl<W: Workspace> ApplyBump for BumpService<W> {
     fn apply(&self, table: &BumpTable) -> Result<(), ApplyError> {
         // Resolve every target up front so an unknown crate aborts before we
         // touch any file.
@@ -68,6 +76,12 @@ impl ApplyBump for BumpService {
                 .set_workspace_dep_version(root_manifest, bump.crate_name(), bump.next())?;
         }
 
+        // The manifests now disagree with the lockfile's recorded member
+        // versions; bring it back in step so a following `--locked` passes.
+        if !resolved.is_empty() {
+            self.workspace.refresh_lockfile()?;
+        }
+
         Ok(())
     }
 }
@@ -76,8 +90,12 @@ impl ApplyBump for BumpService {
 mod tests {
     use super::*;
 
-    use relman_core::mocks::RecordingManifestEditor;
+    use relman_core::mocks::{MapWorkspace, RecordingManifestEditor};
     use relman_core::types::{Bump, CrateName, ReleaseOptions, Target, Version, WorkspacePath};
+
+    fn service(names: &[&str], editor: Arc<RecordingManifestEditor>) -> BumpService<MapWorkspace> {
+        BumpService::new(config(names), editor, Arc::new(MapWorkspace::default()))
+    }
 
     fn name(raw: &str) -> CrateName {
         CrateName::parse(raw).expect("valid crate name")
@@ -123,7 +141,7 @@ mod tests {
     #[test]
     fn applies_package_versions_and_root_pins_for_every_bump() {
         let editor = Arc::new(RecordingManifestEditor::new());
-        let service = BumpService::new(config(&["zaino-state", "zainod"]), editor.clone());
+        let service = service(&["zaino-state", "zainod"], editor.clone());
 
         let table = BumpTable::new(vec![
             crate_bump("zaino-state", "0.6.0", "0.7.0", Bump::Minor),
@@ -167,7 +185,7 @@ mod tests {
     #[test]
     fn an_empty_table_edits_nothing() {
         let editor = Arc::new(RecordingManifestEditor::new());
-        let service = BumpService::new(config(&["zaino-state"]), editor.clone());
+        let service = service(&["zaino-state"], editor.clone());
         service
             .apply(&BumpTable::default())
             .expect("apply succeeds");
@@ -179,7 +197,7 @@ mod tests {
     fn a_bump_naming_an_unknown_target_errors_before_any_edit() {
         let editor = Arc::new(RecordingManifestEditor::new());
         // Config governs only zaino-state; the table also names zaino-proto.
-        let service = BumpService::new(config(&["zaino-state"]), editor.clone());
+        let service = service(&["zaino-state"], editor.clone());
         let table = BumpTable::new(vec![
             crate_bump("zaino-state", "0.6.0", "0.7.0", Bump::Minor),
             crate_bump("zaino-proto", "0.3.0", "0.3.1", Bump::Patch),

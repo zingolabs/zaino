@@ -10,8 +10,11 @@
 //! `ChangesetService` → `ChangesetStore` + `SlugSource`). Later slices add the
 //! remaining release adapters and commands.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -21,10 +24,10 @@ use relman_adapters::{
     CargoMetadataWorkspace, FsChangelogStore, FsChangesetStore, FsConsumedLedgerStore, GitVcs,
     RandomSlugSource, RandomUidSource, TomlEditManifestEditor,
 };
-use relman_cli::{Cli, Command, Ctx, commands};
+use relman_cli::{ChangesetCommandError, Cli, Command, Ctx, commands};
 use relman_core::ports::{
     ApplyBump, Changelog, ChangelogStore, ChangesetCheck, ChangesetStore, Changesets, Clock,
-    ConsumedLedgerStore, ManifestEditor, ReleaseArtifacts, SlugSource, UidSource, Vcs, Versions,
+    ConsumedLedgerStore, ManifestEditor, ReleaseArtifacts, SlugSource, UidSource, Versions,
     Workspace,
 };
 use relman_core::types::{CrateName, DateTime, Utc};
@@ -66,42 +69,70 @@ impl Clock for SystemClock {
     }
 }
 
-fn main() -> Result<()> {
+/// A failed run: the exit status to report and the error to print.
+struct Failure {
+    code: ExitCode,
+    error: anyhow::Error,
+}
+
+impl From<anyhow::Error> for Failure {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            code: ExitCode::FAILURE,
+            error,
+        }
+    }
+}
+
+impl From<ChangesetCommandError> for Failure {
+    fn from(error: ChangesetCommandError) -> Self {
+        Self {
+            code: ExitCode::from(error.exit_code()),
+            error: error.into(),
+        }
+    }
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(failure) => {
+            eprintln!("Error: {:?}", failure.error);
+            failure.code
+        }
+    }
+}
+
+fn run() -> Result<(), Failure> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Command::About(args) => with_ctx(|ctx| {
-            commands::about::run(args, ctx);
+        // `about` needs no repository: it reports the binary's own version and
+        // the clock, so it must work wherever `relman --version` does.
+        Command::About(args) => {
+            let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            commands::about::run(args, &AboutService::new(clock));
             Ok(())
-        }),
-        Command::Changeset(args) => with_ctx(|ctx| {
-            commands::changeset::run(args, ctx)?;
-            Ok(())
-        }),
-        Command::Versions(args) => with_ctx(|ctx| {
-            commands::versions::run(args, ctx)?;
-            Ok(())
-        }),
-        Command::Bump(args) => with_ctx(|ctx| {
-            commands::bump::run(args, ctx)?;
-            Ok(())
-        }),
-        Command::Changelog(args) => with_ctx(|ctx| {
-            commands::changelog::run(args, ctx)?;
-            Ok(())
-        }),
-        Command::Tags(args) => with_ctx(|ctx| {
-            commands::tags::run(args, ctx)?;
-            Ok(())
-        }),
-        Command::PrBody(args) => with_ctx(|ctx| {
-            commands::pr_body::run(args, ctx)?;
-            Ok(())
-        }),
-        Command::PublishPlan(args) => with_ctx(|ctx| {
-            commands::publish_plan::run(args, ctx)?;
-            Ok(())
-        }),
+        }
+        Command::Changeset(args) => with_ctx(|ctx| commands::changeset::run(args, ctx)),
+        Command::Versions(args) => {
+            with_ctx(|ctx| commands::versions::run(args, ctx).map_err(anyhow::Error::new))
+        }
+        Command::Bump(args) => {
+            with_ctx(|ctx| commands::bump::run(args, ctx).map_err(anyhow::Error::new))
+        }
+        Command::Changelog(args) => {
+            with_ctx(|ctx| commands::changelog::run(args, ctx).map_err(anyhow::Error::new))
+        }
+        Command::Tags(args) => {
+            with_ctx(|ctx| commands::tags::run(args, ctx).map_err(anyhow::Error::new))
+        }
+        Command::PrBody(args) => {
+            with_ctx(|ctx| commands::pr_body::run(args, ctx).map_err(anyhow::Error::new))
+        }
+        Command::PublishPlan(args) => {
+            with_ctx(|ctx| commands::publish_plan::run(args, ctx).map_err(anyhow::Error::new))
+        }
     }
 }
 
@@ -109,7 +140,7 @@ fn main() -> Result<()> {
 ///
 /// Loads `relman.toml` from the current directory, resolves the changesets
 /// directory relative to it, and wires the real adapters into the services.
-fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
+fn with_ctx<E: Into<Failure>>(f: impl FnOnce(&Ctx) -> Result<(), E>) -> Result<(), Failure> {
     let root_dir = find_manifest_dir()?;
     let manifest_path = root_dir.join(MANIFEST_NAME);
     let config = relman_config::load(&manifest_path)
@@ -119,9 +150,6 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     // `relman.toml` lives); resolve them against the discovered root so the
     // command works regardless of the current directory.
     let changesets_dir = root_dir.join(config.options().changesets_dir().as_path());
-
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let about = Arc::new(AboutService::new(clock));
 
     // The consumed-UID ledger store, rooted at the resolved path. CI refreshes
     // the file from `origin/stable` before a derivation; relman reads it as a
@@ -138,16 +166,17 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     let store: Arc<dyn ChangesetStore> = Arc::new(FsChangesetStore::new(changesets_dir.clone()));
     let slugs: Arc<dyn SlugSource> = Arc::new(RandomSlugSource::new());
     let uids: Arc<dyn UidSource> = Arc::new(RandomUidSource::new());
+    // Run git in the repo root so it reports paths relative to that root,
+    // matching the target `path`s in `relman.toml`. The rename step matches
+    // those paths against the repo-relative changesets dir.
     let changesets: Arc<dyn Changesets> = Arc::new(ChangesetService::new(
         store.clone(),
         slugs,
         uids,
         ledger_store.clone(),
+        GitVcs::new(root_dir.clone()),
+        config.options().changesets_dir().as_path().to_path_buf(),
     ));
-
-    // Run git in the repo root so it reports paths relative to that root,
-    // matching the target `path`s in `relman.toml`.
-    let vcs: Arc<dyn Vcs> = Arc::new(GitVcs::new(root_dir.clone()));
 
     // The workspace adapter reads resolved versions and dependency edges from
     // the repo-root manifest via `cargo metadata`, filtered to the governed set.
@@ -157,8 +186,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         .map(|target| target.name().clone())
         .collect();
     let root_manifest = root_dir.join(config.options().root_manifest().as_path());
-    let workspace: Arc<dyn Workspace> =
-        Arc::new(CargoMetadataWorkspace::new(root_manifest.clone(), governed));
+    let workspace = Arc::new(CargoMetadataWorkspace::new(root_manifest.clone(), governed));
     let versions: Arc<dyn Versions> = Arc::new(VersionService::new(
         config.clone(),
         store.clone(),
@@ -166,13 +194,14 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         ledger.clone(),
     ));
 
-    // Applies the derived table to the manifests via format-preserving edits.
+    // Applies the derived table to the manifests via format-preserving edits,
+    // then refreshes the lockfile through the workspace adapter.
     let editor: Arc<dyn ManifestEditor> = Arc::new(TomlEditManifestEditor::new());
-    let apply_bump: Arc<dyn ApplyBump> = Arc::new(BumpService::new(config.clone(), editor));
+    let apply_bump: Arc<dyn ApplyBump> =
+        Arc::new(BumpService::new(config.clone(), editor, workspace.clone()));
 
     // Generates changelog sections and splices them into the per-crate and
-    // workspace `CHANGELOG.md` files (a fresh clock: the earlier one moved into
-    // the about service).
+    // workspace `CHANGELOG.md` files.
     let changelog_store: Arc<dyn ChangelogStore> = Arc::new(FsChangelogStore::new());
     let changelog: Arc<dyn Changelog> = Arc::new(ChangelogService::new(
         config.clone(),
@@ -186,18 +215,22 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     // Computes the release artifacts (tag plan, PR body, publish order) as pure
     // plans for CI to apply — reuses the derived table, the changesets, and the
     // crate graph, and mutates nothing.
+    let workspace_port: Arc<dyn Workspace> = workspace;
     let release_artifacts: Arc<dyn ReleaseArtifacts> = Arc::new(ReleaseArtifactsService::new(
         versions.clone(),
         store.clone(),
-        workspace,
+        workspace_port,
         ledger.clone(),
     ));
 
-    let changeset_check: Arc<dyn ChangesetCheck> =
-        Arc::new(ChangesetCheckService::new(config, vcs, store, ledger));
+    let changeset_check: Arc<dyn ChangesetCheck> = Arc::new(ChangesetCheckService::new(
+        config,
+        Arc::new(GitVcs::new(root_dir.clone())),
+        store,
+        ledger,
+    ));
 
     let ctx = Ctx {
-        about,
         changesets,
         changeset_check,
         versions,
@@ -207,5 +240,5 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         changesets_dir,
         root_manifest,
     };
-    f(&ctx)
+    f(&ctx).map_err(Into::into)
 }

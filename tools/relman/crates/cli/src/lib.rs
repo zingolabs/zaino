@@ -4,6 +4,8 @@
 //! held in [`Ctx`]. It knows nothing of concrete services or adapters — the
 //! binary builds [`Ctx`] and hands it in.
 
+#![forbid(unsafe_code)]
+
 mod app;
 pub mod commands;
 mod context;

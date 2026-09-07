@@ -25,8 +25,15 @@ jobs:
   changeset-rename:
     name: Name changeset for PR
     # Master safety switch (see file header). Every job in every pipeline
-    # workflow carries this gate so these files can land dormant.
-    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    # workflow carries this gate so these files can land dormant. The backport
+    # sentinel's `sync/stable-to-dev` PR is exempt on the same three signals
+    # changeset-check uses: its changesets are shipped provenance whose slugs
+    # the consumed ledger records, so renaming them would orphan the ledger.
+    if: >-
+      vars.RELMAN_PIPELINE_ACTIVE == 'true' &&
+      !(github.head_ref == 'sync/stable-to-dev' &&
+        github.event.pull_request.user.type == 'Bot' &&
+        contains(github.event.pull_request.labels.*.name, 'backport'))
     runs-on: ubuntu-latest
     steps:
       # A PR opened against `rc` is a hotfix (the normal path advances rc by a
@@ -65,7 +72,7 @@ jobs:
       - name: Mint GitHub App token
         id: app-token
         if: steps.guard.outputs.same_repo == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -80,6 +87,17 @@ jobs:
           # Push with the App token (see the mint step above) so the resulting
           # synchronize re-runs the dev-gate on the canonical pr-<N> changeset.
           token: ${{ steps.app-token.outputs.token }}
+          # Full history so the merge-base with the base branch is available:
+          # relman renames only the changesets this PR's diff added.
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        if: steps.guard.outputs.same_repo == 'true'
+        run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
+
+      - name: Set up relman
+        if: steps.guard.outputs.same_repo == 'true'
+        uses: ./.github/actions/setup-relman
 
       - name: Rename changeset(s) to pr-<N> and push if changed
         if: steps.guard.outputs.same_repo == 'true'
@@ -88,12 +106,14 @@ jobs:
           # script — a branch name is attacker-controlled and inlining it risks
           # script injection (actionlint expression check).
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           # relman runs from the repo root (discovers relman.toml upward) and only
-          # edits the working tree; committing/pushing is this workflow's job.
-          cargo run -q --manifest-path tools/relman/Cargo.toml -- \
-            changeset rename --pr "${{ github.event.number }}"
+          # edits the working tree; committing/pushing is this workflow's job. It
+          # renames only the author changesets in this PR's diff against the
+          # base, never files inherited from it or already shipped.
+          relman changeset rename --pr "${{ github.event.number }}" --base "origin/${BASE_REF}"
 
           if [ -z "$(git status --porcelain .changesets/)" ]; then
             echo "Changesets already canonically named; nothing to commit."

@@ -46,11 +46,13 @@ landed. We do not cherry-pick from `dev` to cut releases — a release is always
 a **prefix** of `dev`'s history (the hotfix path, below, is the sole, contained
 exception).
 
-There are 17 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
+There are 23 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
 `zaino-proto`, `zaino-common`, `zaino-primitives`, `zaino-address`,
-`zaino-source`, `zaino-rpc`, `zaino-convert-zebra`, `zaino-source-zebra-rpc`,
-`zaino-source-zebra-readstate`, `zaino-source-zebra`, `zaino-consensus`,
-`zaino-mempool`, `zaino-mempool-service`, `zaino-status`) and 3 internal-only
+`zaino-source`, `zaino-source-macros`, `zaino-rpc`, `zaino-convert-zebra`,
+`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`, `zaino-source-zebra`,
+`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status`,
+`zaino-encoding`, `zaino-chain-head`, `zaino-chain-head-service`,
+`zaino-chain-store`, `zaino-chain-store-zainodb`) and 3 internal-only
 (`e2e`, `clientless`, `zaino-testutils`). Each public crate is versioned and
 released **independently**. The authoritative, machine-read list of governed
 targets is [`relman.toml`](../../../relman.toml) at the repo root; this prose
@@ -674,7 +676,7 @@ were already cleared by the commit being promoted. "Whatever cleared all gates
 by Friday" is exactly whatever is on `release-ready` on Friday; work that only
 cleared the deployment gate after the cut simply ships the next cycle — *easy as that*.
 
-At blessing, CI: finalizes the derived versions, applies the `<crate>-vX.Y.Z`
+At blessing, CI: finalizes the derived versions, applies the `<crate>-X.Y.Z`
 and `cycle-<id>` tags, publishes (Docker, GitHub Release, crates.io in
 dependency order), **marks the shipped changesets consumed** (stamps each
 `consumed_in`, rather than deleting — see
@@ -711,6 +713,9 @@ fast-forward and nothing is lost. Version-agnostic branches make this safe:
 there is no version-named branch to reconcile.
 
 **Nuclear option.** A true emergency may go straight to `stable`. Both
+Such a push is **not blessed**: blessing releases only the merge of the
+release PR, so the hotfix reaches users through the next cycle after the
+sentinel carries it back to `dev`.
 sentinels then catch the fallout: the forward Release PR flags `release-ready`
 as behind `stable` (forcing the fix into `rc`/`release-ready`), and the reverse
 sentinel forces it into `dev`.
@@ -755,10 +760,10 @@ replacement):
 
 | Workflow | Verdict |
 | -------- | ------- |
-| `auto-tag-rc.yml` | **delete** — derives version from the `rc/<version>` branch name; obsolete under version-agnostic branches |
-| `final-tag-on-stable.yml` | **delete** — same branch-name→version coupling; replaced by blessing-time tagging from changesets |
-| `release.yaml` | **rework** — retarget to `cycle-*` + `<crate>-vX.Y.Z` tags; Docker image = `zainod` version + cycle handle |
-| `publish-dry-run.yml` + `check-published-versions` | **keep / rework** — the Rust guard is reusable; fold into the new publish flow |
+| `auto-tag-rc.yml` | **keep until cutover** — derives version from the `rc/<version>` branch name; gated off by `RELMAN_PIPELINE_ACTIVE=true`, delete afterwards |
+| `final-tag-on-stable.yml` | **keep until cutover** — same branch-name→version coupling; gated off by `RELMAN_PIPELINE_ACTIVE=true`, replaced by blessing-time tagging from changesets |
+| `release.yaml` | **reworked** — also fires on the `zainod-X.Y.Z` provenance tag and takes the image version from it; the GitHub Release job runs only for legacy tags |
+| `publish-dry-run.yml` + `check-published-versions` | **kept** — blocking on `stable` pushes, advisory elsewhere (`rc` is version-agnostic); the Rust guard also runs in blessing's pre-flight |
 | `ci.yml`, `ci-nightly.yaml` | **rework** into the `dev`-gate and `rc`-gate suite runners |
 | `compute-tag.yml`, `build-n-push-ci-image.yaml`, `trigger-integration-tests.yml`, `shellcheck.yaml` | **keep** — orthogonal to release versioning |
 
@@ -1014,7 +1019,7 @@ From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/
 > This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
 
 **Authoritative crate list (this repo)**: [Context](#context) enumerates the
-**17 crates.io-published packages** and **3 internal-only packages** (`e2e`,
+**23 crates.io-published packages** and **3 internal-only packages** (`e2e`,
 `clientless`, `zaino-testutils`), mirroring the machine-read
 [`relman.toml`](../../../relman.toml). This list has grown since ADR 003:
 `zaino-fetch` was **deleted** and the source stack (`zaino-source*`,

@@ -9,6 +9,20 @@ description: >-
 runs:
   using: composite
   steps:
+    - name: Probe for cargo
+      id: probe
+      shell: bash
+      run: |
+        if command -v cargo >/dev/null 2>&1; then echo "has_cargo=true"; else echo "has_cargo=false"; fi >> "${GITHUB_OUTPUT}"
+
+    # Only the cargo fallback below benefits; a runner without cargo (the
+    # minimal changeset-check container) skips the cache entirely.
+    - name: Cache the relman build
+      if: steps.probe.outputs.has_cargo == 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: tools/relman
+
     - name: Resolve relman onto PATH
       shell: bash
       run: |

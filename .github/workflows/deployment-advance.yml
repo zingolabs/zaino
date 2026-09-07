@@ -14,6 +14,11 @@
 # `deployment_status` events run the workflow from the DEFAULT branch, so this
 # file must be on the default branch at cutover. `tools/scripts/mark-deployment.sh`
 # posts the same signal to exercise this reaction in seconds instead of days.
+#
+# Any account with `deployments: write` can post a `success`, so set the repo
+# variable RELMAN_DEPLOYMENT_REPORTER to the login of the account the cluster
+# posts as; once set, a status from any other login is refused. Leave it unset
+# while the bridge is exercised by hand with mark-deployment.sh.
 # See docs/release/implementation.md § "The deployment-gate bridge".
 # ============================================================================
 
@@ -37,12 +42,25 @@ jobs:
       github.event.deployment.environment == 'deployment'
     runs-on: ubuntu-latest
     steps:
+      - name: Require the status from the configured reporter
+        if: vars.RELMAN_DEPLOYMENT_REPORTER != ''
+        env:
+          REPORTER: ${{ vars.RELMAN_DEPLOYMENT_REPORTER }}
+          CREATOR: ${{ github.event.deployment_status.creator.login }}
+        run: |
+          set -euo pipefail
+          if [ "${CREATOR}" != "${REPORTER}" ]; then
+            echo "::error::deployment_status posted by '${CREATOR}', not the configured reporter '${REPORTER}'; refusing to advance release-ready."
+            exit 1
+          fi
+          echo "deployment_status posted by the configured reporter '${REPORTER}'."
+
       # App token: the ff push to the protected `release-ready` branch cannot be
       # done with GITHUB_TOKEN, and an App-token push (unlike GITHUB_TOKEN) also
       # re-triggers `release-pr-body` on `release-ready` to refresh the release PR.
       - name: Mint GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
