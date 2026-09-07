@@ -5973,6 +5973,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-component"
+version = "0.1.0"
+dependencies = [
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "zaino-consensus"
 version = "0.1.0"
 dependencies = [
