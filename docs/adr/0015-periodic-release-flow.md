@@ -1,3 +1,10 @@
+> **Status: superseded** by
+> [ADR-0016](0016-changeset-derived-release-pipeline.md), specified in
+> [docs/release/pipeline.md](../release/pipeline.md). This is the record of
+> the periodic release flow: the first resolution of zingolabs ADR 003's
+> deferred cadence and RC-validation items. Kept for the decision trail; do
+> not update.
+
 # Zaino Release Flow Design
 
 ## Context

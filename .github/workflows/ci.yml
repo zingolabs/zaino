@@ -10,6 +10,11 @@ on:
   push:
     tags:
       - "**"
+      # Release-pipeline tags (`cycle-<N>`, `cycle-<N>-rc.<M>`, `<crate>-X.Y.Z`)
+      # point at commits `stable`/`rc` already validated; blessing pushes up to
+      # one per governed crate, so they must not fan out into full CI runs.
+      - "!cycle-*"
+      - "!zaino*-[0-9]*.[0-9]*.[0-9]*"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
@@ -68,11 +73,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Cache the tool-crate builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/workbench
+            tools/relman
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Lint and test the workbench crate
         run: |
           cargo fmt --manifest-path tools/workbench/Cargo.toml -- --check
           cargo clippy --manifest-path tools/workbench/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path tools/workbench/Cargo.toml
+          cargo nextest run --manifest-path tools/workbench/Cargo.toml
+
+      - name: Lint and test the relman crate
+        run: |
+          cargo fmt --manifest-path tools/relman/Cargo.toml --all -- --check
+          cargo clippy --manifest-path tools/relman/Cargo.toml --workspace --all-targets -- -D warnings
+          cargo nextest run --manifest-path tools/relman/Cargo.toml --workspace
 
       - name: Check toolchain pin
         run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-toolchain-pin

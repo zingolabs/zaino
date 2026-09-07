@@ -1,0 +1,63 @@
+name: Cycle ids
+description: >-
+  Derive the release-cycle identity from the existing git tags: the open
+  cycle N (the one a new rc or a blessing belongs to) and the next prerelease
+  number M within it. The checkout must have fetched all tags (fetch-depth: 0).
+  Two tag shapes carry the numbers: `cycle-<N>` (final, blessed) and
+  `cycle-<N>-rc.<M>` (deployment prerelease). Date-style ids such as
+  `cycle-2026-08-15` never match and are ignored.
+
+outputs:
+  open:
+    description: "The open cycle N: 1 with no cycle tags, hi+1 when `cycle-<hi>` is final, else hi."
+    value: ${{ steps.ids.outputs.open }}
+  next_rc:
+    description: "The next prerelease number M within the open cycle (max existing + 1, or 1)."
+    value: ${{ steps.ids.outputs.next_rc }}
+  last_rc_tag:
+    description: "The highest existing `cycle-<N>-rc.<M>` tag of the open cycle, or empty."
+    value: ${{ steps.ids.outputs.last_rc_tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Derive cycle ids from tags
+      id: ids
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # highest_cycle(): the max integer N seen across BOTH tag shapes, or
+        # empty when no cycle tags exist.
+        highest_cycle() {
+          git tag --list 'cycle-*' \
+            | sed -n 's/^cycle-\([0-9][0-9]*\)\(-rc\.[0-9][0-9]*\)\{0,1\}$/\1/p' \
+            | sort -n | tail -1
+        }
+        # open_cycle(): the cycle a NEW rc (or a blessing) belongs to.
+        open_cycle() {
+          hi="$(highest_cycle)"
+          if [ -z "$hi" ]; then
+            echo 1
+          elif git rev-parse -q --verify "refs/tags/cycle-${hi}" >/dev/null; then
+            echo $((hi + 1))
+          else
+            echo "$hi"
+          fi
+        }
+        # last_rc(N): the highest existing M of `cycle-<N>-rc.<M>`, or empty.
+        last_rc() {
+          git tag --list "cycle-${1}-rc.*" \
+            | sed -n "s/^cycle-${1}-rc\.\([0-9][0-9]*\)$/\1/p" \
+            | sort -n | tail -1
+        }
+
+        N="$(open_cycle)"
+        last="$(last_rc "$N")"
+        if [ -z "$last" ]; then M=1; last_tag=""; else M=$((last + 1)); last_tag="cycle-${N}-rc.${last}"; fi
+        echo "open cycle N=$N, next rc M=$M, last rc tag=${last_tag:-none}"
+        {
+          echo "open=$N"
+          echo "next_rc=$M"
+          echo "last_rc_tag=$last_tag"
+        } >> "$GITHUB_OUTPUT"

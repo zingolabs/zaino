@@ -1,0 +1,72 @@
+name: Changeset check
+
+# dev-gate enforcement: a PR that changes a governed crate's source must carry a
+# covering changeset. See docs/release/changeset-format.md.
+#
+# Rollout: ADVISORY by default — a missing changeset is reported as a warning and
+# does NOT fail the check, so this can land before the team has adopted
+# changesets. Set the repository variable RELMAN_ENFORCE_CHANGESETS=true to make
+# violations fail (then add "Changeset coverage" to the branch's required
+# checks). Genuinely malformed changesets always fail, regardless of the flag.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [dev, rc, release-ready]
+
+jobs:
+  changeset-check:
+    name: Changeset coverage
+    # GitHub-hosted so it runs on pull requests. Skip drafts, and skip the
+    # backport sentinel's `sync/stable-to-dev` PR: it mechanically carries a
+    # release commit (Cargo.toml bumps, CHANGELOGs, and `.changesets/`
+    # consumed marks) back into `dev` and by design introduces no *new*
+    # changeset — same spirit as an RC-cut PR of already-reviewed work. The
+    # exemption needs all three signals — the branch name, a Bot author (the
+    # sentinel's App), and the `backport` label only a writer can apply — so a
+    # contributor cannot claim it by naming a fork branch. See
+    # docs/release/pipeline.md § "Reverse: the Backport Sentinel".
+    if: >-
+      github.event.pull_request.draft == false &&
+      !(github.head_ref == 'sync/stable-to-dev' &&
+        github.event.pull_request.user.type == 'Bot' &&
+        contains(github.event.pull_request.labels.*.name, 'backport'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v7
+        with:
+          # Full history so the merge-base with the target branch is available
+          # for relman's `git diff base...HEAD`.
+          fetch-depth: 0
+
+      # `fetch-depth: 0` already brought every branch; this only refreshes the
+      # base ref in case it moved since the checkout resolved.
+      - name: Fetch base branch
+        run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
+
+      - name: Set up relman
+        uses: ./.github/actions/setup-relman
+
+      - name: Run relman changeset check
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          ENFORCE: ${{ vars.RELMAN_ENFORCE_CHANGESETS }}
+        run: |
+          set -o pipefail
+          # relman exits 0 when compliant, 2 when one of this PR's changesets is
+          # malformed (unparseable or naming an unknown target), and 1 for any
+          # other violation. Only the last is advisory during rollout.
+          status=0
+          relman changeset check --base "origin/${BASE_REF}" || status=$?
+          if [ "${status}" -eq 0 ]; then
+            echo "changeset check passed"
+          elif [ "${status}" -eq 2 ]; then
+            echo "::error::A changeset in this PR is malformed. Fix the file under .changesets/ (see the relman output above); this fails regardless of RELMAN_ENFORCE_CHANGESETS."
+            exit 1
+          elif [ "${ENFORCE}" = "true" ]; then
+            echo "::error::Changeset coverage check failed. Add a covering changeset (\`relman changeset new\`) for the governed crates this PR touches, or \`relman changeset new --empty \"<reason>\"\` if it is release-irrelevant."
+            exit 1
+          else
+            echo "::warning::Changeset coverage check failed — ADVISORY during rollout (not blocking). Run \`relman changeset check --base origin/${BASE_REF}\` locally for details. Set repo variable RELMAN_ENFORCE_CHANGESETS=true to enforce."
+          fi

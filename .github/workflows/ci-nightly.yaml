@@ -207,3 +207,55 @@ jobs:
         uses: zingolabs/infrastructure/.github/actions/cargo-hack@20485fed7a080e381130ed8120419dc81acae641
         with:
           hack-subcommand: build
+
+  # This job is a REFERENCE publisher of the rc-gate's named signal. The rc-gate
+  # flow point (rc-gate.yml) never names a suite; it only requires a `success`
+  # check-run/commit-status whose context is `vars.RELMAN_RC_GATE_CHECK` (default
+  # `rc-gate`) on the commit it is about to advance rc to. This job posts exactly
+  # that status on the tested commit once every suite job above is green.
+  #
+  # CAVEAT: the suite jobs it `needs` run on self-hosted `arc-sh-runners`, of
+  # which there are none at present. Until runners return (or `ztest` delegates
+  # the suite to a cluster job that posts the same status directly), this job's
+  # `needs` never complete and NO signal is produced — the gate just won't advance
+  # without `force` (no false green). Swapping the producer is pure config: post
+  # the same context from wherever the suite actually runs; this job is not
+  # load-bearing. INERT until the pipeline is activated regardless.
+  #
+  # A GITHUB_TOKEN-posted commit status is fine here: rc-gate only READS it, so
+  # no App identity is needed (unlike deployment_status, which must re-trigger a
+  # workflow and therefore requires the App).
+  publish-rc-gate-signal:
+    name: Publish rc-gate signal
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    needs:
+      - pr-checks
+      - check
+      - fmt
+      - clippy
+      - doc
+      - whitespace
+      - cargo-hack-check
+      - cargo-hack-build
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Post the rc-gate status on the tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ vars.RELMAN_RC_GATE_CHECK || 'rc-gate' }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # github.sha is the commit this nightly ran against — the exact commit
+          # the suite jobs above tested. rc-gate reads dev HEAD; when the nightly
+          # runs on dev (scheduled on the default branch, or dispatched with
+          # ref=dev) these coincide. Landing the status on any other ref simply
+          # means rc-gate won't find it and correctly refuses to advance.
+          gh api "repos/${{ github.repository }}/statuses/${SHA}" -X POST \
+            -f state=success \
+            -f context="${GATE}" \
+            -f description="CI - Nightly (rc-gate suite) green" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Posted '${GATE}'=success on ${SHA:0:9}."
