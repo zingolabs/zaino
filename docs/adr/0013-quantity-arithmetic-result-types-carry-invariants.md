@@ -35,12 +35,13 @@ constructor validated nothing. Two faults followed:
 The correction is a doctrine about primitive quantity types, illustrated here on
 `Zatoshis` and meant to generalise:
 
-1. **A quantity is not always closed under its own operation.** Two supply-sized
-   amounts can sum past the supply, so summing amounts as flow cannot honestly
-   return the same type; that result is a *different* type. We do not give
-   `Zatoshis` an unconditional addition that pretends otherwise. Whether a sum
-   is closed is decided by the meaning of the total, not by the `+` sign — the
-   type family below has one sum that is.
+1. **The set of `Zatoshis` is not closed under addition.** Two supply-sized
+   amounts sum past the supply, so the sum of two `Zatoshis` is not always a
+   `Zatoshis`. The result of summing `Zatoshis` as movements is therefore a
+   different type. We do not define an unconditional addition on `Zatoshis`
+   that pretends otherwise; the one fold that lands back in `Zatoshis`,
+   `sum_balances` in the type family below, does so under a precondition and
+   refuses inputs that break it.
 
 2. **The invariant belongs to the result type, chosen by provenance — not to the
    operator or the element.** The same `Zatoshis` values summed as flow yield an
