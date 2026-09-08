@@ -95,6 +95,11 @@ impl DbV1 {
                 break;
             }
         }
+
+        // The only place this frontier moves (validator task and write path both
+        // arrive here). Reads above it pay a synchronous re-validation
+        metrics::gauge!(crate::metric_names::DB_VALIDATED_HEIGHT)
+            .set(self.validated_tip.load(Ordering::Acquire) as f64);
     }
 
     /// Lightweight per-block validation.
@@ -141,6 +146,10 @@ impl DbV1 {
         if self.is_validated(height.into()) {
             return Ok(());
         }
+
+        // After the already-validated fast path: timing that common no-op call buries
+        // the real re-reads under near-zero samples
+        let _timer = crate::ingest::ScopedTimer::start(crate::metric_names::DB_VALIDATION_SECONDS);
 
         let height_key = height
             .to_bytes()
@@ -621,6 +630,8 @@ impl DbV1 {
                     return Ok(height);
                 }
 
+                metrics::counter!(crate::metric_names::DB_ON_DEMAND_VALIDATIONS_TOTAL).increment(1);
+
                 let hkey = height.to_bytes()?;
 
                 tokio::task::block_in_place(|| {
@@ -658,6 +669,9 @@ impl DbV1 {
             HashOrHeight::Hash(z_hash) => {
                 let height = self.resolve_hash_or_height(hash_or_height).await?;
                 let hash = BlockHash::from(z_hash);
+                // No fast path on a hash lookup, so this counts attempts while
+                // `validation_seconds` counts the ones that did work
+                metrics::counter!(crate::metric_names::DB_ON_DEMAND_VALIDATIONS_TOTAL).increment(1);
                 tokio::task::block_in_place(|| {
                     match self.validate_block_blocking(height, hash) {
                         Ok(()) => {}

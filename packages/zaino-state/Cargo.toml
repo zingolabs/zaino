@@ -15,9 +15,11 @@ default = []
 fast-test-seam = []
 
 # Prometheus metrics emission (gauge! calls in sync paths).
-# Enables the backend's copy too: this crate re-exports the write-path metric
-# names from `zaino-chain-store-zainodb`, which gates them on its own feature.
-prometheus = ["metrics", "zaino-chain-store-zainodb/prometheus"]
+# Forwards to every crate that emits on this crate's behalf: `zaino-status`
+# publishes the per-component status gauge, `zaino-mempool-service` the mempool
+# set, and `zaino-chain-store-zainodb` the write-path metrics whose names this
+# crate re-exports. A missing forward silently stops that crate publishing while
+# the rest of the metrics work.
 
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = ["zaino-source-zebra/test_dependencies"]
@@ -52,7 +54,7 @@ zebra-rpc = { workspace = true }
 tracing = { workspace = true }
 
 # Metrics
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 
 # Documentation
 simple-mermaid = "0.2.0"

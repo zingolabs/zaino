@@ -33,6 +33,17 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
         crate::metrics::init(endpoint)?;
     }
 
+    // Else silent: the block above is compiled out, so a configured endpoint yields
+    // no listener and no complaint
+    #[cfg(not(feature = "prometheus"))]
+    if config.metrics_endpoint.is_some() {
+        tracing::warn!(
+            "`metrics_endpoint` is configured but this binary was built without the \
+             `prometheus` feature, so no /metrics listener will start. Rebuild with \
+             `--features prometheus` (or `no_tls_with_prometheus`) to enable it."
+        );
+    }
+
     loop {
         match start_indexer(config.clone()).await {
             Ok(joinhandle_result) => {
@@ -45,6 +56,10 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
                         }
                         Err(IndexerError::Restart) => {
                             error!("Zaino encountered critical error, restarting.");
+                            // The recorder outlives this loop, so nothing else resets:
+                            // a crash-looping indexer scrapes like a healthy one
+                            #[cfg(feature = "prometheus")]
+                            crate::metrics::record_restart();
                             continue;
                         }
                         Err(e) => {

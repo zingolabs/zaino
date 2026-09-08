@@ -68,6 +68,11 @@ and this library adheres to Rust's notion of
 
 ### Deprecated
 ### Removed
+- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
+  unconditional: with no recorder installed the facade is a no-op, so the gate
+  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
+  still owns the recorder and the `/metrics` listener, so no operator-visible
+  behaviour changes. Dependents forwarding to these features must drop that.
 - The block-carrying change listener — `nonfinalized_listener`, `setup_listener`,
   `handle_nfs_change_listener` and `add_nonbest_block`. Every production source
   returned `Ok(None)`, so the handler early-returned and the code behind it was

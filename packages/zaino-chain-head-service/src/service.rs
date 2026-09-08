@@ -601,7 +601,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
         if tip_changed {
             log_tip_change(stale_tip, new_tip);
-            #[cfg(feature = "prometheus")]
             record_reorg(stale_tip, new_tip);
 
             self.updates.send_replace(ChainStateEpoch {
@@ -905,7 +904,6 @@ fn log_tip_change(old: BlockRef, new: BlockRef) {
 /// or moving backwards is a reorganisation, and the depth is how far the chain
 /// was rewritten. Only the latter is counted, so the rate reflects reorgs
 /// rather than block production.
-#[cfg(feature = "prometheus")]
 fn record_reorg(old: BlockRef, new: BlockRef) {
     use crate::metric_names::{CHAIN_HEAD_REORG_DEPTH, CHAIN_HEAD_REORG_TOTAL};
 

@@ -33,11 +33,39 @@ and this library adheres to Rust's notion of
   an empty one through `ChainStoreFreezeSink`, and require identical rows. That
   pair is what found the four round-trip and watermark defects listed under
   Fixed; none of them is visible to a read-only test.
+- `metric_names` — every Prometheus name this backend emits, defined once here
+  and re-exported by `zaino-state`, so a rename cannot leave a dashboard reading
+  one string while the pin test compares another. Ungated: `ingest::observe`
+  takes a name as an ordinary argument, so call sites mention one outside any
+  `cfg`. Includes the write-path, routing, validation and storage families that
+  arrived with the finalised state, and `HISTOGRAM_METRICS`, which `zainod`
+  asserts its bucket table covers.
+- `ingest` — per-block accounting shared by both write loops: `BlockWork`,
+  `ScopedTimer`, and the cached per-block counter handles. Per-block cost is three
+  **disjoint** spans that sum to the total — `block_fetch_seconds`,
+  `treestate_fetch_seconds`, `block_assemble_seconds` — with nothing recovered by
+  subtraction. `BlockWork` is gated with its only consumer: the experimental
+  transparent-history feature compiles the bulk-sync batch path out.
+- `zaino.db.read_seconds{op}` is bucketed as well as described — it had a
+  description but no ladder, so it scraped as a summary.
 - `tests`, behind the dev-dependency-only `testing` feature: the vector chain
   and the fixtures that materialise it, so `zaino-state`'s remaining suites
   compare against the same oracle rather than a second copy of it.
   `fill_store_with_blockdata` fills a store block-by-block for a test that needs
   a database *at* a height without paying for the ingest path.
+
+### Removed
+- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
+  unconditional: with no recorder installed the facade is a no-op, so the gate
+  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
+  still owns the recorder and the `/metrics` listener, so no operator-visible
+  behaviour changes. Dependents forwarding to these features must drop that.
+- `zaino.sync.block_build_seconds`, `zaino.db.tip_height` and
+  `zaino.sync.last_block_written_at`. Each duplicated a metric the ingest rework
+  publishes under another name: `block_build_seconds` enclosed the two reads now
+  timed separately (a nested total that went negative on the non-finalised path),
+  `db_tip_height` is `zaino.sync.finalized_height`, and liveness is
+  `zaino.sync.iterations_total{outcome}` with `sync.consecutive_failures`.
 
 ### Changed
 - **`FinalisedState::spawn` takes two configs**, `ChainStoreConfig` and

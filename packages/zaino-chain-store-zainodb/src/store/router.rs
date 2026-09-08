@@ -562,6 +562,24 @@ impl<T: ChainStoreSource> Router<T> {
         Err(StoreError::FeatureUnavailable(cap))
     }
 
+    /// Publish the active ephemeral routing mode
+    ///
+    /// - Ordered by how much has moved off the db: 0 none, 1 read-only, 2 full
+    fn publish_ephemeral_mode(&self) {
+        // Read once for both gauges: two calls can straddle a concurrent release and
+        // publish `full` beside an inactive migration
+        let active = self.active_ephemeral_mode();
+        let mode = match active {
+            None => 0.0,
+            Some(EphemeralMode::ReadOnly) => 1.0,
+            Some(EphemeralMode::Full) => 2.0,
+        };
+        metrics::gauge!(crate::metric_names::ROUTER_EPHEMERAL_MODE).set(mode);
+        // Full mode is held by migrations alone → doubles as the in-progress signal
+        metrics::gauge!(crate::metric_names::MIGRATION_ACTIVE)
+            .set(f64::from(u8::from(active == Some(EphemeralMode::Full))));
+    }
+
     // ***** Ephemeral finalised state control *****
     //
     // These methods should only ever be used by the migration manager.
@@ -889,6 +907,9 @@ impl<T: ChainStoreSource> Router<T> {
                 self.primary_mask.store(0, Ordering::Release);
             }
         }
+        // From the mask-writing functions, not their callers: a new caller cannot
+        // introduce a routing change the gauge misses
+        self.publish_ephemeral_mode();
     }
 
     /// Restores steady-state routing to the primary backend and disables ephemeral routing.
@@ -896,6 +917,7 @@ impl<T: ChainStoreSource> Router<T> {
         self.primary_mask
             .store(self.primary_capability().bits(), Ordering::Release);
         self.ephemeral_mask.store(0, Ordering::Release);
+        self.publish_ephemeral_mode();
     }
 
     /// Decrements the ephemeral reference count for `mode`.

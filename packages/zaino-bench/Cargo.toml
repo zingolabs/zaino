@@ -41,4 +41,4 @@ thiserror = { workspace = true }
 # Test-only, so the `prometheus` feature is not unified into non-test builds of
 # the workspace. `metric_names_match_zaino_state` asserts the metric names this
 # crate scrapes are still the ones `zaino-state` emits.
-zaino-state = { workspace = true, features = ["prometheus"] }
+zaino-state = { workspace = true }

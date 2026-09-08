@@ -18,36 +18,41 @@ use std::future::Future;
 pub trait SendFut<T>: Future<Output = T> + Send {}
 impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
 
-#[cfg(feature = "prometheus")]
+/// Prometheus metric names: the single source of truth shared with `zainod`'s
+/// `describe_*` registrations, which carry the descriptions
+///
+/// - Each name defined once, in the crate that emits it; the store's are re-exported
+/// - Ungated, unlike the emission it names: a name is data, passed as an argument
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {
-    //! Prometheus metric names, and the single source of truth shared with
-    //! `zainod`'s `describe_*` registrations, which carry the descriptions.
-    //!
-    //! Each name is defined once, in the crate that emits it.
-    //!
-    //! The finalised store's write-path metrics are emitted from
-    //! `zaino-chain-store-zainodb` and so are defined there and re-exported
-    //! here. Restating them would put the live string and the pinned string in
-    //! different crates: a rename where the metric is emitted would break every
-    //! dashboard built on it while the pin test — which reads this module —
-    //! went on comparing a copy nothing publishes. A re-export cannot drift.
-    //!
-    //! This module remains the single import site, so `zainod`'s `describe_*`
-    //! registrations and the bench harness are unaffected by where a given
-    //! name lives.
-    pub use zaino_chain_store_zainodb::metric_names::*;
+    pub use zaino_chain_store_zainodb::metric_names::{self as store, *};
 
-    pub const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
+    // Named apart from the store's re-exported `COUNTERS` / `GAUGES`: a local name
+    // would shadow the glob, forcing a hand-copy that drifts
+    zaino_status::metric_names! {
+        // Best-known tip, from the chain head. Sync lag = this - SYNC_FINALIZED_HEIGHT,
+        // consumer-derived
+        gauge CHAIN_TIP_HEIGHT = "zaino.chain.tip_height" => "Latest chain tip height reported by the source";
+        // Liveness = "is it moving", which throughput cannot answer (wedged and idle both
+        // publish flat counters)
+        counter SYNC_ITERATIONS_TOTAL = "zaino.sync.iterations_total" => "Sync-worker iterations by outcome; the worker's heartbeat";
+        gauge SYNC_CONSECUTIVE_FAILURES = "zaino.sync.consecutive_failures" => "Consecutive failed sync iterations; 0 when healthy";
+        gauge SYNC_BACKOFF_SECONDS = "zaino.sync.backoff_seconds" => "Current sync-loop retry backoff in seconds; 0 when healthy";
+        // Only mempool metric from here: coherence is decided against the NFS tip
+        gauge MEMPOOL_COHERENCE_FROZEN_SECONDS = "zaino.mempool.coherence_frozen_seconds" => "Seconds tip-coherent mempool reads have been frozen; 0 when live";
+    }
 
-    pub const SYNC_LAG_BLOCKS: &str = "zaino.sync.lag_blocks";
-    pub const SYNC_ITERATIONS_TOTAL: &str = "zaino.sync.iterations_total";
-    pub const SYNC_ITERATION_DURATION_SECONDS: &str = "zaino.sync.iteration_duration_seconds";
-    pub const SYNC_ERRORS_TOTAL: &str = "zaino.sync.errors_total";
-    pub const SYNC_HAS_REACHED_TIP: &str = "zaino.sync.has_reached_tip";
-    pub const SYNC_REACHED_TIP_AT: &str = "zaino.sync.reached_tip_at";
+    /// How a sync iteration ended: `ok` / `error`. Family rate = the heartbeat
+    pub const SYNC_OUTCOME: &str = "outcome";
+}
 
-    pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
+/// Mempool metric names; `zainod` reaches the mempool only through this crate
+pub use zaino_mempool_service::metric_names as mempool_metric_names;
+
+/// Resolve the store's per-block counter handles, so the series exist at 0 before
+/// the first block. Reaches `zainod` through this crate, like the names do.
+pub fn seed_block_counters() {
+    zaino_chain_store_zainodb::ingest::block_counters();
 }
 
 // Zaino's Indexer library frontend.
@@ -133,8 +138,8 @@ pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 pub(crate) mod stream;
 
 pub use stream::{
-    AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-    SubtreeRootReplyStream, UtxoReplyStream,
+    AddressStream, ChannelStream, CompactBlockStream, CompactTransactionStream,
+    RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
 };
 
 pub(crate) mod utils;

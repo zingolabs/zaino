@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `zaino.status{component}` published from `NamedAtomicStatus::store` / `::new` —
+  the one point every status change already passed through, so using the type at
+  all yields a correctly-labelled series. The combined status was previously
+  computed and thrown away.
+- `metric_names!`, declaring a crate's metric names beside the `# HELP` text
+  `zainod` registers, and `timed!` / `Timer`, a scope timer whose histogram handle
+  is resolved once per call site rather than per call.
+
 - New crate. How a Zaino component reports whether it is working, moved out of
   `zaino-common` — `StatusType`, `Status`, `NamedAtomicStatus`, and the
   `Liveness` / `Readiness` / `VitalsProbe` probing traits.
@@ -25,6 +33,14 @@ and this library adheres to Rust's notion of
   transition is silently overwritten, and `apply` closes it.
 
 ### Changed
+
 ### Deprecated
+
 ### Removed
+- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
+  unconditional: with no recorder installed the facade is a no-op, so the gate
+  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
+  still owns the recorder and the `/metrics` listener, so no operator-visible
+  behaviour changes. Dependents forwarding to these features must drop that.
+
 ### Fixed

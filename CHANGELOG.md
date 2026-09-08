@@ -25,14 +25,10 @@ and this library adheres to Rust's notion of
     the `hahn/store` branch.
   - `serve` — single-stream block serve rate, verifying every `prev_hash` link
     in the same pass. Ported from that branch's `zaino-admin check`.
-  - `docs/perf.md` records the results and, next to them, the machine spec and
-    node configs that produced them:
-    `docs/example_configs/zainod-bench-mainnet{,-ephemeral}.toml`. Both select
-    `backend = 'direct'` deliberately — the fastest path Zaino has, and so the
-    honest ceiling to quote — and differ only in
-    `ephemeral_finalised_state`. `concurrent` and `serve` are reported under
-    both modes, since a finalised read is answered from Zaino's own index in one
-    and by passthrough to the validator in the other; `sync` is persistent-only.
+  - `docs/example_configs/zainod-bench-mainnet{,-ephemeral}.toml` are the node
+    configs to measure against. Both select `backend = 'direct'` — the fastest
+    path Zaino has, and so the honest ceiling to quote — and differ only in
+    `ephemeral_finalised_state`.
 - **Eight new crates** implementing validator access as a hexagonal port /
   adapter stack (ADR-0008, ADR-0009). Each carries a `usage.md`:
   - `zaino-primitives` — Zaino's domain vocabulary. Depends on `thiserror` and
@@ -74,6 +70,14 @@ and this library adheres to Rust's notion of
   must route to the same transport as `GetMempoolTxids`.
 - `[mempool]` config section in `zainod`, making the mempool memory bound, poll
   cadence and exclude-list caps operator-configurable.
+- **Prometheus metrics across the indexer** (feature `prometheus`): sync progress
+  + per-stage ingest cost, read routing, non-finalised window health, inbound
+  gRPC/JSON-RPC, outbound validator RPC, mempool shape, process CPU/RSS/fds.
+  Names live with the emitting crates, registration/help/buckets in `zainod`, a
+  test pinning the two sets together (unbucketed histogram → scrapes as a summary).
+- `profiling` Cargo profile — release codegen + line tables, via
+  `--build-arg CARGO_PROFILE=profiling` (also sets frame pointers; no Cargo key
+  for them). `release` untouched → attested image unchanged.
 
 ### Changed
 - **LMDB reader slots raised from 512 to 2048–8192.** The clamp was
@@ -210,6 +214,10 @@ and this library adheres to Rust's notion of
   first-install-wins: an embedder that installs a provider before zaino
   keeps its choice.
 
+- **Breaking (image builds)** — `NO_TLS=true` →
+  `CARGO_FEATURES=no_tls_use_unencrypted_traffic`. One arg per image
+  (`Dockerfile` had two overlapping knobs + a precedence rule).
+
 ### Deprecated
 - Classical TLS key exchange (X25519, SECP256R1, SECP384R1) is deprecated:
   still offered and accepted for wallet compatibility, slated for refusal
@@ -245,6 +253,9 @@ and this library adheres to Rust's notion of
   from the range form. `BlockID` carries no `poolTypes` field, so both
   single-block RPCs now serve the unfiltered default, matching both the range
   form and lightwalletd.
+- `Dockerfile.deterministic` healthcheck probed `/usr/local/bin/zainod` — a
+  builder-stage path only (runtime installs to `/`) → failed every interval since
+  it was added.
 - JSON-RPC responses are read against a 32 MiB cap, chunk-wise. Every response
   is deserialized into memory, so an uncapped read let a compromised,
   misconfigured or impersonated validator exhaust Zaino's memory with one reply.

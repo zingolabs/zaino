@@ -19,6 +19,8 @@ use std::{
 
 use tracing::debug;
 
+use crate::metric_names::{STATUS, STATUS_COMPONENT};
+
 use crate::probing::{Liveness, Readiness};
 
 // The `Liveness`/`Readiness` blanket impls below are why this module and
@@ -179,6 +181,8 @@ impl NamedAtomicStatus {
     /// Creates a new NamedAtomicStatus with the given component name and initial status.
     pub fn new(name: &'static str, status: StatusType) -> Self {
         debug!(component = name, status = %status, "[STATUS] initial");
+        // At construction too: a component that never transitions still gets a series
+        metrics::gauge!(STATUS, STATUS_COMPONENT => name).set(status as u8 as f64);
         Self {
             name,
             inner: Arc::new(AtomicUsize::new(status.into())),
@@ -215,6 +219,8 @@ impl NamedAtomicStatus {
                 "[STATUS] transition"
             );
         }
+        // After the store, so the gauge never leads [`Self::load`]
+        metrics::gauge!(STATUS, STATUS_COMPONENT => self.name).set(new as u8 as f64);
         new
     }
 

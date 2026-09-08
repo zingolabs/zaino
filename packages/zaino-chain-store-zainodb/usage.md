@@ -142,7 +142,8 @@ source-driven build stays the authority — freeze only spares it the fetch.
 ## What the read path reports
 
 The write path has emitted metrics since before it moved here; the reads now do
-too, behind the same `prometheus` feature.
+too. Emission is unconditional — `zainod`'s `prometheus` feature owns the recorder,
+and without one the `metrics` facade is a no-op.
 
 | Metric | Kind | Watch it for |
 | --- | --- | --- |

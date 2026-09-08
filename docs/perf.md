@@ -91,8 +91,9 @@ weight the figures carry:
   finished — but the fetch-pointer gauge the harness watches stopped updating at
   3,444,364, so `--stall-timeout-secs` fired 890s later. That final flat period
   is excluded above; no sync work was outstanding during it. Two harness bugs to
-  fix before the next run: completion should be read from `zaino.db.tip_height`
-  rather than the fetch pointer, and the `--csv` curve should be written even
+  fix before the next run: completion should be read from the committed frontier
+  (`zaino.db.tip_height` at the time of this run; `zaino.sync.finalized_height`
+  since) rather than the fetch pointer, and the `--csv` curve should be written even
   when the run ends in an error (it currently is not, so this run has no curve).
 - **The index is 76 GiB, not ~275 GiB.** That is the measured on-disk size at
   the target height, and it contradicts the estimate in
@@ -102,8 +103,9 @@ Sync curve: not captured for this run (see the second caveat above). When it is,
 `--csv` writes `elapsed_secs,
 finalized_height, target_height, lag_blocks, node_lag_gauge, db_tip_height,
 chain_tip_height, transactions_total, interval_blocks_per_sec`. `lag_blocks` is
-derived as `target - finalized`; `node_lag_gauge` is the node's own
-`zaino.sync.lag_blocks`, which reports the seam depth rather than the sync lag.
+derived as `target - finalized`; `node_lag_gauge` was the node's own
+`zaino.sync.lag_blocks`, which reported the seam depth rather than the sync lag
+and has since been removed, so the column is empty against a current node.
 
 ## 2. Concurrent connections
 

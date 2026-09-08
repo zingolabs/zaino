@@ -74,41 +74,24 @@ use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
 use crate::types::{Height, Outpoint, TransactionHash};
 
-/// How long a read took, recorded against `DB_READ_SECONDS` under its `op`.
+/// Times one routed read into `DB_READ_SECONDS`, labelled by the port method's name.
 ///
-/// A type rather than a bare `Instant` so the `prometheus` feature is handled
-/// once: without it this compiles to nothing and no call site needs a `cfg`.
-///
-/// The whole read surface shares one histogram, split by an `op` label naming
-/// the read. The label is the port method's own name, so a new read is
-/// instrumented by starting a timer with its name rather than by minting a
-/// metric.
-///
-/// Recorded on drop, so a read that returns early through `?` still records: a
-/// read that fails slowly is the symptom worth seeing, and dropping those
-/// samples would make a degrading store look faster as it got worse.
+/// - Recorded on drop, so a read returning early through `?` still records: a read that
+///   fails slowly is the symptom worth seeing
 struct ReadTimer {
-    #[cfg(feature = "prometheus")]
     op: &'static str,
-    #[cfg(feature = "prometheus")]
     started: std::time::Instant,
 }
 
 impl ReadTimer {
-    /// Starts timing a read labelled `op` — the port method's own name.
     fn start(op: &'static str) -> Self {
-        #[cfg(not(feature = "prometheus"))]
-        let _ = op;
         Self {
-            #[cfg(feature = "prometheus")]
             op,
-            #[cfg(feature = "prometheus")]
             started: std::time::Instant::now(),
         }
     }
 }
 
-#[cfg(feature = "prometheus")]
 impl Drop for ReadTimer {
     fn drop(&mut self) {
         metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => self.op)

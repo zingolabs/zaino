@@ -19,12 +19,18 @@ pub use probe::{auth_from_parts, probe_node, ProbeError};
 /// The single source of truth, shared with `zainod`'s `describe_*`
 /// registrations, which carry the descriptions. Moved here from `zaino-fetch`
 /// with the outbound RPC transport these name.
-#[cfg(feature = "prometheus")]
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {
-    pub const RPC_OUTBOUND_REQUESTS_TOTAL: &str = "zaino.rpc.outbound.requests_total";
-    pub const RPC_OUTBOUND_REQUEST_DURATION_SECONDS: &str =
-        "zaino.rpc.outbound.request_duration_seconds";
-    pub const RPC_OUTBOUND_ERRORS_TOTAL: &str = "zaino.rpc.outbound.errors_total";
-    pub const RPC_OUTBOUND_RETRIES_TOTAL: &str = "zaino.rpc.outbound.retries_total";
+    zaino_status::metric_names! {
+        // Retries are an `outcome`, not their own counter: with no denominator they read
+        // the same under saturation and under growing load. `method` is not enumerable
+        // (each caller names its own), so `zainod` exempts this from seeding
+        counter RPC_OUTBOUND_REQUESTS_TOTAL = "zaino.rpc.outbound.requests_total" => "Outbound JSON-RPC attempts by method and outcome";
+        // Separates "validator is slow" from "we ask too much"; the ingest histograms
+        // cannot, since under `direct` their source read reaches no validator
+        histogram RPC_OUTBOUND_DURATION_SECONDS = "zaino.rpc.outbound.duration_seconds" => "Seconds for one outbound JSON-RPC attempt that received a response, by method";
+    }
+
+    pub const RPC_METHOD: &str = "method";
+    pub const RPC_OUTCOME: &str = "outcome";
 }

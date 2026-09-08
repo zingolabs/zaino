@@ -244,7 +244,6 @@ use router::Router;
 use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
-#[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 
 use crate::adapter::domain_block_ref;
@@ -270,6 +269,16 @@ struct PoolActivationHeights {
     sapling: Option<zebra_chain::block::Height>,
     nu5: Option<zebra_chain::block::Height>,
     nu6_3: Option<zebra_chain::block::Height>,
+}
+
+/// - Shared by the version probe and the backend that opens one; two copies drift
+///   silently onto different networks
+pub(super) fn network_dir(kind: NetworkKind) -> &'static str {
+    match kind {
+        NetworkKind::Mainnet => "mainnet",
+        NetworkKind::Testnet => "testnet",
+        NetworkKind::Regtest => "regtest",
+    }
 }
 
 impl PoolActivationHeights {
@@ -365,6 +374,9 @@ pub(crate) fn assemble_indexed_block(
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<IndexedBlock, StoreError> {
+    let _assembling =
+        crate::ingest::ScopedTimer::start(crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS);
+
     let FetchedBlock { block, tree_roots } = fetched;
 
     require_pool_roots(
@@ -420,6 +432,7 @@ async fn fetch_block<S: ChainStoreSource + ?Sized>(
 ) -> Result<zaino_primitives::types::Block, StoreError> {
     let height = zaino_primitives::types::Height::try_from(height)
         .map_err(|_| inconsistent(format!("height {height} is above the protocol maximum")))?;
+    let _timer = crate::ingest::ScopedTimer::start(crate::metric_names::SYNC_BLOCK_FETCH_SECONDS);
     source
         .get_block(height)
         .await
@@ -434,6 +447,8 @@ async fn fetch_tree_roots<S: ChainStoreSource + ?Sized>(
     source: &S,
     block: &zaino_primitives::types::Block,
 ) -> Result<zaino_primitives::types::TreeRoots, StoreError> {
+    let _timer =
+        crate::ingest::ScopedTimer::start(crate::metric_names::SYNC_TREESTATE_FETCH_SECONDS);
     source
         .get_commitment_tree_roots(block.header.hash)
         .await
@@ -795,7 +810,6 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         // caller — only tests and the `reader` wrapper use it.
         let mode = self.db.finalised_state_mode();
 
-        #[cfg(feature = "prometheus")]
         metrics::gauge!(FINALISED_EPHEMERAL).set(if mode == FinalisedStateMode::Persistent {
             0.0
         } else {

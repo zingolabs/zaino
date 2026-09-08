@@ -20,7 +20,6 @@ test_dependencies = []
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 
 # Prometheus metrics emission (request counting / latency in gRPC handlers).
-prometheus = ["metrics"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
@@ -43,7 +42,7 @@ zebra-rpc = { workspace = true }
 tracing = { workspace = true }
 
 # Metrics
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }

@@ -18,7 +18,6 @@ transparent_address_history_experimental = [
 ]
 
 # Prometheus metric emission from the advance path.
-prometheus = ["metrics"]
 
 # TEST-ONLY: exposes `spawn_without_writer` and `advance_once`, so a downstream
 # test crate can step the chain head deterministically instead of racing its
@@ -41,7 +40,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "test-util"] }

@@ -33,6 +33,42 @@ const CAPACITY_LOW_WATER_PERCENT: u64 = 90;
 /// can name it in its doc link; the value is used only within this module.
 pub(super) const MAX_CONSECUTIVE_DISCARDS: u32 = 5;
 
+/// - A guard, not a tail statement: `tick` returns early from six places, and a tail
+///   sample would omit exactly the degraded polls worth measuring
+/// - Holds the snapshot cell, not the service → no `S: MempoolSource` bound
+struct PollSample<'a> {
+    published: &'a arc_swap::ArcSwap<MempoolSnapshot>,
+    started: Instant,
+}
+
+impl<'a> PollSample<'a> {
+    fn start(published: &'a arc_swap::ArcSwap<MempoolSnapshot>) -> Self {
+        Self {
+            published,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for PollSample<'_> {
+    fn drop(&mut self) {
+        use crate::metric_names::*;
+
+        metrics::histogram!(MEMPOOL_POLL_SECONDS).record(self.started.elapsed().as_secs_f64());
+
+        // One read, one snapshot: per-gauge loads let a concurrent publish land
+        // between two
+        let published = self.published.load();
+        metrics::gauge!(MEMPOOL_TRANSACTIONS).set(published.tx_count() as f64);
+        metrics::gauge!(MEMPOOL_BYTES, MEMPOOL_BYTES_KIND => "raw")
+            .set(published.raw_bytes() as f64);
+        metrics::gauge!(MEMPOOL_BYTES, MEMPOOL_BYTES_KIND => "cost")
+            .set(published.cost_bytes() as f64);
+        metrics::gauge!(MEMPOOL_UNADMITTED).set(published.unadmitted().len() as f64);
+        metrics::gauge!(MEMPOOL_COMPLETENESS).set(published.completeness() as u8 as f64);
+    }
+}
+
 impl<S: MempoolSource> super::MempoolService<S> {
     /// The single writer task.
     ///
@@ -65,9 +101,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     self.publish_closing();
                     return;
                 }
-                _ = interval.tick() => {
-                    self.tick(&mut state).await;
-                }
+                _ = interval.tick() => {}
                 _ = async {
                     match block_wake.as_mut() {
                         Some(rx) => {
@@ -75,14 +109,17 @@ impl<S: MempoolSource> super::MempoolService<S> {
                         }
                         None => std::future::pending::<()>().await,
                     }
-                } => {
-                    self.tick(&mut state).await;
-                }
+                } => {}
             }
+
+            self.tick(&mut state).await;
         }
     }
 
+    /// One poll: diff the validator's mempool against the held set, publish what changed
     async fn tick(&self, state: &mut PollState) {
+        let _sample = PollSample::start(&self.current);
+
         // Tag: the validator tip this poll's fetch window opens at.
         //
         // Read fresh every poll, never carried over from the last one: this read
