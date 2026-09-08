@@ -32,6 +32,22 @@ constructor validated nothing. Two faults followed:
 
 ## Doctrine
 
+### Terminology
+
+  - **Zatoshi.** The unit of one hundred-millionth of a ZEC, in which every
+    amount below is counted.
+  - **`Zatoshis`.** The set of integers from zero to the money supply
+    inclusive, each an amount of ZEC counted in zatoshis; the Rust type of the
+    same name represents this set.
+  - **Element.** One member of `Zatoshis`, such as the value of a single
+    transaction output or input, or a balance.
+  - **Balance.** An element read as the amount held by one owner at one
+    moment.
+  - **Movement.** An element read as the amount one transaction transfers into
+    or out of an ownership.
+  - **Sum.** The result of adding elements, whose type is chosen by which
+    reading, balance or movement, the elements carry.
+
 The correction is a doctrine about primitive quantity types, illustrated here on
 `Zatoshis` and meant to generalise:
 
