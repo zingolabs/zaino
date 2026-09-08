@@ -21,7 +21,7 @@
 //! ```text
 //! accumulate          : [A] → F   Σ aᵢ, counting each movement
 //! accumulate_balances : [A] → A?  Σ aᵢ, of balances that coexist
-//!                                 (supply-capped; closed — lands back in A)
+//!                                 (supply-capped; lands back in A or refused)
 //! net                 : F × F → D received − spent, landing in [−S, S] or refused
 //! ```
 //!
@@ -30,9 +30,10 @@
 //! fails only if the machine integer overflows. `accumulate_balances` is the
 //! second accumulate — the same fold shape with a different landing: balances
 //! that coexist at one moment cannot total more than the coins that exist, so
-//! the sum is itself in `[0, S]` and `A` is closed under it; the fold lands
-//! back in [`Zatoshis`] rather than a new type, refusing a total past the
-//! supply. `net` subtracts a spent flow from a received one and admits the
+//! under that precondition the sum is itself in `[0, S]`; the fold lands back
+//! in [`Zatoshis`] rather than a new type, refusing a total past the supply.
+//! `A` is still not closed under addition — the precondition, not the set,
+//! keeps this result inside it. `net` subtracts a spent flow from a received one and admits the
 //! result only as a signed value: a balance change lives in `[−S, S]`, so a
 //! result outside it is refused. That bound is a property of a balance change,
 //! which the two sums are only when they are the received and spent flow of
@@ -57,9 +58,10 @@ impl Zatoshis {
     ///
     /// This is the second accumulate of the algebra: the same fold shape as
     /// [`ZatoshisFlowSum::try_accumulate`], with a different landing and
-    /// bound. Because a sum of coexisting balances stays within `[0, supply]`,
-    /// [`Zatoshis`] is closed under it — so this is deliberately an operation
-    /// returning [`Zatoshis`], not a new quantity type.
+    /// bound. Because a sum of coexisting balances stays within `[0, supply]`
+    /// under its precondition, this is deliberately an operation returning
+    /// [`Zatoshis`], not a new quantity type; the set is not closed under
+    /// addition, so the fold is checked and refuses a total past the supply.
     pub fn sum_balances(mut values: impl Iterator<Item = Zatoshis>) -> Option<Zatoshis> {
         values.try_fold(Zatoshis::ZERO, Zatoshis::checked_add)
     }

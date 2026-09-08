@@ -79,8 +79,11 @@ A sum of *movements* — every output paying an address, every input it spent �
 counts the same coins each time they move, so it is not bounded by the supply;
 that is why it is its own type and not another `Zatoshis`. A sum of *coexisting*
 balances stays supply-bounded — coins that coexist cannot total more than
-exist — so `Zatoshis` is closed under it and there is no fourth type: that sum
-is the operation `Zatoshis::sum_balances`, landing back in `Zatoshis`.
+exist — so that precondition keeps the total inside `Zatoshis` and there is no
+fourth type: that sum is the operation `Zatoshis::sum_balances`, a checked fold
+landing back in `Zatoshis`. The set of `Zatoshis` is still not closed under
+addition; the fold refuses a total past the supply rather than pretend the
+precondition held.
 
 The operations relate the types and live beside them:
 
@@ -101,10 +104,10 @@ let lifetime = ZatoshisFlowSum::from_summed(received_total);
 // value. `None` if the two flows don't describe a coherent balance.
 let net: Option<SignedZatoshis> = received.net(spent);
 
-// Sum balances that coexist at one moment. Supply-capped and closed: the
-// total lands back in `Zatoshis`. `None` means the total passed the supply,
-// which under the coexistence contract is overlapping or double-counted
-// input, not a large number.
+// Sum balances that coexist at one moment. Supply-capped, and under that
+// precondition the total lands back in `Zatoshis`. `None` means the total
+// passed the supply, which under the coexistence contract is overlapping or
+// double-counted input, not a large number.
 let held: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
 ```
 
