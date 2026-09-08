@@ -61,11 +61,12 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 
 2. **The invariant belongs to the result type, chosen by the reading of the
    elements — not to the operator or the element.** The same `Zatoshis` values
-   summed as movements yield an unbounded accumulator; summed as coexisting
-   balances they yield a supply-bounded total. The caller, who knows which
-   reading the values carry, picks the landing type, and that choice is where
-   the bound is declared and enforced — once, in the type, not re-derived at
-   each call site.
+   summed as movements land in `ZatoshisFlowSum`, bounded only by the machine;
+   summed as coexisting balances they land back in `Zatoshis` through
+   `sum_balances`, bounded by the supply. The caller, who knows which reading
+   the values carry, picks the landing type, and that choice is where the bound
+   is declared and enforced — once, in the type, not re-derived at each call
+   site.
 
 3. **A signed zatoshi value is its own type, bounded by ±supply.** A single
    movement is one amount; a change in a balance is a difference of two. A
@@ -117,13 +118,15 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 `ZatoshisFlowSum` earns a distinct type by carrying a new invariant.
 `SignedZatoshis` earns one by being a different quantity. A sum of coexisting
 balances earns neither: balances that coexist at one moment cannot total more
-than the coins that exist, so the total is itself in `[0, supply]` and
-`Zatoshis` is closed under that sum. A distinct type is warranted only when a
-result escapes the element's invariant; this one does not. What the algebra
-gains is its second accumulate as an *operation* — `Zatoshis::sum_balances`, a
-supply-capped checked fold landing back in `Zatoshis`. Under its coexistence
-contract a total past the supply is not a large number but evidence that the
-operands overlap or double-count, so the fold refuses it.
+than the coins that exist, so under that precondition the total is itself in
+`[0, supply]`. The set of `Zatoshis` is still not closed under addition; what
+holds is narrower, that the precondition keeps this particular result inside
+the set. A distinct type is warranted only when a result escapes the element's
+invariant, and this one does not, so the algebra gains its second accumulate
+as an *operation* — `Zatoshis::sum_balances`, a supply-capped checked fold that
+lands back in `Zatoshis`. A total past the supply is not a large number but
+evidence that the operands overlap or double-count, so the fold refuses it
+rather than pretend the precondition held.
 
 ## Considered options
 
