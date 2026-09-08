@@ -4,7 +4,7 @@
 
 proposed
 
-## Context and decision
+## Context
 
 `Zatoshis` is a validated amount: at most the money supply. It is summed in more
 than one place, and the sums do not share the same invariants.
@@ -23,12 +23,14 @@ The earlier code attempted to express these conflicting invariants with a single
 amount type, a supply cap applied to every sum, and a bare signed type whose
 constructor validated nothing. Two faults followed:
 
-  (1) A legitimate movement total past the supply was rejected as if corrupt,
-      because the cap sat on the operator rather than on the result.
+  1. A legitimate movement total past the supply was rejected as if corrupt,
+     because the cap sat on the operator rather than on the result.
 
-  (2) A signed value could be any integer, because the type's "a balance
-      change" claim was made in prose while its only constructor enforced
-      nothing.
+  2. A signed value could be any integer, because the type's "a balance
+     change" claim was made in prose while its only constructor enforced
+     nothing.
+
+## Doctrine
 
 The correction is a doctrine about primitive quantity types, illustrated here on
 `Zatoshis` and meant to generalise:
