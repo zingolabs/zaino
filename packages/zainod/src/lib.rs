@@ -10,6 +10,8 @@ use crate::error::IndexerError;
 use crate::indexer::start_indexer;
 use tracing::{error, info};
 
+#[cfg(feature = "prometheus")]
+pub(crate) mod admin;
 pub mod cli;
 pub mod config;
 pub mod error;

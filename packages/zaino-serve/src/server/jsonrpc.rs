@@ -89,10 +89,20 @@ impl JsonRpcServer {
         let max_request_body_size = (MAX_BLOCK_BYTES as usize) * 2 + 1024;
         let http_middleware_layer = HttpRequestMiddlewareLayer::new(cookie, max_request_body_size);
 
-        // Set up Zebra JSON-RPC call compatibility middleware (RPC version fixes)
-        let rpc_middleware = RpcServiceBuilder::new()
-            .rpc_logger(1024)
-            .layer_fn(FixRpcResponseMiddleware::new);
+        // Before the middleware stack: the metrics layer interns call labels
+        // against this method set, so a caller cannot mint a series by inventing
+        // a name (see `jsonrpc_metrics`)
+        let rpc_module = rpc_impl.into_rpc();
+        let method_names: crate::server::jsonrpc_metrics::MethodNames =
+            std::sync::Arc::new(rpc_module.method_names().collect());
+
+        // Layer order is load-bearing: first added = outermost, so metrics must sit
+        // outside the zcashd compatibility fix to see the code the client receives
+        let rpc_middleware = RpcServiceBuilder::new().rpc_logger(1024);
+        let rpc_middleware = rpc_middleware.layer_fn(move |service| {
+            crate::server::jsonrpc_metrics::MetricsMiddleware::new(service, method_names.clone())
+        });
+        let rpc_middleware = rpc_middleware.layer_fn(FixRpcResponseMiddleware::new);
 
         // Build the JSON-RPC server with middleware integrated. A pre-bound
         // listener (test path) is served directly; otherwise we bind the
@@ -119,7 +129,7 @@ impl JsonRpcServer {
                 })?,
         };
 
-        let server_handle = server.start(rpc_impl.into_rpc());
+        let server_handle = server.start(rpc_module);
 
         let shutdown_signal = shutdown_signal(status.clone());
 

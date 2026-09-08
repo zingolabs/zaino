@@ -108,7 +108,7 @@ fn buckets(metric: &str) -> Option<&'static [f64]> {
 /// - Call once, before any `metrics::*!()` (earlier calls silently no-op)
 /// - Listener lives in [`crate::admin`]: only it wants a runtime of its own
 pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
-    let mut builder = PrometheusBuilder::new().with_http_listener(endpoint);
+    let mut builder = PrometheusBuilder::new();
     for (metric, _) in all(HISTOGRAMS) {
         let buckets = buckets(metric).ok_or_else(|| {
             IndexerError::MetricsError(format!(
@@ -121,17 +121,15 @@ pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
                 IndexerError::MetricsError(format!("bucket bounds for `{metric}`: {e}"))
             })?;
     }
-    builder.install().map_err(|e| {
+    let handle = builder.install_recorder().map_err(|e| {
         IndexerError::MetricsError(format!("Failed to install metrics recorder: {e}"))
     })?;
 
     describe_metrics();
     initialise_counters();
     metrics::gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
-    spawn_process_collector();
 
-    tracing::info!(%endpoint, "Prometheus metrics endpoint started");
-    Ok(())
+    crate::admin::spawn(endpoint, handle)
 }
 
 /// - Recorder installed outside the supervisor loop → nothing else separates a
@@ -141,18 +139,16 @@ pub fn record_restart() {
 }
 
 /// - Block time / process CPU separates CPU-bound from disk-bound from waiting
-/// - Timer, not scrape-time: the exporter's listener has no scrape hook
-fn spawn_process_collector() {
-    let collector = metrics_process::Collector::default();
-    collector.describe();
-
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
-        loop {
-            tick.tick().await;
-            collector.collect();
-        }
-    });
+/// - On scrape, so the sample is as old as the answer and no timer runs while idle
+pub(crate) fn collect_process_metrics() {
+    static COLLECTOR: std::sync::OnceLock<metrics_process::Collector> = std::sync::OnceLock::new();
+    COLLECTOR
+        .get_or_init(|| {
+            let collector = metrics_process::Collector::default();
+            collector.describe();
+            collector
+        })
+        .collect();
 }
 
 fn describe_metrics() {
