@@ -74,31 +74,6 @@ use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
 use crate::types::{Height, Outpoint, TransactionHash};
 
-/// Times one routed read into `DB_READ_SECONDS`, labelled by the port method's name.
-///
-/// - Recorded on drop, so a read returning early through `?` still records: a read that
-///   fails slowly is the symptom worth seeing
-struct ReadTimer {
-    op: &'static str,
-    started: std::time::Instant,
-}
-
-impl ReadTimer {
-    fn start(op: &'static str) -> Self {
-        Self {
-            op,
-            started: std::time::Instant::now(),
-        }
-    }
-}
-
-impl Drop for ReadTimer {
-    fn drop(&mut self) {
-        metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => self.op)
-            .record(self.started.elapsed().as_secs_f64());
-    }
-}
-
 impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
     fn watermark(&self) -> StoreWatermark {
         self.inner.watermark()
@@ -119,7 +94,8 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
         height: DomainHeight,
     ) -> Result<Option<DomainBlockHash>, ChainStoreError> {
         self.bounded(height)?;
-        let _timer = ReadTimer::start("block_hash");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "block_hash");
         Ok(DbReader::get_block_hash(self, stored_height(height))
             .await
             .map_err(chain_store_error)?
@@ -131,7 +107,8 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
         &self,
         hash: DomainBlockHash,
     ) -> Result<Option<DomainHeight>, ChainStoreError> {
-        let _timer = ReadTimer::start("block_height");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "block_height");
         match DbReader::get_block_height(self, stored_hash(hash))
             .await
             .map_err(chain_store_error)?
@@ -277,7 +254,8 @@ impl<T: ChainStoreSource> TransactionIndex for DbReader<T> {
         &self,
         txid: &TransactionId,
     ) -> Result<Option<BlockTxPosition>, ChainStoreError> {
-        let _timer = ReadTimer::start("tx_position");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "tx_position");
         match self
             .get_tx_location(&TransactionHash((*txid).into()))
             .await
@@ -297,7 +275,7 @@ impl<T: ChainStoreSource> TransactionIndex for DbReader<T> {
         let Some(location) = tx_location(position) else {
             return Ok(None);
         };
-        let _timer = ReadTimer::start("txid_at");
+        let _timer = zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "txid_at");
         // The backend errors on a miss where the domain answers `None`: asking
         // about a position past the end of a block is a reasonable question.
         match self.get_txid(location).await {
@@ -314,7 +292,8 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         &self,
         outpoints: &[DomainOutpoint],
     ) -> Result<Vec<Option<SpenderRef>>, ChainStoreError> {
-        let _timer = ReadTimer::start("outpoint_spenders");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "outpoint_spenders");
         let stored: Vec<Outpoint> = outpoints.iter().map(stored_outpoint).collect();
         let locations = DbReader::get_outpoint_spenders(self, stored)
             .await
@@ -343,7 +322,8 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         &self,
         outpoints: &[DomainOutpoint],
     ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
-        let _timer = ReadTimer::start("previous_outputs");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "previous_outputs");
         let mut outputs = Vec::with_capacity(outpoints.len());
         for outpoint in outpoints {
             outputs.push(self.previous_output(outpoint).await?);
@@ -356,7 +336,8 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         &self,
         outpoint: DomainOutpoint,
     ) -> Result<Option<StoredTxOut>, ChainStoreError> {
-        let _timer = ReadTimer::start("unspent_output");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "unspent_output");
         let Some(output) = self.previous_output(&outpoint).await? else {
             return Ok(None);
         };
@@ -377,7 +358,7 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         let Some(location) = tx_location(position) else {
             return Ok(None);
         };
-        let _timer = ReadTimer::start("transparent_outputs");
+        let _timer = zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "transparent_outputs");
         match DbReader::get_transparent(self, location)
             .await
             .map_err(chain_store_error)?
@@ -410,7 +391,8 @@ impl<T: ChainStoreSource> DbReader<T> {
 impl<T: ChainStoreSource> TxOutSetIndex for DbReader<T> {
     #[tracing::instrument(skip(self))]
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
-        let _timer = ReadTimer::start("txout_set");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "txout_set");
         let accumulator = self
             .get_tx_out_set_info_accumulator()
             .await
@@ -438,7 +420,8 @@ impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
         // Timed around the chunk rather than the block: one read transaction
         // covers the range, so a per-block figure would divide one duration by
         // a count rather than measure anything.
-        let _timer = ReadTimer::start("blocks_chunk");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "blocks_chunk");
 
         self.get_chain_block_range(start, end)
             .await
@@ -486,7 +469,8 @@ impl<T: ChainStoreSource> CompactBlockRead for DbReader<T> {
 
         // The wallet-sync hot path: a syncing wallet spends almost all of its
         // time here, so this is the read whose latency a dashboard needs.
-        let _timer = ReadTimer::start("compact_chunk");
+        let _timer =
+            zaino_status::timed!(crate::metric_names::DB_READ_SECONDS, "op" => "compact_chunk");
 
         DbReader::get_compact_block_range(self, start, end, pools)
             .await

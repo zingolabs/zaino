@@ -374,8 +374,7 @@ pub(crate) fn assemble_indexed_block(
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<IndexedBlock, StoreError> {
-    let _assembling =
-        crate::ingest::ScopedTimer::start(crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS);
+    let _assembling = zaino_status::timed!(crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS);
 
     let FetchedBlock { block, tree_roots } = fetched;
 
@@ -432,7 +431,7 @@ async fn fetch_block<S: ChainStoreSource + ?Sized>(
 ) -> Result<zaino_primitives::types::Block, StoreError> {
     let height = zaino_primitives::types::Height::try_from(height)
         .map_err(|_| inconsistent(format!("height {height} is above the protocol maximum")))?;
-    let _timer = crate::ingest::ScopedTimer::start(crate::metric_names::SYNC_BLOCK_FETCH_SECONDS);
+    let _timer = zaino_status::timed!(crate::metric_names::SYNC_BLOCK_FETCH_SECONDS);
     source
         .get_block(height)
         .await
@@ -447,8 +446,7 @@ async fn fetch_tree_roots<S: ChainStoreSource + ?Sized>(
     source: &S,
     block: &zaino_primitives::types::Block,
 ) -> Result<zaino_primitives::types::TreeRoots, StoreError> {
-    let _timer =
-        crate::ingest::ScopedTimer::start(crate::metric_names::SYNC_TREESTATE_FETCH_SECONDS);
+    let _timer = zaino_status::timed!(crate::metric_names::SYNC_TREESTATE_FETCH_SECONDS);
     source
         .get_commitment_tree_roots(block.header.hash)
         .await

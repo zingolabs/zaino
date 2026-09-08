@@ -149,7 +149,7 @@ impl DbV1 {
 
         // After the already-validated fast path: timing that common no-op call buries
         // the real re-reads under near-zero samples
-        let _timer = crate::ingest::ScopedTimer::start(crate::metric_names::DB_VALIDATION_SECONDS);
+        let _timer = zaino_status::timed!(crate::metric_names::DB_VALIDATION_SECONDS);
 
         let height_key = height
             .to_bytes()

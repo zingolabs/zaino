@@ -45,6 +45,12 @@ pub mod metric_names {
 mod metric_macro;
 pub mod probing;
 pub mod status;
+mod timer;
+
+pub use timer::Timer;
+
+#[doc(hidden)] // `timed!` reaches the facade through here, so callers need no dep
+pub use metrics;
 
 pub use probing::{Liveness, Readiness, VitalsProbe};
 pub use status::{NamedAtomicStatus, Status, StatusType};

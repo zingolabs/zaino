@@ -109,28 +109,6 @@ pub fn block_counters() -> &'static BlockCounters {
     })
 }
 
-/// - Covers every exit path, including the `?` returns a trailing `record` misses
-/// - No outcome split: failed work still read what it read
-pub(crate) struct ScopedTimer {
-    histogram: &'static str,
-    started: std::time::Instant,
-}
-
-impl ScopedTimer {
-    pub(crate) fn start(histogram: &'static str) -> Self {
-        Self {
-            histogram,
-            started: std::time::Instant::now(),
-        }
-    }
-}
-
-impl Drop for ScopedTimer {
-    fn drop(&mut self) {
-        metrics::histogram!(self.histogram).record(self.started.elapsed().as_secs_f64());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
