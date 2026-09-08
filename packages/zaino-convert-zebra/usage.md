@@ -7,14 +7,20 @@
 ```rust
 use zaino_convert_zebra::{block_from_zebra, header_from_zebra, transaction_from_zebra};
 
-let block = block_from_zebra(&zebra_block, height)?;
-let tx = transaction_from_zebra(&zebra_tx, index_in_block)?;
+let block = block_from_zebra(&zebra_block, chain_metadata)?;
+let tx = transaction_from_zebra(&zebra_tx)?;
 ```
 
 All conversions return `Result<_, ConvertError>`. They are fallible because
 `zebra-chain` types can hold values the domain types reject — a height above the
 protocol maximum, an amount outside the valid range — and that check is the
-point of the boundary, not an inconvenience at it.
+point of the boundary, not an inconvenience at it. `block_from_zebra` also
+rejects a block with no transactions, since a block always mines a coinbase.
+
+A transaction carries no block position. Whether it is the coinbase is read from
+its slot in the block — `block_from_zebra` builds the transaction list in order,
+and `Block::coinbase()` names position 0 — so `transaction_from_zebra` takes no
+index. A mempool transaction is in no block and has no position to supply.
 
 ## Why a separate crate
 

@@ -45,7 +45,7 @@ pub use aliases::{
     BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, OutputIndex,
     SubtreeIndex, TreeSize, TxIndex,
 };
-pub use block::{Block, BlockHeader, ChainMetadata};
+pub use block::{Block, BlockError, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;

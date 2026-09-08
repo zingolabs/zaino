@@ -19,6 +19,9 @@ pub enum ConvertError {
     /// A value exceeded protocol limits.
     #[error("value overflow: {0}")]
     Value(String),
+    /// The converted transactions did not form a valid block.
+    #[error("block: {0}")]
+    Block(String),
 }
 
 /// Convert a zebra block into a domain [`Block`].
@@ -31,16 +34,14 @@ pub fn block_from_zebra(
     zb: &zebra_chain::block::Block,
     chain_metadata: ChainMetadata,
 ) -> Result<Block, ConvertError> {
-    Ok(Block {
-        header: header_from_zebra(zb)?,
-        transactions: zb
-            .transactions
-            .iter()
-            .enumerate()
-            .map(|(i, tx)| transaction_from_zebra(tx, i as u32))
-            .collect::<Result<Vec<_>, _>>()?,
-        chain_metadata,
-    })
+    let header = header_from_zebra(zb)?;
+    let transactions = zb
+        .transactions
+        .iter()
+        .map(|tx| transaction_from_zebra(tx))
+        .collect::<Result<Vec<_>, _>>()?;
+    Block::try_new(header, transactions, chain_metadata)
+        .map_err(|e| ConvertError::Block(e.to_string()))
 }
 
 /// Convert just the header — skips all transaction parsing.
@@ -98,20 +99,19 @@ pub fn header_from_parts(
 
 /// Convert one zebra transaction into the domain's.
 ///
-/// `index` is the transaction's position within its block. A transaction with
-/// no block — a mempool transaction — passes `0`, matching what the light-wallet
-/// protocol serves for one.
+/// A transaction carries no position: its slot in a block, and so whether it is
+/// the coinbase, is the block's to know (see [`block_from_zebra`], which reads
+/// it from order). A mempool transaction is in no block and has no position to
+/// invent.
 ///
 /// Public because the mempool stream converts a single transaction rather than
 /// a whole block; every other caller reaches this through
 /// [`block_from_zebra`].
 pub fn transaction_from_zebra(
     tx: &zebra_chain::transaction::Transaction,
-    index: u32,
 ) -> Result<Transaction, ConvertError> {
     Ok(Transaction {
         txid: TransactionId::from(tx.hash().0),
-        index,
         transparent: transparent_from_zebra(tx)?,
         sapling: sapling_from_zebra(tx)?,
         orchard: orchard_from_zebra(tx)?,
