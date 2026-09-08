@@ -9,9 +9,11 @@ proposed
 `Zatoshis` is a validated amount: at most the money supply. It is summed in more
 than one place, and the sums do not share the same invariants.
 
-  - A sum of balances that exist at one moment cannot exceed the supply.
-  - A sum of movements — outputs paid to an address, inputs it spent — counts
-    the same coins each time they move and is not bounded by the supply at all.
+  - **The Balance Sum Maximum.** A sum of balances that exist at one moment
+    cannot exceed the supply.
+  - **The Movement Sum Maximum.** A sum of movements — outputs paid to an
+    address, inputs it spent — counts the same coins each time they move and is
+    not bounded by the supply at all.
 
 The type of each value being summed—Zatoshis—and the addition operation are
 identical in both cases; only the meaning of the total differs.
