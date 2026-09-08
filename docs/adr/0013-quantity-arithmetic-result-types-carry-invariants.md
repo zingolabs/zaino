@@ -59,12 +59,13 @@ The correction is a doctrine about primitive quantity types, illustrated here on
    `sum_balances` in the type family below, does so under a precondition and
    refuses inputs that break it.
 
-2. **The invariant belongs to the result type, chosen by provenance — not to the
-   operator or the element.** The same `Zatoshis` values summed as flow yield an
-   unbounded accumulator; summed as coexisting balances they yield a
-   supply-bounded total. The caller, who knows which the values are, picks the
-   landing type, and that choice is where the bound is declared and enforced —
-   once, in the type, not re-derived at each call site.
+2. **The invariant belongs to the result type, chosen by the reading of the
+   elements — not to the operator or the element.** The same `Zatoshis` values
+   summed as movements yield an unbounded accumulator; summed as coexisting
+   balances they yield a supply-bounded total. The caller, who knows which
+   reading the values carry, picks the landing type, and that choice is where
+   the bound is declared and enforced — once, in the type, not re-derived at
+   each call site.
 
 3. **A signed zatoshi value is its own type, bounded by ±supply.** A single
    movement is one amount; a change in a balance is a difference of two. A
