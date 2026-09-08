@@ -19,13 +19,13 @@ than one place, and the sums do not share the same invariants.
 The type of each value being summed—Zatoshis—and the addition operation are
 identical in both cases; only the meaning of the total differs.
 
-The earlier code expressed this with a single amount type, a supply cap applied
-to every sum, and a bare signed type whose constructor validated nothing. Two
-faults followed from putting the bound in the wrong place. A legitimate movement
-total past the supply was rejected as if corrupt, because the cap sat on the
-operator rather than on the result. And a signed value off the wire could be any
-integer, because the type's "a balance change" claim was made in prose while its
-only constructor enforced nothing.
+The earlier code attempted to express these conflicting invariants with a single
+amount type, a supply cap applied to every sum, and a bare signed type whose
+constructor validated nothing. Two faults followed from putting the bound in the
+wrong place. A legitimate movement total past the supply was rejected as if
+corrupt, because the cap sat on the operator rather than on the result. And a
+signed value off the wire could be any integer, because the type's "a balance
+change" claim was made in prose while its only constructor enforced nothing.
 
 The correction is a doctrine about primitive quantity types, illustrated here on
 `Zatoshis` and meant to generalise:
