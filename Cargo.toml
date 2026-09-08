@@ -3,6 +3,8 @@
 members = [
     "packages/zaino-status",
     "packages/zaino-component",
+    "packages/zaino-core",
+    "packages/zaino-service",
     "packages/zaino-consensus",
     "packages/zaino-encoding",
     "packages/zaino-primitives",
@@ -42,6 +44,8 @@ members = [
 default-members = [
     "packages/zaino-status",
     "packages/zaino-component",
+    "packages/zaino-core",
+    "packages/zaino-service",
     "packages/zaino-consensus",
     "packages/zaino-encoding",
     "packages/zaino-primitives",
