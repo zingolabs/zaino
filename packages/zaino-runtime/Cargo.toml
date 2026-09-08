@@ -12,3 +12,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+zaino-status = { path = "../zaino-status" }
