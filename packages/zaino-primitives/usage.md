@@ -77,16 +77,19 @@ ADR-0013 for the doctrine.
 
 | type | range | is |
 |---|---|---|
-| `Zatoshis` | `0 ..= supply` | an amount held — a balance, a UTXO value |
+| `Zatoshis` | `0 ..= supply` | an amount of ZEC counted in zatoshis — a balance, a UTXO value, a single movement |
 | `ZatoshisFlowSum` | `0 ..= u128::MAX` | an accumulation of movements, **not** supply-bounded |
 | `SignedZatoshis` | `-supply ..= supply` | a signed value: a movement or a difference |
 
 A sum of *movements* — every output paying an address, every input it spent —
 counts the same coins each time they move, so it is not bounded by the supply;
 that is why it is its own type and not another `Zatoshis`. A sum of *coexisting*
-balances would be supply-bounded, and is a real fourth member of this family,
-but has no consumer yet and is not built (it is named in the arithmetic
-module's docs).
+balances stays supply-bounded — coins that coexist cannot total more than
+exist — so that precondition keeps the total inside `Zatoshis` and there is no
+fourth type: that sum is the operation `Zatoshis::sum_balances`, a checked fold
+landing back in `Zatoshis`. The set of `Zatoshis` is still not closed under
+addition; the fold refuses a total past the supply rather than pretend the
+precondition held.
 
 The operations relate the types and live beside them:
 
@@ -98,19 +101,31 @@ use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
 let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
 let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
 
+// Adopt a flow total a backend delivered already summed as a u64.
+// Infallible: a u64 always fits the u128 accumulator, and machine
+// representability is the flow sum's only invariant.
+let lifetime = ZatoshisFlowSum::from_summed(received_total);
+
 // Net of a received flow minus a spent flow for one balance, as a signed
 // value. `None` if the two flows don't describe a coherent balance.
 let net: Option<SignedZatoshis> = received.net(spent);
+
+// Sum balances that coexist at one moment. Supply-capped, and under that
+// precondition the total lands back in `Zatoshis`. `None` means the total
+// passed the supply, which under the coexistence contract is overlapping or
+// double-counted input, not a large number.
+let held: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
 ```
 
-`ZatoshisFlowSum` has no other constructor: a flow sum is only ever the checked
-sum of some amounts. `SignedZatoshis` has two validated doors and no unchecked
-one — `ZatoshisFlowSum::net` for a value *derived* in the domain, and
-`SignedZatoshis::try_new` for one *parsed at a boundary* (a movement read off the
-wire or disk). `try_new` is the external-input validation step for a signed
-value, the
-same discipline the crate applies at every wire and persistence boundary,
-pushed down to the primitive.
+`ZatoshisFlowSum` has two validated doors and no unchecked one:
+`try_accumulate` for a total *derived* in the domain as the checked sum of
+some amounts, and `from_summed` for a total a source *delivers already
+summed*. `SignedZatoshis` likewise — `ZatoshisFlowSum::net` for a value
+*derived* in the domain, and `SignedZatoshis::try_new` for one *parsed at a
+boundary* (a movement read off the wire or disk). `try_new` is the
+external-input validation step for a signed value, the same discipline the
+crate applies at every wire and persistence boundary, pushed down to the
+primitive.
 
 ## Byte order
 

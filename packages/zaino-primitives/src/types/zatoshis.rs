@@ -9,7 +9,7 @@
 //! `+`. So each quantity is its own type, and each summation lands in the type
 //! whose invariant it satisfies:
 //!
-//! - [`Zatoshis`] — an amount held, in `0 ..= supply`.
+//! - [`Zatoshis`] — an amount of ZEC counted in zatoshis, in `0 ..= supply`.
 //! - [`ZatoshisFlowSum`] — an accumulation of movements, bounded only by machine
 //!   representability and deliberately not by the supply.
 //! - [`SignedZatoshis`] — a signed value (a movement or a difference), in

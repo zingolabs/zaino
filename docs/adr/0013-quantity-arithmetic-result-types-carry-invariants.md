@@ -4,37 +4,69 @@
 
 proposed
 
-## Context and decision
+## Context
 
-`Zatoshis` is a validated amount: at most the money supply. It is summed in
-more than one place, and the sums do not share an invariant. A sum of balances
-that exist at one moment cannot exceed the supply; a sum of movements — outputs
-paid to an address, inputs it spent — counts the same coins each time they move
-and is not bounded by the supply at all. The element type and the `+` sign are
-identical in both cases; only the *meaning of the total* differs.
+`Zatoshis` is a validated amount: at most the money supply. It is summed in more
+than one place, and the sums do not share the same invariants.
 
-The earlier code expressed this with a single amount type, a supply cap applied
-to every sum, and a bare signed type whose constructor validated nothing. Two
-faults followed from putting the bound in the wrong place. A legitimate movement
-total past the supply was rejected as if corrupt, because the cap sat on the
-operator rather than on the result. And a signed value off the wire could be any
-integer, because the type's "a balance change" claim was made in prose while its
-only constructor enforced nothing.
+  - **The Balance Sum Maximum.** A sum of balances that exist at one moment
+    cannot exceed the supply.
+  - **The Movement Sum Maximum.** A sum of value movements over time is a
+    flow, not a holding: one coin moving many times is counted at each move, so
+    the total can exceed the supply and is bounded only by the `u128` that
+    accumulates it.
+
+The type of each value being summed—Zatoshis—and the addition operation are
+identical in both cases; only the meaning of the total differs.
+
+The earlier code attempted to express these conflicting invariants with a single
+amount type, a supply cap applied to every sum, and a bare signed type whose
+constructor validated nothing. Two faults followed:
+
+  1. A legitimate movement total past the supply was rejected as if corrupt,
+     because the cap sat on the operator rather than on the result.
+
+  2. A signed value could be any integer, because the type's "a balance
+     change" claim was made in prose while its only constructor enforced
+     nothing.
+
+## Doctrine
+
+### Terminology
+
+  - **Zatoshi.** The unit of one hundred-millionth of a ZEC, in which every
+    amount below is counted.
+  - **`Zatoshis`.** The set of integers from zero to the money supply
+    inclusive, each an amount of ZEC counted in zatoshis; the Rust type of the
+    same name represents this set.
+  - **Element.** One member of `Zatoshis`, such as the value of a single
+    transaction output or input, or a balance.
+  - **Balance.** An element read as the amount held by one owner at one
+    moment.
+  - **Movement.** An element read as the amount one transaction transfers into
+    or out of an ownership.
+  - **Sum.** The result of adding elements, whose type is chosen by which
+    reading, balance or movement, the elements carry.
 
 The correction is a doctrine about primitive quantity types, illustrated here on
 `Zatoshis` and meant to generalise:
 
-1. **A quantity is not always closed under its own operation.** Two supply-sized
-   amounts can sum past the supply, so no honest operation returns the same
-   type; the result of summing `Zatoshis` is a *different* type. We do not give
-   `Zatoshis` an addition that pretends otherwise.
+1. **The set of `Zatoshis` is not closed under addition.** Two supply-sized
+   amounts sum past the supply, so the sum of two `Zatoshis` is not always a
+   `Zatoshis`. The result of summing `Zatoshis` as movements is therefore a
+   different type. We do not define an unconditional addition on `Zatoshis`
+   that pretends otherwise; the one fold that lands back in `Zatoshis`,
+   `sum_balances` in the type family below, does so under a precondition and
+   refuses inputs that break it.
 
-2. **The invariant belongs to the result type, chosen by provenance — not to the
-   operator or the element.** The same `Zatoshis` values summed as flow yield an
-   unbounded accumulator; summed as coexisting balances they yield a
-   supply-bounded total. The caller, who knows which the values are, picks the
-   landing type, and that choice is where the bound is declared and enforced —
-   once, in the type, not re-derived at each call site.
+2. **The invariant belongs to the result type, chosen by the reading of the
+   elements — not to the operator or the element.** The same `Zatoshis` values
+   summed as movements land in `ZatoshisFlowSum`, bounded only by the machine;
+   summed as coexisting balances they land back in `Zatoshis` through
+   `sum_balances`, bounded by the supply. The caller, who knows which reading
+   the values carry, picks the landing type, and that choice is where the bound
+   is declared and enforced — once, in the type, not re-derived at each call
+   site.
 
 3. **A signed zatoshi value is its own type, bounded by ±supply.** A single
    movement is one amount; a change in a balance is a difference of two. A
@@ -77,17 +109,24 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 
 `zaino-primitives::types::zatoshis`:
 
-- `Zatoshis` — an amount held. `0 ..= supply`.
+- `Zatoshis` — an amount of ZEC counted in zatoshis. `0 ..= supply`.
 - `ZatoshisFlowSum` — an accumulation of movements. Bounded only by machine
   representability; deliberately not by the supply.
 - `SignedZatoshis` — a signed value: a directional movement, or the difference
   of two totals. `-supply ..= supply`.
 
 `ZatoshisFlowSum` earns a distinct type by carrying a new invariant.
-`SignedZatoshis` earns one by being a different quantity. A fourth member — a
-supply-bounded sum of coexisting balances — is a real part of the algebra but
-has no consumer today; it is named here and left unbuilt until one exists,
-rather than added speculatively.
+`SignedZatoshis` earns one by being a different quantity. A sum of coexisting
+balances earns neither: balances that coexist at one moment cannot total more
+than the coins that exist, so under that precondition the total is itself in
+`[0, supply]`. The set of `Zatoshis` is still not closed under addition; what
+holds is narrower, that the precondition keeps this particular result inside
+the set. A distinct type is warranted only when a result escapes the element's
+invariant, and this one does not, so the algebra gains its second accumulate
+as an *operation* — `Zatoshis::sum_balances`, a supply-capped checked fold that
+lands back in `Zatoshis`. A total past the supply is not a large number but
+evidence that the operands overlap or double-count, so the fold refuses it
+rather than pretend the precondition held.
 
 ## Considered options
 
