@@ -11,9 +11,10 @@ than one place, and the sums do not share the same invariants.
 
   - **The Balance Sum Maximum.** A sum of balances that exist at one moment
     cannot exceed the supply.
-  - **The Movement Sum Maximum.** A sum of movements — outputs paid to an
-    address, inputs it spent — counts the same coins each time they move and is
-    not bounded by the supply at all.
+  - **The Movement Sum Maximum.** A sum of value movements over time is a
+    flow, not a holding: one coin moving many times is counted at each move, so
+    the total can exceed the supply and is bounded only by the `u128` that
+    accumulates it.
 
 The type of each value being summed—Zatoshis—and the addition operation are
 identical in both cases; only the meaning of the total differs.
