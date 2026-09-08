@@ -6081,6 +6081,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-runtime"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-component",
+]
+
+[[package]]
 name = "zaino-serve"
 version = "0.6.0"
 dependencies = [
