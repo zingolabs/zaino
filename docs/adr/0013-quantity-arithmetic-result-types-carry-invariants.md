@@ -107,7 +107,7 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 
 `zaino-primitives::types::zatoshis`:
 
-- `Zatoshis` — an amount held. `0 ..= supply`.
+- `Zatoshis` — an amount of ZEC counted in zatoshis. `0 ..= supply`.
 - `ZatoshisFlowSum` — an accumulation of movements. Bounded only by machine
   representability; deliberately not by the supply.
 - `SignedZatoshis` — a signed value: a directional movement, or the difference

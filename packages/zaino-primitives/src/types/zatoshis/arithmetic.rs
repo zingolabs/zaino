@@ -11,7 +11,7 @@
 //! and `S` for the money supply. The quantities occupy nested ranges:
 //!
 //! ```text
-//! A ∈ [0, S]          an amount held
+//! A ∈ [0, S]          an amount of ZEC counted in zatoshis
 //! F ∈ [0, ∞)          a sum of movements  (machine-bounded, not supply-bounded)
 //! D ∈ [−S, S]         a signed value (a movement or a difference)
 //! ```

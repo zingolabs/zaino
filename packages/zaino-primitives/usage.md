@@ -71,7 +71,7 @@ ADR-0013 for the doctrine.
 
 | type | range | is |
 |---|---|---|
-| `Zatoshis` | `0 ..= supply` | an amount held — a balance, a UTXO value |
+| `Zatoshis` | `0 ..= supply` | an amount of ZEC counted in zatoshis — a balance, a UTXO value, a single movement |
 | `ZatoshisFlowSum` | `0 ..= u128::MAX` | an accumulation of movements, **not** supply-bounded |
 | `SignedZatoshis` | `-supply ..= supply` | a signed value: a movement or a difference |
 
