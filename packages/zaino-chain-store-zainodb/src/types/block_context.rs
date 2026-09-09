@@ -46,9 +46,9 @@ impl BlockContext {
         &self.parent_hash
     }
 
-    /// Returns the cumulative chainwork up to this block.
-    pub fn chainwork(&self) -> &AbsoluteChainWork {
-        &self.chainwork
+    /// Returns the total chain work up to this block.
+    pub fn chainwork(&self) -> AbsoluteChainWork {
+        self.chainwork
     }
 
     /// Returns the height of this block.

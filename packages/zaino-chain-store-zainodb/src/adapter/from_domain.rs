@@ -68,9 +68,6 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
     let context = crate::types::BlockContext::new(
         hash,
         stored_hash(header.prev_hash),
-        // The primitives type already carries the non-zero and width
-        // invariants this bridge used to re-derive by hand, so a stored
-        // block's chainwork passes through unchanged.
         block.chainwork,
         Height(u32::from(header.height)),
     );

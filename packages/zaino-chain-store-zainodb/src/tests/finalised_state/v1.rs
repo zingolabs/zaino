@@ -214,7 +214,7 @@ async fn sync_to_height_across_many_write_batches() {
         // folded in height order, then assembled concurrently. A fold that paired a block with the
         // wrong parent still yields a readable, gap-free, strictly-increasing range — so assert the
         // exact increment against this block's own stored difficulty, which an off-by-one breaks.
-        let chainwork = *header.context.chainwork();
+        let chainwork = header.context.chainwork();
         let block_work = header.data().bits.to_work();
         let expected = match previous_chainwork {
             Some(previous) => previous

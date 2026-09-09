@@ -1070,8 +1070,8 @@ impl IndexedBlock {
         self.context.height()
     }
 
-    /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &AbsoluteChainWork {
+    /// Returns the total chain work.
+    pub fn chainwork(&self) -> AbsoluteChainWork {
         self.context.chainwork()
     }
 
