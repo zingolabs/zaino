@@ -6,8 +6,8 @@
 /// every input spending its prior outputs — as distinct from a set of balances
 /// that coexist. The same coins can move through an address many times, so this
 /// total counts them each time and is **not** bounded by the money supply. It is
-/// bounded only by machine representability, which is why it is a `u128` and not
-/// a [`Zatoshis`](super::Zatoshis).
+/// bounded only by `u128::MAX`, the ceiling of the `u128` that backs it, which
+/// is why it is not a [`Zatoshis`](super::Zatoshis).
 ///
 /// Two validated provenances lead in, and no unchecked one: a total *derived*
 /// in the domain arrives through
@@ -30,8 +30,8 @@ impl ZatoshisFlowSum {
     ///
     /// This is the boundary door: a backend reports a lifetime flow total —
     /// such as an address's gross receipts — as a single `u64`, summed on its
-    /// side. The flow sum's only invariant is machine representability, and a
-    /// `u64` always fits the `u128` accumulator, so there is genuinely nothing
+    /// side. The flow sum's only bound is `u128::MAX`, and a `u64` always fits
+    /// the `u128` accumulator, so there is genuinely nothing
     /// to check and the door is honestly infallible. A total *derived* in the
     /// domain reaches the type through
     /// [`try_accumulate`](Self::try_accumulate) instead.
@@ -64,11 +64,11 @@ mod tests {
     use super::*;
 
     /// The difference guard fails loud, not silent, when a flow sum is too large
-    /// to be a signed integer at all.
+    /// to fit an `i128` at all.
     ///
-    /// This is the machine-representability check beneath the supply bound: a
-    /// difference is refused for being unrepresentable before it is ever asked
-    /// whether it fits the supply. It is unreachable with real amounts — a flow
+    /// This is the `i128::MAX` check beneath the supply bound: a difference
+    /// past `i128::MAX` is refused before it is ever asked whether it fits the
+    /// supply. It is unreachable with real amounts — a flow
     /// sum cannot approach `u128::MAX` — so it is constructed here through the
     /// module-internal raw door purely to prove the guard refuses rather than
     /// wraps to a plausible figure.

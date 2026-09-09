@@ -10,8 +10,8 @@
 //! whose invariant it satisfies:
 //!
 //! - [`Zatoshis`] — an amount of ZEC counted in zatoshis, in `0 ..= supply`.
-//! - [`ZatoshisFlowSum`] — an accumulation of movements, bounded only by machine
-//!   representability and deliberately not by the supply.
+//! - [`ZatoshisFlowSum`] — an accumulation of movements, bounded only by
+//!   `u128::MAX` and deliberately not by the supply.
 //! - [`SignedZatoshis`] — a signed value (a movement or a difference), in
 //!   `-supply ..= supply`.
 //!
