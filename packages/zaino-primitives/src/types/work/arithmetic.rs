@@ -29,7 +29,7 @@
 //! is the concatenation of two chains. A sum of cumulative works is not a
 //! quantity in this domain, so no operation returns one. See ADR-0013.
 
-use super::{BlockWork, ChainWork};
+use super::{SingleBlockWork, AbsoluteChainWork};
 
 /// Error when accumulating a block's work overflows the recorded width.
 ///
@@ -51,14 +51,14 @@ pub struct WorkOverflow;
 #[error("rolling back a block's work would take cumulative work to or below zero")]
 pub struct WorkUnderflow;
 
-impl ChainWork {
+impl AbsoluteChainWork {
     /// Seed the fold at genesis.
     ///
     /// The `genesis` relation: `W → C`. A chain of one block has cumulative
     /// work equal to that block's own work — counted once, not accumulated
     /// onto anything. This is the only way a cumulative value comes into
     /// being other than by extending or unwinding another.
-    pub fn genesis(work: BlockWork) -> Self {
+    pub fn genesis(work: SingleBlockWork) -> Self {
         Self::from_raw(work.into_raw())
     }
 
@@ -67,7 +67,7 @@ impl ChainWork {
     /// The `accumulate` relation: `C × W → C`. A checked add: overflow is
     /// unreachable on real chains, and refused rather than wrapped so a
     /// corrupt input cannot masquerade as a light chain.
-    pub fn accumulate(self, work: BlockWork) -> Result<Self, WorkOverflow> {
+    pub fn accumulate(self, work: SingleBlockWork) -> Result<Self, WorkOverflow> {
         self.into_raw()
             .checked_add(work.into_raw().get())
             .map(Self::from_raw)
@@ -80,7 +80,7 @@ impl ChainWork {
     /// result would reach or cross zero: the chain still contains genesis, so
     /// cumulative work stays strictly positive, and a rollback that violates
     /// that is unwinding work this value never accumulated.
-    pub fn rollback(self, work: BlockWork) -> Result<Self, WorkUnderflow> {
+    pub fn rollback(self, work: SingleBlockWork) -> Result<Self, WorkUnderflow> {
         self.into_raw()
             .get()
             .checked_sub(work.into_raw().get())
@@ -96,15 +96,15 @@ mod tests {
 
     use super::*;
 
-    fn block(value: u128) -> BlockWork {
-        BlockWork::try_new(value).expect("test value must be nonzero")
+    fn block(value: u128) -> SingleBlockWork {
+        SingleBlockWork::try_new(value).expect("test value must be nonzero")
     }
 
     /// The genesis seed is the block's own work, counted exactly once.
     #[test]
     fn genesis_seed_is_the_own_block_work() {
         assert_eq!(
-            NonZeroU128::from(ChainWork::genesis(block(17))).get(),
+            NonZeroU128::from(AbsoluteChainWork::genesis(block(17))).get(),
             17u128
         );
     }
@@ -112,7 +112,7 @@ mod tests {
     /// `rollback` inverts `accumulate`.
     #[test]
     fn rollback_inverts_accumulate() {
-        let base = ChainWork::genesis(block(1000));
+        let base = AbsoluteChainWork::genesis(block(1000));
         let delta = block(300);
         let extended = base.accumulate(delta).expect("no overflow");
         assert_eq!(extended.rollback(delta), Ok(base));
@@ -122,14 +122,14 @@ mod tests {
     /// meaningful ordering.
     #[test]
     fn accumulation_orders_chains_by_weight() {
-        let light = ChainWork::genesis(block(100));
+        let light = AbsoluteChainWork::genesis(block(100));
         let heavy = light.accumulate(block(1)).expect("no overflow");
         assert!(heavy > light);
     }
 
     #[test]
     fn accumulate_overflow_is_refused() {
-        let max = ChainWork::try_new(u128::MAX).expect("nonzero");
+        let max = AbsoluteChainWork::try_new(u128::MAX).expect("nonzero");
         assert_eq!(max.accumulate(block(1)), Err(WorkOverflow));
     }
 
@@ -137,13 +137,13 @@ mod tests {
     /// genesis.
     #[test]
     fn rollback_to_zero_is_refused() {
-        let genesis = ChainWork::genesis(block(42));
+        let genesis = AbsoluteChainWork::genesis(block(42));
         assert_eq!(genesis.rollback(block(42)), Err(WorkUnderflow));
     }
 
     #[test]
     fn rollback_past_zero_is_refused() {
-        let small = ChainWork::genesis(block(1));
+        let small = AbsoluteChainWork::genesis(block(1));
         assert_eq!(small.rollback(block(100)), Err(WorkUnderflow));
     }
 }

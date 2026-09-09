@@ -10,7 +10,7 @@ use core::num::NonZeroU128;
 ///
 /// This is *not* a chain-selection candidate — comparing single blocks by work
 /// decides nothing, which is why the type carries no ordering. Its role is to
-/// be folded into a [`ChainWork`](super::ChainWork) through the relations in
+/// be folded into a [`AbsoluteChainWork`](super::AbsoluteChainWork) through the relations in
 /// the `arithmetic` module: seeding at genesis, accumulating forward, rolling
 /// back on reorg.
 ///
@@ -19,7 +19,7 @@ use core::num::NonZeroU128;
 /// integer through [`try_new`](Self::try_new) and only enforces the
 /// strictly-positive bound.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct BlockWork(NonZeroU128);
+pub struct SingleBlockWork(NonZeroU128);
 
 /// Error when a work value is zero.
 ///
@@ -32,7 +32,7 @@ pub struct BlockWork(NonZeroU128);
 #[error("work is strictly positive; zero is not a work value")]
 pub struct ZeroWork;
 
-impl BlockWork {
+impl SingleBlockWork {
     /// Create a block work value, rejecting zero.
     ///
     /// The boundary door for an already-computed work integer — typically the
@@ -49,21 +49,21 @@ impl BlockWork {
     }
 }
 
-impl From<BlockWork> for NonZeroU128 {
-    fn from(work: BlockWork) -> Self {
+impl From<SingleBlockWork> for NonZeroU128 {
+    fn from(work: SingleBlockWork) -> Self {
         work.0
     }
 }
 
-impl fmt::Debug for BlockWork {
+impl fmt::Debug for SingleBlockWork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("BlockWork")
+        f.debug_tuple("SingleBlockWork")
             .field(&format_args!("{:#x}", self.0))
             .finish()
     }
 }
 
-impl fmt::Display for BlockWork {
+impl fmt::Display for SingleBlockWork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:#x}", self.0)
     }
@@ -75,12 +75,12 @@ mod tests {
 
     #[test]
     fn zero_is_rejected() {
-        assert_eq!(BlockWork::try_new(0), Err(ZeroWork));
+        assert_eq!(SingleBlockWork::try_new(0), Err(ZeroWork));
     }
 
     #[test]
     fn nonzero_round_trips() {
-        let work = BlockWork::try_new(0x1f1f).expect("nonzero");
+        let work = SingleBlockWork::try_new(0x1f1f).expect("nonzero");
         assert_eq!(NonZeroU128::from(work).get(), 0x1f1f);
     }
 }

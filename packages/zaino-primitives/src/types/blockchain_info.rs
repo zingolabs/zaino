@@ -1,7 +1,7 @@
 //! Validator chain state, including the network upgrade schedule Zaino adopts.
 
 use super::{
-    BlockHash, ChainWork, ConsensusBranchIds, Difficulty, Height, NetworkUpgradeInfo,
+    BlockHash, AbsoluteChainWork, ConsensusBranchIds, Difficulty, Height, NetworkUpgradeInfo,
     SignedZatoshis, Zatoshis,
 };
 
@@ -50,8 +50,8 @@ pub struct BlockchainInfo {
     ///
     /// Full 256-bit width where it is reported. The wire form is a 64-bit
     /// integer upstream despite documenting itself as hex-encoded, which would
-    /// truncate every mainnet value; [`ChainWork`] avoids that.
-    pub chain_work: Option<ChainWork>,
+    /// truncate every mainnet value; [`AbsoluteChainWork`] avoids that.
+    pub chain_work: Option<AbsoluteChainWork>,
 
     /// Whether the validator has pruned block data.
     pub pruned: bool,

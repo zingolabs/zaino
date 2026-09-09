@@ -54,7 +54,7 @@ use crate::types::db::legacy::AddrEventBytes;
 use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::types::EquihashSolution;
 use crate::types::{
-    AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, ChainWork,
+    AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, AbsoluteChainWork,
     CompactDifficulty, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, Height,
     OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, ScriptType,
     ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TxInCompact,
@@ -183,7 +183,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        ChainWork::try_new(0x0dec_0de0).expect("nonzero"),
+        AbsoluteChainWork::try_new(0x0dec_0de0).expect("nonzero"),
         height(),
     )
 }
@@ -339,7 +339,7 @@ fn block_goldens() {
     );
     // The composite that reaches disk as the `headers` row: an outer V2 tag,
     // then `PersistentBlockContext` V2 (itself two `BlockHash`es, a
-    // big-endian `ChainWork` and a big-endian `Height`), then `BlockData` V1.
+    // big-endian `AbsoluteChainWork` and a big-endian `Height`), then `BlockData` V1.
     // This is also what pins the three module-private `Persistent*` types.
     assert_golden(
         "BlockHeaderData",

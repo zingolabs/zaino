@@ -35,7 +35,7 @@ use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
-use crate::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{BlockContext, AbsoluteChainWork, CompactDifficulty};
 use zaino_encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
@@ -1071,12 +1071,12 @@ impl IndexedBlock {
     }
 
     /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &ChainWork {
+    pub fn chainwork(&self) -> &AbsoluteChainWork {
         self.context.chainwork()
     }
 
     /// Returns the single-block proof-of-work contribution.
-    pub fn work(&self) -> crate::types::BlockWork {
+    pub fn work(&self) -> crate::types::SingleBlockWork {
         self.data.bits.to_work()
     }
 

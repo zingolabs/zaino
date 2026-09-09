@@ -8,7 +8,7 @@
 //! - BlockHeaderData
 //! - IndexedBlock
 //! - EquihashSolution
-//! - ChainWork
+//! - AbsoluteChainWork
 //!
 //! The business-layer container [`BlockContext`] itself is **not** a DB
 //! type — it has no serde impl. It lives in `types/block_context.rs`.
@@ -17,16 +17,16 @@
 
 use corez::io::{self, Read, Write};
 
-use crate::types::{BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height};
+use crate::types::{BlockContext, BlockHash, BlockIndex, AbsoluteChainWork, CompactDifficulty, Height};
 use zaino_encoding::{
     read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option, write_u32_le,
     FixedEncodedLen, ZainoVersionedSerde,
 };
 
-/// Database-adjacent persistence shape for [`ChainWork`].
+/// Database-adjacent persistence shape for [`AbsoluteChainWork`].
 ///
 /// On disk the value is a 32-byte **big-endian** unsigned integer — the format
-/// established by the original `ChainWork([u8; 32])`, which serialized through
+/// established by the original `AbsoluteChainWork([u8; 32])`, which serialized through
 /// `U256::to_big_endian`/`from_big_endian`. The byte order must match that
 /// format exactly to stay compatible with existing v1 databases.
 ///
@@ -44,12 +44,12 @@ use zaino_encoding::{
 pub(super) struct PersistentChainWork([u8; 32]);
 
 impl PersistentChainWork {
-    pub(super) fn from_business(cw: &ChainWork) -> Self {
+    pub(super) fn from_business(cw: &AbsoluteChainWork) -> Self {
         Self(cw.to_be_bytes())
     }
 
-    pub(super) fn into_business(self) -> io::Result<ChainWork> {
-        ChainWork::try_from_reported(self.0)
+    pub(super) fn into_business(self) -> io::Result<AbsoluteChainWork> {
+        AbsoluteChainWork::try_from_reported(self.0)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
     }
@@ -252,7 +252,7 @@ mod tests {
     use super::{BlockContext, PersistentBlockContext, PersistentChainWork};
     use crate::types::fixtures::{canonical_blockheaderdata, expected_v2_bytes};
     use crate::types::BlockHeaderData;
-    use crate::types::{BlockHash, BlockIndex, ChainWork, Height};
+    use crate::types::{BlockHash, BlockIndex, AbsoluteChainWork, Height};
     use zaino_encoding::ZainoVersionedSerde as _;
 
     /// `BlockContext → PersistentBlockContext → BlockContext` is identity.
@@ -265,7 +265,7 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            ChainWork::try_new(0x0123_4567).expect("nonzero"),
+            AbsoluteChainWork::try_new(0x0123_4567).expect("nonzero"),
             Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);
@@ -275,7 +275,7 @@ mod tests {
 
     /// Regression for the byte-order bug that broke `load_db_backend_from_file`
     /// and every existing v1 DB: the on-disk chainwork format is 32-byte
-    /// **big-endian** (the original `ChainWork([u8; 32])` via
+    /// **big-endian** (the original `AbsoluteChainWork([u8; 32])` via
     /// `U256::to_big_endian`). Decoding it little-endian pushes a small value's
     /// bytes into the high half and spuriously rejects it as ">u128".
     ///
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(NonZeroU128::from(cw).get(), 17);
     }
 
-    /// Verbatim recovery of the pre-#1313 on-disk `ChainWork` encoder — the
+    /// Verbatim recovery of the pre-#1313 on-disk `AbsoluteChainWork` encoder — the
     /// authority for the v1 **big-endian** byte order. Extracted with
     /// `git show 5e4dae4a^:packages/zaino-state/src/chain_index/types/db/legacy.rs`
     /// (5e4dae4a is the #1313 commit that deleted it), kept so the current
@@ -303,26 +303,26 @@ mod tests {
         /// stored as a **big-endian** 256-bit unsigned integer.
         //
         // DOCUMENTATION BUG — the likely root of #1313: this struct doc correctly
-        // says *big-endian*, but the original's `impl FixedEncodedLen for ChainWork`
+        // says *big-endian*, but the original's `impl FixedEncodedLen for AbsoluteChainWork`
         // was annotated `/// 32 bytes, LE`, and the serializer it uses is named
         // `write_fixed_le`. That "LE" label over big-endian bytes is what plausibly
         // led #1313 to re-encode the field little-endian.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub(super) struct ChainWork([u8; 32]);
+        pub(super) struct AbsoluteChainWork([u8; 32]);
 
-        impl ChainWork {
-            /// Returns ChainWork as a U256.
+        impl AbsoluteChainWork {
+            /// Returns AbsoluteChainWork as a U256.
             pub(super) fn to_u256(self) -> primitive_types::U256 {
                 primitive_types::U256::from_big_endian(&self.0)
             }
 
-            /// Builds a ChainWork from a U256.
+            /// Builds a AbsoluteChainWork from a U256.
             pub(super) fn from_u256(value: primitive_types::U256) -> Self {
                 let buf: [u8; 32] = value.to_big_endian();
-                ChainWork(buf)
+                AbsoluteChainWork(buf)
             }
 
-            /// Returns ChainWork bytes.
+            /// Returns AbsoluteChainWork bytes.
             pub(super) fn as_bytes(&self) -> &[u8; 32] {
                 &self.0
             }
@@ -334,9 +334,9 @@ mod tests {
     /// bytes, and the current decoder reads those original bytes back to the
     /// same value.
     fn assert_encoders_agree(value: u128) {
-        let cw = ChainWork::try_new(value).expect("nonzero");
+        let cw = AbsoluteChainWork::try_new(value).expect("nonzero");
         let original =
-            legacy_chainwork_reference::ChainWork::from_u256(primitive_types::U256::from(value));
+            legacy_chainwork_reference::AbsoluteChainWork::from_u256(primitive_types::U256::from(value));
         let original_bytes = *original.as_bytes();
 
         // Encode: the current encoder reproduces the original's big-endian bytes.
@@ -359,7 +359,7 @@ mod tests {
     }
 
     /// Cross-encoder equivalence across the whole domain where the two encoders
-    /// are *intended* to match — every nonzero value the `u128` `ChainWork` can
+    /// are *intended* to match — every nonzero value the `u128` `AbsoluteChainWork` can
     /// hold. This is the check #1313 lacked: red against its little-endian
     /// encoder, green only when the byte order matches the established
     /// big-endian format.

@@ -11,14 +11,14 @@ use super::ZeroWork;
 /// The ordering is the point. Chain selection compares cumulative work —
 /// the heaviest chain wins — so this type derives [`Ord`], and that comparison
 /// is the only operation cumulative values share: there is deliberately no
-/// `ChainWork + ChainWork`, because no chain is the concatenation of two
+/// `AbsoluteChainWork + AbsoluteChainWork`, because no chain is the concatenation of two
 /// chains. Growing or shrinking a cumulative value takes a
-/// [`BlockWork`](super::BlockWork), through the relations in the `arithmetic`
+/// [`SingleBlockWork`](super::SingleBlockWork), through the relations in the `arithmetic`
 /// module.
 ///
 /// Strictly positive: every chain contains at least genesis, whose cumulative
 /// work is its own block work. Absence — a validator that does not track
-/// cumulative work, a block with no parent — is `Option<ChainWork>`, never a
+/// cumulative work, a block with no parent — is `Option<AbsoluteChainWork>`, never a
 /// zero sentinel.
 ///
 /// The RPC surface reports cumulative work as a 256-bit big-endian integer;
@@ -27,7 +27,7 @@ use super::ZeroWork;
 /// loud there instead of being truncated into a lower — and wrongly ordered —
 /// cumulative work downstream.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ChainWork(NonZeroU128);
+pub struct AbsoluteChainWork(NonZeroU128);
 
 /// Error when reported chainwork does not fit the recorded 128 bits.
 ///
@@ -42,7 +42,7 @@ pub struct ChainWorkOverWidth {
     pub high: u128,
 }
 
-impl ChainWork {
+impl AbsoluteChainWork {
     /// Create a cumulative work value, rejecting zero.
     ///
     /// The door for an already-narrowed integer — a value known to be
@@ -109,21 +109,21 @@ fn split(bytes: [u8; 32]) -> (u128, u128) {
     (u128::from_be_bytes(high), u128::from_be_bytes(low))
 }
 
-impl From<ChainWork> for NonZeroU128 {
-    fn from(work: ChainWork) -> Self {
+impl From<AbsoluteChainWork> for NonZeroU128 {
+    fn from(work: AbsoluteChainWork) -> Self {
         work.0
     }
 }
 
-impl fmt::Debug for ChainWork {
+impl fmt::Debug for AbsoluteChainWork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("ChainWork")
+        f.debug_tuple("AbsoluteChainWork")
             .field(&format_args!("{:#x}", self.0))
             .finish()
     }
 }
 
-impl fmt::Display for ChainWork {
+impl fmt::Display for AbsoluteChainWork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:#x}", self.0)
     }
@@ -135,13 +135,13 @@ mod tests {
 
     #[test]
     fn zero_is_rejected_at_the_narrowed_door() {
-        assert_eq!(ChainWork::try_new(0), Err(ZeroWork));
+        assert_eq!(AbsoluteChainWork::try_new(0), Err(ZeroWork));
     }
 
     /// All-zero off the wire is "not reported", not a smallest chain.
     #[test]
     fn reported_all_zero_is_absence() {
-        assert_eq!(ChainWork::try_from_reported([0u8; 32]), Ok(None));
+        assert_eq!(AbsoluteChainWork::try_from_reported([0u8; 32]), Ok(None));
     }
 
     /// A non-zero high half is refused, not truncated: a truncated value
@@ -151,7 +151,7 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[0] = 1;
         assert_eq!(
-            ChainWork::try_from_reported(bytes),
+            AbsoluteChainWork::try_from_reported(bytes),
             Err(ChainWorkOverWidth { high: 1 << 120 })
         );
     }
@@ -161,17 +161,17 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[16..].copy_from_slice(&0x00de_ad00_beefu128.to_be_bytes());
 
-        let work = ChainWork::try_from_reported(bytes)
+        let work = AbsoluteChainWork::try_from_reported(bytes)
             .expect("within width")
             .expect("non-zero");
         assert_eq!(work.to_be_bytes(), bytes);
-        assert_eq!(work, ChainWork::try_new(0x00de_ad00_beef).expect("nonzero"));
+        assert_eq!(work, AbsoluteChainWork::try_new(0x00de_ad00_beef).expect("nonzero"));
     }
 
     #[test]
     fn ord_selects_the_heavier_chain() {
-        let lighter = ChainWork::try_new(100).expect("nonzero");
-        let heavier = ChainWork::try_new(200).expect("nonzero");
+        let lighter = AbsoluteChainWork::try_new(100).expect("nonzero");
+        let heavier = AbsoluteChainWork::try_new(200).expect("nonzero");
         assert!(heavier > lighter);
     }
 }

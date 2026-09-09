@@ -13,4 +13,4 @@ pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 // The work family is the vocabulary primitive: this store folds and persists
 // the same quantity every other layer compares, so there is nothing
 // store-specific to add to it.
-pub use zaino_primitives::types::{BlockWork, ChainWork};
+pub use zaino_primitives::types::{SingleBlockWork, AbsoluteChainWork};

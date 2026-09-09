@@ -1,7 +1,7 @@
 //! `getblockheader` — block header plus cumulative chain state.
 
 use crate::types::{
-    BlockCommitments, BlockHash, BlockTime, ChainWork, CompactDifficulty, Confirmations,
+    BlockCommitments, BlockHash, BlockTime, AbsoluteChainWork, CompactDifficulty, Confirmations,
     Difficulty, EquihashNonce, Height, MerkleRoot, TreeRoot,
 };
 
@@ -73,7 +73,7 @@ pub struct BlockHeaderVerbose {
     /// because a caller that has it can order competing branches without
     /// recomputing work from headers; callers must handle its absence rather
     /// than assume it.
-    pub chainwork: Option<ChainWork>,
+    pub chainwork: Option<AbsoluteChainWork>,
 
     /// Hash of the previous block.
     ///

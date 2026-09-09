@@ -59,7 +59,7 @@ use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
-    BlockContext, BlockData, BlockHash, BlockWork, ChainWork, CompactDifficulty,
+    BlockContext, BlockData, BlockHash, SingleBlockWork, AbsoluteChainWork, CompactDifficulty,
     CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTxData,
     EquihashSolution, Height, IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType,
     TransactionHash, TransparentCompactTx, TxInCompact, TxOutCompact,
@@ -136,7 +136,7 @@ pub enum BlockConversionError {
 pub fn block_work(
     header_bits: zaino_primitives::types::CompactDifficulty,
     hash: BlockHash,
-) -> Result<BlockWork, BlockConversionError> {
+) -> Result<SingleBlockWork, BlockConversionError> {
     Ok(difficulty(header_bits, hash)?.to_work())
 }
 
@@ -151,8 +151,8 @@ pub fn block_work(
 pub fn chainwork_from_parent(
     header_bits: zaino_primitives::types::CompactDifficulty,
     hash: BlockHash,
-    parent_chainwork: Option<ChainWork>,
-) -> Result<ChainWork, BlockConversionError> {
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<AbsoluteChainWork, BlockConversionError> {
     let block_work = block_work(header_bits, hash)?;
     match parent_chainwork {
         Some(parent) => {
@@ -163,7 +163,7 @@ pub fn chainwork_from_parent(
                     reason: error.to_string(),
                 })
         }
-        None => Ok(ChainWork::genesis(block_work)),
+        None => Ok(AbsoluteChainWork::genesis(block_work)),
     }
 }
 
@@ -179,7 +179,7 @@ pub fn chainwork_from_parent(
 pub fn indexed_block(
     block: &Block,
     tree_roots: &TreeRoots,
-    chainwork: ChainWork,
+    chainwork: AbsoluteChainWork,
 ) -> Result<IndexedBlock, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 

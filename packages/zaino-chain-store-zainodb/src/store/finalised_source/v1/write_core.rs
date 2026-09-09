@@ -85,7 +85,7 @@ struct BatchBuild {
 struct BatchCursor {
     /// Height of the next block to build.
     next: u32,
-    parent_chainwork: Option<crate::types::ChainWork>,
+    parent_chainwork: Option<crate::types::AbsoluteChainWork>,
     last_progress_log: std::time::Instant,
 }
 
@@ -153,7 +153,7 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
                 Some(parent) => parent
                     .accumulate(block_work)
                     .map_err(|e| StoreError::Custom(format!("chainwork overflow: {e}")))?,
-                None => crate::types::ChainWork::genesis(block_work),
+                None => crate::types::AbsoluteChainWork::genesis(block_work),
             });
             prepared.push((height_int, parts, parent_chainwork));
         }
@@ -435,7 +435,7 @@ impl DbWrite for DbV1 {
             not(feature = "transparent_address_history_experimental"),
             allow(unused_mut)
         )]
-        let (start_height, mut parent_chainwork): (u32, Option<crate::types::ChainWork>) =
+        let (start_height, mut parent_chainwork): (u32, Option<crate::types::AbsoluteChainWork>) =
             match self.tip_height().await? {
                 None => (GENESIS_HEIGHT.0, None),
                 Some(tip) => {
