@@ -7,7 +7,8 @@
 //!
 //! # The algebra
 //!
-//! Write `A` for a held amount, `F` for a flow sum, `D` for a signed value,
+//! Write `A` for an amount of ZEC counted in zatoshis, `F` for a flow sum,
+//! `D` for a signed value,
 //! and `S` for the money supply. The quantities occupy nested ranges:
 //!
 //! ```text
@@ -192,7 +193,7 @@ mod tests {
         assert_eq!(ZatoshisFlowSum::ZERO.net(two_supplies), None);
     }
 
-    /// `accumulate_balances` of nothing is zero held.
+    /// `accumulate_balances` of nothing is a zero balance.
     #[test]
     fn sum_balances_of_nothing_is_zero() {
         assert_eq!(

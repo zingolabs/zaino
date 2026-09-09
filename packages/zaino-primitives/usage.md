@@ -114,7 +114,7 @@ let net: Option<SignedZatoshis> = received.net(spent);
 // precondition the total lands back in `Zatoshis`. `None` means the total
 // passed the supply, which under the coexistence contract is overlapping or
 // double-counted input, not a large number.
-let held: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
+let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
 ```
 
 `ZatoshisFlowSum` has two validated doors and no unchecked one:
