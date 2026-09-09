@@ -3,16 +3,17 @@
 //! Cross-type operations are relations between quantities, not methods of a
 //! single one, so they live here beside the types rather than on any of them.
 //! This module is also where the allowed operations — the algebra — are written
-//! down as the specification a new summation site inherits.
+//! down as the specification a new sum is written against.
 //!
 //! # The algebra
 //!
-//! Write `A` for a held amount, `F` for a flow sum, `D` for a signed value,
-//! and `S` for the money supply. The quantities occupy nested ranges:
+//! Write `A` for an amount of ZEC counted in zatoshis, `F` for a flow sum,
+//! `D` for a signed value, and `S` for the money supply. The quantities
+//! occupy nested ranges:
 //!
 //! ```text
 //! A ∈ [0, S]          an amount of ZEC counted in zatoshis
-//! F ∈ [0, ∞)          a sum of movements  (machine-bounded, not supply-bounded)
+//! F ∈ [0, u128::MAX]  a sum of movements  (bounded by u128::MAX, not the supply)
 //! D ∈ [−S, S]         a signed value (a movement or a difference)
 //! ```
 //!
@@ -25,20 +26,33 @@
 //! net                 : F × F → D received − spent, landing in [−S, S] or refused
 //! ```
 //!
-//! `accumulate` carries amounts into the unbounded flow sum: a total of
-//! movements is not a balance, so the supply cap does not apply to it, and it
-//! fails only if the machine integer overflows. `accumulate_balances` is the
+//! `accumulate` carries amounts into the flow sum: a total of movements is
+//! not a balance, so the supply cap does not apply to it, and it fails only
+//! if the total would exceed `u128::MAX`. `accumulate_balances` is the
 //! second accumulate — the same fold shape with a different landing: balances
 //! that coexist at one moment cannot total more than the coins that exist, so
 //! under that precondition the sum is itself in `[0, S]`; the fold lands back
 //! in [`Zatoshis`] rather than a new type, refusing a total past the supply.
-//! `A` is still not closed under addition — the precondition, not the set,
-//! keeps this result inside it. `net` subtracts a spent flow from a received one and admits the
-//! result only as a signed value: a balance change lives in `[−S, S]`, so a
+//! `A` is still not closed under addition: the checked fold, not the set,
+//! keeps this result inside it, and the precondition is what lets a refusal
+//! be read as overlapping or double-counted input rather than a large number.
+//! `net` subtracts a spent flow from a received one and admits the result
+//! only as a signed value: a balance change lives in `[−S, S]`, so a
 //! result outside it is refused. That bound is a property of a balance change,
 //! which the two sums are only when they are the received and spent flow of
 //! one balance — `net`'s contract. A difference of unrelated flow sums is not
 //! a balance change and is deliberately not offered. See ADR-0013.
+//!
+//! The relations are the whole algebra: no operator joins the types, so a
+//! flow sum plus a balance total is rejected by the compiler.
+//!
+//! ```compile_fail,E0369
+//! use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum};
+//!
+//! let flow = ZatoshisFlowSum::try_accumulate(core::iter::empty()).expect("empty");
+//! let balance = Zatoshis::sum_balances(core::iter::empty()).expect("empty");
+//! let _ = flow + balance;
+//! ```
 
 use super::{SignedZatoshis, Zatoshis, ZatoshisFlowSum};
 
@@ -70,19 +84,19 @@ impl Zatoshis {
 impl ZatoshisFlowSum {
     /// Sum a sequence of amounts as flow.
     ///
-    /// The `accumulate` relation: `[A] → F`. Folds the amounts into the
-    /// unbounded flow sum with a checked add, returning `None` only if the
-    /// running total overflows the machine integer.
+    /// The `accumulate` relation: `[A] → F`. Folds the amounts into the flow
+    /// sum with a checked add, returning `None` only if the running total
+    /// would exceed `u128::MAX`.
     ///
     /// That overflow is unreachable in practice — each amount is a
     /// supply-bounded [`Zatoshis`] and the count is a collection length, so the
-    /// total cannot approach a `u128` — but the add stays checked so a future
+    /// total cannot approach `u128::MAX` — but the add stays checked so a future
     /// change fails loud rather than wrapping silently.
     pub fn try_accumulate(mut values: impl Iterator<Item = Zatoshis>) -> Option<Self> {
         values.try_fold(Self::ZERO, ZatoshisFlowSum::checked_add)
     }
 
-    /// Add one amount to a flow sum, or `None` on machine overflow.
+    /// Add one amount to a flow sum, or `None` if the sum would exceed `u128::MAX`.
     ///
     /// The incremental step of [`try_accumulate`](Self::try_accumulate).
     fn checked_add(self, amount: Zatoshis) -> Option<Self> {
@@ -102,7 +116,7 @@ impl ZatoshisFlowSum {
     /// keeps within `[-supply, supply]`. So `None` means the two flows do not
     /// describe a coherent balance (partial or corrupt data), not merely a large
     /// number. A difference of unrelated flow sums is not a balance change, is
-    /// bounded only by the machine, and is deliberately not offered: there is no
+    /// bounded only by `u128::MAX`, and is deliberately not offered: there is no
     /// generic subtraction nor `impl Sub` that would return an unbounded result.
     pub fn net(self, spent: Self) -> Option<SignedZatoshis> {
         let (received, spent) = (self.into_raw(), spent.into_raw());
@@ -140,9 +154,9 @@ mod tests {
     #[test]
     fn accumulate_sums_the_amounts() {
         let received = ZatoshisFlowSum::try_accumulate([100, 50, 30].map(zatoshis).into_iter())
-            .expect("well within the machine bound");
+            .expect("well within u128::MAX");
         let spent = ZatoshisFlowSum::try_accumulate([60].map(zatoshis).into_iter())
-            .expect("well within the machine bound");
+            .expect("well within u128::MAX");
 
         assert_eq!(received.net(spent).map(i64::from), Some(120));
     }
@@ -169,7 +183,7 @@ mod tests {
     fn flow_sum_exceeds_the_supply() {
         let gross =
             ZatoshisFlowSum::try_accumulate([MAX_ZATOSHIS, MAX_ZATOSHIS].map(zatoshis).into_iter())
-                .expect("gross flow is only machine-bounded");
+                .expect("gross flow is bounded only by u128::MAX");
         let one = ZatoshisFlowSum::try_accumulate([MAX_ZATOSHIS].map(zatoshis).into_iter())
             .expect("valid");
 
@@ -192,7 +206,7 @@ mod tests {
         assert_eq!(ZatoshisFlowSum::ZERO.net(two_supplies), None);
     }
 
-    /// `accumulate_balances` of nothing is zero held.
+    /// `accumulate_balances` of nothing is a zero balance.
     #[test]
     fn sum_balances_of_nothing_is_zero() {
         assert_eq!(
