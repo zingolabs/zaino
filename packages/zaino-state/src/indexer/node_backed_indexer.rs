@@ -133,6 +133,9 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     }
 
     /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.
+    ///
+    /// Returns once the index is *serving*, not once it is synced — initial sync is
+    /// hours on mainnet, and callers read [`Status`] (`/readyz`) for that.
     #[instrument(name = "NodeBackedIndexerService::spawn", skip(config), fields(network = %config.common.network))]
     async fn spawn(
         config: NodeBackedIndexerServiceConfig,
@@ -169,28 +172,14 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
         .await
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
-        let service = Self {
+        // No wait on `status() == Ready` here: a sync that fails later surfaces the same
+        // `CriticalError` to zainod's serve loop, which restarts on it for the whole life
+        // of the process, not just the first sync
+        Ok(Self {
             indexer,
             data,
             config: config.common,
-        };
-
-        // wait for sync to complete, return error on sync fail.
-        loop {
-            match service.status() {
-                StatusType::Ready | StatusType::Closing => break,
-                StatusType::CriticalError => {
-                    return Err(NodeBackedIndexerServiceError::Critical(
-                        "ChainIndex initial sync failed, check full log for details.".to_string(),
-                    ));
-                }
-                _ => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
-
-        Ok(service)
+        })
     }
 
     /// Returns a [`NodeBackedIndexerServiceSubscriber`].

@@ -24,7 +24,9 @@ license = "Apache-2.0"
 version = "0.2.0"
 
 [workspace.dependencies]
-ztest = "0.1"
+# 0.1.16 floor: per-profile `footprint`, `set_ready_timeout`, and the unlabelled
+# throughput families these profiles read
+ztest = "0.1.16"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

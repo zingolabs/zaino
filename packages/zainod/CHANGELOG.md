@@ -9,84 +9,46 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
-- `/livez` and `/readyz` beside `/metrics` on the admin listener, which now runs on
-  its own thread and current-thread runtime. `zaino-status` has carried `Liveness`
-  and `Readiness` since it was split out, but nothing served them, so Kubernetes
-  could not probe Zaino at all. Syncing is live-but-not-ready. The isolation matters
-  most for the probes: one answered from a saturated runtime measures that runtime's
-  queue, and a timed-out liveness probe gets the pod killed.
-- An `fs_mode` field on the periodic `Zaino status check` log line, reporting
-  whether finalised-state reads are served by the persistent database
-  (`persistent`), by the ephemeral passthrough during sync or migration
-  (`ephemeral(syncing)`), or by a process configured with
-  `ephemeral_finalised_state = true` (`ephemeral(configured)`). `chain_state:
-  Ready` alone is ambiguous — the passthrough reports `Ready` identically to a
-  synced on-disk index — so containerised tests should gate startup on
-  `fs_mode: persistent`, or on the `finalised state online` log line, rather
-  than on `Ready`.
-- Metric descriptions for `zaino.db.finalized_ephemeral`,
-  `zaino.sync.accumulator_height` and `zaino.db.accumulator_rebuild_active`. Note
-  the `prometheus` feature is off by default, so no listener starts unless it is
-  enabled.
-- Process-level resource metrics (`process_cpu_seconds_total`,
-  `process_resident_memory_bytes`, fds, threads) via `metrics-process`, sampled on
-  scrape rather than on a timer, so nothing runs while idle. CPU-bound, disk-contended and waiting-on-validator all shift the same
-  latency histograms the same way.
-- `zainod.restarts_total`, counted in the supervisor's restart loop. The restart
-  is in-process and the recorder outlives it, so no counter resets and no gauge
-  clears: nothing else distinguished a crash loop from a healthy run.
-- `zaino.status{component}` descriptions, and discriminant legends rendered into
-  `zaino.status` / `zaino.mempool.completeness` help text, so the integer is
-  readable from the scrape rather than a legend that drifts silently.
-- Liveness counters pre-registered at zero, so a just-started indexer's heartbeat
-  reads from the first scrape.
-
-- Graceful shutdown on `SIGTERM`. Zaino installed no signal handler, so k8s pod
-  teardown killed it mid-write; teardown now drives the same `close()` path as an
-  internal shutdown.
-- A check that `HISTOGRAMS` covers exactly the histograms the workspace emits,
-  against each emitting crate's `HISTOGRAMS`. The other histogram test
-  check the table against itself, which is how `reorg_depth` shipped wrong.
-- Explicit bucket bounds per histogram: a finer ladder for the three per-block
-  timings than for the gRPC and batch-commit ones. Matched on the **whole** name —
-  the exporter sorts matchers lexicographically and takes the first, so overlapping
-  suffixes resolve by alphabetical accident. Unbucketed histograms render as
-  summaries, silently; `histogram_quantile()` now works over these.
-- Work counters pre-registered at zero, so a consumer can tell "nothing indexed yet"
-  from "this build does not report it". Height gauges are not — 0 is a false height,
-  absent is honest. The per-block counters are seeded by resolving their cached
-  handles, so registration and the hot-path lookup elision are one mechanism.
-- Storage gauges `zaino.db.map_size_bytes` and `zaino.db.used_bytes`.
-- Per-pool, per-direction throughput counters `zaino.sync.transparent_inputs_total`,
-  `transparent_outputs_total`, `sapling_spends_total`, `sapling_outputs_total`,
-  `orchard_actions_total` and `ironwood_actions_total`.
-- Progress gauge `zaino.sync.fetched_height` and timing histograms
-  `zaino.sync.block_fetch_seconds` / `zaino.sync.batch_write_seconds`.
-- `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
-  120) — the bulk-sync write-batch flush interval, which also bounds the window of
-  unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.
-- `[storage.database]` config gains `accumulator_rebuild_memory_size` (GiB,
-  default 8) — a dedicated heap budget for the txout-set accumulator rebuild,
-  separate from `sync_write_batch_size`.
+- **`/livez` and `/readyz`**, beside `/metrics` on the admin listener (feature
+  `prometheus`, off by default). Syncing is live-but-not-ready, so Kubernetes can
+  hold traffic off a syncing node without restarting it. The listener runs on its
+  own thread and runtime: a probe answered from a saturated serving runtime
+  measures that runtime's queue, and a timed-out liveness probe gets the pod killed.
+- **Graceful shutdown on `SIGTERM`.** Zaino installed no signal handler, so
+  container teardown killed it mid-write. Teardown now drives the same `close()`
+  path as an internal shutdown.
+- Process metrics (`process_cpu_seconds_total`, `process_resident_memory_bytes`,
+  fds, threads), sampled on scrape rather than on a timer, and
+  `zainod.restarts_total` — nothing else distinguished a crash loop from a healthy
+  run, since the in-process restart resets no counter.
+- Work counters are pre-registered at zero, so "nothing indexed yet" is
+  distinguishable from "this build does not report it". Height gauges are not: 0
+  is a false height, absent is honest.
 
 ### Changed
-### Deprecated
+- **The gRPC and JSON-RPC listeners bind as soon as the indexer is constructed,
+  not after the initial sync completes.** On a mainnet-sized chain the old order
+  left both ports closed for hours, which reads to an orchestrator as a process
+  that never came up. **Move a readiness probe pointed at a serving port to
+  `/livez`; use `/readyz` when it must wait for a usable index.**
+
 ### Removed
-- **Metric descriptions for the metrics removed below.** Migrate any dashboard or
-  alert on `zaino.sync.lag_blocks`, `zaino.sync.iterations_total`,
-  `zaino.sync.iteration_duration_seconds`, `zaino.sync.errors_total`,
-  `zaino.sync.has_reached_tip`, `zaino.sync.reached_tip_at`,
-  `zaino.sync.reorg_total`, `zaino.sync.block_write_seconds`,
-  `zaino.sync.sapling_outputs_total`, `zaino.sync.last_block_written_at`,
-  `zaino.db.tip_height`, `zaino.grpc.requests_total`,
-  `zaino.mempool.transactions`, `zaino.mempool.tip_changes_total`, or the
-  `zaino.rpc.outbound.request_duration_seconds`. Replacements are noted per metric in the `zaino-state` and
-  `zaino-serve` changelogs.
+- **Metrics.** Migrate any dashboard or alert on `zaino.sync.lag_blocks`,
+  `iterations_total`, `iteration_duration_seconds`, `errors_total`,
+  `has_reached_tip`, `reached_tip_at`, `reorg_total`, `block_write_seconds`,
+  `last_block_written_at`, `zaino.db.tip_height`, `zaino.grpc.requests_total`,
+  `zaino.mempool.transactions`, `zaino.mempool.tip_changes_total`, or
+  `zaino.rpc.outbound.request_duration_seconds`. Replacements are listed per
+  metric in the `zaino-state` and `zaino-serve` changelogs.
+
 ### Fixed
-- **`zaino.sync.reorg_depth` rendered as a summary, not a histogram.** Descriptions
-  and bucket bounds were two independent lists; one `HISTOGRAMS` table now drives
-  both, making the omission inexpressible rather than merely tested for. Depth is a
-  count, not a duration, so it gets an integer ladder.
+- **`zaino.sync.reorg_depth` rendered as a summary, not a histogram**, so
+  `histogram_quantile()` did not work over it. Every histogram now carries
+  explicit bucket bounds.
+- A gRPC or JSON-RPC listener that failed to bind panicked instead of returning
+  its error. An address already in use now exits through the daemon's own
+  shutdown path with a named error — more visible now that the listeners bind at
+  startup rather than after the initial sync.
 - A configured `metrics_endpoint` on a binary built without the `prometheus`
   feature was silently ignored — no listener, no complaint. It now warns.
 

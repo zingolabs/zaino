@@ -33,7 +33,7 @@
 //!   UTXO churn alone (shielded pools never enter a txout set)
 //! - `max_spent_entries` = 8 GiB / 256 B = 33.5M spent outpoints → testnet never shards, ⊕ called
 //!   once against the identity, φ=2 measures a phase that did no work
-//! - Pin 1,693,104 = deepest mainnet artifact below [`SANDBLAST_ONSET`], by 11,219 blocks; sandblast
+//! - Pin 1,693,104 = deepest mainnet artifact under [`SANDBLAST_ONSET`], by 11,219; sandblast
 //!   dust makes churn pathological → `perf --base` never compares this against the Ironwood rung
 //! - 20.3 GiB pull vs Ironwood's 244.8 GiB = the profile you iterate on
 //! - No `until_height`: φ=2 runs once, after the block loop, at the end of `write_blocks_to_height`
@@ -50,15 +50,15 @@
 //!
 //! `ztest sync start zaino_index_set_atomicity`
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use ztest::prelude::*;
 use ztest::snapshots::ORCHARD_MAINNET;
 use ztest::sync::{
-    hours, mins, secs, Op, OpSet, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner, Verdict,
-    Violation,
+    Op, OpSet, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner, Verdict, Violation, hours,
+    mins, secs,
 };
 
 // ── cadences and caps ────────────────────────────────────────────────────────────────────────
@@ -74,12 +74,18 @@ const RUN_CAP: std::time::Duration = hours(24);
 /// a plausible φ=2 pass on purpose — [`index_advances`]
 const STALL_WINDOW: std::time::Duration = mins(15);
 
-/// Completion fires on the last finalised commit; φ=2 + NFS anchor/fill still to run, both unbounded
+/// Completion fires on the last finalised commit; φ=2 + NFS anchor/fill still to run, both unbound
 /// by design. Not measured — expiry = wedged, not slow
 const INDEX_UP_WINDOW: std::time::Duration = mins(30);
 
 /// Slack: `gettxoutsetinfo` folds the whole NFS per call, and the answer is a step, not a curve
 const INDEX_UP_POLL: std::time::Duration = secs(10);
+
+/// Per-component budget for "pod up + readiness RPC answered".
+///
+/// - Default 20 s = a regtest number; zaino opens a 30 GB state dir before its gRPC binds
+/// - Ceiling on a wedged start, not an expectation (the run's own clock = [`RUN_CAP`])
+const READY_WINDOW: std::time::Duration = mins(20);
 
 /// Grace before [`required_families_are_published`] may violate — the gauges it needs appear at
 /// different times (first batch commit, NFS anchor resolving over mainnet), not together
@@ -116,7 +122,7 @@ const TXOUTSET_ENTRY_LEN: u64 = 65;
 ///   batch boundaries → conforming engine keeps skew ≤ β/|C|
 /// - `validated_height` excluded (async by design, symptom = a re-read = latency not atomicity) →
 ///   [`VALIDATION_LAG_BUDGET`] instead
-/// - β not a block count (`sync_write_batch_size` = 8 GiB *heap* > this whole chain) → batches close
+/// - β not a block count (`sync_write_batch_size` = 8 GiB *heap* > this chain) → batches close
 ///   on the blocks cap (`batch_blocks` tops at 512) or the 120 s checkpoint ⇒ φ=2 one batch behind
 ///   φ=0 ≈ 1e-4 of this chain
 /// - 1 % ≈ 30 batches slack: 2 orders below the defer-a-whole-phase signature (skew ≈ 1.0). Cliff
@@ -163,21 +169,23 @@ const ORDER_SLACK: u32 = 2;
 /// restates them, a rename shows up only as a probe going quiet. `run.requires_work` guards the
 /// per-op counters and nothing else → [`super::required_families_are_published`] guards these
 mod family {
-    pub(super) const CHAIN_TIP: &str = "zaino_chain_tip_height";
-    pub(super) const TARGET: &str = "zaino_sync_target_height";
-    pub(super) const FETCHED: &str = "zaino_sync_fetched_height";
-    pub(super) const FINALIZED: &str = "zaino_sync_finalized_height";
-    pub(super) const ACCUMULATOR: &str = "zaino_sync_accumulator_height";
-    pub(super) const VALIDATED: &str = "zaino_db_validated_height";
-    pub(super) const NFS_TIP: &str = "zaino_nfs_tip_height";
+    use ztest::prelude::{Family, family};
 
-    pub(super) const NFS_REANCHORS: &str = "zaino_nfs_reanchors_total";
-    pub(super) const ACCUMULATOR_SECONDS: &str = "zaino_sync_accumulator_seconds";
-    pub(super) const BLOCK_FETCH: &str = "zaino_sync_block_fetch_seconds";
-    pub(super) const BLOCK_ASSEMBLE: &str = "zaino_sync_block_assemble_seconds";
+    pub(super) const CHAIN_TIP: Family = family("zaino_chain_tip_height");
+    pub(super) const TARGET: Family = family("zaino_sync_target_height");
+    pub(super) const FETCHED: Family = family("zaino_sync_fetched_height");
+    pub(super) const FINALIZED: Family = family("zaino_sync_finalized_height");
+    pub(super) const ACCUMULATOR: Family = family("zaino_sync_accumulator_height");
+    pub(super) const VALIDATED: Family = family("zaino_db_validated_height");
+    pub(super) const NFS_TIP: Family = family("zaino_nfs_tip_height");
+
+    pub(super) const NFS_REANCHORS: Family = family("zaino_nfs_reanchors_total");
+    pub(super) const ACCUMULATOR_SECONDS: Family = family("zaino_sync_accumulator_seconds");
+    pub(super) const BLOCK_FETCH: Family = family("zaino_sync_block_fetch_seconds");
+    pub(super) const BLOCK_ASSEMBLE: Family = family("zaino_sync_block_assemble_seconds");
 
     /// Gauges the probes treat as required — absent = its probe unfailable = worse than a red run
-    pub(super) const REQUIRED_GAUGES: [&str; 6] =
+    pub(super) const REQUIRED_GAUGES: [Family; 6] =
         [CHAIN_TIP, TARGET, FETCHED, FINALIZED, ACCUMULATOR, NFS_TIP];
 }
 
@@ -190,24 +198,25 @@ const INDEXED_POOLS: [Op; 2] = [Op::SaplingOutput, Op::OrchardAction];
 #[ztest::needs(ORCHARD_MAINNET)]
 #[ztest::sync_test(
     name = "zaino_index_set_atomicity",
-    description = "index-set conformance over the pinned pre-sandblast mainnet snapshot",
+    description = "index-set conformance over a pinned pre-sandblast mainnet snapshot",
     subject = indexer,
     timeout = "24h",
     qos = sync,
-    footprint = "15c/29Gi",
+    footprint = "6c/24Gi",
     tags = ["mainnet", "zaino", "index", "orchard", "nu5", "model", "atomicity"],
 )]
 async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
     // `?` unavailable (body returns SyncOutcome) → setup failure converts via `From`
     let (zebra, zaino) = match run
         .topology(|t| {
+            t.set_ready_timeout(READY_WINDOW);
             // Per-pod, not the even split: zebra reads a frozen snapshot and never grows; zaino
             // holds an open LMDB write txn plus separate 8 GiB write-batch / rebuild budgets. Must
-            // sum inside `footprint`. No `.disk(..)` on zebra — the clone never passes the seed floor
+            // sum inside `footprint`. No `.disk(..)` on zebra — clone never passes the seed floor
             let zebra = t.add_validator(
                 Validator::zebrad("6.2.3")
                     .snapshot(ORCHARD_MAINNET)
-                    .resources(Cpu::cores(5), Mem::gib(4)),
+                    .resources(Cpu::cores(2), Mem::gib(4)),
             );
             let zaino = t.add_indexer(
                 // `no_tls_with_prometheus` load-bearing (its exporter = the whole progress + cost
@@ -216,21 +225,18 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
                     Indexer::Zainod,
                     "../../Dockerfile",
                     context = "../..",
-                    features = [
-                        "no_tls_with_prometheus",
-                        "allow_unencrypted_public_json_rpc_bind"
-                    ]
+                    features = ["no_tls_with_prometheus", "allow_unencrypted_public_json_rpc_bind"]
                 )
                 // Private CoW clone, read-only; zaino's own index starts empty
                 .snapshot(ORCHARD_MAINNET)
                 // `Fetch` forwards to the validator and builds no index → nothing to assert
                 .tuning(ZainoTuning::State)
-                // Sync tier wants a reserved PVC, not node ephemeral (eviction at hour 18 = the run).
-                // UNMEASURED: Ironwood declares 325 GiB over 3.43M post-sandblast blocks; this rung =
-                // 49 % of that height, far less of its transactions, and the dominant tables
-                // (`spent`, `txid_location`) scale with transactions not block bytes → est. 65-80 GiB
+                // Sync tier wants a reserved PVC, not node ephemeral (eviction at hour 18 = run)
+                // UNMEASURED: Ironwood declares 325 GiB over 3.43M post-sandblast blocks; this rung
+                // = 49 % of that height, far less of its transactions, and the dominant tables
+                // (`spent`, `txid_location`) scale with txs not block bytes → est. 65-80 GiB
                 .disk(Disk::gib(96))
-                .resources(Cpu::cores(9), Mem::gib(24)),
+                .resources(Cpu::cores(4), Mem::gib(20)),
             );
             (zebra, zaino)
         })
@@ -276,13 +282,12 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
     // ── §8.1 Inv 1: dependency precedence ────────────────────────────────────────────────────
     {
         let zaino = zaino.clone();
-        run.always(Severity::Fatal)
-            .named("dependency_precedence")
-            .every(secs(30))
-            .check_rpc(move |s, _cx| {
+        run.always(Severity::Fatal).named("dependency_precedence").every(secs(30)).check_rpc(
+            move |s, _cx| {
                 let zaino = zaino.clone();
                 Box::pin(async move { dependency_precedence(s, &zaino).await })
-            });
+            },
+        );
     }
 
     // ── §8.3 Inv 3: batch atomicity as peak watermark skew ───────────────────────────────────
@@ -290,13 +295,12 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
     {
         let zaino = zaino.clone();
         let peak = peak_skew.clone();
-        run.always(Severity::Recorded)
-            .named("watermark_skew_observed")
-            .every(secs(30))
-            .check_rpc(move |s, _cx| {
+        run.always(Severity::Recorded).named("watermark_skew_observed").every(secs(30)).check_rpc(
+            move |s, _cx| {
                 let (zaino, peak) = (zaino.clone(), peak.clone());
                 Box::pin(async move { observe_watermark_skew(s, &zaino, &peak).await })
-            });
+            },
+        );
     }
     {
         let peak = peak_skew.clone();
@@ -314,60 +318,56 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
     // ── extraction accounting (§3.2) ─────────────────────────────────────────────────────────
     {
         let zaino = zaino.clone();
-        run.always(Severity::Fatal)
-            .named("extraction_spans_agree")
-            .every(mins(2))
-            .check_rpc(move |s, _cx| {
+        run.always(Severity::Fatal).named("extraction_spans_agree").every(mins(2)).check_rpc(
+            move |s, _cx| {
                 let zaino = zaino.clone();
                 Box::pin(async move { extraction_spans_agree(s, &zaino).await })
-            });
+            },
+        );
     }
 
     // ── §7.3 cost model. Recorded: no baseline yet, the first run's answer *is* it ───────────
     {
         let zaino = zaino.clone();
-        run.at_completion(Severity::Recorded)
-            .named("phase_two_cost_share")
-            .check_rpc(move |s, _cx| {
+        run.at_completion(Severity::Recorded).named("phase_two_cost_share").check_rpc(
+            move |s, _cx| {
                 let zaino = zaino.clone();
                 Box::pin(async move { phase_two_cost_share(s, &zaino, started).await })
-            });
+            },
+        );
     }
 
     // ── background maintenance ───────────────────────────────────────────────────────────────
     {
         let zaino = zaino.clone();
         let peak = peak_validation_lag.clone();
-        run.always(Severity::Recorded)
-            .named("validation_keeps_up")
-            .every(mins(2))
-            .check_rpc(move |s, _cx| {
+        run.always(Severity::Recorded).named("validation_keeps_up").every(mins(2)).check_rpc(
+            move |s, _cx| {
                 let (zaino, peak) = (zaino.clone(), peak.clone());
                 Box::pin(async move { validation_keeps_up(s, &zaino, &peak, span).await })
-            });
+            },
+        );
     }
     {
         let zaino = zaino.clone();
-        run.always(Severity::Fatal)
-            .named("nfs_anchored_once")
-            .every(mins(2))
-            .check_rpc(move |s, _cx| {
+        run.always(Severity::Fatal).named("nfs_anchored_once").every(mins(2)).check_rpc(
+            move |s, _cx| {
                 let zaino = zaino.clone();
                 Box::pin(async move { nfs_anchored_once(s, &zaino).await })
-            });
+            },
+        );
     }
 
     // ── safety ───────────────────────────────────────────────────────────────────────────────
     {
         let zaino = zaino.clone();
         let last = last_finalized.clone();
-        run.always(Severity::Fatal)
-            .named("finalised_index_append_only")
-            .every(secs(30))
-            .check_rpc(move |s, _cx| {
+        run.always(Severity::Fatal).named("finalised_index_append_only").every(secs(30)).check_rpc(
+            move |s, _cx| {
                 let (zaino, last) = (zaino.clone(), last.clone());
                 Box::pin(async move { finalised_index_append_only(s, &zaino, &last).await })
-            });
+            },
+        );
     }
     run.always(Severity::Recorded)
         .named("indexed_work_monotonic")
@@ -376,13 +376,12 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
     {
         // Captured clone, not `cx` — `SyncCtx` carries only the indexer
         let zebra = zebra.clone();
-        run.always(Severity::Fatal)
-            .named("index_within_pinned_tip")
-            .every(secs(30))
-            .check_rpc(move |s, _cx| {
+        run.always(Severity::Fatal).named("index_within_pinned_tip").every(secs(30)).check_rpc(
+            move |s, _cx| {
                 let zebra = zebra.clone();
                 Box::pin(async move { index_within_pinned_tip(s, &zebra, chain).await })
-            });
+            },
+        );
     }
 
     // ── liveness ─────────────────────────────────────────────────────────────────────────────
@@ -392,20 +391,14 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
         .check(index_advances);
 
     // ── coverage ─────────────────────────────────────────────────────────────────────────────
-    run.sometimes()
-        .named("observed_a_partial_index")
-        .check(observed_a_partial_index);
-    run.sometimes()
-        .named("crossed_the_straddled_activation")
-        .check(crossed_activation);
+    run.sometimes().named("observed_a_partial_index").check(observed_a_partial_index);
+    run.sometimes().named("crossed_the_straddled_activation").check(crossed_activation);
     {
         let zaino = zaino.clone();
-        run.sometimes()
-            .named("observed_phase_two_run")
-            .check_rpc(move |s, _cx| {
-                let zaino = zaino.clone();
-                Box::pin(async move { observed_phase_two_run(s, &zaino).await })
-            });
+        run.sometimes().named("observed_phase_two_run").check_rpc(move |s, _cx| {
+            let zaino = zaino.clone();
+            Box::pin(async move { observed_phase_two_run(s, &zaino).await })
+        });
     }
 
     // ── terminal ─────────────────────────────────────────────────────────────────────────────
@@ -414,21 +407,21 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
         .check_rpc(move |s, cx| Box::pin(index_serves_the_pinned_tip(s, cx, chain)));
     {
         let zaino = zaino.clone();
-        run.at_completion(Severity::Fatal)
-            .named("finalised_seam_within_reorg_bound")
-            .check_rpc(move |s, _cx| {
+        run.at_completion(Severity::Fatal).named("finalised_seam_within_reorg_bound").check_rpc(
+            move |s, _cx| {
                 let zaino = zaino.clone();
                 Box::pin(async move { finalised_seam_within_reorg_bound(s, &zaino, chain).await })
-            });
+            },
+        );
     }
     {
         let zaino = zaino.clone();
-        run.at_completion(Severity::Fatal)
-            .named("watermarks_converge_at_completion")
-            .check_rpc(move |s, _cx| {
+        run.at_completion(Severity::Fatal).named("watermarks_converge_at_completion").check_rpc(
+            move |s, _cx| {
                 let zaino = zaino.clone();
                 Box::pin(async move { watermarks_converge(s, &zaino, chain).await })
-            });
+            },
+        );
     }
 
     run.run().await
@@ -436,46 +429,53 @@ async fn zaino_index_set_atomicity(mut run: SyncRunner) -> SyncOutcome {
 
 // ── metric helpers ───────────────────────────────────────────────────────────────────────────
 
-/// `Ok(None)` = family absent ≠ zero (several are unset in the opening minutes; absence-as-0 invents
+/// How long a `/metrics` read may take before the pod is called wedged. A probe budget, not a
+/// measurement: these run every tick against a pod that is also indexing
+const SCRAPE_TIMEOUT: std::time::Duration = secs(10);
+
+/// `Ok(None)` = family absent ≠ zero (several unset in the opening minutes; absence-as-0 invents
 /// an ordering violation out of a starting pod). Negative/non-finite = broken exporter → error
-async fn gauge(zaino: &ZainoIndexer, family: &str) -> Result<Option<u32>, String> {
-    match zaino.metric(family, MetricKind::Gauge, None).await {
-        Ok(Some(v)) if v.is_finite() && v >= 0.0 => Ok(Some(v as u32)),
-        Ok(Some(v)) => Err(format!("{family} read as {v}, which is not a height")),
-        Ok(None) => Ok(None),
-        Err(e) => Err(format!("{family}: {e}")),
+///
+/// - `reduce`, not `height_gauge`: the latter folds a broken reading into `None`, which every
+///   probe here reads as "not published yet" and would pass on
+async fn gauge(zaino: &ZainoIndexer, family: Family) -> Result<Option<u32>, String> {
+    let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
+    match exposition.reduce(family, Reduce::Max) {
+        Some(v) if v.is_finite() && v >= 0.0 => Ok(Some(v as u32)),
+        Some(v) => Err(format!("{family} read as {v}, which is not a height")),
+        None => Ok(None),
     }
 }
 
-/// `Exposition::reduce` sums every label set → `mode=rebuild` vs `delta` indistinguishable, likewise
-/// `stage=` / `backend=`. ztest gap: label selection would make [`phase_two_cost_share`] a direct
-/// traversal count instead of a cost share
-async fn counter(zaino: &ZainoIndexer, family: &str) -> Result<Option<u64>, String> {
-    match zaino.metric(family, MetricKind::Counter, None).await {
-        Ok(Some(v)) if v.is_finite() && v >= 0.0 => Ok(Some(v as u64)),
-        Ok(Some(v)) => Err(format!("{family} read as {v}, which is not a count")),
-        Ok(None) => Ok(None),
-        Err(e) => Err(format!("{family}: {e}")),
+/// `reduce` sums every label set → `mode=rebuild` vs `delta` indistinguishable, likewise `stage=`
+/// / `backend=`. Narrowing one needs [`family_where`], which would make [`phase_two_cost_share`]
+/// a direct traversal count instead of a cost share
+async fn counter(zaino: &ZainoIndexer, family: Family) -> Result<Option<u64>, String> {
+    let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
+    match exposition.reduce(family, Reduce::Sum) {
+        Some(v) if v.is_finite() && v >= 0.0 => Ok(Some(v as u64)),
+        Some(v) => Err(format!("{family} read as {v}, which is not a count")),
+        None => Ok(None),
     }
 }
 
 /// Histogram `_count`, folded across label sets ([`counter`] re: the fold)
-async fn hist_count(zaino: &ZainoIndexer, family: &str) -> Result<Option<u64>, String> {
-    match zaino.metric(family, MetricKind::Count, None).await {
-        Ok(Some(v)) if v.is_finite() && v >= 0.0 => Ok(Some(v as u64)),
-        Ok(Some(v)) => Err(format!("{family}_count read as {v}, which is not a count")),
-        Ok(None) => Ok(None),
-        Err(e) => Err(format!("{family}_count: {e}")),
+async fn hist_count(zaino: &ZainoIndexer, family: Family) -> Result<Option<u64>, String> {
+    let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
+    match exposition.tally(family) {
+        Some(t) if t.count.is_finite() && t.count >= 0.0 => Ok(Some(t.count as u64)),
+        Some(t) => Err(format!("{family}_count read as {}, which is not a count", t.count)),
+        None => Ok(None),
     }
 }
 
 /// Histogram `_sum` in seconds, folded across label sets ([`counter`] re: the fold)
-async fn hist_sum(zaino: &ZainoIndexer, family: &str) -> Result<Option<f64>, String> {
-    match zaino.metric(family, MetricKind::Sum, None).await {
-        Ok(Some(v)) if v.is_finite() && v >= 0.0 => Ok(Some(v)),
-        Ok(Some(v)) => Err(format!("{family}_sum read as {v}, which is not a duration")),
-        Ok(None) => Ok(None),
-        Err(e) => Err(format!("{family}_sum: {e}")),
+async fn hist_sum(zaino: &ZainoIndexer, family: Family) -> Result<Option<f64>, String> {
+    let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
+    match exposition.tally(family) {
+        Some(t) if t.sum.is_finite() && t.sum >= 0.0 => Ok(Some(t.sum)),
+        Some(t) => Err(format!("{family}_sum read as {}, which is not a duration", t.sum)),
+        None => Ok(None),
     }
 }
 
@@ -708,7 +708,7 @@ async fn watermarks_converge(s: &Snapshot, zaino: &ZainoIndexer, chain: ChainSna
 
 /// Two relations over the served accumulator; both absolute (no validator, no second zaino):
 ///
-/// - `bytes_serialized == txouts * `[`TXOUTSET_ENTRY_LEN`] — both fields moved by the same ⊕, so the
+/// - `bytes_serialized == txouts * `[`TXOUTSET_ENTRY_LEN`] — both fields moved by one ⊕, so the
 ///   identity states its counter components stayed in step through every merge. zaino *also* checks
 ///   this before serving (`chain_index.rs`, `get_tx_out_set_info`) → a broken merge surfaces as an
 ///   RPC error carrying "bytes_serialized invariant violated", not as skewed fields. Kept as the
@@ -728,17 +728,10 @@ async fn accumulator_self_consistent(s: &Snapshot, cx: &SyncCtx) -> Verdict {
     };
     let deadline = Instant::now() + INDEX_UP_WINDOW;
     loop {
-        let last = match rpc
-            .call_value("gettxoutsetinfo", serde_json::json!([]))
-            .await
-        {
+        let last = match rpc.call_value("gettxoutsetinfo", serde_json::json!([])).await {
             Ok(v) => {
                 let u64_at = |k| v.get(k).and_then(serde_json::Value::as_u64);
-                match (
-                    u64_at("txouts"),
-                    u64_at("bytes_serialized"),
-                    u64_at("transactions"),
-                ) {
+                match (u64_at("txouts"), u64_at("bytes_serialized"), u64_at("transactions")) {
                     (Some(outputs), Some(bytes), Some(transactions)) => {
                         let want = outputs.saturating_mul(TXOUTSET_ENTRY_LEN);
                         ztest::sync_ensure!(
@@ -783,8 +776,8 @@ async fn accumulator_self_consistent(s: &Snapshot, cx: &SyncCtx) -> Verdict {
 // ── extraction accounting ────────────────────────────────────────────────────────────────────
 
 /// zaino's contract: assemble exceeds fetch only by reorg rebuilds (re-assemble, no re-fetch) →
-/// frozen chain ⇒ equal within [`SPAN_COUNT_SLACK`]. Precedent: the accounting this replaced had two
-/// stages behind one label and a derived span going silently negative. Misses → `fetch_misses_total`
+/// frozen chain ⇒ equal within [`SPAN_COUNT_SLACK`]. Precedent: the accounting this replaced had
+/// two stages behind one label, a derived span silently negative. Misses → `fetch_misses_total`
 async fn extraction_spans_agree(s: &Snapshot, zaino: &ZainoIndexer) -> Verdict {
     let (fetch, assemble) = match (
         hist_count(zaino, family::BLOCK_FETCH).await,
@@ -810,7 +803,7 @@ async fn extraction_spans_agree(s: &Snapshot, zaino: &ZainoIndexer) -> Verdict {
 // ── §7.3 cost model ──────────────────────────────────────────────────────────────────────────
 
 /// Threshold + why it is a guess: [`ACCUMULATOR_SHARE_BUDGET`]. Folded over `mode` = `current +
-/// delta + rebuild`. Absent = φ=2 never ran = [`observed_phase_two_run`]'s finding, not billed twice
+/// delta + rebuild`. Absent = φ=2 never ran = [`observed_phase_two_run`]'s find, not billed twice
 async fn phase_two_cost_share(s: &Snapshot, zaino: &ZainoIndexer, started: Instant) -> Verdict {
     let seconds = match hist_sum(zaino, family::ACCUMULATOR_SECONDS).await {
         Ok(Some(v)) => v,
@@ -845,14 +838,12 @@ async fn validation_keeps_up(
     peak: &AtomicU64,
     span: f64,
 ) -> Verdict {
-    let (finalized, validated) = match (
-        gauge(zaino, family::FINALIZED).await,
-        gauge(zaino, family::VALIDATED).await,
-    ) {
-        (Ok(Some(f)), Ok(Some(v))) => (f, v),
-        (Ok(_), Ok(_)) => return Verdict::Pending,
-        (Err(e), _) | (_, Err(e)) => return Verdict::ProbeError(e),
-    };
+    let (finalized, validated) =
+        match (gauge(zaino, family::FINALIZED).await, gauge(zaino, family::VALIDATED).await) {
+            (Ok(Some(f)), Ok(Some(v))) => (f, v),
+            (Ok(_), Ok(_)) => return Verdict::Pending,
+            (Err(e), _) | (_, Err(e)) => return Verdict::ProbeError(e),
+        };
     let lag = finalized.saturating_sub(validated);
     peak.fetch_max(u64::from(lag), Ordering::Relaxed);
     if span <= 0.0 {
@@ -937,7 +928,7 @@ fn indexed_work_monotonic(s: &Snapshot) -> Verdict {
 ///
 /// - `s.height()` here and in the coverage probes = `fetched_height`, the ingest frontier, which is
 ///   what "has zaino reached blocks past X" wants. Probes naming the *committed* frontier read
-///   [`family::FINALIZED`] instead — ztest's `live_height` prefers `HEIGHTS.live` and the two differ
+///   [`family::FINALIZED`] instead — ztest's `live_height` prefers `HEIGHTS.live`, and they differ
 ///   by up to a batch
 async fn index_within_pinned_tip(
     s: &Snapshot,
@@ -975,11 +966,7 @@ async fn index_within_pinned_tip(
 /// pipelined, the writer not idle on it). Terminal φ=2 escapes: liveness stops at completion, which
 /// fires on the last finalised commit — before the work the terminal probes wait through
 fn index_advances(s: &Snapshot) -> Verdict {
-    if s.progressed_within(STALL_WINDOW) {
-        Verdict::Satisfied
-    } else {
-        Verdict::Pending
-    }
+    if s.progressed_within(STALL_WINDOW) { Verdict::Satisfied } else { Verdict::Pending }
 }
 
 // ── coverage ─────────────────────────────────────────────────────────────────────────────────
@@ -994,13 +981,10 @@ fn observed_a_partial_index(s: &Snapshot) -> Verdict {
     }
 }
 
-/// Below NU5 `Op::OrchardAction` is legitimately flat all run → `indexed_work_monotonic` passes proving nothing
+/// Below NU5 `Op::OrchardAction` legitimately flat all run → `indexed_work_monotonic` passes
+/// proving nothing
 fn crossed_activation(s: &Snapshot) -> Verdict {
-    if s.height() >= STRADDLED_ACTIVATION {
-        Verdict::Satisfied
-    } else {
-        Verdict::Pending
-    }
+    if s.height() >= STRADDLED_ACTIVATION { Verdict::Satisfied } else { Verdict::Pending }
 }
 
 /// Anti-vacuity for every φ=2 claim: [`accumulator_self_consistent`] waits for it and
@@ -1019,7 +1003,7 @@ async fn observed_phase_two_run(_s: &Snapshot, zaino: &ZainoIndexer) -> Verdict 
 ///
 /// - Still catching up → the empty object zcashd returns when stats collection fails (spent-index
 ///   invariants do not hold yet) ⇒ an answer *with* a height = the index is up
-/// - That height = `non_finalized_snapshot.best_tip`, no proxy path through it ⇒ unlike every height
+/// - That height = `non_finalized_snapshot.best_tip`, no proxy path through it ⇒ unlike each height
 ///   zaino forwards, it cannot be the validator's answer wearing zaino's name
 /// - So the tip claim is the NFS's; other half = [`finalised_seam_within_reorg_bound`]
 /// - Waits, retrying errors: a refused connection while the pod scans the whole chain is expected
@@ -1035,10 +1019,7 @@ async fn index_serves_the_pinned_tip(s: &Snapshot, cx: &SyncCtx, chain: ChainSna
     let deadline = Instant::now() + INDEX_UP_WINDOW;
     loop {
         // Why this attempt failed, so expiry names the state, not only the height
-        let last = match rpc
-            .call_value("gettxoutsetinfo", serde_json::json!([]))
-            .await
-        {
+        let last = match rpc.call_value("gettxoutsetinfo", serde_json::json!([])).await {
             // Keyed on the field, not a shape name: the two arms serialize untagged
             Ok(v) => match v.get("height").and_then(serde_json::Value::as_u64) {
                 Some(h) if h == u64::from(pinned) => return Verdict::Satisfied,
@@ -1084,7 +1065,7 @@ async fn finalised_seam_within_reorg_bound(
     let frontier = match gauge(zaino, family::FINALIZED).await {
         Ok(Some(h)) => h,
         Ok(None) => {
-            return Verdict::ProbeError("finalised frontier unpublished at completion".into())
+            return Verdict::ProbeError("finalised frontier unpublished at completion".into());
         }
         Err(e) => return Verdict::ProbeError(e),
     };
@@ -1106,9 +1087,5 @@ async fn finalised_seam_within_reorg_bound(
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────
 
 fn violated(height: u32, detail: String) -> Verdict {
-    Verdict::Violated(Violation {
-        probe: String::new(),
-        height: Some(height),
-        detail,
-    })
+    Verdict::Violated(Violation { probe: String::new(), height: Some(height), detail })
 }

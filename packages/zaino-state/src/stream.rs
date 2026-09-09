@@ -15,7 +15,7 @@ use zaino_proto::proto::{
 /// still returns one, and two structurally identical types would mean a
 /// pointless conversion at that seam. The definition comes back here when that
 /// method is deleted.
-pub use zaino_chain_store_zainodb::stream::{ChannelStream, StreamObserver};
+pub use zaino_chain_store_zainodb::stream::ChannelStream;
 
 /// Stream of `RawTransaction` items, output type of get_taddress_txids.
 pub type RawTransactionStream = ChannelStream<RawTransaction>;

@@ -136,16 +136,18 @@ where
         let json_server = match indexer_config.json_server_settings {
             Some(json_server_config) => Some(match json_listener {
                 #[cfg(feature = "test_dependencies")]
-                Some(listener) => JsonRpcServer::spawn_from_listener(
-                    service.inner_ref().get_subscriber(),
-                    json_server_config,
-                    listener,
-                )
-                .await
-                .unwrap(),
-                _ => JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
-                    .await
-                    .unwrap(),
+                Some(listener) => {
+                    JsonRpcServer::spawn_from_listener(
+                        service.inner_ref().get_subscriber(),
+                        json_server_config,
+                        listener,
+                    )
+                    .await?
+                }
+                _ => {
+                    JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
+                        .await?
+                }
             }),
             None => None,
         };
@@ -157,10 +159,10 @@ where
         };
         let grpc_server = match grpc_listener {
             #[cfg(feature = "test_dependencies")]
-            Some(listener) => TonicServer::spawn_from_listener(routes, grpc_config, listener)
-                .await
-                .unwrap(),
-            _ => TonicServer::spawn(routes, grpc_config).await.unwrap(),
+            Some(listener) => {
+                TonicServer::spawn_from_listener(routes, grpc_config, listener).await?
+            }
+            _ => TonicServer::spawn(routes, grpc_config).await?,
         };
 
         let mut indexer = Self {
