@@ -62,10 +62,6 @@ changed"
 echo "  set-worktree-parent-tools  Copy .cargo/config.toml to common \
 worktree parent"
 echo ""
-echo "Environment:"
-echo "  RUST_VERSION                  Derived from rust-toolchain.toml"
-echo "                                via the workbench get-rust-version bin"
-echo ""
 echo "Build Context:"
 echo "  live-tests/test_environment/   Directory containing the \
 CI build-environment image"

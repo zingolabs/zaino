@@ -20,8 +20,6 @@ jobs:
       - name: Compute version-based image tag
         id: taggen
         run: |
-          RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)
-          export RUST_VERSION
           TAG=$(./tools/scripts/get-ci-image-tag.sh)
           echo "TAG=$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"

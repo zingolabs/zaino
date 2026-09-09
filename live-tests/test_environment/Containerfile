@@ -5,16 +5,14 @@
 # **no** validator binaries — the live-test suites get their validators from the
 # ztest Kubernetes harness, not from this image. See docs/testing.md.
 
-ARG RUST_VERSION
 ARG UID=1000
 ARG GID=${UID}
 ARG USER=container_user
 ARG HOME="/home/container_user"
 ARG CARGO_HOME="/usr/local/cargo"
 
-FROM docker.io/library/rust:${RUST_VERSION}-trixie AS base
+FROM docker.io/library/rust:1.96.0-trixie AS base
 
-ARG RUST_VERSION
 ARG UID
 ARG GID
 ARG USER
@@ -28,9 +26,9 @@ ENV PROTOC=/usr/bin/protoc
 ENV ROCKSDB_LIB_DIR=/usr/lib/x86_64-linux-gnu
 
 LABEL maintainer="nachog00"
-LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
+LABEL org.zaino.test-artifacts.versions.rust="1.96.0"
 
-# Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
+# Versions pinned (DL3008) to the candidates in rust:1.96.0-trixie; bump
 # together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl=8.14.1-2+deb13u4 \
@@ -48,16 +46,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --non-unique --gid ${GID} ${USER} && \
     useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
 
-# Install the toolchain under the same channel name rust-toolchain.toml asks
-# for at runtime. The rust:${RUST_VERSION}-trixie base image installs its
-# toolchain under a point-release identity (e.g. "1.92.0-x86_64-unknown-linux-gnu")
-# that does not match rust-toolchain.toml's channel-style `channel = "1.92"` —
-# without this line rustup would re-download the whole toolchain on every
-# container start. RUST_VERSION is the canonical source, from rust-toolchain.toml
-# via the workbench `get-rust-version` bin, also used in the FROM clause above.
-RUN rustup toolchain install ${RUST_VERSION} --profile minimal \
+# Toolchain baked in under the exact name + components rust-toolchain.toml asks for
+#
+# - absent → rustup fetches at every container start (nothing persists across runs)
+# - version must track rust-toolchain.toml's `channel` by hand (root CLAUDE.md)
+RUN rustup toolchain install 1.96.0 --profile minimal \
         --component rustfmt --component clippy && \
-    rustup default ${RUST_VERSION}
+    rustup default 1.96.0
 
 RUN mkdir -p ${CARGO_HOME} && \
     chown -R ${UID}:${GID} ${HOME} ${CARGO_HOME}
