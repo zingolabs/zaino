@@ -42,6 +42,17 @@
 //! which the two sums are only when they are the received and spent flow of
 //! one balance — `net`'s contract. A difference of unrelated flow sums is not
 //! a balance change and is deliberately not offered. See ADR-0013.
+//!
+//! The relations are the whole algebra: no operator joins the types, so a
+//! flow sum plus a balance total is rejected by the compiler.
+//!
+//! ```compile_fail,E0369
+//! use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum};
+//!
+//! let flow = ZatoshisFlowSum::try_accumulate(core::iter::empty()).expect("empty");
+//! let balance = Zatoshis::sum_balances(core::iter::empty()).expect("empty");
+//! let _ = flow + balance;
+//! ```
 
 use super::{SignedZatoshis, Zatoshis, ZatoshisFlowSum};
 
