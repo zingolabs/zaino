@@ -129,28 +129,33 @@ primitive.
 
 ## The work quantity family
 
-The same doctrine, applied to proof-of-work. Two quantities share the unit and
-are not interchangeable:
+Two quantities share the proof-of-work unit and are not interchangeable:
 
 | type | is |
 |---|---|
-| `SingleBlockWork` | the expected work of **one** block, from its difficulty target |
-| `AbsoluteChainWork` | **cumulative** work at a block — the fold of block works along its chain; `Ord`, because comparing it *is* chain selection |
+| `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
+| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
 
-Both are strictly positive. The fold is the algebra, in the `work::arithmetic`
-module: `AbsoluteChainWork::genesis(block_work)` seeds it (genesis's cumulative work is
-its own block work), `accumulate` extends it, `rollback` unwinds it on reorg —
-each checked, with a typed error. There is deliberately no
-`AbsoluteChainWork + AbsoluteChainWork`: no chain is the concatenation of two chains.
+Fold one into the other with the relations in `types::work::arithmetic`:
 
-Boundary doors on `AbsoluteChainWork`: `try_from_reported` reads the 32 big-endian
-bytes a validator reports — all-zero is `Ok(None)` ("not reported"; absence is
-`Option`, never a zero sentinel) and a value past the recorded 128 bits is
-refused rather than truncated — and `to_be_bytes` renders back for the wire.
-`try_new` / `SingleBlockWork::try_new` take an already-computed integer and enforce
-only the non-zero bound. The difficulty → work derivation itself is consensus
-logic and deliberately lives outside this crate, next to the consensus
-implementation that owns it.
+```rust,ignore
+// A chain of one block has that block's work.
+let mut total = AbsoluteChainWork::genesis(block_work);
+
+// Extend by one block; unwind one on reorg. Both checked, with typed errors.
+total = total.accumulate(next_block_work)?;
+total = total.rollback(next_block_work)?;
+```
+
+`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
+sends, and answers `Ok(None)` when the validator does not track the value;
+`to_be_bytes` renders back for the wire. For an integer you already hold, use
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+
+The difficulty-to-work derivation is consensus logic and lives outside this
+crate. The `types::work` module documentation covers why these are separate
+types, and what `AbsoluteChainWork` is *not* — in particular
+`zaino-chain-head`'s anchor-relative work, which is a third quantity.
 
 ## Byte order
 

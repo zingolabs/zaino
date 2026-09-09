@@ -1,33 +1,24 @@
-//! The single-block quantity: the expected work of one block.
+//! The work one block is expected to take.
 
 use core::fmt;
 use core::num::NonZeroU128;
 
-/// The expected work of one block, derived from its difficulty target.
+/// The work one block is expected to take, derived from its difficulty target.
 ///
-/// Strictly positive: a valid difficulty target always yields non-zero work,
-/// so zero is not a work value and is not representable.
+/// Strictly positive. A valid difficulty target always yields non-zero work, so
+/// zero is not a value of this quantity and cannot be represented.
 ///
-/// This is *not* a chain-selection candidate — comparing single blocks by work
-/// decides nothing, which is why the type carries no ordering. Its role is to
-/// be folded into a [`AbsoluteChainWork`](super::AbsoluteChainWork) through the relations in
-/// the `arithmetic` module: seeding at genesis, accumulating forward, rolling
-/// back on reorg.
-///
-/// The value itself comes from a consensus implementation's
-/// difficulty-to-work conversion; this crate takes the already-computed
-/// integer through [`try_new`](Self::try_new) and only enforces the
-/// strictly-positive bound.
+/// Deliberately not `Ord`, and folded into
+/// [`AbsoluteChainWork`](super::AbsoluteChainWork) rather than compared with
+/// it. The module documentation explains both.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SingleBlockWork(NonZeroU128);
 
 /// Error when a work value is zero.
 ///
-/// Work is strictly positive: every valid difficulty target yields non-zero
-/// work, and every chain — genesis included — has accumulated at least one
-/// block's worth. A zero signals a value that was never work (an unset field,
-/// a corrupt row), and is rejected rather than smuggled in as a smallest
-/// element that would sort below every real chain.
+/// Zero is not a work value. It signals an integer that is not work at all — an
+/// unset field, a corrupt row — so it is refused rather than accepted as a
+/// smallest element that would sort below every real chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("work is strictly positive; zero is not a work value")]
 pub struct ZeroWork;
@@ -35,10 +26,8 @@ pub struct ZeroWork;
 impl SingleBlockWork {
     /// Create a block work value, rejecting zero.
     ///
-    /// The boundary door for an already-computed work integer — typically the
-    /// output of a consensus implementation's difficulty-to-work conversion,
-    /// which never yields zero for a valid target. A zero therefore signals a
-    /// value that is not work at all, and is refused rather than wrapped.
+    /// Takes a work integer that has already been computed, normally by a
+    /// consensus implementation's difficulty-to-work conversion.
     pub fn try_new(value: u128) -> Result<Self, ZeroWork> {
         NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
     }
