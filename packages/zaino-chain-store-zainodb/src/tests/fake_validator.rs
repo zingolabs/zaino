@@ -243,9 +243,13 @@ fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeB
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
                 zaino_primitives::types::ChainMetadata {
-                    sapling_tree_size: vector.sapling_tree_size as u32,
-                    orchard_tree_size: vector.orchard_tree_size as u32,
-                    ironwood_tree_size: 0,
+                    sapling_tree_size: zaino_primitives::types::TreeSize::new(
+                        vector.sapling_tree_size,
+                    ),
+                    orchard_tree_size: zaino_primitives::types::TreeSize::new(
+                        vector.orchard_tree_size,
+                    ),
+                    ironwood_tree_size: zaino_primitives::types::TreeSize::ZERO,
                 },
             )
             .expect("vector blocks convert to the domain shape");
@@ -255,11 +259,11 @@ fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeB
                 tree_roots: TreeRoots {
                     sapling: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.sapling_root).into(),
-                        size: vector.sapling_tree_size,
+                        size: zaino_primitives::types::TreeSize::new(vector.sapling_tree_size),
                     }),
                     orchard: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.orchard_root).into(),
-                        size: vector.orchard_tree_size,
+                        size: zaino_primitives::types::TreeSize::new(vector.orchard_tree_size),
                     }),
                     // The vector chain predates NU6.3, so no block in it has an
                     // ironwood treestate. `None`, not a zero root: the two are

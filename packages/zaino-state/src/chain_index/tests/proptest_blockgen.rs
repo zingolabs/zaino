@@ -1078,9 +1078,9 @@ impl ProptestMockchain {
         zaino_convert_zebra::block_from_zebra(
             &block,
             zaino_primitives::types::ChainMetadata {
-                sapling_tree_size: 0,
-                orchard_tree_size: 0,
-                ironwood_tree_size: 0,
+                sapling_tree_size: zaino_primitives::types::TreeSize::ZERO,
+                orchard_tree_size: zaino_primitives::types::TreeSize::ZERO,
+                ironwood_tree_size: zaino_primitives::types::TreeSize::ZERO,
             },
         )
         .map_err(|error| format!("proptest block did not convert: {error}"))
@@ -1403,7 +1403,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
 
         let info = |root: [u8; 32], size: u64| zaino_primitives::types::TreeRootInfo {
             root: zaino_primitives::types::TreeRoot::from(root),
-            size,
+            size: zaino_primitives::types::TreeSize::new(size),
         };
 
         // An empty pool reports the empty-tree root, not an absent one. A

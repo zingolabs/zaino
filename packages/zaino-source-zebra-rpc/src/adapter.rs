@@ -1,6 +1,8 @@
 //! Trait implementations: zaino-source query traits on [`ZebraRpcAdapter`].
 
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
+use zaino_primitives::types::{
+    Block, BlockHash, ChainMetadata, Height, TransactionId, TreeSize, Treestate,
+};
 use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, FetchError, GetBlockError, GetChainTipError, GetTreestateError, QueryError,
@@ -218,9 +220,9 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
         // not a measurement: a consumer that needs real sizes must not read
         // them off this block.
         let chain_metadata = ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         };
 
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
@@ -448,9 +450,9 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
 
         // Tree sizes are indexed state, not block data — see `GetBlock`.
         let chain_metadata = ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         };
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
             .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
