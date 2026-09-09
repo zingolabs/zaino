@@ -17,7 +17,9 @@
 
 use corez::io::{self, Read, Write};
 
-use crate::types::{BlockContext, BlockHash, BlockIndex, AbsoluteChainWork, CompactDifficulty, Height};
+use crate::types::{
+    AbsoluteChainWork, BlockContext, BlockHash, BlockIndex, CompactDifficulty, Height,
+};
 use zaino_encoding::{
     read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option, write_u32_le,
     FixedEncodedLen, ZainoVersionedSerde,
@@ -252,7 +254,7 @@ mod tests {
     use super::{BlockContext, PersistentBlockContext, PersistentChainWork};
     use crate::types::fixtures::{canonical_blockheaderdata, expected_v2_bytes};
     use crate::types::BlockHeaderData;
-    use crate::types::{BlockHash, BlockIndex, AbsoluteChainWork, Height};
+    use crate::types::{AbsoluteChainWork, BlockHash, BlockIndex, Height};
     use zaino_encoding::ZainoVersionedSerde as _;
 
     /// `BlockContext → PersistentBlockContext → BlockContext` is identity.
@@ -335,8 +337,9 @@ mod tests {
     /// same value.
     fn assert_encoders_agree(value: u128) {
         let cw = AbsoluteChainWork::new(NonZeroU128::new(value).expect("nonzero"));
-        let original =
-            legacy_chainwork_reference::AbsoluteChainWork::from_u256(primitive_types::U256::from(value));
+        let original = legacy_chainwork_reference::AbsoluteChainWork::from_u256(
+            primitive_types::U256::from(value),
+        );
         let original_bytes = *original.as_bytes();
 
         // Encode: the current encoder reproduces the original's big-endian bytes.

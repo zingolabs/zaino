@@ -1,7 +1,8 @@
 //! Blocks as the store holds and serves them.
 
 use zaino_primitives::types::{
-    BlockHeader, BlockRef, AbsoluteChainWork, PreIndexCompactTx, ShieldedPool, SignedZatoshis, TreeRoots,
+    AbsoluteChainWork, BlockHeader, BlockRef, PreIndexCompactTx, ShieldedPool, SignedZatoshis,
+    TreeRoots,
 };
 
 /// A finalised block, as the store indexed it.

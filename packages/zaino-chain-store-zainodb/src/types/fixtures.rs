@@ -1,7 +1,8 @@
 //! Unit tests for Zaino-state::ChainIndex::types and encoding.
 
 use crate::types::{
-    BlockContext, BlockData, BlockHeaderData, AbsoluteChainWork, CompactDifficulty, EquihashSolution,
+    AbsoluteChainWork, BlockContext, BlockData, BlockHeaderData, CompactDifficulty,
+    EquihashSolution,
 };
 use zaino_encoding::{version, ZainoVersionedSerde as _};
 
@@ -18,8 +19,7 @@ const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let hash = crate::types::BlockHash::from([1u8; 32]);
     let parent_hash = crate::types::BlockHash::from([2u8; 32]);
-    let chainwork =
-        AbsoluteChainWork::new(core::num::NonZeroU128::new(0x42).expect("nonzero"));
+    let chainwork = AbsoluteChainWork::new(core::num::NonZeroU128::new(0x42).expect("nonzero"));
     let height = crate::types::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");

@@ -59,10 +59,10 @@ use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
-    BlockContext, BlockData, BlockHash, SingleBlockWork, AbsoluteChainWork, CompactDifficulty,
-    CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTxData,
-    EquihashSolution, Height, IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType,
-    TransactionHash, TransparentCompactTx, TxInCompact, TxOutCompact,
+    AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactDifficulty, CompactOrchardAction,
+    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
+    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, SingleBlockWork, TransactionHash,
+    TransparentCompactTx, TxInCompact, TxOutCompact,
 };
 
 /// A domain block could not be expressed as an [`IndexedBlock`].

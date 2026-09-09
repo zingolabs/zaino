@@ -249,7 +249,7 @@ use crate::metric_names::*;
 
 use crate::adapter::domain_block_ref;
 use crate::store::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode};
-use crate::types::{BlockHash, AbsoluteChainWork, Height, IndexedBlock, GENESIS_HEIGHT};
+use crate::types::{AbsoluteChainWork, BlockHash, Height, IndexedBlock, GENESIS_HEIGHT};
 use zaino_chain_store::ChainStoreConfig;
 
 use crate::config::{StoreSettings, ZainoDbConfig};

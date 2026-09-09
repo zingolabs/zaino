@@ -1,6 +1,6 @@
 //! Chain-state facts about a block that are not in the block itself.
 
-use super::{BlockHash, AbsoluteChainWork, Confirmations, Difficulty, ValuePoolBalance};
+use super::{AbsoluteChainWork, BlockHash, Confirmations, Difficulty, ValuePoolBalance};
 
 /// What a verbose block query adds to the block's own bytes.
 ///

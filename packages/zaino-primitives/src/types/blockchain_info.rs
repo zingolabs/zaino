@@ -1,7 +1,7 @@
 //! Validator chain state, including the network upgrade schedule Zaino adopts.
 
 use super::{
-    BlockHash, AbsoluteChainWork, ConsensusBranchIds, Difficulty, Height, NetworkUpgradeInfo,
+    AbsoluteChainWork, BlockHash, ConsensusBranchIds, Difficulty, Height, NetworkUpgradeInfo,
     SignedZatoshis, Zatoshis,
 };
 

@@ -6,7 +6,7 @@
 //! (`PersistentBlockContext`), and the two types round-trip via `from_business`/
 //! `to_business` conversion methods defined on that type.
 
-use super::{BlockHash, BlockIndex, AbsoluteChainWork, Height};
+use super::{AbsoluteChainWork, BlockHash, BlockIndex, Height};
 
 /// The block's [`BlockIndex`], parent hash, and cumulative chainwork.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

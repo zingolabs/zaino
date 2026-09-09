@@ -35,7 +35,7 @@ use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
-use crate::types::{BlockContext, AbsoluteChainWork, CompactDifficulty};
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty};
 use zaino_encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,

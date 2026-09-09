@@ -1,7 +1,7 @@
 //! `getblockheader` — block header plus cumulative chain state.
 
 use crate::types::{
-    BlockCommitments, BlockHash, BlockTime, AbsoluteChainWork, CompactDifficulty, Confirmations,
+    AbsoluteChainWork, BlockCommitments, BlockHash, BlockTime, CompactDifficulty, Confirmations,
     Difficulty, EquihashNonce, Height, MerkleRoot, TreeRoot,
 };
 

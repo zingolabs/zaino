@@ -54,11 +54,11 @@ use crate::types::db::legacy::AddrEventBytes;
 use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::types::EquihashSolution;
 use crate::types::{
-    AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, AbsoluteChainWork,
-    CompactDifficulty, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, Height,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, ScriptType,
-    ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TxInCompact,
-    TxLocation, TxOutCompact, TxidList,
+    AbsoluteChainWork, AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash,
+    BlockHeaderData, CompactDifficulty, CompactOrchardAction, CompactSaplingOutput,
+    CompactSaplingSpend, Height, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
+    SaplingTxList, ScriptType, ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx,
+    TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
 use zaino_encoding::{FixedEncodedLen, ZainoVersionedSerde};
 

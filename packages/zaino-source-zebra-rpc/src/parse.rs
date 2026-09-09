@@ -31,8 +31,8 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
         ScriptPubKey, SpentInfo, TxOut,
     },
-    AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
-    BlockchainInfo, AbsoluteChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
+    AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
+    BlockVerbose, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
     NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
     ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
@@ -901,7 +901,9 @@ pub(crate) fn parse_blockchain_info(
 /// semantics: all-zero reads as `None` — "not reported", never a zero a
 /// consumer could compare — and a value past the domain's 128-bit width is
 /// refused rather than truncated.
-fn parse_reported_chain_work(value: &serde_json::Value) -> Result<Option<AbsoluteChainWork>, ParseError> {
+fn parse_reported_chain_work(
+    value: &serde_json::Value,
+) -> Result<Option<AbsoluteChainWork>, ParseError> {
     let be = if let Some(number) = value.as_u64() {
         let mut be = [0u8; 32];
         be[24..].copy_from_slice(&number.to_be_bytes());

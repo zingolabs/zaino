@@ -12,7 +12,7 @@
 //! - BlockWithMetadata - Block with associated metadata
 
 use super::db::legacy::*;
-use crate::types::{BlockContext, SingleBlockWork, AbsoluteChainWork, CompactDifficulty};
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty, SingleBlockWork};
 
 /// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
 ///

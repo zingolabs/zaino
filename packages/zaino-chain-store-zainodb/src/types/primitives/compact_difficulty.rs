@@ -82,7 +82,8 @@ impl CompactDifficulty {
             .to_work()
             .expect("validated at construction: nBits encodes a valid target");
         // A valid, nonzero target always produces nonzero work.
-        SingleBlockWork::try_new(work.as_u128()).expect("valid compact difficulty produces nonzero work")
+        SingleBlockWork::try_new(work.as_u128())
+            .expect("valid compact difficulty produces nonzero work")
     }
 
     /// Returns a human-readable difficulty as a multiple of the network's
