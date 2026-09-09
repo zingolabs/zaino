@@ -33,9 +33,11 @@
 //! that coexist at one moment cannot total more than the coins that exist, so
 //! under that precondition the sum is itself in `[0, S]`; the fold lands back
 //! in [`Zatoshis`] rather than a new type, refusing a total past the supply.
-//! `A` is still not closed under addition — the precondition, not the set,
-//! keeps this result inside it. `net` subtracts a spent flow from a received one and admits the
-//! result only as a signed value: a balance change lives in `[−S, S]`, so a
+//! `A` is still not closed under addition: the checked fold, not the set,
+//! keeps this result inside it, and the precondition is what lets a refusal
+//! be read as overlapping or double-counted input rather than a large number.
+//! `net` subtracts a spent flow from a received one and admits the result
+//! only as a signed value: a balance change lives in `[−S, S]`, so a
 //! result outside it is refused. That bound is a property of a balance change,
 //! which the two sums are only when they are the received and spent flow of
 //! one balance — `net`'s contract. A difference of unrelated flow sums is not
