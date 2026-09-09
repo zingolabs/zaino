@@ -3,13 +3,13 @@
 //! Cross-type operations are relations between quantities, not methods of a
 //! single one, so they live here beside the types rather than on any of them.
 //! This module is also where the allowed operations — the algebra — are written
-//! down as the specification a new summation site inherits.
+//! down as the specification a new sum is written against.
 //!
 //! # The algebra
 //!
 //! Write `A` for an amount of ZEC counted in zatoshis, `F` for a flow sum,
-//! `D` for a signed value,
-//! and `S` for the money supply. The quantities occupy nested ranges:
+//! `D` for a signed value, and `S` for the money supply. The quantities
+//! occupy nested ranges:
 //!
 //! ```text
 //! A ∈ [0, S]          an amount of ZEC counted in zatoshis
