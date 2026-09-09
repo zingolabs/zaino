@@ -147,7 +147,7 @@ impl crate::OneShotGetTreestate for MockChain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{BlockHeader, ChainMetadata, EquihashSolution, TreeSize};
+    use zaino_primitives::types::{BlockHeader, ChainMetadata, EquihashSolution};
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid test height")
@@ -173,11 +173,7 @@ mod tests {
                 solution: EquihashSolution::Regtest([0; 36]),
             },
             transactions: vec![],
-            chain_metadata: ChainMetadata {
-                sapling_tree_size: TreeSize::ZERO,
-                orchard_tree_size: TreeSize::ZERO,
-                ironwood_tree_size: TreeSize::ZERO,
-            },
+            chain_metadata: ChainMetadata::ZERO,
         }
     }
 
