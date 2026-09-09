@@ -10,7 +10,7 @@ use zaino_rpc::metric_names::*;
 use zaino_serve::metric_names::*;
 use zaino_state::mempool_metric_names::*;
 use zaino_state::metric_names::*;
-use zaino_status::metric_names::*;
+use zaino_status::{metric_names::*, StatusType};
 
 use crate::error::IndexerError;
 
@@ -162,54 +162,57 @@ fn describe_metrics() {
         metrics::describe_gauge!(metric, help);
     }
 
-    // Legend ships in the scrape; a dashboard-side copy of it drifts, silently
-    for (metric, help, values) in LEGENDS {
-        let legend: Vec<String> = values
-            .iter()
-            .enumerate()
-            .map(|(discriminant, name)| format!("{discriminant}={name}"))
-            .collect();
-        metrics::describe_gauge!(*metric, format!("{help}: {}", legend.join(", ")));
-    }
-}
-
-/// Gauges publishing a raw discriminant; the legend is what makes one readable
-const LEGENDS: &[(&str, &str, &[&str])] = &[
-    (STATUS, "Component state, by name", &STATUS_VALUES),
-    (
+    describe_legend(STATUS, "Component state, by name", &StatusType::ALL);
+    describe_legend(
         MEMPOOL_COMPLETENESS,
         "Published mempool set completeness",
-        &MEMPOOL_COMPLETENESS_VALUES,
-    ),
-];
+        &MempoolCompleteness::ALL,
+    );
+}
+
+/// Numbers a discriminant gauge's variants into its `# HELP`.
+///
+/// - Legend ships in the scrape; a dashboard-side copy of it drifts, silently
+/// - `{:?}` over the variants themselves, never a parallel string table: the names
+///   are derived, and position is the discriminant (pinned by each enum's own test)
+fn describe_legend<T: std::fmt::Debug>(metric: &'static str, help: &str, variants: &[T]) {
+    let legend: Vec<String> = variants
+        .iter()
+        .enumerate()
+        .map(|(discriminant, variant)| format!("{discriminant}={variant:?}"))
+        .collect();
+    metrics::describe_gauge!(metric, format!("{help}: {}", legend.join(", ")));
+}
 
 /// - Absent ≠ zero: an unseeded series reads as "this build does not report it"
-/// - Per-block counters seed themselves when the store builds its cached handles
+/// - Seeded through the macro, never a cached handle: a handle binds to one recorder
+///   for the life of the process, so it would no-op against one installed later
 /// - No height gauges (0 = a false height), no `method` families ([`UNSEEDABLE_COUNTERS`])
 fn initialise_counters() {
-    zaino_state::seed_block_counters();
-
-    for outcome in ["ok", "error"] {
-        metrics::counter!(SYNC_ITERATIONS_TOTAL, SYNC_OUTCOME => outcome).increment(0);
+    for (metric, _) in all(COUNTERS) {
+        if !UNSEEDABLE_COUNTERS.contains(&metric) {
+            metrics::counter!(metric).increment(0);
+        }
     }
+    // 0 is a true statement for these ("not migrating", "not rebuilding"), unlike a
+    // height. Published only when the thing happens, so a node that never migrates
+    // would otherwise never emit them at all
     for name in [
-        DB_ON_DEMAND_VALIDATIONS_TOTAL,
-        DB_CORRUPT_ROWS_TOTAL,
-        CHAIN_HEAD_REORG_TOTAL,
-        RESTARTS_TOTAL,
+        ROUTER_EPHEMERAL_MODE,
+        MIGRATION_ACTIVE,
+        ACCUMULATOR_REBUILD_ACTIVE,
     ] {
-        metrics::counter!(name).increment(0);
+        metrics::gauge!(name).set(0.0);
     }
 }
 
 /// Labels unknown until emission; a partial seed is a different series, not a placeholder
 ///
 /// - `rate()` over an absent series yields no data, so alerts need `or vector(0)`
-#[cfg(test)]
 const UNSEEDABLE_COUNTERS: &[&str] = &[
     GRPC_ERRORS_TOTAL,
     JSONRPC_ERRORS_TOTAL,
-    RPC_OUTBOUND_REQUESTS_TOTAL,
+    RPC_OUTBOUND_ERRORS_TOTAL,
 ];
 
 #[cfg(test)]
@@ -274,6 +277,25 @@ mod tests {
         }
     }
 
+    /// - `metric_names!` rejects a duplicate identifier but not a duplicate name;
+    ///   two entries sharing one name silently drop the second `# HELP`
+    #[test]
+    fn no_metric_name_is_declared_twice() {
+        let mut names: Vec<&str> = all(COUNTERS)
+            .chain(all(GAUGES))
+            .chain(all(HISTOGRAMS))
+            .map(|(name, _)| name)
+            .collect();
+        names.sort_unstable();
+        let total = names.len();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            total,
+            "a metric name is declared more than once"
+        );
+    }
+
     /// - Missing ladder = a summary at runtime; stale ladder = a decision about a
     ///   histogram nothing emits. `init` refuses to start on the first, not the second
     #[test]
@@ -325,19 +347,31 @@ mod tests {
             metrics::gauge!(STATUS, STATUS_COMPONENT => "test").set(0.0);
             metrics::gauge!(MEMPOOL_COMPLETENESS).set(0.0);
         });
-        for (metric, _, values) in LEGENDS {
+        let legend_of = |metric: &str| {
             let rendered = metric.replace('.', "_");
-            let help = scrape
+            scrape
                 .lines()
                 .find(|line| line.starts_with(&format!("# HELP {rendered} ")))
-                .unwrap_or_else(|| panic!("`{metric}` has no HELP line. Scrape was:\n{scrape}"));
-            for (discriminant, name) in values.iter().enumerate() {
-                assert!(
-                    help.contains(&format!("{discriminant}={name}")),
-                    "`{metric}` help omits `{discriminant}={name}`, so that state is \
-                     unreadable in a dashboard. Help line was:\n{help}"
-                );
-            }
+                .unwrap_or_else(|| panic!("`{metric}` has no HELP line. Scrape was:\n{scrape}"))
+                .to_string()
+        };
+
+        let status = legend_of(STATUS);
+        for (discriminant, variant) in StatusType::ALL.iter().enumerate() {
+            assert!(
+                status.contains(&format!("{discriminant}={variant:?}")),
+                "`{STATUS}` help omits `{discriminant}={variant:?}`, so that state is \
+                 unreadable in a dashboard. Help line was:\n{status}"
+            );
+        }
+
+        let completeness = legend_of(MEMPOOL_COMPLETENESS);
+        for (discriminant, variant) in MempoolCompleteness::ALL.iter().enumerate() {
+            assert!(
+                completeness.contains(&format!("{discriminant}={variant:?}")),
+                "`{MEMPOOL_COMPLETENESS}` help omits `{discriminant}={variant:?}`. \
+                 Help line was:\n{completeness}"
+            );
         }
     }
 }

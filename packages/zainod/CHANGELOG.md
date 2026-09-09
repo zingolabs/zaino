@@ -9,6 +9,12 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `/livez` and `/readyz` beside `/metrics` on the admin listener, which now runs on
+  its own thread and current-thread runtime. `zaino-status` has carried `Liveness`
+  and `Readiness` since it was split out, but nothing served them, so Kubernetes
+  could not probe Zaino at all. Syncing is live-but-not-ready. The isolation matters
+  most for the probes: one answered from a saturated runtime measures that runtime's
+  queue, and a timed-out liveness probe gets the pod killed.
 - An `fs_mode` field on the periodic `Zaino status check` log line, reporting
   whether finalised-state reads are served by the persistent database
   (`persistent`), by the ephemeral passthrough during sync or migration
@@ -19,12 +25,12 @@ and this crate adheres to Rust's notion of
   `fs_mode: persistent`, or on the `finalised state online` log line, rather
   than on `Ready`.
 - Metric descriptions for `zaino.db.finalized_ephemeral`,
-  `zaino.db.accumulator_built_height` and
-  `zaino.db.accumulator_rebuild_active`. Note the `prometheus` feature is off
-  by default, so these are inert unless explicitly enabled.
+  `zaino.sync.accumulator_height` and `zaino.db.accumulator_rebuild_active`. Note
+  the `prometheus` feature is off by default, so no listener starts unless it is
+  enabled.
 - Process-level resource metrics (`process_cpu_seconds_total`,
-  `process_resident_memory_bytes`, fds, threads) via `metrics-process`, on a 10s
-  timer. CPU-bound, disk-contended and waiting-on-validator all shift the same
+  `process_resident_memory_bytes`, fds, threads) via `metrics-process`, sampled on
+  scrape rather than on a timer, so nothing runs while idle. CPU-bound, disk-contended and waiting-on-validator all shift the same
   latency histograms the same way.
 - `zainod.restarts_total`, counted in the supervisor's restart loop. The restart
   is in-process and the recorder outlives it, so no counter resets and no gauge
@@ -39,7 +45,7 @@ and this crate adheres to Rust's notion of
   teardown killed it mid-write; teardown now drives the same `close()` path as an
   internal shutdown.
 - A check that `HISTOGRAMS` covers exactly the histograms the workspace emits,
-  against each emitting crate's `HISTOGRAM_METRICS`. The other two histogram tests
+  against each emitting crate's `HISTOGRAMS`. The other histogram test
   check the table against itself, which is how `reorg_depth` shipped wrong.
 - Explicit bucket bounds per histogram: a finer ladder for the three per-block
   timings than for the gRPC and batch-commit ones. Matched on the **whole** name —
@@ -51,8 +57,9 @@ and this crate adheres to Rust's notion of
   absent is honest. The per-block counters are seeded by resolving their cached
   handles, so registration and the hot-path lookup elision are one mechanism.
 - Storage gauges `zaino.db.map_size_bytes` and `zaino.db.used_bytes`.
-- Per-pool throughput counters `zaino.sync.transparent_ops_total`,
-  `zaino.sync.sapling_ops_total` and `zaino.sync.ironwood_actions_total`.
+- Per-pool, per-direction throughput counters `zaino.sync.transparent_inputs_total`,
+  `transparent_outputs_total`, `sapling_spends_total`, `sapling_outputs_total`,
+  `orchard_actions_total` and `ironwood_actions_total`.
 - Progress gauge `zaino.sync.fetched_height` and timing histograms
   `zaino.sync.block_fetch_seconds` / `zaino.sync.batch_write_seconds`.
 - `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
@@ -73,8 +80,7 @@ and this crate adheres to Rust's notion of
   `zaino.sync.sapling_outputs_total`, `zaino.sync.last_block_written_at`,
   `zaino.db.tip_height`, `zaino.grpc.requests_total`,
   `zaino.mempool.transactions`, `zaino.mempool.tip_changes_total`, or the
-  `zaino.rpc.outbound.{requests_total,request_duration_seconds,errors_total}`
-  triple. Replacements are noted per metric in the `zaino-state` and
+  `zaino.rpc.outbound.request_duration_seconds`. Replacements are noted per metric in the `zaino-state` and
   `zaino-serve` changelogs.
 ### Fixed
 - **`zaino.sync.reorg_depth` rendered as a summary, not a histogram.** Descriptions

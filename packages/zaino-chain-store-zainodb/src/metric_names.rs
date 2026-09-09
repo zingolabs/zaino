@@ -14,7 +14,7 @@ zaino_status::metric_names! {
     // Behind the finalised tip: reads above validated_height pay a synchronous re-read
     gauge DB_VALIDATED_HEIGHT = "zaino.db.validated_height" => "Height the finalized index is structurally validated to";
     histogram DB_VALIDATION_SECONDS = "zaino.db.validation_seconds" => "Seconds to structurally re-validate one stored block";
-    counter DB_ON_DEMAND_VALIDATIONS_TOTAL = "zaino.db.on_demand_validations_total" => "Reads that re-validated a block synchronously, above validated_height";
+    counter DB_ON_DEMAND_VALIDATIONS_TOTAL = "zaino.db.on_demand_validations_total" => "Reads that took the synchronous re-validation path; `db_validation_seconds` counts the ones that did work";
 
     // DB vs passthrough: different latency & correctness, otherwise indistinguishable
     gauge ROUTER_EPHEMERAL_MODE = "zaino.router.ephemeral_mode" => "Ephemeral routing: 0 none, 1 read-only, 2 full (migration)";
@@ -30,7 +30,7 @@ zaino_status::metric_names! {
     // Insert+sort vs device flush: they saturate for unrelated reasons
     histogram SYNC_BATCH_WRITE_SECONDS = "zaino.sync.batch_write_seconds" => "Seconds to write one block batch into the B-tree, excluding the fsync";
     histogram SYNC_FSYNC_SECONDS = "zaino.sync.fsync_seconds" => "Seconds in the LMDB checkpoint fsync after a batch write";
-    histogram SYNC_BATCH_BLOCKS = "zaino.sync.batch_blocks" => "Blocks in one committed write batch";
+    histogram SYNC_BATCH_BLOCKS = "zaino.sync.batch_blocks" => "Blocks in one assembled write batch";
 
     // O(range) delta vs from-genesis rebuild, which share a distribution without `mode`
     histogram SYNC_ACCUMULATOR_SECONDS = "zaino.sync.accumulator_seconds" => "Seconds bringing the txout-set accumulator to the tip, by mode";

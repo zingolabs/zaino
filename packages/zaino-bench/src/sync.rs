@@ -50,14 +50,8 @@ struct Sample {
     elapsed: Duration,
     finalized_height: u64,
     target_height: u64,
-    /// The node's own `zaino.sync.lag_blocks` gauge, recorded raw. Not used
-    /// for progress or completion — see [`Sample::lag`] for why — but kept in
-    /// the CSV so the run has the node's own reading next to the derived one.
-    lag_blocks: Option<u64>,
-    db_tip_height: Option<u64>,
     chain_tip_height: Option<u64>,
     transactions: Option<u64>,
-    reached_tip: bool,
 }
 
 impl Sample {
@@ -174,15 +168,10 @@ fn sample(scrape: &Scrape, elapsed: Duration) -> Result<Sample, BenchError> {
         elapsed,
         finalized_height: scrape.height(names::SYNC_FINALIZED_HEIGHT)?,
         target_height: scrape.height(names::SYNC_TARGET_HEIGHT)?,
-        lag_blocks: scrape
-            .get(names::SYNC_LAG_BLOCKS)
-            .map(|v| v.max(0.0) as u64),
-        db_tip_height: scrape.get(names::DB_TIP_HEIGHT).map(|v| v as u64),
         chain_tip_height: scrape.get(names::CHAIN_TIP_HEIGHT).map(|v| v as u64),
         transactions: scrape.get(names::SYNC_TRANSACTIONS_TOTAL).map(|v| v as u64),
         // Absent until the sync loop completes its first iteration, which is
         // "not yet at tip" rather than an error.
-        reached_tip: scrape.get(names::SYNC_HAS_REACHED_TIP).unwrap_or(0.0) >= 1.0,
     })
 }
 
@@ -237,9 +226,6 @@ fn report(samples: &[Sample], start_height: u64) {
     eprintln!("  End height:         {}", last.finalized_height);
     eprintln!("  Blocks synced:      {blocks}");
     eprintln!("  Target height:      {}", last.target_height);
-    if let Some(db_tip) = last.db_tip_height {
-        eprintln!("  Db tip height:      {db_tip}");
-    }
     if let Some(chain_tip) = last.chain_tip_height {
         eprintln!("  Chain tip height:   {chain_tip}");
     }
@@ -256,11 +242,6 @@ fn report(samples: &[Sample], start_height: u64) {
     eprintln!(
         "  Caught up:          {}",
         if last.caught_up() { "yes" } else { "no" }
-    );
-    eprintln!(
-        "  Node's has_reached_tip gauge: {} (set once the sync loop is healthy, \
-         not on arrival at the tip)",
-        if last.reached_tip { "1" } else { "0" }
     );
 }
 
@@ -284,7 +265,7 @@ fn write_csv(path: &str, samples: &[Sample]) -> Result<(), BenchError> {
     let mut file = std::fs::File::create(path).map_err(csv_error)?;
     writeln!(
         file,
-        "elapsed_secs,finalized_height,target_height,lag_blocks,node_lag_gauge,db_tip_height,chain_tip_height,transactions_total,interval_blocks_per_sec"
+        "elapsed_secs,finalized_height,target_height,lag_blocks,chain_tip_height,transactions_total,interval_blocks_per_sec"
     )
     .map_err(csv_error)?;
 
@@ -292,13 +273,11 @@ fn write_csv(path: &str, samples: &[Sample]) -> Result<(), BenchError> {
     for current in samples {
         writeln!(
             file,
-            "{:.3},{},{},{},{},{},{},{},{}",
+            "{:.3},{},{},{},{},{},{}",
             current.elapsed.as_secs_f64(),
             current.finalized_height,
             current.target_height,
             current.lag(),
-            optional(current.lag_blocks),
-            optional(current.db_tip_height),
             optional(current.chain_tip_height),
             optional(current.transactions),
             interval_rate(current, previous)
@@ -320,64 +299,50 @@ fn optional(value: Option<u64>) -> String {
 mod tests {
     use super::*;
 
-    fn at(elapsed_secs: u64, finalized_height: u64, reached_tip: bool) -> Sample {
+    fn at(elapsed_secs: u64, finalized_height: u64) -> Sample {
         Sample {
             elapsed: Duration::from_secs(elapsed_secs),
             finalized_height,
             target_height: 3_390_744,
-            lag_blocks: None,
-            db_tip_height: Some(finalized_height),
             chain_tip_height: Some(3_390_744),
             transactions: None,
-            reached_tip,
         }
     }
 
-    /// The node's `lag_blocks` gauge reports the non-finalised seam depth, a
-    /// constant, so a run three million blocks short of the tip and one sitting
-    /// on it both publish roughly the same value. `lag` must therefore derive
-    /// from the heights and ignore the gauge entirely.
+    /// - Lag derives from the heights; the node published no usable lag gauge, and
+    ///   the one it used to publish reported the non-finalised seam depth
     #[test]
-    fn lag_is_derived_from_the_heights_not_the_nodes_gauge() {
-        let mut sample = at(10, 3_000_000, false);
-        assert_eq!(sample.lag(), 390_744, "target - finalized");
-
-        sample.lag_blocks = Some(100);
-        assert_eq!(
-            sample.lag(),
-            390_744,
-            "the seam-depth gauge must not override the derived lag"
-        );
+    fn lag_is_derived_from_the_heights() {
+        assert_eq!(at(10, 3_000_000).lag(), 390_744, "target - finalized");
     }
 
-    /// The regression behind an early exit: the node sets `has_reached_tip` as
-    /// soon as its sync loop is healthy, which is seconds into a multi-hour
-    /// sync. Completion must follow the heights instead.
+    /// - Completion follows the heights: an early "healthy" signal is seconds into a
+    ///   multi-hour sync
     #[test]
-    fn the_nodes_reached_tip_gauge_does_not_end_a_run() {
-        let early = at(30, 8_897, true);
+    fn a_run_ends_on_the_heights_not_an_early_signal() {
+        let early = at(30, 8_897);
         assert!(
             !early.caught_up(),
             "8897 of 3390744 is not caught up, whatever the gauge says"
         );
         assert!(!finished(Some(&early), None), "the run must keep going");
 
-        let done = at(9_000, 3_390_744, false);
+        let done = at(9_000, 3_390_744);
         assert!(done.caught_up(), "finalized == target is caught up");
         assert!(finished(Some(&done), None), "and ends the run");
     }
 
     #[test]
     fn a_run_without_until_height_finishes_when_it_catches_up() {
-        assert!(!finished(Some(&at(10, 100, false)), None));
-        assert!(finished(Some(&at(10, 3_390_744, false)), None));
+        assert!(!finished(Some(&at(10, 100)), None));
+        assert!(finished(Some(&at(10, 3_390_744)), None));
     }
 
     #[test]
     fn until_height_finishes_the_run_before_the_tip() {
-        assert!(!finished(Some(&at(10, 99, false)), Some(100)));
-        assert!(finished(Some(&at(10, 100, false)), Some(100)));
-        assert!(finished(Some(&at(10, 101, false)), Some(100)));
+        assert!(!finished(Some(&at(10, 99)), Some(100)));
+        assert!(finished(Some(&at(10, 100)), Some(100)));
+        assert!(finished(Some(&at(10, 101)), Some(100)));
     }
 
     #[test]
@@ -388,15 +353,15 @@ mod tests {
 
     #[test]
     fn interval_rate_is_blocks_over_the_gap() {
-        let previous = at(10, 1_000, false);
-        let current = at(20, 6_000, false);
+        let previous = at(10, 1_000);
+        let current = at(20, 6_000);
         assert_eq!(interval_rate(&current, Some(&previous)), Some(500.0));
     }
 
     #[test]
     fn interval_rate_needs_two_samples_and_a_positive_gap() {
-        let current = at(10, 1_000, false);
+        let current = at(10, 1_000);
         assert_eq!(interval_rate(&current, None), None);
-        assert_eq!(interval_rate(&current, Some(&at(10, 900, false))), None);
+        assert_eq!(interval_rate(&current, Some(&at(10, 900))), None);
     }
 }

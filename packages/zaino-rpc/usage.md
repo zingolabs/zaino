@@ -69,8 +69,8 @@ Names live here (this crate emits them); registration and descriptions in `zaino
 - `requests_total{method,outcome}` — one increment per *attempt*, so family total =
   attempt count, each outcome (`ok`, `rpc_error`, `retried`, `transport_error`) a
   computable fraction
-- Rising `retried` share = validator work queue filling (refused, not served
-  slowly → never appears as latency)
+- Rising `retried` share = validator work queue filling. A refusal is fast, so it
+  drags `duration_seconds` down rather than up — the share is the signal, not latency
 - `duration_seconds{method}` — per attempt that got a response, retry sleeps excluded
 
 `method` is a label → `call` / `call_with_timeout` take `&'static str`: cardinality

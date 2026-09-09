@@ -17,8 +17,6 @@ transparent_address_history_experimental = [
     "zaino-chain-head/transparent_address_history_experimental",
 ]
 
-# Prometheus metric emission from the advance path.
-
 # TEST-ONLY: exposes `spawn_without_writer` and `advance_once`, so a downstream
 # test crate can step the chain head deterministically instead of racing its
 # timer. MUST appear only in `[dev-dependencies]` — `resolver = "2"` keeps

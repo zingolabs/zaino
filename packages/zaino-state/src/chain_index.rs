@@ -1029,8 +1029,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                     // so. Reported here rather than from the coherence layer
                     // because this loop is the thing that would have to fix it.
                     let frozen_for = coherence.frozen_for();
-                    metrics::gauge!(MEMPOOL_COHERENCE_FROZEN_SECONDS)
-                        .set(frozen_for.map_or(0.0, |d| d.as_secs_f64()));
                     if let Some(frozen_for) = frozen_for {
                         if frozen_for >= COHERENCE_FREEZE_ESCALATION {
                             tracing::warn!(
@@ -1045,12 +1043,14 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                     } => r,
                 };
 
-                // The heartbeat: throughput goes flat on a quiet chain *and* a stopped
-                // loop; this ticks only in the first
-                {
-                    let outcome = if sync_result.is_ok() { "ok" } else { "error" };
-                    metrics::counter!(SYNC_ITERATIONS_TOTAL, SYNC_OUTCOME => outcome).increment(1);
-                }
+                // Outside the fallible block: an unreachable validator is exactly when
+                // coherence freezes, and that path returns before reaching it, so the
+                // gauge would read 0 through the whole incident
+                metrics::gauge!(MEMPOOL_COHERENCE_FROZEN_SECONDS).set(
+                    coherence
+                        .frozen_for()
+                        .map_or(0.0, |frozen| frozen.as_secs_f64()),
+                );
 
                 match sync_result {
                     Ok(()) => {

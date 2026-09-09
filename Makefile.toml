@@ -164,5 +164,27 @@ dependencies = [
   "test-experimental-features",
 ]
 
+# The `prometheus` feature carries the recorder, the admin listener and every
+# metric registration contract (bucket ladders, counter seeding, discriminant
+# legends). The main archive builds --no-default-features, so none of it compiles
+# in CI and none of its tests run — a seeding regression that only reproduces in a
+# shared test process reached review because of exactly that gap.
+[tasks.check-prometheus-packages]
+description = "cargo check --features prometheus across the whole workspace"
+command = "cargo"
+args = ["check", "--workspace", "--all-targets", "--features", "zainod/prometheus"]
+
+# Run under `cargo test`, not nextest: nextest gives each test its own process,
+# which hides any state cached in a `static` across tests — and the metric handles
+# are cached in exactly that way.
+[tasks.test-prometheus]
+description = "Run the zainod suite with prometheus enabled, in one shared process"
+command = "cargo"
+args = ["test", "-p", "zainod", "--features", "prometheus"]
+
+[tasks.check-prometheus]
+description = "Verify the prometheus feature compiles workspace-wide and its tests pass"
+dependencies = ["check-prometheus-packages", "test-prometheus"]
+
 # -------------------------------------------------------------------
 

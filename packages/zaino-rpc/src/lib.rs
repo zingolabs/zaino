@@ -22,15 +22,18 @@ pub use probe::{auth_from_parts, probe_node, ProbeError};
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {
     zaino_status::metric_names! {
-        // Retries are an `outcome`, not their own counter: with no denominator they read
-        // the same under saturation and under growing load. `method` is not enumerable
-        // (each caller names its own), so `zainod` exempts this from seeding
-        counter RPC_OUTBOUND_REQUESTS_TOTAL = "zaino.rpc.outbound.requests_total" => "Outbound JSON-RPC attempts by method and outcome";
+        // Errors only, mirroring the inbound gRPC & JSON-RPC surfaces: volume is the
+        // duration histogram's `_count`, so a success counter would only restate it.
+        // `method` is not enumerable (each caller names its own) → exempt from seeding
+        counter RPC_OUTBOUND_ERRORS_TOTAL = "zaino.rpc.outbound.errors_total" => "Failed outbound JSON-RPC attempts by method and outcome: unreachable, refused, or retried";
         // Separates "validator is slow" from "we ask too much"; the ingest histograms
         // cannot, since under `direct` their source read reaches no validator
         histogram RPC_OUTBOUND_DURATION_SECONDS = "zaino.rpc.outbound.duration_seconds" => "Seconds for one outbound JSON-RPC attempt that received a response, by method";
     }
 
     pub const RPC_METHOD: &str = "method";
+
+    /// `transport_error` unreachable / `rpc_error` refused / `retried` saturated —
+    /// three different operator actions, none derivable from the histogram
     pub const RPC_OUTCOME: &str = "outcome";
 }

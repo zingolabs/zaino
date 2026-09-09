@@ -33,27 +33,15 @@ pub mod metric_names {
         // Best-known tip, from the chain head. Sync lag = this - SYNC_FINALIZED_HEIGHT,
         // consumer-derived
         gauge CHAIN_TIP_HEIGHT = "zaino.chain.tip_height" => "Latest chain tip height reported by the source";
-        // Liveness = "is it moving", which throughput cannot answer (wedged and idle both
-        // publish flat counters)
-        counter SYNC_ITERATIONS_TOTAL = "zaino.sync.iterations_total" => "Sync-worker iterations by outcome; the worker's heartbeat";
         gauge SYNC_CONSECUTIVE_FAILURES = "zaino.sync.consecutive_failures" => "Consecutive failed sync iterations; 0 when healthy";
         gauge SYNC_BACKOFF_SECONDS = "zaino.sync.backoff_seconds" => "Current sync-loop retry backoff in seconds; 0 when healthy";
         // Only mempool metric from here: coherence is decided against the NFS tip
         gauge MEMPOOL_COHERENCE_FROZEN_SECONDS = "zaino.mempool.coherence_frozen_seconds" => "Seconds tip-coherent mempool reads have been frozen; 0 when live";
     }
-
-    /// How a sync iteration ended: `ok` / `error`. Family rate = the heartbeat
-    pub const SYNC_OUTCOME: &str = "outcome";
 }
 
 /// Mempool metric names; `zainod` reaches the mempool only through this crate
 pub use zaino_mempool_service::metric_names as mempool_metric_names;
-
-/// Resolve the store's per-block counter handles, so the series exist at 0 before
-/// the first block. Reaches `zainod` through this crate, like the names do.
-pub fn seed_block_counters() {
-    zaino_chain_store_zainodb::ingest::block_counters();
-}
 
 // Zaino's Indexer library frontend.
 pub(crate) mod indexer;

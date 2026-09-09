@@ -8,9 +8,6 @@ homepage.workspace = true
 license.workspace = true
 description = "Shared JSON-RPC 2.0 client: envelope, retry, auth. No validator knowledge."
 
-[features]
-# Enables the outbound RPC metrics
-
 [dependencies]
 zaino-source = { workspace = true }
 reqwest.workspace = true

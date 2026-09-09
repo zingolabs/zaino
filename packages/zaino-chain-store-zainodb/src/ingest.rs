@@ -61,27 +61,27 @@ impl BlockWork {
     }
 
     pub(crate) fn record(self) {
-        {
-            let counters = block_counters();
-            for (counter, count) in [
-                (&counters.transactions, self.transactions),
-                (&counters.transparent_inputs, self.transparent_inputs),
-                (&counters.transparent_outputs, self.transparent_outputs),
-                (&counters.sapling_spends, self.sapling_spends),
-                (&counters.sapling_outputs, self.sapling_outputs),
-                (&counters.orchard_actions, self.orchard_actions),
-                (&counters.ironwood_actions, self.ironwood_actions),
-            ] {
-                counter.increment(count);
-            }
+        let counters = block_counters();
+        for (counter, count) in [
+            (&counters.transactions, self.transactions),
+            (&counters.transparent_inputs, self.transparent_inputs),
+            (&counters.transparent_outputs, self.transparent_outputs),
+            (&counters.sapling_spends, self.sapling_spends),
+            (&counters.sapling_outputs, self.sapling_outputs),
+            (&counters.orchard_actions, self.orchard_actions),
+            (&counters.ironwood_actions, self.ironwood_actions),
+        ] {
+            counter.increment(count);
         }
     }
 }
 
 /// - `counter!()` builds a `Key`, hashes it and read-locks a registry shard *per call*;
 ///   a cached handle leaves only the `fetch_add`, and sync makes millions of calls
-/// - Building them registers the series, which is also what seeds them at 0
-pub struct BlockCounters {
+/// - Gated with `BlockWork`: the experimental feature compiles the batch path out, and
+///   an ungated cache there is 7 handles nothing can ever increment
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+struct BlockCounters {
     transactions: metrics::Counter,
     transparent_inputs: metrics::Counter,
     transparent_outputs: metrics::Counter,
@@ -92,8 +92,11 @@ pub struct BlockCounters {
 }
 
 /// - Steady-state read is an acquire load, no lock
-/// - Called by `zainod` at startup, so the series exist before the first block
-pub fn block_counters() -> &'static BlockCounters {
+/// - Resolves against whatever recorder is live at the first block. Seeding does NOT
+///   go through here: a cached handle would bind the seed to one recorder for the
+///   life of the process
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+fn block_counters() -> &'static BlockCounters {
     static COUNTERS: std::sync::OnceLock<BlockCounters> = std::sync::OnceLock::new();
     COUNTERS.get_or_init(|| {
         use crate::metric_names::*;
@@ -111,6 +114,7 @@ pub fn block_counters() -> &'static BlockCounters {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "transparent_address_history_experimental"))]
     use super::*;
 
     /// - Oracle = the zebra blocks, not the compact model (re-walking `IndexedBlock`

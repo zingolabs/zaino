@@ -99,11 +99,9 @@ and this library adheres to Rust's notion of
   `zaino-serve`'s job.
 - The finalised store's read path is instrumented. A corrupt row is logged at
   `warn` with its typed cause and counted as `zaino.db.corrupt_rows_total`; the
-  two chunked reads carry a span and a latency histogram
-  (`zaino.db.compact_read_seconds`, `zaino.db.block_read_seconds`). Previously a
-  read failure fell through to the validator silently, so a damaged store was
-  indistinguishable from one merely behind. Histograms are behind the
-  `prometheus` feature, as on the write path; the log is not.
+  read path carries a span and a latency histogram, `zaino.db.read_seconds{op}`.
+  Previously a read failure fell through to the validator silently, so a damaged
+  store was indistinguishable from one merely behind.
 - `PoolFilter` holds the shielded pools as a set and transparent as one flag,
   rather than four parallel bools. `all`, `none`, `Default`, `with_pool` and
   `includes` no longer enumerate the pools, so adding one is a single entry in

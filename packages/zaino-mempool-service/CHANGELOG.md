@@ -8,7 +8,7 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
-- Optional `prometheus` feature publishing the set's shape and health from the
+- Metrics publishing the set's shape and health from the
   poll loop: `zaino.mempool.transactions`, `zaino.mempool.bytes{kind}`,
   `zaino.mempool.unadmitted`, `zaino.mempool.completeness` (non-zero = a known
   partial view, and the value says why), `zaino.mempool.poll_seconds`. Sampled by
@@ -107,8 +107,3 @@ and this library adheres to Rust's notion of
   see `zaino-mempool/docs/audit.md`.
 
 ### Removed
-- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
-  unconditional: with no recorder installed the facade is a no-op, so the gate
-  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
-  still owns the recorder and the `/metrics` listener, so no operator-visible
-  behaviour changes. Dependents forwarding to these features must drop that.

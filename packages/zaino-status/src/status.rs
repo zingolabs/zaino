@@ -51,18 +51,30 @@ pub enum StatusType {
     CriticalError = 7,
 }
 
+impl StatusType {
+    /// Every variant, ordered by discriminant. Pinned by `all_is_ordered_by_discriminant`
+    ///
+    /// - The one enumeration: `From<usize>` and `zainod`'s scrape legend both read it,
+    ///   so a new variant cannot reach either as an unnamed integer
+    pub const ALL: [StatusType; 8] = [
+        StatusType::Spawning,
+        StatusType::Syncing,
+        StatusType::Ready,
+        StatusType::Busy,
+        StatusType::Closing,
+        StatusType::Offline,
+        StatusType::RecoverableError,
+        StatusType::CriticalError,
+    ];
+}
+
 impl From<usize> for StatusType {
+    /// Out of range = a corrupt cell, which is a critical error by definition
     fn from(value: usize) -> Self {
-        match value {
-            0 => StatusType::Spawning,
-            1 => StatusType::Syncing,
-            2 => StatusType::Ready,
-            3 => StatusType::Busy,
-            4 => StatusType::Closing,
-            5 => StatusType::Offline,
-            6 => StatusType::RecoverableError,
-            _ => StatusType::CriticalError,
-        }
+        Self::ALL
+            .get(value)
+            .copied()
+            .unwrap_or(StatusType::CriticalError)
     }
 }
 
@@ -264,5 +276,20 @@ mod apply {
 
         assert_eq!(installed, StatusType::Closing);
         assert_eq!(status.load(), StatusType::Closing);
+    }
+}
+
+#[cfg(test)]
+mod discriminants {
+    use super::*;
+
+    /// - `ALL`'s order *is* the wire encoding: `From<usize>` indexes it, the gauge
+    ///   stores `as usize`, and the scrape legend numbers it by position
+    #[test]
+    fn all_is_ordered_by_discriminant() {
+        for (index, status) in StatusType::ALL.iter().enumerate() {
+            assert_eq!(usize::from(*status), index, "{status} sits at {index}");
+            assert_eq!(StatusType::from(index), *status);
+        }
     }
 }

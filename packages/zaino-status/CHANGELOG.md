@@ -15,6 +15,9 @@ and this library adheres to Rust's notion of
 - `metric_names!`, declaring a crate's metric names beside the `# HELP` text
   `zainod` registers, and `timed!` / `Timer`, a scope timer whose histogram handle
   is resolved once per call site rather than per call.
+- `StatusType::ALL`, every variant ordered by discriminant. `From<usize>` now
+  indexes it and `zainod` numbers it into the scrape legend, so a new variant
+  reaches neither as an unnamed integer.
 
 - New crate. How a Zaino component reports whether it is working, moved out of
   `zaino-common` — `StatusType`, `Status`, `NamedAtomicStatus`, and the
@@ -37,10 +40,5 @@ and this library adheres to Rust's notion of
 ### Deprecated
 
 ### Removed
-- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
-  unconditional: with no recorder installed the facade is a no-op, so the gate
-  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
-  still owns the recorder and the `/metrics` listener, so no operator-visible
-  behaviour changes. Dependents forwarding to these features must drop that.
 
 ### Fixed

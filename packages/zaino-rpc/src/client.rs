@@ -148,9 +148,8 @@ impl RpcClient {
             let response_bytes = match self.send_http(&body, timeout).await {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    // HTTP failure / refusal / timeout: no JSON-RPC code exists, so
-                    // the retry-only counter left an offline validator invisible
-                    Self::record_outcome(method, "transport_error");
+                    // No JSON-RPC code exists for a refused or timed-out connection
+                    Self::record_failure(method, "transport_error");
                     return Err(error);
                 }
             };
@@ -158,7 +157,7 @@ impl RpcClient {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     // Malformed envelope = transport failure (no answer to the question)
-                    Self::record_outcome(method, "transport_error");
+                    Self::record_failure(method, "transport_error");
                     return Err(error);
                 }
             };
@@ -170,33 +169,29 @@ impl RpcClient {
             .record(started.elapsed().as_secs_f64());
 
             match outcome {
-                ResponseOutcome::Success(value) => {
-                    Self::record_outcome(method, "ok");
-                    return Ok(value);
-                }
+                ResponseOutcome::Success(value) => return Ok(value),
                 ResponseOutcome::RpcError { code, message } => {
                     if retry::is_retryable(code) && retry::should_retry(attempt, self.max_retries) {
-                        // Refused, not served slowly → never reaches the timing
-                        // histograms; the ratio vs the family total is the saturation signal
-                        Self::record_outcome(method, "retried");
+                        // Timed like any other attempt, and a refusal is fast — the
+                        // saturation signal is this outcome's share, not latency
+                        Self::record_failure(method, "retried");
                         tokio::time::sleep(self.retry_delay).await;
                         continue;
                     }
-                    Self::record_outcome(method, "rpc_error");
+                    Self::record_failure(method, "rpc_error");
                     return Err(RpcError::Rpc { code, message });
                 }
             }
         }
     }
 
-    /// - Exactly one per exit from the retry loop body → the family total is the
-    ///   attempt count
+    /// - Success is not counted: attempt volume is the duration histogram's `_count`
     #[inline]
-    fn record_outcome(_method: &'static str, _outcome: &'static str) {
+    fn record_failure(method: &'static str, outcome: &'static str) {
         metrics::counter!(
-            crate::metric_names::RPC_OUTBOUND_REQUESTS_TOTAL,
-            crate::metric_names::RPC_METHOD => _method,
-            crate::metric_names::RPC_OUTCOME => _outcome,
+            crate::metric_names::RPC_OUTBOUND_ERRORS_TOTAL,
+            crate::metric_names::RPC_METHOD => method,
+            crate::metric_names::RPC_OUTCOME => outcome,
         )
         .increment(1);
     }

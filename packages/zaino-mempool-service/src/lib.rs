@@ -31,19 +31,15 @@ pub mod metric_names {
     }
 
     /// Not a bool: capacity bound / deferred metadata / source error differ.
-    /// `zainod` registers it, appending the [`MEMPOOL_COMPLETENESS_VALUES`] legend
+    /// `zainod` registers it, numbering [`MempoolCompleteness::ALL`] into the help
     pub const MEMPOOL_COMPLETENESS: &str = "zaino.mempool.completeness";
 
     /// `raw` (serialized) vs `cost` (ZIP-401, what the capacity bound applies to)
     pub const MEMPOOL_BYTES_KIND: &str = "kind";
 
-    /// Indexed by discriminant, matching `MempoolCompleteness`
-    pub const MEMPOOL_COMPLETENESS_VALUES: [&str; 4] = [
-        "complete",
-        "incomplete-capacity-limited",
-        "incomplete-pending-metadata",
-        "incomplete-source-error",
-    ];
+    /// `zainod` numbers [`MempoolCompleteness::ALL`] into [`MEMPOOL_COMPLETENESS`]'s
+    /// help text; re-exported so it needs no direct dep on `zaino-mempool`
+    pub use zaino_mempool::snapshot::MempoolCompleteness;
 }
 
 pub mod service;

@@ -35,13 +35,13 @@ and this library adheres to Rust's notion of
   Fixed; none of them is visible to a read-only test.
 - `metric_names` — every Prometheus name this backend emits, defined once here
   and re-exported by `zaino-state`, so a rename cannot leave a dashboard reading
-  one string while the pin test compares another. Ungated: `ingest::observe`
+  one string while the pin test compares another. Ungated: `ingest`
   takes a name as an ordinary argument, so call sites mention one outside any
   `cfg`. Includes the write-path, routing, validation and storage families that
-  arrived with the finalised state, and `HISTOGRAM_METRICS`, which `zainod`
+  arrived with the finalised state, and `HISTOGRAMS`, which `zainod`
   asserts its bucket table covers.
 - `ingest` — per-block accounting shared by both write loops: `BlockWork`,
-  `ScopedTimer`, and the cached per-block counter handles. Per-block cost is three
+  `zaino-status`'s `timed!`, and the cached per-block counter handles. Per-block cost is three
   **disjoint** spans that sum to the total — `block_fetch_seconds`,
   `treestate_fetch_seconds`, `block_assemble_seconds` — with nothing recovered by
   subtraction. `BlockWork` is gated with its only consumer: the experimental
@@ -65,7 +65,7 @@ and this library adheres to Rust's notion of
   publishes under another name: `block_build_seconds` enclosed the two reads now
   timed separately (a nested total that went negative on the non-finalised path),
   `db_tip_height` is `zaino.sync.finalized_height`, and liveness is
-  `zaino.sync.iterations_total{outcome}` with `sync.consecutive_failures`.
+  `sync.consecutive_failures` with the tip-minus-finalized lag.
 
 ### Changed
 - **`FinalisedState::spawn` takes two configs**, `ChainStoreConfig` and

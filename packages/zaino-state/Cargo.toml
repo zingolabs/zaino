@@ -14,13 +14,6 @@ default = []
 # TEST-ONLY. switches non-finalized depth to 100 from 1001 so NFS tests dont need to mine 1k+ blocks
 fast-test-seam = []
 
-# Prometheus metrics emission (gauge! calls in sync paths).
-# Forwards to every crate that emits on this crate's behalf: `zaino-status`
-# publishes the per-component status gauge, `zaino-mempool-service` the mempool
-# set, and `zaino-chain-store-zainodb` the write-path metrics whose names this
-# crate re-exports. A missing forward silently stops that crate publishing while
-# the rest of the metrics work.
-
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = ["zaino-source-zebra/test_dependencies"]
 

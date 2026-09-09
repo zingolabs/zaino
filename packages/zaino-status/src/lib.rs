@@ -24,22 +24,10 @@
 pub mod metric_names {
     /// Emitted from the one call every status change passes through → the series set
     /// is the component set, with nothing to register. `zainod` registers it,
-    /// appending the [`STATUS_VALUES`] legend
+    /// numbering [`StatusType::ALL`](crate::StatusType::ALL) into the help text
     pub const STATUS: &str = "zaino.status";
 
     pub const STATUS_COMPONENT: &str = "component";
-
-    /// Indexed by discriminant; `zainod` renders it into [`STATUS`]'s help text
-    pub const STATUS_VALUES: [&str; 8] = [
-        "spawning",
-        "syncing",
-        "ready",
-        "busy",
-        "closing",
-        "offline",
-        "recoverable-error",
-        "critical-error",
-    ];
 }
 
 mod metric_macro;

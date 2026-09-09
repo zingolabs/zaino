@@ -34,13 +34,13 @@ impl Drop for Timer {
 /// - `histogram!()` builds a `Key`, hashes the name and read-locks a registry shard on
 ///   every call, and a labelled one allocates a `Vec<Label>` too; the `OnceLock` pays
 ///   that once per site, leaving a load and the record
-/// - Label values are `literal` by construction: one cached handle means one series, so
-///   a runtime value would pin whichever value arrived first
+/// - Name and label values are `path`/`literal` by construction: one cached handle is
+///   one series, so a runtime value on either axis would pin whichever arrived first
 /// - Resolves against whatever recorder is installed when the site is *first* reached,
 ///   so install the recorder before serving starts (`zainod::run` does)
 #[macro_export]
 macro_rules! timed {
-    ($name:expr $(, $key:literal => $value:literal)* $(,)?) => {{
+    ($name:path $(, $key:literal => $value:literal)* $(,)?) => {{
         static HISTOGRAM: ::std::sync::OnceLock<$crate::metrics::Histogram> =
             ::std::sync::OnceLock::new();
         $crate::Timer::new(

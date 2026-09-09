@@ -16,10 +16,5 @@ tracing = { workspace = true }
 unsafe_code = "forbid"
 missing_docs = "warn"
 
-[features]
-# Publish every component's status as a Prometheus gauge from
-# `NamedAtomicStatus::store`. Named to match the `prometheus` feature the rest of
-# the workspace forwards, so an operator build turns it on everywhere at once.
-
 [dev-dependencies]
 metrics-exporter-prometheus = { workspace = true }

@@ -39,12 +39,13 @@ and this library adheres to Rust's notion of
   misconfiguration.
 - A log line when a background migration completes; previously only the failure
   path logged, so a finished migration looked identical to one still running.
-- `zaino.db.finalized_ephemeral`, `zaino.db.accumulator_built_height` and
+- `zaino.db.finalized_ephemeral`, `zaino.sync.accumulator_height` and
   `zaino.db.accumulator_rebuild_active` metric names (emitted under the
   `prometheus` feature).
-- Liveness: `zaino.sync.iterations_total{outcome}` (the heartbeat — no throughput
-  counter separates wedged from a quiet chain), `zaino.sync.consecutive_failures`,
-  `zaino.sync.backoff_seconds`.
+- Liveness: `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`.
+  "Is the worker wedged" is answered by `zaino.chain.tip_height` minus
+  `zaino.sync.finalized_height` staying above the reorg buffer, so no per-iteration
+  heartbeat counter is emitted.
 - Read routing: `zaino.router.ephemeral_mode`, `zaino.migration.active`,
   `zaino.migration.progress_height`.
 - The two frontiers behind the finalised tip: `zaino.db.validated_height` (reads
@@ -61,7 +62,7 @@ and this library adheres to Rust's notion of
   (`transparent_inputs_total`, `transparent_outputs_total`, `sapling_spends_total`,
   `sapling_outputs_total`, `ironwood_actions_total`), and `zaino.db.map_size_bytes`
   / `zaino.db.used_bytes`, which mark where the db stops fitting in RAM.
-- Per-block ingest accounting (`BlockWork`, `ScopedTimer`) in
+- Per-block ingest accounting (`BlockWork`, `zaino-status`'s `timed!`) in
   `zaino-chain-store-zainodb`'s `ingest`, with the finalised store it measures. Its
   metric names are re-exported here, so `metric_names` remains the one import site.
 

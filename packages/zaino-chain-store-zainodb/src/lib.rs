@@ -46,7 +46,7 @@ pub mod adapter;
 pub mod conversion;
 pub mod entry;
 pub mod error;
-pub mod ingest;
+pub(crate) mod ingest;
 pub mod metric_names;
 pub mod pool;
 pub mod store;

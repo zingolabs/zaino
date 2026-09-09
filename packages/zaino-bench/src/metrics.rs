@@ -19,10 +19,7 @@ use crate::error::BenchError;
 pub(crate) mod names {
     pub(crate) const SYNC_FINALIZED_HEIGHT: &str = "zaino.sync.finalized_height";
     pub(crate) const SYNC_TARGET_HEIGHT: &str = "zaino.sync.target_height";
-    pub(crate) const SYNC_LAG_BLOCKS: &str = "zaino.sync.lag_blocks";
-    pub(crate) const SYNC_HAS_REACHED_TIP: &str = "zaino.sync.has_reached_tip";
     pub(crate) const SYNC_TRANSACTIONS_TOTAL: &str = "zaino.sync.transactions_total";
-    pub(crate) const DB_TIP_HEIGHT: &str = "zaino.db.tip_height";
     pub(crate) const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
 }
 
@@ -169,7 +166,6 @@ zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"}
             Some(3200000)
         );
         assert_eq!(scrape.height(names::SYNC_TARGET_HEIGHT).ok(), Some(3390744));
-        assert_eq!(scrape.get(names::SYNC_HAS_REACHED_TIP), Some(0.0));
     }
 
     #[test]

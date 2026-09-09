@@ -42,11 +42,12 @@ and this library adheres to Rust's notion of
 - **Breaking** — `RpcClient::call` / `call_with_timeout`: `method: &str` →
   `&'static str`. Name = metric label, so the bound caps cardinality at the
   compiled-in method set as a type error (no caller string can mint a series).
-- Outbound RPC metrics are now `zaino.rpc.outbound.requests_total{method,outcome}`,
-  emitted from the retry loop in `client.rs` behind the `prometheus` feature. A
-  bare retry count has no denominator, and "the caller measures volume per block"
-  held only for the two ingest calls — `getbestblockheight`, mempool polls and
-  passthrough RPCs are most of `rpc`-path traffic and were unmeasured.
+- Outbound RPC metrics are now `zaino.rpc.outbound.errors_total{method,outcome}`
+  plus `zaino.rpc.outbound.duration_seconds{method}`, emitted from the retry loop
+  in `client.rs`. Same shape as the inbound gRPC and JSON-RPC surfaces: volume is
+  the histogram's `_count`, so no success counter restates it. `outcome` splits
+  the three different operator actions — `transport_error` unreachable,
+  `rpc_error` refused, `retried` saturated.
 
 ### Deprecated
 

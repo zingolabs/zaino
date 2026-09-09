@@ -795,8 +795,12 @@ impl DbV1 {
 
         {
             use crate::metric_names::*;
-            metrics::histogram!(SYNC_ACCUMULATOR_SECONDS, ACCUMULATOR_MODE => mode)
-                .record(started.elapsed().as_secs_f64());
+            // `current` did nothing; recording it would bury both real modes under
+            // thousands of ~0s samples on a caught-up node
+            if mode != "current" {
+                metrics::histogram!(SYNC_ACCUMULATOR_SECONDS, ACCUMULATOR_MODE => mode)
+                    .record(started.elapsed().as_secs_f64());
+            }
             // Re-read, not assumed from `height`: a partial pass must not publish a
             // frontier it never reached
             if let Ok(Some(built)) = self.read_tx_out_set_accumulator_built_height().await {

@@ -127,11 +127,16 @@ defaults reflecting their transport security:
   networks where encryption is handled externally (e.g. containers behind a
   service mesh or proxy that terminates TLS).
 
-- **Prometheus `/metrics`** (`metrics_endpoint`, feature `prometheus`): off unless
-  set. Unauthenticated + unencrypted → publishes chain tip, sync progress,
-  per-method request volumes, process memory. A non-private bind is **warned, not
-  rejected** (no control operations; containers bind `0.0.0.0` by norm). Restrict
-  to loopback, a private interface, or your scraper's network.
+- **Admin listener** (`metrics_endpoint`, feature `prometheus`): off unless set.
+  Serves `/metrics`, `/livez` and `/readyz` on its own thread and runtime, so a
+  saturated serving runtime cannot stall a scrape or time out a liveness probe into
+  a restart loop. `/livez` fails only on an unrecoverable component or an indexer
+  that has stopped reporting; `/readyz` fails while syncing, so Kubernetes withholds
+  traffic without restarting the pod. Unauthenticated + unencrypted → publishes
+  chain tip, sync progress, per-method request volumes, process memory. A
+  non-private bind is **warned, not rejected** (no control operations; containers
+  bind `0.0.0.0` by norm). Restrict to loopback, a private interface, or your
+  scraper's network.
 
 **Security implication:** the JSON-RPC interface transmits unencrypted traffic.
 Do not expose it to untrusted networks, and only enable
