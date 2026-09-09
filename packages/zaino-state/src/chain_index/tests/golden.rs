@@ -184,7 +184,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        AbsoluteChainWork::try_new(0x0dec_0de0).expect("nonzero"),
+        AbsoluteChainWork::new(core::num::NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
         height(),
     )
 }

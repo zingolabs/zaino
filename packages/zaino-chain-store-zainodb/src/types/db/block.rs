@@ -265,7 +265,7 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            AbsoluteChainWork::try_new(0x0123_4567).expect("nonzero"),
+            AbsoluteChainWork::new(NonZeroU128::new(0x0123_4567).expect("nonzero")),
             Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);
@@ -334,7 +334,7 @@ mod tests {
     /// bytes, and the current decoder reads those original bytes back to the
     /// same value.
     fn assert_encoders_agree(value: u128) {
-        let cw = AbsoluteChainWork::try_new(value).expect("nonzero");
+        let cw = AbsoluteChainWork::new(NonZeroU128::new(value).expect("nonzero"));
         let original =
             legacy_chainwork_reference::AbsoluteChainWork::from_u256(primitive_types::U256::from(value));
         let original_bytes = *original.as_bytes();

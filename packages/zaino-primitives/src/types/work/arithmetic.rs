@@ -1,91 +1,75 @@
-//! Arithmetic over the work quantity family.
+//! The relations between the work quantities.
 //!
-//! Cross-type operations are relations between quantities, not methods of a
-//! single one, so they live here beside the types rather than on either. This
-//! module is also where the allowed operations — the algebra — are written
-//! down as the specification a new fold site inherits.
+//! An operation over two quantities belongs to neither type, so the three
+//! relations live here. This is also the specification a new fold site
+//! inherits.
 //!
 //! # The algebra
 //!
-//! Write `W` for one block's expected work and `C` for cumulative work at a
-//! block. Both are strictly positive:
+//! Write `W` for [`SingleBlockWork`] and `C` for [`AbsoluteChainWork`]:
 //!
 //! ```text
-//! W ∈ (0, 2^128)      the expected work of one block
-//! C ∈ (0, 2^128)      cumulative work: the fold of block works along a chain
+//! W ∈ (0, 2^128)
+//! C ∈ (0, 2^128)
+//!
+//! genesis    : W → C      a chain of one block
+//! accumulate : C × W → C  extend the chain by one block
+//! rollback   : C × W → C  unwind one block, on reorg
 //! ```
 //!
-//! Three relations are defined, and only these three:
+//! Those three and `C`'s ordering are the whole algebra. `C × C` is not
+//! defined: no chain is the concatenation of two chains, so the sum of two
+//! total chain works is not a quantity in this domain and no operation returns
+//! one. See ADR-0013.
 //!
-//! ```text
-//! genesis    : W → C          the fold's seed — a chain of one block
-//! accumulate : C × W → C      extend the chain by one block; refused on overflow
-//! rollback   : C × W → C      unwind one block (reorg); refused at or below zero
-//! ```
-//!
-//! Together with `C`'s derived ordering — chain selection, the operation the
-//! fold exists to feed — that is the whole algebra. There is deliberately no
-//! `C × C → C`: adding two cumulative values is meaningless, because no chain
-//! is the concatenation of two chains. A sum of cumulative works is not a
-//! quantity in this domain, so no operation returns one. See ADR-0013.
+//! Both adding relations are checked, and the subtracting one is checked
+//! against zero. Neither bound is reachable on a real chain. They stay checked
+//! so a corrupt input fails loud instead of wrapping into a small value that
+//! would then sort as a light chain.
 
-use super::{SingleBlockWork, AbsoluteChainWork};
+use core::num::NonZeroU128;
+
+use super::{AbsoluteChainWork, SingleBlockWork};
 
 /// Error when accumulating a block's work overflows the recorded width.
-///
-/// Unreachable on real chains — cumulative work is nowhere near `2^128` — but
-/// the fold stays checked so a corrupt input fails loud rather than wrapping
-/// into a small, wrongly ordered cumulative work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("accumulating a block's work overflowed the cumulative width")]
 pub struct WorkOverflow;
 
 /// Error when rolling back a block's work reaches or crosses zero.
 ///
-/// A rollback unwinds a block that the cumulative value once accumulated, so
-/// the result must stay strictly positive — the chain still contains at least
-/// genesis. Reaching zero or below means the block work being unwound was
-/// never part of this accumulation, and the fold refuses rather than invents
-/// a chain with no blocks.
+/// A rollback unwinds a block this value once accumulated, so the result must
+/// stay strictly positive: the chain still contains genesis. Crossing that
+/// floor means the block work being unwound was never part of this
+/// accumulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("rolling back a block's work would take cumulative work to or below zero")]
 pub struct WorkUnderflow;
 
 impl AbsoluteChainWork {
-    /// Seed the fold at genesis.
+    /// `genesis : W → C`. A chain of one block has that block's work.
     ///
-    /// The `genesis` relation: `W → C`. A chain of one block has cumulative
-    /// work equal to that block's own work — counted once, not accumulated
-    /// onto anything. This is the only way a cumulative value comes into
-    /// being other than by extending or unwinding another.
+    /// The only way a total chain work comes into being other than by
+    /// extending or unwinding another.
     pub fn genesis(work: SingleBlockWork) -> Self {
-        Self::from_raw(work.into_raw())
+        Self::new(work.into_raw())
     }
 
-    /// Extend this chain's cumulative work by one block's work.
-    ///
-    /// The `accumulate` relation: `C × W → C`. A checked add: overflow is
-    /// unreachable on real chains, and refused rather than wrapped so a
-    /// corrupt input cannot masquerade as a light chain.
+    /// `accumulate : C × W → C`. Extend the chain by one block.
     pub fn accumulate(self, work: SingleBlockWork) -> Result<Self, WorkOverflow> {
         self.into_raw()
             .checked_add(work.into_raw().get())
-            .map(Self::from_raw)
+            .map(Self::new)
             .ok_or(WorkOverflow)
     }
 
-    /// Unwind one block's work from this chain's cumulative work.
-    ///
-    /// The `rollback` relation: `C × W → C`, for reorgs. Refused if the
-    /// result would reach or cross zero: the chain still contains genesis, so
-    /// cumulative work stays strictly positive, and a rollback that violates
-    /// that is unwinding work this value never accumulated.
+    /// `rollback : C × W → C`. Unwind one block, on reorg.
     pub fn rollback(self, work: SingleBlockWork) -> Result<Self, WorkUnderflow> {
         self.into_raw()
             .get()
             .checked_sub(work.into_raw().get())
-            .and_then(core::num::NonZeroU128::new)
-            .map(Self::from_raw)
+            .and_then(NonZeroU128::new)
+            .map(Self::new)
             .ok_or(WorkUnderflow)
     }
 }
@@ -129,7 +113,7 @@ mod tests {
 
     #[test]
     fn accumulate_overflow_is_refused() {
-        let max = AbsoluteChainWork::try_new(u128::MAX).expect("nonzero");
+        let max = AbsoluteChainWork::new(NonZeroU128::MAX);
         assert_eq!(max.accumulate(block(1)), Err(WorkOverflow));
     }
 

@@ -1197,7 +1197,12 @@ mod tests {
     fn chainwork_left_pads_a_trimmed_value() {
         let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
 
-        assert_eq!(trimmed, Some(AbsoluteChainWork::try_new(0xff).expect("nonzero")));
+        assert_eq!(
+            trimmed,
+            Some(AbsoluteChainWork::new(
+                core::num::NonZeroU128::new(0xff).expect("nonzero")
+            ))
+        );
     }
 
     /// Zero off the wire — either validator's encoding — is "not reported",

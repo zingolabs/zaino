@@ -125,8 +125,10 @@ pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadCo
 /// block's own work rather than at zero, precisely so this conversion cannot
 /// fail.
 fn chainwork(work: ChainHeadWork) -> AbsoluteChainWork {
-    AbsoluteChainWork::try_new(work.as_u128())
-        .expect("chain head work is accumulated from a non-zero anchor")
+    AbsoluteChainWork::new(
+        core::num::NonZeroU128::new(work.as_u128())
+            .expect("chain head work is accumulated from a non-zero anchor"),
+    )
 }
 
 #[cfg(test)]

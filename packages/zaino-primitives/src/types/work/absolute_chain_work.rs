@@ -1,40 +1,29 @@
-//! The cumulative quantity: work accumulated along a chain.
+//! The total work of a chain up to a block.
 
 use core::fmt;
 use core::num::NonZeroU128;
 
-use super::ZeroWork;
-
-/// Cumulative proof-of-work at a block: the fold of block works along its
-/// chain.
+/// The total work of a chain up to and including a block. Validators report
+/// this value as `chainwork`.
 ///
-/// The ordering is the point. Chain selection compares cumulative work —
-/// the heaviest chain wins — so this type derives [`Ord`], and that comparison
-/// is the only operation cumulative values share: there is deliberately no
-/// `AbsoluteChainWork + AbsoluteChainWork`, because no chain is the concatenation of two
-/// chains. Growing or shrinking a cumulative value takes a
-/// [`SingleBlockWork`](super::SingleBlockWork), through the relations in the `arithmetic`
-/// module.
+/// `Ord`, because comparing total chain work is how the best chain is chosen.
+/// That comparison is the only operation two of these values share; the
+/// `arithmetic` module states the rest of the algebra.
 ///
-/// Strictly positive: every chain contains at least genesis, whose cumulative
-/// work is its own block work. Absence — a validator that does not track
-/// cumulative work, a block with no parent — is `Option<AbsoluteChainWork>`, never a
-/// zero sentinel.
+/// Strictly positive. Every chain contains at least genesis, whose total work
+/// is its own block work. A validator that does not track the value, or a block
+/// with no parent, is `Option<AbsoluteChainWork>`. Absence is never a zero.
 ///
-/// The RPC surface reports cumulative work as a 256-bit big-endian integer;
-/// this type records 128 bits, which real chains do not approach. The width
-/// bound is checked once, at the reported-bytes door, so a wider value fails
-/// loud there instead of being truncated into a lower — and wrongly ordered —
-/// cumulative work downstream.
+/// Recorded in 128 bits, against the 256 the wire carries. Real chains do not
+/// approach either bound; [`try_from_reported`](Self::try_from_reported)
+/// enforces the narrower one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AbsoluteChainWork(NonZeroU128);
 
-/// Error when reported chainwork does not fit the recorded 128 bits.
+/// Error when reported chain work does not fit the recorded 128 bits.
 ///
-/// Zcash's cumulative work is nowhere near `2^128`, so a value that does not
-/// fit did not come from this chain. Truncating instead would record a lower
-/// cumulative work than the chain actually has, which reorders chain
-/// selection — so the width bound fails loud at the door.
+/// Truncating would record less work than the chain has, which changes which
+/// chain compares as heaviest. The bound fails loud instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("reported chainwork does not fit 128 bits (high half {high:#034x})")]
 pub struct ChainWorkOverWidth {
@@ -43,31 +32,24 @@ pub struct ChainWorkOverWidth {
 }
 
 impl AbsoluteChainWork {
-    /// Create a cumulative work value, rejecting zero.
+    /// Create a total chain work value.
     ///
-    /// The door for an already-narrowed integer — a value known to be
-    /// cumulative work, such as one carried by another accumulator over the
-    /// same chain. A value read off a validator's wire enters through
-    /// [`try_from_reported`](Self::try_from_reported) instead, which also owns
-    /// the width bound and the absence convention.
-    pub fn try_new(value: u128) -> Result<Self, ZeroWork> {
-        NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
+    /// Infallible: the strictly-positive bound travels in the argument type.
+    /// Bytes from a validator or from disk enter through
+    /// [`try_from_reported`](Self::try_from_reported) instead.
+    pub const fn new(value: NonZeroU128) -> Self {
+        Self(value)
     }
 
-    /// Read cumulative work as a validator reports it: 32 big-endian bytes.
+    /// Read total chain work as a validator reports it: 32 big-endian bytes.
     ///
-    /// Two conventions of the reporting surface are absorbed here, so no
-    /// consumer re-derives them:
+    /// Absorbs both conventions of the reporting surface, so no consumer
+    /// repeats them:
     ///
-    /// - **All-zero means not reported.** Zero is not a possible amount of
-    ///   work for a real chain, so a validator that does not track cumulative
-    ///   work (Zebra hardcodes the field to zero) is saying "no value", and
-    ///   the answer is `Ok(None)` — absence as `Option`, never a zero
-    ///   sentinel a consumer could mistakenly compare.
-    /// - **The high 16 bytes must be zero.** The wire is 256 bits wide but
-    ///   the quantity is recorded in 128; a wider value did not come from
-    ///   this chain and is refused rather than truncated into a lower — and
-    ///   wrongly ordered — cumulative work.
+    /// - **All-zero is `Ok(None)`.** Zero is not a possible amount of work, so
+    ///   a validator that does not track the value (zebra hardcodes the field
+    ///   to zero) is reporting absence, not a quantity to compare.
+    /// - **The high 16 bytes must be zero**, or the value is refused.
     pub fn try_from_reported(bytes: [u8; 32]) -> Result<Option<Self>, ChainWorkOverWidth> {
         let (high, low) = split(bytes);
         if high != 0 {
@@ -76,25 +58,15 @@ impl AbsoluteChainWork {
         Ok(NonZeroU128::new(low).map(Self))
     }
 
-    /// Render cumulative work as the 32 big-endian bytes the wire carries.
-    ///
-    /// Infallible widening: the recorded 128 bits left-pad into the 256-bit
-    /// wire form without loss.
+    /// Render as the 32 big-endian bytes the wire carries. Widening 128 bits to
+    /// 256 cannot lose anything.
     pub fn to_be_bytes(&self) -> [u8; 32] {
         let mut bytes = [0u8; 32];
         bytes[16..].copy_from_slice(&self.0.get().to_be_bytes());
         bytes
     }
 
-    /// Wrap the fold's running value.
-    ///
-    /// Module-internal: the arithmetic relations build cumulative work from
-    /// the integer they fold into, and no unchecked external door exists.
-    pub(super) const fn from_raw(raw: NonZeroU128) -> Self {
-        Self(raw)
-    }
-
-    /// The raw accumulated value, for the arithmetic relations to fold.
+    /// The raw value, for the arithmetic relations to fold.
     pub(super) const fn into_raw(self) -> NonZeroU128 {
         self.0
     }
@@ -133,9 +105,8 @@ impl fmt::Display for AbsoluteChainWork {
 mod tests {
     use super::*;
 
-    #[test]
-    fn zero_is_rejected_at_the_narrowed_door() {
-        assert_eq!(AbsoluteChainWork::try_new(0), Err(ZeroWork));
+    fn work(value: u128) -> AbsoluteChainWork {
+        AbsoluteChainWork::new(NonZeroU128::new(value).expect("test value must be nonzero"))
     }
 
     /// All-zero off the wire is "not reported", not a smallest chain.
@@ -161,17 +132,15 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[16..].copy_from_slice(&0x00de_ad00_beefu128.to_be_bytes());
 
-        let work = AbsoluteChainWork::try_from_reported(bytes)
+        let reported = AbsoluteChainWork::try_from_reported(bytes)
             .expect("within width")
             .expect("non-zero");
-        assert_eq!(work.to_be_bytes(), bytes);
-        assert_eq!(work, AbsoluteChainWork::try_new(0x00de_ad00_beef).expect("nonzero"));
+        assert_eq!(reported.to_be_bytes(), bytes);
+        assert_eq!(reported, work(0x00de_ad00_beef));
     }
 
     #[test]
     fn ord_selects_the_heavier_chain() {
-        let lighter = AbsoluteChainWork::try_new(100).expect("nonzero");
-        let heavier = AbsoluteChainWork::try_new(200).expect("nonzero");
-        assert!(heavier > lighter);
+        assert!(work(200) > work(100));
     }
 }
