@@ -1,7 +1,7 @@
 //! Transaction and per-pool data.
 
 use super::{
-    EncryptedCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script,
+    CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script,
     SignedZatoshis, TransactionId, Zatoshis,
 };
 
@@ -89,8 +89,8 @@ pub struct SaplingOutput {
     pub cmu: NoteCommitment,
     /// Ephemeral key for recipient detection.
     pub ephemeral_key: EphemeralKey,
-    /// Partial encrypted ciphertext (52 bytes, enough for scanning).
-    pub enc_ciphertext: EncryptedCiphertext,
+    /// Compact ciphertext head (52 bytes, enough for scanning).
+    pub enc_ciphertext: CompactCiphertext,
 }
 
 /// Orchard pool data within a transaction.
@@ -111,6 +111,6 @@ pub struct OrchardAction {
     pub cmx: NoteCommitment,
     /// Ephemeral key for recipient detection.
     pub ephemeral_key: EphemeralKey,
-    /// Partial encrypted ciphertext (52 bytes, enough for scanning).
-    pub enc_ciphertext: EncryptedCiphertext,
+    /// Compact ciphertext head (52 bytes, enough for scanning).
+    pub enc_ciphertext: CompactCiphertext,
 }
