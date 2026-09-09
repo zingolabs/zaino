@@ -7,7 +7,6 @@
 //!
 //! The opposite direction is `to_domain`.
 
-use super::error_map::corrupt_row_because;
 use zaino_chain_store::{ChainStoreError, StoredBlock, StoredTx};
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockTxPosition, EncryptedCiphertext, Height as DomainHeight,
@@ -77,16 +76,9 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
 
     // Shared with the write direction rather than restated: both start from the
     // same `BlockHeader`, so a second copy would be the same mapping free to
-    // drift — and had already drifted, this side stringifying the difficulty
-    // failure the other keeps typed.
-    //
-    // A header that will not convert came off disk, so it is a corrupt row
-    // rather than a backend failure, and the conversion's own error is carried
-    // as the cause: it names which field was rejected and why, which is what
-    // separates a corrupt row from a block this build cannot yet parse.
-    let data = crate::conversion::block_data(header).map_err(|error| {
-        corrupt_row_because(format!("a convertible header for block {hash}"), error)
-    })?;
+    // drift. The mapping is total — every fallible field, difficulty included,
+    // is already validated by the types the header carries.
+    let data = crate::conversion::block_data(header);
 
     let transactions = block
         .transactions
