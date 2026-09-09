@@ -1,4 +1,4 @@
-//! The held-amount quantity: a validated zatoshi balance or UTXO value.
+//! An amount of ZEC counted in zatoshis, read as a balance or as a movement.
 
 use core::fmt;
 

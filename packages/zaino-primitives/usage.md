@@ -102,14 +102,14 @@ The operations relate the types and live beside them:
 ```rust
 use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
 
-// Sum amounts as flow. `None` only on machine overflow (unreachable in
+// Sum amounts as flow. `None` only past `u128::MAX` (unreachable in
 // practice), never on passing the supply — gross flow legitimately can.
 let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
 let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
 
 // Adopt a flow total a backend delivered already summed as a u64.
-// Infallible: a u64 always fits the u128 accumulator, and machine
-// representability is the flow sum's only invariant.
+// Infallible: a u64 always fits the u128 accumulator, and u128::MAX
+// is the flow sum's only bound.
 let lifetime = ZatoshisFlowSum::from_summed(received_total);
 
 // Net of a received flow minus a spent flow for one balance, as a signed
@@ -120,7 +120,7 @@ let net: Option<SignedZatoshis> = received.net(spent);
 // precondition the total lands back in `Zatoshis`. `None` means the total
 // passed the supply, which under the coexistence contract is overlapping or
 // double-counted input, not a large number.
-let held: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
+let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
 ```
 
 `ZatoshisFlowSum` has two validated doors and no unchecked one:
