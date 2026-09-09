@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! A ∈ [0, S]          an amount of ZEC counted in zatoshis
-//! F ∈ [0, ∞)          a sum of movements  (machine-bounded, not supply-bounded)
+//! F ∈ [0, u128::MAX]  a sum of movements  (bounded by u128::MAX, not the supply)
 //! D ∈ [−S, S]         a signed value (a movement or a difference)
 //! ```
 //!
@@ -25,9 +25,9 @@
 //! net                 : F × F → D received − spent, landing in [−S, S] or refused
 //! ```
 //!
-//! `accumulate` carries amounts into the unbounded flow sum: a total of
-//! movements is not a balance, so the supply cap does not apply to it, and it
-//! fails only if the machine integer overflows. `accumulate_balances` is the
+//! `accumulate` carries amounts into the flow sum: a total of movements is
+//! not a balance, so the supply cap does not apply to it, and it fails only
+//! if the total would exceed `u128::MAX`. `accumulate_balances` is the
 //! second accumulate — the same fold shape with a different landing: balances
 //! that coexist at one moment cannot total more than the coins that exist, so
 //! under that precondition the sum is itself in `[0, S]`; the fold lands back
@@ -70,19 +70,19 @@ impl Zatoshis {
 impl ZatoshisFlowSum {
     /// Sum a sequence of amounts as flow.
     ///
-    /// The `accumulate` relation: `[A] → F`. Folds the amounts into the
-    /// unbounded flow sum with a checked add, returning `None` only if the
-    /// running total overflows the machine integer.
+    /// The `accumulate` relation: `[A] → F`. Folds the amounts into the flow
+    /// sum with a checked add, returning `None` only if the running total
+    /// would exceed `u128::MAX`.
     ///
     /// That overflow is unreachable in practice — each amount is a
     /// supply-bounded [`Zatoshis`] and the count is a collection length, so the
-    /// total cannot approach a `u128` — but the add stays checked so a future
+    /// total cannot approach `u128::MAX` — but the add stays checked so a future
     /// change fails loud rather than wrapping silently.
     pub fn try_accumulate(mut values: impl Iterator<Item = Zatoshis>) -> Option<Self> {
         values.try_fold(Self::ZERO, ZatoshisFlowSum::checked_add)
     }
 
-    /// Add one amount to a flow sum, or `None` on machine overflow.
+    /// Add one amount to a flow sum, or `None` if the sum would exceed `u128::MAX`.
     ///
     /// The incremental step of [`try_accumulate`](Self::try_accumulate).
     fn checked_add(self, amount: Zatoshis) -> Option<Self> {
@@ -102,7 +102,7 @@ impl ZatoshisFlowSum {
     /// keeps within `[-supply, supply]`. So `None` means the two flows do not
     /// describe a coherent balance (partial or corrupt data), not merely a large
     /// number. A difference of unrelated flow sums is not a balance change, is
-    /// bounded only by the machine, and is deliberately not offered: there is no
+    /// bounded only by `u128::MAX`, and is deliberately not offered: there is no
     /// generic subtraction nor `impl Sub` that would return an unbounded result.
     pub fn net(self, spent: Self) -> Option<SignedZatoshis> {
         let (received, spent) = (self.into_raw(), spent.into_raw());
@@ -140,9 +140,9 @@ mod tests {
     #[test]
     fn accumulate_sums_the_amounts() {
         let received = ZatoshisFlowSum::try_accumulate([100, 50, 30].map(zatoshis).into_iter())
-            .expect("well within the machine bound");
+            .expect("well within u128::MAX");
         let spent = ZatoshisFlowSum::try_accumulate([60].map(zatoshis).into_iter())
-            .expect("well within the machine bound");
+            .expect("well within u128::MAX");
 
         assert_eq!(received.net(spent).map(i64::from), Some(120));
     }
@@ -169,7 +169,7 @@ mod tests {
     fn flow_sum_exceeds_the_supply() {
         let gross =
             ZatoshisFlowSum::try_accumulate([MAX_ZATOSHIS, MAX_ZATOSHIS].map(zatoshis).into_iter())
-                .expect("gross flow is only machine-bounded");
+                .expect("gross flow is bounded only by u128::MAX");
         let one = ZatoshisFlowSum::try_accumulate([MAX_ZATOSHIS].map(zatoshis).into_iter())
             .expect("valid");
 

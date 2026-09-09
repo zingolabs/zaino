@@ -61,7 +61,7 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 
 2. **The invariant belongs to the result type, chosen by the reading of the
    elements — not to the operator or the element.** The same `Zatoshis` values
-   summed as movements land in `ZatoshisFlowSum`, bounded only by the machine;
+   summed as movements land in `ZatoshisFlowSum`, bounded only by `u128::MAX`;
    summed as coexisting balances they land back in `Zatoshis` through
    `sum_balances`, bounded by the supply. The caller, who knows which reading
    the values carry, picks the landing type, and that choice is where the bound
@@ -110,8 +110,8 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 `zaino-primitives::types::zatoshis`:
 
 - `Zatoshis` — an amount of ZEC counted in zatoshis. `0 ..= supply`.
-- `ZatoshisFlowSum` — an accumulation of movements. Bounded only by machine
-  representability; deliberately not by the supply.
+- `ZatoshisFlowSum` — an accumulation of movements. Bounded only by
+  `u128::MAX`; deliberately not by the supply.
 - `SignedZatoshis` — a signed value: a directional movement, or the difference
   of two totals. `-supply ..= supply`.
 
