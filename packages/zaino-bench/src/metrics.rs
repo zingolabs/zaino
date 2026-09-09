@@ -19,10 +19,7 @@ use crate::error::BenchError;
 pub(crate) mod names {
     pub(crate) const SYNC_FINALIZED_HEIGHT: &str = "zaino.sync.finalized_height";
     pub(crate) const SYNC_TARGET_HEIGHT: &str = "zaino.sync.target_height";
-    pub(crate) const SYNC_LAG_BLOCKS: &str = "zaino.sync.lag_blocks";
-    pub(crate) const SYNC_HAS_REACHED_TIP: &str = "zaino.sync.has_reached_tip";
     pub(crate) const SYNC_TRANSACTIONS_TOTAL: &str = "zaino.sync.transactions_total";
-    pub(crate) const DB_TIP_HEIGHT: &str = "zaino.db.tip_height";
     pub(crate) const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
 }
 
@@ -169,7 +166,6 @@ zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"}
             Some(3200000)
         );
         assert_eq!(scrape.height(names::SYNC_TARGET_HEIGHT).ok(), Some(3390744));
-        assert_eq!(scrape.get(names::SYNC_HAS_REACHED_TIP), Some(0.0));
     }
 
     #[test]
@@ -223,6 +219,10 @@ zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"}
     /// Pins this crate's copy of the metric names to the ones `zaino-state`
     /// actually emits, so a rename there fails the build rather than silently
     /// producing a harness that waits forever for a metric nobody publishes.
+    ///
+    /// Pins names, not emission — `lag_blocks`, `has_reached_tip` and `db_tip_height` were
+    /// retired upstream, and `Sample` still reads all three into fields that can only be
+    /// `None`. Removing those fields is the reconciliation this test cannot express
     #[test]
     fn metric_names_match_zaino_state() {
         use zaino_state::metric_names as upstream;
@@ -232,13 +232,10 @@ zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"}
             upstream::SYNC_FINALIZED_HEIGHT
         );
         assert_eq!(names::SYNC_TARGET_HEIGHT, upstream::SYNC_TARGET_HEIGHT);
-        assert_eq!(names::SYNC_LAG_BLOCKS, upstream::SYNC_LAG_BLOCKS);
-        assert_eq!(names::SYNC_HAS_REACHED_TIP, upstream::SYNC_HAS_REACHED_TIP);
         assert_eq!(
             names::SYNC_TRANSACTIONS_TOTAL,
             upstream::SYNC_TRANSACTIONS_TOTAL
         );
-        assert_eq!(names::DB_TIP_HEIGHT, upstream::DB_TIP_HEIGHT);
         assert_eq!(names::CHAIN_TIP_HEIGHT, upstream::CHAIN_TIP_HEIGHT);
     }
 }

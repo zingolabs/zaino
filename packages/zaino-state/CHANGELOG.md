@@ -39,9 +39,32 @@ and this library adheres to Rust's notion of
   misconfiguration.
 - A log line when a background migration completes; previously only the failure
   path logged, so a finished migration looked identical to one still running.
-- `zaino.db.finalised_ephemeral`, `zaino.db.accumulator_built_height` and
+- `zaino.db.finalized_ephemeral`, `zaino.sync.accumulator_height` and
   `zaino.db.accumulator_rebuild_active` metric names (emitted under the
   `prometheus` feature).
+- Liveness: `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`.
+  "Is the worker wedged" is answered by `zaino.chain.tip_height` minus
+  `zaino.sync.finalized_height` staying above the reorg buffer, so no per-iteration
+  heartbeat counter is emitted.
+- Read routing: `zaino.router.ephemeral_mode`, `zaino.migration.active`,
+  `zaino.migration.progress_height`.
+- The two frontiers behind the finalised tip: `zaino.db.validated_height` (reads
+  above it pay a synchronous re-validation) and `zaino.sync.accumulator_height`
+  (`gettxoutsetinfo` is correct only up to it), with `zaino.db.validation_seconds`,
+  `zaino.db.on_demand_validations_total`, `zaino.sync.accumulator_seconds{mode}`.
+- Write-path shape: `zaino.sync.batch_blocks` and `zaino.sync.fsync_seconds`, split
+  out of `batch_write_seconds` since the two saturate for unrelated reasons.
+- `zaino.sync.block_assemble_seconds`, replacing `block_build_seconds`. Per-block
+  cost is now three **disjoint** spans summing to the total, nothing derived by
+  subtraction.
+- `zaino.sync.fetched_height` (in-memory build frontier), `block_fetch_seconds`,
+  `treestate_fetch_seconds`, `batch_write_seconds`, per-class throughput counters
+  (`transparent_inputs_total`, `transparent_outputs_total`, `sapling_spends_total`,
+  `sapling_outputs_total`, `ironwood_actions_total`), and `zaino.db.map_size_bytes`
+  / `zaino.db.used_bytes`, which mark where the db stops fitting in RAM.
+- Per-block ingest accounting (`BlockWork`, `zaino-status`'s `timed!`) in
+  `zaino-chain-store-zainodb`'s `ingest`, with the finalised store it measures. Its
+  metric names are re-exported here, so `metric_names` remains the one import site.
 
 ### Changed
 - The finalised state is no longer part of this crate. It is now the
@@ -133,8 +156,38 @@ and this library adheres to Rust's notion of
   the index to `RecoverableError` — and `Readiness::is_ready` to false — for the
   rest of the process's life. Component statuses are now read live on each call,
   so a recovered component is reported as recovered.
+- `zaino.db.used_bytes` sampled on the maintenance timer, not per commit — a
+  per-commit gauge froze while idle and missed accumulator and migration growth.
+- **The non-finalised (steady-state) loop is instrumented at all.** Every metric
+  lived in the bulk writer, so a caught-up indexer looked wedged. Height gauges
+  stay on the writer — NFS runs to the tip, so publishing there would make the
+  frontier retreat each pass.
+- **`zaino.sync.block_fetch_seconds` spans exactly one source read**; the
+  commitment-tree-root query moved to `treestate_fetch_seconds`. Not "time awaiting
+  the validator" — under `direct` there is none, and the read burns CPU in-process.
+- **Throughput counters recorded per block built, not per batch committed.** A
+  commit lands once per `sync_checkpoint_interval` (120s), so every derived rate
+  was a sawtooth timing the commit clock.
+- `zaino.sync.finalized_height` means *committed and fsynced*, advancing on batch
+  commit, so a crash cannot lose what it reports. In-flight build frontier moved
+  to `zaino.sync.fetched_height`.
+- `zaino.sync.target_height` is set once per sync call rather than on the
+  throttled progress-log tick.
+- Per-block "Syncing block" log `info` → `debug`, plus one `info` summary per NFS
+  pass that applied blocks; a cold window fill logged a line per block.
+- The `transparent_address_history_experimental` write path is left
+  uninstrumented: it does not compile (`network` / `pool_lists` out of scope, a
+  defect predating this work), so nothing added there could be built or run.
+- Block work tallied in one pass per block, feeding both the batch byte budget
+  and the throughput counters, instead of walking every transaction twice on the
+  indexer's hottest loop. Unlabelled metric handles resolve once per sync call.
 ### Deprecated
 ### Removed
+- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
+  unconditional: with no recorder installed the facade is a no-op, so the gate
+  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
+  still owns the recorder and the `/metrics` listener, so no operator-visible
+  behaviour changes. Dependents forwarding to these features must drop that.
 - `chain_index::non_finalised_state` and its test file, the `NonFinalizedSnapshot`
   trait and its impls, `chain_tips_from_nonfinalized_snapshot`,
   `branch_len_to_active_chain`, and the never-constructed
@@ -148,11 +201,50 @@ and this library adheres to Rust's notion of
 - `get_block_height_passthrough`, `SyncError::NodeConnectionError` and two other
   `SyncError` variants — all carried over from the non-finalised state, and
   constructed by nothing once the sync worker drives one thing.
+- **Metric** `zaino.sync.block_build_seconds` — a nested total whose contract the
+  two ingest loops measured differently. The three per-block histograms are now
+  disjoint. **Migrate**: `build - fetch - treestate` → `block_assemble_seconds`;
+  the total → the sum of the three.
+
+- **Metrics** `zaino.sync.lag_blocks`, `zaino.sync.iterations_total`,
+  `zaino.sync.iteration_duration_seconds`, `zaino.sync.errors_total`,
+  `zaino.sync.has_reached_tip`, `zaino.sync.reached_tip_at`,
+  `zaino.sync.reorg_total`, `zaino.sync.block_write_seconds`,
+  `zaino.sync.sapling_outputs_total`, `zaino.sync.last_block_written_at`,
+  `zaino.db.tip_height`, `zaino.mempool.transactions` and
+  `zaino.mempool.tip_changes_total`.
+  - `lag_blocks` was never correct — it substituted the sync *target*
+    (`finalized_height_floor(tip)`) for the committed height, reporting a constant
+    `OPERATIONAL_NFS_DEPTH` throughout every sync. Derive lag as
+    `zaino.chain.tip_height - zaino.sync.finalized_height`.
+  - `reorg_total` is `zaino.sync.reorg_depth`'s `_count`.
+  - `sapling_outputs_total` survives, joined by `zaino.sync.sapling_spends_total`.
+    Apart because only outputs are checkable against note-commitment tree growth,
+    and totals re-add where a merged count cannot. Transparent counters likewise.
+  - `transparent_ops_total` / `sapling_ops_total`, briefly introduced during this
+    cycle, are replaced by the four per-direction counters above.
+  - `block_write_seconds` is renamed `zaino.sync.batch_write_seconds`: it always
+    timed a batch, not a block.
+  - `db.tip_height` duplicated `zaino.sync.finalized_height`, which now carries
+    the committed meaning.
+  - The `iterations`/`errors`/`reached_tip` family measured the sync loop's own
+    cadence rather than any property of the chain or the index.
 ### Fixed
 - `zaino.chain.tip_height` was emitted twice per sync iteration — once through a
   hard-coded string literal and once through the `CHAIN_TIP_HEIGHT` constant,
   with the same value. The redundant literal emission is removed, leaving the
   constant as the single source of truth for the metric name.
+- `zaino.sync.reorg_depth` and the NFS tip-change logs never fired — `update` read
+  its "new" tip from `compare_and_swap`, which returns the *previous* value, so
+  every comparison was `x != x`. Now reports from the published `Arc`.
+- `target_height` / `finalized_height` absent on an already-synced node, making
+  `tip - finalized` unavailable at startup and steady state. Now republished every
+  pass, before the early return.
+- `zaino.sync.block_fetch_seconds` timed its own loop terminator — NFS ends every
+  pass on a `None`, and at the tip those outnumbered real fetches.
+- `zaino.sync.block_build_seconds` enclosed its fetch on the finalised writer but
+  not on NFS, so the documented `build - fetch - treestate` went negative on the
+  stage dominating steady state. Replaced; see *Removed*.
 
 ## [0.7.0] - 2026-08-14
 
@@ -214,6 +306,7 @@ and this library adheres to Rust's notion of
 - `FinalisedState::wait_until_synced` — waits for in-progress background
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
+
 ### Changed
 - `BlockchainSource` documents how it dissolves, not just that it will. Before a
   subsystem migrates, its needs sit on the trait as wire-typed *methods*; after,
@@ -324,7 +417,9 @@ and this library adheres to Rust's notion of
   `source_caps` — per-consumer capability aliases, declared here rather than in
   `zaino-source`, because an alias states a requirement of its consumer
   (ADR-0008).
+
 ### Deprecated
+
 ### Removed
 - **Breaking** — `zaino_state::{Status, StatusType, NamedAtomicStatus}` and the
   `status` module behind them. The status vocabulary lives in `zaino-status`;
@@ -348,6 +443,7 @@ and this library adheres to Rust's notion of
   `error::ChainParseError` is unproducible and removed.
 - The `zcashd_support` feature declaration, which gated nothing in this crate
   once the zcashd-shaped response types moved to `zaino-serve`.
+
 ### Fixed
 - `LegacyRpcError` — carries a zcashd-compatible legacy code as a typed
   `source` through the error chain, so a domain rejection reaches the serving

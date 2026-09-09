@@ -142,12 +142,12 @@ source-driven build stays the authority — freeze only spares it the fetch.
 ## What the read path reports
 
 The write path has emitted metrics since before it moved here; the reads now do
-too, behind the same `prometheus` feature.
+too. Emission is unconditional — `zainod`'s `prometheus` feature owns the recorder,
+and without one the `metrics` facade is a no-op.
 
 | Metric | Kind | Watch it for |
 | --- | --- | --- |
-| `zaino.db.compact_read_seconds` | histogram | wallet sync rate — clients spend nearly all their time in this read |
-| `zaino.db.block_read_seconds` | histogram | stored-block reads |
+| `zaino.db.read_seconds{op}` | histogram | per-op finalised read latency; `op="compact_chunk"` is the wallet-sync rate |
 | `zaino.db.corrupt_rows_total` | counter | non-zero means the database is damaged, not behind |
 
 Both histograms are timed around the *chunk*, because one read transaction

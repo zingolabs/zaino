@@ -8,6 +8,17 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `zaino.status{component}` published from `NamedAtomicStatus::store` / `::new` —
+  the one point every status change already passed through, so using the type at
+  all yields a correctly-labelled series. The combined status was previously
+  computed and thrown away.
+- `metric_names!`, declaring a crate's metric names beside the `# HELP` text
+  `zainod` registers, and `timed!` / `Timer`, a scope timer whose histogram handle
+  is resolved once per call site rather than per call.
+- `StatusType::ALL`, every variant ordered by discriminant. `From<usize>` now
+  indexes it and `zainod` numbers it into the scrape legend, so a new variant
+  reaches neither as an unnamed integer.
+
 - New crate. How a Zaino component reports whether it is working, moved out of
   `zaino-common` — `StatusType`, `Status`, `NamedAtomicStatus`, and the
   `Liveness` / `Readiness` / `VitalsProbe` probing traits.
@@ -25,6 +36,9 @@ and this library adheres to Rust's notion of
   transition is silently overwritten, and `apply` closes it.
 
 ### Changed
+
 ### Deprecated
+
 ### Removed
+
 ### Fixed

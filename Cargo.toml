@@ -112,6 +112,9 @@ time = { version = "0.3", features = ["macros", "formatting"] }
 
 # Network / RPC
 http = "1.1"
+hyper = "1.10"
+hyper-util = "0.1"
+http-body-util = "0.1"
 reqwest = { version = "0.13", default-features = false, features = [
     "cookies",
     "rustls-no-provider",
@@ -134,6 +137,7 @@ futures = "0.3.30"
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+metrics-process = "2.4"
 
 # Utility
 bytes = "1.12"
@@ -232,3 +236,10 @@ arc-swap = "1.7.1"
 [profile.test]
 opt-level = 3
 debug = true
+
+# Release codegen a profiler can attribute to source lines (`release` stays lean)
+# - Frame pointers = other half, no Cargo key for them: pass
+#   `-C force-frame-pointers=yes` via RUSTFLAGS alongside `--profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"

@@ -8,6 +8,9 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `MempoolCompleteness::ALL`, every variant ordered by discriminant. `zainod`
+  numbers it into `zaino.mempool.completeness`'s help text, so the gauge's raw
+  discriminant is readable without a dashboard-side copy of the variant names.
 - New crate: `zaino-mempool`, the hexagonal *ports + foundational types* of
   Zaino's mempool subsystem — a bounded, coherent, local read model of the
   validator's mempool, separated from `zaino-state` (see

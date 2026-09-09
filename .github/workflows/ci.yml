@@ -159,6 +159,9 @@ jobs:
       - name: Check the experimental feature set compiles and its tests pass
         run: makers check-experimental-features
 
+      - name: Check the prometheus feature compiles and its tests pass
+        run: makers check-prometheus
+
   build-test-artifacts:
     name: Build test artifacts
     needs: compute-tag
@@ -204,7 +207,10 @@ jobs:
         #     not shipped on by default; CI should not gate on a non-release combo.
         #     Compiled and tested separately by `experimental-features-build`, so
         #     omitting it here no longer means it goes unbuilt.
-        #   - prometheus.
+        #   - prometheus: carries the recorder, the admin listener and the metric
+        #     registration contracts. Compiled and tested separately by
+        #     `experimental-features-build`'s prometheus step, so omitting it here
+        #     no longer means it goes unbuilt.
         run: cargo nextest archive --verbose --workspace --no-default-features --archive-file nextest-archive.tar.zst
 
       - name: Save cargo dependencies

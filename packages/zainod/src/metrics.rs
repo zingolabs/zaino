@@ -1,213 +1,377 @@
-//! Prometheus metrics endpoint for Zaino.
-//!
-//! Installs a global metrics recorder and spawns an HTTP listener
-//! that serves the `/metrics` scrape endpoint.
+//! Prometheus recorder + `/metrics` scrape listener
 
 use std::net::SocketAddr;
 
-use metrics_exporter_prometheus::PrometheusBuilder;
-use tracing::info;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 
-// Metric names are owned by the crates that emit them, so the `describe_*`
-// registrations below share one source of truth with the emit sites and can
-// never drift.
+// Names owned by the emitting crates, so `describe_*` cannot drift from emission
 use zaino_chain_head_service::metric_names::*;
 use zaino_rpc::metric_names::*;
 use zaino_serve::metric_names::*;
+use zaino_state::mempool_metric_names::*;
 use zaino_state::metric_names::*;
+use zaino_status::{metric_names::*, StatusType};
 
 use crate::error::IndexerError;
 
-/// Static build-metadata gauge name (`zainod.build_info`); see [`set_build_info`].
 const BUILD_INFO: &str = "zainod.build_info";
 
-/// Install the Prometheus metrics recorder and spawn the HTTP listener.
+/// Supervisor restarts; named here (zainod = emitter & registrar)
+const RESTARTS_TOTAL: &str = "zainod.restarts_total";
+
+/// Per-block timings; sub-ms floor (0.4ms warm vs 5ms cold read must not share a bucket)
+const PER_BLOCK_SECONDS: &[f64] = &[
+    0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+/// Serving, outbound calls, batch commit (whole-batch fsync → tens of seconds in range)
+const COARSE_SECONDS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0,
+];
+
+/// Accumulator rebuild, client-held streams
+const LONG_SECONDS: &[f64] = &[
+    0.01, 0.1, 1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 10800.0, 43200.0,
+];
+
+/// Integer ladder, dense at small ints (1 = routine, past the NFS window = incident)
+const REORG_DEPTHS: &[f64] = &[1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0, 20.0, 50.0, 100.0];
+
+const BATCH_BLOCK_COUNTS: &[f64] = &[1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0];
+
+/// Bucket ladder per emitted histogram; the `# HELP` comes from the emitting crate
 ///
-/// This must be called **once** before any `metrics::gauge!()` / `metrics::counter!()`
-/// calls, otherwise those calls silently no-op.
+/// - `Matcher::Full`, never `Suffix`: overlapping matchers resolve lexicographically
+/// - A histogram missing here would ship as a summary, so [`init`] refuses to start
+const BUCKETS: &[(&str, &[f64])] = &[
+    (SYNC_BLOCK_FETCH_SECONDS, PER_BLOCK_SECONDS),
+    (SYNC_TREESTATE_FETCH_SECONDS, PER_BLOCK_SECONDS),
+    (SYNC_BLOCK_ASSEMBLE_SECONDS, PER_BLOCK_SECONDS),
+    (DB_READ_SECONDS, PER_BLOCK_SECONDS),
+    (SYNC_BATCH_WRITE_SECONDS, COARSE_SECONDS),
+    (SYNC_FSYNC_SECONDS, COARSE_SECONDS),
+    (DB_VALIDATION_SECONDS, COARSE_SECONDS),
+    (GRPC_REQUEST_DURATION_SECONDS, COARSE_SECONDS),
+    (JSONRPC_REQUEST_DURATION_SECONDS, COARSE_SECONDS),
+    (RPC_OUTBOUND_DURATION_SECONDS, COARSE_SECONDS),
+    (MEMPOOL_POLL_SECONDS, COARSE_SECONDS),
+    (SYNC_ACCUMULATOR_SECONDS, LONG_SECONDS),
+    (CHAIN_HEAD_REORG_DEPTH, REORG_DEPTHS),
+    (SYNC_BATCH_BLOCKS, BATCH_BLOCK_COUNTS),
+];
+
+/// Every counter the workspace emits, with its `# HELP`, from the crate that emits it
+const COUNTERS: &[&[(&str, &str)]] = &[
+    zaino_state::metric_names::store::COUNTERS,
+    zaino_state::metric_names::COUNTERS,
+    zaino_serve::metric_names::COUNTERS,
+    zaino_rpc::metric_names::COUNTERS,
+    zaino_chain_head_service::metric_names::COUNTERS,
+    &[(
+        RESTARTS_TOTAL,
+        "Times the supervisor has restarted the indexer",
+    )],
+];
+
+const GAUGES: &[&[(&str, &str)]] = &[
+    zaino_state::metric_names::store::GAUGES,
+    zaino_state::metric_names::GAUGES,
+    zaino_state::mempool_metric_names::GAUGES,
+    &[(
+        BUILD_INFO,
+        "Static build metadata; always 1, version in a label",
+    )],
+];
+
+const HISTOGRAMS: &[&[(&str, &str)]] = &[
+    zaino_state::metric_names::store::HISTOGRAMS,
+    zaino_state::mempool_metric_names::HISTOGRAMS,
+    zaino_serve::metric_names::HISTOGRAMS,
+    zaino_rpc::metric_names::HISTOGRAMS,
+    zaino_chain_head_service::metric_names::HISTOGRAMS,
+];
+
+/// Flatten one of the per-crate tables above
+fn all(
+    tables: &'static [&'static [(&'static str, &'static str)]],
+) -> impl Iterator<Item = (&'static str, &'static str)> {
+    tables.iter().flat_map(|table| table.iter().copied())
+}
+
+fn buckets(metric: &str) -> Option<&'static [f64]> {
+    BUCKETS
+        .iter()
+        .find(|(name, _)| *name == metric)
+        .map(|(_, buckets)| *buckets)
+}
+
+/// - Call once, before any `metrics::*!()` (earlier calls silently no-op)
+/// - Listener lives in [`crate::admin`]: only it wants a runtime of its own
 pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
-    PrometheusBuilder::new()
-        .with_http_listener(endpoint)
-        .install()
-        .map_err(|e| {
-            IndexerError::MetricsError(format!("Failed to install metrics recorder: {e}"))
+    let mut builder = PrometheusBuilder::new();
+    for (metric, _) in all(HISTOGRAMS) {
+        let buckets = buckets(metric).ok_or_else(|| {
+            IndexerError::MetricsError(format!(
+                "`{metric}` has no bucket ladder in BUCKETS, so it would scrape as a summary"
+            ))
         })?;
+        builder = builder
+            .set_buckets_for_metric(Matcher::Full(metric.to_string()), buckets)
+            .map_err(|e| {
+                IndexerError::MetricsError(format!("bucket bounds for `{metric}`: {e}"))
+            })?;
+    }
+    let handle = builder.install_recorder().map_err(|e| {
+        IndexerError::MetricsError(format!("Failed to install metrics recorder: {e}"))
+    })?;
 
     describe_metrics();
-    set_build_info();
+    initialise_counters();
+    metrics::gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
-    info!(%endpoint, "Prometheus metrics endpoint started");
-    Ok(())
+    crate::admin::spawn(endpoint, handle)
 }
 
-/// Register human-readable descriptions for all Zaino metrics.
-///
-/// These appear as `# HELP` lines in the scrape output.
+/// - Recorder installed outside the supervisor loop → nothing else separates a
+///   crash loop from a healthy run
+pub fn record_restart() {
+    metrics::counter!(RESTARTS_TOTAL).increment(1);
+}
+
+/// - Block time / process CPU separates CPU-bound from disk-bound from waiting
+/// - On scrape, so the sample is as old as the answer and no timer runs while idle
+pub(crate) fn collect_process_metrics() {
+    static COLLECTOR: std::sync::OnceLock<metrics_process::Collector> = std::sync::OnceLock::new();
+    COLLECTOR
+        .get_or_init(|| {
+            let collector = metrics_process::Collector::default();
+            collector.describe();
+            collector
+        })
+        .collect();
+}
+
 fn describe_metrics() {
-    metrics::describe_gauge!(
-        SYNC_FINALIZED_HEIGHT,
-        "Current finalized block height being synced"
-    );
-    metrics::describe_gauge!(
-        SYNC_TARGET_HEIGHT,
-        "Target finalized block height for current sync iteration"
-    );
-    metrics::describe_gauge!(
-        CHAIN_TIP_HEIGHT,
-        "Latest chain tip height reported by the validator"
-    );
+    for (metric, help) in all(HISTOGRAMS) {
+        metrics::describe_histogram!(metric, help);
+    }
+    for (metric, help) in all(COUNTERS) {
+        metrics::describe_counter!(metric, help);
+    }
+    for (metric, help) in all(GAUGES) {
+        metrics::describe_gauge!(metric, help);
+    }
 
-    metrics::describe_counter!(
-        SYNC_TRANSACTIONS_TOTAL,
-        "Total transactions indexed during sync"
-    );
-    metrics::describe_counter!(
-        SYNC_SAPLING_OUTPUTS_TOTAL,
-        "Total Sapling outputs indexed during sync"
-    );
-    metrics::describe_counter!(
-        SYNC_ORCHARD_ACTIONS_TOTAL,
-        "Total Orchard actions indexed during sync"
-    );
-
-    metrics::describe_histogram!(
-        SYNC_BLOCK_BUILD_SECONDS,
-        "Seconds to fetch and build one indexed block (fetch + treestate + parse)"
-    );
-    metrics::describe_histogram!(
-        SYNC_BLOCK_WRITE_SECONDS,
-        "Seconds to durably write one batch of blocks to the database"
-    );
-
-    metrics::describe_gauge!(
-        BUILD_INFO,
-        "Static build metadata; always 1. Version exposed as a label."
-    );
-
-    // Sync lifecycle
-    metrics::describe_gauge!(
-        SYNC_HAS_REACHED_TIP,
-        "Whether the indexer has ever reached the chain tip (0 or 1, never resets)"
-    );
-    metrics::describe_gauge!(
-        SYNC_REACHED_TIP_AT,
-        "Unix timestamp of the first time the indexer reached the chain tip"
-    );
-    metrics::describe_gauge!(
-        SYNC_LAG_BLOCKS,
-        "Number of blocks between chain tip and finalized height"
-    );
-    metrics::describe_counter!(
-        SYNC_ITERATIONS_TOTAL,
-        "Total sync loop iterations completed"
-    );
-    metrics::describe_histogram!(
-        SYNC_ITERATION_DURATION_SECONDS,
-        "Wall-clock duration of each sync loop iteration"
-    );
-    metrics::describe_counter!(
-        SYNC_ERRORS_TOTAL,
-        "Total sync loop errors by severity (recoverable or critical)"
-    );
-    metrics::describe_counter!(
-        CHAIN_HEAD_REORG_TOTAL,
-        "Total chain reorganization events observed by the chain head"
-    );
-    metrics::describe_histogram!(
-        CHAIN_HEAD_REORG_DEPTH,
-        "Depth of chain reorganizations in blocks (0 for same-height reorgs)"
-    );
-
-    // DB reads. The write path has been described since before the finalised
-    // state moved into its own crate; these are its reads, which a wallet
-    // syncing against this node spends almost all of its time in. One histogram
-    // covers the whole read surface, split by an `op` label naming the read
-    // (`compact_chunk`, `block_hash`, `txout_set`, ...); the wallet-sync hot
-    // path is `op="compact_chunk"`, which a client's sync rate is bounded by.
-    metrics::describe_histogram!(
-        DB_READ_SECONDS,
-        "Time to serve one finalized-database read, labelled by `op` (the read operation). The \
-         wallet-sync read path is `op=\"compact_chunk\"`: a client's sync rate is bounded by it"
-    );
-    metrics::describe_counter!(
-        DB_CORRUPT_ROWS_TOTAL,
-        "Rows read from the finalized database that could not be decoded. Non-zero means the \
-         database is damaged rather than merely behind; reads fall through to the validator, so \
-         queries continue to be answered and nothing else surfaces it"
-    );
-
-    // DB
-    metrics::describe_gauge!(
-        DB_TIP_HEIGHT,
-        "Height of the last block committed to the finalized database"
-    );
-    metrics::describe_gauge!(
-        SYNC_LAST_BLOCK_WRITTEN_AT,
-        "Unix timestamp of the last block written to the finalized database"
-    );
-    metrics::describe_gauge!(
-        FINALISED_EPHEMERAL,
-        "1 while finalised-state reads are served by the ephemeral passthrough rather than the \
-         persistent database (initial sync, or a migration in progress); 0 once the on-disk index \
-         is serving. Note this reads 1 for the whole life of a process configured with \
-         ephemeral_finalised_state = true"
-    );
-    metrics::describe_gauge!(
-        ACCUMULATOR_BUILT_HEIGHT,
-        "Height the persisted txout-set accumulator currently reflects. Lagging far behind the DB \
-         tip means the next sync will trigger a full from-genesis rebuild"
-    );
-    metrics::describe_gauge!(
-        ACCUMULATOR_REBUILD_ACTIVE,
-        "1 while a from-genesis txout-set accumulator rebuild is running. This is a multi-pass \
-         full-chain scan; expect elevated read I/O for its duration"
-    );
-
-    // Inbound gRPC
-    metrics::describe_counter!(GRPC_REQUESTS_TOTAL, "Total inbound gRPC requests by method");
-    metrics::describe_histogram!(
-        GRPC_REQUEST_DURATION_SECONDS,
-        "Duration of inbound gRPC requests by method"
-    );
-    metrics::describe_counter!(
-        GRPC_ERRORS_TOTAL,
-        "Total inbound gRPC errors by method and status code"
-    );
-
-    // Outbound JSON-RPC
-    metrics::describe_counter!(
-        RPC_OUTBOUND_REQUESTS_TOTAL,
-        "Total outbound JSON-RPC requests by method"
-    );
-    metrics::describe_histogram!(
-        RPC_OUTBOUND_REQUEST_DURATION_SECONDS,
-        "Duration of outbound JSON-RPC requests by method"
-    );
-    metrics::describe_counter!(
-        RPC_OUTBOUND_ERRORS_TOTAL,
-        "Total outbound JSON-RPC errors by method"
-    );
-    metrics::describe_counter!(
-        RPC_OUTBOUND_RETRIES_TOTAL,
-        "Total outbound JSON-RPC retries due to work queue depth exceeded"
-    );
-
-    // Mempool
-    metrics::describe_gauge!(
-        MEMPOOL_COHERENCE_FROZEN_SECONDS,
-        "How long tip-coherent mempool reads have been frozen; 0 when live. \
-         Brief spikes are normal tip transitions — a sustained non-zero value \
-         means the validator tip and Zaino's have stopped agreeing"
+    describe_legend(STATUS, "Component state, by name", &StatusType::ALL);
+    describe_legend(
+        MEMPOOL_COMPLETENESS,
+        "Published mempool set completeness",
+        &MempoolCompleteness::ALL,
     );
 }
 
-/// Emit a constant gauge `zainod_build_info{version="x.y.z"} 1` so the
-/// deployed binary version is queryable in PromQL / Grafana, matching the
-/// pattern Zebra uses with `zebrad_build_info`.
-fn set_build_info() {
-    metrics::gauge!(
-        BUILD_INFO,
-        "version" => env!("CARGO_PKG_VERSION"),
-    )
-    .set(1.0);
+/// Numbers a discriminant gauge's variants into its `# HELP`.
+///
+/// - Legend ships in the scrape; a dashboard-side copy of it drifts, silently
+/// - `{:?}` over the variants themselves, never a parallel string table: the names
+///   are derived, and position is the discriminant (pinned by each enum's own test)
+fn describe_legend<T: std::fmt::Debug>(metric: &'static str, help: &str, variants: &[T]) {
+    let legend: Vec<String> = variants
+        .iter()
+        .enumerate()
+        .map(|(discriminant, variant)| format!("{discriminant}={variant:?}"))
+        .collect();
+    metrics::describe_gauge!(metric, format!("{help}: {}", legend.join(", ")));
+}
+
+/// - Absent ≠ zero: an unseeded series reads as "this build does not report it"
+/// - Seeded through the macro, never a cached handle: a handle binds to one recorder
+///   for the life of the process, so it would no-op against one installed later
+/// - No height gauges (0 = a false height), no `method` families ([`UNSEEDABLE_COUNTERS`])
+fn initialise_counters() {
+    for (metric, _) in all(COUNTERS) {
+        if !UNSEEDABLE_COUNTERS.contains(&metric) {
+            metrics::counter!(metric).increment(0);
+        }
+    }
+    // 0 is a true statement for these ("not migrating", "not rebuilding"), unlike a
+    // height. Published only when the thing happens, so a node that never migrates
+    // would otherwise never emit them at all
+    for name in [
+        ROUTER_EPHEMERAL_MODE,
+        MIGRATION_ACTIVE,
+        ACCUMULATOR_REBUILD_ACTIVE,
+    ] {
+        metrics::gauge!(name).set(0.0);
+    }
+}
+
+/// Labels unknown until emission; a partial seed is a different series, not a placeholder
+///
+/// - `rate()` over an absent series yields no data, so alerts need `or vector(0)`
+const UNSEEDABLE_COUNTERS: &[&str] = &[
+    GRPC_ERRORS_TOTAL,
+    JSONRPC_ERRORS_TOTAL,
+    RPC_OUTBOUND_ERRORS_TOTAL,
+];
+
+#[cfg(test)]
+mod tests {
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
+    use super::*;
+
+    /// - Shares `init`'s bucket registration; its own ladder would pass while the
+    ///   shipped binary rendered summaries
+    fn scrape(body: impl FnOnce()) -> String {
+        let mut builder = PrometheusBuilder::new();
+        for (metric, ladder) in BUCKETS {
+            builder = builder
+                .set_buckets_for_metric(Matcher::Full((*metric).to_string()), ladder)
+                .expect("bucket bounds are non-empty and finite");
+        }
+        let recorder = builder.build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            describe_metrics();
+            initialise_counters();
+            body();
+        });
+        handle.render()
+    }
+
+    /// - 0 = a false height, absent = honest until something measures one
+    #[test]
+    fn height_gauges_are_absent_until_measured() {
+        let scrape = scrape(|| {});
+        assert!(
+            !scrape.contains("zaino_sync_finalized_height "),
+            "a finalized height was published before any block was indexed, which \
+             reads as a tip at genesis. Scrape was:\n{scrape}"
+        );
+    }
+
+    /// - Unbucketed → the exporter renders a summary: rolling-window quantiles, not
+    ///   aggregatable, and the series still appears
+    #[test]
+    fn every_histogram_scrapes_on_its_own_bucket_ladder() {
+        let scrape = scrape(|| {
+            for (metric, ladder) in BUCKETS {
+                // In the first bucket → the `le` assert exercises the ladder, not +Inf
+                metrics::histogram!(*metric).record(ladder[0]);
+            }
+        });
+
+        for (metric, ladder) in BUCKETS {
+            // Overlapping matchers resolve by lexicographic accident; `Matcher::Full` prevents it
+            let lowest = format!(
+                "{}_bucket{{le=\"{}\"}}",
+                metric.replace('.', "_"),
+                ladder[0]
+            );
+            assert!(
+                scrape.contains(&lowest),
+                "`{metric}` did not get its configured ladder; expected `{lowest}`. \
+                 Scrape was:\n{scrape}"
+            );
+        }
+    }
+
+    /// - `metric_names!` rejects a duplicate identifier but not a duplicate name;
+    ///   two entries sharing one name silently drop the second `# HELP`
+    #[test]
+    fn no_metric_name_is_declared_twice() {
+        let mut names: Vec<&str> = all(COUNTERS)
+            .chain(all(GAUGES))
+            .chain(all(HISTOGRAMS))
+            .map(|(name, _)| name)
+            .collect();
+        names.sort_unstable();
+        let total = names.len();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            total,
+            "a metric name is declared more than once"
+        );
+    }
+
+    /// - Missing ladder = a summary at runtime; stale ladder = a decision about a
+    ///   histogram nothing emits. `init` refuses to start on the first, not the second
+    #[test]
+    fn every_emitted_histogram_has_a_bucket_ladder_and_no_ladder_is_stale() {
+        let mut emitted: Vec<&str> = all(HISTOGRAMS).map(|(name, _)| name).collect();
+        let mut laddered: Vec<&str> = BUCKETS.iter().map(|(name, _)| *name).collect();
+        emitted.sort_unstable();
+        laddered.sort_unstable();
+        assert_eq!(
+            laddered, emitted,
+            "BUCKETS and the emitted histograms disagree"
+        );
+    }
+
+    /// - Every counter is seeded or named unseedable, never neither
+    #[test]
+    fn every_counter_is_seeded_or_named_unseedable() {
+        let scrape = scrape(|| {});
+        for (metric, _) in all(COUNTERS) {
+            // A sample line, not `contains`: `# HELP` carries the name too, so a
+            // substring match reads an unsampled counter as seeded. Labelled series
+            // render as `name{..} 0`, unlabelled as `name 0`
+            let rendered = metric.replace('.', "_");
+            let seeded = scrape.lines().any(|line| {
+                line.starts_with(&format!("{rendered} "))
+                    || line.starts_with(&format!("{rendered}{{"))
+            });
+            assert_eq!(
+                seeded,
+                !UNSEEDABLE_COUNTERS.contains(&metric),
+                "`{metric}` is {} a fresh scrape but {} UNSEEDABLE_COUNTERS. \
+                 Scrape was:\n{scrape}",
+                if seeded { "in" } else { "absent from" },
+                if UNSEEDABLE_COUNTERS.contains(&metric) {
+                    "listed in"
+                } else {
+                    "absent from"
+                },
+            );
+        }
+    }
+
+    /// - Gauges publish a raw int; the legend is the only thing making it readable
+    /// - Variant added without extending the list = permanently unlabelled state
+    #[test]
+    fn discriminant_legends_are_rendered_into_help_text() {
+        // `# HELP` is emitted only for sampled metrics, and neither is pre-created
+        let scrape = scrape(|| {
+            metrics::gauge!(STATUS, STATUS_COMPONENT => "test").set(0.0);
+            metrics::gauge!(MEMPOOL_COMPLETENESS).set(0.0);
+        });
+        let legend_of = |metric: &str| {
+            let rendered = metric.replace('.', "_");
+            scrape
+                .lines()
+                .find(|line| line.starts_with(&format!("# HELP {rendered} ")))
+                .unwrap_or_else(|| panic!("`{metric}` has no HELP line. Scrape was:\n{scrape}"))
+                .to_string()
+        };
+
+        let status = legend_of(STATUS);
+        for (discriminant, variant) in StatusType::ALL.iter().enumerate() {
+            assert!(
+                status.contains(&format!("{discriminant}={variant:?}")),
+                "`{STATUS}` help omits `{discriminant}={variant:?}`, so that state is \
+                 unreadable in a dashboard. Help line was:\n{status}"
+            );
+        }
+
+        let completeness = legend_of(MEMPOOL_COMPLETENESS);
+        for (discriminant, variant) in MempoolCompleteness::ALL.iter().enumerate() {
+            assert!(
+                completeness.contains(&format!("{discriminant}={variant:?}")),
+                "`{MEMPOOL_COMPLETENESS}` help omits `{discriminant}={variant:?}`. \
+                 Help line was:\n{completeness}"
+            );
+        }
+    }
 }

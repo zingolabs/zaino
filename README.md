@@ -95,8 +95,9 @@ Makefile.toml                      cargo-make task definitions
 rust-toolchain.toml                Pinned Rust toolchain
 deny.toml                          cargo-deny policy (licenses, advisories)
 
-Dockerfile                         Production container image
-entrypoint.sh                      Production container entrypoint
+Dockerfile                         Container image (operators and development)
+Dockerfile.deterministic           Reproducible, attested release image
+entrypoint.sh                      Container entrypoint
 .dockerignore                      Docker build context exclusions
 
 README.md                          This file
@@ -109,8 +110,8 @@ LICENSE                            Apache-2.0 license text
 
 ## Server network exposure
 
-Zaino exposes two servers, with different defaults reflecting their transport
-security:
+Zaino exposes two servers and one optional telemetry listener, with different
+defaults reflecting their transport security:
 
 - **gRPC** (`[grpc_settings]`): may bind to a public address only when TLS is
   configured (`[grpc_settings.tls]` with `cert_path` / `key_path`). Binding to a
@@ -126,10 +127,57 @@ security:
   networks where encryption is handled externally (e.g. containers behind a
   service mesh or proxy that terminates TLS).
 
+- **Admin listener** (`metrics_endpoint`, feature `prometheus`): off unless set.
+  Serves `/metrics`, `/livez` and `/readyz` on its own thread and runtime, so a
+  saturated serving runtime cannot stall a scrape or time out a liveness probe into
+  a restart loop. `/livez` fails only on an unrecoverable component or an indexer
+  that has stopped reporting; `/readyz` fails while syncing, so Kubernetes withholds
+  traffic without restarting the pod. Unauthenticated + unencrypted → publishes
+  chain tip, sync progress, per-method request volumes, process memory. A
+  non-private bind is **warned, not rejected** (no control operations; containers
+  bind `0.0.0.0` by norm). Restrict to loopback, a private interface, or your
+  scraper's network.
+
 **Security implication:** the JSON-RPC interface transmits unencrypted traffic.
 Do not expose it to untrusted networks, and only enable
 `allow_unencrypted_public_json_rpc_bind` when an external layer secures the
 connection.
+
+## Container images
+
+Two images, same workspace:
+
+|                     | `Dockerfile`                    | `Dockerfile.deterministic`     |
+| ------------------- | ------------------------------- | ------------------------------ |
+| Purpose             | operators and development       | reproducible, attested releases |
+| Base                | `rust:<pin>` → `debian-slim`    | stagex pallets → busybox       |
+| Linking             | dynamic (glibc)                 | static (musl)                  |
+| Runs as             | non-root `container_user`       | root                           |
+| Profiling builds    | yes, via `CARGO_PROFILE`        | no — kept byte-reproducible    |
+
+`RUST_VERSION` has no default (a literal would drift from the pinned toolchain):
+
+```sh
+docker build -t zainod \
+  --build-arg RUST_VERSION="$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" .
+```
+
+`CARGO_FEATURES` — comma-separated, empty = default set:
+
+```sh
+--build-arg CARGO_FEATURES=prometheus
+--build-arg CARGO_FEATURES=no_tls_use_unencrypted_traffic
+```
+
+`CARGO_PROFILE=profiling` (`Dockerfile` only) → release codegen + line tables +
+frame pointers, so a sampling profiler can walk and symbolicate stacks. No such
+switch on the deterministic image (both would change the bytes it reproduces).
+
+Local equivalent:
+
+```sh
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod
+```
 
 ## Running tests
 
@@ -179,10 +227,10 @@ mistakes its design is trying to prevent.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
-- [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
+- [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it does not do.
 - [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
 - [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the JSON-RPC adapter and its error classification.
-- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
+- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it cannot answer.
 - [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
 - [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.

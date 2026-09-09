@@ -35,7 +35,7 @@ no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
 
 # Prometheus /metrics scrape endpoint.
-prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus", "zaino-serve/prometheus", "zaino-rpc/prometheus", "zaino-chain-head-service/prometheus"]
+prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus", "dep:metrics-process", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
 
 # DANGER: allows the JSON-RPC server to bind to a public (non-private,
 # non-loopback) address. The JSON-RPC interface has NO transport encryption and
@@ -83,6 +83,10 @@ serde = { workspace = true, features = ["derive"] }
 # Metrics (behind "prometheus" feature)
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
+metrics-process = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, optional = true, features = ["tokio"] }
+http-body-util = { workspace = true, optional = true }
 
 # Utility
 thiserror = { workspace = true }
