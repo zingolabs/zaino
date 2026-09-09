@@ -9,15 +9,15 @@ use zebra_rpc::methods::{AddressBalance, GetAddressUtxos};
 
 /// A UTXO whose address the wire type cannot represent.
 ///
-/// [`TransparentAddress`](zaino_primitives::types::TransparentAddress) is an
-/// opaque string by design — the domain never inspects an address, it forwards
-/// it. Zebra's `GetAddressUtxos` holds a parsed `transparent::Address`, so
-/// rendering has to parse, and parsing can fail.
+/// A [`TransparentAddress`](zaino_primitives::types::TransparentAddress) is a
+/// validated transparent address, but Zebra's `GetAddressUtxos` holds a parsed
+/// `transparent::Address` of its own, so rendering re-parses with a second
+/// implementation, and that step is typed as fallible.
 ///
-/// In practice it cannot: the addresses in a response are the ones the caller
-/// asked about, echoed back by a validator that matched them. It is reported
-/// rather than asserted because the alternative is a panic on a value that came
-/// from outside this process.
+/// In practice it cannot fail: our constructor already accepted the string as a
+/// transparent address, and Zebra parses the same set. It is reported rather
+/// than asserted because the two parsers are separate implementations, and a
+/// disagreement between them is a reason to fail the query, not to panic.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("utxo address is not a valid transparent address: {0}")]
 pub struct UnrenderableUtxoAddress(String);
@@ -85,7 +85,7 @@ mod tests {
 
     fn utxo() -> Utxo {
         Utxo {
-            address: TransparentAddress::new(ADDRESS.to_string()),
+            address: TransparentAddress::try_new(ADDRESS).expect("valid testnet address"),
             txid: TransactionId::from(ASYMMETRIC),
             output_index: 2,
             script: Script::from(vec![0x76, 0xa9]),
@@ -143,11 +143,13 @@ mod tests {
         assert_eq!(json[0]["height"], 1_234);
     }
 
+    /// A malformed address is now rejected where it is *constructed*, not where
+    /// it is rendered: [`TransparentAddress`] cannot hold a non-address, so the
+    /// rendering path never receives one. What was once a render-time error
+    /// check is now a construction-time invariant, so the rejection is asserted
+    /// at the boundary that enforces it.
     #[test]
-    fn an_unparseable_address_is_reported_not_panicked_on() {
-        let mut utxo = utxo();
-        utxo.address = TransparentAddress::new("not an address".to_string());
-
-        assert!(address_utxos_from_domain(vec![utxo]).is_err());
+    fn a_malformed_address_is_rejected_at_construction() {
+        assert!(TransparentAddress::try_new("not an address").is_err());
     }
 }
