@@ -223,10 +223,11 @@ async fn sync_to_height_across_many_write_batches() {
             None => crate::types::AbsoluteChainWork::genesis(block_work),
         };
         assert_eq!(
-            chainwork, expected,
+            chainwork,
+            Some(expected),
             "chainwork at height {height} must be its parent's plus this block's own work"
         );
-        previous_chainwork = Some(chainwork);
+        previous_chainwork = chainwork;
     }
 }
 

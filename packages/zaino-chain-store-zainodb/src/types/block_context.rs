@@ -15,9 +15,13 @@ pub struct BlockContext {
     pub index: BlockIndex,
     /// The hash of this block's parent block (previous block in chain).
     pub parent_hash: BlockHash,
-    /// The cumulative proof-of-work of the blockchain up to this block,
-    /// used for chain selection.
-    pub chainwork: AbsoluteChainWork,
+    /// Total chain work up to this block, when it is known.
+    ///
+    /// `None` for a block the chain head produced: it holds a bounded window
+    /// and never reads the finalised state, so the work below that window is
+    /// not available to it. Such a block is served, never stored — persisting
+    /// one is refused at the encode boundary.
+    pub chainwork: Option<AbsoluteChainWork>,
 }
 
 impl BlockContext {
@@ -26,7 +30,7 @@ impl BlockContext {
     pub fn new(
         hash: BlockHash,
         parent_hash: BlockHash,
-        chainwork: AbsoluteChainWork,
+        chainwork: Option<AbsoluteChainWork>,
         height: Height,
     ) -> Self {
         Self {
@@ -46,8 +50,8 @@ impl BlockContext {
         &self.parent_hash
     }
 
-    /// Returns the total chain work up to this block.
-    pub fn chainwork(&self) -> AbsoluteChainWork {
+    /// Returns the total chain work up to this block, when it is known.
+    pub fn chainwork(&self) -> Option<AbsoluteChainWork> {
         self.chainwork
     }
 

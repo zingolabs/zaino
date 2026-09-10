@@ -160,13 +160,23 @@ pub(super) struct PersistentBlockContext {
 }
 
 impl PersistentBlockContext {
-    pub(super) fn from_business(context: &BlockContext) -> Self {
-        Self {
+    /// Fallible in the encode direction, unusually for a `from_business`: a
+    /// block whose chain work is unknown has no stored form, and this is where
+    /// that is refused. See [`BlockContext::chainwork`].
+    pub(super) fn from_business(context: &BlockContext) -> io::Result<Self> {
+        let chainwork = context.chainwork.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "block has no chain work; refusing to store it",
+            )
+        })?;
+
+        Ok(Self {
             hash: context.index.hash,
             parent_hash: context.parent_hash,
-            chainwork: PersistentChainWork::from_business(&context.chainwork),
+            chainwork: PersistentChainWork::from_business(&chainwork),
             height: context.height(),
-        }
+        })
     }
 
     pub(super) fn into_business(self) -> io::Result<BlockContext> {
@@ -176,7 +186,7 @@ impl PersistentBlockContext {
                 hash: self.hash,
             },
             parent_hash: self.parent_hash,
-            chainwork: self.chainwork.into_business()?,
+            chainwork: Some(self.chainwork.into_business()?),
         })
     }
 }
@@ -267,12 +277,32 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            AbsoluteChainWork::new(NonZeroU128::new(0x0123_4567).expect("nonzero")),
+            Some(AbsoluteChainWork::new(
+                NonZeroU128::new(0x0123_4567).expect("nonzero"),
+            )),
             Height(0x0dec_0de0),
         );
-        let persisted = PersistentBlockContext::from_business(&bctx);
+        let persisted = PersistentBlockContext::from_business(&bctx).expect("chain work present");
         let back = persisted.into_business().expect("valid chainwork");
         assert_eq!(bctx, back);
+    }
+
+    /// A block whose chain work is unknown has no stored form.
+    ///
+    /// The chain head produces such blocks. They are served, and this is what
+    /// stops one reaching the database, where its missing work would be read
+    /// back as a real total.
+    #[test]
+    fn a_block_without_chain_work_is_refused_by_the_encoder() {
+        let bctx = BlockContext::new(
+            BlockHash::from([0x11; 32]),
+            BlockHash::from([0x22; 32]),
+            None,
+            Height(0x0dec_0de0),
+        );
+
+        let error = PersistentBlockContext::from_business(&bctx).expect_err("must be refused");
+        assert_eq!(error.kind(), corez::io::ErrorKind::InvalidData);
     }
 
     /// Regression for the byte-order bug that broke `load_db_backend_from_file`

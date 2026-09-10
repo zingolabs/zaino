@@ -14,21 +14,20 @@
 //! same time. It goes away when ChainIndex is reworked to read the two halves
 //! through their own vocabularies.
 //!
-//! Until then, one thing about the result is load-bearing: its `chainwork` is
-//! **anchor-relative**, because ChainHead accumulates from its own window
-//! rather than from genesis (see [`ChainHeadWork`]). Blocks produced here are
-//! served, never persisted — the finalised state syncs from the validator
-//! independently and computes absolute chainwork itself. Writing one of these
-//! to the database would put a wrong chainwork on disk.
+//! Blocks produced here carry no chain work. ChainHead measures work over its
+//! own window and never reads the finalised state, so the total below that
+//! window is not available to it; the finalised state syncs from the validator
+//! independently and computes its own. A block without chain work has no stored
+//! form, and the encode boundary refuses one.
 
 use std::sync::Arc;
 
 use crate::chain_index::{
-    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::AbsoluteChainWork,
+    source::BlockchainSource, source_ports::ChainIndexSourcePorts,
     validator_source::ValidatorSource,
 };
 use crate::IndexedBlock;
-use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource, ChainHeadWork};
+use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource};
 
 /// A source that can also answer ChainHead's questions.
 ///
@@ -100,9 +99,8 @@ pub enum ChainHeadConversionError {
 /// Re-expresses a ChainHead block as an `IndexedBlock`.
 ///
 /// Only the ChainHead-specific part is here: unwrapping the block into the
-/// domain pieces the store's conversion takes, and turning ChainHead's
-/// anchor-relative work into the type `IndexedBlock` stores. The field mapping
-/// itself lives in the store, because `IndexedBlock` is the store's shape.
+/// domain pieces the store's conversion takes. The field mapping itself lives
+/// in the store, because `IndexedBlock` is the store's shape.
 ///
 /// That split is deliberate. Neither subsystem may depend on the other, and
 /// this does not make one: the store's conversion names nothing from either
@@ -111,24 +109,15 @@ pub enum ChainHeadConversionError {
 /// adapter. What it avoids is a second copy of the mapping, which is what the
 /// codebase had, and which had already drifted over transparent script
 /// classification.
+///
+/// The chain work is `None`. ChainHead measures work over its own window and
+/// cannot know the total below it, so there is no absolute value to give.
 pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadConversionError> {
     Ok(zaino_chain_store_zainodb::conversion::indexed_block(
         &block.block,
         &block.tree_roots,
-        chainwork(block.work),
+        None,
     )?)
-}
-
-/// ChainHead's anchor-relative work, as the type `IndexedBlock` stores.
-///
-/// Non-zero by construction: ChainHead starts each accumulation at the anchor
-/// block's own work rather than at zero, precisely so this conversion cannot
-/// fail.
-fn chainwork(work: ChainHeadWork) -> AbsoluteChainWork {
-    AbsoluteChainWork::new(
-        core::num::NonZeroU128::new(work.as_u128())
-            .expect("chain head work is accumulated from a non-zero anchor"),
-    )
 }
 
 #[cfg(test)]
@@ -136,6 +125,7 @@ mod tests {
     use super::*;
     use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
     use crate::chain_index::types::TxInCompact;
+    use zaino_chain_head::ChainHeadWork;
     use zaino_primitives::types::TreeRoots;
 
     /// This conversion and the finalised state's must produce the same
@@ -155,11 +145,12 @@ mod tests {
     /// encodings the golden tests already pin. `indexed_block_chain` is the
     /// oracle: it still builds through the old `zebra_chain` path.
     ///
-    /// Anchoring both accumulations at the same first block makes even
-    /// chainwork comparable, so this is a total comparison. It became total
-    /// when the two paths stopped disagreeing about the coinbase input: the
-    /// store's conversion synthesises the null prevout a domain block drops,
-    /// because that input is a persisted field.
+    /// Chain work is the one field that must differ, and the test pins that
+    /// too: the finalised path computes it, and this one cannot know it.
+    /// Everything else agrees, which became true when the two paths stopped
+    /// disagreeing about the coinbase input — the store's conversion
+    /// synthesises the null prevout a domain block drops, because that input is
+    /// a persisted field.
     #[test]
     fn conversion_agrees_with_the_finalised_state_path() {
         let vectors = load_test_vectors().expect("test vectors load");
@@ -208,7 +199,19 @@ mod tests {
 
             let actual = indexed_block(&chain_head_block).expect("conversion succeeds");
 
-            assert_eq!(actual.context, expected.context, "block context");
+            assert_eq!(actual.context.index, expected.context.index, "block index");
+            assert_eq!(
+                actual.context.parent_hash, expected.context.parent_hash,
+                "parent hash",
+            );
+            assert_eq!(
+                actual.context.chainwork, None,
+                "a chain head block cannot know its total chain work",
+            );
+            assert!(
+                expected.context.chainwork.is_some(),
+                "the finalised path computes total chain work",
+            );
             assert_eq!(actual.data, expected.data, "block header data");
             assert_eq!(
                 actual.commitment_tree_data, expected.commitment_tree_data,

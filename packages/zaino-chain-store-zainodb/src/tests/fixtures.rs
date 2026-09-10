@@ -72,7 +72,7 @@ pub fn indexed_block_chain(blocks: &[VectorBlock]) -> impl Iterator<Item = Index
         };
         let block = IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata))
             .expect("vector blocks are valid");
-        parent_chainwork = Some(block.context.chainwork);
+        parent_chainwork = block.context.chainwork;
         block
     })
 }
