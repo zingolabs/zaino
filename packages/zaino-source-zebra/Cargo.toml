@@ -6,6 +6,9 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Composite Zebra source: routes each query to the transport that can answer it."
 
 [dependencies]
