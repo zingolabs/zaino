@@ -163,14 +163,26 @@ parallelism — re-run, or lower `--test-threads`.
 
 ### Architecture Decision Records
 Decisions that shape the codebase, with the reasoning that produced them. Read
-these before changing the structure they describe.
-- [ADR-0006](./docs/adr/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
-- [ADR-0007](./docs/adr/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
-- [ADR-0008](./docs/adr/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
-- [ADR-0009](./docs/adr/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
-- [ADR-0010](./docs/adr/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
-- [ADR-0011](./docs/adr/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
-- [ADR-0012](./docs/adr/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
+these before changing the structure they describe. Every record lives in the
+org ledger, [zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs);
+[`docs/adr/`](./docs/adr/README.md) is a read-only mirror of the whole ledger,
+and zaino's own records sit under [`docs/adr/zaino/`](./docs/adr/zaino/).
+Propose a record in the ledger, never here. Refresh the mirror whenever you
+like with:
+
+```sh
+git subtree pull --prefix=docs/adr --squash \
+    git@github.com:zingolabs/zingo-adrs.git dev
+```
+
+Records a newcomer needs first:
+- [ADR-0006](./docs/adr/zaino/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
+- [ADR-0007](./docs/adr/zaino/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
+- [ADR-0008](./docs/adr/zaino/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
+- [ADR-0009](./docs/adr/zaino/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
+- [ADR-0010](./docs/adr/zaino/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
+- [ADR-0011](./docs/adr/zaino/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
+- [ADR-0012](./docs/adr/zaino/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
 
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the

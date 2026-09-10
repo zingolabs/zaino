@@ -97,6 +97,12 @@ For more details see our [testing document](./docs/testing.md).
 ## More Documentation
 
 To see more included documentation, please see [our docs directory](./docs/).
+
+Architecture decision records live in the org ledger,
+[zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs), and are mirrored
+read-only under [`docs/adr/`](./docs/adr/README.md). Propose a record as a pull
+request to the ledger, not to this repository; the ledger's README explains the
+record shape and how to refresh the mirror.
 ## Software Philosophy
 We believe in the power of Free and Open Source Software (FOSS) as the best path for individual and social freedom in computing.
 

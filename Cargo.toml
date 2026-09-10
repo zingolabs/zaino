@@ -168,11 +168,11 @@ zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
 # wire codec can share one encoding vocabulary without either depending on the
 # other. Holds no impl for any domain type: those live with the type whose
 # bytes they describe, which is what keeps a schema out of the vocabulary
-# crates. See docs/adr/0012.
+# crates. See docs/adr/zaino/0012.
 zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
-# `zebra-chain` or on another zaino crate. See docs/adr/0010.
+# `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.1.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
@@ -200,7 +200,7 @@ zaino-common = { path = "packages/zaino-common", version = "0.5.0" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead
-# answers without depending on the service that answers it. See docs/adr/0011.
+# answers without depending on the service that answers it. See docs/adr/zaino/0011.
 zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
 # The ChainHead runtime: owns the writer task that keeps the graph reconciled
 # with the validator, and publishes each snapshot. Separate from the domain
@@ -213,7 +213,7 @@ zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version
 # depending on the implementation that answers it, and a second implementation
 # is a matter of satisfying the traits. It also owns Zaino's UTXO-set
 # commitment, which is a contract between implementations rather than any one
-# implementation's business. See docs/adr/0012.
+# implementation's business. See docs/adr/zaino/0012.
 zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
 # The LMDB implementation of those ports, and the on-disk vocabulary it is
 # built from. Named for the backend rather than for the role: a second
