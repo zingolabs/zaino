@@ -17,3 +17,13 @@ crate       = "zaino-chain-store-zainodb"
 kind        = "breaking"
 description = "A block's chain work is now optional: BlockContext::chainwork is Option<AbsoluteChainWork>, and encoding a block without it is refused. The on-disk format is unchanged."
 migration   = "BlockContext::new takes Option<AbsoluteChainWork>; pass Some(..) for blocks read from or written to the store. conversion::indexed_block takes the same. Blocks produced from the chain head carry None and cannot be persisted."
+
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "internal"
+description = "Fold a window's work from RelativeChainWork::ZERO at the anchor. The anchor and an extending block are built by separate constructors, so the anchor no longer takes a fallible path it cannot fail on."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "internal"
+description = "Chain-head blocks converted for serving now carry no chain work, instead of reinterpreting the window's anchor-relative total as an absolute one."
