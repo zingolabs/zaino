@@ -129,23 +129,32 @@ primitive.
 
 ## The work quantity family
 
-Two quantities share the proof-of-work unit and are not interchangeable:
+Three quantities share the proof-of-work unit and are not interchangeable:
 
 | type | is |
 |---|---|
 | `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
-| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
+| `AbsoluteChainWork` | the **total** work of a chain up to a block — what validators report as `chainwork` |
+| `RelativeChainWork` | the work a **run of blocks** holds, measured from wherever the run begins |
 
 Each fold is a method on the type it returns, and each is checked:
 
 ```rust,ignore
-// A chain of one block has that block's work.
+// From genesis. A chain of one block has that block's work.
 let mut total = AbsoluteChainWork::genesis(block_work);
+total = total.accumulate(next_block_work)?;   // extend
+total = total.rollback(next_block_work)?;     // unwind, on reorg
 
-// Extend by one block; unwind one on reorg. Both checked, with typed errors.
-total = total.accumulate(next_block_work)?;
-total = total.rollback(next_block_work)?;
+// Over a run. The empty run has accumulated nothing.
+let mut run = RelativeChainWork::ZERO;
+run = run.accumulate(next_block_work)?;
 ```
+
+Nothing converts between `AbsoluteChainWork` and `RelativeChainWork`. They are
+the same integer measured from different places, so one used as the other is a
+different number, not an imprecise one. A consumer that can only measure a run —
+`zaino-chain-head`, which never reads the finalised state — holds the relative
+type and compares runs against each other.
 
 `AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
 sends, and answers `Ok(None)` when the validator does not track the value;
@@ -153,9 +162,7 @@ sends, and answers `Ok(None)` when the validator does not track the value;
 `AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
 
 The difficulty-to-work derivation is consensus logic and lives outside this
-crate. The `types::work` module documentation covers why these are separate
-types, and what `AbsoluteChainWork` is *not* — in particular
-`zaino-chain-head`'s anchor-relative work, which is a third quantity.
+crate. The `types::work` module documentation states the full algebra.
 
 ## Byte order
 
