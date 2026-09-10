@@ -44,9 +44,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _, ChainHeadWork,
+    ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _,
 };
-use zaino_primitives::types::{BlockHash, BlockRef, ChainStateEpoch, Height, TreeRoots};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, SingleBlockWork, TreeRoots,
+};
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use crate::{
@@ -628,7 +630,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         block: &zaino_primitives::types::Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        chain_head_block(block.clone(), &tree_roots, Some(prev_block.work))
+        extending_chain_head_block(block.clone(), &tree_roots, prev_block.work)
     }
 
     /// Get commitment tree roots from the blockchain source.
@@ -649,9 +651,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// is the fallback the old code used whenever the reader could not serve
     /// the height, which was every time the database lagged.
     ///
-    /// The anchor sits below the reorg-possible range, so its accumulated work
-    /// is the base of this window's own accumulation rather than an absolute
-    /// value — see `ChainHeadWork`.
+    /// The anchor sits below the reorg-possible range. Work is measured from
+    /// it, so it seeds the window's fold with `RelativeChainWork::ZERO`.
     async fn resolve_anchor_block(
         &self,
         anchor_height: Height,
@@ -663,7 +664,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         })?;
 
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        chain_head_block(block, &tree_roots, None)
+        Ok(anchor_chain_head_block(block, &tree_roots))
     }
 
     /// One coherent height/hash pair from the source.
@@ -763,35 +764,52 @@ fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
     }
 }
 
-/// Builds a [`ChainHeadBlock`], accumulating work onto its parent's.
+/// Builds the window's anchor.
+///
+/// Work is measured from the anchor, so the anchor has accumulated none of it.
+/// Every block above folds onto this seed.
+fn anchor_chain_head_block(
+    block: zaino_primitives::types::Block,
+    tree_roots: &TreeRoots,
+) -> ChainHeadBlock {
+    chain_head_block(block, tree_roots, RelativeChainWork::ZERO)
+}
+
+/// Builds a block that extends a retained parent, folding its own work onto the
+/// parent's total.
+fn extending_chain_head_block(
+    block: zaino_primitives::types::Block,
+    tree_roots: &TreeRoots,
+    parent_work: RelativeChainWork,
+) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
+    let hash = block.header.hash;
+
+    let block_work = zaino_consensus::work_from_bits(block.header.bits)
+        .map_err(|error| format!("invalid difficulty: {error}"))
+        .and_then(|work| {
+            SingleBlockWork::try_new(work).map_err(|error| format!("no work: {error}"))
+        })
+        .map_err(|reason| {
+            ChainHeadAdvanceError::InconsistentSource(format!("block {hash} has {reason}"))
+        })?;
+
+    let work = parent_work.accumulate(block_work).map_err(|error| {
+        ChainHeadAdvanceError::ReorgFailure(format!("work overflowed at block {hash}: {error}"))
+    })?;
+
+    Ok(chain_head_block(block, tree_roots, work))
+}
+
+/// Assembles a retained block around a work total the caller has folded.
 ///
 /// The old `create_indexed_block_with_optional_roots`, less the parts only a
-/// persisted block needed. `parent_work` is `None` only for the anchor, whose
-/// accumulation starts at its own work — see `ChainHeadWork` for why that is
-/// anchor-relative rather than absolute.
+/// persisted block needed.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
     tree_roots: &TreeRoots,
-    parent_work: Option<ChainHeadWork>,
-) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-    let block_work = zaino_consensus::work_from_bits(block.header.bits).map_err(|error| {
-        ChainHeadAdvanceError::InconsistentSource(format!(
-            "block {} has invalid difficulty: {error}",
-            block.header.hash
-        ))
-    })?;
-
-    let work = match parent_work {
-        Some(parent) => parent.checked_add(block_work).ok_or_else(|| {
-            ChainHeadAdvanceError::ReorgFailure(format!(
-                "accumulated work overflowed at block {}",
-                block.header.hash
-            ))
-        })?,
-        None => ChainHeadWork::anchored_at(block_work),
-    };
-
-    Ok(ChainHeadBlock {
+    work: RelativeChainWork,
+) -> ChainHeadBlock {
+    ChainHeadBlock {
         reference: BlockRef {
             hash: block.header.hash,
             height: block.header.height,
@@ -800,7 +818,7 @@ fn chain_head_block(
         work,
         block,
         tree_roots: tree_roots.clone(),
-    })
+    }
 }
 
 /// Anchors the graph, retrying transient source failures.
@@ -860,11 +878,9 @@ async fn anchor<S: ChainHeadBlockSource>(
         .await
         .map_err(|error| ChainHeadAdvanceError::InconsistentSource(error.to_string()))?;
 
-    Ok(MapBackedSnapshot::from_initial_block(chain_head_block(
-        block,
-        &tree_roots,
-        None,
-    )?))
+    Ok(MapBackedSnapshot::from_initial_block(
+        anchor_chain_head_block(block, &tree_roots),
+    ))
 }
 
 /// Sleeps, unless cancelled first.

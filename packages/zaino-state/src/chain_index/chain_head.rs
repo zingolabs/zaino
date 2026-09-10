@@ -125,8 +125,7 @@ mod tests {
     use super::*;
     use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
     use crate::chain_index::types::TxInCompact;
-    use zaino_chain_head::ChainHeadWork;
-    use zaino_primitives::types::TreeRoots;
+    use zaino_primitives::types::{RelativeChainWork, SingleBlockWork, TreeRoots};
 
     /// This conversion and the finalised state's must produce the same
     /// `IndexedBlock` from the same block.
@@ -156,7 +155,7 @@ mod tests {
         let vectors = load_test_vectors().expect("test vectors load");
         let expected: Vec<IndexedBlock> = indexed_block_chain(&vectors.blocks).collect();
 
-        let mut work: Option<ChainHeadWork> = None;
+        let mut work = RelativeChainWork::ZERO;
         for (vector, expected) in vectors.blocks.iter().zip(&expected) {
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
@@ -168,13 +167,12 @@ mod tests {
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = zaino_consensus::work_from_bits(block.header.bits)
-                .expect("vector block has valid difficulty");
-            let accumulated = match work {
-                Some(parent) => parent.checked_add(block_work).expect("no overflow"),
-                None => ChainHeadWork::anchored_at(block_work),
-            };
-            work = Some(accumulated);
+            let block_work = SingleBlockWork::try_new(
+                zaino_consensus::work_from_bits(block.header.bits)
+                    .expect("vector block has valid difficulty"),
+            )
+            .expect("a valid difficulty yields work");
+            work = work.accumulate(block_work).expect("no overflow");
 
             let chain_head_block = ChainHeadBlock {
                 reference: zaino_primitives::types::BlockRef {
@@ -182,7 +180,7 @@ mod tests {
                     height: block.header.height,
                 },
                 parent_hash: block.header.prev_hash,
-                work: accumulated,
+                work,
                 block,
                 tree_roots: TreeRoots {
                     sapling: Some(zaino_primitives::types::TreeRootInfo {
