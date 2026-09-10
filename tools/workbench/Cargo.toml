@@ -1,0 +1,14 @@
+# Standalone dev-tooling crate with its own workspace, so the ledger's only
+# binary builds against std alone.
+[package]
+name = "workbench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]

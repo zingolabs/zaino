@@ -1,0 +1,26 @@
+name: check-ledger
+
+on:
+  pull_request:
+  push:
+    branches: [dev]
+
+jobs:
+  check-ledger:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/workbench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit tests
+        run: cargo test
+      - name: Records and index
+        run: cargo run --quiet -- ../..
