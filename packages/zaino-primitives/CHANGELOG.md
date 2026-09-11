@@ -8,6 +8,31 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+- `types::EquihashSolution`, and `version` / `solution` on `BlockHeader`. A
+  header now carries everything needed to re-derive its own hash. Breaking for
+  code that constructs `BlockHeader` literals.
+- `types::ChainStateEpoch` — a generation plus the tip it describes, naming
+  *which* chain state a published view represents. Lives here because two
+  subsystems need the vocabulary and neither may depend on the other: the chain
+  head publishes epochs, and the mempool's coherence layer freezes and thaws
+  against them. It replaces `zaino_chain_head::ChainHeadEpoch` and
+  `zaino_mempool::NonFinalizedEpoch`, which were field-identical.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate. Zaino's domain vocabulary: chain types (`Block`, `BlockHeader`,
   `Transaction`, `BlockHash`, `TransactionHash`, `Height`, `TreeRoot`,
   `Treestate`, `ShieldedPool`, `ChainMetadata`, `Zatoshis`, `SignedZatoshis`)
@@ -16,16 +41,6 @@ and this library adheres to Rust's notion of
   `ChainTip`, `MempoolInfo`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`,
   `TxOut`, `TxOutSetInfo`, `BlockSubsidy`, `AddressBalance`, `AddressDelta`,
   `Utxo`, `SubtreeRoot`).
-- `types::BlockRef` — a hash and a height together, so the two cannot be passed
-  in the wrong order or observed torn apart.
-- `types::EquihashSolution`, and `version` / `solution` on `BlockHeader`. A
-  header now carries everything needed to re-derive its own hash.
-- `types::ChainStateEpoch` — a generation plus the tip it describes, naming
-  *which* chain state a published view represents. Lives here because two
-  subsystems need the vocabulary and neither may depend on the other: the chain
-  head publishes epochs, and the mempool's coherence layer freezes and thaws
-  against them. It replaces `zaino_chain_head::ChainHeadEpoch` and
-  `zaino_mempool::NonFinalizedEpoch`, which were field-identical.
 - Ironwood (NU6.3) throughout: `ChainMetadata::ironwood_tree_size`,
   `Treestate::ironwood`, `TreeRoots::ironwood`, `ShieldedPool::Ironwood`.
   Uniformly `Option` per pool, with defaulting applied at the conversion
