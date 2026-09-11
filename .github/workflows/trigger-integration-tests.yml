@@ -54,8 +54,13 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           TEST_SHA: ${{ steps.test-branch.outputs.test_sha }}
+          # Stable per-source key so the integration repo can cancel a superseded
+          # run: the PR number for pull requests, otherwise the branch name
+          # (e.g. `dev`).
+          SOURCE_REF: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
         run: >
           gh api repos/zcash/integration-tests/dispatches
           --field event_type="zaino-interop-request"
           --field client_payload[sha]="${SHA}"
           --field client_payload[test_sha]="${TEST_SHA}"
+          --field client_payload[source_ref]="${SOURCE_REF}"
