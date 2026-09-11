@@ -156,7 +156,7 @@ async fn status_recovers_after_a_transient_source_failure() {
 }
 
 /// Moved here from the integration test
-/// `chain_cache::sync_large_chain_{zebrad,zcashd}`. That test contained one
+/// `chain_cache::sync_large_chain_zebrad`. That test contained one
 /// whitebox read — `snapshot.best_tip.height` (W11 in the issue #1044
 /// audit) — asserting the indexer tip matched the validator tip after
 /// ~150 blocks were produced in a burst. That property is about the sync

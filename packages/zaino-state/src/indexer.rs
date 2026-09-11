@@ -152,17 +152,17 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns software information from the RPC server, as a [`NodeInfo`] JSON struct.
     ///
-    /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
+    /// Zcash RPC reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
     /// tags: control
     ///
     /// # Notes
     ///
-    /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
+    /// [The Zcash RPC reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
     /// in Zebra's [`NodeInfo`]. Zebra uses the field names and formats from the
-    /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
+    /// [the legacy full node's code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`NodeInfo`]. It only contains the fields
+    /// Some fields from the Zcash RPC reference are missing from Zebra's [`NodeInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
     fn get_info(&self) -> impl SendFut<Result<NodeInfo, Self::Error>>;
 
@@ -186,9 +186,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// If end is zero, it's interpreted as the latest block height.
     ///
-    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    /// [the original legacy full-node implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
     ///
-    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// Zcash RPC reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
     /// method: post
     /// tags: address
     fn get_address_deltas(
@@ -198,13 +198,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns blockchain state information, as a [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo) JSON struct.
     ///
-    /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
+    /// Zcash RPC reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
     /// tags: blockchain
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo). It only contains the fields
+    /// Some fields from the Zcash RPC reference are missing from Zebra's [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo). It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     fn get_blockchain_info(
         &self,
@@ -212,14 +212,14 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
-    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// Zcash RPC reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     /// method: post
     /// tags: blockchain
     fn get_difficulty(&self) -> impl SendFut<Result<f64, Self::Error>>;
 
     /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
     ///
-    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// Zcash RPC reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -230,26 +230,26 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns details on the active state of the TX memory pool.
     ///
-    /// zcashd reference: [`getmempoolinfo`](https://zcash.github.io/rpc/getmempoolinfo.html)
+    /// Zcash RPC reference: [`getmempoolinfo`](https://zcash.github.io/rpc/getmempoolinfo.html)
     /// method: post
     /// tags: mempool
     ///
     /// Original implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     fn get_mempool_info(
         &self,
-    ) -> impl SendFut<Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::MempoolInfo, Self::Error>>;
 
     /// Returns data about each connected network node as a json array of objects.
     ///
-    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// Zcash RPC reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
     /// tags: network
     ///
-    /// Current `zebrad` does not include the same fields as `zcashd`.
+    /// Current `zebrad` does not include the same fields as the legacy full node.
     fn get_peer_info(&self) -> impl SendFut<Result<Vec<PeerInfo>, Self::Error>>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
-    /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
+    /// Zcash RPC reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
     /// tags: address
     ///
@@ -260,14 +260,14 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// zcashd also accepts a single string parameter instead of an array of strings, but Zebra
+    /// the legacy full node also accepts a single string parameter instead of an array of strings, but Zebra
     /// doesn't because lightwalletd always calls this RPC with an array of addresses.
     ///
-    /// zcashd also returns the total amount of Zatoshis received by the addresses, but Zebra
+    /// the legacy full node also returns the total amount of Zatoshis received by the addresses, but Zebra
     /// doesn't because lightwalletd doesn't use that information.
     ///
     /// The RPC documentation says that the returned object has a string `balance` field, but
-    /// zcashd actually [returns an
+    /// the legacy full node actually [returns an
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
     fn z_get_address_balance(
         &self,
@@ -277,7 +277,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
     /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
     ///
-    /// zcashd reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
+    /// Zcash RPC reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
     /// tags: transaction
     ///
@@ -287,7 +287,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// zcashd accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
+    /// the legacy full node accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
     /// because lightwalletd doesn't use it.
     fn send_raw_transaction(
         &self,
@@ -302,7 +302,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// - hash: (string, required) The block hash
     /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
     ///
-    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// Zcash RPC reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     /// method: post
     /// tags: blockchain
     fn get_block_header(
@@ -316,7 +316,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// request, so it selects between two questions rather than making one
     /// answer polymorphic; the serving layer picks which to ask.
     ///
-    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// Zcash RPC reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     fn get_raw_block_header(&self, hash: String) -> impl SendFut<Result<Vec<u8>, Self::Error>>;
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
@@ -324,7 +324,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [error code `-8`.](https://github.com/zcash/zcash/issues/5758) if a height was
     /// passed or -5 if a hash was passed.
     ///
-    /// zcashd reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
+    /// Zcash RPC reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -351,25 +351,25 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns information about the given block and its transactions.
     ///
-    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// Zcash RPC reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
     /// method: post
     /// tags: blockchain
     fn get_block_deltas(&self, hash: String) -> impl SendFut<Result<BlockDeltas, Self::Error>>;
 
     /// Returns the current block count in the best valid block chain.
     ///
-    /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
+    /// Zcash RPC reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
     /// method: post
     /// tags: blockchain
     fn get_block_count(&self) -> impl SendFut<Result<Height, Self::Error>>;
 
     /// Returns information about all known tips in the block tree.
     ///
-    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// Zcash RPC reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
     /// method: post
     /// tags: blockchain
     ///
-    /// zcashd builds the response from all block-index leaves, always includes the active
+    /// the legacy full node builds the response from all block-index leaves, always includes the active
     /// tip, sorts by descending height, and classifies leaves as `invalid`, `headers-only`,
     /// `valid-headers`, `valid-fork`, `active`, or `unknown`.
     fn get_chain_tips(
@@ -381,7 +381,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Parameters
     /// - `address`: (string, required, example="tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb") The Zcash transparent address to validate.
     ///
-    /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
+    /// Zcash RPC reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
     /// tags: util
     fn validate_address(
@@ -398,7 +398,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Parameters
     /// - `address`: (string, required) The address to validate.
     ///
-    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
+    /// Zcash RPC reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
     #[deprecated(note = "https://github.com/zingolabs/zaino/issues/992#issuecomment-4245596178")]
@@ -408,8 +408,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ) -> impl SendFut<Result<ZValidatedAddress, Self::Error>>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
-    /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
-    /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
+    /// online Zcash RPC reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
+    /// The legacy full-node doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
     /// method: post
     /// tags: blockchain
     /// The Zcash source code is considered canonical:
@@ -420,14 +420,14 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
-    /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
+    /// Zcash RPC reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
     fn get_raw_mempool(&self) -> impl SendFut<Result<Vec<String>, Self::Error>>;
 
     /// Returns information about the given block's Sapling & Orchard tree state.
     ///
-    /// zcashd reference: [`z_gettreestate`](https://zcash.github.io/rpc/z_gettreestate.html)
+    /// Zcash RPC reference: [`z_gettreestate`](https://zcash.github.io/rpc/z_gettreestate.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -437,7 +437,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// The zcashd doc reference above says that the parameter "`height` can be
+    /// The legacy full-node doc reference above says that the parameter "`height` can be
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
@@ -448,7 +448,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
     ///
-    /// zcashd reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
+    /// Zcash RPC reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
     /// method: post
     /// tags: blockchain
     ///
@@ -462,8 +462,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// While Zebra is doing its initial subtree index rebuild, subtrees will become available
     /// starting at the chain tip. This RPC will return an empty list if the `start_index` subtree
-    /// exists, but has not been rebuilt yet. This matches `zcashd`'s behaviour when subtrees aren't
-    /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
+    /// exists, but has not been rebuilt yet. This matches the legacy full node's behaviour when subtrees aren't
+    /// available yet. (But the legacy full node does its rebuild before syncing any blocks.)
     fn z_get_subtrees_by_index(
         &self,
         pool: zaino_primitives::types::ShieldedPool,
@@ -473,7 +473,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
-    /// zcashd reference: [`getrawtransaction`](https://zcash.github.io/rpc/getrawtransaction.html)
+    /// Zcash RPC reference: [`getrawtransaction`](https://zcash.github.io/rpc/getrawtransaction.html)
     /// method: post
     /// tags: transaction
     ///
@@ -498,7 +498,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns details about an unspent transaction output.
     ///
-    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// Zcash RPC reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
     /// method: post
     /// tags: transaction
     ///
@@ -516,7 +516,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns the txid, input index, and block height where an output is spent.
     ///
-    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// Zcash RPC reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -526,7 +526,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// zcashd 6.12.2 returns an undocumented `height` field in addition to
+    /// the legacy full node 6.12.2 returns an undocumented `height` field in addition to
     /// the documented `txid` and `index` fields.
     fn get_spent_info(
         &self,
@@ -535,7 +535,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
-    /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
+    /// Zcash RPC reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
     /// method: post
     /// tags: address
     ///
@@ -557,7 +557,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// zcashd reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
+    /// Zcash RPC reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
     /// method: post
     /// tags: address
     ///
@@ -576,12 +576,12 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns a json object containing mining-related information.
     ///
-    /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
+    /// the legacy full node reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
     fn get_mining_info(&self) -> impl SendFut<Result<MiningInfo, Self::Error>>;
 
     /// Returns statistics about the unspent transaction output set.
     ///
-    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// Zcash RPC reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
     /// method: post
     /// tags: blockchain
     fn get_tx_out_set_info(
@@ -590,7 +590,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
-    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// Zcash RPC reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -698,7 +698,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
         request: BlockRange,
     ) -> impl SendFut<Result<CompactBlockStream, Self::Error>>;
 
-    /// Return the requested full (not compact) transaction (as from zcashd)
+    /// Return the requested full (not compact) transaction (as from the legacy full node)
     fn get_transaction(
         &self,
         request: TxFilter,

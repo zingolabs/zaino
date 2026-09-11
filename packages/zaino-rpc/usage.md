@@ -38,7 +38,7 @@ RpcError::Transport(..)           // connection, timeout
 RpcError::Auth                    // credentials rejected
 ```
 
-The `code` on `RpcError::Rpc` is the thing a zcashd-compatible client keys on,
+The `code` on `RpcError::Rpc` is the thing a legacy-compatible client keys on,
 so it must survive to the served response. It does, via
 `FailureMode::RpcError(i64)` and the downcast walk in `zaino-serve`.
 

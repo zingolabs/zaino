@@ -15,7 +15,7 @@ use zaino_primitives::types::{Height, TransactionId};
 /// Mirrors the fields of Zebra's `VerifiedUnminedTx` that Zaino serves or needs:
 /// the transaction bytes, its size, and — crucially — `entry_height`, the chain
 /// tip height when the transaction entered the mempool (Zebra's
-/// `VerifiedUnminedTx.height`, zcashd's `nHeight`).
+/// `VerifiedUnminedTx.height`, the legacy full node's `nHeight`).
 #[derive(Debug)]
 pub struct MempoolEntry {
     /// The transaction's id.

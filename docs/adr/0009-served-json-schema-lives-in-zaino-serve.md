@@ -20,7 +20,7 @@ is what pinned `zaino-fetch` in the workspace after `zaino-rpc` and
 Serving one type in both directions is not a tidiness problem. It means the
 shape Zaino *accepts* from a validator and the shape Zaino *emits* to a client
 cannot diverge, even where the interfaces genuinely differ — and they do
-differ. zebrad spells a value pool `lockbox` where zcashd spells it `deferred`;
+differ. zebrad spells a value pool `lockbox` where the legacy full node spells it `deferred`;
 `z_gettreestate`'s `finalRoot` is display-order while `z_getsubtreesbyindex`'s
 subtree roots are not. A single struct forces one answer to questions that have
 two.
@@ -28,7 +28,7 @@ two.
 We decide:
 
 1. **The served JSON schema is `zaino-serve`'s**, in
-   `src/rpc/jsonrpc/wire/` — serde structs carrying zcashd's exact field names,
+   `src/rpc/jsonrpc/wire/` — serde structs carrying the legacy full node's exact field names,
    one module per response family, next to the `#[rpc(server)]` trait that is
    their only consumer.
 
@@ -87,14 +87,14 @@ different contracts.
 - **Generate the served schema from a specification** — deferred, not rejected.
   It is the right long-term answer for a wire contract, and `zaino-proto`
   already works this way for gRPC. There is no machine-readable specification of
-  the zcashd JSON-RPC surface to generate from, and writing one is a larger
+  the legacy full-node JSON-RPC surface to generate from, and writing one is a larger
   piece of work than this rewire.
 
 ## Consequences
 
 - **A defect closed rather than carried.** `zaino-serve`'s error recovery
   downcast-walked for `zaino_fetch`'s `RpcError`, which the new stack never
-  constructs — so zcashd error-code recovery was **silently inert**: every code
+  constructs — so the legacy full node error-code recovery was **silently inert**: every code
   reached the client as a generic internal error. It now matches
   `zaino_source::FetchError`'s `FailureMode::RpcError(i64)` (the validator's
   code) and `zaino_state::LegacyRpcError` (Zaino's own), and is tested
@@ -106,7 +106,7 @@ different contracts.
   reversal happened somewhere in a shared type and neither call site said so.
 
 - **Both spellings of a value pool are accepted.** `lockbox` (zebrad) and
-  `deferred` (zcashd) map to the same domain pool, so the served answer does not
+  `deferred` (the legacy full node) map to the same domain pool, so the served answer does not
   depend on which validator is behind the adapter. This was a live-suite
   failure, not a hypothetical.
 

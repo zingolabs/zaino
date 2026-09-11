@@ -1,55 +1,22 @@
-//! Type definitions for the chain index.
+//! The chain index's type vocabulary, during the move to `zaino-chain-store`.
 //!
-//! This module provides types for blockchain indexing, organized into two main categories:
+//! These types are no longer defined here. The persisted shapes and the
+//! business-layer primitives they are built from now live in
+//! `zaino-chain-store-zainodb`, the backend that writes them, and are
+//! re-exported here so the rest of this crate does not have to move at the
+//! same time.
 //!
-//! ## Database Types
-//! Types that implement `ZainoVersionedSerde` for database persistence.
-//! These types follow strict versioning rules and require migrations for any changes.
+//! # This module is scaffolding
 //!
-//! Currently organized in `db/legacy.rs` (pending refactoring into focused modules):
-//! - Block types: BlockHash, BlockIndex, BlockData, IndexedBlock, etc.
-//! - Transaction types: TransactionHash, CompactTxData, TransparentCompactTx, etc.
-//! - Address types: AddrScript, Outpoint, AddrHistRecord, etc.
-//! - Shielded types: SaplingCompactTx, OrchardCompactTx, etc.
-//! - Primitives: Height, ChainWork, ShardIndex, etc.
+//! Re-exporting a backend's internal types is the wrong dependency direction,
+//! and it is deliberate and temporary. `ChainIndex` still passes these shapes
+//! around its read paths; when it is reworked to read the finalised and recent
+//! halves through their own vocabularies, every name here loses its consumer
+//! and this module goes with them. Nothing new should be written against it.
 //!
-//! ## Helper Types
-//! Non-database types for in-memory operations and conversions:
-//! - BestChainLocation, NonBestChainLocation - Transaction location tracking
-//! - TreeRootData - Commitment tree roots wrapper
-//! - BlockMetadata, BlockWithMetadata - Block construction helpers
-//!
-//! ## Module Organization Rules
-//!
-//! **Database Types (`db` module):**
-//! 1. Must implement `ZainoVersionedSerde`
-//! 2. Never use external types as fields directly - store fundamental data
-//! 3. Never change without implementing a new version and database migration
-//! 4. Follow stringent versioning rules for backward compatibility
-//!
-//! **Helper Types (`helpers` module):**
-//! 1. Do NOT implement `ZainoVersionedSerde`
-//! 2. Used for in-memory operations, conversions, and coordination
-//! 3. Can be changed more freely as they're not persisted
+//! The wire conversions are the exception: they stay in this crate, in
+//! [`super::wire_types`]. A protocol type has no business in a storage crate,
+//! and keeping the two apart is what stops a stored shape being served
+//! directly or a served shape being written to disk.
 
-pub mod block_context;
-pub mod db;
-pub mod helpers;
-pub mod primitives;
-pub mod wire;
-
-// Re-export database types for backward compatibility
-pub use db::legacy::*;
-pub use db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
-
-// Re-export business-layer primitives and containers
-pub use block_context::BlockContext;
-pub use primitives::{
-    BlockIndex, ChainWork, ChainWorkError, CompactDifficulty, CompactDifficultyError,
-};
-
-// Re-export helper types
-pub use helpers::{
-    BestChainLocation, BlockMetadata, BlockWithMetadata, ChainScope, NonBestChainLocation,
-    TreeRootData,
-};
+pub use zaino_chain_store_zainodb::types::*;

@@ -299,12 +299,12 @@ impl OneShotGetAddressDeltas for ZebraValidator {
         // The state service first where there is one. This inverts the usual
         // reasoning — deltas cover every transaction in a height range, so
         // asking the validator to compute them would be the natural choice —
-        // but `getaddressdeltas` is a zcashd method that Zebra does not
+        // but `getaddressdeltas` is a legacy full-node method that Zebra does not
         // implement. Against Zebra the state service is not an accelerator
         // here; it is the only thing that can answer at all.
         //
         // Both paths report mined transactions only, so the routing does not
-        // change which transactions are covered. Against zcashd the RPC path
+        // change which transactions are covered. Against the legacy full node the RPC path
         // additionally reports spends, which the state service cannot resolve
         // (see the readstate implementation).
         match self.fast() {
@@ -410,10 +410,10 @@ impl OneShotGetBlockDeltas for ZebraValidator {
         hash: BlockHash,
     ) -> Result<rpc::BlockDeltas, QueryError<GetBlockDeltasError>> {
         // State service first, and it is not merely a preference: `getblockdeltas`
-        // is a zcashd method that **zebrad does not implement** — it answers
+        // is a legacy full-node method that **zebrad does not implement** — it answers
         // `-32601 Method not found` — so on a zebrad-backed deployment the
         // derivation in the state adapter is the only implementation there is.
-        // The RPC path remains for zcashd, and for a side-chain block the
+        // The RPC path remains for the legacy full node, and for a side-chain block the
         // finalized state does not hold.
         fast_then_slow!(self, get_block_deltas, hash)
     }

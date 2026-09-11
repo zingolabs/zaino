@@ -59,7 +59,7 @@ fn pool_balance(
         "sprout" => GetBlockchainInfoBalance::sprout(value, delta),
         "sapling" => GetBlockchainInfoBalance::sapling(value, delta),
         "orchard" => GetBlockchainInfoBalance::orchard(value, delta),
-        // zebra names this pool `lockbox` on the wire; `deferred` is zcashd's
+        // zebra names this pool `lockbox` on the wire; `deferred` is the legacy full node's
         // name for the same pool, and zebra's own constructor is still called
         // `deferred`. Both spellings are accepted so the answer does not depend
         // on which validator is behind the adapter.

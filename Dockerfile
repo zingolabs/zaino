@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake=3.25.1-1 \
       make=4.3-4.1 \
       ca-certificates=20230311+deb12u1 \
-      protobuf-compiler=3.21.12-3 \
+      protobuf-compiler=3.21.12-3+deb12u1 \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy entire workspace (prevents missing members)

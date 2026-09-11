@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Wire superset compatible with `zcashd` and `zebrad`.
+/// Wire superset compatible with the legacy full node and `zebrad`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetMiningInfoWire {
     #[serde(rename = "blocks")]
@@ -21,13 +21,13 @@ pub struct GetMiningInfoWire {
     #[serde(default)]
     networkhashps: Option<u64>,
 
-    // Present on both zcashd and zebrad
+    // Present on both the legacy full node and zebrad
     #[serde(default)]
     chain: String,
     #[serde(default)]
     testnet: bool,
 
-    // zcashd
+    // the legacy full node
     #[serde(default)]
     difficulty: Option<f64>,
     #[serde(default)]
@@ -101,7 +101,7 @@ impl From<GetMiningInfoWire> for MiningInfo {
 impl GetMiningInfoWire {
     /// Renders the domain type as the served JSON shape.
     ///
-    /// The zcashd-only local-miner fields (`genproclimit`, `localsolps`,
+    /// The legacy-only local-miner fields (`genproclimit`, `localsolps`,
     /// `generate`, `errorstimestamp`, `pooledtx`) have no counterpart in the
     /// domain type and are emitted as absent. They describe a mining daemon,
     /// which Zaino is not, so there is nothing truthful to put in them — see
@@ -149,11 +149,11 @@ mod from_domain_tests {
         }
     }
 
-    /// Pins zcashd's field names. `blocks`, `currentblocksize` and
+    /// Pins the legacy full node's field names. `blocks`, `currentblocksize` and
     /// `currentblocktx` are all renames, so a struct-field rename here would
     /// otherwise silently change the served JSON.
     #[test]
-    fn renders_zcashd_field_names() {
+    fn renders_legacy_field_names() {
         let json = serde_json::to_value(GetMiningInfoWire::from_domain(sample())).unwrap();
 
         assert_eq!(json["blocks"], 1_234);
@@ -228,7 +228,7 @@ mod tests {
         .unwrap()
     }
 
-    fn zcashd_json() -> String {
+    fn legacy_json() -> String {
         serde_json::to_string(&json!({
             "blocks": 765_432u64,
             "currentblocksize": 999_999u64,
@@ -271,9 +271,10 @@ mod tests {
     }
 
     #[test]
-    fn deser_zcashd_integers_then_roundtrip() {
-        let json_str = zcashd_json();
-        let wire: GetMiningInfoWire = serde_json::from_str(&json_str).expect("deserialize zcashd");
+    fn deser_legacy_integers_then_roundtrip() {
+        let json_str = legacy_json();
+        let wire: GetMiningInfoWire =
+            serde_json::from_str(&json_str).expect("deserialize the legacy fixture");
 
         assert_eq!(wire.tip_height, 765_432);
         assert_eq!(wire.current_block_size, Some(999_999));
@@ -336,8 +337,8 @@ mod tests {
     }
 
     #[test]
-    fn convert_to_internal_from_zcashd() {
-        let wire: GetMiningInfoWire = serde_json::from_str(&zcashd_json()).unwrap();
+    fn convert_to_internal_from_legacy() {
+        let wire: GetMiningInfoWire = serde_json::from_str(&legacy_json()).unwrap();
         let mining_info: MiningInfo = wire.clone().into();
 
         assert_eq!(mining_info.tip_height, wire.tip_height);
