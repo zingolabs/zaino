@@ -195,3 +195,7 @@ one if none fits. If the crate has no guide yet, create it and add it to the
 README index. This mirrors the CHANGELOG discipline: the CHANGELOG records *what
 changed*, the guide records *how to use it*, and neither substitutes for the
 other. Purely internal refactors need no guide edit.
+
+## Miscellaneous Requiremetns
+
+- **Rust toolchain version**: If changing the rust toolchain version of the repo, also update the Dockerfiles and rebuild `flake.nix`.

@@ -40,10 +40,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
-      - name: Determine Rust version from rust-toolchain.toml
-        run: |
-          echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> "$GITHUB_ENV"
-
       - name: Extract metadata for Docker (default image)
         id: meta-default
         uses: docker/metadata-action@v6
@@ -65,8 +61,6 @@ jobs:
           push: ${{ env.PUSH_IMAGES }}
           tags: ${{ steps.meta-default.outputs.tags }}
           labels: ${{ steps.meta-default.outputs.labels }}
-          build-args: |
-            RUST_VERSION=${{ env.RUST_VERSION }}
           cache-from: |
             type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache
             type=gha
@@ -94,7 +88,6 @@ jobs:
         with:
           build-args: |
             NO_TLS=true
-            RUST_VERSION=${{ env.RUST_VERSION }}
           context: .
           platforms: linux/amd64
           push: ${{ env.PUSH_IMAGES }}

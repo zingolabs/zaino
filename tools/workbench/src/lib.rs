@@ -56,8 +56,9 @@ pub fn read(path: &Path) -> Result<String, Vec<String>> {
 
 /// The pinned, validated rustc channel from `<root>/rust-toolchain.toml`.
 ///
-/// Single source of truth for `RUST_VERSION`. Rejects any non-numeric channel
-/// (`stable` / `nightly` / dated pins) so the CI image tag stays reproducible.
+/// Rejects any non-numeric channel (`stable` / `nightly` / dated pins) — the
+/// deterministic build's `pallet-rust` tag has to compare against a concrete
+/// version.
 pub fn toolchain_channel(root: &Path) -> Result<String, Vec<String>> {
     let path = root.join("rust-toolchain.toml");
     let contents = read(&path)?;

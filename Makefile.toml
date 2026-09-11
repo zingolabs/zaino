@@ -8,9 +8,6 @@ default_to_workspace = false
 
 [env]
 IMAGE_NAME = "zingodevops/zaino-ci"
-# Single source of truth: rust-toolchain.toml's `channel`, extracted via the
-# workbench `get-rust-version` binary.
-RUST_VERSION = { script = ["cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version"] }
 
 [tasks.help]
 description = "List available commands and usage notes"
