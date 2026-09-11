@@ -9,6 +9,14 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.9.0] - 2026-08-28
+
+### Added
 - An `fs_mode` field on the periodic `Zaino status check` log line, reporting
   whether finalised-state reads are served by the persistent database
   (`persistent`), by the ephemeral passthrough during sync or migration
