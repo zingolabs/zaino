@@ -8,6 +8,11 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `transport_error` as an outcome — retries counted only retryable JSON-RPC
+  *codes*, so HTTP failure, refusal and timeout moved no metric at all.
+- `zaino.rpc.outbound.duration_seconds{method}`, timed per attempt so retry sleeps
+  are excluded. Separates a slow validator from too many asks, which the per-block
+  ingest histograms cannot — under `direct` their source read has no validator.
 - New crate. The JSON-RPC transport, replacing `zaino-fetch`'s
   `JsonRpSeeConnector`: HTTP, the request/response envelope, authentication,
   and retry-on-`-1`.
@@ -34,8 +39,28 @@ and this library adheres to Rust's notion of
   or the override is inert; a unit test pins the relationship.
 
 ### Changed
+- **Breaking** — `RpcClient::call` / `call_with_timeout`: `method: &str` →
+  `&'static str`. Name = metric label, so the bound caps cardinality at the
+  compiled-in method set as a type error (no caller string can mint a series).
+- Outbound RPC metrics are now `zaino.rpc.outbound.errors_total{method,outcome}`
+  plus `zaino.rpc.outbound.duration_seconds{method}`, emitted from the retry loop
+  in `client.rs`. Same shape as the inbound gRPC and JSON-RPC surfaces: volume is
+  the histogram's `_count`, so no success counter restates it. `outcome` splits
+  the three different operator actions — `transport_error` unreachable,
+  `rpc_error` refused, `retried` saturated.
+
 ### Deprecated
+
 ### Removed
+- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
+  unconditional: with no recorder installed the facade is a no-op, so the gate
+  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
+  still owns the recorder and the `/metrics` listener, so no operator-visible
+  behaviour changes. Dependents forwarding to these features must drop that.
+- Metric name `zaino.rpc.outbound.errors_total`, and
+  `zaino.rpc.outbound.request_duration_seconds` (superseded by
+  `duration_seconds`).
+
 ### Fixed
 - `probe_node` returns an error instead of calling `std::process::exit(1)`, as
   its predecessor in `zaino-fetch` did. Exiting the process from a library made

@@ -9,23 +9,52 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
-- An `fs_mode` field on the periodic `Zaino status check` log line, reporting
-  whether finalised-state reads are served by the persistent database
-  (`persistent`), by the ephemeral passthrough during sync or migration
-  (`ephemeral(syncing)`), or by a process configured with
-  `ephemeral_finalised_state = true` (`ephemeral(configured)`). `chain_state:
-  Ready` alone is ambiguous — the passthrough reports `Ready` identically to a
-  synced on-disk index — so containerised tests should gate startup on
-  `fs_mode: persistent`, or on the `finalised state online` log line, rather
-  than on `Ready`.
-- Metric descriptions for `zaino.db.finalised_ephemeral`,
-  `zaino.db.accumulator_built_height` and
-  `zaino.db.accumulator_rebuild_active`. Note the `prometheus` feature is off
-  by default, so these are inert unless explicitly enabled.
+- **`/livez` and `/readyz`**, beside `/metrics` on the admin listener (feature
+  `prometheus`, off by default). Syncing is live-but-not-ready, so Kubernetes can
+  hold traffic off a syncing node without restarting it. The listener runs on its
+  own thread and runtime: a probe answered from a saturated serving runtime
+  measures that runtime's queue, and a timed-out liveness probe gets the pod killed.
+- **`/health`** on the same listener: `{"status": …, "finalised_state_mode": …}` as
+  JSON, the mode one of `persistent`, `ephemeral(configured)`, `ephemeral(syncing)`,
+  `ephemeral(migrating)`. `503` once the indexer stops reporting, as `/livez`. The
+  mode is never a metric — a gauge encoding a mode reads as a level.
+- **Graceful shutdown on `SIGTERM`.** Zaino installed no signal handler, so
+  container teardown killed it mid-write. Teardown now drives the same `close()`
+  path as an internal shutdown.
+- Process metrics (`process_cpu_seconds_total`, `process_resident_memory_bytes`,
+  fds, threads), sampled on scrape rather than on a timer, and
+  `zainod.restarts_total` — nothing else distinguished a crash loop from a healthy
+  run, since the in-process restart resets no counter.
+- Work counters are pre-registered at zero, so "nothing indexed yet" is
+  distinguishable from "this build does not report it". Height gauges are not: 0
+  is a false height, absent is honest.
+
 ### Changed
-### Deprecated
+- **The gRPC and JSON-RPC listeners bind as soon as the indexer is constructed,
+  not after the initial sync completes.** On a mainnet-sized chain the old order
+  left both ports closed for hours, which reads to an orchestrator as a process
+  that never came up. **Move a readiness probe pointed at a serving port to
+  `/livez`; use `/readyz` when it must wait for a usable index.**
+
 ### Removed
+- **Metrics.** Migrate any dashboard or alert on `zaino.sync.lag_blocks`,
+  `iterations_total`, `iteration_duration_seconds`, `errors_total`,
+  `has_reached_tip`, `reached_tip_at`, `reorg_total`, `block_write_seconds`,
+  `last_block_written_at`, `zaino.db.tip_height`, `zaino.grpc.requests_total`,
+  `zaino.mempool.transactions`, `zaino.mempool.tip_changes_total`, or
+  `zaino.rpc.outbound.request_duration_seconds`. Replacements are listed per
+  metric in the `zaino-state` and `zaino-serve` changelogs.
+
 ### Fixed
+- **`zaino.sync.reorg_depth` rendered as a summary, not a histogram**, so
+  `histogram_quantile()` did not work over it. Every histogram now carries
+  explicit bucket bounds.
+- A gRPC or JSON-RPC listener that failed to bind panicked instead of returning
+  its error. An address already in use now exits through the daemon's own
+  shutdown path with a named error — more visible now that the listeners bind at
+  startup rather than after the initial sync.
+- A configured `metrics_endpoint` on a binary built without the `prometheus`
+  feature was silently ignored — no listener, no complaint. It now warns.
 
 ## [0.8.0] - 2026-08-14
 
@@ -52,13 +81,16 @@ and this crate adheres to Rust's notion of
   `zaino-state`. No configuration change: the `[validator] connection` selector
   (`rpc` / `direct`) means the same thing, and now chooses whether the composite
   is constructed with a read-state adapter alongside its RPC one.
+
 ### Deprecated
+
 ### Removed
 - The outbound RPC metric *names* moved to `zaino-rpc`, which is the crate that
   emits them. Registration and the metric descriptions stay here, so the
   exported metrics are unchanged.
 - `zcashd_support` no longer forwards to `zaino-state`, which gates nothing
   under it; it forwards to `zaino-serve` alone.
+
 ### Fixed
 - The startup validator probe returns an error instead of calling
   `std::process::exit(1)` from inside a library, so the daemon controls its own

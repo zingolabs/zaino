@@ -73,6 +73,17 @@ pub enum MempoolCompleteness {
 }
 
 impl MempoolCompleteness {
+    /// Every variant, ordered by discriminant. Pinned by `all_is_ordered_by_discriminant`
+    ///
+    /// - `zainod` numbers this into the `mempool.completeness` help text, so a new
+    ///   variant cannot scrape as an unnamed integer
+    pub const ALL: [MempoolCompleteness; 4] = [
+        MempoolCompleteness::Complete,
+        MempoolCompleteness::IncompleteCapacityLimited,
+        MempoolCompleteness::IncompletePendingMetadata,
+        MempoolCompleteness::IncompleteSourceError,
+    ];
+
     /// Whether the set is a full view of the source mempool.
     ///
     /// Telemetry and the freeze decision only — do **not** gate reads on this.
@@ -363,6 +374,23 @@ impl MempoolSnapshot {
     /// is not pending when Zaino simply has not looked yet.
     pub fn is_ready(&self) -> bool {
         self.source_tip.is_some()
+    }
+}
+
+#[cfg(test)]
+mod completeness_tests {
+    use super::MempoolCompleteness;
+
+    /// - `ALL`'s order *is* the gauge encoding: the publisher stores `as u8` and the
+    ///   scrape legend numbers it by position
+    #[test]
+    fn all_is_ordered_by_discriminant() {
+        for (index, completeness) in MempoolCompleteness::ALL.iter().enumerate() {
+            assert_eq!(
+                *completeness as usize, index,
+                "{completeness:?} sits at {index}"
+            );
+        }
     }
 }
 
