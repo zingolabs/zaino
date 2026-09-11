@@ -194,16 +194,9 @@ fn initialise_counters() {
             metrics::counter!(metric).increment(0);
         }
     }
-    // 0 is a true statement for these ("not migrating", "not rebuilding"), unlike a
-    // height. Published only when the thing happens, so a node that never migrates
-    // would otherwise never emit them at all
-    for name in [
-        ROUTER_EPHEMERAL_MODE,
-        MIGRATION_ACTIVE,
-        ACCUMULATOR_REBUILD_ACTIVE,
-    ] {
-        metrics::gauge!(name).set(0.0);
-    }
+    // 0 = a true statement ("not rebuilding"), unlike a height. Published only when a rebuild
+    // happens, so a node that never rebuilds would otherwise never emit it
+    metrics::gauge!(ACCUMULATOR_REBUILD_ACTIVE).set(0.0);
 }
 
 /// Labels unknown until emission; a partial seed is a different series, not a placeholder

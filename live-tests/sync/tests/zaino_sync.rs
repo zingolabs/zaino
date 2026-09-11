@@ -161,7 +161,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // under test. The chain is frozen, so the span is already fixed by the pin.
 
     // ── safety: what the index must never do mid-build ──
-    run.always(Severity::Fatal).named("index_append_only").every(secs(30)).check(index_append_only);
+    run.always(Severity::Fatal).named("index_append_only").each_tick().check(index_append_only);
     run.always(Severity::Recorded)
         .named("indexed_work_monotonic")
         .each_tick()

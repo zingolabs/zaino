@@ -128,13 +128,15 @@ defaults reflecting their transport security:
   service mesh or proxy that terminates TLS).
 
 - **Admin listener** (`metrics_endpoint`, feature `prometheus`): off unless set.
-  Serves `/metrics`, `/livez` and `/readyz` on its own thread and runtime, so a
+  Serves `/metrics`, `/livez`, `/readyz` and `/health` on its own thread and runtime, so a
   saturated serving runtime cannot stall a scrape or time out a liveness probe into
   a restart loop. `/livez` fails only on an unrecoverable component or an indexer
   that has stopped reporting; `/readyz` fails while syncing, so Kubernetes withholds
   traffic without restarting the pod. The gRPC and JSON-RPC listeners bind as soon as
   the indexer is constructed, well before the initial sync finishes, so `/readyz` —
   not the presence of an open serving port — is what tells you the index is usable.
+  `/health` reports the status and `finalised_state_mode` (whether finalised reads come
+  from the persistent database or an ephemeral passthrough) as JSON.
   Unauthenticated + unencrypted → publishes
   chain tip, sync progress, per-method request volumes, process memory. A
   non-private bind is **warned, not rejected** (no control operations; containers
@@ -244,6 +246,7 @@ mistakes its design is trying to prevent.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
 - [`zaino-bench`](./packages/zaino-bench/usage.md): measuring sync time, connection ceiling, and serve rate on a running node.
+- [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, what goes on `/health`, and why the two never overlap.
 
 
 ## Security Vulnerability Disclosure

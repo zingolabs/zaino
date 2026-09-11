@@ -154,7 +154,7 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // ── safety: neither index misbehaves, and they never disagree ──
     run.always(Severity::Fatal)
         .named("subject_index_append_only")
-        .every(secs(30))
+        .each_tick()
         .check(subject_index_append_only);
     {
         let zaino_state = zaino_state.clone();

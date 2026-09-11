@@ -244,8 +244,6 @@ use router::Router;
 use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
-use crate::metric_names::*;
-
 use crate::adapter::domain_block_ref;
 use crate::store::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode};
 use crate::types::{BlockHash, ChainWork, Height, IndexedBlock, GENESIS_HEIGHT};
@@ -807,13 +805,6 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         // Deliberately not hooked to `wait_until_ready`: despite its name it has no production
         // caller — only tests and the `reader` wrapper use it.
         let mode = self.db.finalised_state_mode();
-
-        metrics::gauge!(FINALISED_EPHEMERAL).set(if mode == FinalisedStateMode::Persistent {
-            0.0
-        } else {
-            1.0
-        });
-
         if status == StatusType::Ready && mode == FinalisedStateMode::Persistent {
             self.db.note_persistent_online();
         }

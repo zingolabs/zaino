@@ -45,7 +45,9 @@ and this library adheres to Rust's notion of
 
 ### Added
 - `FinalisedStateMode` and `NodeBackedChainIndex::finalised_state_mode`, reporting
-  whether finalised reads are served from disk or by an ephemeral passthrough.
+  whether finalised reads are served from disk, by a configured ephemeral passthrough,
+  or by one installed while initial sync (`ephemeral(syncing)`) or a migration
+  (`ephemeral(migrating)`) runs.
   `StatusType` cannot express this: a passthrough reports `Ready` exactly like a
   fully synced database.
 - Metrics: `zaino.sync.fetched_height`, `accumulator_height`,
@@ -55,9 +57,9 @@ and this library adheres to Rust's notion of
   (`transparent_inputs_total`, `transparent_outputs_total`, `sapling_spends_total`,
   `sapling_outputs_total`, `orchard_actions_total`, `ironwood_actions_total`);
   `zaino.db.validated_height`, `validation_seconds`, `on_demand_validations_total`,
-  `map_size_bytes`, `used_bytes`, `finalized_ephemeral`,
-  `accumulator_rebuild_active`; `zaino.router.ephemeral_mode`,
-  `zaino.migration.active`, `zaino.migration.progress_height`.
+  `map_size_bytes`, `used_bytes`, `accumulator_rebuild_active`;
+  `zaino.migration.progress_height`. Which backend serves finalised reads is a mode,
+  not a quantity: `zainod` reports it on `/health`, never as a metric.
 
 ### Removed
 - **Feature `prometheus`.** `metrics` is now a plain dependency and emission is

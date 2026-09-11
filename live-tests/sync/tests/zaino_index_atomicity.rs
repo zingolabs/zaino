@@ -169,23 +169,29 @@ const ORDER_SLACK: u32 = 2;
 /// restates them, a rename shows up only as a probe going quiet. `run.requires_work` guards the
 /// per-op counters and nothing else → [`super::required_families_are_published`] guards these
 mod family {
-    use ztest::prelude::{Family, family};
+    use ztest::prelude::{Counter, Dimension, Gauge, Hist, counter, gauge, hist};
 
-    pub(super) const CHAIN_TIP: Family = family("zaino_chain_tip_height");
-    pub(super) const TARGET: Family = family("zaino_sync_target_height");
-    pub(super) const FETCHED: Family = family("zaino_sync_fetched_height");
-    pub(super) const FINALIZED: Family = family("zaino_sync_finalized_height");
-    pub(super) const ACCUMULATOR: Family = family("zaino_sync_accumulator_height");
-    pub(super) const VALIDATED: Family = family("zaino_db_validated_height");
-    pub(super) const NFS_TIP: Family = family("zaino_nfs_tip_height");
+    const fn height(name: &'static str) -> Gauge {
+        gauge(name, Dimension::Count)
+    }
 
-    pub(super) const NFS_REANCHORS: Family = family("zaino_nfs_reanchors_total");
-    pub(super) const ACCUMULATOR_SECONDS: Family = family("zaino_sync_accumulator_seconds");
-    pub(super) const BLOCK_FETCH: Family = family("zaino_sync_block_fetch_seconds");
-    pub(super) const BLOCK_ASSEMBLE: Family = family("zaino_sync_block_assemble_seconds");
+    pub(super) const CHAIN_TIP: Gauge = height("zaino_chain_tip_height");
+    pub(super) const TARGET: Gauge = height("zaino_sync_target_height");
+    pub(super) const FETCHED: Gauge = height("zaino_sync_fetched_height");
+    pub(super) const FINALIZED: Gauge = height("zaino_sync_finalized_height");
+    pub(super) const ACCUMULATOR: Gauge = height("zaino_sync_accumulator_height");
+    pub(super) const VALIDATED: Gauge = height("zaino_db_validated_height");
+    pub(super) const NFS_TIP: Gauge = height("zaino_nfs_tip_height");
+
+    pub(super) const NFS_REANCHORS: Counter = counter("zaino_nfs_reanchors_total", Dimension::Count);
+    pub(super) const ACCUMULATOR_SECONDS: Hist =
+        hist("zaino_sync_accumulator_seconds", Dimension::Seconds);
+    pub(super) const BLOCK_FETCH: Hist = hist("zaino_sync_block_fetch_seconds", Dimension::Seconds);
+    pub(super) const BLOCK_ASSEMBLE: Hist =
+        hist("zaino_sync_block_assemble_seconds", Dimension::Seconds);
 
     /// Gauges the probes treat as required — absent = its probe unfailable = worse than a red run
-    pub(super) const REQUIRED_GAUGES: [Family; 6] =
+    pub(super) const REQUIRED_GAUGES: [Gauge; 6] =
         [CHAIN_TIP, TARGET, FETCHED, FINALIZED, ACCUMULATOR, NFS_TIP];
 }
 
@@ -436,23 +442,23 @@ const SCRAPE_TIMEOUT: std::time::Duration = secs(10);
 /// `Ok(None)` = family absent ≠ zero (several unset in the opening minutes; absence-as-0 invents
 /// an ordering violation out of a starting pod). Negative/non-finite = broken exporter → error
 ///
-/// - `reduce`, not `height_gauge`: the latter folds a broken reading into `None`, which every
-///   probe here reads as "not published yet" and would pass on
-async fn gauge(zaino: &ZainoIndexer, family: Family) -> Result<Option<u32>, String> {
+/// - `level`, not `height`: the latter folds a broken reading into `None`, which every probe
+///   here reads as "not published yet" and would pass on
+async fn gauge(zaino: &ZainoIndexer, family: Gauge) -> Result<Option<u32>, String> {
     let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
-    match exposition.reduce(family, Reduce::Max) {
+    match exposition.level(family) {
         Some(v) if v.is_finite() && v >= 0.0 => Ok(Some(v as u32)),
         Some(v) => Err(format!("{family} read as {v}, which is not a height")),
         None => Ok(None),
     }
 }
 
-/// `reduce` sums every label set → `mode=rebuild` vs `delta` indistinguishable, likewise `stage=`
-/// / `backend=`. Narrowing one needs [`family_where`], which would make [`phase_two_cost_share`]
+/// `total` sums every label set → `mode=rebuild` vs `delta` indistinguishable, likewise `stage=`
+/// / `backend=`. Narrowing one needs `counter_where`, which would make [`phase_two_cost_share`]
 /// a direct traversal count instead of a cost share
-async fn counter(zaino: &ZainoIndexer, family: Family) -> Result<Option<u64>, String> {
+async fn counter(zaino: &ZainoIndexer, family: Counter) -> Result<Option<u64>, String> {
     let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
-    match exposition.reduce(family, Reduce::Sum) {
+    match exposition.total(family) {
         Some(v) if v.is_finite() && v >= 0.0 => Ok(Some(v as u64)),
         Some(v) => Err(format!("{family} read as {v}, which is not a count")),
         None => Ok(None),
@@ -460,9 +466,9 @@ async fn counter(zaino: &ZainoIndexer, family: Family) -> Result<Option<u64>, St
 }
 
 /// Histogram `_count`, folded across label sets ([`counter`] re: the fold)
-async fn hist_count(zaino: &ZainoIndexer, family: Family) -> Result<Option<u64>, String> {
+async fn hist_count(zaino: &ZainoIndexer, family: Hist) -> Result<Option<u64>, String> {
     let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
-    match exposition.tally(family) {
+    match exposition.tally(family.family()) {
         Some(t) if t.count.is_finite() && t.count >= 0.0 => Ok(Some(t.count as u64)),
         Some(t) => Err(format!("{family}_count read as {}, which is not a count", t.count)),
         None => Ok(None),
@@ -470,9 +476,9 @@ async fn hist_count(zaino: &ZainoIndexer, family: Family) -> Result<Option<u64>,
 }
 
 /// Histogram `_sum` in seconds, folded across label sets ([`counter`] re: the fold)
-async fn hist_sum(zaino: &ZainoIndexer, family: Family) -> Result<Option<f64>, String> {
+async fn hist_sum(zaino: &ZainoIndexer, family: Hist) -> Result<Option<f64>, String> {
     let exposition = zaino.read(SCRAPE_TIMEOUT).await.map_err(|e| format!("{family}: {e}"))?;
-    match exposition.tally(family) {
+    match exposition.tally(family.family()) {
         Some(t) if t.sum.is_finite() && t.sum >= 0.0 => Ok(Some(t.sum)),
         Some(t) => Err(format!("{family}_sum read as {}, which is not a duration", t.sum)),
         None => Ok(None),
@@ -886,9 +892,8 @@ async fn nfs_anchored_once(s: &Snapshot, zaino: &ZainoIndexer) -> Verdict {
 /// zaino's glossary: finalised state = "append-only: never incrementally rolled back". No
 /// reorg-depth tolerance (unlike on a live chain) — peerless zebrad ⇒ no reorg can have asked.
 ///
-/// - Reads [`family::FINALIZED`], NOT `s.height()`: ztest's `live_height` prefers `HEIGHTS.live`
-///   = `fetched_height`, which is *legitimately* non-monotone (an interrupted pass restarts at
-///   committed_tip + 1 and re-fetches) → gating on it asserts something that is not an invariant
+/// - Own `last` = the highest committed frontier ever evaluated → a drop between two sparse
+///   evaluations still fails (adjacent ticks alone would miss it)
 /// - `last` starts at 0, so the first reading always passes
 async fn finalised_index_append_only(
     _s: &Snapshot,
@@ -926,10 +931,8 @@ fn indexed_work_monotonic(s: &Snapshot) -> Verdict {
 /// pin. Manifest = stronger (written before either pod existed ⇒ cannot be dragged along by
 /// whatever zaino and zebra agree to be wrong about).
 ///
-/// - `s.height()` here and in the coverage probes = `fetched_height`, the ingest frontier, which is
-///   what "has zaino reached blocks past X" wants. Probes naming the *committed* frontier read
-///   [`family::FINALIZED`] instead — ztest's `live_height` prefers `HEIGHTS.live`, and they differ
-///   by up to a batch
+/// - `s.height()` = the committed frontier (`finalized_height`) only — no reading before the first
+///   commit, and it trails the ingest frontier by up to a batch
 async fn index_within_pinned_tip(
     s: &Snapshot,
     validator: &ZebraValidator,

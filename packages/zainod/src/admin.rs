@@ -1,4 +1,4 @@
-//! Admin surface: `/metrics`, `/livez`, `/readyz`, on a runtime of its own.
+//! Admin surface: `/metrics`, `/livez`, `/readyz`, `/health`, on a runtime of its own.
 //!
 //! - Own thread + current-thread runtime: the serving runtime is the one that
 //!   saturates, and a probe answered from there measures its queue, not the process
@@ -22,6 +22,7 @@ use hyper::{body::Bytes, server::conn::http1, service::service_fn, Request, Resp
 use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics_exporter_prometheus::PrometheusHandle;
 use tracing::{error, info, warn};
+use zaino_state::FinalisedStateMode;
 use zaino_status::StatusType;
 
 use crate::error::IndexerError;
@@ -56,13 +57,38 @@ static PROCESS_STATUS: AtomicUsize = AtomicUsize::new(0);
 /// Millis since [`epoch`] at the last [`publish_status`]; 0 = never published.
 static PROCESS_STATUS_AT: AtomicU64 = AtomicU64::new(0);
 
+/// [`FinalisedStateMode`] beside [`PROCESS_STATUS`], via [`encode_mode`]; 0 = no indexer yet
+static PROCESS_MODE: AtomicUsize = AtomicUsize::new(0);
+
+fn encode_mode(mode: Option<FinalisedStateMode>) -> usize {
+    match mode {
+        None => 0,
+        Some(FinalisedStateMode::EphemeralConfigured) => 1,
+        Some(FinalisedStateMode::EphemeralSyncing) => 2,
+        Some(FinalisedStateMode::EphemeralMigrating) => 3,
+        Some(FinalisedStateMode::Persistent) => 4,
+    }
+}
+
+fn decode_mode(raw: usize) -> Option<FinalisedStateMode> {
+    match raw {
+        0 => None,
+        1 => Some(FinalisedStateMode::EphemeralConfigured),
+        2 => Some(FinalisedStateMode::EphemeralSyncing),
+        3 => Some(FinalisedStateMode::EphemeralMigrating),
+        4 => Some(FinalisedStateMode::Persistent),
+        other => unreachable!("PROCESS_MODE holds only encode_mode's values, got {other}"),
+    }
+}
+
 fn epoch() -> Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     *EPOCH.get_or_init(Instant::now)
 }
 
-pub(crate) fn publish_status(status: StatusType) {
+pub(crate) fn publish_status(status: StatusType, mode: Option<FinalisedStateMode>) {
     PROCESS_STATUS.store(status.into(), Ordering::Relaxed);
+    PROCESS_MODE.store(encode_mode(mode), Ordering::Relaxed);
     PROCESS_STATUS_AT.store(
         epoch().elapsed().as_millis().min(u64::MAX as u128) as u64,
         Ordering::Relaxed,
@@ -122,7 +148,7 @@ async fn serve(endpoint: SocketAddr, handle: PrometheusHandle) {
         // Downs the probes too, so k8s will restart the pod on this
         Err(e) => return error!(%e, %endpoint, "admin endpoint failed to bind"),
     };
-    info!(%endpoint, "admin endpoint started: /metrics, /livez, /readyz");
+    info!(%endpoint, "admin endpoint started: /metrics, /livez, /readyz, /health");
 
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -187,8 +213,29 @@ async fn route(
         // component, or an indexer that stopped reporting, asks to be restarted
         "/livez" => probe(process_status().is_live() && status_is_fresh()),
         "/readyz" => probe(process_status().is_ready() && status_is_fresh()),
+        "/health" => health(),
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
     }
+}
+
+/// Status + which backend serves finalised reads, as JSON.
+///
+/// - Mode lives here, never in `/metrics`: a gauge encoding a mode reads as a level
+/// - Stale (indexer stopped reporting) → 503, as `/livez` fails on it
+fn health() -> Response<Full<Bytes>> {
+    let mode = match decode_mode(PROCESS_MODE.load(Ordering::Relaxed)) {
+        Some(mode) => format!("\"{mode}\""),
+        None => "null".to_string(),
+    };
+    let payload = format!(
+        "{{\"status\":\"{}\",\"finalised_state_mode\":{mode}}}",
+        process_status()
+    );
+    let code = match status_is_fresh() {
+        true => StatusCode::OK,
+        false => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    body(code, JSON_CONTENT_TYPE, payload)
 }
 
 fn probe(passing: bool) -> Response<Full<Bytes>> {
@@ -210,6 +257,8 @@ fn probe(passing: bool) -> Response<Full<Bytes>> {
 const EXPOSITION_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 const PLAIN_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
+
+const JSON_CONTENT_TYPE: &str = "application/json";
 
 fn body(status: StatusCode, content_type: &'static str, payload: String) -> Response<Full<Bytes>> {
     Response::builder()
@@ -265,7 +314,10 @@ mod tests {
             panic!("admin endpoint never accepted a connection on {endpoint}");
         };
 
-        publish_status(StatusType::Syncing);
+        publish_status(
+            StatusType::Syncing,
+            Some(FinalisedStateMode::EphemeralSyncing),
+        );
         let metrics = get("/metrics").await;
         assert!(metrics.starts_with("HTTP/1.1 200"), "{metrics}");
         assert!(metrics.contains("zaino_test_total 7"), "{metrics}");
@@ -280,9 +332,33 @@ mod tests {
         assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
         assert!(get("/readyz").await.starts_with("HTTP/1.1 503"));
 
-        publish_status(StatusType::Ready);
+        let health = get("/health").await;
+        assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+        assert!(
+            health.ends_with(r#"{"status":"Syncing","finalised_state_mode":"ephemeral(syncing)"}"#),
+            "{health}"
+        );
+        assert!(
+            !metrics.contains("ephemeral"),
+            "a mode must never reach /metrics: {metrics}"
+        );
+
+        publish_status(StatusType::Ready, Some(FinalisedStateMode::Persistent));
         assert!(get("/readyz").await.starts_with("HTTP/1.1 200"));
         assert!(get("/nope").await.starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn every_mode_survives_the_atomic() {
+        for mode in [
+            None,
+            Some(FinalisedStateMode::EphemeralConfigured),
+            Some(FinalisedStateMode::EphemeralSyncing),
+            Some(FinalisedStateMode::EphemeralMigrating),
+            Some(FinalisedStateMode::Persistent),
+        ] {
+            assert_eq!(decode_mode(encode_mode(mode)), mode);
+        }
     }
 
     /// - Syncing is live but not ready: k8s must withhold traffic without restarting

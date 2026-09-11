@@ -16,9 +16,7 @@ zaino_status::metric_names! {
     histogram DB_VALIDATION_SECONDS = "zaino.db.validation_seconds" => "Seconds to structurally re-validate one stored block";
     counter DB_ON_DEMAND_VALIDATIONS_TOTAL = "zaino.db.on_demand_validations_total" => "Reads that took the synchronous re-validation path; `db_validation_seconds` counts the ones that did work";
 
-    // DB vs passthrough: different latency & correctness, otherwise indistinguishable
-    gauge ROUTER_EPHEMERAL_MODE = "zaino.router.ephemeral_mode" => "Ephemeral routing: 0 none, 1 read-only, 2 full (migration)";
-    gauge MIGRATION_ACTIVE = "zaino.migration.active" => "1 while a migration holds full ephemeral routing";
+    // Whether a migration runs = `/health`'s `finalised_state_mode` (a mode is no quantity)
     gauge MIGRATION_PROGRESS_HEIGHT = "zaino.migration.progress_height" => "Height an in-progress migration backfill has reached";
 
     // Three disjoint spans summing to the per-block cost; under `direct` a "fetch" is
@@ -45,7 +43,6 @@ zaino_status::metric_names! {
     counter SYNC_ORCHARD_ACTIONS_TOTAL = "zaino.sync.orchard_actions_total" => "Orchard actions ingested";
     counter SYNC_IRONWOOD_ACTIONS_TOTAL = "zaino.sync.ironwood_actions_total" => "Ironwood actions ingested";
 
-    gauge FINALISED_EPHEMERAL = "zaino.db.finalized_ephemeral" => "1 while finalised reads are served by the ephemeral passthrough";
     gauge ACCUMULATOR_REBUILD_ACTIVE = "zaino.db.accumulator_rebuild_active" => "1 while a from-genesis accumulator rebuild is running";
 
     // No LMDB reader slots: `mdb_env_info` = raw FFI, crate forbids unsafe

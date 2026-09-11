@@ -14,6 +14,10 @@ and this crate adheres to Rust's notion of
   hold traffic off a syncing node without restarting it. The listener runs on its
   own thread and runtime: a probe answered from a saturated serving runtime
   measures that runtime's queue, and a timed-out liveness probe gets the pod killed.
+- **`/health`** on the same listener: `{"status": …, "finalised_state_mode": …}` as
+  JSON, the mode one of `persistent`, `ephemeral(configured)`, `ephemeral(syncing)`,
+  `ephemeral(migrating)`. `503` once the indexer stops reporting, as `/livez`. The
+  mode is never a metric — a gauge encoding a mode reads as a level.
 - **Graceful shutdown on `SIGTERM`.** Zaino installed no signal handler, so
   container teardown killed it mid-write. Teardown now drives the same `close()`
   path as an internal shutdown.

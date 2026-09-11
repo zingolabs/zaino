@@ -182,7 +182,7 @@ where
                 // Every tick (100ms), so `/readyz` never trails the indexer by more
                 // than one; the probes read it with a relaxed load
                 #[cfg(feature = "prometheus")]
-                crate::admin::publish_status(indexer.status());
+                crate::admin::publish_status(indexer.status(), indexer.finalised_state_mode());
 
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
@@ -298,6 +298,13 @@ where
         StatusType::from(self.status_int())
     }
 
+    /// Which backend serves finalised reads; `None` before the service exists
+    pub(crate) fn finalised_state_mode(&self) -> Option<zaino_state::FinalisedStateMode> {
+        self.service
+            .as_ref()
+            .map(|service| service.inner_ref().finalised_state_mode())
+    }
+
     /// Logs the indexers status.
     pub fn log_status(&self) {
         let service_status = match &self.service {
@@ -310,9 +317,8 @@ where
         // real on-disk index. Reporting the mode next to the status is what lets an operator — or a
         // containerised test polling this line — tell the two apart.
         let finalised_state_mode = self
-            .service
-            .as_ref()
-            .map(|service| service.inner_ref().finalised_state_mode().to_string())
+            .finalised_state_mode()
+            .map(|mode| mode.to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
         let json_server_status = match &self.json_server {
