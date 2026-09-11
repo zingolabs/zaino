@@ -13,6 +13,21 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.8.0] - 2026-09-11
+
+### Added
+- `getaddressdeltas` on the JSON-RPC server, answered through the source
+  port.
+### Changed
+- **Breaking** — builds on zaino-proto 0.6.0, whose `CompactBlock` no
+  longer has `proto_version`.
+### Deprecated
+### Removed
+- **Breaking** — the `zcashd_support` feature and the zcashd-shaped wire
+  types it gated: `ZcashdPeerInfo`, `ServiceFlags` and `PeerStateStats`.
+  Zaino no longer supports zcashd as a backing validator.
+### Fixed
+
 ## [0.7.0] - 2026-08-28
 
 ### Added

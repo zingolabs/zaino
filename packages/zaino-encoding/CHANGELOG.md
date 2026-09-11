@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-09-11
+
+### Added
 - New crate. Versioned encoding traits and byte helpers, moved verbatim from
   `zaino-state`'s `chain_index/types/encoding.rs`. A leaf: it knows about bytes
   and version tags, and about no domain type whatsoever.

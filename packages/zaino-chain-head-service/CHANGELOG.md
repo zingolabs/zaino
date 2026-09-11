@@ -13,6 +13,19 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.1.1] - 2026-09-11
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+- Reading past the chain tip treats only the source's named not-found
+  errors (`GetBlockError::HeightNotFound`, `GetBlockByHashError::NotFound`)
+  as absence, so a future domain error variant fails to compile there
+  instead of being read as the end of the chain. Each absence is logged at
+  debug level.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

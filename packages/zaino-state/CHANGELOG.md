@@ -9,6 +9,16 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.9.0] - 2026-09-11
+
+### Added
+### Changed
+- The `prometheus` feature also enables `zaino-chain-store-zainodb`'s, whose
+  write-path metric names this crate re-exports.
 - The finalised state is no longer part of this crate. It is now the
   `zaino-chain-store` / `zaino-chain-store-zainodb` subsystem: ports in the
   domain crate, the LMDB implementation in the adapter. See ADR-0012.
@@ -61,7 +71,23 @@ and this library adheres to Rust's notion of
     in a database module.
 ### Deprecated
 ### Removed
+- The `zaino.mempool.transactions` and `zaino.mempool.tip_changes_total`
+  metric names, which no crate emits.
 ### Fixed
+- `get_block` and `get_block_nullifiers` serve the default pool set, as
+  `get_block_range` does for a request without `poolTypes`. They served
+  every pool, so a transparent-only transaction appeared in the
+  single-block form and not in the range form.
+- An error relayed from the backing validator carries the validator's own
+  message. Only the message crosses the gRPC boundary, so a rejected
+  transaction was indistinguishable from an unreachable node.
+- Chain-store errors are classified by name. An inverted range and an
+  index this deployment does not build are no longer reported as server
+  faults, and `get_tx_out_set_info` keeps a retryable `NotReady`
+  retryable instead of re-wrapping it as an internal error.
+- A failed finalised compact-block read is logged before the fallback to
+  the validator, so a damaged database is distinguishable from one that is
+  merely behind.
 
 ## [0.8.0] - 2026-08-28
 
