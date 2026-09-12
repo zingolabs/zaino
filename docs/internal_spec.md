@@ -3,7 +3,7 @@ The Zaino repo consists of several crates that collectively provide an indexing 
 
 ### Crates
 In dependency order. The source stack (`zaino-primitives` through
-`zaino-source-zebra`) is described by [ADR-0008](./adr/0008-source-ports-and-domain-primitives.md);
+`zaino-source-zebra`) is described by [ADR-0008](./adr/zaino/0008-source-ports-and-domain-primitives.md);
 each of its crates carries a `usage.md` beside its `Cargo.toml`.
   - `Zaino-Primitives` — domain vocabulary
   - `Zaino-Address` — address classification
@@ -138,7 +138,7 @@ Full documentation for `ZainoD` can be found [here](https://zingolabs.github.io/
   - This is deliberately *not* shared with the shape Zaino accepts from a
     validator, which is `zaino-source-zebra-rpc`'s. The two interfaces
     genuinely differ, and one type serving both directions cannot express that.
-    See [ADR-0009](./adr/0009-served-json-schema-lives-in-zaino-serve.md).
+    See [ADR-0009](./adr/zaino/0009-served-json-schema-lives-in-zaino-serve.md).
 
 - Error Handling:
   - Maps internal errors to appropriate gRPC status codes.
@@ -196,7 +196,7 @@ Full documentation for `Zaino-State` can be found [here](https://zingolabs.githu
 ## The source stack (`zaino-primitives` … `zaino-source-zebra`)
 Validator access is a hexagonal port/adapter stack rather than a single client
 library. It replaces `Zaino-Fetch`, which was deleted in this cycle. See
-[ADR-0008](./adr/0008-source-ports-and-domain-primitives.md) for the reasoning
+[ADR-0008](./adr/zaino/0008-source-ports-and-domain-primitives.md) for the reasoning
 and each crate's `usage.md` for practical guidance.
 
 ### Functionality

@@ -97,6 +97,13 @@ For more details see our [testing document](./docs/testing.md).
 ## More Documentation
 
 To see more included documentation, please see [our docs directory](./docs/).
+
+Architecture decision records live in
+[zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs). This repository
+holds only a submodule pointer to it at `docs/adr/`; run
+`git submodule update --init docs/adr` to read the records. Propose a record as
+a pull request to zingo-adrs, not to this repository; its README explains the
+record shape and how to advance the pointer.
 ## Software Philosophy
 We believe in the power of Free and Open Source Software (FOSS) as the best path for individual and social freedom in computing.
 
