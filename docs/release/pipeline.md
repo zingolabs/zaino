@@ -762,7 +762,7 @@ replacement):
 | -------- | ------- |
 | `auto-tag-rc.yml` | **keep until cutover** — derives version from the `rc/<version>` branch name; gated off by `RELMAN_PIPELINE_ACTIVE=true`, delete afterwards |
 | `final-tag-on-stable.yml` | **keep until cutover** — same branch-name→version coupling; gated off by `RELMAN_PIPELINE_ACTIVE=true`, replaced by blessing-time tagging from changesets |
-| `release.yaml` | **reworked** — also fires on the `zainod-X.Y.Z` provenance tag and takes the image version from it; the GitHub Release job runs only for legacy tags |
+| `release.yaml` | **reworked** — also fires on the `zainod-X.Y.Z` provenance tag and takes the image version from it; the GitHub Release job runs only for legacy tags; publishes multi-arch (`linux/amd64` + `linux/arm64`) manifests via `docker/github-builder` |
 | `publish-dry-run.yml` + `check-published-versions` | **kept** — blocking on `stable` pushes, advisory elsewhere (`rc` is version-agnostic); the Rust guard also runs in blessing's pre-flight |
 | `ci.yml`, `ci-nightly.yaml` | **rework** into the `dev`-gate and `rc`-gate suite runners |
 | `compute-tag.yml`, `build-n-push-ci-image.yaml`, `trigger-integration-tests.yml`, `shellcheck.yaml` | **keep** — orthogonal to release versioning |
