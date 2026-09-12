@@ -32,7 +32,8 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 
 - `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
   `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
-  `Treestate`, `ShieldedPool`, `ChainMetadata`, `Zatoshis`, `SignedZatoshis`.
+  `Treestate`, `ShieldedPool`, `ChainMetadata`, and the zatoshi quantity
+  family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis` (see below).
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
@@ -55,12 +56,76 @@ Types enforce what they claim:
 ```rust
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
+let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
 ```
+
+A transaction's position is the block's to know, not the transaction's:
+`Transaction` stores no index, and coinbase-ness is read from block order via
+`Block::coinbase()` (position 0), never from a per-transaction field that could
+disagree with the container.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the
 no-`unwrap` rule in CLAUDE.md is much easier to follow when the type has
 already done the work.
+
+## The zatoshi quantity family
+
+Three types share the zatoshi unit but carry different invariants, so summing
+and differencing amounts is done through them rather than a bare integer. See
+ADR-0013 for the doctrine.
+
+| type | range | is |
+|---|---|---|
+| `Zatoshis` | `0 ..= supply` | an amount of ZEC counted in zatoshis — a balance, a UTXO value, a single movement |
+| `ZatoshisFlowSum` | `0 ..= u128::MAX` | an accumulation of movements, **not** supply-bounded |
+| `SignedZatoshis` | `-supply ..= supply` | a signed value: a movement or a difference |
+
+A sum of *movements* — every output paying an address, every input it spent —
+counts the same coins each time they move, so it is not bounded by the supply;
+that is why it is its own type and not another `Zatoshis`. A sum of *coexisting*
+balances stays supply-bounded — coins that coexist cannot total more than
+exist — so that precondition keeps the total inside `Zatoshis` and there is no
+fourth type: that sum is the operation `Zatoshis::sum_balances`, a checked fold
+landing back in `Zatoshis`. The set of `Zatoshis` is still not closed under
+addition; the fold refuses a total past the supply rather than pretend the
+precondition held.
+
+The operations relate the types and live beside them:
+
+```rust
+use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
+
+// Sum amounts as flow. `None` only past `u128::MAX` (unreachable in
+// practice), never on passing the supply — gross flow legitimately can.
+let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
+let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
+
+// Adopt a flow total a backend delivered already summed as a u64.
+// Infallible: a u64 always fits the u128 accumulator, and u128::MAX
+// is the flow sum's only bound.
+let lifetime = ZatoshisFlowSum::from_summed(received_total);
+
+// Net of a received flow minus a spent flow for one balance, as a signed
+// value. `None` if the two flows don't describe a coherent balance.
+let net: Option<SignedZatoshis> = received.net(spent);
+
+// Sum balances that coexist at one moment. Supply-capped, and under that
+// precondition the total lands back in `Zatoshis`. `None` means the total
+// passed the supply, which under the coexistence contract is overlapping or
+// double-counted input, not a large number.
+let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
+```
+
+`ZatoshisFlowSum` has two validated doors and no unchecked one:
+`try_accumulate` for a total *derived* in the domain as the checked sum of
+some amounts, and `from_summed` for a total a source *delivers already
+summed*. `SignedZatoshis` likewise — `ZatoshisFlowSum::net` for a value
+*derived* in the domain, and `SignedZatoshis::try_new` for one *parsed at a
+boundary* (a movement read off the wire or disk). `try_new` is the
+external-input validation step for a signed value, the same discipline the
+crate applies at every wire and persistence boundary, pushed down to the
+primitive.
 
 ## Byte order
 

@@ -45,7 +45,7 @@ pub use aliases::{
     BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, OutputIndex,
     SubtreeIndex, TreeSize, TxIndex,
 };
-pub use block::{Block, BlockHeader, ChainMetadata};
+pub use block::{Block, BlockError, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
@@ -83,4 +83,6 @@ pub use tree_roots::{TreeRootInfo, TreeRoots};
 pub use treestate::{PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
-pub use zatoshis::{SignedZatoshis, Zatoshis, ZatoshisOverflow};
+pub use zatoshis::{
+    SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisFlowSum, ZatoshisOverflow,
+};

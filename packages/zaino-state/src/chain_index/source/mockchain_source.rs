@@ -1043,30 +1043,39 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
         let matching = self.matching_transparent_outputs(&valid, &network);
         let spent = self.spent_transparent_outpoints();
 
-        let mut balance = 0_u64;
-        let mut received = 0_u64;
+        let mut received_values = Vec::new();
+        let mut balance_values = Vec::new();
         for (outpoint, output) in matching {
-            let value = u64::from(output.output.value());
-            received = received.checked_add(value).ok_or_else(|| {
-                port_fault::<zaino_source::GetAddressBalanceError>(
-                    "address received amount overflowed u64",
-                )
-            })?;
+            let value = domain::Zatoshis::new(u64::from(output.output.value()))
+                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?;
+            received_values.push(value);
             if !spent.contains(&outpoint) {
-                balance = balance.checked_add(value).ok_or_else(|| {
-                    port_fault::<zaino_source::GetAddressBalanceError>(
-                        "address balance amount overflowed u64",
-                    )
-                })?;
+                balance_values.push(value);
             }
         }
 
-        Ok(domain::AddressBalance {
-            balance: domain::Zatoshis::new(balance)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-            received: domain::Zatoshis::new(received)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-        })
+        // Every matching output is a receipt, so the lifetime received total
+        // is a flow: it is derived here by the flow accumulate, not bounded by
+        // the supply.
+        let received = domain::ZatoshisFlowSum::try_accumulate(received_values.into_iter())
+            .ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "address received flow overflowed its accumulator",
+                )
+            })?;
+
+        // The unspent outputs coexist on the chain, so their total is a
+        // supply-bounded balance; a total past the supply means the UTXO set
+        // overlaps or double-counts, and is refused rather than wrapped.
+        let balance =
+            domain::Zatoshis::sum_balances(balance_values.into_iter()).ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "unspent output values total past the money supply: \
+                     overlapping or corrupt UTXO set",
+                )
+            })?;
+
+        Ok(domain::AddressBalance { balance, received })
     }
 }
 
@@ -1246,7 +1255,8 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
                 inputs.push(domain::rpc::InputDelta {
                     address,
                     // Inputs are debits, so the amount leaves the address.
-                    satoshis: domain::SignedZatoshis::new(-(value as i64)),
+                    satoshis: domain::SignedZatoshis::try_new(-(value as i64))
+                        .map_err(|e| port_fault(e.to_string()))?,
                     index: input_index as u32,
                     prev_txid: domain::TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,
@@ -1348,7 +1358,8 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
                     continue;
                 }
                 deltas.push(domain::AddressDelta {
-                    satoshis: domain::SignedZatoshis::new(i64::from(output.value())),
+                    satoshis: domain::SignedZatoshis::try_new(i64::from(output.value()))
+                        .map_err(|e| port_fault(e.to_string()))?,
                     txid,
                     index: output_index as u32,
                     height: domain::Height::try_from(height.0)
