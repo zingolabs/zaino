@@ -413,8 +413,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             if parent_hash == graph.best_tip().hash {
                 // Normal chain progression
                 let prev_block = graph
-                    .blocks
-                    .get(&graph.best_tip().hash)
+                    .tip_block()
                     .ok_or_else(|| {
                         ChainHeadAdvanceError::ReorgFailure(format!(
                             "graph is missing its own tip {:?}",
@@ -457,16 +456,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // flip the tip away from the block the validator just told us is
         // canonical. On a tie the validator's answer — which the walk above has
         // already applied — wins.
-        let tip_work = graph
-            .blocks
-            .get(&graph.best_tip().hash)
-            .map(|block| block.work)
-            .ok_or_else(|| {
-                ChainHeadAdvanceError::ReorgFailure(format!(
-                    "graph is missing its own tip {:?}",
-                    graph.best_tip()
-                ))
-            })?;
+        let tip_work = graph.tip_block().map(|block| block.work).ok_or_else(|| {
+            ChainHeadAdvanceError::ReorgFailure(format!(
+                "graph is missing its own tip {:?}",
+                graph.best_tip()
+            ))
+        })?;
         let heaviest = graph
             .blocks
             .values()
