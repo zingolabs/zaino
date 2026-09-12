@@ -31,8 +31,8 @@ use zebra_rpc::methods::{
 };
 
 use crate::stream::{
-    AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-    SubtreeRootReplyStream, UtxoReplyStream,
+    AddressStream, CompactBlockStream, CompactTransactionStream, IndexedTipStream,
+    RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
 };
 use zaino_status::Status;
 
@@ -79,7 +79,7 @@ where
 /// [`Readiness`](zaino_status::probing::Readiness) via the [`Status`] supertrait.
 pub trait ZcashService: Sized + Status {
     /// A subscriber to the service, used to fetch chain data.
-    type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + Status;
+    type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + IndexedTipIndexer + Status;
 
     /// Service Config.
     type Config: Clone;
@@ -651,6 +651,12 @@ pub trait ZcashIndexer: Send + Sync + 'static {
             .await
         }
     }
+}
+
+/// Publishes the canonical tip that is currently readable through the local index.
+pub trait IndexedTipIndexer: Send + Sync + 'static {
+    /// Returns an initial indexed-tip snapshot followed by latest-state changes.
+    fn subscribe_indexed_tips(&self) -> IndexedTipStream;
 }
 
 /// Clamps an optional block-range endpoint to the chain height, or errors

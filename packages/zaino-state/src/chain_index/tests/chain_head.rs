@@ -16,6 +16,7 @@
 
 use std::time::Duration;
 
+use futures::StreamExt as _;
 use zaino_chain_head::ChainHeadSnapshot as _;
 
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
@@ -38,6 +39,34 @@ async fn chain_head_reaches_the_validator_tip() {
         },
     )
     .await;
+}
+
+/// Every announced tip must already resolve through the same local index view.
+#[tokio::test(flavor = "multi_thread")]
+async fn indexed_tip_events_name_index_readable_blocks() {
+    // Given
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let mut tips = index_reader.indexed_tip_stream();
+    let initial = tips.next().await.expect("the stream starts with a tip");
+
+    // When
+    mockchain.source().mine_blocks(1);
+    let updated = tokio::time::timeout(Duration::from_secs(10), tips.next())
+        .await
+        .expect("the updated tip arrives before the deadline")
+        .expect("the index remains available");
+
+    // Then
+    for tip in [initial, updated] {
+        let snapshot = index_reader.snapshot_nonfinalized_state();
+        let indexed_hash = index_reader
+            .get_block_hash(&snapshot, crate::Height(u32::from(tip.height)))
+            .await
+            .expect("indexed block lookup succeeds")
+            .expect("announced tip is readable");
+        assert_eq!(indexed_hash.0, <[u8; 32]>::from(tip.hash));
+    }
 }
 
 /// The finalised state and the chain head must jointly cover the chain with no

@@ -1313,6 +1313,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> std:
 impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     NodeBackedChainIndexSubscriber<Source>
 {
+    pub(crate) fn indexed_tip_stream(&self) -> crate::IndexedTipStream {
+        crate::stream::indexed_tip_stream(self.chain_head.subscribe_updates())
+    }
+
     pub(crate) fn source(&self) -> &Source {
         &self.source
     }

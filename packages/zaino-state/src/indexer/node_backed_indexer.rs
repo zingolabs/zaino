@@ -240,6 +240,14 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Stat
     }
 }
 
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> crate::IndexedTipIndexer
+    for NodeBackedIndexerServiceSubscriber<Source>
+{
+    fn subscribe_indexed_tips(&self) -> crate::IndexedTipStream {
+        self.indexer.indexed_tip_stream()
+    }
+}
+
 impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     NodeBackedIndexerServiceSubscriber<Source>
 {

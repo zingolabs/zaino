@@ -51,7 +51,7 @@ async fn tls_spawn_serves_a_handshake() {
         .expect("local_addr on a bound listener is infallible");
 
     let mut server = TonicServer::spawn_inner(
-        Routes::default(),
+        |_| Routes::default(),
         GrpcServerConfig {
             listen_address: local_addr,
             tls: Some(GrpcTls {
