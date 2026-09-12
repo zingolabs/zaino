@@ -93,7 +93,7 @@ pub struct VerboseBlockHeader {
 
     /// Cumulative chain work for this block (hex).
     ///
-    /// Present in zcashd, omitted by Zebra.
+    /// Present in the legacy full node, omitted by Zebra.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chainwork: Option<String>,
 
@@ -211,7 +211,7 @@ mod from_domain_tests {
     }
 
     #[test]
-    fn renders_zcashd_field_names() {
+    fn renders_legacy_field_names() {
         let json = serde_json::to_value(GetBlockHeader::verbose_from_domain(sample())).unwrap();
 
         assert_eq!(json["confirmations"], 10);
@@ -245,8 +245,8 @@ mod tests {
     use serde_json::{json, Value};
     use zebra_chain::block;
 
-    /// Zcashd verbose response.
-    fn zcashd_verbose_json() -> &'static str {
+    /// The legacy full node verbose response.
+    fn legacy_verbose_json() -> &'static str {
         r#"{
           "hash": "000000000053d2771290ff1b57181bd067ae0e55a367ba8ddee2d961ea27a14f",
           "confirmations": 10,
@@ -285,8 +285,8 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_verbose_zcashd_includes_chainwork() {
-        match serde_json::from_str::<VerboseBlockHeader>(zcashd_verbose_json()) {
+    fn deserialize_verbose_legacy_includes_chainwork() {
+        match serde_json::from_str::<VerboseBlockHeader>(legacy_verbose_json()) {
             Ok(block_header) => {
                 assert_eq!(
                     block_header.hash,
@@ -453,8 +453,8 @@ mod tests {
     }
 
     #[test]
-    fn zcashd_roundtrip_preserves_chainwork() {
-        let block_header: GetBlockHeader = serde_json::from_str(zcashd_verbose_json()).unwrap();
+    fn legacy_roundtrip_preserves_chainwork() {
+        let block_header: GetBlockHeader = serde_json::from_str(legacy_verbose_json()).unwrap();
         let header_value: Value = serde_json::to_value(&block_header).unwrap();
         let header_object = header_value.as_object().unwrap();
 

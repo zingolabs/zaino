@@ -13,24 +13,25 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::finalised_state::router::FinalisedStateMode;
 use crate::chain_index::source::GetTransactionLocation;
-use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeRootData};
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
-use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
+use crate::error::{ChainIndexError, ChainIndexErrorKind};
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
-use crate::{CompactBlockStream, SyncError, TxOutCompact};
+use crate::{CompactBlockStream, SyncError};
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use zaino_chain_store_zainodb::store::FinalisedStateMode;
+use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use chain_head::WithChainHeadSource;
+use chain_store::WithChainStoreSource;
 use futures::Stream;
 use source::BlockchainSource;
 use tokio_stream::StreamExt;
@@ -60,9 +61,9 @@ use zebra_state::HashOrHeight;
 /// ChainIndex's side of the ChainHead boundary: handing ChainHead a validator,
 /// and re-expressing its blocks in this crate's vocabulary.
 pub mod chain_head;
-pub mod encoding;
-/// All state below [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip.
-pub mod finalised_state;
+/// ChainIndex's side of the ChainStore boundary: handing the finalised store a
+/// validator.
+pub mod chain_store;
 mod mempool;
 
 /// How long the mempool may stay frozen before the sync loop says so.
@@ -88,9 +89,11 @@ mod network_adoption;
 /// the module docs.
 pub mod source;
 pub mod source_ports;
-/// Common types used by the rest of this module
-pub mod types;
+/// The finalised store's on-disk vocabulary, re-exported for this crate's own
+/// use while it still reads both halves of the chain through `IndexedBlock`.
+pub(crate) mod types;
 pub mod validator_source;
+pub mod wire_types;
 
 #[cfg(test)]
 mod tests;
@@ -148,7 +151,7 @@ pub(crate) fn unix_now_secs() -> f64 {
 ///
 /// The primary implementation is [`NodeBackedChainIndex`], which can be backed by either:
 /// - Direct read access to a zebrad database via `ReadStateService` (preferred)
-/// - A JSON-RPC connection to a validator node (zcashd, zebrad, or another zainod)
+/// - A JSON-RPC connection to a validator node (zebrad or another zainod)
 ///
 /// # Constructing one
 ///
@@ -478,10 +481,10 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the `getblock`-shaped block for the given hash-or-height string.
     ///
-    /// `verbosity` follows the zcashd `getblock` convention (0 = raw, 1 = object with
+    /// `verbosity` follows the legacy full-node `getblock` convention (0 = raw, 1 = object with
     /// txids, 2 = object with full transaction data).
     ///
-    /// zcashd reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
+    /// Zcash RPC reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
     fn z_get_block(
         &self,
         hash_or_height: String,
@@ -490,7 +493,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the `getblockheader`-shaped header for the given block hash.
     ///
-    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// Zcash RPC reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     fn get_block_header(
         &self,
         hash: String,
@@ -508,7 +511,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
     /// with the given hash.
     ///
-    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// Zcash RPC reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
     fn get_block_deltas(
         &self,
         hash: String,
@@ -517,7 +520,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the proof-of-work difficulty of the best chain as a multiple of the
     /// minimum difficulty.
     ///
-    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// Zcash RPC reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     fn get_difficulty(&self) -> impl std::future::Future<Output = Result<f64, Self::Error>>;
 
     // ********** Node-passthrough methods **********
@@ -604,7 +607,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     ///
     /// Returns `None` while the indexer is still syncing the finalised state (the
     /// accumulator's spent-index invariants are not yet established). The wire
-    /// layer renders that as zcashd's empty object.
+    /// layer renders that as the legacy full node's empty object.
     fn get_tx_out_set_info(
         &self,
     ) -> impl std::future::Future<Output = Result<Option<TxOutSetInfo>, Self::Error>>;
@@ -617,7 +620,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// This is the primary implementation backing [`ChainIndex`] and replaces the functionality
 /// previously provided by `FetchService` and `StateService`. It can be backed by either:
 /// - A zebra `ReadStateService` for direct database access (preferred for performance)
-/// - A JSON-RPC connection to any validator node (zcashd, zebrad, or another zainod)
+/// - A JSON-RPC connection to any validator node (zebrad or another zainod)
 ///
 /// To use the [`ChainIndex`] trait methods, call [`subscriber()`](NodeBackedChainIndex::subscriber)
 /// to get a [`NodeBackedChainIndexSubscriber`] which implements the trait.
@@ -661,7 +664,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// - Snapshot-based consistency for queries
 #[derive(Debug)]
 pub struct NodeBackedChainIndex<
-    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// The tip-agnostic mempool: always live, never frozen.
     mempool: std::sync::Arc<mempool::ChainIndexMempool<Source>>,
@@ -678,7 +681,7 @@ pub struct NodeBackedChainIndex<
     /// It is also what the coherence layer freezes and thaws against: the
     /// chain head publishes its own epoch, so nothing here has to relay one.
     chain_head: Arc<ChainHeadService<Source::Head>>,
-    finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
+    finalized_db: std::sync::Arc<zaino_chain_store_zainodb::store::FinalisedState<Source::Store>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
@@ -773,7 +776,9 @@ fn combine_component_statuses(
     own.combine(finalised).combine(mempool).combine(chain_head)
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedChainIndex<Source>
+{
     /// Creates a new chainindex from a connection to a validator.
     ///
     /// In production `Source` is
@@ -794,8 +799,14 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
         config: crate::config::ChainIndexConfig,
         sync_timings: SyncTimings,
     ) -> Result<Self, crate::InitError> {
-        let finalized_db =
-            Arc::new(finalised_state::FinalisedState::spawn(config.clone(), source.clone()).await?);
+        let finalized_db = Arc::new(
+            zaino_chain_store_zainodb::store::FinalisedState::spawn(
+                config.chain_store_config(),
+                config.zainodb_config(),
+                source.chain_store_source(),
+            )
+            .await?,
+        );
 
         let cancel_token = CancellationToken::new();
 
@@ -866,7 +877,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
             mempool: self.mempool.subscriber(),
             coherence: self.coherence.subscriber(),
             chain_head: self.chain_head.subscriber(),
-            finalized_state: self.finalized_db.to_reader(),
+            finalized_state: zaino_chain_store::ChainStoreService::reader(
+                self.finalized_db.as_ref(),
+            ),
             status: self.status.clone(),
             network: self.network.clone(),
             source: self.source.clone(),
@@ -885,12 +898,12 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
     /// arm on *that* sleep would release the worker — which is exactly
     /// the design we have. Cancelling first just removes the wasted
     /// failure-path round trip.
-    pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    pub async fn shutdown(&self) -> Result<(), zaino_chain_store::ChainStoreError> {
         // The synchronous teardown (cancellation, mempool close, source
         // release) runs before the fallible DB shutdown so a DB error cannot
         // skip it — the source's Zebra syncer task must not outlive the index.
         self.shutdown_sync_best_effort();
-        self.finalized_db.shutdown().await
+        chain_store::shutdown(self.finalized_db.as_ref()).await
     }
 
     /// Synchronous best-effort teardown for contexts that cannot run async
@@ -930,7 +943,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
     pub fn status(&self) -> StatusType {
         combine_component_statuses(
             self.status.load(),
-            self.finalized_db.status(),
+            zaino_chain_store::ChainStoreService::status(self.finalized_db.as_ref()),
             self.mempool.status(),
             self.chain_head.status(),
         )
@@ -1013,7 +1026,11 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
                     // the two advance independently — both deriving the seam
                     // from the same tip and the same depth, and neither
                     // waiting on the other.
-                    fs.sync_to_height(finalised_height, &source)
+                    // `build_to`, not `sync_to_height(height, &source)`: the
+                    // store owns the validator it was built with, so this
+                    // worker names a target height and nothing else. It cannot
+                    // hand the store a different chain part-way through a run.
+                    chain_store::build_to(fs.as_ref(), finalised_height)
                         .await
                         .map_err(source_error)?;
 
@@ -1129,7 +1146,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Drop for NodeBackedChainIndex<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Drop
+    for NodeBackedChainIndex<Source>
+{
     /// Cooperative cancellation on drop: signals the sync worker (and any
     /// other futures racing against `cancel_token.cancelled()`) to exit
     /// promptly when the indexer goes out of scope.
@@ -1155,9 +1174,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> Drop for NodeBackedChainInd
 /// Designed for concurrent efficiency.
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
-#[derive(Clone, Debug)]
 pub struct NodeBackedChainIndexSubscriber<
-    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// The live set: answers regardless of what the tip is doing.
     mempool: zaino_mempool_service::MempoolSubscriber,
@@ -1167,7 +1185,7 @@ pub struct NodeBackedChainIndexSubscriber<
     /// Read-only handle onto the running ChainHead. Produces snapshots and
     /// nothing else — a subscriber cannot drive or stop synchronisation.
     chain_head: zaino_chain_head_service::ChainHeadSubscriber,
-    finalized_state: finalised_state::reader::DbReader<Source>,
+    finalized_state: zaino_chain_store_zainodb::store::reader::DbReader<Source::Store>,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
     source: Source,
@@ -1259,7 +1277,42 @@ async fn compact_block_from_source<Source: BlockchainSource>(
     )))
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscriber<Source> {
+/// Cloned and formatted by hand rather than derived.
+///
+/// Both derives would demand the same bound on `Source::Store` — the validator
+/// the finalised store was built from — which is neither `Clone` nor
+/// necessarily `Debug`, and does not need to be: the store handle this holds is
+/// shared behind an `Arc`. A derive cannot see that, because it bounds every
+/// generic parameter that appears in a field type.
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Clone
+    for NodeBackedChainIndexSubscriber<Source>
+{
+    fn clone(&self) -> Self {
+        Self {
+            mempool: self.mempool.clone(),
+            coherence: self.coherence.clone(),
+            chain_head: self.chain_head.clone(),
+            finalized_state: self.finalized_state.clone(),
+            status: self.status.clone(),
+            network: self.network.clone(),
+            source: self.source.clone(),
+        }
+    }
+}
+
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> std::fmt::Debug
+    for NodeBackedChainIndexSubscriber<Source>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeBackedChainIndexSubscriber")
+            .field("network", &self.network)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedChainIndexSubscriber<Source>
+{
     pub(crate) fn source(&self) -> &Source {
         &self.source
     }
@@ -1287,7 +1340,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscri
     pub fn combined_status(&self) -> StatusType {
         combine_component_statuses(
             self.status.load(),
-            self.finalized_state.status(),
+            zaino_chain_store::ChainStoreReader::status(&self.finalized_state),
             self.mempool.status(),
             self.chain_head.status(),
         )
@@ -1302,45 +1355,32 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscri
         &self,
         txid: TransactionHash,
     ) -> Result<u64, ChainIndexError> {
-        let Some(tx_location) = self
-            .finalized_state
-            .get_tx_location(&txid)
-            .await
-            .map_err(|e| ChainIndexError::internal(e.to_string()))?
+        let Some(position) = chain_store::tx_position(&self.finalized_state, &txid).await? else {
+            return Ok(0);
+        };
+
+        let Some(outputs) =
+            chain_store::transparent_outputs(&self.finalized_state, position).await?
         else {
             return Ok(0);
         };
 
-        let Some(transparent) = self
-            .finalized_state
-            .get_transparent(tx_location)
-            .await
-            .map_err(|e| ChainIndexError::internal(e.to_string()))?
-        else {
-            return Ok(0);
-        };
-
-        // Skip unspendable outputs (matches `is_unspendable_tx_out` semantics used by the
-        // accumulator). NonStandard outputs are never in the UTXO set, so they must not count
-        // toward a transaction's "remaining unspent" tally.
-        use crate::chain_index::types::db::metadata::is_unspendable_tx_out;
-        let outpoints: Vec<Outpoint> = transparent
-            .outputs()
+        // Skip unspendable outputs. NonStandard outputs are never in the UTXO
+        // set, so they must not count toward a transaction's "remaining
+        // unspent" tally — and the rule that decides it is the one the
+        // commitment itself is defined by, not a second copy of it.
+        let outpoints: Vec<Outpoint> = outputs
             .iter()
             .enumerate()
-            .filter(|(_, out)| !is_unspendable_tx_out(out))
-            .map(|(i, _)| Outpoint::new(txid.0, i as u32))
+            .filter(|(_, out)| !zaino_chain_store::is_unspendable(out))
+            .map(|(index, _)| Outpoint::new(txid.0, index as u32))
             .collect();
 
         if outpoints.is_empty() {
             return Ok(0);
         }
 
-        let spenders = self
-            .finalized_state
-            .get_outpoint_spenders(outpoints)
-            .await
-            .map_err(|e| ChainIndexError::internal(e.to_string()))?;
+        let spenders = chain_store::outpoint_spenders(&self.finalized_state, &outpoints).await?;
 
         Ok(spenders.into_iter().filter(|s| s.is_none()).count() as u64)
     }
@@ -1380,10 +1420,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscri
             Some(block) => Ok(snapshot
                 .is_on_best_chain(block.reference)
                 .then(|| types::Height(u32::from(block.height())))),
-            None => self
-                // ChainIndex step 4:
-                .finalized_state
-                .get_block_height(hash)
+            // ChainIndex step 4:
+            None => chain_store::block_height(&self.finalized_state, hash)
                 .await
                 .map_err(|e| ChainIndexError::database_hole(hash, Some(Box::new(e)))),
         }
@@ -1404,20 +1442,21 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscri
         'snapshot: 'iter,
         'self_lt: 'iter,
     {
-        let finalized_blocks_containing_transaction = match self
-            .finalized_state
-            .get_tx_location(&types::TransactionHash(txid))
-            .await?
-        {
-            Some(tx_location) => {
-                self.finalized_state
-                    .get_chain_block_by_height(crate::Height(tx_location.block_height()))
+        let finalized_blocks_containing_transaction =
+            match chain_store::tx_position(&self.finalized_state, &types::TransactionHash(txid))
+                .await?
+            {
+                Some(position) => {
+                    chain_store::block_at(
+                        &self.finalized_state,
+                        crate::Height(u32::from(position.height)),
+                    )
                     .await?
-            }
+                }
 
-            None => None,
-        }
-        .into_iter();
+                None => None,
+            }
+            .into_iter();
         // The chain head answers "where does this transaction appear" itself,
         // over its whole retained graph — canonical and competing branches
         // alike — so this asks rather than re-scanning the blocks here.
@@ -1452,9 +1491,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscri
         {
             return Ok(true);
         }
-        Ok(self
-            .finalized_state
-            .get_block_height(*hash)
+        Ok(chain_store::block_height(&self.finalized_state, *hash)
             .await?
             .is_some())
     }
@@ -1487,7 +1524,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscri
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Status
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
     for NodeBackedChainIndexSubscriber<Source>
 {
     fn status(&self) -> StatusType {
@@ -1495,7 +1532,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> Status
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> ChainIndex
     for NodeBackedChainIndexSubscriber<Source>
 {
     type Snapshot = Arc<MapBackedSnapshot>;
@@ -1545,11 +1582,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
             .and_then(|height| snapshot.best_block_by_height(height))
         {
             Some(block) => Ok(Some(types::BlockHash(block.hash().into()))),
-            None => self
-                .finalized_state
-                .get_block_hash(height)
-                .await
-                .map_err(Into::into),
+            None => chain_store::block_hash(&self.finalized_state, height).await,
         }
     }
 
@@ -1567,10 +1600,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
         match snapshot.block_by_hash(&chain_head::domain_hash(*target_hash)) {
             Some(block) => Ok(Some(chain_head::indexed_block(block)?)),
             None => match self.get_block_height(snapshot, *target_hash).await {
-                Ok(Some(height)) => Ok(self
-                    .finalized_state
-                    .get_chain_block_by_height(height)
-                    .await?),
+                Ok(Some(height)) => chain_store::block_at(&self.finalized_state, height).await,
                 Ok(None) => Ok(None),
                 Err(e) => Err(e),
             },
@@ -1592,10 +1622,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
             .and_then(|height| snapshot.best_block_by_height(height))
         {
             Some(block) => Ok(Some(chain_head::indexed_block(block)?)),
-            None => Ok(self
-                .finalized_state
-                .get_chain_block_by_height(*target_height)
-                .await?),
+            None => chain_store::block_at(&self.finalized_state, *target_height).await,
         }
     }
 
@@ -1623,9 +1650,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
                 futures::stream::iter((start.0)..=(end.0)).then(move |height| async move {
                     // For blocks above validator_finalized_height, it's not reorg-safe to get blocks by height. It is reorg-safe to get blocks by hash. What we need to do in this case is use our snapshot index to look up the hash at a given height, and then get that hash from the validator.
                     // This is why we now look in the index.
-                    match self
-                        .finalized_state
-                        .get_block_hash(types::Height(height))
+                    match chain_store::block_hash(&self.finalized_state, types::Height(height))
                         .await
                     {
                         Ok(Some(hash)) => {
@@ -1926,7 +1951,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
         }
 
         // Not retained by the chain head, so it is finalised or unknown.
-        match self.finalized_state.get_block_height(*hash).await {
+        match chain_store::block_height(&self.finalized_state, *hash).await {
             Ok(Some(height)) => Ok(Some((*hash, height))),
             Ok(None) => Ok(None),
             Err(e) => Err(ChainIndexError::database_hole(hash, Some(Box::new(e)))),
@@ -2057,23 +2082,15 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
         }
         let unresolved_outpoints: Vec<Outpoint> =
             unresolved_indices.iter().map(|&i| outpoints[i]).collect();
-        let locations = self
-            .finalized_state
-            .get_outpoint_spenders(unresolved_outpoints)
-            .await?;
 
-        // 3) Resolve each finalised `TxLocation` to a txid. Dedup identical locations so a
-        //    block spending several queried outpoints is only fetched once. `get_txid` is a
-        //    single keyed lookup, far cheaper than reconstructing the whole block.
-        let mut slots_by_location: HashMap<types::TxLocation, Vec<usize>> = HashMap::new();
-        for (slot, location) in unresolved_indices.into_iter().zip(locations) {
-            if let Some(location) = location {
-                slots_by_location.entry(location).or_default().push(slot);
-            }
-        }
-        for (location, slots) in slots_by_location {
-            let txid = self.finalized_state.get_txid(location).await?;
-            for slot in slots {
+        // The port answers with the spending transaction's identifier, not just
+        // its position, so there is no second pass to resolve one to the other
+        // and no need to dedup positions to avoid repeating it.
+        let spenders =
+            chain_store::outpoint_spenders(&self.finalized_state, &unresolved_outpoints).await?;
+
+        for (slot, spender) in unresolved_indices.into_iter().zip(spenders) {
+            if let Some(txid) = spender {
                 result[slot] = Some(txid);
             }
         }
@@ -2092,7 +2109,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> ChainIndexRpcExt
     for NodeBackedChainIndexSubscriber<Source>
 {
     /// Returns the *compact* block for the given height.
@@ -2131,13 +2148,31 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
                     &pool_types,
                 ),
                 None => {
-                    match self
-                        .finalized_state
-                        .get_compact_block(height, pool_types.clone())
-                        .await
-                    {
-                        Ok(block) => block,
-                        Err(_) => self
+                    let finalised =
+                        chain_store::compact_block(&self.finalized_state, height, &pool_types)
+                            .await;
+
+                    // A failure takes the same route as a miss, but it is not
+                    // one, so it is logged rather than absorbed. Silently, the
+                    // two are indistinguishable: an LMDB cursor desync or a
+                    // corrupt row would read as "the store has not built this
+                    // height yet" for as long as the validator kept covering
+                    // for it, which is indefinitely.
+                    if let Err(error) = &finalised {
+                        tracing::warn!(
+                            error = error as &dyn std::error::Error,
+                            %height,
+                            "finalised compact-block read failed; falling back to validator"
+                        );
+                    }
+
+                    match finalised {
+                        Ok(Some(block)) => block,
+                        // A miss and a failure both fall through to the
+                        // validator, as they did before: the store not holding
+                        // the block is the ordinary case on a node that is
+                        // still building, and passthrough is what covers it.
+                        Ok(None) | Err(_) => self
                             .get_compact_block_from_node(height, &pool_types)
                             .await?
                             .ok_or(ChainIndexError::database_hole(height, None))?,
@@ -2200,7 +2235,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
 
         // Pre-create any finalized-state stream(s) we will need so that errors are returned
         // from this method (not deferred into the spawned task).
-        let finalized_stream: Option<CompactBlockStream> = if is_ascending {
+        let finalized_stream: Option<chain_store::WireCompactBlocks> = if is_ascending {
             if start_height < lowest_nonfinalized_height {
                 let finalized_end_height = types::Height(std::cmp::min(
                     capped_end_height.0,
@@ -2209,14 +2244,13 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
 
                 if start_height <= finalized_end_height {
                     Some(
-                        self.finalized_state
-                            .get_compact_block_stream(
-                                start_height,
-                                finalized_end_height,
-                                pool_types.clone(),
-                            )
-                            .await
-                            .map_err(ChainIndexError::from)?,
+                        chain_store::compact_blocks_ascending(
+                            &self.finalized_state,
+                            start_height,
+                            finalized_end_height,
+                            &pool_types,
+                        )
+                        .await?,
                     )
                 } else {
                     None
@@ -2233,14 +2267,13 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
             };
 
             Some(
-                self.finalized_state
-                    .get_compact_block_stream(
-                        finalized_start_height,
-                        end_height,
-                        pool_types.clone(),
-                    )
-                    .await
-                    .map_err(ChainIndexError::from)?,
+                chain_store::compact_blocks_descending(
+                    &self.finalized_state,
+                    finalized_start_height,
+                    end_height,
+                    &pool_types,
+                )
+                .await?,
             )
         } else {
             None
@@ -2398,7 +2431,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
     ) -> Result<GetBlock, Self::Error> {
         // Resolve tip-relative negative heights against the best chaintip,
         // matching zebra's own `getblock` semantics (`-1` is the tip). A
-        // rejected identifier carries zcashd's legacy InvalidParameter code
+        // rejected identifier carries the legacy full node's legacy InvalidParameter code
         // as a typed `RpcError` source, which the serve layer recovers by
         // downcast-walking the error chain.
         let snapshot = self.snapshot_nonfinalized_state();
@@ -2528,7 +2561,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
         raw_transaction_hex: String,
     ) -> Result<zaino_primitives::types::TransactionId, Self::Error> {
         // A local rejection, before the validator round trip. It carries
-        // zcashd's `InvalidParameter` so the client sees the same code it
+        // the legacy full node's `InvalidParameter` so the client sees the same code it
         // would have got from the validator, rather than a generic internal
         // error — the serving layer recovers it by downcasting the source
         // chain.
@@ -2581,28 +2614,24 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
     }
 
     async fn get_tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, Self::Error> {
-        use crate::chain_index::types::db::metadata::{
-            is_unspendable_tx_out, ZAINO_TXOUTSET_ENTRY_LEN,
-        };
         use hex::ToHex as _;
         use std::collections::HashMap;
+        use zaino_chain_store::{is_unspendable, StoredTxOut, TXOUT_SET_ENTRY_LEN};
 
         let snapshot = self.snapshot_nonfinalized_state();
         let best_tip = self.best_chaintip(&snapshot).await?;
 
-        let mut accumulator = self
-            .finalized_state
-            .get_tx_out_set_info_accumulator()
-            .await
-            .map_err(|e| {
-                ChainIndexError::internal(format!(
-                    "get_tx_out_set_info: finalised accumulator unavailable: {e}"
-                ))
-            })?;
+        let mut accumulator = chain_store::txout_set(&self.finalized_state).await?;
 
         // Outputs created inside the non-finalised state, keyed by outpoint. Lets same-NFS
         // spends resolve their prev output without touching the finalised database.
-        let mut nfs_created: HashMap<Outpoint, TxOutCompact> = HashMap::new();
+        //
+        // Keyed and valued in the domain's shapes, because the accumulator this
+        // fold continues is the domain's: the finalised half and the recent
+        // half must contribute to one commitment through one definition, or the
+        // number they produce together means nothing.
+        let mut nfs_created: HashMap<zaino_primitives::types::Outpoint, StoredTxOut> =
+            HashMap::new();
 
         // Per-transaction "currently-unspent transparent outputs" counter across the combined
         // finalised + non-finalised UTXO set. Seeded lazily:
@@ -2628,14 +2657,17 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
                 // never saw them on the finalised side either, so they must not contribute to
                 // `transactions` or to the resolution map for later same-NFS spends.
                 for (output_index, output) in transparent.outputs().iter().enumerate() {
-                    if is_unspendable_tx_out(output) {
+                    let output = zaino_chain_store_zainodb::adapter::stored_tx_out(output)?;
+                    if is_unspendable(&output) {
                         continue;
                     }
-                    let outpoint = Outpoint::new(txid.0, output_index as u32);
+                    let outpoint = zaino_chain_store_zainodb::adapter::domain_outpoint(
+                        &Outpoint::new(txid.0, output_index as u32),
+                    );
                     accumulator
-                        .apply_added_output(&outpoint, output)
+                        .apply_added_output(&outpoint, &output)
                         .map_err(|e| ChainIndexError::internal(e.to_string()))?;
-                    nfs_created.insert(outpoint, *output);
+                    nfs_created.insert(outpoint, output);
 
                     let entry = tx_unspent_count.entry(txid).or_insert(0);
                     let prev = *entry;
@@ -2655,23 +2687,23 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
                 // Spent prev outputs leave the UTXO set.
                 for outpoint in transparent.spent_outpoints() {
                     let prev_txid = TransactionHash::from(*outpoint.prev_txid());
+                    let domain_outpoint =
+                        zaino_chain_store_zainodb::adapter::domain_outpoint(&outpoint);
 
-                    let prev_out_from_nfs = nfs_created.remove(&outpoint);
+                    let prev_out_from_nfs = nfs_created.remove(&domain_outpoint);
                     let prev_out = match prev_out_from_nfs {
                         Some(out) => out,
-                        None => self
-                            .finalized_state
-                            .get_previous_output(outpoint)
-                            .await
-                            .map_err(|e| {
+                        None => chain_store::previous_output(&self.finalized_state, &outpoint)
+                            .await?
+                            .ok_or_else(|| {
                                 ChainIndexError::internal(format!(
-                                    "get_tx_out_set_info: finalised prev output for {outpoint:?} not found: {e}"
+                                    "get_tx_out_set_info: finalised prev output for {outpoint:?} not found"
                                 ))
                             })?,
                     };
 
                     accumulator
-                        .apply_removed_output(&outpoint, &prev_out)
+                        .apply_removed_output(&domain_outpoint, &prev_out)
                         .map_err(|e| ChainIndexError::internal(e.to_string()))?;
 
                     // Seed the prev_txid unspent counter if this is the first time we touch it.
@@ -2709,10 +2741,10 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
             }
         }
 
-        // Invariant: bytes_serialized == transaction_outputs * ZAINO_TXOUTSET_ENTRY_LEN.
+        // Invariant: bytes_serialized == transaction_outputs * TXOUT_SET_ENTRY_LEN.
         let expected_bytes = accumulator
             .transaction_outputs
-            .checked_mul(ZAINO_TXOUTSET_ENTRY_LEN)
+            .checked_mul(TXOUT_SET_ENTRY_LEN)
             .ok_or_else(|| {
                 ChainIndexError::internal(
                     "get_tx_out_set_info: bytes_serialized invariant overflow".to_string(),
@@ -2741,49 +2773,10 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
     }
 }
 
-/// The available shielded pools
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ShieldedPool {
-    /// Sapling
-    Sapling,
-    /// Orchard
-    Orchard,
-    /// Ironwood
-    Ironwood,
-}
-
-impl ShieldedPool {
-    /// The network upgrade that activates this pool.
-    pub(crate) fn activation_upgrade(&self) -> zebra_chain::parameters::NetworkUpgrade {
-        match self {
-            ShieldedPool::Sapling => zebra_chain::parameters::NetworkUpgrade::Sapling,
-            ShieldedPool::Orchard => zebra_chain::parameters::NetworkUpgrade::Nu5,
-            ShieldedPool::Ironwood => zebra_chain::parameters::NetworkUpgrade::Nu6_3,
-        }
-    }
-
-    /// [`ShieldedPool::activation_upgrade`] in `zcash_protocol` terms, for call sites
-    /// gated through [`zcash_protocol::consensus::Parameters`].
-    pub(crate) fn zcash_protocol_activation_upgrade(
-        &self,
-    ) -> zcash_protocol::consensus::NetworkUpgrade {
-        match self {
-            ShieldedPool::Sapling => zcash_protocol::consensus::NetworkUpgrade::Sapling,
-            ShieldedPool::Orchard => zcash_protocol::consensus::NetworkUpgrade::Nu5,
-            ShieldedPool::Ironwood => zcash_protocol::consensus::NetworkUpgrade::Nu6_3,
-        }
-    }
-
-    /// Returns the string representative of the given pool.
-    ///
-    /// Used for display purposes and in converting the strongly types `PoolType`
-    /// struct into the string that the Zcash RPCs require as input.
-    pub fn pool_string(&self) -> String {
-        match self {
-            ShieldedPool::Sapling => "sapling".to_string(),
-            ShieldedPool::Orchard => "orchard".to_string(),
-            ShieldedPool::Ironwood => "ironwood".to_string(),
-        }
-    }
-}
+/// The shielded pools this crate names.
+///
+/// Not defined here: the finalised store owns the mapping from a pool to the
+/// network upgrade that activates it, because that is what it needs to decide
+/// whether a block should have a commitment tree root. A second copy here drifts
+/// the moment a pool is added.
+pub use zaino_chain_store_zainodb::pool::ShieldedPool;

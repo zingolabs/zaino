@@ -50,7 +50,7 @@ pub struct LockBoxStream {
     pub value_zat: Zatoshis,
 }
 
-/// Response to a `getblocksubsidy` RPC request. Used for both `zcashd` and `zebrad`.
+/// Response to a `getblocksubsidy` RPC request. Used for both the legacy full node and `zebrad`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BlockSubsidy {
@@ -241,7 +241,7 @@ mod tests {
     };
 
     #[test]
-    fn zcashd_decimals_parse_to_zats() {
+    fn legacy_decimals_parse_to_zats() {
         let j = serde_json::json!({
           "miner": 2.5,
           "founders": 0.0,

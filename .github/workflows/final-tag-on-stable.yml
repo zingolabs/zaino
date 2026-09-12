@@ -1,3 +1,7 @@
+# LEGACY tag producer for the pre-cutover release protocol (rc/<version>
+# branches). It stays live until the repo variable RELMAN_PIPELINE_ACTIVE is
+# set to true, at which point the release pipeline (rc-gate / blessing) owns
+# every tag and this workflow goes dormant. Delete it after the cutover.
 name: Final Tag on Stable
 
 on:
@@ -8,7 +12,7 @@ on:
 
 jobs:
   tag-stable:
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true && vars.RELMAN_PIPELINE_ACTIVE != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

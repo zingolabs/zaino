@@ -1,0 +1,111 @@
+[package]
+name = "zaino-chain-store-zainodb"
+description = "Zaino's LMDB-backed finalised chain store."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[features]
+default = []
+
+# Prometheus metrics on the write path. Off by default: a store that is not
+# scraped should not pay for the instrumentation.
+prometheus = ["metrics"]
+
+# TEST-ONLY: exposes the historical-version entry writers, so a downstream test
+# crate can build fixtures in an older on-disk format and prove the current
+# reader still decodes them, and the checked-in chain vectors, so a downstream
+# suite can run against the same chain rather than keeping a second copy. MUST
+# appear only in `[dev-dependencies]` — `resolver = "2"` keeps dev-dependency
+# features out of production graphs.
+testing = []
+
+# Transparent address history: the on-disk index and the reads over it.
+transparent_address_history_experimental = [
+    "zaino-chain-store/transparent_address_history_experimental",
+]
+
+[dependencies]
+# The ports this backend implements, and the business vocabulary they speak.
+zaino-chain-store = { workspace = true }
+zaino-primitives = { workspace = true }
+
+# The validator questions this backend asks. Named directly rather than only
+# through `ChainStoreSource`'s supertraits, because the per-question error type
+# has to be matched on to classify a failure as retryable.
+zaino-source = { workspace = true }
+
+# Deployment settings: the LMDB sizing knobs and the activation schedule the
+# store builds against. Retired with `zaino-common` itself (see the demolition
+# plan in the modularisation docs).
+zaino-common = { workspace = true }
+
+# The versioned encoding every persisted shape here is written in.
+zaino-encoding = { workspace = true }
+
+# The Read/Write traits the encoders are written against.
+corez = { workspace = true }
+
+# Per-row checksums, and the UTXO-set commitment's digest.
+blake2 = { workspace = true }
+
+# Zebra types still reached by the persisted vocabulary: block hashes are
+# displayed in reverse byte order, and difficulty is validated against zebra's
+# implementation rather than a second copy of it. Retired as the persisted
+# types move onto `zaino-primitives`.
+zebra-chain = { workspace = true }
+
+# TEMPORARY. The persisted types still carry `to_compact_block` and friends,
+# which build proto messages — a serving concern that has no business in a
+# storage crate. They are still here because their callers are: the
+# compact-block reader moves in the next commit and changes to produce domain
+# compact blocks, at which point these conversions lose their in-crate callers
+# and move to `zaino-serve`'s side of the boundary along with them. Splitting
+# them out ahead of their callers would mean editing the same code twice.
+zaino-proto = { workspace = true }
+
+# Metric emission on the write path, behind the `prometheus` feature.
+metrics = { workspace = true, optional = true }
+
+# Utility
+bitflags = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tokio-stream = { workspace = true }
+hex = { workspace = true, features = ["serde"] }
+thiserror = { workspace = true }
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+lmdb.workspace = true
+lmdb-sys.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+zaino-status.workspace = true
+arc-swap.workspace = true
+dashmap.workspace = true
+tonic.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+# Difficulty targets, for the accumulator tests' synthetic chains.
+zaino-consensus = { workspace = true }
+
+# A real validator, so the port bound check is against something that ships
+# rather than against a mock written to satisfy it.
+zaino-source-zebra = { workspace = true }
+primitive-types.workspace = true
+proptest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_arrays = "0.2"
+tempfile.workspace = true
+zaino-convert-zebra.workspace = true
+tracing-subscriber.workspace = true
+zebra-rpc.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

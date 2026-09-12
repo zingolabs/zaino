@@ -1,0 +1,195 @@
+//! V1.0 to V1.1 migration tests.
+
+use std::path::PathBuf;
+use tempfile::TempDir;
+use zaino_common::network::ActivationHeights;
+
+use crate::config::{StoreSettings, ZainoDbConfig};
+use crate::store::capability::{DbCore as _, DbRead as _, DbVersion, MigrationStatus};
+use crate::store::FinalisedState;
+use crate::tests::fixtures::{fake_validator_with_tip, load_test_vectors, TestVectorData};
+use crate::tests::init_tracing;
+use crate::types::Height;
+use zaino_chain_store::ChainStoreConfig;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn v1_0_to_v1_1_metadata_migration() {
+    init_tracing();
+
+    let TestVectorData { blocks, .. } = load_test_vectors().unwrap();
+
+    let temp_dir: TempDir = tempfile::tempdir().unwrap();
+    let db_path: PathBuf = temp_dir.path().to_path_buf();
+
+    let v1_config = StoreSettings::new(
+        ChainStoreConfig::at_path(db_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
+
+    let source = fake_validator_with_tip(&blocks.clone(), 150);
+
+    let zaino_db = FinalisedState::build_db_to_version(
+        v1_config,
+        source,
+        DbVersion {
+            major: 1,
+            minor: 1,
+            patch: 0,
+        },
+    )
+    .await
+    .unwrap();
+
+    // `wait_until_synced` (not `wait_until_ready`): a v1.1.0 database keeps its commitment rows in
+    // the legacy `commitment_tree_data_1_0_0` table (the v1.2.1 -> v1.3.0 migration has not run), so
+    // the background validator — which reads the v1.3.0 commitment table — can never reach the ready
+    // state. `wait_until_synced` waits for the migration to complete, which is what this test needs.
+    zaino_db.wait_until_synced().await;
+
+    let metadata = zaino_db.get_metadata().await.unwrap();
+
+    assert_eq!(
+        metadata.version,
+        DbVersion {
+            major: 1,
+            minor: 1,
+            patch: 0,
+        }
+    );
+    assert_eq!(metadata.migration_status, MigrationStatus::Empty);
+    assert_eq!(
+        metadata.schema_hash,
+        crate::store::finalised_source::v1::DB_SCHEMA_V1_HASH
+    );
+
+    let db_height = zaino_db.db_height().await.unwrap().unwrap();
+    assert_eq!(db_height, Height(150));
+
+    zaino_db.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
+    init_tracing();
+
+    let TestVectorData { blocks, .. } = load_test_vectors().unwrap();
+
+    let initial_active_height = Height(150);
+
+    let temp_dir: TempDir = tempfile::tempdir().unwrap();
+    let db_path: PathBuf = temp_dir.path().to_path_buf();
+
+    let v1_config = StoreSettings::new(
+        ChainStoreConfig::at_path(db_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
+
+    let source = fake_validator_with_tip(&blocks.clone(), initial_active_height.0);
+
+    let old_db = FinalisedState::build_clean_v1_0_0(&v1_config, source.clone())
+        .await
+        .unwrap();
+
+    let old_db_height = old_db.db_height().await.unwrap().unwrap();
+    assert_eq!(old_db_height, initial_active_height);
+
+    let old_metadata = old_db.get_metadata().await.unwrap();
+    assert_eq!(
+        old_metadata.version,
+        DbVersion {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        }
+    );
+    assert_eq!(old_metadata.migration_status, MigrationStatus::Empty);
+
+    old_db.shutdown().await.unwrap();
+    drop(old_db);
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let blocks_to_mine = u32::from(source.loaded_height()) - u32::from(source.reported_tip());
+    assert!(
+        blocks_to_mine > 0,
+        "test vectors must contain blocks above the initial active height"
+    );
+
+    source.advance_tip(blocks_to_mine);
+
+    let target_height = Height(u32::from(source.reported_tip()));
+    assert!(
+        target_height > initial_active_height,
+        "mock chain source must advance beyond the old v1.0.0 database height"
+    );
+
+    let zaino_db = std::sync::Arc::new(
+        FinalisedState::spawn(v1_config.store, v1_config.db, source.clone())
+            .await
+            .unwrap(),
+    );
+
+    zaino_db.wait_until_synced().await;
+
+    let migrated_db_height = zaino_db.db_height().await.unwrap().unwrap();
+    assert_eq!(
+        migrated_db_height, initial_active_height,
+        "metadata migration must not append newly active blocks"
+    );
+
+    zaino_db
+        .sync_to_height(target_height, &source)
+        .await
+        .unwrap();
+
+    zaino_db.wait_until_synced().await;
+
+    let synced_db_height = zaino_db.db_height().await.unwrap().unwrap();
+    assert_eq!(synced_db_height, target_height);
+
+    {
+        let reader = zaino_db.to_reader();
+
+        for height in 0..=initial_active_height.0 {
+            let height = Height(height);
+
+            let header = reader
+                .get_block_header(height)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to read v1.0.0-format BlockHeaderData at height {}: {error}",
+                        height.0
+                    )
+                });
+
+            assert_eq!(
+                header.context.index.height, height,
+                "v1.0.0-format BlockHeaderData at height {} returned wrong height",
+                height.0
+            );
+        }
+
+        for height in (initial_active_height.0 + 1)..=target_height.0 {
+            let height = Height(height);
+
+            let header = reader
+                .get_block_header(height)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to read current-format BlockHeaderData at height {}: {error}",
+                        height.0
+                    )
+                });
+
+            assert_eq!(
+                header.context.index.height, height,
+                "current-format BlockHeaderData at height {} returned wrong height",
+                height.0
+            );
+        }
+    }
+
+    zaino_db.shutdown().await.unwrap();
+}

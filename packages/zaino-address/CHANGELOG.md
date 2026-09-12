@@ -8,6 +8,25 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.1] - 2026-09-11
+
+### Added
+### Changed
+- `DEPRECATION_NOTICE` and the documentation no longer name zcashd,
+  whose support was removed from Zaino; the notice refers to the legacy
+  full node.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-19
+
+### Added
 - New crate. Zcash address classification for `validateaddress` and
   `z_validateaddress`: `validate_address`, `z_validate_address`,
   `sapling_key_bytes`, and the domain types `ValidatedAddress` /

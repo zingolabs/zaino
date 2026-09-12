@@ -6,7 +6,7 @@
 //! running ChainHead.
 //!
 //! The handle is deliberately thin. Everything answerable *about the chain*
-//! lives on [`ChainHeadSnapshot`](crate::snapshot::ChainHeadSnapshot), because
+//! lives on [`ChainHeadSnapshot`], because
 //! that is what those questions are about; this port only produces snapshots
 //! and reports when a new one exists. Restating each query here as a method
 //! taking a snapshot would define every capability twice, and would make a

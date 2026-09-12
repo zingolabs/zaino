@@ -17,15 +17,25 @@
 
 use zaino_source::*;
 
-/// What the finalised state asks of the validator while syncing.
+/// What the finalised state asks of the validator.
 ///
-/// Blocks come as canonical bytes rather than parsed
-/// ([`GetRawBlock`]): the finalised state builds its own indexed
-/// representation from them, and needs the exact bytes the block hash commits
-/// to rather than a shape something else has already interpreted.
+/// Derived from what the implementation calls, not from what a store might
+/// plausibly want. Blocks by height to build from; blocks by hash and
+/// transactions for the passthrough mode, which answers reads from the
+/// validator and so asks questions a building store never does; the chain tip
+/// to know how far there is to go; commitment tree roots, which a block alone
+/// does not yield.
+///
+/// Blocks are asked for parsed rather than raw. This previously named
+/// [`OneShotGetRawBlock`], on the reasoning that the finalised state wants the exact
+/// committed bytes — but it does not: it calls `get_block` and builds its index
+/// from the parsed form, so requiring raw bytes described a design that was
+/// never implemented and would have made every store parse blocks a second
+/// time.
 pub trait FinalisedSourceCaps:
     OneShotGetBestBlockHeight
-    + OneShotGetRawBlock
+    + OneShotGetBlock
+    + OneShotGetBlockByHash
     + OneShotGetCommitmentTreeRoots
     + OneShotGetTransaction
     + Send
@@ -36,7 +46,8 @@ pub trait FinalisedSourceCaps:
 
 impl<T> FinalisedSourceCaps for T where
     T: OneShotGetBestBlockHeight
-        + OneShotGetRawBlock
+        + OneShotGetBlock
+        + OneShotGetBlockByHash
         + OneShotGetCommitmentTreeRoots
         + OneShotGetTransaction
         + Send

@@ -11,7 +11,7 @@ use super::QueryError;
 ///
 /// [`entry_height`](Self::entry_height) is the validator's authoritative chain
 /// tip height at the moment the transaction entered its mempool — Zebra's
-/// `VerifiedUnminedTx.height`, zcashd's `nHeight`. It is a protocol field the
+/// `VerifiedUnminedTx.height`, the legacy full node's `nHeight`. It is a protocol field the
 /// validator owns, so a consumer must source it here rather than substituting a
 /// locally derived value: the two disagree exactly when the chain moves under a
 /// transaction, which is the case that matters.
