@@ -103,7 +103,9 @@ Architecture decision records live in
 holds only a submodule pointer to it at `docs/adr/`; run
 `git submodule update --init docs/adr` to read the records. Propose a record as
 a pull request to zingo-adrs, not to this repository; its README explains the
-record shape and how to advance the pointer.
+record shape and how to advance the pointer. A code pull request may advance
+the pointer, for example when the code cites a record newer than the pinned
+commit; the change is one line and needs no separate pull request.
 ## Software Philosophy
 We believe in the power of Free and Open Source Software (FOSS) as the best path for individual and social freedom in computing.
 
