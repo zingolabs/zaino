@@ -38,7 +38,7 @@ use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource, ChainHeadWork};
 /// validator, and ChainHead is built on that rather than on the wrapper.
 ///
 /// Kept off `BlockchainSource` because that port is frozen scaffolding
-/// (docs/adr/0008) and shrinks as each subsystem moves onto the real ports.
+/// (docs/adr/zaino/0008) and shrinks as each subsystem moves onto the real ports.
 pub trait WithChainHeadSource: BlockchainSource {
     /// The validator ChainHead will drive.
     type Head: ChainHeadBlockSource;

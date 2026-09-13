@@ -106,3 +106,35 @@ A key-exchange group with no post-quantum component (X25519, SECP256R1,
 SECP384R1). Deprecated in zaino: still accepted for client
 compatibility, slated for refusal once major wallet stacks negotiate
 hybrids.
+
+### Decision records
+
+**zingo-adrs**:
+The `zingolabs/zingo-adrs` repository: the one append-only home of
+architecture decision records for every zingolabs code repository. A code
+repository checks in a submodule pointer to it and none of its content.
+_Avoid_: "the ledger", "the org ledger", zaino-adrs, "the ADR repo"
+
+**Org-scoped record**:
+A record that binds every zingolabs code repository. It lives at the top
+level of zingo-adrs.
+_Avoid_: global ADR, shared ADR
+
+**Repo-scoped record**:
+A record that binds exactly one code repository. It lives in that
+repository's subdirectory of zingo-adrs (`zaino/` for zaino).
+_Avoid_: local ADR, project ADR
+
+**Record citation**:
+Each scope of zingo-adrs numbers its records in its own sequence.
+A bare `ADR-NNNN` cites a record in the citing repository's own scope; a
+citation into another scope carries the path (`zaino/0016`, or the
+org-level `003`).
+_Avoid_: bare numbers across scopes, "zingolabs ADR" (stale form)
+
+**Record status**:
+The first line under a record's `## Status` heading, one of `proposed`,
+`accepted`, or `superseded by <record citation>`. Prose after that line
+may narrow a partial supersession; the line itself is the whole record's
+standing.
+_Avoid_: deprecated, retired, obsolete, "no longer applies"
