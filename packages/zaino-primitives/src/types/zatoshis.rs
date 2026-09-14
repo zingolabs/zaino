@@ -16,11 +16,9 @@
 //!   `-supply ..= supply`.
 //!
 //! Summing amounts as flow and subtracting one flow total from another are
-//! relations between these types; they live in the [`arithmetic`] module
-//! alongside the algebra that governs them. See ADR-0013.
+//! relations between these types and live on them. See ADR-0013.
 
 mod amount;
-mod arithmetic;
 mod flow_sum;
 mod signed;
 

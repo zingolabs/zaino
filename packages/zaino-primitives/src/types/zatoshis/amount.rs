@@ -45,6 +45,11 @@ impl Zatoshis {
         }
         Some(Self(sum))
     }
+
+    /// Sums balances that coexist at one moment, or `None` if the total passes the supply.
+    pub fn sum_balances(mut values: impl Iterator<Item = Zatoshis>) -> Option<Zatoshis> {
+        values.try_fold(Zatoshis::ZERO, Zatoshis::checked_add)
+    }
 }
 
 impl Zatoshis {
@@ -89,5 +94,46 @@ mod tests {
     fn checked_add_overflow() {
         let a = Zatoshis::new(MAX_ZATOSHIS).expect("valid");
         assert!(a.checked_add(Zatoshis::new(1).expect("valid")).is_none());
+    }
+
+    fn zatoshis(value: u64) -> Zatoshis {
+        Zatoshis::new(value).expect("a valid amount")
+    }
+
+    /// `accumulate_balances` of nothing is a zero balance.
+    #[test]
+    fn sum_balances_of_nothing_is_zero() {
+        assert_eq!(
+            Zatoshis::sum_balances(core::iter::empty()),
+            Some(Zatoshis::ZERO)
+        );
+    }
+
+    /// `accumulate_balances` sums balances within the supply.
+    #[test]
+    fn sum_balances_within_the_supply_sums() {
+        let total = Zatoshis::sum_balances([100, 50, 30].map(zatoshis).into_iter());
+
+        assert_eq!(total.map(u64::from), Some(180));
+    }
+
+    /// A set of balances totalling exactly the supply is the extreme legitimate
+    /// case — all coins in the summed set — and is admitted.
+    #[test]
+    fn sum_balances_at_the_supply_is_allowed() {
+        let half = MAX_ZATOSHIS / 2;
+        let total = Zatoshis::sum_balances([half, MAX_ZATOSHIS - half].map(zatoshis).into_iter());
+
+        assert_eq!(total.map(u64::from), Some(MAX_ZATOSHIS));
+    }
+
+    /// Coexisting balances cannot total past the supply, so such a total is
+    /// evidence of overlapping or double-counted inputs and is refused.
+    #[test]
+    fn sum_balances_past_the_supply_is_refused() {
+        assert_eq!(
+            Zatoshis::sum_balances([MAX_ZATOSHIS, 1].map(zatoshis).into_iter()),
+            None
+        );
     }
 }
