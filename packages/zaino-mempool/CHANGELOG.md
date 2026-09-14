@@ -8,6 +8,31 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+### Changed
+- `MempoolSource` bounds the renamed single-attempt ports of `zaino-source`
+  0.2.0 (`OneShotGetMempoolTxids`, `OneShotGetMempoolMetadata`,
+  `OneShotGetRawMempoolTransaction`, `OneShotGetMempoolSourceTip`).
+- `NfsEpochObserver::current_epoch` and
+  `TipAwareMempool::stream_transactions_until_tip_change` speak
+  `zaino_primitives::types::ChainStateEpoch`.
+### Deprecated
+### Removed
+- `NonFinalizedEpoch` — replaced by `zaino_primitives::types::ChainStateEpoch`,
+  which is field-identical and shared with the chain head subsystem that
+  publishes it.
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate: `zaino-mempool`, the hexagonal *ports + foundational types* of
   Zaino's mempool subsystem — a bounded, coherent, local read model of the
   validator's mempool, separated from `zaino-state` (see
@@ -27,7 +52,7 @@ and this library adheres to Rust's notion of
     crate's, so there is one canonical type rather than a mempool-local copy.
   - Under `tip_aware_mempool`: the `NfsEpochObserver` port (with `NoNfs`), the
     `TipAwareMempool` port (`coherent_snapshot` + the ready-made
-    `stream_transactions_until_tip_change` loop), the
+    `stream_transactions_until_tip_change` loop), `NonFinalizedEpoch`, the
     coherent-view types (`CoherentSnapshot`, `MempoolMode`, `FreezeReason`,
     `ObservedTips`, `TipChange`), and the coherent-stream `MempoolEvent`.
     `ObservedTips` names the V side as a plain `BlockRef`: the field carries the
@@ -139,7 +164,7 @@ and this library adheres to Rust's notion of
   silently wrap on a narrowing cast at ingest.
 
 ### Fixed
-- `ChainStateEpoch::generation` documentation: it increments when the
+- `NonFinalizedEpoch::generation` documentation: it increments when the
   publisher's best tip *changes*, not on every republication. The code was
   already correct; the doc claimed the opposite.
 
