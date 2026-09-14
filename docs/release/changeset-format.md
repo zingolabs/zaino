@@ -3,7 +3,7 @@
 > Sub-spec of [pipeline.md](./pipeline.md). Defines the `.changesets/` file
 > contract: what a contributor writes, how CI aggregates it into per-crate
 > version bumps and changelogs. The CLI that reads/writes these files
-> (`tools/relman`) is specified separately; this document is about the **data**,
+> ([zingolabs/release_manager](https://github.com/zingolabs/release_manager)) is specified separately; this document is about the **data**,
 > not the tool.
 
 ## Status

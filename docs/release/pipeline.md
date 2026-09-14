@@ -733,7 +733,8 @@ crates. The release CLI needs the opposite — real dependencies (`toml_edit`,
 `semver`, `serde`/`toml`) and a subcommand router (`clap`) so `changeset` /
 `bump` / `changelog` operations can share the crate-graph logic. Adding those to
 `workbench` would break its documented "tiny, never touch the production graph"
-contract. Instead, a **new sibling crate under `tools/`** (e.g. `tools/relman`)
+contract. Instead, a **separate tool, `relman`** (now its own repository,
+[zingolabs/release_manager](https://github.com/zingolabs/release_manager))
 **copies workbench's isolation pattern** — its own workspace, `publish = false`,
 fmt/clippy/tested in CI — but is a clap-based multi-subcommand binary carrying
 the release deps. That isolation is exactly what licenses using those crates
