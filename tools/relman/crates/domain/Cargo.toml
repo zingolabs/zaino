@@ -12,6 +12,7 @@ relman-core = { workspace = true }
 relman-config = { workspace = true }
 semver = { workspace = true }
 toml_edit.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 relman-core = { workspace = true, features = ["test-support"] }
