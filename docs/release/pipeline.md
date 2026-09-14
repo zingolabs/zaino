@@ -171,15 +171,9 @@ of them:
 
 - `rc-gate` signal — any producer that posts a `success` check-run/commit-status
   with context `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the tested
-  commit. `CI - Nightly` (`ci-nightly.yaml`) carries a reference producer: it runs
-  the full suite (the complete `nextest` run plus check/fmt/clippy/doc/whitespace/
-  cargo-hack) and, once every job is green, its `publish-rc-gate-signal` job posts
-  that status. **Caveat (current):** those suite jobs run on self-hosted
-  `arc-sh-runners`, of which there are none right now — so the publish job's
-  `needs` are unmet and no signal is produced (the gate simply won't advance
-  without `force`; no false green). The anticipated real producer is a **cluster
-  job driven by `ztest`** that runs the suite and posts the same status; when it
-  lands it becomes the publisher with no change to the gate. `GITHUB_TOKEN`
+  commit. **No producer is wired yet** (the gate won't advance without `force`).
+  The anticipated producer is a **cluster job driven by `ztest`** that runs the
+  live suite and posts the status; it lands with no change to the gate. `GITHUB_TOKEN`
   suffices for whichever producer runs inside Actions — the gate only reads.
 - `release-gate` (deployment) signal — normally the cluster deployment gate posts
   a `deployment_status` back (poller → live-chain WorkflowTemplate). The manual
@@ -237,10 +231,9 @@ network-flaky — they are `rc`-tier on provisioning cost, not on flakiness.
 
 **The manifest (contract 1 — committed, first cut).** One declarative artifact
 maps each nextest-realized gate to a selection. It is the single source of truth
-the runner *and* CI read; nothing else enumerates tests. Lives at
-`.release/gate-suites.toml`, sibling to `.release/consumed-ledger.toml`; no
-consumer reads it yet (wired when the runner lands), but the classification is
-now data rather than scattered YAML. `release-gate` is intentionally absent — not
+the runner *and* CI read; nothing else enumerates tests. It lands at
+`.release/gate-suites.toml`, sibling to `.release/consumed-ledger.toml`, together
+with the runner that reads it. `release-gate` is intentionally absent — not
 a nextest suite; it answers via `deployment_status` from the devops repo.
 
 ```toml
@@ -293,7 +286,7 @@ When (and only when) a second live producer exists, that shape is a thin
   "commit":     "<sha>",
   "gate":       "rc-gate",
   "verdict":    "success | failure",
-  "producer":   "ztest | ci-nightly | deployment-soak",
+  "producer":   "ztest | deployment-soak",
   "detail_ref": "<url to the run / junit / soak dashboard>",
   "at":         "<iso8601>"
 }
@@ -758,12 +751,11 @@ replacement):
 
 | Workflow | Verdict |
 | -------- | ------- |
-| `auto-tag-rc.yml` | **keep until cutover** — derives version from the `rc/<version>` branch name; gated off by `RELMAN_PIPELINE_ACTIVE=true`, delete afterwards |
-| `final-tag-on-stable.yml` | **keep until cutover** — same branch-name→version coupling; gated off by `RELMAN_PIPELINE_ACTIVE=true`, replaced by blessing-time tagging from changesets |
-| `release.yaml` | **reworked** — also fires on the `zainod-X.Y.Z` provenance tag and takes the image version from it; the GitHub Release job runs only for legacy tags |
-| `publish-dry-run.yml` + `check-published-versions` | **kept** — blocking on `stable` pushes, advisory elsewhere (`rc` is version-agnostic); the Rust guard also runs in blessing's pre-flight |
-| `ci.yml`, `ci-nightly.yaml` | **rework** into the `dev`-gate and `rc`-gate suite runners |
-| `compute-tag.yml`, `build-n-push-ci-image.yaml`, `trigger-integration-tests.yml`, `shellcheck.yaml` | **keep** — orthogonal to release versioning |
+| `auto-tag-rc.yml`, `final-tag-on-stable.yml` | **deleted** — `rc-gate` / blessing tag via `relman tags` |
+| `release.yaml` | **reworked** — images only, on the `zainod-X.Y.Z` provenance tag; blessing owns the GitHub Release |
+| `publish-dry-run.yml` | **deleted** — blessing's pre-flight runs `check-published-versions` + a per-crate `cargo publish --dry-run` over `relman publish-plan` |
+| `ci.yml` | **rework** into the `dev`-gate suite runner |
+| `trigger-integration-tests.yml` | **keep** — orthogonal to release versioning |
 
 ## Open Questions (deferred to the build slice)
 

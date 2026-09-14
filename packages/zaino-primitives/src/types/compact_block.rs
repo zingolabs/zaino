@@ -144,7 +144,6 @@ mod tests {
     fn compact_conversion_keeps_ironwood_and_orchard_apart() {
         let tx = Transaction {
             txid: [0; 32].into(),
-            index: 0,
             transparent: Default::default(),
             sapling: Default::default(),
             orchard: OrchardData {

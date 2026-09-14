@@ -35,7 +35,7 @@ use zaino_primitives::types::{
     BlockchainInfo, ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
     NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
-    ValuePoolBalance, Zatoshis,
+    ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -614,9 +614,12 @@ pub(crate) fn parse_address_balance(
     Ok(AddressBalance {
         balance: Zatoshis::new(as_u64(field(value, "balance")?)?)
             .map_err(|e| ParseError::Amount(e.to_string()))?,
+        // A lifetime receipts flow, delivered pre-summed by the validator; not
+        // supply-bounded, so it lands in the flow-sum type through its
+        // boundary door rather than being rejected by the amount bound.
         received: match opt_field(value, "received") {
-            Some(v) => Zatoshis::new(as_u64(v)?).map_err(|e| ParseError::Amount(e.to_string()))?,
-            None => Zatoshis::ZERO,
+            Some(v) => ZatoshisFlowSum::from_summed(as_u64(v)?),
+            None => ZatoshisFlowSum::from_summed(0),
         },
     })
 }
@@ -629,7 +632,8 @@ pub(crate) fn parse_address_deltas(
         .iter()
         .map(|d| {
             Ok(AddressDelta {
-                satoshis: SignedZatoshis::new(as_i64(field(d, "satoshis")?)?),
+                satoshis: SignedZatoshis::try_new(as_i64(field(d, "satoshis")?)?)
+                    .map_err(|e| ParseError::Amount(e.to_string()))?,
                 txid: as_txid(field(d, "txid")?)?,
                 index: as_u32(field(d, "index")?)?,
                 height: as_height(field(d, "height")?)?,
@@ -948,7 +952,9 @@ fn parse_value_pool(value: &serde_json::Value) -> Result<ValuePoolBalance, Parse
         value_delta: opt_field(value, "valueDeltaZat")
             .map(as_i64)
             .transpose()?
-            .map(SignedZatoshis::new),
+            .map(SignedZatoshis::try_new)
+            .transpose()
+            .map_err(|e| ParseError::Amount(e.to_string()))?,
     })
 }
 
@@ -1061,7 +1067,8 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
                 inputs: parse_optional_list(d, "inputs", |i| {
                     Ok(InputDelta {
                         address: TransparentAddress::new(as_str(field(i, "address")?)?.to_owned()),
-                        satoshis: SignedZatoshis::new(as_i64(field(i, "satoshis")?)?),
+                        satoshis: SignedZatoshis::try_new(as_i64(field(i, "satoshis")?)?)
+                            .map_err(|e| ParseError::Amount(e.to_string()))?,
                         index: as_u32(field(i, "index")?)?,
                         prev_txid: as_txid(field(i, "prevtxid")?)?,
                         prev_output: as_u32(field(i, "prevout")?)?,
