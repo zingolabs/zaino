@@ -28,7 +28,6 @@ jobs:
           workspaces: |
             .
             tools/workbench
-            tools/relman
 
       - uses: taiki-e/install-action@v2
         with:

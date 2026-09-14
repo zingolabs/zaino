@@ -78,7 +78,8 @@ tool. `relman` is a handful of pure functions plus `toml_edit`. We borrow the
 ### `relman` internal structure (hexagonal)
 
 `relman` is generated from the `rust-cli-starter` `cargo-generate` template
-(ports & adapters), as its **own isolated workspace** under `tools/relman/`
+(ports & adapters), as its **own repository**,
+[zingolabs/release_manager](https://github.com/zingolabs/release_manager),
 (kept out of the production graph, like `workbench`). The template's
 functional-core/imperative-shell shape *is* the boundary specified above.
 

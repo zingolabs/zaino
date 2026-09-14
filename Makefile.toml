@@ -60,11 +60,11 @@ script = [
 ]
 
 [tasks.lint-tools]
-description = "Format-check, clippy, and test the tools/workbench and tools/relman workspaces (not members of the root workspace)."
+description = "Format-check, clippy, and test the tools/workbench workspace (not a member of the root workspace)."
 script_runner = "bash"
 script = '''
 set -euo pipefail
-for manifest in tools/workbench/Cargo.toml tools/relman/Cargo.toml; do
+for manifest in tools/workbench/Cargo.toml; do
   cargo fmt --manifest-path "$manifest" --all -- --check
   cargo clippy --locked --manifest-path "$manifest" --workspace --all-targets -- -D warnings
   cargo nextest run --locked --manifest-path "$manifest" --workspace
