@@ -209,30 +209,21 @@ jobs:
       # 4. Pre-flight publishability check — validate the ENTIRE publish plan is
       # actually publishable (no version-reuse, no yanked/unresolvable deps)
       # BEFORE any push/tag/Release, so a real release fails fast and leaves
-      # nothing orphaned on stable. BLOCKING for a real release; ADVISORY under
-      # RELMAN_PUBLISH_DRY_RUN (a fork can't truly publish — crate names are a
-      # global namespace — so it warns and proceeds to exercise the rest).
+      # nothing orphaned on stable.
       - name: Pre-flight publishability check
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          DRY_RUN: ${{ vars.RELMAN_PUBLISH_DRY_RUN }}
         run: |
           set -euo pipefail
-          block() {  # abort the release (real) or just warn (dry-run)
-            if [ "${DRY_RUN:-}" = "true" ]; then echo "::warning::pre-flight (advisory): $1";
-            else echo "::error::pre-flight: $1"; exit 1; fi
-          }
-          guard_mode=blocking; [ "${DRY_RUN:-}" = "true" ] && guard_mode=advisory
-          cargo run -q --manifest-path tools/workbench/Cargo.toml \
-            --bin check-published-versions -- --mode "$guard_mode" \
-            || block "version-reuse violations — bump the offending crates before releasing."
+          cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-published-versions
           while read -r crate version; do
             [ -z "${crate:-}" ] && continue
             if out="$(cargo publish -p "${crate}" --locked --dry-run --no-verify 2>&1)"; then
               echo "pre-flight ok: ${crate} ${version}"
             else
               echo "${out}" | tail -5
-              block "${crate} ${version} is not publishable (see above)."
+              echo "::error::pre-flight: ${crate} ${version} is not publishable (see above)."
+              exit 1
             fi
           done < "$RUNNER_TEMP/plan.txt"
 
@@ -246,9 +237,8 @@ jobs:
 
       # 6. Tags: final `cycle-<N>` + per-crate `<crate>-X.Y.Z`, all at the release
       # commit. tags.txt was derived in step 1, before the changesets were
-      # consumed. All tags go in ONE push: `ci.yml` excludes these tag shapes from
-      # its `push.tags` trigger, and a single push keeps the release atomic on the
-      # remote (no half-tagged release if the runner dies mid-loop).
+      # consumed. All tags go in ONE push: a single push keeps the release atomic on
+      # the remote (no half-tagged release if the runner dies mid-loop).
       - name: Create and push release tags
         run: |
           set -euo pipefail
@@ -287,42 +277,18 @@ jobs:
             echo "Created release $tag"
           fi
 
-      # 8. Publish to crates.io in dependency order.
-      # IRREVERSIBLE unless RELMAN_PUBLISH_DRY_RUN=true (fork/sandbox testing),
-      # which runs `cargo publish --dry-run --no-verify` — packages each crate and
-      # exercises the orchestration WITHOUT uploading. (`--no-verify` is required
-      # in dry-run: a dependent's verify build would resolve its new dependency
-      # against crates.io, where this cycle's not-yet-uploaded versions don't
-      # exist. The fork validates the workflow wiring; leave the flag unset for a
-      # real release.)
+      # 8. Publish to crates.io in dependency order. IRREVERSIBLE.
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          DRY_RUN: ${{ vars.RELMAN_PUBLISH_DRY_RUN }}
         run: |
           set -euo pipefail
-
-          # Under dry-run the pre-flight step already exercised
-          # `cargo publish --dry-run` for the whole plan, and a fork cannot upload
-          # anyway — so there is nothing left to do here.
-          if [ "${DRY_RUN:-}" = "true" ]; then
-            echo "::notice::dry-run: upload skipped (publishability validated in pre-flight)."
-            exit 0
-          fi
-          publish_flags="--locked"
-
-          # Real release only. Re-run the version-reuse guard (blocking) as a last
-          # gate before the irreversible upload.
-          cargo run -q --manifest-path tools/workbench/Cargo.toml \
-            --bin check-published-versions -- --mode blocking
-
           # plan.txt ("<crate> <version>" lines, dependency order) was derived in
           # step 1, before the changesets were consumed.
           while read -r crate version; do
             [ -z "${crate:-}" ] && continue
             echo "::group::Publish ${crate} ${version}"
-            # shellcheck disable=SC2086 # publish_flags is intentionally word-split
-            if out="$(cargo publish -p "${crate}" ${publish_flags} 2>&1)"; then
+            if out="$(cargo publish -p "${crate}" --locked 2>&1)"; then
               echo "${out}"
             else
               echo "${out}"
@@ -341,11 +307,3 @@ jobs:
             # publish.
             sleep 15
           done < "$RUNNER_TEMP/plan.txt"
-
-      # 9. Container images follow from the pushed tags: `release.yaml` builds
-      # and pushes the zainod images on the `zainod-X.Y.Z` tag push above.
-      # gh-pages doc publish is a cutover TODO.
-      - name: Post-publish artifacts
-        run: |
-          set -euo pipefail
-          echo "::notice::Container images are built by release.yaml on the zainod-X.Y.Z tag; gh-pages publish is a cutover TODO."

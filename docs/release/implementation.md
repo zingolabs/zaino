@@ -140,8 +140,8 @@ applied only to declared targets, and the publish plan covers exactly them. No
 > Deployment on a cut (step 1) and `deployment-advance.yml` reacts to
 > `deployment_status` by fast-forwarding `release-ready` (step 6). The **cluster
 > side** (Argo Events eventsource + sensor + the soak Workflow, steps 2–5) lives
-> in the `devops` repo and is the remaining build. `tools/scripts/mark-deployment.sh`
-> injects the `deployment_status` so the GitHub half is testable without the
+> in the `devops` repo and is the remaining build. `deployment-signoff.yml`
+> posts the `deployment_status` so the GitHub half is testable without the
 > cluster.
 
 Each RC commit is dispatched to the **deployment gate** via a **GitHub
@@ -176,9 +176,8 @@ environment protection rules) — the "visible marker" story for the
    unopinionated: the automated Workflow, a fixture job, or a **human** — the
    GitHub side reacts the same. The human path is `deployment-signoff.yml`
    (`workflow_dispatch`): it mints the release App token and posts the verdict
-   for an RC's Deployment, the in-CI counterpart of the local `mark-deployment.sh`
-   helper. Both post **as the App** so `deployment-advance` re-triggers; manual
-   mode needs the cluster auto-poller suspended so it does not claim the
+   for an RC's Deployment. It posts **as the App** so `deployment-advance`
+   re-triggers; manual mode needs the cluster auto-poller suspended so it does not claim the
    Deployment first.
 6. `deployment-advance.yml` reacts to `deployment_status`: on `success`,
    fast-forwards `release-ready` (which refreshes the release PR); on `failure`,
@@ -209,8 +208,7 @@ testable in seconds/minutes:
    Deployment for an RC commit and POST `deployment_status = success` (or
    `failure`) by hand. That fires the `release-ready` advance (step 6) — proving
    the `rc → release-ready` promotion + the release-PR refresh + blessing **with
-   no deployment run at all**. The helper `tools/scripts/mark-deployment.sh`
-   wraps this one `gh api` call.
+   no deployment run at all**. `deployment-signoff.yml` posts that status.
 
 Corollary for the reacting GH Action (step 6): it must key off the real
 `deployment_status` event/payload only — no hidden assumption that a run
@@ -263,8 +261,7 @@ workflow and holds no credentials — it only reads the diff.
 ### What can cause a release to advance
 
 Every path below is inert until the repo variable `RELMAN_PIPELINE_ACTIVE`
-is `true`; `RELMAN_PUBLISH_DRY_RUN` additionally downgrades publishing to
-advisory.
+is `true`.
 
 1. **Merge of the release PR (`release-ready` → `stable`)** → `blessing`
    publishes to crates.io, tags, cuts the GitHub Release. Blessing checks
