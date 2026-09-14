@@ -1,0 +1,15 @@
+[package]
+name = "zaino-runtime"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The orchestrator: composes the finalised (zaino-fs) and non-finalised (zaino-nfs) components into one running indexer, and implements zaino-service::IndexerService."
+
+[dependencies]
+zaino-component = { path = "../zaino-component" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+zaino-status = { path = "../zaino-status" }
