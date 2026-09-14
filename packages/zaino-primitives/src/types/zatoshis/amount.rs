@@ -23,6 +23,9 @@ impl Zatoshis {
     /// Zero zatoshis.
     pub const ZERO: Self = Self(0);
 
+    /// The largest amount the protocol allows, the whole money supply.
+    pub const MAX: Self = Self(MAX_ZATOSHIS);
+
     /// Create a zatoshi amount, validating against the protocol maximum.
     pub fn new(amount: u64) -> Result<Self, ZatoshisOverflow> {
         if amount > MAX_ZATOSHIS {
@@ -44,9 +47,16 @@ impl Zatoshis {
     }
 }
 
+impl Zatoshis {
+    /// Reads the amount as a plain integer, usable in constant context.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 impl From<Zatoshis> for u64 {
     fn from(z: Zatoshis) -> Self {
-        z.0
+        z.as_u64()
     }
 }
 

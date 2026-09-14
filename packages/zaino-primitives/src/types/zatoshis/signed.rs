@@ -30,6 +30,14 @@ pub struct SignedZatoshisOverflow {
 }
 
 impl SignedZatoshis {
+    /// The largest magnitude a signed value may carry, the whole money supply.
+    pub const MAX: Self = Self(MAX_ZATOSHIS as i64);
+
+    /// Reads the value as a plain integer, usable in constant context.
+    pub const fn as_i64(self) -> i64 {
+        self.0
+    }
+
     /// Create a signed value from one read at a boundary, enforcing that its
     /// magnitude fits the money supply.
     ///
@@ -75,7 +83,7 @@ impl SignedZatoshis {
 
 impl From<SignedZatoshis> for i64 {
     fn from(z: SignedZatoshis) -> Self {
-        z.0
+        z.as_i64()
     }
 }
 
