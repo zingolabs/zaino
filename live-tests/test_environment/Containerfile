@@ -31,7 +31,7 @@ LABEL org.zaino.test-artifacts.versions.rust="1.96.0"
 # Versions pinned (DL3008) to the candidates in rust:1.96.0-trixie; bump
 # together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl=8.14.1-2+deb13u4 \
+    curl=8.14.1-2+deb13u5 \
     libclang-dev=1:19.0-63 \
     build-essential=12.12 \
     cmake=3.31.6-2 \
