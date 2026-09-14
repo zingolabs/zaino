@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use relman_core::ports::{ArtifactError, ChangelogGenError, ChangesetStore, ChangesetStoreError};
+use relman_core::ports::{
+    ArtifactError, ChangelogGenError, ChangesetStore, ChangesetStoreError, DeriveError,
+};
 use relman_core::types::{
     ChangeEntry, Changeset, ChangesetError, ConsumedLedger, CrateName, StoredChangeset,
 };
@@ -39,15 +41,39 @@ impl From<EntriesError> for ArtifactError {
     }
 }
 
+impl From<EntriesError> for DeriveError {
+    fn from(error: EntriesError) -> Self {
+        match error {
+            EntriesError::ChangesetParse { slug, error } => Self::ChangesetParse { slug, error },
+            EntriesError::Store(error) => Self::Store(error),
+        }
+    }
+}
+
 /// Groups each crate's unshipped changeset entries in sorted-slug order.
 pub(super) fn entries_by_crate<S: ChangesetStore + ?Sized>(
     changesets: &S,
     ledger: &ConsumedLedger,
 ) -> Result<BTreeMap<CrateName, Vec<ChangeEntry>>, EntriesError> {
+    let mut by_crate: BTreeMap<CrateName, Vec<ChangeEntry>> = BTreeMap::new();
+    for entry in unshipped_entries(changesets, ledger)? {
+        by_crate
+            .entry(entry.crate_name().clone())
+            .or_default()
+            .push(entry);
+    }
+    Ok(by_crate)
+}
+
+/// Every unshipped changeset entry, in sorted-slug then file order.
+pub(super) fn unshipped_entries<S: ChangesetStore + ?Sized>(
+    changesets: &S,
+    ledger: &ConsumedLedger,
+) -> Result<Vec<ChangeEntry>, EntriesError> {
     let mut slugs = changesets.list()?;
     slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
-    let mut by_crate: BTreeMap<CrateName, Vec<ChangeEntry>> = BTreeMap::new();
+    let mut unshipped = Vec::new();
     for slug in &slugs {
         let raw = changesets.read(slug)?;
         let stored = match StoredChangeset::parse_toml(&raw) {
@@ -62,20 +88,12 @@ pub(super) fn entries_by_crate<S: ChangesetStore + ?Sized>(
                 });
             }
         };
-        // A shipped changeset belongs to a past release, whether marked in-file
-        // or only known shipped through the ledger; it never re-lists.
-        if stored.consumed_in().is_some() || stored.id().is_some_and(|id| ledger.contains(id)) {
+        if ledger.has_shipped(&stored) {
             continue;
         }
-        let Changeset::WithChanges(entries) = stored.into_body() else {
-            continue;
-        };
-        for entry in entries {
-            by_crate
-                .entry(entry.crate_name().clone())
-                .or_default()
-                .push(entry);
+        if let Changeset::WithChanges(entries) = stored.into_body() {
+            unshipped.extend(entries);
         }
     }
-    Ok(by_crate)
+    Ok(unshipped)
 }

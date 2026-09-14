@@ -9,6 +9,8 @@ use relman_core::types::{
     StoredChangeset, Version,
 };
 
+use super::entries::unshipped_entries;
+
 /// Derives the per-crate version [`BumpTable`] from the accumulated changesets
 /// and the workspace crate graph. Implements the [`Versions`] driving port over
 /// the [`ChangesetStore`] and [`Workspace`] driven ports and the loaded
@@ -63,68 +65,27 @@ impl VersionService {
         self.config.target_by_name(name).is_some()
     }
 
-    /// Whether a parsed changeset has already shipped — either by its per-file
-    /// `consumed_in` mark or by its id appearing in the consumed-UID ledger. The
-    /// ledger closes the window where a released changeset's mark hasn't yet
-    /// backported from `stable` to `dev`.
-    fn is_shipped(&self, stored: &StoredChangeset) -> bool {
-        stored.consumed_in().is_some() || stored.id().is_some_and(|id| self.ledger.contains(id))
-    }
-
-    /// Read and parse the whole changeset set, folding each `WithChanges` entry
-    /// into the per-crate highest kind + reasons. `Empty` changesets, unfilled
-    /// templates, and already-consumed changesets contribute nothing (all are
-    /// skipped); an entry naming a non-target crate is a hard error, as is a
-    /// malformed changeset.
+    /// Folds each unshipped entry into per-crate highest kind + reasons
+    /// - entry naming a non-target crate = hard error
     fn collect_direct(&self) -> Result<DirectInputs, DeriveError> {
-        let mut slugs = self.store.list()?;
-        // Deterministic traversal order regardless of the store's backing.
-        slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-
         let mut inputs = DirectInputs::default();
-        for slug in &slugs {
-            let raw = self.store.read(slug)?;
-            let stored = match StoredChangeset::parse_toml(&raw) {
-                Ok(stored) => stored,
-                // An unfilled template is not yet a changeset: skip it, as the
-                // caller's `unfilled_templates` scan is what surfaces the warning.
-                Err(ChangesetError::Unfilled) => continue,
-                Err(error) => {
-                    return Err(DeriveError::ChangesetParse {
-                        slug: slug.as_str().to_owned(),
-                        error: error.to_string(),
-                    });
-                }
-            };
-            // A shipped changeset was folded into a past release; it is left on
-            // disk as provenance and must not bump anything again. Skipping it
-            // makes aggregation self-defending against a released changeset that
-            // lingers in `.changesets/` — whether marked in-file or only known
-            // shipped through the ledger.
-            if self.is_shipped(&stored) {
-                continue;
+        for entry in unshipped_entries(self.store.as_ref(), &self.ledger)? {
+            let name = entry.crate_name();
+            if !self.is_target(name) {
+                return Err(DeriveError::UnknownTarget {
+                    crate_name: name.as_str().to_owned(),
+                });
             }
-            let Changeset::WithChanges(entries) = stored.into_body() else {
-                continue;
-            };
-            for entry in entries {
-                let name = entry.crate_name();
-                if !self.is_target(name) {
-                    return Err(DeriveError::UnknownTarget {
-                        crate_name: name.as_str().to_owned(),
-                    });
-                }
-                inputs
-                    .highest_kind
-                    .entry(name.clone())
-                    .and_modify(|k| *k = (*k).max(entry.kind()))
-                    .or_insert(entry.kind());
-                inputs
-                    .reasons
-                    .entry(name.clone())
-                    .or_default()
-                    .push(entry.description().as_str().to_owned());
-            }
+            inputs
+                .highest_kind
+                .entry(name.clone())
+                .and_modify(|k| *k = (*k).max(entry.kind()))
+                .or_insert(entry.kind());
+            inputs
+                .reasons
+                .entry(name.clone())
+                .or_default()
+                .push(entry.description().as_str().to_owned());
         }
         Ok(inputs)
     }

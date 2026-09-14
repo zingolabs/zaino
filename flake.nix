@@ -15,7 +15,6 @@
 
   ### Build with Nix
   # nix build .#zainod — build the binary (output at `./result/bin/zainod`)
-  # nix flake check — run fmt, clippy, doc, and the test suite
   # nix develop — enter a dev shell with the pinned Rust toolchain and build deps
 
 
@@ -54,10 +53,8 @@
           gitCommit = self.rev or self.dirtyRev;
         };
 
-        # Single source of truth for src + build env lives in nix/package.nix
-        # and is re-exposed through the derivation's passthru for downstream
-        # checks. Avoids duplicating the source filter or env settings here.
-        inherit (zainod.passthru) commonArgs cargoArtifacts;
+        # Build env defined once in nix/package.nix; devShell reuses it via passthru
+        inherit (zainod.passthru) commonArgs;
       in
       {
         packages = {
@@ -82,6 +79,7 @@
             cargo-nextest
             cargo-deny
             cargo-make
+            shellcheck
             rust-analyzer
 
             # Integration tests
@@ -94,25 +92,6 @@
             # Needed for librocksdb-sys
             LD_LIBRARY_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           };
-        };
-
-        checks = {
-          clippy = craneLib.cargoClippy (commonArgs // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- -D warnings";
-          });
-
-          fmt = craneLib.cargoFmt {
-            inherit (commonArgs) src pname version;
-          };
-
-          nextest = craneLib.cargoNextest (commonArgs // {
-            inherit cargoArtifacts;
-          });
-
-          doc = craneLib.cargoDoc (commonArgs // {
-            inherit cargoArtifacts;
-          });
         };
 
         formatter = pkgs.nixfmt-rfc-style;

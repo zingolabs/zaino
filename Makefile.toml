@@ -1,168 +1,111 @@
-extend = [
-    { path = "tools/makefiles/lints.toml" },
-    { path = "tools/makefiles/notify.toml" },
-    { path = "tools/makefiles/rocksdb.toml" },
-]
 [config]
 default_to_workspace = false
 
-[env]
-IMAGE_NAME = "zingodevops/zaino-ci"
-# Single source of truth: rust-toolchain.toml's `channel`, extracted via the
-# workbench `get-rust-version` binary.
-RUST_VERSION = { script = ["cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version"] }
-
-[tasks.help]
-description = "List available commands and usage notes"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/help.sh"'
-
-[tasks.base-script]
-# The pre-script lives in tools/scripts/base-script-pre.sh and is *sourced*
-# (not executed) so the TAG var, podman_cleanup function, and cleanup trap it
-# defines stay in scope for each consuming task's script.main. cargo-make
-# concatenates pre/main/post into one shell program, so sourcing keeps them in
-# the same shell.
-script_runner = "bash"
-script.pre = 'source "./tools/scripts/base-script-pre.sh"'
-script.main = "err 'default main script. define a proper script to skip this one'"
-script.post = ""
-
-# -------------------------------------------------------------------
-
-[tasks.compute-image-tag]
-description = "Compute image tag from version vars"
-script_runner = "bash"
-script = 'source "./tools/scripts/compute-image-tag.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.get-podman-hash]
-description = "Get the current CONTAINER_DIR_HASH"
-script_runner = "bash"
-script = 'source "./tools/scripts/get-podman-hash.sh"'
-
-[tasks.ensure-image-exists]
-description = "Ensure the image exists locally, building if needed"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/ensure-image-exists.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.pull-ci-image]
-description = "Pull the CI image from the registry"
-extend = "base-script"
-script.main = 'source "./tools/scripts/pull-ci-image.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.build-image]
-description = "Build the CI container image (Rust build environment)"
-# Note: builds from live-tests/test_environment/, which holds the Containerfile
-# for the CI build-environment image (Rust toolchain + protoc + RocksDB +
-# cargo-nextest; no validator binaries — see docs/testing.md).
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/build-image.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.push-image]
-description = "Push image if running in CI"
-# condition = { env_set = ["CI"] }
-dependencies = ["ensure-image-exists"]
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/push-image.sh"'
-
-# -------------------------------------------------------------------
-
-# ===================================================================
-# Tripwire, not a front door. `makers test` used to route both suites; it was
-# removed. Without this override cargo-make's *builtin* `test`
-# task takes the name and silently runs `cargo test`, which skips the live
-# suites entirely — a false pass. Fail loudly and name the real commands.
-# ===================================================================
-
-[tasks.test]
-clear = true
-description = "Removed. Use cargo nextest run / ztest run — see docs/testing.md."
-script_runner = "bash"
-script = """
-echo 'makers test was removed. Run the suites directly:' >&2
-echo '  cargo nextest run                                # packages/*' >&2
-echo '  cd live-tests && ztest run -p clientless -p e2e  # live (k8s)' >&2
-echo 'See docs/testing.md for ztest CLI and cluster setup.' >&2
-exit 2
-"""
-
-# -------------------------------------------------------------------
-
-[tasks.bench]
-# clear = true fully replaces cargo-make's built-in `bench` task (which runs
-# `cargo bench`); without it our `script` would merge with the builtin `command`.
-clear = true
-description = "Run the zaino-bench harness against a running zainod (sync | concurrent | serve)"
-# Release, always: a debug load generator measures itself rather than the
-# server. Not a member of `default-members`, so `-p` is required to select it.
-script_runner = "bash"
-script = 'exec cargo run --release -p zaino-bench -- "$@"'
-
-# -------------------------------------------------------------------
-
-[tasks.verify-all]
-description = "Exercise every Makefile.toml task for correctness (idempotent)"
-script_runner = "bash"
-script = 'source "./tools/scripts/verify-all.sh"'
-
-# -------------------------------------------------------------------
-
-# The workspace test archive is built with `--no-default-features`, so
-# `zaino-proto`'s separate `heavy` default feature must survive that build.
-[tasks.check-zaino-proto-heavy]
-description = "Guard: zaino-proto `heavy` must stay enabled under --no-default-features (else the test build silently loses zebra-state/zebra-chain/which)"
-script_runner = "@rust"
-script = { file = "tools/scripts/check-zaino-proto-heavy.rs" }
-
-# -------------------------------------------------------------------
-
-# The experimental/alpha feature set is off by default and is therefore never
-# built by the normal CI path, which is exactly how it bit-rots: two `#[cfg]`
-# blocks in the finalised state's address-history writer went on referencing
-# bindings that the non-gated path had renamed away, and nothing noticed
-# because nothing compiled them.
-#
-# Gated on the `experimental_features` umbrella rather than on
-# `transparent_address_history_experimental` directly, so a feature added to
-# that set is covered the day it lands rather than the day someone remembers
-# to extend this list.
-[tasks.check-experimental-features-packages]
-description = "cargo check --features experimental_features across the whole workspace"
+[tasks.fmt]
 command = "cargo"
-args = [
-  "check",
-  "--workspace",
-  "--all-targets",
-  "--features",
-  "zaino-state/experimental_features",
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.clippy]
+command = "cargo"
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.lint-boundary-conversions]
+description = "Forbid From/TryFrom impls across the persistence and wire boundaries. Both must use named inherent methods (from_business/into_business for persistence; to_wire/try_from_wire for wire)."
+# See CLAUDE.md §'Persistence-boundary conversions' and §'Wire-boundary
+# conversions'. Reference implementations:
+#   - packages/zaino-state/src/chain_index/types/db/block.rs     (DB)
+#   - packages/zaino-state/src/chain_index/types/wire.rs         (wire)
+script_runner = "bash"
+script = [
+    '''
+    set -euo pipefail
+
+    # === Persistence boundary ===
+    # Matches either direction of a From/TryFrom where the `Persistent*`
+    # side of the boundary appears.
+    persistent_on_rhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*>[[:space:]]+for[[:space:]]+(Persistent|[A-Za-z0-9_:]+::Persistent)'
+    persistent_on_lhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*Persistent[^>]*>[[:space:]]+for[[:space:]]+'
+
+    # === Wire boundary ===
+    # Matches either direction of a From/TryFrom where a zaino-proto type
+    # (anything under `proto::` or a `::proto::` path) sits opposite a
+    # business-layer target. We flag any impl that *mentions* a `proto::`
+    # type on either side of a From/TryFrom — intentional because there
+    # should be zero such impls once wire conversions are all named methods.
+    proto_on_rhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*>[[:space:]]+for[[:space:]]+[A-Za-z0-9_:]*proto::'
+    proto_on_lhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*proto::[^>]*>[[:space:]]+for[[:space:]]+'
+
+    # Scan all Rust sources; exclude generated / vendored paths and the
+    # zaino-proto package itself (it legitimately re-exports via prost-derived
+    # Froms between scalar types).
+    hits=$(
+      git ls-files '*.rs' ':!target/*' ':!packages/zaino-proto/*' \
+      | xargs -r grep -nE "$persistent_on_rhs|$persistent_on_lhs|$proto_on_rhs|$proto_on_lhs" \
+      || true
+    )
+
+    if [ -n "$hits" ]; then
+      echo ""
+      echo "Boundary-conversion lint: forbidden From/TryFrom impls found."
+      echo "Persistence boundary conversions must be named inherent methods on the"
+      echo "Persistent* type (canonical: from_business / into_business)."
+      echo "Wire boundary conversions must be named inherent methods on the"
+      echo "business-layer type (canonical: to_wire / try_from_wire)."
+      echo "See CLAUDE.md for the rules."
+      echo ""
+      echo "$hits"
+      exit 1
+    fi
+    '''
 ]
 
-# Compiling the gated code is what catches the rot; running its tests is what
-# catches a behavioural regression in it. Scoped to zaino-state because that is
-# the only crate the umbrella currently reaches.
-[tasks.test-experimental-features]
-description = "Run the zaino-state suite with the experimental/alpha features enabled"
-command = "cargo"
-args = ["nextest", "run", "-p", "zaino-state", "--features", "experimental_features"]
+[tasks.lint-tools]
+description = "Format-check, clippy, and test the tools/workbench and tools/relman workspaces (not members of the root workspace)."
+script_runner = "bash"
+script = '''
+set -euo pipefail
+for manifest in tools/workbench/Cargo.toml tools/relman/Cargo.toml; do
+  cargo fmt --manifest-path "$manifest" --all -- --check
+  cargo clippy --locked --manifest-path "$manifest" --workspace --all-targets -- -D warnings
+  cargo nextest run --locked --manifest-path "$manifest" --workspace
+done
+'''
 
-[tasks.check-experimental-features]
-description = "Verify the experimental/alpha feature set compiles workspace-wide and its tests pass"
+[tasks.lint-crypto-provider]
+description = "Assert rustls resolves with aws-lc-rs + prefer-post-quantum and that the only ring-selecting feature edges are the tolerated zebra path (ADR-0006). Fails loud in both directions: new edges and vanished edges."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-crypto-provider"]
+
+[tasks.lint-no-openssl-apt]
+description = "Fail if any Dockerfile installs a libssl*/openssl* apt package. TLS is rustls; the system-package companion to deny.toml's openssl crate ban."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-no-openssl-apt"]
+
+[tasks.lint-code-duplication]
+description = "Fail on any exact or near duplicate Rust logic (AST-normalized, min 50 nodes) in packages/ (minus generated zaino-proto and in-crate tests/), live-tests/, and tools/. Escape hatch: annotated entries in .dupes-ignore.toml."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-code-duplication"]
+
+[tasks.deny]
+description = "Enforce deny.toml's crate bans (openssl/openssl-sys/boring*). Scoped to `bans`: advisories/licenses have pre-existing failures (e.g. RUSTSEC-2022-0001 lmdb) tracked separately."
+command = "cargo"
+args = ["deny", "check", "bans"]
+
+[tasks.lint-shell]
+description = "Lint every tracked shell script with shellcheck"
+script_runner = "bash"
+script = "git ls-files -z '*.sh' | xargs -0 -r shellcheck"
+
+[tasks.lint]
+description = "Run every lint CI runs. Enable as a pre-push hook with `git config core.hooksPath .githooks`."
 dependencies = [
-  "check-experimental-features-packages",
-  "test-experimental-features",
+    "fmt",
+    "lint-boundary-conversions",
+    "lint-shell",
+    "deny",
+    "lint-crypto-provider",
+    "lint-no-openssl-apt",
+    "lint-code-duplication",
+    "lint-tools",
+    "clippy",
 ]
-
-# -------------------------------------------------------------------
-
