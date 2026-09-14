@@ -3,6 +3,7 @@ mod apply_bump;
 mod changelog;
 mod changeset_check;
 mod changesets;
+mod entries;
 mod release_artifacts;
 mod versions;
 

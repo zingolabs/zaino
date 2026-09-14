@@ -109,9 +109,7 @@ impl ChangesetCheck for ChangesetCheckService {
             // provenance: it neither covers this PR's touched targets nor waives
             // the PR. Skip it, exactly as the derivation does — whether marked
             // in-file or only known shipped through the ledger.
-            if stored.consumed_in().is_some()
-                || stored.id().is_some_and(|id| self.ledger.contains(id))
-            {
+            if self.ledger.has_shipped(&stored) {
                 continue;
             }
             match stored.into_body() {

@@ -5,6 +5,7 @@
 //! layer, because this response reshapes value pools into a fixed array and
 //! renames network upgrades by consensus branch id.
 
+use crate::rpc::jsonrpc::wire::common::amount;
 use zaino_primitives::types::{BlockchainInfo, ValuePoolBalance};
 use zebra_chain::parameters::Network;
 use zebra_rpc::methods::GetBlockchainInfoResponse;
@@ -15,10 +16,6 @@ pub enum BlockchainInfoWireError {
     /// A value pool the interface has no slot for.
     #[error("unknown value pool `{0}`")]
     UnknownValuePool(String),
-
-    /// A pool balance outside the range the interface's amount type allows.
-    #[error("value pool balance out of range: {0}")]
-    PoolBalanceOutOfRange(String),
 
     /// A consensus branch id this build does not recognise.
     ///
@@ -38,21 +35,8 @@ fn pool_balance(
 ) -> Result<zebra_rpc::client::GetBlockchainInfoBalance, BlockchainInfoWireError> {
     use zebra_rpc::client::GetBlockchainInfoBalance;
 
-    fn amount<C: zebra_chain::amount::Constraint>(
-        zats: i64,
-    ) -> Result<zebra_chain::amount::Amount<C>, BlockchainInfoWireError> {
-        zebra_chain::amount::Amount::try_from(zats)
-            .map_err(|e| BlockchainInfoWireError::PoolBalanceOutOfRange(e.to_string()))
-    }
-
-    let value = amount(
-        i64::try_from(u64::from(balance.chain_value))
-            .map_err(|e| BlockchainInfoWireError::PoolBalanceOutOfRange(e.to_string()))?,
-    )?;
-    let delta = balance
-        .value_delta
-        .map(|d| amount(i64::from(d)))
-        .transpose()?;
+    let value = amount::non_negative(balance.chain_value);
+    let delta = balance.value_delta.map(amount::negative_allowed);
 
     Ok(match balance.id.as_str() {
         "transparent" => GetBlockchainInfoBalance::transparent(value, delta),

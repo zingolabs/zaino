@@ -81,19 +81,19 @@ pub struct InvalidDeploymentStatus {
 }
 
 impl DeploymentStatus {
+    /// Every status the deployment gate can report.
+    const ALL: [Self; 4] = [Self::Passed, Self::Running, Self::Failed, Self::Pending];
+
     /// Parse the lowercase wire name of a deployment status. Any other value —
     /// including an empty string — is rejected, so an unknown status can never
     /// be silently treated as one of the known ones.
     pub fn parse(raw: &str) -> Result<Self, InvalidDeploymentStatus> {
-        match raw {
-            "passed" => Ok(Self::Passed),
-            "running" => Ok(Self::Running),
-            "failed" => Ok(Self::Failed),
-            "pending" => Ok(Self::Pending),
-            other => Err(InvalidDeploymentStatus {
-                found: other.to_owned(),
-            }),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_str() == raw)
+            .ok_or_else(|| InvalidDeploymentStatus {
+                found: raw.to_owned(),
+            })
     }
 
     /// The lowercase wire word for this status.

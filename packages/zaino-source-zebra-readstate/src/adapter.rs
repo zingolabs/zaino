@@ -370,8 +370,11 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
                 Ok(zaino_primitives::types::AddressBalance {
                     balance: zaino_primitives::types::Zatoshis::new(balance.into())
                         .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
-                    received: zaino_primitives::types::Zatoshis::new(received)
-                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                    // A lifetime receipts flow, delivered pre-summed by the
+                    // state service; not supply-bounded, so it lands in the
+                    // flow-sum type through its boundary door rather than
+                    // being rejected by the amount bound.
+                    received: zaino_primitives::types::ZatoshisFlowSum::from_summed(received),
                 })
             }
             _ => Err(unexpected_response("AddressBalance").into()),
@@ -619,7 +622,8 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                 }
 
                 deltas.push(AddressDelta {
-                    satoshis: SignedZatoshis::new(output.value.zatoshis()),
+                    satoshis: SignedZatoshis::try_new(output.value.zatoshis())
+                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                     txid: delta_txid,
                     index: index as u32,
                     height,
@@ -1335,7 +1339,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 inputs.push(InputDelta {
                     address: TransparentAddress::new(address.to_string()),
                     // A spend debits the address, so the value leaves it.
-                    satoshis: SignedZatoshis::new(-output.value.zatoshis()),
+                    satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
+                        .map_err(|e| parse(e.to_string()))?,
                     index: index as u32,
                     prev_txid: TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,

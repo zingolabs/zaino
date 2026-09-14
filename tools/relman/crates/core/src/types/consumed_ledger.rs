@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{CycleId, InvalidCycleId, InvalidUid, Uid};
+use crate::types::{CycleId, InvalidCycleId, InvalidUid, StoredChangeset, Uid};
 
 /// The consumed-UID ledger: the set of changeset [`Uid`]s that a past release has
 /// already shipped.
@@ -136,6 +136,11 @@ impl ConsumedLedger {
     /// Whether `id` has already been shipped (is present in the ledger).
     pub fn contains(&self, id: &Uid) -> bool {
         self.entries.contains_key(id)
+    }
+
+    /// Shipped = per-file `consumed_in` mark OR id in this ledger (mark may not have backported yet)
+    pub fn has_shipped(&self, stored: &StoredChangeset) -> bool {
+        stored.consumed_in().is_some() || stored.id().is_some_and(|id| self.contains(id))
     }
 
     /// Record `id` as shipped by `cycle`, with an optional audit `slug`.

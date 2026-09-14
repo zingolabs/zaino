@@ -19,6 +19,9 @@ pub enum ConvertError {
     /// A value exceeded protocol limits.
     #[error("value overflow: {0}")]
     Value(String),
+    /// The converted transactions did not form a valid block.
+    #[error("block: {0}")]
+    Block(String),
 }
 
 /// Convert a zebra block into a domain [`Block`].
@@ -31,16 +34,14 @@ pub fn block_from_zebra(
     zb: &zebra_chain::block::Block,
     chain_metadata: ChainMetadata,
 ) -> Result<Block, ConvertError> {
-    Ok(Block {
-        header: header_from_zebra(zb)?,
-        transactions: zb
-            .transactions
-            .iter()
-            .enumerate()
-            .map(|(i, tx)| transaction_from_zebra(tx, i as u32))
-            .collect::<Result<Vec<_>, _>>()?,
-        chain_metadata,
-    })
+    let header = header_from_zebra(zb)?;
+    let transactions = zb
+        .transactions
+        .iter()
+        .map(|tx| transaction_from_zebra(tx))
+        .collect::<Result<Vec<_>, _>>()?;
+    Block::try_new(header, transactions, chain_metadata)
+        .map_err(|e| ConvertError::Block(e.to_string()))
 }
 
 /// Convert just the header — skips all transaction parsing.
@@ -98,24 +99,23 @@ pub fn header_from_parts(
 
 /// Convert one zebra transaction into the domain's.
 ///
-/// `index` is the transaction's position within its block. A transaction with
-/// no block — a mempool transaction — passes `0`, matching what the light-wallet
-/// protocol serves for one.
+/// A transaction carries no position: its slot in a block, and so whether it is
+/// the coinbase, is the block's to know (see [`block_from_zebra`], which reads
+/// it from order). A mempool transaction is in no block and has no position to
+/// invent.
 ///
 /// Public because the mempool stream converts a single transaction rather than
 /// a whole block; every other caller reaches this through
 /// [`block_from_zebra`].
 pub fn transaction_from_zebra(
     tx: &zebra_chain::transaction::Transaction,
-    index: u32,
 ) -> Result<Transaction, ConvertError> {
     Ok(Transaction {
         txid: TransactionId::from(tx.hash().0),
-        index,
         transparent: transparent_from_zebra(tx)?,
-        sapling: sapling_from_zebra(tx),
-        orchard: orchard_from_zebra(tx),
-        ironwood: ironwood_from_zebra(tx),
+        sapling: sapling_from_zebra(tx)?,
+        orchard: orchard_from_zebra(tx)?,
+        ironwood: ironwood_from_zebra(tx)?,
     })
 }
 
@@ -149,8 +149,10 @@ fn transparent_from_zebra(
     Ok(TransparentData { inputs, outputs })
 }
 
-fn sapling_from_zebra(tx: &zebra_chain::transaction::Transaction) -> SaplingData {
-    SaplingData {
+fn sapling_from_zebra(
+    tx: &zebra_chain::transaction::Transaction,
+) -> Result<SaplingData, ConvertError> {
+    Ok(SaplingData {
         spends: tx
             .sapling_nullifiers()
             .map(|nf| SaplingSpend {
@@ -169,18 +171,25 @@ fn sapling_from_zebra(tx: &zebra_chain::transaction::Transaction) -> SaplingData
                 }
             })
             .collect(),
-        value_balance: SignedZatoshis::new(i64::from(tx.sapling_value_balance().sapling_amount())),
-    }
+        value_balance: SignedZatoshis::try_new(i64::from(
+            tx.sapling_value_balance().sapling_amount(),
+        ))
+        .map_err(|e| ConvertError::Value(e.to_string()))?,
+    })
 }
 
-fn orchard_from_zebra(tx: &zebra_chain::transaction::Transaction) -> OrchardData {
+fn orchard_from_zebra(
+    tx: &zebra_chain::transaction::Transaction,
+) -> Result<OrchardData, ConvertError> {
     orchard_shaped_from_zebra(
         tx.orchard_actions(),
         i64::from(tx.orchard_value_balance().orchard_amount()),
     )
 }
 
-fn ironwood_from_zebra(tx: &zebra_chain::transaction::Transaction) -> OrchardData {
+fn ironwood_from_zebra(
+    tx: &zebra_chain::transaction::Transaction,
+) -> Result<OrchardData, ConvertError> {
     orchard_shaped_from_zebra(
         tx.ironwood_actions(),
         i64::from(tx.ironwood_value_balance().ironwood_amount()),
@@ -196,8 +205,8 @@ fn ironwood_from_zebra(tx: &zebra_chain::transaction::Transaction) -> OrchardDat
 fn orchard_shaped_from_zebra<'a>(
     actions: impl Iterator<Item = &'a zebra_chain::orchard::Action>,
     value_balance: i64,
-) -> OrchardData {
-    OrchardData {
+) -> Result<OrchardData, ConvertError> {
+    Ok(OrchardData {
         actions: actions
             .map(|act| {
                 let nf_bytes: [u8; 32] = act.nullifier.into();
@@ -211,8 +220,9 @@ fn orchard_shaped_from_zebra<'a>(
                 }
             })
             .collect(),
-        value_balance: SignedZatoshis::new(value_balance),
-    }
+        value_balance: SignedZatoshis::try_new(value_balance)
+            .map_err(|e| ConvertError::Value(e.to_string()))?,
+    })
 }
 
 #[cfg(test)]
@@ -226,10 +236,13 @@ mod tests {
     fn shared_conversion_reports_the_balance_it_was_given() {
         let empty: [&zebra_chain::orchard::Action; 0] = [];
 
-        let pool = orchard_shaped_from_zebra(empty.into_iter(), -42);
+        let pool = orchard_shaped_from_zebra(empty.into_iter(), -42).expect("a valid balance");
 
         assert!(pool.actions.is_empty());
-        assert_eq!(pool.value_balance, SignedZatoshis::new(-42));
+        assert_eq!(
+            pool.value_balance,
+            SignedZatoshis::try_new(-42).expect("a valid balance")
+        );
     }
 }
 

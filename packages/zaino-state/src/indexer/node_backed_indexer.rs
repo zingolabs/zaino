@@ -1601,16 +1601,30 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let mut total_balance: u64 = 0;
+                    // Per-address balances coexist at one moment, so their
+                    // running total is itself a supply-bounded balance: the
+                    // incremental form of `Zatoshis::sum_balances`, demanded
+                    // by the streaming shape. A total past the supply means
+                    // the request's addresses overlap or the source
+                    // double-counts, and is refused rather than wrapped.
+                    let mut total_balance = zaino_primitives::types::Zatoshis::ZERO;
                     loop {
                         match channel_rx.recv().await {
                             Some(taddr) => {
                                 let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
                                 let balance = service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance += u64::from(balance.balance);
+                                total_balance = total_balance
+                                    .checked_add(balance.balance)
+                                    .ok_or_else(|| {
+                                        tonic::Status::data_loss(
+                                            "Error: address balances total past the money \
+                                                 supply; the requested addresses overlap or the \
+                                                 source data is corrupt.",
+                                        )
+                                    })?;
                             }
                             None => {
-                                return Ok(total_balance);
+                                return Ok(u64::from(total_balance));
                             }
                         }
                     }
@@ -1746,10 +1760,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
                                         ))
                                     })
                                     .and_then(|transaction| {
-                                        // Index 0: a mempool transaction is in no
-                                        // block, and this field is its position
-                                        // within one.
-                                        zaino_convert_zebra::transaction_from_zebra(&transaction, 0)
+                                        // A mempool transaction is in no block, so
+                                        // it carries no position. The served
+                                        // `CompactTx.index` is set to 0 at the
+                                        // proto boundary (`compact_tx_to_proto`),
+                                        // not on the domain type.
+                                        zaino_convert_zebra::transaction_from_zebra(&transaction)
                                             .map_err(|e| tonic::Status::unknown(e.to_string()))
                                     })
                                     .map(|transaction| {
