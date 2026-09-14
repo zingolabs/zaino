@@ -52,6 +52,7 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 ```
 packages/                          Cargo workspace member crates, in dependency order
   zaino-status/                      How a component reports whether it is working
+  zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
   zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
