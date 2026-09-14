@@ -22,13 +22,13 @@ impl ZatoshisFlowSum {
     /// Returns the received flow minus the spent one as a signed value, or `None` outside the supply.
     pub fn net(self, spent: Self) -> Option<SignedZatoshis> {
         let (received, spent) = (self.into_raw(), spent.into_raw());
-        let magnitude = i128::try_from(received.abs_diff(spent)).ok()?;
+        let magnitude = i64::try_from(received.abs_diff(spent)).ok()?;
         let difference = if received >= spent {
             magnitude
         } else {
             -magnitude
         };
-        SignedZatoshis::try_from_i128(difference).ok()
+        SignedZatoshis::try_new(difference).ok()
     }
 }
 
