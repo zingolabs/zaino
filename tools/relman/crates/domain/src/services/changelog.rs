@@ -5,10 +5,9 @@ use relman_config::ReleaseConfig;
 use relman_core::ports::{
     Changelog, ChangelogEdit, ChangelogGenError, ChangelogStore, ChangesetStore, Clock, Versions,
 };
-use relman_core::types::{
-    ChangeEntry, Changeset, ChangesetError, ConsumedLedger, CrateName, StoredChangeset,
-};
+use relman_core::types::{ChangeEntry, ConsumedLedger, CrateName};
 
+use super::entries;
 use crate::render;
 
 /// Generates Keep-a-Changelog entries for each bumping crate and the workspace.
@@ -54,49 +53,12 @@ impl ChangelogService {
         }
     }
 
-    /// Re-read and parse the whole changeset set, grouping each crate's direct
-    /// [`ChangeEntry`]s in the same deterministic traversal order the version
-    /// derivation uses (sorted slugs, then file order). That alignment is what
-    /// lets the renderer treat a crate's trailing bump reasons as transitive.
+    /// Groups each crate's unshipped changeset entries in sorted-slug order.
     fn entries_by_crate(&self) -> Result<BTreeMap<CrateName, Vec<ChangeEntry>>, ChangelogGenError> {
-        let mut slugs = self.changesets.list()?;
-        slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-
-        let mut by_crate: BTreeMap<CrateName, Vec<ChangeEntry>> = BTreeMap::new();
-        for slug in &slugs {
-            let raw = self.changesets.read(slug)?;
-            let stored = match StoredChangeset::parse_toml(&raw) {
-                Ok(stored) => stored,
-                // Skip an unfilled template exactly as an `Empty` changeset is
-                // skipped below — it carries no entries. The warning is surfaced
-                // by the version derivation, which reads the same set.
-                Err(ChangesetError::Unfilled) => continue,
-                Err(error) => {
-                    return Err(ChangelogGenError::ChangesetParse {
-                        slug: slug.as_str().to_owned(),
-                        error: error.to_string(),
-                    });
-                }
-            };
-            // A shipped changeset was folded into a past release's changelog;
-            // skip it so it never re-appears in a later cycle's entries — whether
-            // marked in-file or only known shipped through the ledger.
-            if stored.consumed_in().is_some()
-                || stored.id().is_some_and(|id| self.ledger.contains(id))
-            {
-                continue;
-            }
-            let Changeset::WithChanges(entries) = stored.into_body() else {
-                continue;
-            };
-            for entry in entries {
-                by_crate
-                    .entry(entry.crate_name().clone())
-                    .or_default()
-                    .push(entry);
-            }
-        }
-        Ok(by_crate)
+        Ok(entries::entries_by_crate(
+            self.changesets.as_ref(),
+            &self.ledger,
+        )?)
     }
 }
 

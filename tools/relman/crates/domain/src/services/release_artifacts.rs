@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use relman_core::ports::{ArtifactError, ChangesetStore, ReleaseArtifacts, Versions, Workspace};
 use relman_core::types::{
-    BumpTable, ChangeEntry, Changeset, ChangesetError, ConsumedLedger, CrateName, CycleId,
-    CycleStatus, PublishPlan, StoredChangeset, Tag, TagPlan,
+    BumpTable, ChangeEntry, ConsumedLedger, CrateName, CycleId, CycleStatus, PublishPlan, Tag,
+    TagPlan,
 };
 
+use super::entries;
 use crate::render;
 
 /// Computes the release artifacts CI applies — the git tag plan, the release-PR
@@ -48,49 +49,12 @@ impl ReleaseArtifactsService {
         }
     }
 
-    /// Re-read and parse the whole changeset set, grouping each crate's direct
-    /// [`ChangeEntry`]s in the same deterministic traversal order the version
-    /// derivation uses (sorted slugs, then file order). That alignment is what
-    /// lets the renderer treat a crate's trailing bump reasons as transitive.
+    /// Groups each crate's unshipped changeset entries in sorted-slug order.
     fn entries_by_crate(&self) -> Result<BTreeMap<CrateName, Vec<ChangeEntry>>, ArtifactError> {
-        let mut slugs = self.changesets.list()?;
-        slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-
-        let mut by_crate: BTreeMap<CrateName, Vec<ChangeEntry>> = BTreeMap::new();
-        for slug in &slugs {
-            let raw = self.changesets.read(slug)?;
-            let stored = match StoredChangeset::parse_toml(&raw) {
-                Ok(stored) => stored,
-                // Skip an unfilled template exactly as an `Empty` changeset is
-                // skipped below — it carries no entries. The warning is surfaced
-                // by the version derivation, which reads the same set.
-                Err(ChangesetError::Unfilled) => continue,
-                Err(error) => {
-                    return Err(ArtifactError::ChangesetParse {
-                        slug: slug.as_str().to_owned(),
-                        error: error.to_string(),
-                    });
-                }
-            };
-            // A shipped changeset belongs to a past release's artifacts; skip it
-            // so this cycle's PR body / changelog digest never re-lists it —
-            // whether marked in-file or only known shipped through the ledger.
-            if stored.consumed_in().is_some()
-                || stored.id().is_some_and(|id| self.ledger.contains(id))
-            {
-                continue;
-            }
-            let Changeset::WithChanges(entries) = stored.into_body() else {
-                continue;
-            };
-            for entry in entries {
-                by_crate
-                    .entry(entry.crate_name().clone())
-                    .or_default()
-                    .push(entry);
-            }
-        }
-        Ok(by_crate)
+        Ok(entries::entries_by_crate(
+            self.changesets.as_ref(),
+            &self.ledger,
+        )?)
     }
 
     /// Order the bumping crates so each follows the governed dependencies it

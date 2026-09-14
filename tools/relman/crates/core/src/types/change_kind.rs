@@ -32,17 +32,17 @@ pub struct InvalidChangeKind {
 }
 
 impl ChangeKind {
+    /// Every kind, most severe first.
+    const ALL: [Self; 4] = [Self::Breaking, Self::Feature, Self::Fix, Self::Internal];
+
     /// Parse the lowercase wire name of a kind.
     pub fn parse(raw: &str) -> Result<Self, InvalidChangeKind> {
-        match raw {
-            "breaking" => Ok(Self::Breaking),
-            "feature" => Ok(Self::Feature),
-            "fix" => Ok(Self::Fix),
-            "internal" => Ok(Self::Internal),
-            other => Err(InvalidChangeKind {
-                found: other.to_owned(),
-            }),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == raw)
+            .ok_or_else(|| InvalidChangeKind {
+                found: raw.to_owned(),
+            })
     }
 
     /// The lowercase wire name of this kind.
