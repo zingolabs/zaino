@@ -1,19 +1,4 @@
-//! A **component**: a supervised in-process subsystem.
-//!
-//! Status is one *facet* of a component, not the whole of it. A component
-//! standardises what every subsystem otherwise hand-rolls: its **health** (a
-//! reported condition), its **lifecycle** (a management phase), its
-//! **management** ([`Managed`]: spawn / restart / stop, for owned components),
-//! and the **tasks** it runs ([`Task`]). Error bubbling and named logging fold
-//! in here as the abstraction grows.
-//!
-//! Two altitudes: the low [`Task`] primitive (one supervised async task) and the
-//! component itself (a subsystem owning one or more tasks). The read side
-//! ([`StatusSource`]) and the control side ([`Managed`]) are separate
-//! capabilities, so a consumer bounds on exactly what it uses: the runtime
-//! *observes* every component but only *drives* the ones it owns — an observed
-//! component (e.g. an external validator) reports a [`ComponentStatus`] without
-//! implementing [`Managed`].
+#![doc = include_str!("../usage.md")]
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
 

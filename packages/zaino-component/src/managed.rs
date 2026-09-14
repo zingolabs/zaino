@@ -2,14 +2,11 @@
 
 use core::future::Future;
 
-/// Control over a component the runtime *owns*: it may spawn, restart, and stop
+/// Control over a component the runtime owns: it may spawn, restart, and stop
 /// it.
 ///
-/// Implementing this trait is the line between an **owned** component — the
-/// runtime drives its lifecycle — and an **observed** one: an external
-/// dependency (e.g. a validator) whose [`StatusSource`](crate::StatusSource) the
-/// runtime reads but whose lifecycle it cannot drive, so it does not implement
-/// this.
+/// Implementing this trait is what makes a component owned rather than
+/// observed; see the crate documentation for that distinction.
 pub trait Managed {
     /// What can go wrong driving this component. Typed per implementor, so a
     /// management failure carries the component's own cause rather than a

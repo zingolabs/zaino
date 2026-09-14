@@ -1,9 +1,8 @@
-//! A supervised async task — the low primitive a component runs its work on.
+//! A supervised async task.
 //!
 //! Bundles the plumbing a raw `tokio::spawn` leaves to the caller: a name (for
 //! status and logs), cooperative cancellation, a hard abort, and panic capture
-//! on join. A component owns one or more of these; a task failing is the event
-//! that flips the component's health.
+//! on join.
 
 use core::fmt;
 use core::future::Future;
@@ -12,9 +11,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// A task's name, carried on the task and its errors for status and logs.
-///
-/// A newtype rather than a bare `&'static str` so the name is one named concept
-/// wherever it travels, not an anonymous string repeated at every site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskName(pub &'static str);
 
