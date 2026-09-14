@@ -34,7 +34,7 @@ jobs:
           tool: cargo-make,cargo-deny,cargo-nextest
 
       # Same task as the pre-push hook (shellcheck preinstalled on ubuntu-latest)
-      - run: makers lint
+      - run: cargo make lint
 
   test:
     name: Test
