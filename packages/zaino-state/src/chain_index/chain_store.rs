@@ -29,7 +29,7 @@ use crate::chain_index::{
 /// validator, and the store is built on that rather than on the wrapper.
 ///
 /// Kept off `BlockchainSource` because that port is frozen scaffolding
-/// (docs/adr/0008) and shrinks as each subsystem moves onto the real ports.
+/// (docs/adr/zaino/0008) and shrinks as each subsystem moves onto the real ports.
 pub trait WithChainStoreSource: BlockchainSource {
     /// The validator the store will build itself from.
     type Store: ChainStoreSource;
