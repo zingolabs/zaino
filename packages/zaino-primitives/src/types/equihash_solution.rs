@@ -10,7 +10,7 @@
 ///
 /// The two variants are the two Equihash parameterisations Zcash uses; the
 /// length is what distinguishes them on the wire.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // The `Standard` variant is 1344 bytes and dominates the enum's size. Boxing it
 // would move a per-block allocation onto the heap for no gain: a header is
 // built once per block and read as bytes.

@@ -13,7 +13,7 @@ use super::{
 /// rather than as the subset an index happens to read: a consumer that
 /// re-serializes a block, or persists one, needs the fields the block hash
 /// commits to. `version` and `solution` are here for that reason alone.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlockHeader {
     /// Block hash (double-SHA256 of the serialized header).
     pub hash: BlockHash,
@@ -42,7 +42,7 @@ pub struct BlockHeader {
 /// This is the domain-level block — not a wire format. Adapters
 /// parse from their wire format (hex RPC, ReadState, etc.) into
 /// this type. Indexes extract from it via `ProvideContext`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Block {
     /// Block header.
     pub header: BlockHeader,
@@ -58,7 +58,7 @@ pub struct Block {
 /// block has contributed no notes, so its cumulative size is genuinely `0`.
 /// This differs from [`TreeRoots`](super::TreeRoots), where an absent root and
 /// a zero root are distinct facts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChainMetadata {
     /// Cumulative Sapling note commitment tree size after this block.
     pub sapling_tree_size: u32,

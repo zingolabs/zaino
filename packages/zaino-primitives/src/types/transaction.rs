@@ -6,7 +6,7 @@ use super::{
 };
 
 /// A transaction within a block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Transaction {
     /// Transaction id.
     ///
@@ -33,7 +33,7 @@ pub struct Transaction {
 }
 
 /// Transparent pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct TransparentData {
     /// Transparent inputs (spent outpoints).
     pub inputs: Vec<TransparentInput>,
@@ -42,7 +42,7 @@ pub struct TransparentData {
 }
 
 /// A transparent input: reference to a previous output being spent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TransparentInput {
     /// Transaction containing the output being spent.
     pub prev_txid: TransactionId,
@@ -51,7 +51,7 @@ pub struct TransparentInput {
 }
 
 /// A transparent output.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TransparentOutput {
     /// Value in zatoshis.
     pub value: Zatoshis,
@@ -60,7 +60,7 @@ pub struct TransparentOutput {
 }
 
 /// Sapling pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct SaplingData {
     /// Sapling spends (nullifiers).
     pub spends: Vec<SaplingSpend>,
@@ -71,14 +71,14 @@ pub struct SaplingData {
 }
 
 /// A Sapling spend: the nullifier that marks a note as consumed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SaplingSpend {
     /// Nullifier.
     pub nullifier: Nullifier,
 }
 
 /// A Sapling output: commitment + detection material.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SaplingOutput {
     /// Note commitment (cmu).
     pub cmu: NoteCommitment,
@@ -89,7 +89,7 @@ pub struct SaplingOutput {
 }
 
 /// Orchard pool data within a transaction.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct OrchardData {
     /// Orchard actions (each is both a spend and an output).
     pub actions: Vec<OrchardAction>,
@@ -98,7 +98,7 @@ pub struct OrchardData {
 }
 
 /// An Orchard action: nullifier + commitment + detection material.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OrchardAction {
     /// Nullifier.
     pub nullifier: Nullifier,
