@@ -3,7 +3,7 @@
 use core::fmt;
 use core::num::NonZeroU128;
 
-use super::{SingleBlockWork, WorkOverflow, WorkUnderflow};
+use super::SingleBlockWork;
 
 /// The total work of a chain up to and including a block. Validators report
 /// this value as `chainwork`.
@@ -32,6 +32,22 @@ pub struct ChainWorkOverWidth {
     /// The non-zero high-order 128 bits of the rejected value.
     pub high: u128,
 }
+
+/// Error when [`accumulate`](AbsoluteChainWork::accumulate) overflows the
+/// recorded width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("accumulating a block's work overflowed the recorded width")]
+pub struct WorkOverflow;
+
+/// Error when [`rollback`](AbsoluteChainWork::rollback) reaches or crosses
+/// zero.
+///
+/// The result must stay strictly positive, because the chain still contains
+/// genesis. Crossing that floor means the work being unwound was never part of
+/// this total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("unwinding a block's work would take the total to or below zero")]
+pub struct WorkUnderflow;
 
 impl AbsoluteChainWork {
     /// Create a total chain work value.

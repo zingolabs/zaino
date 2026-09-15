@@ -59,9 +59,7 @@
 //! pass it to [`SingleBlockWork::new`].
 
 mod absolute_chain_work;
-mod error;
 mod single_block_work;
 
-pub use absolute_chain_work::{AbsoluteChainWork, ChainWorkOverWidth};
-pub use error::{WorkOverflow, WorkUnderflow};
+pub use absolute_chain_work::{AbsoluteChainWork, ChainWorkOverWidth, WorkOverflow, WorkUnderflow};
 pub use single_block_work::SingleBlockWork;
