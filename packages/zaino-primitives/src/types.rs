@@ -83,7 +83,8 @@ pub use treestate::{PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
 pub use work::{
-    AbsoluteChainWork, ChainWorkOverWidth, SingleBlockWork, WorkOverflow, WorkUnderflow, ZeroWork,
+    AbsoluteChainWork, ChainWorkOverWidth, RelativeChainWork, SingleBlockWork, WorkOverflow,
+    WorkUnderflow, ZeroWork,
 };
 pub use zatoshis::{
     SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisFlowSum, ZatoshisOverflow,
