@@ -1,14 +1,17 @@
 //! `zaino-wallet` — the full-wallet library adapter.
 //!
 //! A stable-DTO facade over the [`WalletLibService`] inner port. A wallet that
-//! embeds Zaino (zallet) holds a [`Wallet`] and speaks its DTOs; the inner
+//! embeds Zaino (zallet) holds an [`Indexer`] and speaks its DTOs; the inner
 //! surface's domain types are converted here, at the adapter, so the inner
 //! primitives can evolve without breaking the embedded consumer.
 //!
-//! This is the driving-adapter half of the hexagon: a public library *is* a
-//! driving adapter with its own stable types. The handle is bound to
+//! The handle is named [`Indexer`] because that is what it is *from the wallet's
+//! point of view*: the thing it queries for chain data. It is bound to
 //! [`WalletLibService`] alone — not the whole inner surface — so it depends on
 //! exactly the capabilities the full-wallet use case needs, and nothing else.
+//!
+//! This is the driving-adapter half of the hexagon: a public library *is* a
+//! driving adapter with its own stable types.
 #![forbid(unsafe_code)]
 
 mod dto;
@@ -19,12 +22,12 @@ pub use error::WalletError;
 
 use zaino_service::{Snapshot, WalletLibService};
 
-/// Full-wallet library handle over a [`WalletLibService`] engine.
-pub struct Wallet<W: WalletLibService> {
+/// The indexer a full wallet library queries, over a [`WalletLibService`] engine.
+pub struct Indexer<W: WalletLibService> {
     engine: W,
 }
 
-impl<W: WalletLibService> Wallet<W> {
+impl<W: WalletLibService> Indexer<W> {
     pub fn new(engine: W) -> Self {
         Self { engine }
     }
@@ -32,28 +35,20 @@ impl<W: WalletLibService> Wallet<W> {
     /// The tip the current best chain is pinned to, as a wallet DTO. `None` when
     /// the chain has no tip yet.
     pub async fn tip(&self) -> Result<Option<WalletTip>, WalletError> {
-        let snapshot = self
-            .engine
-            .snapshot()
-            .await
-            .map_err(WalletError::Snapshot)?;
+        let snapshot = self.engine.snapshot().await?;
         Ok(snapshot.pinned_tip().map(WalletTip::from_domain))
     }
 
     /// Relay a signed transaction; returns its id.
     pub async fn broadcast(&self, raw_tx: Vec<u8>) -> Result<WalletTxId, WalletError> {
-        let id = self
-            .engine
-            .broadcast(raw_tx)
-            .await
-            .map_err(WalletError::Broadcast)?;
+        let id = self.engine.broadcast(raw_tx).await?;
         Ok(WalletTxId::from_domain(id))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Wallet, WalletTip, WalletTxId};
+    use super::{Indexer, WalletTip, WalletTxId};
     use zaino_core::{BlockHash, BlockId, Height};
     use zaino_service::testing::{MockChain, MockIndexerService};
 
@@ -65,12 +60,12 @@ mod tests {
             height: Height::try_from(42).expect("valid height"),
             hash: BlockHash::from([7u8; 32]),
         };
-        let wallet = Wallet::new(MockIndexerService::new(MockChain {
+        let indexer = Indexer::new(MockIndexerService::new(MockChain {
             tip: Some(tip),
             ..Default::default()
         }));
 
-        let dto = wallet.tip().await.expect("tip").expect("some tip");
+        let dto = indexer.tip().await.expect("tip").expect("some tip");
         assert_eq!(
             dto,
             WalletTip {
@@ -83,8 +78,8 @@ mod tests {
     /// Broadcast routes through the control capability and maps the id out.
     #[tokio::test]
     async fn broadcast_returns_txid_dto() {
-        let wallet = Wallet::new(MockIndexerService::new(MockChain::default()));
-        let id = wallet.broadcast(vec![1, 2, 3]).await.expect("broadcast");
+        let indexer = Indexer::new(MockIndexerService::new(MockChain::default()));
+        let id = indexer.broadcast(vec![1, 2, 3]).await.expect("broadcast");
         assert_eq!(id, WalletTxId([0u8; 32]));
     }
 }
