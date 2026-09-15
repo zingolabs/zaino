@@ -19,6 +19,7 @@
 mod bundle;
 mod controls;
 pub mod error;
+mod profiles;
 mod reads;
 
 #[cfg(feature = "testing")]
@@ -27,6 +28,10 @@ pub mod testing;
 pub use bundle::{IndexerService, Snapshot};
 pub use controls::{
     Broadcast, MempoolSubscribe, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
+};
+pub use profiles::{
+    FullWalletReads, LightServeService, LightWalletReads, NodeRpcReads, NodeRpcService,
+    WalletLibService, WalletReadCore,
 };
 pub use reads::{
     AddressRead, BlockRead, CompactBlockRead, ForkReconcile, SpendRead, TransactionRead,

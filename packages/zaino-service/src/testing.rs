@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_core::{
-    AddressBalance, AddressDelta, Block, BlockHeader, BlockHash, BlockId, BlockRef, Capability,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
     CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint, ReportedUpgrade,
     ServiceabilityManifest, ServiceableRange, ShieldedPool, SpendStatus, SubtreeRoot, Transaction,
     TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
@@ -31,8 +31,8 @@ use crate::error::{
 };
 use crate::{
     AddressRead, BlockRead, Broadcast, CompactBlockRead, ForkReconcile, IndexerService,
-    MempoolSubscribe, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
-    TransactionRead, TreestateRead,
+    MempoolSubscribe, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot,
+    TipSubscribe, TransactionRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -57,7 +57,10 @@ impl MockIndexerService {
     }
 
     fn current(&self) -> Arc<MockChain> {
-        self.chain.lock().expect("mock chain mutex poisoned").clone()
+        self.chain
+            .lock()
+            .expect("mock chain mutex poisoned")
+            .clone()
     }
 
     /// Swap in new state; live snapshots keep the old `Arc` (ADR-0003 demo).
@@ -141,10 +144,7 @@ impl BlockRead for MockSnapshot {
 }
 
 impl CompactBlockRead for MockSnapshot {
-    async fn compact_block(
-        &self,
-        _at: BlockRef,
-    ) -> Result<Option<CompactBlock>, BlockReadError> {
+    async fn compact_block(&self, _at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
         Ok(None)
     }
     fn stream_compact(
@@ -156,10 +156,7 @@ impl CompactBlockRead for MockSnapshot {
 }
 
 impl TransactionRead for MockSnapshot {
-    async fn transaction(
-        &self,
-        _id: TransactionId,
-    ) -> Result<Option<Transaction>, TxReadError> {
+    async fn transaction(&self, _id: TransactionId) -> Result<Option<Transaction>, TxReadError> {
         Ok(None)
     }
     async fn transaction_status(&self, _id: TransactionId) -> Result<TxStatus, TxReadError> {
@@ -226,6 +223,10 @@ impl ForkReconcile for MockSnapshot {
 }
 
 impl Snapshot for MockSnapshot {
+    fn pinned_tip(&self) -> Option<BlockId> {
+        self.chain.tip
+    }
+
     fn serviceable_range(&self) -> ServiceableRange {
         self.chain.serviceable.unwrap_or_else(|| {
             let zero = Height::try_from(0).expect("0 is a valid height");
@@ -240,8 +241,17 @@ impl Snapshot for MockSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{MockChain, MockIndexerService};
-    use crate::{BlockRead, TakeSnapshot};
+    use crate::{BlockRead, LightServeService, NodeRpcService, TakeSnapshot, WalletLibService};
     use zaino_core::{BlockHash, BlockId, Height};
+
+    /// The one concrete engine satisfies every public profile with zero
+    /// profile-specific impl code — proof the read-set + control blanket impls
+    /// compose. Compile-time only; the body is a no-op.
+    #[test]
+    fn mock_satisfies_all_profiles() {
+        fn assert_profiles<T: WalletLibService + LightServeService + NodeRpcService>() {}
+        assert_profiles::<MockIndexerService>();
+    }
 
     fn block_id(height: u32, tag: u8) -> BlockId {
         BlockId {
