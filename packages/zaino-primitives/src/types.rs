@@ -2,6 +2,7 @@
 
 mod address_balance;
 mod address_delta;
+mod address_network;
 mod aliases;
 mod block;
 mod block_commitments;
@@ -41,6 +42,7 @@ mod zatoshis;
 
 pub use address_balance::AddressBalance;
 pub use address_delta::AddressDelta;
+pub use address_network::AddressNetwork;
 pub use aliases::{
     BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, OutputIndex,
     SubtreeIndex, TreeSize, TxIndex,
@@ -77,7 +79,7 @@ pub use transaction::{
 };
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;
-pub use transparent_address::TransparentAddress;
+pub use transparent_address::{TransparentAddress, TransparentAddressError};
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
 pub use treestate::{PoolTreestate, TreeBytes, Treestate};
