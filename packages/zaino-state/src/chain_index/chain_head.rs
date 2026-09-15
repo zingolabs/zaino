@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use crate::chain_index::{
-    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::ChainWork,
+    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::AbsoluteChainWork,
     validator_source::ValidatorSource,
 };
 use crate::IndexedBlock;
@@ -124,9 +124,9 @@ pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadCo
 /// Non-zero by construction: ChainHead starts each accumulation at the anchor
 /// block's own work rather than at zero, precisely so this conversion cannot
 /// fail.
-fn chainwork(work: ChainHeadWork) -> ChainWork {
-    ChainWork::new(
-        std::num::NonZeroU128::new(work.as_u128())
+fn chainwork(work: ChainHeadWork) -> AbsoluteChainWork {
+    AbsoluteChainWork::new(
+        core::num::NonZeroU128::new(work.as_u128())
             .expect("chain head work is accumulated from a non-zero anchor"),
     )
 }

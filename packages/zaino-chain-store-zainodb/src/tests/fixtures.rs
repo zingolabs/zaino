@@ -15,7 +15,9 @@ pub(crate) use super::fake_validator::fake_validator_with_tip;
 /// shaped for its own ports, not for this crate's four.
 #[cfg(test)]
 pub(crate) use super::fake_validator::{fake_validator_from_vectors, FakeValidator};
-use crate::types::{BlockMetadata, BlockWithMetadata, ChainWork, CompactTxData, IndexedBlock};
+use crate::types::{
+    AbsoluteChainWork, BlockMetadata, BlockWithMetadata, CompactTxData, IndexedBlock,
+};
 
 /// The network the vector chain was mined on.
 ///
@@ -56,7 +58,7 @@ pub fn vector_network() -> zebra_chain::parameters::Network {
 /// path, which now assembles blocks from `zaino-primitives` instead.
 pub fn indexed_block_chain(blocks: &[VectorBlock]) -> impl Iterator<Item = IndexedBlock> + '_ {
     let network = vector_network();
-    let mut parent_chainwork: Option<ChainWork> = None;
+    let mut parent_chainwork: Option<AbsoluteChainWork> = None;
 
     blocks.iter().map(move |vector| {
         let metadata = BlockMetadata {
