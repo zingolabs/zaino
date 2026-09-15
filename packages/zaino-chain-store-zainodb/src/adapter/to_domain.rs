@@ -171,7 +171,12 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
             .map(stored_compact_tx)
             .collect::<Result<Vec<_>, _>>()?,
         tree_roots: tree_roots(&block.commitment_tree_data),
-        chainwork: context.chainwork(),
+        chainwork: context.chainwork().ok_or_else(|| {
+            ChainStoreError::backend(format!(
+                "block {} has no chain work and so is not a stored block",
+                context.hash()
+            ))
+        })?,
     })
 }
 

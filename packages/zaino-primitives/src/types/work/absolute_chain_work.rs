@@ -3,18 +3,16 @@
 use core::fmt;
 use core::num::NonZeroU128;
 
-use super::SingleBlockWork;
+use super::{SingleBlockWork, WorkOverflow};
 
 /// The total work of a chain up to and including a block. Validators report
 /// this value as `chainwork`.
 ///
-/// `Ord`, because comparing total chain work is how the best chain is chosen.
-/// That comparison is the only operation two of these values share; the module
-/// documentation states the rest of the algebra.
+/// `Ord`. The `types::work` module documentation states the algebra and why
+/// the three quantities are distinct.
 ///
-/// Strictly positive. Every chain contains at least genesis, whose total work
-/// is its own block work. A validator that does not track the value, or a block
-/// with no parent, is `Option<AbsoluteChainWork>`. Absence is never a zero.
+/// Strictly positive. A validator that does not track the value, or a block
+/// with no parent, is `Option<AbsoluteChainWork>`; absence is never a zero.
 ///
 /// Recorded in 128 bits, against the 256 the wire carries. Real chains do not
 /// approach either bound; [`try_from_reported`](Self::try_from_reported)
@@ -32,12 +30,6 @@ pub struct ChainWorkOverWidth {
     /// The non-zero high-order 128 bits of the rejected value.
     pub high: u128,
 }
-
-/// Error when [`accumulate`](AbsoluteChainWork::accumulate) overflows the
-/// recorded width.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("accumulating a block's work overflowed the recorded width")]
-pub struct WorkOverflow;
 
 /// Error when [`rollback`](AbsoluteChainWork::rollback) reaches or crosses
 /// zero.

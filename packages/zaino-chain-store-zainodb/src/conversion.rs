@@ -175,11 +175,12 @@ pub fn chainwork_from_parent(
 /// derivable from one block.
 ///
 /// `chainwork` is passed in rather than derived, because a block alone does not
-/// determine it. See [`chainwork_from_parent`].
+/// determine it. See [`chainwork_from_parent`]. `None` where the caller cannot
+/// know it — see [`BlockContext::chainwork`].
 pub fn indexed_block(
     block: &Block,
     tree_roots: &TreeRoots,
-    chainwork: AbsoluteChainWork,
+    chainwork: Option<AbsoluteChainWork>,
 ) -> Result<IndexedBlock, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
