@@ -15,9 +15,12 @@
 //! source adapters also follow. So the runtime's single concrete engine
 //! satisfies every profile, and each adapter depends only on the one it needs.
 
-use crate::controls::{Broadcast, MempoolSubscribe, ReportedUpgrades, TakeSnapshot, TipSubscribe};
+use crate::controls::{
+    Broadcast, MempoolSubscribe, Passthrough, ReportedUpgrades, TakeSnapshot, TipSubscribe,
+};
 use crate::reads::{
-    AddressRead, BlockRead, CompactBlockRead, SpendRead, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, SpendRead,
+    TransactionRead, TreestateRead,
 };
 
 // --- read-sets: the demand, named --------------------------------------------
@@ -39,19 +42,19 @@ pub trait FullWalletReads: WalletReadCore {}
 impl<T> FullWalletReads for T where T: WalletReadCore {}
 
 /// The lightwalletd-compatible read demand. A sibling of [`FullWalletReads`] over
-/// [`WalletReadCore`]. The compact-block nullifier variant is its delta and
-/// lands here once modelled.
-pub trait LightWalletReads: WalletReadCore {}
-impl<T> LightWalletReads for T where T: WalletReadCore {}
+/// [`WalletReadCore`]; its delta is the compact-block nullifier serving variant.
+pub trait LightWalletReads: WalletReadCore + CompactNullifierRead {}
+impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 
 /// The node-RPC / explorer read demand: raw blocks and spend lookups the
-/// wallet-shaped consumers never need. A distinct shape, not a wallet delta.
+/// wallet-shaped consumers never need, plus the chain-info aggregate. A distinct
+/// shape, not a wallet delta.
 pub trait NodeRpcReads:
-    BlockRead + TransactionRead + SpendRead + AddressRead + TreestateRead
+    BlockRead + TransactionRead + SpendRead + AddressRead + TreestateRead + ChainInfoRead
 {
 }
 impl<T> NodeRpcReads for T where
-    T: BlockRead + TransactionRead + SpendRead + AddressRead + TreestateRead
+    T: BlockRead + TransactionRead + SpendRead + AddressRead + TreestateRead + ChainInfoRead
 {
 }
 
@@ -87,13 +90,17 @@ impl<T> LightServeService for T where
 {
 }
 
-/// Node-RPC / explorer serving. Chain/node-info aggregate reads and the
-/// validator passthrough seam (mining/peers/txoutset) land here once modelled.
+/// Node-RPC / explorer serving. Composes the node read-set (incl. the chain-info
+/// aggregate) with the validator passthrough seam (mining/peers/txoutset).
 pub trait NodeRpcService:
-    TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe
+    TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe + Passthrough
 {
 }
 impl<T> NodeRpcService for T where
-    T: TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe
+    T: TakeSnapshot<Snapshot: NodeRpcReads>
+        + Broadcast
+        + MempoolSubscribe
+        + TipSubscribe
+        + Passthrough
 {
 }

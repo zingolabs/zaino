@@ -14,15 +14,19 @@ pub use zaino_primitives::types::{
     TransactionId, TransactionLocation, TransparentAddress, Treestate, Utxo, Zatoshis,
 };
 
+mod chain_info;
 mod events;
 mod locator;
+mod passthrough;
 mod refs;
 mod serviceability;
 mod status;
 mod upgrades;
 
+pub use chain_info::ChainInfo;
 pub use events::{MempoolTx, TipEvent};
 pub use locator::{ForkPoint, Locator};
+pub use passthrough::{PassthroughAnswer, PassthroughQuery};
 pub use refs::{BlockId, BlockRef, HeightRange, Outpoint};
 pub use serviceability::{Capability, ServiceabilityManifest, ServiceableRange};
 pub use status::{SpendStatus, TxStatus};

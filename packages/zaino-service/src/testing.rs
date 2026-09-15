@@ -20,9 +20,10 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
-    CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint, ReportedUpgrade,
-    ServiceabilityManifest, ServiceableRange, ShieldedPool, SpendStatus, SubtreeRoot, Transaction,
-    TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
+    ChainInfo, CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint,
+    PassthroughAnswer, PassthroughQuery, ReportedUpgrade, ServiceabilityManifest, ServiceableRange,
+    ShieldedPool, SpendStatus, SubtreeRoot, Transaction, TransactionId, TransparentAddress,
+    Treestate, TxStatus, Utxo,
 };
 
 use crate::error::{
@@ -30,9 +31,9 @@ use crate::error::{
     TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, BlockRead, Broadcast, CompactBlockRead, ForkReconcile, IndexerService,
-    MempoolSubscribe, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot,
-    TipSubscribe, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, Broadcast, ChainInfoRead, CompactBlockRead, CompactNullifierRead,
+    ForkReconcile, IndexerService, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable,
+    Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -121,6 +122,12 @@ impl Serviceable for MockIndexerService {
 impl ReportedUpgrades for MockIndexerService {
     async fn reported_upgrades(&self) -> Result<Vec<ReportedUpgrade>, ReadError> {
         Ok(Vec::new())
+    }
+}
+
+impl Passthrough for MockIndexerService {
+    async fn passthrough(&self, query: PassthroughQuery) -> Result<PassthroughAnswer, Transient> {
+        Ok(PassthroughAnswer(format!("mock passthrough: {query:?}")))
     }
 }
 
@@ -224,6 +231,29 @@ impl ForkReconcile for MockSnapshot {
     }
     fn blocks_to_tip(&self, _from: Height) -> BoxStream<'_, Result<Block, ReadError>> {
         stream::empty().boxed()
+    }
+}
+
+impl CompactNullifierRead for MockSnapshot {
+    async fn compact_block_nullifiers(
+        &self,
+        _at: BlockRef,
+    ) -> Result<Option<CompactBlock>, BlockReadError> {
+        Ok(None)
+    }
+}
+
+impl ChainInfoRead for MockSnapshot {
+    async fn chain_info(&self) -> Result<ChainInfo, ReadError> {
+        let estimated_height = self
+            .chain
+            .tip
+            .map(|id| id.height)
+            .unwrap_or(Height::try_from(0).expect("0 is a valid height"));
+        Ok(ChainInfo {
+            tip: self.chain.tip,
+            estimated_height,
+        })
     }
 }
 

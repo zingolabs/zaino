@@ -15,7 +15,9 @@ pub enum TxStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpendStatus {
     Unspent,
-    Spent { by: TransactionId },
+    Spent {
+        by: TransactionId,
+    },
     /// Known spent, spender unresolved — caller retries (ZcashFoundation/zebra#10806).
     SpentSpenderUnknown,
     /// No in-view transaction created this outpoint.

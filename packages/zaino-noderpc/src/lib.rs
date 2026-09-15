@@ -16,8 +16,8 @@ mod wire;
 
 pub use error::RpcError;
 
-use zaino_core::Outpoint;
-use zaino_service::{NodeRpcService, Snapshot, SpendRead};
+use zaino_core::{Outpoint, PassthroughQuery};
+use zaino_service::{ChainInfoRead, NodeRpcService, Snapshot, SpendRead};
 
 use crate::wire::{bytes_from_hex, spend_status_to_wire, to_hex, txid_from_hex};
 
@@ -63,6 +63,27 @@ impl<S: NodeRpcService> NodeRpc<S> {
         let raw = bytes_from_hex(tx_hex)?;
         let txid = self.engine.broadcast(raw).await?;
         Ok(to_hex(txid.into()))
+    }
+
+    /// `getblockchaininfo` (aggregate): reads the domain `ChainInfo` — the
+    /// node-rpc read delta the wallet-shaped ports lack.
+    pub async fn get_blockchain_info(&self) -> Result<String, RpcError> {
+        let snapshot = self.engine.snapshot().await?;
+        let info = snapshot.chain_info().await?;
+        Ok(format!(
+            "estimated_height={}",
+            u32::from(info.estimated_height)
+        ))
+    }
+
+    /// `getmininginfo`: not indexed — relayed to the validator through the
+    /// passthrough seam and returned opaque.
+    pub async fn get_mining_info(&self) -> Result<String, RpcError> {
+        let answer = self
+            .engine
+            .passthrough(PassthroughQuery::MiningInfo)
+            .await?;
+        Ok(answer.0)
     }
 }
 
@@ -118,5 +139,25 @@ mod tests {
             node.send_raw_transaction("odd").await,
             Err(RpcError::InvalidParams(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn chain_info_reads_and_mining_info_passes_through() {
+        let tip = BlockId {
+            height: Height::try_from(77).expect("valid height"),
+            hash: BlockHash::from([0u8; 32]),
+        };
+        let node = NodeRpc::new(engine_with_tip(Some(tip)));
+        // Chain-info aggregate: a node-rpc-specific indexed read.
+        assert_eq!(
+            node.get_blockchain_info().await.expect("chain info"),
+            "estimated_height=77"
+        );
+        // Mining info: not indexed — relayed opaque through the passthrough seam.
+        assert!(node
+            .get_mining_info()
+            .await
+            .expect("mining info")
+            .contains("MiningInfo"));
     }
 }

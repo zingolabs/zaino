@@ -5,7 +5,7 @@
 //! RPC error, matching node-RPC semantics. Same domain answer, two wire shapes —
 //! decided by the adapter, not the port.
 
-use zaino_service::error::{BroadcastRejection, SpendReadError, Transient};
+use zaino_service::error::{BroadcastRejection, ReadError, SpendReadError, Transient};
 
 /// A node-RPC handler failure.
 #[derive(Debug, thiserror::Error)]
@@ -25,4 +25,7 @@ pub enum RpcError {
     /// A spend-status read failed.
     #[error(transparent)]
     SpendRead(#[from] SpendReadError),
+    /// A generic read (e.g. the chain-info aggregate) failed.
+    #[error(transparent)]
+    Read(#[from] ReadError),
 }
