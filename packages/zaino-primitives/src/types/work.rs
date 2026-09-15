@@ -27,11 +27,31 @@
 //! its crate-local `ChainHeadWork`. It is deliberately not
 //! [`AbsoluteChainWork`]. The two are measured from different origins, so a
 //! value of one served or compared as the other is wrong by the difference
-//! between the anchor and genesis. Promoting it to a primitive, and with it the
-//! relations that convert between the origins, is a planned follow-up.
+//! between the anchor and genesis. Promoting it to a primitive is a planned
+//! follow-up.
 //!
-//! The relations that fold one quantity into the other live in the `arithmetic`
-//! module, which also states the whole algebra. See ADR-0013 for the doctrine.
+//! # The algebra
+//!
+//! Write `W` for [`SingleBlockWork`] and `C` for [`AbsoluteChainWork`]. Each
+//! relation is a method on the type it returns:
+//!
+//! ```text
+//! W ∈ (0, 2^128)
+//! C ∈ (0, 2^128)
+//!
+//! genesis    : W → C      a chain of one block
+//! accumulate : C × W → C  extend the chain by one block
+//! rollback   : C × W → C  unwind one block, on reorg
+//! ```
+//!
+//! Those three, with `C`'s ordering, are the whole algebra. `C × C` is not
+//! defined: no chain is the concatenation of two chains, so the sum of two
+//! total chain works is not a quantity in this domain and no operation returns
+//! one.
+//!
+//! Every fold is checked. Neither bound is reachable on a real chain; they stay
+//! checked so a corrupt input fails loud instead of wrapping into a small value
+//! that would then sort as a light chain. See ADR-0013 for the doctrine.
 //!
 //! Deriving [`SingleBlockWork`] from a difficulty target is not done here. The
 //! nBits → target → work conversion is consensus logic, and belongs to a crate
@@ -39,9 +59,9 @@
 //! pass it to [`SingleBlockWork::try_new`].
 
 mod absolute_chain_work;
-mod arithmetic;
+mod error;
 mod single_block_work;
 
 pub use absolute_chain_work::{AbsoluteChainWork, ChainWorkOverWidth};
-pub use arithmetic::{WorkOverflow, WorkUnderflow};
+pub use error::{WorkOverflow, WorkUnderflow};
 pub use single_block_work::{SingleBlockWork, ZeroWork};

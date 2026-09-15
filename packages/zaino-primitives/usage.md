@@ -136,7 +136,7 @@ Two quantities share the proof-of-work unit and are not interchangeable:
 | `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
 | `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
 
-Fold one into the other with the relations in `types::work::arithmetic`:
+Each fold is a method on the type it returns, and each is checked:
 
 ```rust,ignore
 // A chain of one block has that block's work.

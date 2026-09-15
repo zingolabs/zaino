@@ -32,7 +32,7 @@ impl SingleBlockWork {
         NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
     }
 
-    /// The raw value, for the arithmetic relations to fold.
+    /// The raw value, for the relations that fold it into a chain total.
     pub(super) const fn into_raw(self) -> NonZeroU128 {
         self.0
     }

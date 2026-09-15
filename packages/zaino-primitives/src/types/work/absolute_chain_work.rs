@@ -3,12 +3,14 @@
 use core::fmt;
 use core::num::NonZeroU128;
 
+use super::{SingleBlockWork, WorkOverflow, WorkUnderflow};
+
 /// The total work of a chain up to and including a block. Validators report
 /// this value as `chainwork`.
 ///
 /// `Ord`, because comparing total chain work is how the best chain is chosen.
-/// That comparison is the only operation two of these values share; the
-/// `arithmetic` module states the rest of the algebra.
+/// That comparison is the only operation two of these values share; the module
+/// documentation states the rest of the algebra.
 ///
 /// Strictly positive. Every chain contains at least genesis, whose total work
 /// is its own block work. A validator that does not track the value, or a block
@@ -66,9 +68,30 @@ impl AbsoluteChainWork {
         bytes
     }
 
-    /// The raw value, for the arithmetic relations to fold.
-    pub(super) const fn into_raw(self) -> NonZeroU128 {
+    /// `genesis : W → C`. A chain of one block has that block's work.
+    ///
+    /// The only way a total comes into being other than by extending or
+    /// unwinding another.
+    pub fn genesis(work: SingleBlockWork) -> Self {
+        Self(work.into_raw())
+    }
+
+    /// `accumulate : C × W → C`. Extend the chain by one block.
+    pub fn accumulate(self, work: SingleBlockWork) -> Result<Self, WorkOverflow> {
         self.0
+            .checked_add(work.into_raw().get())
+            .map(Self)
+            .ok_or(WorkOverflow)
+    }
+
+    /// `rollback : C × W → C`. Unwind one block, on reorg.
+    pub fn rollback(self, work: SingleBlockWork) -> Result<Self, WorkUnderflow> {
+        self.0
+            .get()
+            .checked_sub(work.into_raw().get())
+            .and_then(NonZeroU128::new)
+            .map(Self)
+            .ok_or(WorkUnderflow)
     }
 }
 
@@ -142,5 +165,50 @@ mod tests {
     #[test]
     fn ord_selects_the_heavier_chain() {
         assert!(work(200) > work(100));
+    }
+
+    fn block(value: u128) -> SingleBlockWork {
+        SingleBlockWork::try_new(value).expect("test value must be nonzero")
+    }
+
+    /// The genesis seed is the block's own work, counted exactly once.
+    #[test]
+    fn genesis_seed_is_the_own_block_work() {
+        assert_eq!(AbsoluteChainWork::genesis(block(17)), work(17));
+    }
+
+    /// `rollback` inverts `accumulate`.
+    #[test]
+    fn rollback_inverts_accumulate() {
+        let base = AbsoluteChainWork::genesis(block(1000));
+        let delta = block(300);
+        let extended = base.accumulate(delta).expect("no overflow");
+        assert_eq!(extended.rollback(delta), Ok(base));
+    }
+
+    /// Accumulating gives a heavier chain — the fold feeds the ordering.
+    #[test]
+    fn accumulation_orders_chains_by_weight() {
+        let light = AbsoluteChainWork::genesis(block(100));
+        assert!(light.accumulate(block(1)).expect("no overflow") > light);
+    }
+
+    #[test]
+    fn accumulate_overflow_is_refused() {
+        let max = AbsoluteChainWork::new(NonZeroU128::MAX);
+        assert_eq!(max.accumulate(block(1)), Err(WorkOverflow));
+    }
+
+    /// Rolling back to exactly zero is refused: a chain always has genesis.
+    #[test]
+    fn rollback_to_zero_is_refused() {
+        let genesis = AbsoluteChainWork::genesis(block(42));
+        assert_eq!(genesis.rollback(block(42)), Err(WorkUnderflow));
+    }
+
+    #[test]
+    fn rollback_past_zero_is_refused() {
+        let small = AbsoluteChainWork::genesis(block(1));
+        assert_eq!(small.rollback(block(100)), Err(WorkUnderflow));
     }
 }
