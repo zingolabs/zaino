@@ -61,5 +61,5 @@
 mod absolute_chain_work;
 mod single_block_work;
 
-pub use absolute_chain_work::{AbsoluteChainWork, ChainWorkOverWidth, WorkOverflow, WorkUnderflow};
+pub use absolute_chain_work::{AbsoluteChainWork, WorkOverflow, WorkUnderflow};
 pub use single_block_work::SingleBlockWork;

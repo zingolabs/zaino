@@ -147,9 +147,8 @@ total = total.accumulate(next_block_work)?;
 total = total.rollback(next_block_work)?;
 ```
 
-`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
-sends, and answers `Ok(None)` when the validator does not track the value;
-`to_be_bytes` renders back for the wire. For an integer you already hold, use
+`to_be_bytes` renders the 32 big-endian bytes the wire carries; nothing reads
+chainwork in, since Zebra does not report it. For an integer you already hold, use
 `AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::new(NonZeroU128)`.
 
 The difficulty-to-work derivation is consensus logic and lives outside this
