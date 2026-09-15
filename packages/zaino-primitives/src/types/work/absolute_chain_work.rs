@@ -168,7 +168,7 @@ mod tests {
     }
 
     fn block(value: u128) -> SingleBlockWork {
-        SingleBlockWork::try_new(value).expect("test value must be nonzero")
+        SingleBlockWork::new(NonZeroU128::new(value).expect("test value must be nonzero"))
     }
 
     /// The genesis seed is the block's own work, counted exactly once.
