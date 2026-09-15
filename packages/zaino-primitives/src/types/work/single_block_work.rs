@@ -50,9 +50,11 @@ impl fmt::Display for SingleBlockWork {
 mod tests {
     use super::*;
 
+    const SAMPLE: NonZeroU128 = NonZeroU128::new(0x1f1f).expect("nonzero literal");
+
     #[test]
     fn nonzero_round_trips() {
-        let work = SingleBlockWork::new(NonZeroU128::new(0x1f1f).expect("nonzero"));
-        assert_eq!(NonZeroU128::from(work).get(), 0x1f1f);
+        let work = SingleBlockWork::new(SAMPLE);
+        assert_eq!(NonZeroU128::from(work), SAMPLE);
     }
 }
