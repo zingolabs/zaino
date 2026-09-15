@@ -58,7 +58,7 @@ pub mod ports;
 pub mod transparent;
 pub mod txout_set;
 
-pub use block::{PoolFilter, StoredBlock, StoredTx};
+pub use block::{FrozenBlock, PoolFilter, StoredBlock, StoredTx};
 pub use capability::{
     MigrationState, Provenance, SchemaVersion, StoreCapabilities, StoreCapability, StoreSchema,
     StoreWatermark,

@@ -51,21 +51,21 @@ pub(crate) use to_domain::domain_block_ref;
 use error_map::{chain_store_error, chain_store_source_error};
 use from_domain::{stored_hash, stored_height, stored_outpoint, tx_location};
 use to_domain::{
-    block_tx_position, domain_hash, domain_height, domain_txid, store_capabilities, store_schema,
-    stored_block, stored_tx_outs,
+    block_tx_position, domain_chainwork, domain_hash, domain_height, domain_txid,
+    store_capabilities, store_schema, stored_block, stored_tx_outs,
 };
 
 use core::future::Future;
 
 use zaino_chain_store::{
     ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
-    ChainStoreSource, ChainStoreSourceError, CompactBlockRead, PoolFilter, SpenderRef,
+    ChainStoreSource, ChainStoreSourceError, CompactBlockRead, FrozenBlock, PoolFilter, SpenderRef,
     SpentOutputIndex, StoreCapabilities, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead,
     StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockTxPosition, CompactBlock, Height as DomainHeight,
-    Outpoint as DomainOutpoint, TransactionId,
+    BlockHash as DomainBlockHash, BlockTxPosition, ChainWork as DomainChainWork, CompactBlock,
+    Height as DomainHeight, Outpoint as DomainOutpoint, TransactionId,
 };
 use zaino_status::StatusType;
 
@@ -571,6 +571,61 @@ impl<T: ChainStoreSource> ChainStoreIngest for FinalisedState<T> {
     }
 }
 
+impl<T: ChainStoreSource> FinalisedState<T> {
+    /// The absolute chainwork of the block this store holds at its tip.
+    ///
+    /// `None` on an empty store, which is genesis's parent: nothing below it,
+    /// so the first block written accumulates onto nothing.
+    ///
+    /// Read through this store's own reader. That costs a whole block for one
+    /// number, which no port offers alone — paid once per freeze batch, where
+    /// the batch then folds forward in memory.
+    async fn tip_chainwork(&self) -> Result<Option<DomainChainWork>, ChainStoreError> {
+        let Some(tip) = self.db_height().await.map_err(chain_store_error)? else {
+            return Ok(None);
+        };
+        let tip = domain_height(tip)?;
+
+        Ok(ChainStoreService::reader(self)
+            .blocks_chunk(tip, tip)
+            .await?
+            .into_iter()
+            .next()
+            .map(|block| block.chainwork))
+    }
+}
+
+/// A block's chainwork, accumulated onto its parent's.
+///
+/// The store's own derivation, from data that is on the block itself: its
+/// difficulty says what it contributes, and the parent says what came before.
+/// Nothing a caller supplied takes part.
+fn accumulate_chainwork(
+    parent: Option<DomainChainWork>,
+    header: &zaino_primitives::types::BlockHeader,
+) -> Result<DomainChainWork, ChainStoreError> {
+    let hash = stored_hash(header.hash);
+    let block_work = crate::conversion::block_work(header.bits, hash).map_err(|error| {
+        ChainStoreError::backend_because(
+            format!("block {} has invalid difficulty", header.hash),
+            error,
+        )
+    })?;
+
+    // Widened through the same helper the read path uses, so the work a block
+    // contributes on the way in and the work reported on the way out are the
+    // same bytes rather than two independent widenings.
+    parent
+        .unwrap_or(DomainChainWork::ZERO)
+        .checked_add(domain_chainwork(&block_work).into())
+        .ok_or_else(|| {
+            ChainStoreError::backend(format!(
+                "256-bit chainwork overflowed at block {}",
+                header.hash
+            ))
+        })
+}
+
 impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
     /// Writes blocks the composer has already seen fall beyond reorg.
     ///
@@ -588,9 +643,18 @@ impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
     /// A gap is not repaired here. The writer is append-only and contiguous, so
     /// a block above `tip + 1` cannot be written; it is left for the
     /// source-driven build path, which is why that path cannot be removed.
-    async fn freeze(&self, blocks: &[StoredBlock]) -> Result<(), ChainStoreError> {
+    async fn freeze(&self, blocks: &[FrozenBlock]) -> Result<(), ChainStoreError> {
+        // Where this store is, and what the next block accumulates onto. Both
+        // read once and advanced in step, because a block is only ever written
+        // at `tip + 1`: after a write the tip is the block just written and its
+        // chainwork is that block's. Re-reading either per block would be a
+        // store round trip for a number this loop already holds, paid once for
+        // every block in the batch.
+        let mut store_tip = self.db_height().await.map_err(chain_store_error)?;
+        let mut parent_chainwork = self.tip_chainwork().await?;
+
         for block in blocks {
-            let expected = match self.db_height().await.map_err(chain_store_error)? {
+            let expected = match store_tip {
                 Some(tip) => tip.0.saturating_add(1),
                 None => crate::types::GENESIS_HEIGHT.0,
             };
@@ -603,9 +667,19 @@ impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
                 break;
             }
 
-            self.write_block(indexed_block_from_stored(block)?)
+            let chainwork = accumulate_chainwork(parent_chainwork, &block.header)?;
+            let stored = StoredBlock {
+                header: block.header.clone(),
+                transactions: block.transactions.clone(),
+                tree_roots: block.tree_roots.clone(),
+                chainwork,
+            };
+
+            self.write_block(indexed_block_from_stored(&stored)?)
                 .await
                 .map_err(chain_store_error)?;
+            parent_chainwork = Some(chainwork);
+            store_tip = Some(crate::types::Height(height));
         }
 
         Ok(())
