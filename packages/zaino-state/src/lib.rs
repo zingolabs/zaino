@@ -18,33 +18,32 @@ use std::future::Future;
 pub trait SendFut<T>: Future<Output = T> + Send {}
 impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
 
-#[cfg(feature = "prometheus")]
-#[allow(missing_docs)] // names are self-describing; descriptions live in zainod
+/// Prometheus metric names emitted by this crate, with the `# HELP` `zainod` registers
+///
+/// - The store's are re-exported (one import site); its tables stay reachable as `store::*`
+#[allow(missing_docs)] // the `# HELP` in the table below is the description
 pub mod metric_names {
-    //! Prometheus metric names, and the single source of truth shared with
-    //! `zainod`'s `describe_*` registrations, which carry the descriptions.
-    //!
-    //! Each name is defined once, in the crate that emits it.
-    //!
-    //! The finalised store's write-path metrics are emitted from
-    //! `zaino-chain-store-zainodb` and so are defined there and re-exported
-    //! here (a restated copy drifts from the emitted name; a re-export cannot).
-    //!
-    //! This module remains the single import site, so `zainod`'s `describe_*`
-    //! registrations are unaffected by where a given name lives.
-    pub use zaino_chain_store_zainodb::metric_names::*;
+    pub use zaino_chain_store_zainodb::metric_names::{self as store, *};
 
+    // Sync lag = CHAIN_TIP_HEIGHT - SYNC_FINALIZED_HEIGHT, consumer-derived
     pub const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
-
-    pub const SYNC_LAG_BLOCKS: &str = "zaino.sync.lag_blocks";
-    pub const SYNC_ITERATIONS_TOTAL: &str = "zaino.sync.iterations_total";
-    pub const SYNC_ITERATION_DURATION_SECONDS: &str = "zaino.sync.iteration_duration_seconds";
-    pub const SYNC_ERRORS_TOTAL: &str = "zaino.sync.errors_total";
-    pub const SYNC_HAS_REACHED_TIP: &str = "zaino.sync.has_reached_tip";
-    pub const SYNC_REACHED_TIP_AT: &str = "zaino.sync.reached_tip_at";
-
+    pub const SYNC_CONSECUTIVE_FAILURES: &str = "zaino.sync.consecutive_failures";
+    pub const SYNC_BACKOFF_SECONDS: &str = "zaino.sync.backoff_seconds";
+    // Coherence decided against the chain-head tip → emitted from the sync loop, not the mempool
     pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
+
+    // Shadows the store's glob-imported `GAUGES`
+    #[rustfmt::skip]
+    pub const GAUGES: &[(&str, &str)] = &[
+        (CHAIN_TIP_HEIGHT, "Latest chain tip height reported by the source"),
+        (SYNC_CONSECUTIVE_FAILURES, "Consecutive failed sync iterations; 0 when healthy"),
+        (SYNC_BACKOFF_SECONDS, "Current sync-loop retry backoff in seconds; 0 when healthy"),
+        (MEMPOOL_COHERENCE_FROZEN_SECONDS, "Seconds tip-coherent mempool reads have been frozen; 0 when live"),
+    ];
 }
+
+/// Mempool metric names; `zainod` reaches the mempool only through this crate
+pub use zaino_mempool_service::metric_names as mempool_metric_names;
 
 // Zaino's Indexer library frontend.
 pub(crate) mod indexer;
@@ -64,7 +63,7 @@ pub use zaino_chain_store_zainodb::store::FinalisedStateMode;
 
 // Core ChainIndex trait and implementations
 pub use chain_index::{
-    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    ChainIndex, ChainIndexRpcExt, IndexHealth, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 // Source types for ChainIndex backends
 pub use chain_index::chain_head::WithChainHeadSource;
@@ -129,8 +128,8 @@ pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 pub(crate) mod stream;
 
 pub use stream::{
-    AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-    SubtreeRootReplyStream, UtxoReplyStream,
+    AddressStream, ChannelStream, CompactBlockStream, CompactTransactionStream,
+    RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
 };
 
 pub(crate) mod utils;

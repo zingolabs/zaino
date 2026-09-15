@@ -2,7 +2,6 @@
 //! `gettxoutsetinfo`.
 
 use super::*;
-#[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 use crate::store::finalised_source::v1::{
     ACCUMULATOR_BUILD_MAX_SHARDS, SPENT_SET_ENTRY_BYTES_ESTIMATE,
@@ -272,6 +271,22 @@ fn index_spent_outpoints(
 /// Read, maintenance, and bulk (re)build of the finalised txout-set accumulator (schema table #9).
 ///
 /// Groups the accumulator's read / write-path-delta / rebuild surface.
+/// Raises a rebuild flag for its lifetime (lowered on drop, so `?` and panics clear it)
+struct RebuildFlag<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl<'a> RebuildFlag<'a> {
+    fn raise(flag: &'a std::sync::atomic::AtomicBool) -> Self {
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        Self(flag)
+    }
+}
+
+impl Drop for RebuildFlag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl DbV1 {
     /// Resolves each spent outpoint to its previous [`TxOutCompact`].
     ///
@@ -768,8 +783,12 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<(), StoreError> {
-        match self.read_tx_out_set_accumulator_built_height().await? {
-            Some(built) if built.0 >= height.0 => {}
+        // Timed per branch: delta is O(range), rebuild a whole-chain scan; merged,
+        // rebuilds read as an extreme tail
+        let started = std::time::Instant::now();
+        #[allow(unused_variables)]
+        let mode = match self.read_tx_out_set_accumulator_built_height().await? {
+            Some(built) if built.0 >= height.0 => "current",
             Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
                 info!(
                     "write_blocks_to_height: updating txout-set accumulator {}..={}",
@@ -778,6 +797,7 @@ impl DbV1 {
                 );
                 self.update_tx_out_set_accumulator_for_range(built, height)
                     .await?;
+                "delta"
             }
             _ => {
                 info!(
@@ -785,6 +805,22 @@ impl DbV1 {
                     height.0
                 );
                 self.rebuild_tx_out_set_accumulator().await?;
+                "rebuild"
+            }
+        };
+
+        {
+            use crate::metric_names::*;
+            // `current` did nothing; recording it would bury both real modes under
+            // thousands of ~0s samples on a caught-up node
+            if mode != "current" {
+                metrics::histogram!(SYNC_ACCUMULATOR_SECONDS, ACCUMULATOR_MODE => mode)
+                    .record(started.elapsed().as_secs_f64());
+            }
+            // Re-read, not assumed from `height`: a partial pass must not publish a
+            // frontier it never reached
+            if let Ok(Some(built)) = self.read_tx_out_set_accumulator_built_height().await {
+                metrics::gauge!(SYNC_ACCUMULATOR_HEIGHT).set(built.0 as f64);
             }
         }
         Ok(())
@@ -797,6 +833,11 @@ impl DbV1 {
     // scratch with (almost entirely) sequential scans, exploiting the fact that the
     // `hash_serialized` field is an XOR multiset commitment: an output created and later spent is
     // XORed in then out and cancels, so the live set is exactly the created-and-not-spent outputs.
+
+    pub(crate) fn accumulator_rebuild_active(&self) -> bool {
+        self.accumulator_rebuild_active
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 
     /// Rebuilds the finalised txout-set accumulator to the current db tip and persists it.
     ///
@@ -840,9 +881,7 @@ impl DbV1 {
 
         let started = std::time::Instant::now();
 
-        #[cfg(feature = "prometheus")]
-        metrics::gauge!(ACCUMULATOR_REBUILD_ACTIVE).set(1.0);
-
+        let rebuilding = RebuildFlag::raise(&self.accumulator_rebuild_active);
         let result = tokio::task::block_in_place(|| {
             let accumulator =
                 self.build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)?;
@@ -858,12 +897,9 @@ impl DbV1 {
             Ok::<_, StoreError>(())
         });
 
-        #[cfg(feature = "prometheus")]
-        {
-            metrics::gauge!(ACCUMULATOR_REBUILD_ACTIVE).set(0.0);
-            if result.is_ok() {
-                metrics::gauge!(ACCUMULATOR_BUILT_HEIGHT).set(db_tip.0 as f64);
-            }
+        drop(rebuilding);
+        if result.is_ok() {
+            metrics::gauge!(SYNC_ACCUMULATOR_HEIGHT).set(db_tip.0 as f64);
         }
 
         // The commit is the only durable evidence the rebuild happened; without this line the sole
@@ -1564,8 +1600,7 @@ impl DbV1 {
             Ok::<_, StoreError>(())
         })?;
 
-        #[cfg(feature = "prometheus")]
-        metrics::gauge!(ACCUMULATOR_BUILT_HEIGHT).set(tip.0 as f64);
+        metrics::gauge!(SYNC_ACCUMULATOR_HEIGHT).set(tip.0 as f64);
 
         Ok(())
     }

@@ -711,3 +711,43 @@ async fn the_subscriber_observes_status_transitions() {
     assert_eq!(subscriber.status(), StatusType::Closing);
     assert_eq!(subscriber.status(), service.status());
 }
+
+/// The reorg the old height comparison dropped: a competing branch wins *because*
+/// it is longer, so the new tip is higher than the one it replaced and the rewrite
+/// is invisible to `new_height > old_height`.
+///
+/// - Asserts the fork point the live snapshot reports, which is what feeds the depth
+/// - Depth is blocks rewritten, so it is unrelated to the height the new tip reached
+#[tokio::test]
+async fn a_reorg_won_by_a_longer_chain_reports_the_blocks_it_rewrote() {
+    let validator = MockValidator::linear(7);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+
+    let old_tip = service.subscriber().current().best_tip();
+    assert_eq!(old_tip.height, height(6));
+
+    // Fork at 3, then build four blocks where there were three: the new tip ends up
+    // higher than the one it replaced, and three blocks were still rewritten
+    validator.reorg(4, &[40, 41, 42, 43]);
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(
+        snapshot.best_tip().height,
+        height(7),
+        "the longer branch won"
+    );
+
+    let fork = snapshot.find_fork_point(&old_tip.hash);
+    assert_eq!(
+        fork.map(|fork| fork.height),
+        Some(height(3)),
+        "4, 5 and 6 were replaced, so the last surviving ancestor is 3"
+    );
+    assert_eq!(
+        crate::service::classify_tip_change(old_tip, fork),
+        crate::service::TipChange::Reorg(Some(3)),
+        "three blocks rewritten, even though the tip climbed"
+    );
+}

@@ -343,6 +343,14 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
         }
     }
 
+    /// `false` on the ephemeral backend (holds no accumulator)
+    pub(crate) fn accumulator_rebuild_active(&self) -> bool {
+        match self {
+            Self::V1(db) => db.accumulator_rebuild_active(),
+            Self::Ephemeral(_) => false,
+        }
+    }
+
     /// Return an arc clone of the underlying LMDB environment, used during some DB migrations.
     pub(crate) fn env(&self) -> Result<Arc<Environment>, StoreError> {
         Ok(Arc::clone(

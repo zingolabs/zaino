@@ -174,7 +174,13 @@ where
         let log_interval = tokio::time::Duration::from_secs(10);
 
         let serve_task = tokio::task::spawn(async move {
+            let shutdown = shutdown_signal();
+            tokio::pin!(shutdown);
             loop {
+                // Every tick (100ms): the heartbeat `/livez` & `/health` answer from
+                #[cfg(feature = "prometheus")]
+                crate::admin::publish(indexer.health());
+
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
                     indexer.log_status();
@@ -193,7 +199,16 @@ where
                     return Ok(());
                 }
 
-                server_interval.tick().await;
+                tokio::select! {
+                    _ = server_interval.tick() => {}
+                    // Pod teardown = SIGTERM; same graceful close, so the db and
+                    // mempool are not killed mid-write
+                    _ = &mut shutdown => {
+                        info!("received shutdown signal; closing Zaino gracefully");
+                        indexer.close().await;
+                        return Ok(());
+                    }
+                }
             }
         });
 
@@ -280,6 +295,13 @@ where
         StatusType::from(self.status_int())
     }
 
+    /// `None` before the service exists
+    pub(crate) fn health(&self) -> Option<zaino_state::IndexHealth> {
+        self.service
+            .as_ref()
+            .map(|service| service.inner_ref().health())
+    }
+
     /// Logs the indexers status.
     pub fn log_status(&self) {
         let service_status = match &self.service {
@@ -292,9 +314,8 @@ where
         // real on-disk index. Reporting the mode next to the status is what lets an operator — or a
         // containerised test polling this line — tell the two apart.
         let finalised_state_mode = self
-            .service
-            .as_ref()
-            .map(|service| service.inner_ref().finalised_state_mode().to_string())
+            .health()
+            .map(|health| health.finalised_state_mode.to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
         let json_server_status = match &self.json_server {
@@ -314,6 +335,30 @@ where
             grpc = %grpc_server_status,
             "Zaino status check"
         );
+    }
+}
+
+/// Resolves on SIGTERM (pod teardown) or ctrl-c; ctrl-c only off unix
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "could not install SIGTERM handler; falling back to ctrl-c only");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

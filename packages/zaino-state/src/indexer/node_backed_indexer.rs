@@ -128,8 +128,8 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>;
     type Config = NodeBackedIndexerServiceConfig;
 
-    fn finalised_state_mode(&self) -> crate::FinalisedStateMode {
-        self.indexer.finalised_state_mode()
+    fn health(&self) -> crate::IndexHealth {
+        self.indexer.health()
     }
 
     /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.

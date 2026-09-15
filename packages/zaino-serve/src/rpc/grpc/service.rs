@@ -111,7 +111,6 @@ macro_rules! implement_client_methods {
             {
                 info!(method = stringify!($method_name), "[TEST] received call");
                 Box::pin(async {
-                    #[cfg(feature = "prometheus")]
                     let grpc_start = std::time::Instant::now();
 
                     // The inner `async {}.await` contains the `?` from
@@ -122,7 +121,6 @@ macro_rules! implement_client_methods {
                         Ok(client_method_helper!($($streaming)? self __input $method_name))
                     }.await;
 
-                    #[cfg(feature = "prometheus")]
                     record_grpc_metrics(stringify!($method_name), grpc_start, &grpc_result);
 
                     grpc_result
@@ -132,25 +130,25 @@ macro_rules! implement_client_methods {
     };
 }
 
-/// Emit the standard inbound-gRPC metric triple for one handler invocation:
-/// request count, request duration, and — on error — an error count keyed by
-/// status code. Shared by `implement_client_methods!` and the hand-written
-/// streaming handlers so the emission lives in exactly one place.
-#[cfg(feature = "prometheus")]
+/// Inbound-gRPC metrics for one handler invocation: request duration (whose
+/// `_count` is the per-method volume) and, on error, a count keyed by status code
+///
+/// - Shared by `implement_client_methods!` and the hand-written streaming handlers
 fn record_grpc_metrics<T>(
     method: &'static str,
     start: std::time::Instant,
     result: &Result<tonic::Response<T>, tonic::Status>,
 ) {
     use crate::metric_names::*;
-    metrics::counter!(GRPC_REQUESTS_TOTAL, "method" => method).increment(1);
-    metrics::histogram!(GRPC_REQUEST_DURATION_SECONDS, "method" => method)
+    metrics::histogram!(GRPC_REQUEST_DURATION_SECONDS, SERVE_METHOD => method)
         .record(start.elapsed().as_secs_f64());
     if let Err(status) = result {
+        // Derived `Debug` = the canonical name (`NotFound`); `Code::description()` is
+        // a prose sentence. Allocates, but only on an error
         metrics::counter!(
             GRPC_ERRORS_TOTAL,
-            "method" => method,
-            "code" => status.code().description(),
+            SERVE_METHOD => method,
+            SERVE_CODE => format!("{:?}", status.code()),
         )
         .increment(1);
     }
@@ -267,7 +265,6 @@ where
             "[TEST] received call"
         );
         Box::pin(async {
-            #[cfg(feature = "prometheus")]
             let grpc_start = std::time::Instant::now();
 
             let (channel_tx, channel_rx) =
@@ -295,7 +292,6 @@ where
             }
             .await;
 
-            #[cfg(feature = "prometheus")]
             record_grpc_metrics("get_taddress_balance_stream", grpc_start, &grpc_result);
 
             grpc_result

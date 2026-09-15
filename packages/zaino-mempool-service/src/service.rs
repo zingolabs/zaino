@@ -126,6 +126,11 @@ impl<S: MempoolSource> MempoolService<S> {
         self.status.load()
     }
 
+    /// Completeness of the currently published set.
+    pub fn completeness(&self) -> zaino_mempool::snapshot::MempoolCompleteness {
+        self.current.load().completeness()
+    }
+
     /// The current mempool memory bound (max total ZIP-401 cost), in bytes.
     pub fn max_cost_bytes(&self) -> u64 {
         self.config.max_cost_bytes()
