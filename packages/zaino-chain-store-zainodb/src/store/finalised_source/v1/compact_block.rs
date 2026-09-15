@@ -1399,17 +1399,11 @@ fn assemble_compact_block(
         })?,
         bits: header.data().bits().as_bits(),
         transactions,
-        chain_metadata: zaino_primitives::types::ChainMetadata {
-            sapling_tree_size: zaino_primitives::types::TreeSize::new(u64::from(
-                commitment_tree_data.sizes().sapling(),
-            )),
-            orchard_tree_size: zaino_primitives::types::TreeSize::new(u64::from(
-                commitment_tree_data.sizes().orchard(),
-            )),
-            ironwood_tree_size: zaino_primitives::types::TreeSize::new(u64::from(
-                commitment_tree_data.sizes().ironwood(),
-            )),
-        },
+        chain_metadata: zaino_primitives::types::ChainMetadata::new(
+            commitment_tree_data.sizes().sapling(),
+            commitment_tree_data.sizes().orchard(),
+            commitment_tree_data.sizes().ironwood(),
+        ),
     })
 }
 
@@ -1697,11 +1691,11 @@ pub(crate) fn compact_block_from_indexed(
         })?,
         bits: block.data.bits().as_bits(),
         transactions,
-        chain_metadata: zaino_primitives::types::ChainMetadata {
-            sapling_tree_size: zaino_primitives::types::TreeSize::new(u64::from(sizes.sapling())),
-            orchard_tree_size: zaino_primitives::types::TreeSize::new(u64::from(sizes.orchard())),
-            ironwood_tree_size: zaino_primitives::types::TreeSize::new(u64::from(sizes.ironwood())),
-        },
+        chain_metadata: zaino_primitives::types::ChainMetadata::new(
+            sizes.sapling(),
+            sizes.orchard(),
+            sizes.ironwood(),
+        ),
     })
 }
 

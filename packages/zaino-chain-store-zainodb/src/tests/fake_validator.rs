@@ -242,15 +242,11 @@ fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeB
         .map(|vector| {
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
-                zaino_primitives::types::ChainMetadata {
-                    sapling_tree_size: zaino_primitives::types::TreeSize::new(
-                        vector.sapling_tree_size,
-                    ),
-                    orchard_tree_size: zaino_primitives::types::TreeSize::new(
-                        vector.orchard_tree_size,
-                    ),
-                    ironwood_tree_size: zaino_primitives::types::TreeSize::ZERO,
-                },
+                zaino_primitives::types::ChainMetadata::new(
+                    vector.sapling_tree_size,
+                    vector.orchard_tree_size,
+                    zaino_primitives::types::TreeSize::ZERO,
+                ),
             )
             .expect("vector blocks convert to the domain shape");
 

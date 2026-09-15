@@ -203,11 +203,7 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
                 // Cumulative tree sizes are indexed state rather than block
                 // data, so they are zero here and filled in by whatever tracks
                 // them. Zero is a placeholder, not a measurement.
-                let chain_metadata = ChainMetadata {
-                    sapling_tree_size: TreeSize::ZERO,
-                    orchard_tree_size: TreeSize::ZERO,
-                    ironwood_tree_size: TreeSize::ZERO,
-                };
+                let chain_metadata = ChainMetadata::ZERO;
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
             }
@@ -259,11 +255,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
         match read(&self.state, ReadRequest::Block(zebra_hash.into())).await? {
             ReadResponse::Block(Some(arc_block)) => {
                 // Tree sizes are indexed state, not block data — see `GetBlock`.
-                let chain_metadata = ChainMetadata {
-                    sapling_tree_size: TreeSize::ZERO,
-                    orchard_tree_size: TreeSize::ZERO,
-                    ironwood_tree_size: TreeSize::ZERO,
-                };
+                let chain_metadata = ChainMetadata::ZERO;
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
             }

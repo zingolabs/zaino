@@ -71,6 +71,18 @@ impl From<u64> for TreeSize {
     }
 }
 
+impl From<u32> for TreeSize {
+    /// Widen a `u32` tree size to the `u64` the domain carries.
+    ///
+    /// Lossless and always valid: every `u32` is a representable count, so the
+    /// widen never fails. This is the infallible inverse direction of
+    /// [`try_to_u32`](Self::try_to_u32), which is fallible because narrowing
+    /// back to the `u32` proto/DB surface can overflow.
+    fn from(count: u32) -> Self {
+        Self(u64::from(count))
+    }
+}
+
 impl From<TreeSize> for u64 {
     fn from(size: TreeSize) -> Self {
         size.0
