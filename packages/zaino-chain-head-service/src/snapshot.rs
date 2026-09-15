@@ -25,18 +25,18 @@ use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId,
 };
 
+use crate::snapshot::imbl_nonempty_wrappers::ImblNonEmptyVec;
+
+// TODO: these are likely generally useful, enough that they should be
+// PRed into imbl rather than living here. Want to iterate on them a bit first
+mod imbl_nonempty_wrappers;
+
 struct ImblBackedSnapshot {
-    chains: imbl::HashSet<(
-        // this (head, vec) pattern is a NonEmpty equivalent. TODO make a wrapper type for readability
-        imbl::shared_ptr::SharedPointer<ChainHeadBlock, imbl::shared_ptr::DefaultSharedPtr>,
-        imbl::Vector<ChainHeadBlock>,
-    )>,
+    chains: imbl::HashSet<ImblNonEmptyVec<ChainHeadBlock>>,
+
     // Cloning the best chain is effectively free due to imbl
     // immutable data structure benefits
-    best_chain: (
-        imbl::shared_ptr::SharedPointer<ChainHeadBlock, imbl::shared_ptr::DefaultSharedPtr>,
-        imbl::Vector<ChainHeadBlock>,
-    ),
+    best_chain: ImblNonEmptyVec<ChainHeadBlock>,
 }
 
 impl ImblBackedSnapshot {
