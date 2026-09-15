@@ -1,0 +1,15 @@
+[package]
+name = "zaino-noderpc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "POC: Zcash node JSON-RPC serve adapter over the NodeRpcService inner port. Proves the node-rpc profile binding + both-direction wire conversion; not the production zaino-serve."
+
+[dependencies]
+zaino-service = { path = "../zaino-service" }
+zaino-core = { path = "../zaino-core" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt"] }

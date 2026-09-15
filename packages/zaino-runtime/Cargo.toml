@@ -13,3 +13,8 @@ tokio = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 zaino-status = { path = "../zaino-status" }
+# Serving-composition POC: one engine driving both public ports at once.
+zaino-core = { path = "../zaino-core" }
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+zaino-lightserve = { path = "../zaino-lightserve" }
+zaino-noderpc = { path = "../zaino-noderpc" }

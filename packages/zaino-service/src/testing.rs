@@ -45,14 +45,19 @@ pub struct MockChain {
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
+///
+/// `Clone` yields another handle to the *same* engine (shared `Arc<Mutex<..>>`),
+/// so one engine can back several outer adapters at once — the composition the
+/// runtime performs.
+#[derive(Clone)]
 pub struct MockIndexerService {
-    chain: Mutex<Arc<MockChain>>,
+    chain: Arc<Mutex<Arc<MockChain>>>,
 }
 
 impl MockIndexerService {
     pub fn new(chain: MockChain) -> Self {
         Self {
-            chain: Mutex::new(Arc::new(chain)),
+            chain: Arc::new(Mutex::new(Arc::new(chain))),
         }
     }
 

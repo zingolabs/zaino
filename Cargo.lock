@@ -6058,6 +6058,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-noderpc"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
 name = "zaino-primitives"
 version = "0.1.0"
 dependencies = [
@@ -6098,6 +6108,10 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-component",
+ "zaino-core",
+ "zaino-lightserve",
+ "zaino-noderpc",
+ "zaino-service",
  "zaino-status",
 ]
 
