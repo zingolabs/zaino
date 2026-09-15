@@ -14,11 +14,6 @@ default = []
 # TEST-ONLY. switches non-finalized depth to 100 from 1001 so NFS tests dont need to mine 1k+ blocks
 fast-test-seam = []
 
-# Prometheus metrics emission (gauge! calls in sync paths).
-# Enables the backend's copy too: this crate re-exports the write-path metric
-# names from `zaino-chain-store-zainodb`, which gates them on its own feature.
-prometheus = ["metrics", "zaino-chain-store-zainodb/prometheus"]
-
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = ["zaino-source-zebra/test_dependencies"]
 
@@ -52,7 +47,7 @@ zebra-rpc = { workspace = true }
 tracing = { workspace = true }
 
 # Metrics
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 
 # Documentation
 simple-mermaid = "0.2.0"

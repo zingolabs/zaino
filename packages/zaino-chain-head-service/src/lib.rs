@@ -34,7 +34,6 @@
 //! budget is spent. Stale data with a status saying so is more useful to a
 //! consumer than no data at all.
 
-#[cfg(feature = "prometheus")]
 pub mod metric_names;
 
 mod error;

@@ -141,37 +141,25 @@ source-driven build stays the authority — freeze only spares it the fetch.
 
 ## What the read path reports
 
-The write path has emitted metrics since before it moved here; the reads now do
-too, behind the same `prometheus` feature.
+Emission unconditional; no recorder (no `zainod` `prometheus` feature) → no-op.
 
-| Metric | Kind | Watch it for |
-| --- | --- | --- |
-| `zaino.db.compact_read_seconds` | histogram | wallet sync rate — clients spend nearly all their time in this read |
-| `zaino.db.block_read_seconds` | histogram | stored-block reads |
-| `zaino.db.corrupt_rows_total` | counter | non-zero means the database is damaged, not behind |
+| Metric                        | Kind      | Watch it for                                         |
+| ----------------------------- | --------- | ---------------------------------------------------- |
+| `zaino.db.read_seconds{op}`   | histogram | per-op read latency; `op="compact_chunk"` = wallet sync |
+| `zaino.db.corrupt_rows_total` | counter   | non-zero = database damaged, not behind              |
 
-Both histograms are timed around the *chunk*, because one read transaction
-covers the range — a per-block figure would divide one duration by a count. They
-record whether the read succeeded or failed, so a store that is failing slowly
-shows as slow rather than dropping out of the sample.
-
-`zaino.db.corrupt_rows_total` is the one to alert on. A row that will not decode
-is reported to the caller, which falls through to the validator and answers the
-request anyway — correct, and silent. Without this counter a rotting database is
-indistinguishable from one that is merely behind, for as long as the validator
-keeps covering, which is indefinitely.
-
-The corrupt-row `warn!` is *not* behind the feature, and carries the rejecting
-conversion's own error as its cause, so an operator without Prometheus still
-learns which field failed:
+- Timed per *chunk* (one read txn spans the range; per-block = one duration ÷ a count)
+- Recorded on success and failure (a slowly failing store shows as slow)
+- Alert on `corrupt_rows_total`: an undecodable row falls through to the validator → correct
+  answer, silent rot
+- Paired `warn!` names the rejecting conversion, Prometheus or not:
 
 ```
 WARN chain store read a row it cannot decode
      error=chain store holds a corrupt row: expected in-range value for stored output 21000000000000001
 ```
 
-Both come from one helper in `adapter::error_map`, so a conversion added later
-reports without being asked to.
+- Both from one helper in `adapter::error_map` (a new conversion reports unasked)
 
 ## Testing against the vector chain
 

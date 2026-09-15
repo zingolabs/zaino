@@ -1,0 +1,69 @@
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = "The metrics listener (`metrics_endpoint`) runs on its own thread and runtime and also serves `/livez` (fails once the indexer loop stops reporting for 30s)."
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = "Graceful shutdown on `SIGTERM`, through the same close path as an internal shutdown."
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = "Process metrics (`process_cpu_seconds_total`, `process_resident_memory_bytes`, fds, threads) sampled on scrape, `zainod.restarts_total`, and explicit bucket ladders for every histogram (none scrape as summaries any more)."
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = "A `metrics_endpoint` configured on a binary built without `prometheus` now warns instead of being silently ignored; a non-private bind warns that the listener is unauthenticated."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = "Sync and store metrics reworked. Added: `zaino.sync.fetched_height`, `block_fetch_seconds`, `treestate_fetch_seconds`, `block_assemble_seconds`, `batch_write_seconds`, `fsync_seconds`, `batch_blocks`, `accumulator_seconds{mode}`, `accumulator_height`, `zaino.sync.fetched_{transactions,transparent_inputs,transparent_outputs,sapling_spends,sapling_outputs,orchard_actions,ironwood_actions}_total`, `zaino.db.validated_height`, `validation_seconds`, `on_demand_validations_total`, `map_size_bytes`, `used_bytes`, `zaino.migration.progress_height`. `zaino.sync.finalized_height` now means committed and fsynced."
+migration = "Removed: `zaino.sync.block_build_seconds` (sum of the three per-block spans), `zaino.sync.block_write_seconds` (→ `batch_write_seconds` + `fsync_seconds`), `zaino.sync.{transactions,sapling_outputs,orchard_actions}_total` (→ `fetched_*_total`), `zaino.sync.last_block_written_at`, `zaino.db.tip_height` (→ `zaino.sync.finalized_height`), `zaino.db.finalised_ephemeral`, `zaino.db.accumulator_built_height` (→ `zaino.sync.accumulator_height`), `zaino.db.accumulator_rebuild_active` (rebuild progress is logged). Throughput counters count fetched blocks: a failed commit or restart re-counts. Feature `prometheus` removed; emission is unconditional (no-op without a recorder)."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = "`FinalisedStateMode::EphemeralRouted` split into `EphemeralSyncing` and `EphemeralMigrating`."
+migration = "Match both new variants wherever `EphemeralRouted` was matched."
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = "Sync-loop metrics: added `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`."
+migration = "Removed metrics: `zaino.sync.lag_blocks` (derive `zaino.chain.tip_height - zaino.sync.finalized_height`), `iterations_total`, `iteration_duration_seconds`, `errors_total`, `has_reached_tip`, `reached_tip_at`. Feature `prometheus` removed."
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = "`zaino.sync.reorg_total` / `reorg_depth` now count reorgs won by a longer chain (previously missed by a height comparison); depth = blocks rewritten back to the fork point. Feature `prometheus` removed; emission is unconditional."
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "feature"
+description = "Poll-loop metrics `zaino.mempool.transactions`, `zaino.mempool.bytes{kind}`, `zaino.mempool.unadmitted`, `zaino.mempool.poll_seconds`."
+
+[[changes]]
+crate = "zaino-serve"
+kind = "feature"
+description = "JSON-RPC serving metrics `zaino.jsonrpc.request_duration_seconds{method}` and `zaino.jsonrpc.errors_total{method,code}`; unregistered method names are labelled `unknown`."
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = "Removed `zaino.grpc.requests_total` (= `zaino.grpc.request_duration_seconds` `_count`); `zaino.grpc.errors_total{code}` now carries the status name (`NotFound`). Feature `prometheus` removed."
+migration = "Use `zaino.grpc.request_duration_seconds_count` for request volume."
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "breaking"
+description = "`RpcClient::call` / `call_with_timeout` take `method: &'static str` (bounds metric-label cardinality). Outbound metrics are now `zaino.rpc.outbound.duration_seconds{method}` and `zaino.rpc.outbound.errors_total{method,outcome}` (`transport_error`, `rpc_error`, `retried`)."
+migration = "Pass method names as string literals. Removed metrics: `zaino.rpc.outbound.requests_total`, `request_duration_seconds`, `retries_total`. Feature `prometheus` removed."
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "internal"
+description = "Adapter call helpers take `&'static str` method names, following `zaino-rpc`."

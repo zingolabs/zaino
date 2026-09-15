@@ -11,10 +11,6 @@ version = "0.1.0"
 [features]
 default = []
 
-# Prometheus metrics on the write path. Off by default: a store that is not
-# scraped should not pay for the instrumentation.
-prometheus = ["metrics"]
-
 # TEST-ONLY: exposes the historical-version entry writers, so a downstream test
 # crate can build fixtures in an older on-disk format and prove the current
 # reader still decodes them, and the checked-in chain vectors, so a downstream
@@ -67,8 +63,7 @@ zebra-chain = { workspace = true }
 # them out ahead of their callers would mean editing the same code twice.
 zaino-proto = { workspace = true }
 
-# Metric emission on the write path, behind the `prometheus` feature.
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 
 # Utility
 bitflags = { workspace = true }

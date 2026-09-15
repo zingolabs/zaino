@@ -15,12 +15,11 @@ FROM docker.io/library/rust:1.96.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
-# Toggle to build without TLS feature if needed
-ARG NO_TLS=false
-
-# Extra cargo features to enable (comma-separated, e.g. "prometheus,no_tls_with_prometheus").
-# Takes precedence over NO_TLS when set.
+# Comma-separated; empty = default feature set (e.g. "prometheus")
 ARG CARGO_FEATURES=""
+
+# `release` or `profiling` (adds line tables + frame pointers, set below)
+ARG CARGO_PROFILE=release
 
 # Build deps incl. protoc for prost-build
 # Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
@@ -43,13 +42,11 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    if [ -n "${CARGO_FEATURES}" ]; then \
-      cargo install --locked --path packages/zainod --bin zainod --root /out --features "${CARGO_FEATURES}"; \
-    elif [ "${NO_TLS}" = "true" ]; then \
-      cargo install --locked --path packages/zainod --bin zainod --root /out --features no_tls_use_unencrypted_traffic; \
-    else \
-      cargo install --locked --path packages/zainod --bin zainod --root /out; \
-    fi
+    if [ "${CARGO_PROFILE}" = "profiling" ]; then \
+      export RUSTFLAGS="-C force-frame-pointers=yes"; \
+    fi; \
+    cargo install --locked --path packages/zainod --bin zainod --root /out \
+      --profile "${CARGO_PROFILE}" --features "${CARGO_FEATURES}"
 
 ############################
 # Runtime
