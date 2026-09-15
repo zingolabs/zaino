@@ -84,7 +84,7 @@ pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
 pub use work::{
     AbsoluteChainWork, ChainWorkOverWidth, RelativeChainWork, SingleBlockWork, WorkOverflow,
-    WorkUnderflow, ZeroWork,
+    WorkUnderflow,
 };
 pub use zatoshis::{
     SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisFlowSum, ZatoshisOverflow,

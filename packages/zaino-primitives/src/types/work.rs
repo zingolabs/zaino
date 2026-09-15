@@ -63,7 +63,7 @@
 //! Deriving [`SingleBlockWork`] from a difficulty target is not done here. The
 //! nBits → target → work conversion is consensus logic, and belongs to a crate
 //! that holds a consensus implementation. Those crates compute the integer and
-//! pass it to [`SingleBlockWork::try_new`].
+//! pass it to [`SingleBlockWork::new`].
 
 mod absolute_chain_work;
 mod error;
@@ -73,4 +73,4 @@ mod single_block_work;
 pub use absolute_chain_work::{AbsoluteChainWork, ChainWorkOverWidth, WorkUnderflow};
 pub use error::WorkOverflow;
 pub use relative_chain_work::RelativeChainWork;
-pub use single_block_work::{SingleBlockWork, ZeroWork};
+pub use single_block_work::SingleBlockWork;

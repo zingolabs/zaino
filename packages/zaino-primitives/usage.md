@@ -158,7 +158,7 @@ and why the three are distinct.
 `AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
 sends, and answers `Ok(None)` when the validator does not track the value;
 `to_be_bytes` renders back for the wire. For an integer you already hold, use
-`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::new(NonZeroU128)`.
 
 The difficulty-to-work derivation is consensus logic and lives outside this
 crate. The `types::work` module documentation states the full algebra.
