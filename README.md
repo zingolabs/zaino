@@ -52,6 +52,7 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 ```
 packages/                          Cargo workspace member crates, in dependency order
   zaino-status/                      How a component reports whether it is working
+  zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
   zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
@@ -187,6 +188,7 @@ Records a newcomer needs first:
 Practical guidance for working *in* a crate — its scope, its invariants, and the
 mistakes its design is trying to prevent.
 - [`zaino-status`](./packages/zaino-status/usage.md): the status vocabulary, and why it stays vocabulary.
+- [`zaino-component`](./packages/zaino-component/usage.md): the component abstraction, its two independent axes, and the observed/owned line.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
