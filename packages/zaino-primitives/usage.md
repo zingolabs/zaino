@@ -150,11 +150,10 @@ let mut run = RelativeChainWork::ZERO;
 run = run.accumulate(next_block_work)?;
 ```
 
-Nothing converts between `AbsoluteChainWork` and `RelativeChainWork`. They are
-the same integer measured from different places, so one used as the other is a
-different number, not an imprecise one. A consumer that can only measure a run —
-`zaino-chain-head`, which never reads the finalised state — holds the relative
-type and compares runs against each other.
+Nothing converts between `AbsoluteChainWork` and `RelativeChainWork`. A consumer
+that can only observe a run of blocks holds the relative type and compares runs
+against each other. The `types::work` module documentation states the algebra
+and why the three are distinct.
 
 `AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
 sends, and answers `Ok(None)` when the validator does not track the value;

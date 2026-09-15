@@ -801,9 +801,6 @@ fn extending_chain_head_block(
 }
 
 /// Assembles a retained block around a work total the caller has folded.
-///
-/// The old `create_indexed_block_with_optional_roots`, less the parts only a
-/// persisted block needed.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
     tree_roots: &TreeRoots,

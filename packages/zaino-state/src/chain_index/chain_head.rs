@@ -14,11 +14,9 @@
 //! same time. It goes away when ChainIndex is reworked to read the two halves
 //! through their own vocabularies.
 //!
-//! Blocks produced here carry no chain work. ChainHead measures work over its
-//! own window and never reads the finalised state, so the total below that
-//! window is not available to it; the finalised state syncs from the validator
-//! independently and computes its own. A block without chain work has no stored
-//! form, and the encode boundary refuses one.
+//! Blocks produced here carry no chain work, because ChainHead cannot know it
+//! — see [`zaino_chain_head`]. The finalised state syncs from the validator
+//! independently and computes its own.
 
 use std::sync::Arc;
 
@@ -110,8 +108,7 @@ pub enum ChainHeadConversionError {
 /// codebase had, and which had already drifted over transparent script
 /// classification.
 ///
-/// The chain work is `None`. ChainHead measures work over its own window and
-/// cannot know the total below it, so there is no absolute value to give.
+/// The chain work is `None`: ChainHead has no absolute value to give.
 pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadConversionError> {
     Ok(zaino_chain_store_zainodb::conversion::indexed_block(
         &block.block,

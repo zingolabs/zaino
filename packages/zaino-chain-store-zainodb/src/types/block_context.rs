@@ -15,12 +15,12 @@ pub struct BlockContext {
     pub index: BlockIndex,
     /// The hash of this block's parent block (previous block in chain).
     pub parent_hash: BlockHash,
-    /// Total chain work up to this block, when it is known.
+    /// Total chain work up to this block.
     ///
-    /// `None` for a block the chain head produced: it holds a bounded window
-    /// and never reads the finalised state, so the work below that window is
-    /// not available to it. Such a block is served, never stored — persisting
-    /// one is refused at the encode boundary.
+    /// `None` when the producer of the block cannot know it — a chain head
+    /// serves blocks from a bounded window and has no view of the work below
+    /// it. A block without chain work has no stored form, and the encode
+    /// boundary refuses one.
     pub chainwork: Option<AbsoluteChainWork>,
 }
 

@@ -18,11 +18,9 @@ pub struct ChainHeadBlock {
     pub parent_hash: BlockHash,
     /// Work accumulated over the blocks this window retains above its anchor.
     ///
-    /// Not the `chainwork` a validator reports. ChainHead never reads the
-    /// finalised state, so the work below its anchor is unavailable to it and
-    /// this total is measured from the anchor instead. Every branch in the
-    /// window measures from that same anchor, which is what makes comparing
-    /// these totals a correct choice between branches.
+    /// Measured from the anchor, not from genesis, for the reason given in the
+    /// [crate documentation](crate). Every block in a window shares that
+    /// anchor, which is what makes these totals comparable with each other.
     pub work: RelativeChainWork,
     /// The parsed block.
     pub block: Block,

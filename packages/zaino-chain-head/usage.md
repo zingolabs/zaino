@@ -90,15 +90,13 @@ head down because there is no method on it that could.
 ## Work is anchor-relative
 
 A block's `work` is a `RelativeChainWork`: the total over the blocks this window
-retains above its **own anchor**, not from genesis. The anchor's own work is
+retains above its **own anchor**. The anchor's own work is
 `RelativeChainWork::ZERO`, and each block above folds its own work onto its
 parent's total.
 
-That orders competing branches correctly, which is all the chain head needs. It
-is not the absolute chainwork a validator reports, and the separate type is what
-stops the two being confused: no operation converts between them. Two chain
-heads with different anchors produce different numbers for the same block, so a
-`RelativeChainWork` is only comparable against another from the same window.
+That orders competing branches, which is all the chain head needs. Two chain
+heads with different anchors produce different numbers for the same block, so
+compare a `RelativeChainWork` only against another from the same window.
 
 ## The driven port names only what is asked
 

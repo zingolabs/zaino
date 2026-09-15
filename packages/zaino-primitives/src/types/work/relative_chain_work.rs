@@ -8,16 +8,12 @@ use super::{SingleBlockWork, WorkOverflow};
 ///
 /// A sum over a set of blocks, not an offset from a single one. [`ZERO`] is the
 /// empty run, and each block folded in adds its own work. So a value says how
-/// much work the run holds, and says nothing about where the run begins.
-///
-/// Zero is a real value of this quantity — an empty run has accumulated
-/// nothing — which is what separates it from
-/// [`AbsoluteChainWork`](super::AbsoluteChainWork), where zero cannot occur.
+/// much work the run holds, and nothing about where the run begins.
 ///
 /// Ordered, because picking the heaviest of several runs is what the ordering
-/// is for. Two runs are only comparable when they begin at the same block; the
-/// type does not carry where it began, so it cannot check that. Callers hold
-/// runs that share a start by construction — see the module documentation.
+/// is for. Two runs are only comparable when they begin at the same block, and
+/// the type does not carry where it began, so it cannot check that. A caller
+/// holding several runs is responsible for their sharing a start.
 ///
 /// [`ZERO`]: Self::ZERO
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

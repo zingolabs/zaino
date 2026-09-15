@@ -1,5 +1,8 @@
 //! Proof-of-work quantities.
 //!
+//! <!-- doc-hygiene: allow(budget) — the algebra is this module's spec; no
+//! other layer owns it -->
+//!
 //! Work is one unit, but three quantities are measured in it:
 //!
 //! - [`SingleBlockWork`] — the work one block is expected to take, derived
@@ -10,35 +13,26 @@
 //!   measured from wherever the run begins.
 //!
 //! They are separate types because merging them would let wrong statements
-//! compile.
+//! compile. Three contrasts carry that weight.
 //!
 //! **Ordering.** Comparing total chain work is how the best chain is chosen, so
-//! [`AbsoluteChainWork`] is `Ord`. [`SingleBlockWork`] is not. Difficulty is
+//! [`AbsoluteChainWork`] is `Ord`. [`SingleBlockWork`] is not: difficulty is
 //! fixed within a retarget interval, so two competing blocks at the same height
-//! have equal work. An ordering on single blocks would report a tie for exactly
-//! the case chain selection exists to resolve.
+//! have equal work, and an ordering over them would tie in exactly the case
+//! chain selection exists to resolve.
 //!
 //! **Seeding.** A chain of one block has total work equal to that block's work,
 //! but the two remain different quantities. With one type the seed and the
-//! summand have the same signature, so passing the wrong one at the start of a
-//! fold compiles and corrupts every value after it. With two types, only
+//! summand share a signature, so passing the wrong one at the start of a fold
+//! compiles and corrupts every value after it. Only
 //! [`AbsoluteChainWork::genesis`] crosses between them.
 //!
 //! **Origin.** [`AbsoluteChainWork`] counts from genesis;
-//! [`RelativeChainWork`] counts from wherever its run begins, so it is a total
-//! over a set of blocks rather than a value at one block. The two are the same
-//! integer measured from different places, and the difference is the whole chain
-//! below the run — so one reported or stored as the other is a different number,
-//! not an imprecise one. Only their being separate types prevents it: no
-//! operation converts between them.
-//!
-//! That separation is what lets a consumer hold one without the other.
-//! `zaino-chain-head` keeps a bounded window and never reads the finalised
-//! state, so it cannot know the work below its window. It does not need to:
-//! choosing between competing branches is a comparison among runs that begin at
-//! the same block, which [`RelativeChainWork`]'s ordering answers on its own.
-//! The absolute figure a client asks for is a separate job, answered elsewhere
-//! from what the validator itself reports.
+//! [`RelativeChainWork`] counts from wherever its run begins. They are the same
+//! integer measured from different places, differing by the whole chain below
+//! the run, so one used as the other is a different number rather than an
+//! imprecise one. Zero is a real value of [`RelativeChainWork`] — the empty run
+//! — where [`AbsoluteChainWork`] cannot be zero at all.
 //!
 //! # The algebra
 //!
