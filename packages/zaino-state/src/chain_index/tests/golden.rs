@@ -56,6 +56,9 @@ use crate::chain_index::types::db::commitment::{
 use crate::chain_index::types::db::legacy::AddrEventBytes;
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::chain_index::types::EquihashSolution;
+
+/// The chainwork the golden block context carries.
+const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0dec_0de0).expect("nonzero literal");
 use crate::{
     AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, ChainWork,
     CompactDifficulty, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend,
@@ -185,7 +188,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        ChainWork::new(NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
+        ChainWork::new(CHAINWORK),
         height(),
     )
 }

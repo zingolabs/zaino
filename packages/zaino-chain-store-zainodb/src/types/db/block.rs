@@ -260,6 +260,8 @@ mod tests {
     use crate::types::{BlockHash, BlockIndex, ChainWork, Height};
     use zaino_encoding::ZainoVersionedSerde as _;
 
+    const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0123_4567).expect("nonzero literal");
+
     /// `BlockContext → PersistentBlockContext → BlockContext` is identity.
     ///
     /// Fails if the `from_business` / `into_business` conversions ever drift
@@ -270,7 +272,7 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            ChainWork::new(NonZeroU128::new(0x0123_4567).expect("nonzero")),
+            ChainWork::new(CHAINWORK),
             Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);

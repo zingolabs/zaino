@@ -126,6 +126,10 @@ impl fmt::Display for ChainWork {
 mod tests {
     use super::*;
 
+    const REPORTED: NonZeroU128 = NonZeroU128::new(0x00de_ad00_beef).expect("nonzero literal");
+    const LIGHTER: NonZeroU128 = NonZeroU128::new(100).expect("nonzero literal");
+    const HEAVIER: NonZeroU128 = NonZeroU128::new(200).expect("nonzero literal");
+
     /// All-zero off the wire is "not reported", not a smallest chain.
     #[test]
     fn reported_all_zero_is_absence() {
@@ -147,22 +151,19 @@ mod tests {
     #[test]
     fn reported_bytes_round_trip() {
         let mut bytes = [0u8; 32];
-        bytes[16..].copy_from_slice(&0x00de_ad00_beefu128.to_be_bytes());
+        bytes[16..].copy_from_slice(&REPORTED.get().to_be_bytes());
 
         let work = ChainWork::try_from_reported(bytes)
             .expect("within width")
             .expect("non-zero");
         assert_eq!(work.to_be_bytes(), bytes);
-        assert_eq!(
-            work,
-            ChainWork::new(NonZeroU128::new(0x00de_ad00_beef).expect("nonzero"))
-        );
+        assert_eq!(work, ChainWork::new(REPORTED));
     }
 
     #[test]
     fn ord_selects_the_heavier_chain() {
-        let lighter = ChainWork::new(NonZeroU128::new(100).expect("nonzero"));
-        let heavier = ChainWork::new(NonZeroU128::new(200).expect("nonzero"));
+        let lighter = ChainWork::new(LIGHTER);
+        let heavier = ChainWork::new(HEAVIER);
         assert!(heavier > lighter);
     }
 }

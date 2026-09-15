@@ -151,6 +151,9 @@ mod from_domain_tests {
     use core::num::NonZeroU128;
     use zaino_primitives::types::{self as domain, Height};
 
+    const CHAINWORK: NonZeroU128 =
+        NonZeroU128::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff).expect("nonzero literal");
+
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
@@ -172,9 +175,7 @@ mod from_domain_tests {
             difficulty: 1.0,
             block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
             final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),
-            chainwork: Some(domain::ChainWork::new(
-                NonZeroU128::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff).expect("nonzero"),
-            )),
+            chainwork: Some(domain::ChainWork::new(CHAINWORK)),
             previous_block_hash: Some(domain::BlockHash::from(ASYMMETRIC)),
             next_block_hash: None,
         }

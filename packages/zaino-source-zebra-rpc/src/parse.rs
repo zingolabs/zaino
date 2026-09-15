@@ -1138,6 +1138,8 @@ mod tests {
     /// another backwards, so a mirrored decode cannot pass by coincidence.
     const ASYMMETRIC_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01";
 
+    const TRIMMED: NonZeroU128 = NonZeroU128::new(0xff).expect("nonzero literal");
+
     fn asymmetric_bytes() -> [u8; 32] {
         let mut bytes = [0u8; 32];
         hex::decode_to_slice(ASYMMETRIC_HEX, &mut bytes).expect("valid fixture");
@@ -1198,10 +1200,7 @@ mod tests {
     fn chainwork_left_pads_a_trimmed_value() {
         let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
 
-        assert_eq!(
-            trimmed,
-            Some(ChainWork::new(NonZeroU128::new(0xff).expect("nonzero")))
-        );
+        assert_eq!(trimmed, Some(ChainWork::new(TRIMMED)));
     }
 
     /// Zero off the wire — either validator's encoding — is "not reported",

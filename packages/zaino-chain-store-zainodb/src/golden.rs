@@ -63,6 +63,9 @@ use crate::types::{
 };
 use zaino_encoding::{FixedEncodedLen, ZainoVersionedSerde};
 
+/// The chainwork the golden block context carries.
+const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0dec_0de0).expect("nonzero literal");
+
 /// A valid nBits value. Passes zebra's compact-difficulty validation without
 /// corresponding to any real block.
 const TEST_VALID_NBITS: u32 = 0x2007_ffff;
@@ -184,7 +187,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        ChainWork::new(NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
+        ChainWork::new(CHAINWORK),
         height(),
     )
 }

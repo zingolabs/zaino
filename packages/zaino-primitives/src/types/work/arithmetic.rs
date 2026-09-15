@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn accumulate_overflow_is_refused() {
-        let max = ChainWork::new(NonZeroU128::new(u128::MAX).expect("nonzero"));
+        let max = ChainWork::new(NonZeroU128::MAX);
         assert_eq!(max.accumulate(block(1)), Err(WorkOverflow));
     }
 
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn extend_overflow_is_refused() {
-        let max = ChainWork::new(NonZeroU128::new(u128::MAX).expect("nonzero"));
+        let max = ChainWork::new(NonZeroU128::MAX);
         assert_eq!(max.extend(RelativeWork::new(1)), Err(WorkOverflow));
     }
 
