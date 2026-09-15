@@ -46,7 +46,6 @@
 //! [`zaino_primitives::types::MempoolInfo`] with no encoding to pin.
 
 use std::fmt::Debug;
-use std::num::NonZeroU128;
 
 use crate::entry::{StoredEntryFixed, StoredEntryVar};
 use crate::store::capability::{DbMetadata, DbVersion, MigrationStatus};
@@ -184,7 +183,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        ChainWork::new(NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
+        ChainWork::try_new(0x0dec_0de0).expect("nonzero"),
         height(),
     )
 }
