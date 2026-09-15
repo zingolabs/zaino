@@ -32,6 +32,7 @@
 //! reorg or a partially-extended window.
 
 use std::{
+    fmt,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -636,11 +637,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         self.source
             .get_commitment_tree_roots(hash)
             .await
-            .map_err(|error| {
-                ChainHeadAdvanceError::InconsistentSource(format!(
-                    "tree roots for block {hash}: {error}"
-                ))
-            })
+            .map_err(|error| advance_error(error, &format!("tree roots for block {hash}")))
     }
 
     /// Resolve the chain head's anchor (root) block at `anchor_height`.
@@ -672,7 +669,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             .source
             .get_chain_tip()
             .await
-            .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
+            .map_err(|error| advance_error(error, "chain tip"))?;
         Ok(BlockRef { hash, height })
     }
 
@@ -694,7 +691,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 debug!(height = %missing, "block_at_height: source reports no block; treating as absent");
                 Ok(None)
             }
-            Err(error) => Err(ChainHeadAdvanceError::SourceUnavailable(error.to_string())),
+            // Transport failure carries its cause through unchanged.
+            Err(zaino_source::QueryError::Fetch(fetch)) => {
+                Err(ChainHeadAdvanceError::SourceUnavailable(fetch))
+            }
         }
     }
 
@@ -714,7 +714,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 debug!(hash = %missing, "block_at_hash: source reports no block; treating as absent");
                 Ok(None)
             }
-            Err(error) => Err(ChainHeadAdvanceError::SourceUnavailable(error.to_string())),
+            // Transport failure carries its cause through unchanged.
+            Err(zaino_source::QueryError::Fetch(fetch)) => {
+                Err(ChainHeadAdvanceError::SourceUnavailable(fetch))
+            }
         }
     }
 }
@@ -760,6 +763,28 @@ fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
         (_, TickOutcome::Advanced) => StatusType::Ready,
         (_, TickOutcome::Retrying) => StatusType::RecoverableError,
         (_, TickOutcome::GaveUp) => StatusType::CriticalError,
+    }
+}
+
+/// Classifies a source [`QueryError`](zaino_source::QueryError) into a
+/// [`ChainHeadAdvanceError`], the single home of the transport-vs-domain split.
+///
+/// A transport failure is threaded through unchanged as the `#[source]` of
+/// [`SourceUnavailable`](ChainHeadAdvanceError::SourceUnavailable), so
+/// `Error::source()` yields the underlying [`FetchError`](zaino_source::FetchError)
+/// and its machine-readable failure mode. A domain rejection wraps no external
+/// error, so it stays message-only under
+/// [`InconsistentSource`](ChainHeadAdvanceError::InconsistentSource), tagged
+/// with `context` to name the query that was refused.
+fn advance_error<E: fmt::Debug + fmt::Display>(
+    error: zaino_source::QueryError<E>,
+    context: &str,
+) -> ChainHeadAdvanceError {
+    match error {
+        zaino_source::QueryError::Fetch(fetch) => ChainHeadAdvanceError::SourceUnavailable(fetch),
+        zaino_source::QueryError::Domain(domain) => {
+            ChainHeadAdvanceError::InconsistentSource(format!("{context}: {domain}"))
+        }
     }
 }
 
@@ -847,18 +872,23 @@ async fn anchor<S: ChainHeadBlockSource>(
     let (_, tip_height) = source
         .get_chain_tip()
         .await
-        .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
+        .map_err(|error| advance_error(error, "chain tip"))?;
 
     let anchor_height = height_below(tip_height, config.max_depth());
 
     let block = source
         .get_block(anchor_height)
         .await
-        .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
+        .map_err(|error| advance_error(error, &format!("anchor block {anchor_height}")))?;
     let tree_roots = source
         .get_commitment_tree_roots(block.header.hash)
         .await
-        .map_err(|error| ChainHeadAdvanceError::InconsistentSource(error.to_string()))?;
+        .map_err(|error| {
+            advance_error(
+                error,
+                &format!("tree roots for block {}", block.header.hash),
+            )
+        })?;
 
     Ok(MapBackedSnapshot::from_initial_block(chain_head_block(
         block,
