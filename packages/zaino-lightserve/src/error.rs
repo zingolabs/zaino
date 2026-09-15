@@ -7,6 +7,8 @@
 //! A *broadcast rejection* is not an error at all here: it is a domain answer
 //! carried in the `SendResponse` (see `send_transaction`).
 
+use zaino_service::error::Transient;
+
 /// A light-serve handler failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
@@ -14,6 +16,6 @@ pub enum ServeError {
     #[error("no blocks available yet")]
     NoBlocks,
     /// Could not acquire a coherent snapshot; likely resolves on retry.
-    #[error("temporarily unavailable: {0}")]
-    Unavailable(String),
+    #[error(transparent)]
+    Unavailable(#[from] Transient),
 }

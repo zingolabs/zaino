@@ -33,11 +33,7 @@ impl<S: LightServeService> LightServe<S> {
 
     /// `GetLatestBlock`: the tip of the pinned best chain, as a wire `BlockId`.
     pub async fn get_latest_block(&self) -> Result<proto::BlockId, ServeError> {
-        let snapshot = self
-            .engine
-            .snapshot()
-            .await
-            .map_err(|transient| ServeError::Unavailable(format!("{transient:?}")))?;
+        let snapshot = self.engine.snapshot().await?;
         let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
         Ok(tip.to_wire())
     }

@@ -8,6 +8,7 @@ description = "Zaino's inner driving surface: the segregated capability trait al
 [dependencies]
 zaino-core = { path = "../zaino-core" }
 futures = "0.3"
+thiserror.workspace = true
 
 [features]
 # In-crate scriptable mock of the driving surface, for testing outer clients

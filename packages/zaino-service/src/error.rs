@@ -13,13 +13,16 @@ use zaino_core::Capability;
 macro_rules! read_error {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
-        #[derive(Debug)]
+        #[derive(Debug, thiserror::Error)]
         pub enum $name {
             /// Backing index not built to the requested height yet.
+            #[error("not serviceable yet: {0:?}")]
             NotServiceable(Capability),
             /// Likely to resolve on retry (e.g. a mid-swap reorg race).
+            #[error("transient read failure: {0}")]
             Transient(String),
             /// Unrecoverable backend failure.
+            #[error("fatal read failure: {0}")]
             Fatal(String),
         }
     };
@@ -40,14 +43,17 @@ read_error!(/// Generic read error for streamed surfaces and [`crate::ForkReconc
 
 /// Failure to *acquire* a snapshot — the one reorg race ADR-0003 admits.
 /// Reads *through* a snapshot never race, so they never yield this.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("could not acquire a snapshot: {0}")]
 pub struct Transient(pub String);
 
 /// A broadcast rejection is a *domain answer*, not a backend failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum BroadcastRejection {
     /// Bytes did not decode to a transaction.
+    #[error("malformed transaction: {0}")]
     Malformed(String),
     /// Decoded, but consensus/validation rejected it (with the engine's reason).
+    #[error("transaction rejected: {0}")]
     Invalid(String),
 }
