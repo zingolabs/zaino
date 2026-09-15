@@ -3,6 +3,7 @@
 use crate::types::{
     BlockContext, BlockData, BlockHeaderData, ChainWork, CompactDifficulty, EquihashSolution,
 };
+use core::num::NonZeroU128;
 use zaino_encoding::{version, ZainoVersionedSerde as _};
 
 /// A valid nBits value for test fixtures. Passes zebra's compact difficulty
@@ -18,7 +19,7 @@ const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let hash = crate::types::BlockHash::from([1u8; 32]);
     let parent_hash = crate::types::BlockHash::from([2u8; 32]);
-    let chainwork = ChainWork::try_new(0x42).expect("nonzero");
+    let chainwork = ChainWork::new(NonZeroU128::new(0x42).expect("nonzero"));
     let height = crate::types::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");

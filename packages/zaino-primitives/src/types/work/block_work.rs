@@ -15,32 +15,15 @@ use core::num::NonZeroU128;
 /// back on reorg.
 ///
 /// The value itself comes from a consensus implementation's
-/// difficulty-to-work conversion; this crate takes the already-computed
-/// integer through [`try_new`](Self::try_new) and only enforces the
-/// strictly-positive bound.
+/// difficulty-to-work conversion, which proves it non-zero before
+/// [`new`](Self::new) wraps it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BlockWork(NonZeroU128);
 
-/// Error when a work value is zero.
-///
-/// Work is strictly positive: every valid difficulty target yields non-zero
-/// work, and every chain — genesis included — has accumulated at least one
-/// block's worth. A zero signals a value that was never work (an unset field,
-/// a corrupt row), and is rejected rather than smuggled in as a smallest
-/// element that would sort below every real chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("work is strictly positive; zero is not a work value")]
-pub struct ZeroWork;
-
 impl BlockWork {
-    /// Create a block work value, rejecting zero.
-    ///
-    /// The boundary door for an already-computed work integer — typically the
-    /// output of a consensus implementation's difficulty-to-work conversion,
-    /// which never yields zero for a valid target. A zero therefore signals a
-    /// value that is not work at all, and is refused rather than wrapped.
-    pub fn try_new(value: u128) -> Result<Self, ZeroWork> {
-        NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
+    /// Wraps an already non-zero block work value.
+    pub const fn new(value: NonZeroU128) -> Self {
+        Self(value)
     }
 
     /// The raw value, for the arithmetic relations to fold.
@@ -74,13 +57,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_is_rejected() {
-        assert_eq!(BlockWork::try_new(0), Err(ZeroWork));
-    }
-
-    #[test]
     fn nonzero_round_trips() {
-        let work = BlockWork::try_new(0x1f1f).expect("nonzero");
+        let work = BlockWork::new(NonZeroU128::new(0x1f1f).expect("nonzero"));
         assert_eq!(NonZeroU128::from(work).get(), 0x1f1f);
     }
 }

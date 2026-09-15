@@ -45,6 +45,7 @@
 //! rebuilt from the validator on every start. It is now
 //! [`zaino_primitives::types::MempoolInfo`] with no encoding to pin.
 
+use core::num::NonZeroU128;
 use std::fmt::Debug;
 
 use crate::chain_index::finalised_state::capability::{DbMetadata, DbVersion, MigrationStatus};
@@ -184,7 +185,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        ChainWork::try_new(0x0dec_0de0).expect("nonzero"),
+        ChainWork::new(NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
         height(),
     )
 }

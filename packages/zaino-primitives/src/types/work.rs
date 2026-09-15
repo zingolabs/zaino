@@ -25,7 +25,7 @@
 //! Deriving a [`BlockWork`] from a difficulty target is deliberately *not*
 //! here: the nBits → target → work conversion is consensus logic and belongs to
 //! the crates that hold a consensus implementation. They construct the value
-//! and enter through [`BlockWork::try_new`].
+//! and enter through [`BlockWork::new`].
 
 mod arithmetic;
 mod block_work;
@@ -33,6 +33,6 @@ mod chain_work;
 mod relative_work;
 
 pub use arithmetic::{WorkOverflow, WorkUnderflow};
-pub use block_work::{BlockWork, ZeroWork};
+pub use block_work::BlockWork;
 pub use chain_work::{ChainWork, ChainWorkOverWidth};
 pub use relative_work::RelativeWork;

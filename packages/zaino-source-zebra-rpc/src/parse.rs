@@ -1131,6 +1131,7 @@ pub(crate) fn parse_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::num::NonZeroU128;
     use serde_json::json;
 
     /// A value whose reversal is unmistakable: it reads one way forwards and
@@ -1197,7 +1198,10 @@ mod tests {
     fn chainwork_left_pads_a_trimmed_value() {
         let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
 
-        assert_eq!(trimmed, Some(ChainWork::try_new(0xff).expect("nonzero")));
+        assert_eq!(
+            trimmed,
+            Some(ChainWork::new(NonZeroU128::new(0xff).expect("nonzero")))
+        );
     }
 
     /// Zero off the wire — either validator's encoding — is "not reported",

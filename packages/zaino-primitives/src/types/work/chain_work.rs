@@ -3,8 +3,6 @@
 use core::fmt;
 use core::num::NonZeroU128;
 
-use super::ZeroWork;
-
 /// Cumulative proof-of-work at a block: the fold of block works along its
 /// chain.
 ///
@@ -44,15 +42,9 @@ pub struct ChainWorkOverWidth {
 }
 
 impl ChainWork {
-    /// Create a cumulative work value, rejecting zero.
-    ///
-    /// The door for an already-narrowed integer — a value known to be
-    /// cumulative work, such as one carried by another accumulator over the
-    /// same chain. A value read off a validator's wire enters through
-    /// [`try_from_reported`](Self::try_from_reported) instead, which also owns
-    /// the width bound and the absence convention.
-    pub fn try_new(value: u128) -> Result<Self, ZeroWork> {
-        NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
+    /// Wraps an already non-zero cumulative work value.
+    pub const fn new(value: NonZeroU128) -> Self {
+        Self(value)
     }
 
     /// Read cumulative work as a validator reports it: 32 big-endian bytes.
@@ -134,11 +126,6 @@ impl fmt::Display for ChainWork {
 mod tests {
     use super::*;
 
-    #[test]
-    fn zero_is_rejected_at_the_narrowed_door() {
-        assert_eq!(ChainWork::try_new(0), Err(ZeroWork));
-    }
-
     /// All-zero off the wire is "not reported", not a smallest chain.
     #[test]
     fn reported_all_zero_is_absence() {
@@ -166,13 +153,16 @@ mod tests {
             .expect("within width")
             .expect("non-zero");
         assert_eq!(work.to_be_bytes(), bytes);
-        assert_eq!(work, ChainWork::try_new(0x00de_ad00_beef).expect("nonzero"));
+        assert_eq!(
+            work,
+            ChainWork::new(NonZeroU128::new(0x00de_ad00_beef).expect("nonzero"))
+        );
     }
 
     #[test]
     fn ord_selects_the_heavier_chain() {
-        let lighter = ChainWork::try_new(100).expect("nonzero");
-        let heavier = ChainWork::try_new(200).expect("nonzero");
+        let lighter = ChainWork::new(NonZeroU128::new(100).expect("nonzero"));
+        let heavier = ChainWork::new(NonZeroU128::new(200).expect("nonzero"));
         assert!(heavier > lighter);
     }
 }

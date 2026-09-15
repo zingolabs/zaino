@@ -156,8 +156,8 @@ Boundary doors on `ChainWork`: `try_from_reported` reads the 32 big-endian
 bytes a validator reports — all-zero is `Ok(None)` ("not reported"; absence is
 `Option`, never a zero sentinel) and a value past the recorded 128 bits is
 refused rather than truncated — and `to_be_bytes` renders back for the wire.
-`try_new` / `BlockWork::try_new` take an already-computed integer and enforce
-only the non-zero bound. The difficulty → work derivation itself is consensus
+`ChainWork::new` / `BlockWork::new` take a `NonZeroU128`, so the caller proves
+the non-zero bound before the value exists. The difficulty → work derivation itself is consensus
 logic and deliberately lives outside this crate, next to the consensus
 implementation that owns it.
 

@@ -8,6 +8,7 @@
 //! Internally delegates to `zebra_chain`'s difficulty types for all
 //! arithmetic, but never exposes them in the public API.
 
+use core::num::NonZeroU128;
 use std::fmt;
 
 use super::BlockWork;
@@ -82,7 +83,10 @@ impl CompactDifficulty {
             .to_work()
             .expect("validated at construction: nBits encodes a valid target");
         // A valid, nonzero target always produces nonzero work.
-        BlockWork::try_new(work.as_u128()).expect("valid compact difficulty produces nonzero work")
+        BlockWork::new(
+            NonZeroU128::new(work.as_u128())
+                .expect("valid compact difficulty produces nonzero work"),
+        )
     }
 
     /// Returns a human-readable difficulty as a multiple of the network's

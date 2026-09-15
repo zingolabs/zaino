@@ -149,7 +149,7 @@ mod tests {
     use super::*;
 
     fn block(value: u128) -> BlockWork {
-        BlockWork::try_new(value).expect("test value must be nonzero")
+        BlockWork::new(NonZeroU128::new(value).expect("test value must be nonzero"))
     }
 
     /// The genesis seed is the block's own work, counted exactly once.
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn accumulate_overflow_is_refused() {
-        let max = ChainWork::try_new(u128::MAX).expect("nonzero");
+        let max = ChainWork::new(NonZeroU128::new(u128::MAX).expect("nonzero"));
         assert_eq!(max.accumulate(block(1)), Err(WorkOverflow));
     }
 
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn extend_overflow_is_refused() {
-        let max = ChainWork::try_new(u128::MAX).expect("nonzero");
+        let max = ChainWork::new(NonZeroU128::new(u128::MAX).expect("nonzero"));
         assert_eq!(max.extend(RelativeWork::new(1)), Err(WorkOverflow));
     }
 

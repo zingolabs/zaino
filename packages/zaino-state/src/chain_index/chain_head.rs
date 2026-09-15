@@ -21,6 +21,7 @@
 //! independently and computes absolute chainwork itself. Writing one of these
 //! to the database would put a wrong chainwork on disk.
 
+use core::num::NonZeroU128;
 use std::sync::Arc;
 
 use crate::chain_index::{
@@ -125,8 +126,10 @@ pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadCo
 /// block's own work rather than at zero, precisely so this conversion cannot
 /// fail.
 fn chainwork(work: ChainHeadWork) -> ChainWork {
-    ChainWork::try_new(work.as_u128())
-        .expect("chain head work is accumulated from a non-zero anchor")
+    ChainWork::new(
+        NonZeroU128::new(work.as_u128())
+            .expect("chain head work is accumulated from a non-zero anchor"),
+    )
 }
 
 #[cfg(test)]
