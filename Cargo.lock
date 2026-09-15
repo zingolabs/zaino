@@ -6017,6 +6017,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-lightserve"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-core",
+ "zaino-proto",
+ "zaino-service",
+]
+
+[[package]]
 name = "zaino-mempool"
 version = "0.1.0"
 dependencies = [
