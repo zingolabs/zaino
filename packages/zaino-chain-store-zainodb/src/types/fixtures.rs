@@ -1,5 +1,7 @@
 //! Unit tests for Zaino-state::ChainIndex::types and encoding.
 
+use core::num::NonZeroU128;
+
 use crate::types::{
     AbsoluteChainWork, BlockContext, BlockData, BlockHeaderData, CompactDifficulty,
     EquihashSolution,
@@ -10,6 +12,9 @@ use zaino_encoding::{version, ZainoVersionedSerde as _};
 /// validation but does not correspond to any specific real-world block.
 const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 
+/// The chainwork of the canonical fixture header.
+const CANONICAL_CHAINWORK: NonZeroU128 = NonZeroU128::new(0x42).expect("nonzero literal");
+
 /// Canonical [`BlockHeaderData`] used by the serde tests in this module
 /// and by cross-boundary tests that start from its encoded bytes.
 ///
@@ -19,7 +24,7 @@ const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let hash = crate::types::BlockHash::from([1u8; 32]);
     let parent_hash = crate::types::BlockHash::from([2u8; 32]);
-    let chainwork = AbsoluteChainWork::new(core::num::NonZeroU128::new(0x42).expect("nonzero"));
+    let chainwork = AbsoluteChainWork::new(CANONICAL_CHAINWORK);
     let height = crate::types::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");

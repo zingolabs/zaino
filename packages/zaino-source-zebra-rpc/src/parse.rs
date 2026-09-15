@@ -1132,12 +1132,16 @@ pub(crate) fn parse_transaction(
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU128;
+
     use super::*;
     use serde_json::json;
 
     /// A value whose reversal is unmistakable: it reads one way forwards and
     /// another backwards, so a mirrored decode cannot pass by coincidence.
     const ASYMMETRIC_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01";
+
+    const TRIMMED: NonZeroU128 = NonZeroU128::new(0xff).expect("nonzero literal");
 
     fn asymmetric_bytes() -> [u8; 32] {
         let mut bytes = [0u8; 32];
@@ -1199,12 +1203,7 @@ mod tests {
     fn chainwork_left_pads_a_trimmed_value() {
         let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
 
-        assert_eq!(
-            trimmed,
-            Some(AbsoluteChainWork::new(
-                core::num::NonZeroU128::new(0xff).expect("nonzero")
-            ))
-        );
+        assert_eq!(trimmed, Some(AbsoluteChainWork::new(TRIMMED)));
     }
 
     /// Zero off the wire — either validator's encoding — is "not reported",

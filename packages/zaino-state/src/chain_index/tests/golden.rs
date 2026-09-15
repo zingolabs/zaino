@@ -45,6 +45,7 @@
 //! rebuilt from the validator on every start. It is now
 //! [`zaino_primitives::types::MempoolInfo`] with no encoding to pin.
 
+use core::num::NonZeroU128;
 use std::fmt::Debug;
 
 use crate::chain_index::finalised_state::capability::{DbMetadata, DbVersion, MigrationStatus};
@@ -62,6 +63,9 @@ use crate::{
     SaplingTxList, ScriptType, ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx,
     TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde,
 };
+
+/// The chainwork the golden block context carries.
+const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0dec_0de0).expect("nonzero literal");
 
 /// A valid nBits value. Passes zebra's compact-difficulty validation without
 /// corresponding to any real block.
@@ -184,7 +188,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        AbsoluteChainWork::new(core::num::NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
+        AbsoluteChainWork::new(CHAINWORK),
         height(),
     )
 }
