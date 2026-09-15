@@ -70,7 +70,7 @@ mod error;
 mod relative_chain_work;
 mod single_block_work;
 
-pub use absolute_chain_work::{AbsoluteChainWork, ChainWorkOverWidth, WorkUnderflow};
+pub use absolute_chain_work::{AbsoluteChainWork, WorkUnderflow};
 pub use error::WorkOverflow;
 pub use relative_chain_work::RelativeChainWork;
 pub use single_block_work::SingleBlockWork;
