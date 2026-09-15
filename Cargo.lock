@@ -6264,6 +6264,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-wallet"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
 name = "zainod"
 version = "0.8.0"
 dependencies = [

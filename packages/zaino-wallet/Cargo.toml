@@ -1,0 +1,15 @@
+[package]
+name = "zaino-wallet"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Full-wallet library adapter: a stable-DTO facade over the WalletLibService inner port, for a wallet that embeds Zaino (zallet)."
+
+[dependencies]
+zaino-service = { path = "../zaino-service" }
+zaino-core = { path = "../zaino-core" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt"] }
