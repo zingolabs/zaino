@@ -132,7 +132,8 @@ mod tests {
             time: 0,
             merkle_root: [0u8; 32].into(),
             block_commitments: [0u8; 32].into(),
-            bits: 0,
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff)
+                .expect("the regtest difficulty threshold is valid"),
             nonce: [0u8; 32],
             solution: EquihashSolution::Regtest([0u8; 36]),
         }

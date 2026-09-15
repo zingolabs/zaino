@@ -215,7 +215,7 @@ async fn sync_to_height_across_many_write_batches() {
         // wrong parent still yields a readable, gap-free, strictly-increasing range — so assert the
         // exact increment against this block's own stored difficulty, which an off-by-one breaks.
         let chainwork = *header.context.chainwork();
-        let block_work = header.data().bits.to_work();
+        let block_work = header.data().bits.to_work().expect("vector work fits");
         let expected = match previous_chainwork {
             Some(previous) => previous
                 .accumulate(block_work)

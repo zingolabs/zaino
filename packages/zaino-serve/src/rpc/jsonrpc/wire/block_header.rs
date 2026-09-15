@@ -134,7 +134,7 @@ impl VerboseBlockHeader {
             time: i64::from(header.time),
             nonce: hex::encode(header.nonce),
             solution: hex::encode(header.solution),
-            bits: format!("{:08x}", header.bits),
+            bits: format!("{:08x}", header.bits.as_bits()),
             difficulty: header.difficulty,
             chainwork: header.chainwork.map(|work| hex::encode(work.to_be_bytes())),
             previous_block_hash: header
@@ -167,7 +167,7 @@ mod from_domain_tests {
             time: 1_700_000_000,
             nonce: [0xcc; 32],
             solution: vec![0xde, 0xad, 0xbe, 0xef],
-            bits: 0x1d00_ffff,
+            bits: domain::CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid nBits"),
             difficulty: 1.0,
             block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
             final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),

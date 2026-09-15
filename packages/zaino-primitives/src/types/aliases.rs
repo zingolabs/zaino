@@ -18,9 +18,6 @@ pub type TreeSize = u64;
 /// Subtree index within a shielded pool's commitment tree.
 pub type SubtreeIndex = u16;
 
-/// Compact difficulty target (nBits encoding).
-pub type CompactDifficulty = u32;
-
 /// Block timestamp (Unix epoch seconds).
 pub type BlockTime = u32;
 
