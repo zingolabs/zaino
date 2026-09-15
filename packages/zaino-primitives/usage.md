@@ -155,10 +155,9 @@ that can only observe a run of blocks holds the relative type and compares runs
 against each other. The `types::work` module documentation states the algebra
 and why the three are distinct.
 
-`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
-sends, and answers `Ok(None)` when the validator does not track the value;
-`to_be_bytes` renders back for the wire. For an integer you already hold, use
-`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+`to_be_bytes` renders the 32 big-endian bytes the wire carries; nothing reads
+chainwork in, since Zebra does not report it. For an integer you already hold, use
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::new(NonZeroU128)`.
 
 The difficulty-to-work derivation is consensus logic and lives outside this
 crate. The `types::work` module documentation states the full algebra.

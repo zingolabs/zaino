@@ -32,6 +32,7 @@
 //! reorg or a partially-extended window.
 
 use std::{
+    num::NonZeroU128,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -787,7 +788,9 @@ fn extending_chain_head_block(
     let block_work = zaino_consensus::work_from_bits(block.header.bits)
         .map_err(|error| format!("invalid difficulty: {error}"))
         .and_then(|work| {
-            SingleBlockWork::try_new(work).map_err(|error| format!("no work: {error}"))
+            NonZeroU128::new(work)
+                .map(SingleBlockWork::new)
+                .ok_or_else(|| "no work: zero is not a work value".to_owned())
         })
         .map_err(|reason| {
             ChainHeadAdvanceError::InconsistentSource(format!("block {hash} has {reason}"))

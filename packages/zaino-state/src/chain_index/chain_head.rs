@@ -164,11 +164,13 @@ mod tests {
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = SingleBlockWork::try_new(
-                zaino_consensus::work_from_bits(block.header.bits)
-                    .expect("vector block has valid difficulty"),
-            )
-            .expect("a valid difficulty yields work");
+            let block_work = SingleBlockWork::new(
+                core::num::NonZeroU128::new(
+                    zaino_consensus::work_from_bits(block.header.bits)
+                        .expect("vector block has valid difficulty"),
+                )
+                .expect("a valid difficulty yields work"),
+            );
             work = work.accumulate(block_work).expect("no overflow");
 
             let chain_head_block = ChainHeadBlock {
