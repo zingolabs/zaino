@@ -61,7 +61,10 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
                             // The recorder outlives this loop, so nothing else resets:
                             // a crash-looping indexer scrapes like a healthy one
                             #[cfg(feature = "prometheus")]
-                            crate::metrics::record_restart();
+                            {
+                                crate::metrics::record_restart();
+                                crate::admin::clear_heartbeat();
+                            }
                             continue;
                         }
                         Err(e) => {

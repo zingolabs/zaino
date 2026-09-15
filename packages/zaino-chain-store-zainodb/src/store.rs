@@ -827,11 +827,6 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         self.db.finalised_state_mode()
     }
 
-    /// Whether a from-genesis txout-set accumulator rebuild is running.
-    pub fn accumulator_rebuild_active(&self) -> bool {
-        self.db.accumulator_rebuild_active()
-    }
-
     /// Waits until the database reports [`StatusType::Ready`].
     ///
     /// This polls the router at a fixed interval (100ms) using a Tokio timer. The polling loop uses

@@ -443,11 +443,6 @@ impl<T: ChainStoreSource> Router<T> {
 
     // ***** Observability *****
 
-    /// Rebuilds run on the primary only (sync write path & the v1.2 migration)
-    pub(crate) fn accumulator_rebuild_active(&self) -> bool {
-        self.primary.load().accumulator_rebuild_active()
-    }
-
     /// Returns which backend is currently answering finalised-state reads.
     ///
     /// Read-only; derived from the same state [`Router::backend`] routes on, so it cannot disagree

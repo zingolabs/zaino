@@ -125,15 +125,10 @@ defaults reflecting their transport security:
   service mesh or proxy that terminates TLS).
 
 - **Admin listener** (`metrics_endpoint`, feature `prometheus`): off unless set.
-  Serves `/metrics`, `/livez` and `/health` on its own thread and runtime, so a
-  saturated serving runtime cannot stall a scrape or time out a liveness probe into
-  a restart loop. `/livez` fails once the indexer loop stops reporting; `/health`
-  carries modes and flags as JSON (see [`zainod`'s guide](./packages/zainod/usage.md)).
-  Unauthenticated + unencrypted → publishes
-  chain tip, sync progress, per-method request volumes, process memory. A
-  non-private bind is **warned, not rejected** (no control operations; containers
-  bind `0.0.0.0` by norm). Restrict to loopback, a private interface, or your
-  scraper's network.
+  `/metrics`, `/livez` (`/readyz`: TODO) on its own thread + runtime — see
+  [`zainod`'s guide](./packages/zainod/usage.md). Unauthenticated + unencrypted, publishes
+  chain tip, sync progress, request volumes, process memory. Non-private bind **warned, not
+  rejected** → restrict to loopback, a private interface, or the scraper's network.
 
 **Security implication:** the JSON-RPC interface transmits unencrypted traffic.
 Do not expose it to untrusted networks, and only enable
@@ -142,21 +137,16 @@ connection.
 
 ## Container image
 
-`Dockerfile` builds `zainod` on `rust:<pin>` and runs it on `debian-slim` as non-root
-`container_user`.
+`Dockerfile`: `rust:<pin>` build → `debian-slim` runtime, non-root `container_user`.
 
-`CARGO_FEATURES` — comma-separated, empty = default set:
+| Build arg        | Values                                    | Default   |
+| ---------------- | ----------------------------------------- | --------- |
+| `CARGO_FEATURES` | comma-separated, e.g. `prometheus`, `no_tls_use_unencrypted_traffic` | empty (default set) |
+| `CARGO_PROFILE`  | `release`, `profiling` (+ line tables & frame pointers, for sampling profilers) | `release` |
 
 ```sh
 docker build -t zainod --build-arg CARGO_FEATURES=prometheus .
-docker build -t zainod --build-arg CARGO_FEATURES=no_tls_use_unencrypted_traffic .
-```
-
-`CARGO_PROFILE=profiling` → release codegen + line tables + frame pointers, so a sampling
-profiler can walk and symbolicate stacks. Local equivalent:
-
-```sh
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod  # local profiling build
 ```
 
 ## Running tests
@@ -235,7 +225,7 @@ mistakes its design is trying to prevent.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
-- [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, what goes on `/health`, and why the two never overlap.
+- [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).
 
 
 ## Security Vulnerability Disclosure

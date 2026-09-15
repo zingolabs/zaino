@@ -64,16 +64,15 @@ embedding process no say in its own shutdown.
 
 ## Metrics
 
-Names live here (this crate emits them); registration and descriptions in `zainod`.
+| Metric                                           | Meaning                                                   |
+| ------------------------------------------------ | --------------------------------------------------------- |
+| `zaino.rpc.outbound.duration_seconds{method}`    | one attempt that got a response (retry sleeps excluded)   |
+| `zaino.rpc.outbound.errors_total{method,outcome}`| `transport_error` unreachable / `rpc_error` refused / `retried` saturated |
 
-- `errors_total{method,outcome}` — failed attempts: `transport_error` (unreachable),
-  `rpc_error` (refused), `retried` (saturated); attempt volume = `duration_seconds`' `_count`
-- Rising `retried` share = validator work queue filling. A refusal is fast, so it
-  drags `duration_seconds` down rather than up — the share is the signal, not latency
-- `duration_seconds{method}` — per attempt that got a response, retry sleeps excluded
-
-`method` is a label → `call` / `call_with_timeout` take `&'static str`: cardinality
-capped at the compiled-in method set as a type error (the recorder never evicts).
+- Attempt volume = `duration_seconds` `_count` (no success counter)
+- Rising `retried` share = validator queue filling (a refusal is fast → latency drops, share rises)
+- `method` = a label → `call` takes `&'static str` (cardinality capped at compile time; the
+  recorder never evicts)
 
 ## Related
 

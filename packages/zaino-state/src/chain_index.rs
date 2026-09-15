@@ -129,15 +129,6 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
 }
 
-/// Process-level modes & flags (not quantities → never metrics); served on `zainod`'s `/health`
-#[allow(missing_docs)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IndexHealth {
-    pub finalised_state_mode: FinalisedStateMode,
-    pub mempool_completeness: zaino_mempool::snapshot::MempoolCompleteness,
-    pub accumulator_rebuild_active: bool,
-}
-
 /// The interface to the chain index.
 ///
 /// `ChainIndex` provides a unified interface for querying blockchain data from different
@@ -934,15 +925,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     /// passthrough reports [`StatusType::Ready`] identically to a synced persistent database.
     pub fn finalised_state_mode(&self) -> FinalisedStateMode {
         self.finalized_db.finalised_state_mode()
-    }
-
-    /// Modes & flags for `zainod`'s `/health`.
-    pub fn health(&self) -> IndexHealth {
-        IndexHealth {
-            finalised_state_mode: self.finalized_db.finalised_state_mode(),
-            mempool_completeness: self.mempool.completeness(),
-            accumulator_rebuild_active: self.finalized_db.accumulator_rebuild_active(),
-        }
     }
 
     /// Displays the status of the chain_index

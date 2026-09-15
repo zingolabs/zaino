@@ -63,7 +63,7 @@ pub use zaino_chain_store_zainodb::store::FinalisedStateMode;
 
 // Core ChainIndex trait and implementations
 pub use chain_index::{
-    ChainIndex, ChainIndexRpcExt, IndexHealth, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 // Source types for ChainIndex backends
 pub use chain_index::chain_head::WithChainHeadSource;
@@ -128,8 +128,8 @@ pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 pub(crate) mod stream;
 
 pub use stream::{
-    AddressStream, ChannelStream, CompactBlockStream, CompactTransactionStream,
-    RawTransactionStream, SubtreeRootReplyStream, UtxoReplyStream,
+    AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
+    SubtreeRootReplyStream, UtxoReplyStream,
 };
 
 pub(crate) mod utils;

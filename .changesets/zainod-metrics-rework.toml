@@ -1,7 +1,7 @@
 [[changes]]
 crate = "zainod"
 kind = "feature"
-description = "The metrics listener (`metrics_endpoint`) runs on its own thread and runtime and also serves `/livez` (fails once the indexer loop stops reporting for 30s) and `/health` (JSON: `finalised_state_mode`, `mempool_completeness`, `accumulator_rebuild_active`)."
+description = "The metrics listener (`metrics_endpoint`) runs on its own thread and runtime and also serves `/livez` (fails once the indexer loop stops reporting for 30s)."
 
 [[changes]]
 crate = "zainod"
@@ -22,12 +22,7 @@ description = "A `metrics_endpoint` configured on a binary built without `promet
 crate = "zaino-chain-store-zainodb"
 kind = "breaking"
 description = "Sync and store metrics reworked. Added: `zaino.sync.fetched_height`, `block_fetch_seconds`, `treestate_fetch_seconds`, `block_assemble_seconds`, `batch_write_seconds`, `fsync_seconds`, `batch_blocks`, `accumulator_seconds{mode}`, `accumulator_height`, `zaino.sync.fetched_{transactions,transparent_inputs,transparent_outputs,sapling_spends,sapling_outputs,orchard_actions,ironwood_actions}_total`, `zaino.db.validated_height`, `validation_seconds`, `on_demand_validations_total`, `map_size_bytes`, `used_bytes`, `zaino.migration.progress_height`. `zaino.sync.finalized_height` now means committed and fsynced."
-migration = "Removed: `zaino.sync.block_build_seconds` (sum of the three per-block spans), `zaino.sync.block_write_seconds` (→ `batch_write_seconds` + `fsync_seconds`), `zaino.sync.{transactions,sapling_outputs,orchard_actions}_total` (→ `fetched_*_total`), `zaino.sync.last_block_written_at`, `zaino.db.tip_height` (→ `zaino.sync.finalized_height`), `zaino.db.finalised_ephemeral`, `zaino.db.accumulator_built_height` (→ `zaino.sync.accumulator_height`), `zaino.db.accumulator_rebuild_active` (→ `/health`). Throughput counters count fetched blocks: a failed commit or restart re-counts. Feature `prometheus` removed; emission is unconditional (no-op without a recorder)."
-
-[[changes]]
-crate = "zaino-chain-store-zainodb"
-kind = "feature"
-description = "`FinalisedState::accumulator_rebuild_active()` reports whether a from-genesis txout-set accumulator rebuild is running."
+migration = "Removed: `zaino.sync.block_build_seconds` (sum of the three per-block spans), `zaino.sync.block_write_seconds` (→ `batch_write_seconds` + `fsync_seconds`), `zaino.sync.{transactions,sapling_outputs,orchard_actions}_total` (→ `fetched_*_total`), `zaino.sync.last_block_written_at`, `zaino.db.tip_height` (→ `zaino.sync.finalized_height`), `zaino.db.finalised_ephemeral`, `zaino.db.accumulator_built_height` (→ `zaino.sync.accumulator_height`), `zaino.db.accumulator_rebuild_active` (rebuild progress is logged). Throughput counters count fetched blocks: a failed commit or restart re-counts. Feature `prometheus` removed; emission is unconditional (no-op without a recorder)."
 
 [[changes]]
 crate = "zaino-chain-store-zainodb"
@@ -38,8 +33,8 @@ migration = "Match both new variants wherever `EphemeralRouted` was matched."
 [[changes]]
 crate = "zaino-state"
 kind = "breaking"
-description = "`ZcashService::finalised_state_mode()` replaced by `ZcashService::health() -> IndexHealth` (finalised-state mode, mempool completeness, accumulator rebuild). Sync-loop metrics: added `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`."
-migration = "Read `health().finalised_state_mode`. Removed metrics: `zaino.sync.lag_blocks` (derive `zaino.chain.tip_height - zaino.sync.finalized_height`), `iterations_total`, `iteration_duration_seconds`, `errors_total`, `has_reached_tip`, `reached_tip_at`. Feature `prometheus` removed."
+description = "Sync-loop metrics: added `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`."
+migration = "Removed metrics: `zaino.sync.lag_blocks` (derive `zaino.chain.tip_height - zaino.sync.finalized_height`), `iterations_total`, `iteration_duration_seconds`, `errors_total`, `has_reached_tip`, `reached_tip_at`. Feature `prometheus` removed."
 
 [[changes]]
 crate = "zaino-chain-head-service"
@@ -49,7 +44,7 @@ description = "`zaino.sync.reorg_total` / `reorg_depth` now count reorgs won by 
 [[changes]]
 crate = "zaino-mempool-service"
 kind = "feature"
-description = "Poll-loop metrics `zaino.mempool.transactions`, `zaino.mempool.bytes{kind}`, `zaino.mempool.unadmitted`, `zaino.mempool.poll_seconds`, and `MempoolService::completeness()`."
+description = "Poll-loop metrics `zaino.mempool.transactions`, `zaino.mempool.bytes{kind}`, `zaino.mempool.unadmitted`, `zaino.mempool.poll_seconds`."
 
 [[changes]]
 crate = "zaino-serve"

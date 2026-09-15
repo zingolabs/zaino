@@ -80,7 +80,7 @@ use std::{
     collections::HashSet,
     fs,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicU32, Ordering},
         Arc,
     },
     time::Duration,
@@ -431,8 +431,6 @@ pub(crate) struct DbV1 {
     /// grows beyond the number of “holes” in the sequence.
     validated_set: DashSet<u32>,
 
-    accumulator_rebuild_active: Arc<AtomicBool>,
-
     /// Background validator / maintenance task handle.
     ///
     /// Wrapped in a `Mutex` so `shutdown(&self)` can `.take()` the handle on
@@ -623,7 +621,6 @@ impl DbV1 {
             metadata,
             validated_tip: Arc::new(AtomicU32::new(0)),
             validated_set: DashSet::new(),
-            accumulator_rebuild_active: Arc::new(AtomicBool::new(false)),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: CancellationToken::new(),
             status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
@@ -653,7 +650,6 @@ impl DbV1 {
             metadata: self.metadata,
             validated_tip: Arc::clone(&self.validated_tip),
             validated_set: self.validated_set.clone(),
-            accumulator_rebuild_active: Arc::clone(&self.accumulator_rebuild_active),
             db_handler: std::sync::Mutex::new(None),
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),

@@ -1,44 +1,48 @@
 # `zainod` — usage
 
-The binary and `zainodlib`. This guide covers the admin listener (`metrics_endpoint`, feature
-`prometheus`); configuration and serving are documented in the README.
+The binary and `zainodlib`. Covers the admin listener (`metrics_endpoint`, feature `prometheus`);
+configuration and serving live in the README.
 
 ## The admin listener
 
-One listener, own thread, own current-thread runtime — a probe answered from the saturated serving
-runtime measures that runtime's queue, and a timed-out liveness probe gets the pod killed.
+Own thread + current-thread runtime (a probe on the saturated serving runtime measures its queue; a
+timed-out liveness probe kills the pod).
 
-| Path       | Answers                                             | Fails (`503`) when           |
-| ---------- | --------------------------------------------------- | ---------------------------- |
-| `/metrics` | Prometheus exposition: counters, gauges, histograms | never (render panic → `500`) |
-| `/livez`   | the indexer loop is still running                   | no heartbeat for 30s         |
-| `/health`  | modes & flags as JSON (below)                       | no heartbeat for 30s         |
+| Path       | Answers                                | `503` when                   |
+| ---------- | -------------------------------------- | ---------------------------- |
+| `/metrics` | Prometheus exposition: quantities only | never (render panic → `500`) |
+| `/livez`   | indexer loop still running             | no heartbeat for 30s         |
+| `/readyz`  | TODO                                   | TODO                         |
 
-The indexer loop republishes the heartbeat every 100ms. `/readyz` is not served yet: readiness
-arrives with per-component `ComponentStatus` reporting (`zaino-component`).
+- Heartbeat republished by the indexer loop every 100ms
 
-```json
-{"finalised_state_mode":"persistent","mempool_completeness":"complete","accumulator_rebuild_active":false}
-```
+### `/readyz` — TODO
 
-- `finalised_state_mode`: `persistent`, `ephemeral(configured)`, `ephemeral(syncing)`,
-  `ephemeral(migrating)`
-- `mempool_completeness`: `complete`, `incomplete(capacity_limited)`,
-  `incomplete(pending_metadata)`, `incomplete(source_error)`
-- All three `null` until the indexer service exists
+Status code: `200` iff every component `Ready` + `Healthy`. Body, per component (`zaino-component`
+`ComponentStatus`):
 
-## Quantities on `/metrics`, modes on `/health`
+| Field       | Values                                                  |
+| ----------- | ------------------------------------------------------- |
+| `name`      | chain index, finalised state, chain head, mempool, gRPC, JSON-RPC |
+| `lifecycle` | `Offline`, `Spawning`, `Syncing`, `Ready`, `Closing`    |
+| `health`    | `Healthy`, `Recoverable`, `Critical`, `Offline`         |
 
-A metric is a quantity: a count, a height, a duration, a size. A mode is not. Encoded as a gauge
-(`0 none, 1 read-only, 2 full`) a dashboard averages it, `rate()` differentiates it and an alert
-thresholds it — all meaningless, none an error. A new mode or flag goes on `/health`.
+Per-component detail:
 
-`ephemeral(syncing)` vs `ephemeral(migrating)` matters operationally: during sync routed writes still
-append to the database; during a migration the database is frozen and every routed write lands on the
-passthrough. A caller gating on "the real index is serving" waits for `persistent`.
+| Component       | Detail                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------- |
+| finalised state | mode: `persistent`, `ephemeral(configured)`, `ephemeral(syncing)`, `ephemeral(migrating)`; accumulator rebuild running |
+| mempool         | completeness: `complete`, `incomplete(capacity_limited / pending_metadata / source_error)`      |
+
+## Quantities on `/metrics`, modes on `/readyz`
+
+- Metric = a quantity (count, height, duration, size)
+- Mode as a gauge (`0 none, 1 read-only, 2 full`) → averaged, `rate()`d, thresholded: meaningless,
+  never an error
 
 ## Metric names
 
-Each emitting crate declares its names and `# HELP` text in its own `metric_names` module: plain
-`const`s plus `COUNTERS` / `GAUGES` / `HISTOGRAMS` tables. `zainod` registers them and owns the bucket
-ladders; a histogram without a ladder fails `metrics::init` (it would silently scrape as a summary).
+- Declared by the emitting crate's `metric_names` module: `const` names + `COUNTERS` / `GAUGES` /
+  `HISTOGRAMS` (`# HELP`) tables
+- `zainod` registers them and owns bucket ladders; a histogram without one fails `metrics::init`
+  (would scrape as a summary)

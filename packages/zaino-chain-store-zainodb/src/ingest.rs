@@ -1,5 +1,4 @@
-//! - `block_fetch` + `treestate_fetch` + `block_assemble` = the per-block cost; all
-//!   three scope-bound, so work cannot move between them or be recovered by subtraction
+//! Per-block work tally: feeds the bulk-sync batch byte budget and the `fetched_*_total` counters
 
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 use crate::types::IndexedBlock;

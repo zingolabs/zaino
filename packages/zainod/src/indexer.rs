@@ -177,9 +177,9 @@ where
             let shutdown = shutdown_signal();
             tokio::pin!(shutdown);
             loop {
-                // Every tick (100ms): the heartbeat `/livez` & `/health` answer from
+                // Every tick (100ms): the heartbeat `/livez` answers from
                 #[cfg(feature = "prometheus")]
-                crate::admin::publish(indexer.health());
+                crate::admin::heartbeat();
 
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
@@ -295,13 +295,6 @@ where
         StatusType::from(self.status_int())
     }
 
-    /// `None` before the service exists
-    pub(crate) fn health(&self) -> Option<zaino_state::IndexHealth> {
-        self.service
-            .as_ref()
-            .map(|service| service.inner_ref().health())
-    }
-
     /// Logs the indexers status.
     pub fn log_status(&self) {
         let service_status = match &self.service {
@@ -314,8 +307,9 @@ where
         // real on-disk index. Reporting the mode next to the status is what lets an operator — or a
         // containerised test polling this line — tell the two apart.
         let finalised_state_mode = self
-            .health()
-            .map(|health| health.finalised_state_mode.to_string())
+            .service
+            .as_ref()
+            .map(|service| service.inner_ref().finalised_state_mode().to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
         let json_server_status = match &self.json_server {

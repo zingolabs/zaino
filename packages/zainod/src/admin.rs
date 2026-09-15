@@ -1,9 +1,8 @@
-//! Admin surface: `/metrics`, `/livez`, `/health`, on a runtime of its own.
+//! Admin surface: `/metrics`, `/livez`, on a runtime of its own.
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/metrics` = quantities only; modes & flags go on `/health`
-//! - No `/readyz` yet: readiness arrives with per-component `ComponentStatus` reporting
+//! - `/readyz` TODO: per-component `ComponentStatus` (see `usage.md`)
 
 use std::{
     convert::Infallible,
@@ -17,8 +16,6 @@ use hyper::{body::Bytes, server::conn::http1, service::service_fn, Request, Resp
 use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics_exporter_prometheus::PrometheusHandle;
 use tracing::{error, info, warn};
-use zaino_mempool::snapshot::MempoolCompleteness;
-use zaino_state::{FinalisedStateMode, IndexHealth};
 
 use crate::error::IndexerError;
 
@@ -35,30 +32,26 @@ const MAX_CONNECTIONS: usize = 32;
 /// - Indexer republishes every 100ms; a wedged runtime stops while this thread keeps answering
 const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
 
-#[derive(Clone, Copy)]
-struct Heartbeat {
-    at: Instant,
-    health: Option<IndexHealth>,
-}
+static HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
 
-static HEARTBEAT: Mutex<Option<Heartbeat>> = Mutex::new(None);
-
-/// Called by the indexer loop every tick; `health` = `None` before the service exists
-pub(crate) fn publish(health: Option<IndexHealth>) {
+/// Called by the indexer loop every tick
+pub(crate) fn heartbeat() {
     // Poison-tolerant: the lock only guards a `Copy` swap
-    *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Heartbeat {
-        at: Instant::now(),
-        health,
-    });
+    *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
 }
 
-fn latest() -> Option<Heartbeat> {
+/// Supervisor restart: back to "still starting" (the respawn stops the loop, may outlast 30s)
+pub(crate) fn clear_heartbeat() {
+    *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
+fn last_heartbeat() -> Option<Instant> {
     *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Never published = still starting (k8s covers that window with its own startup delay)
-fn is_fresh(heartbeat: Option<Heartbeat>) -> bool {
-    heartbeat.is_none_or(|heartbeat| heartbeat.at.elapsed() < HEARTBEAT_MAX_AGE)
+/// Never beaten = still starting (k8s covers that window with its own startup delay)
+fn is_fresh(heartbeat: Option<Instant>) -> bool {
+    heartbeat.is_none_or(|at| at.elapsed() < HEARTBEAT_MAX_AGE)
 }
 
 /// Start the admin listener on its own thread.
@@ -96,7 +89,7 @@ async fn serve(endpoint: SocketAddr, handle: PrometheusHandle) {
         Ok(listener) => listener,
         Err(e) => return error!(%e, %endpoint, "admin endpoint failed to bind"),
     };
-    info!(%endpoint, "admin endpoint started: /metrics, /livez, /health");
+    info!(%endpoint, "admin endpoint started: /metrics, /livez");
 
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -154,7 +147,7 @@ async fn route(
                 }
             }
         }
-        "/livez" => match is_fresh(latest()) {
+        "/livez" => match is_fresh(last_heartbeat()) {
             true => body(StatusCode::OK, PLAIN_CONTENT_TYPE, "ok".to_string()),
             false => body(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -162,50 +155,7 @@ async fn route(
                 "unavailable".to_string(),
             ),
         },
-        "/health" => health(latest()),
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
-    }
-}
-
-fn health(heartbeat: Option<Heartbeat>) -> Response<Full<Bytes>> {
-    let (code, payload) = health_report(heartbeat);
-    body(code, JSON_CONTENT_TYPE, payload)
-}
-
-fn health_report(heartbeat: Option<Heartbeat>) -> (StatusCode, String) {
-    let code = match is_fresh(heartbeat) {
-        true => StatusCode::OK,
-        false => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    let payload = match heartbeat.and_then(|heartbeat| heartbeat.health) {
-        Some(health) => format!(
-            r#"{{"finalised_state_mode":"{}","mempool_completeness":"{}","accumulator_rebuild_active":{}}}"#,
-            finalised_state_mode(health.finalised_state_mode),
-            mempool_completeness(health.mempool_completeness),
-            health.accumulator_rebuild_active,
-        ),
-        None => r#"{"finalised_state_mode":null,"mempool_completeness":null,"accumulator_rebuild_active":null}"#
-            .to_string(),
-    };
-    (code, payload)
-}
-
-// Wire names owned here, exhaustively: a new variant fails to compile rather than serialise blind
-fn finalised_state_mode(mode: FinalisedStateMode) -> &'static str {
-    match mode {
-        FinalisedStateMode::EphemeralConfigured => "ephemeral(configured)",
-        FinalisedStateMode::EphemeralSyncing => "ephemeral(syncing)",
-        FinalisedStateMode::EphemeralMigrating => "ephemeral(migrating)",
-        FinalisedStateMode::Persistent => "persistent",
-    }
-}
-
-fn mempool_completeness(completeness: MempoolCompleteness) -> &'static str {
-    match completeness {
-        MempoolCompleteness::Complete => "complete",
-        MempoolCompleteness::IncompleteCapacityLimited => "incomplete(capacity_limited)",
-        MempoolCompleteness::IncompletePendingMetadata => "incomplete(pending_metadata)",
-        MempoolCompleteness::IncompleteSourceError => "incomplete(source_error)",
     }
 }
 
@@ -215,8 +165,6 @@ fn mempool_completeness(completeness: MempoolCompleteness) -> &'static str {
 const EXPOSITION_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 const PLAIN_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
-
-const JSON_CONTENT_TYPE: &str = "application/json";
 
 fn body(status: StatusCode, content_type: &'static str, payload: String) -> Response<Full<Bytes>> {
     Response::builder()
@@ -232,7 +180,7 @@ mod tests {
 
     /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing
     #[tokio::test]
-    async fn the_admin_surface_answers_metrics_livez_and_health() {
+    async fn the_admin_surface_answers_metrics_and_livez() {
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, || {
@@ -271,40 +219,18 @@ mod tests {
             "{metrics}"
         );
         assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
-        assert!(get("/health").await.starts_with("HTTP/1.1 200"));
         assert!(get("/readyz").await.starts_with("HTTP/1.1 404"));
     }
 
+    /// - Stale heartbeat = wedged indexer runtime
     #[test]
-    fn health_serialises_the_published_snapshot() {
-        let heartbeat = Heartbeat {
-            at: Instant::now(),
-            health: Some(IndexHealth {
-                finalised_state_mode: FinalisedStateMode::EphemeralSyncing,
-                mempool_completeness: MempoolCompleteness::IncompleteCapacityLimited,
-                accumulator_rebuild_active: true,
-            }),
-        };
-        assert_eq!(
-            health_report(Some(heartbeat)),
-            (
-                StatusCode::OK,
-                r#"{"finalised_state_mode":"ephemeral(syncing)","mempool_completeness":"incomplete(capacity_limited)","accumulator_rebuild_active":true}"#
-                    .to_string()
-            )
-        );
-    }
-
-    /// - Stale heartbeat = wedged indexer runtime → 503 on both probes' source
-    #[test]
-    fn a_stale_heartbeat_is_unavailable() {
+    fn a_stale_heartbeat_is_not_live() {
         let Some(at) = Instant::now().checked_sub(HEARTBEAT_MAX_AGE + Duration::from_secs(1))
         else {
             return; // monotonic clock younger than the max age (fresh boot)
         };
-        let stale = Some(Heartbeat { at, health: None });
-        assert!(!is_fresh(stale));
-        assert_eq!(health_report(stale).0, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(is_fresh(None), "never published = still starting");
+        assert!(!is_fresh(Some(at)));
+        assert!(is_fresh(Some(Instant::now())));
+        assert!(is_fresh(None), "never beaten = still starting");
     }
 }

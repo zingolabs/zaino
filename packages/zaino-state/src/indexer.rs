@@ -92,8 +92,12 @@ pub trait ZcashService: Sized + Status {
     /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
 
-    /// Modes & flags a status cannot express (e.g. a passthrough reports `Ready` like a synced db).
-    fn health(&self) -> crate::IndexHealth;
+    /// Returns which backend is currently answering finalised-state reads.
+    ///
+    /// Companion to [`Status::status`], which cannot express this: an ephemeral passthrough reports
+    /// [`zaino_status::StatusType::Ready`] identically to a synced persistent database, so a caller
+    /// gating on `Ready` alone cannot tell which one it is about to query.
+    fn finalised_state_mode(&self) -> crate::FinalisedStateMode;
 
     /// Shuts down the StateService.
     fn close(&mut self);

@@ -271,22 +271,6 @@ fn index_spent_outpoints(
 /// Read, maintenance, and bulk (re)build of the finalised txout-set accumulator (schema table #9).
 ///
 /// Groups the accumulator's read / write-path-delta / rebuild surface.
-/// Raises a rebuild flag for its lifetime (lowered on drop, so `?` and panics clear it)
-struct RebuildFlag<'a>(&'a std::sync::atomic::AtomicBool);
-
-impl<'a> RebuildFlag<'a> {
-    fn raise(flag: &'a std::sync::atomic::AtomicBool) -> Self {
-        flag.store(true, std::sync::atomic::Ordering::Release);
-        Self(flag)
-    }
-}
-
-impl Drop for RebuildFlag<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
-
 impl DbV1 {
     /// Resolves each spent outpoint to its previous [`TxOutCompact`].
     ///
@@ -786,7 +770,6 @@ impl DbV1 {
         // Timed per branch: delta is O(range), rebuild a whole-chain scan; merged,
         // rebuilds read as an extreme tail
         let started = std::time::Instant::now();
-        #[allow(unused_variables)]
         let mode = match self.read_tx_out_set_accumulator_built_height().await? {
             Some(built) if built.0 >= height.0 => "current",
             Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
@@ -834,11 +817,6 @@ impl DbV1 {
     // `hash_serialized` field is an XOR multiset commitment: an output created and later spent is
     // XORed in then out and cancels, so the live set is exactly the created-and-not-spent outputs.
 
-    pub(crate) fn accumulator_rebuild_active(&self) -> bool {
-        self.accumulator_rebuild_active
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-
     /// Rebuilds the finalised txout-set accumulator to the current db tip and persists it.
     ///
     /// Atomically writes the recomputed accumulator singleton and the
@@ -881,7 +859,6 @@ impl DbV1 {
 
         let started = std::time::Instant::now();
 
-        let rebuilding = RebuildFlag::raise(&self.accumulator_rebuild_active);
         let result = tokio::task::block_in_place(|| {
             let accumulator =
                 self.build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)?;
@@ -897,7 +874,6 @@ impl DbV1 {
             Ok::<_, StoreError>(())
         });
 
-        drop(rebuilding);
         if result.is_ok() {
             metrics::gauge!(SYNC_ACCUMULATOR_HEIGHT).set(db_tip.0 as f64);
         }

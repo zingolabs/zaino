@@ -244,8 +244,7 @@ mod tests {
         }
     }
 
-    /// - `metric_names!` rejects a duplicate identifier but not a duplicate name;
-    ///   two entries sharing one name silently drop the second `# HELP`
+    /// - Two table entries sharing one name silently drop the second `# HELP`
     #[test]
     fn no_metric_name_is_declared_twice() {
         let mut names: Vec<&str> = all(COUNTERS)
