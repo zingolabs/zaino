@@ -32,10 +32,11 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 
 - `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
   `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
-  `Treestate`, `ShieldedPool`, `ChainMetadata`, the zatoshi quantity
-  family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis`, and the
-  transparent-script family `Script` / `ScriptType` / `classify_script` /
-  `TransparentAddressKey` / `TransparentAddress` (both families below).
+  `Treestate`, `ShieldedPool`, `ChainMetadata`, `CompactDifficulty`,
+  `ChainWork`, the zatoshi quantity family `Zatoshis` / `ZatoshisFlowSum` /
+  `SignedZatoshis`, and the transparent-script family `Script` / `ScriptType` /
+  `classify_script` / `TransparentAddressKey` / `TransparentAddress` (the
+  families and chainwork are covered below).
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
