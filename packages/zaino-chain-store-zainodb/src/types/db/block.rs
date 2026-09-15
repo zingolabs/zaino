@@ -15,6 +15,8 @@
 //! The `From` conversions between `BlockContext` and
 //! `PersistentBlockContext` are defined here, alongside PBC.
 
+use core::num::NonZeroU128;
+
 use corez::io::{self, Read, Write};
 
 use crate::types::{BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height};
@@ -33,25 +35,27 @@ use zaino_encoding::{
 /// Coming back to the business layer the value must fit in `u128`, so the
 /// **high-order** 16 bytes (`[..16]`, big-endian most-significant) must be zero
 /// and the **low-order** 16 bytes (`[16..]`) hold the nonzero `u128`.
-///
-/// Both directions go through the primitive's own byte doors — the on-disk
-/// format is the same 32-byte big-endian form the wire reports, so the width
-/// and non-zero checks live on the type, not here. The one boundary-specific
-/// judgement is what absence means: off the wire an all-zero value is "not
-/// reported", but a block row always has a chainwork, so a zero row is a
-/// corrupt row, not an absent value.
 #[derive(Debug)]
 pub(super) struct PersistentChainWork([u8; 32]);
 
 impl PersistentChainWork {
     pub(super) fn from_business(cw: &ChainWork) -> Self {
-        Self(cw.to_be_bytes())
+        let mut row = [0u8; 32];
+        row[16..].copy_from_slice(&NonZeroU128::from(*cw).get().to_be_bytes());
+        Self(row)
     }
 
     pub(super) fn into_business(self) -> io::Result<ChainWork> {
-        ChainWork::try_from_reported(self.0)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
+        let (high, low) = self.0.split_at(16);
+        if high.iter().any(|byte| *byte != 0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chainwork exceeds u128 range",
+            ));
+        }
+        let value = u128::from_be_bytes(low.try_into().expect("split_at(16) leaves 16 bytes"));
+        ChainWork::try_new(value)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
     }
 }
 
