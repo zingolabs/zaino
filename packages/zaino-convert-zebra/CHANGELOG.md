@@ -8,6 +8,25 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+### Changed
+- `header_from_zebra` and `header_from_parts` populate the new
+  `zaino-primitives` 0.2.0 header fields `version` and `solution`, converting
+  zebra's Equihash solution into `types::EquihashSolution`.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate. `zebra-chain` → `zaino-primitives` conversions:
   `block_from_zebra`, `header_from_zebra`, `header_from_parts`,
   `transaction_from_zebra`, and `ConvertError`.

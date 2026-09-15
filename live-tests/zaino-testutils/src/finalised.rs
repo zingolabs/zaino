@@ -3,10 +3,13 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use ztest::prelude::{family, Exporter, ZainoIndexer};
+use ztest::prelude::{gauge, Dimension, Exporter, Gauge, ZainoIndexer};
 
 /// Per-scrape budget — `timeout` bounds the whole poll loop, not one round trip
 const SCRAPE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Finalised writer's committed tip (set per v1 batch commit, absent until the first)
+pub const DB_TIP_HEIGHT: Gauge = gauge("zaino_db_tip_height", Dimension::Count);
 
 /// Polls the finalised writer's committed tip until it reaches `target`.
 ///
@@ -37,7 +40,7 @@ pub async fn wait_for_finalised(
             .read(SCRAPE_TIMEOUT)
             .await
             .map_err(anyhow::Error::msg)?
-            .height_gauge(family("zaino_db_tip_height"));
+            .height(DB_TIP_HEIGHT);
         if let Some(frontier) = frontier.filter(|f| *f >= target) {
             return Ok(frontier);
         }

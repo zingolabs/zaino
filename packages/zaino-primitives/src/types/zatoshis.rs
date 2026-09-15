@@ -10,17 +10,15 @@
 //! whose invariant it satisfies:
 //!
 //! - [`Zatoshis`] — an amount of ZEC counted in zatoshis, in `0 ..= supply`.
-//! - [`ZatoshisFlowSum`] — an accumulation of movements, bounded only by machine
-//!   representability and deliberately not by the supply.
+//! - [`ZatoshisFlowSum`] — an accumulation of movements, bounded only by
+//!   `u128::MAX` and deliberately not by the supply.
 //! - [`SignedZatoshis`] — a signed value (a movement or a difference), in
 //!   `-supply ..= supply`.
 //!
 //! Summing amounts as flow and subtracting one flow total from another are
-//! relations between these types; they live in the [`arithmetic`] module
-//! alongside the algebra that governs them. See ADR-0013.
+//! relations between these types and live on them. See ADR-0013.
 
 mod amount;
-mod arithmetic;
 mod flow_sum;
 mod signed;
 

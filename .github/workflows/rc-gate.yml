@@ -9,8 +9,7 @@
 #
 # NOTE ON THE NIGHTLY-GREEN PRECONDITION: advancement requires the `rc-gate`
 # named signal (a check-run/commit-status, context `vars.RELMAN_RC_GATE_CHECK`)
-# to be green on dev HEAD. `CI - Nightly` publishes it on a fully-green run; this
-# workflow only reads it (a `force` dispatch bypasses). The gate does not run the
+# to be green on dev HEAD. No publisher is wired yet; this workflow only reads it (a `force` dispatch bypasses). The gate does not run the
 # suite itself — that would duplicate the runner.
 #
 # IDEMPOTENT: a night on which `dev` did not move cuts nothing. The prerelease
@@ -73,9 +72,8 @@ jobs:
       # about to advance to. The gate is DECOUPLED from what runs the suite: it
       # requires a NAMED SIGNAL — a check-run or commit status whose context is
       # `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) — to be `success` on dev
-      # HEAD. `CI - Nightly` (ci-nightly.yaml) is the current publisher — its
-      # `publish-rc-gate-signal` job posts this status on a fully-green run — but
-      # the gate never names it: whatever publishes the signal (a nextest e2e
+      # HEAD. No publisher is wired yet, and
+      # the gate never names one: whatever publishes the signal (a ztest e2e
       # workflow, an external runner, a manual sign-off) is the swappable
       # membership. A `force` dispatch bypasses (recovery, or before the suite
       # has run for a fresh commit).
@@ -152,7 +150,9 @@ jobs:
 
       - name: Set up relman
         if: steps.need.outputs.cut == 'true'
-        uses: ./.github/actions/setup-relman
+        uses: zingolabs/release_manager/.github/actions/setup-relman@7b87e4ab916d72f026ff1d1c80f82dd816bff3c7
+        with:
+          version: 7b87e4ab916d72f026ff1d1c80f82dd816bff3c7
 
       - name: Create and push prerelease tag
         id: tag
@@ -206,8 +206,7 @@ jobs:
       # `deployment-advance` workflow reacts to by advancing `release-ready`.
       # `required_contexts:[]` so the Deployment is not gated on status checks —
       # the soak itself IS the gate. See implementation.md § "The deployment-gate
-      # bridge". (`tools/scripts/mark-deployment.sh` injects the same signal for
-      # testing without waiting days.)
+      # bridge".
       - name: Dispatch the RC to the deployment gate
         if: steps.need.outputs.cut == 'true'
         env:
