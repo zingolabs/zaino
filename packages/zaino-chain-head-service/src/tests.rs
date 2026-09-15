@@ -28,7 +28,7 @@ use zaino_chain_head::{
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
-    MerkleRoot, TreeRoots,
+    MerkleRoot, TreeRoots, TreeSize,
 };
 use zaino_source::{
     FailureMode, FetchError, GetBlockByHashError, GetBlockError, GetChainTipError,
@@ -75,9 +75,9 @@ fn block(h: u32, id: u16, parent: u16) -> Block {
         },
         transactions: vec![],
         chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         },
     }
 }

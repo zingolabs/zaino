@@ -1,6 +1,6 @@
 //! Chain-state facts about a block that are not in the block itself.
 
-use super::{BlockHash, ChainWork, Confirmations, Difficulty, ValuePoolBalance};
+use super::{BlockHash, ChainWork, Confirmations, Difficulty, TreeSize, ValuePoolBalance};
 
 /// What a verbose block query adds to the block's own bytes.
 ///
@@ -63,9 +63,9 @@ pub struct BlockVerbose {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockTreeSizes {
     /// Sapling notes committed as of this block.
-    pub sapling: u64,
+    pub sapling: TreeSize,
     /// Orchard notes committed as of this block.
-    pub orchard: u64,
+    pub orchard: TreeSize,
     /// Ironwood notes committed as of this block (NU6.3).
-    pub ironwood: u64,
+    pub ironwood: TreeSize,
 }

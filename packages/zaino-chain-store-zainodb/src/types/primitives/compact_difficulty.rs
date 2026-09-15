@@ -9,9 +9,8 @@
 //! arithmetic, but never exposes them in the public API.
 
 use std::fmt;
-use std::num::NonZeroU128;
 
-use super::ChainWork;
+use super::BlockWork;
 
 /// A validated compact difficulty value from a block header.
 ///
@@ -69,20 +68,21 @@ impl CompactDifficulty {
         u32::from_be_bytes(self.0.bytes_in_display_order())
     }
 
-    /// Compute the single-block proof-of-work contribution as a [`ChainWork`].
+    /// Compute the single-block proof-of-work contribution as a [`BlockWork`].
     ///
     /// Walks the full Zebra conversion chain internally:
-    /// `CompactDifficulty → ExpandedDifficulty → Work → ChainWork`.
-    pub fn to_work(&self) -> ChainWork {
+    /// `CompactDifficulty → ExpandedDifficulty → Work → BlockWork`. This is
+    /// the consensus-side derivation the primitives crate deliberately does
+    /// not own — the work integer comes from Zebra's consensus-tested
+    /// conversion, and only the strictly-positive bound is re-established at
+    /// the primitives door.
+    pub fn to_work(&self) -> BlockWork {
         let work = self
             .0
             .to_work()
             .expect("validated at construction: nBits encodes a valid target");
         // A valid, nonzero target always produces nonzero work.
-        ChainWork::new(
-            NonZeroU128::new(work.as_u128())
-                .expect("valid compact difficulty produces nonzero work"),
-        )
+        BlockWork::try_new(work.as_u128()).expect("valid compact difficulty produces nonzero work")
     }
 
     /// Returns a human-readable difficulty as a multiple of the network's
@@ -147,10 +147,10 @@ mod tests {
     #[test]
     fn to_work_is_nonzero() {
         let cd = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid");
-        assert!(cd.to_work().as_non_zero_u128().get() > 0);
+        assert!(std::num::NonZeroU128::from(cd.to_work()).get() > 0);
     }
 
-    /// Full pipeline: on-disk u32 → CompactDifficulty → ChainWork → accumulate.
+    /// Full pipeline: on-disk u32 → CompactDifficulty → BlockWork → fold.
     ///
     /// Exercises the complete conversion chain that block indexing performs,
     /// without needing real block data.
@@ -160,18 +160,23 @@ mod tests {
         let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid");
         let block_work = bits.to_work();
 
-        // Genesis: chainwork = block's own work.
-        let genesis_chainwork = block_work;
-        assert!(genesis_chainwork.as_non_zero_u128().get() > 0);
+        // Genesis: cumulative work = the block's own work, counted once.
+        let genesis_chainwork = zaino_primitives::types::ChainWork::genesis(block_work);
+        assert_eq!(
+            std::num::NonZeroU128::from(genesis_chainwork),
+            std::num::NonZeroU128::from(block_work)
+        );
 
         // Block 1: parent chainwork + block work.
-        let block1_chainwork = genesis_chainwork.add(&block_work).expect("no overflow");
+        let block1_chainwork = genesis_chainwork
+            .accumulate(block_work)
+            .expect("no overflow");
         assert!(block1_chainwork > genesis_chainwork);
 
         // The accumulated value is exactly 2x the single-block work.
         assert_eq!(
-            block1_chainwork.as_non_zero_u128().get(),
-            2 * block_work.as_non_zero_u128().get(),
+            std::num::NonZeroU128::from(block1_chainwork).get(),
+            2 * std::num::NonZeroU128::from(block_work).get(),
         );
     }
 }

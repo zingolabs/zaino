@@ -326,7 +326,7 @@ mod tests {
         // The resilient ports whose generated impls these tests exercise.
         use crate::{GetBlock, GetChainTip};
         use zaino_primitives::types::{
-            Block, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
+            Block, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height, TreeSize,
         };
 
         fn height(h: u32) -> Height {
@@ -353,9 +353,9 @@ mod tests {
                 },
                 transactions: vec![],
                 chain_metadata: ChainMetadata {
-                    sapling_tree_size: 0,
-                    orchard_tree_size: 0,
-                    ironwood_tree_size: 0,
+                    sapling_tree_size: TreeSize::ZERO,
+                    orchard_tree_size: TreeSize::ZERO,
+                    ironwood_tree_size: TreeSize::ZERO,
                 },
             }
         }
