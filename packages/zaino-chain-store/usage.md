@@ -378,8 +378,15 @@ absence. That is what `gettxout` wants.
 
 What is stored is a projection — the fields an index reads, not the bytes a
 block hash commits to. A `StoredTxOut` carries a 20-byte address key and a
-value; the locking script is not recoverable. `StoredAddress` can express
-`NonStandard`, which `TransparentAddress` cannot, and that is why it exists.
+value; the locking script is not recoverable. That key is
+`zaino_primitives::TransparentAddressKey`, which can express `NonStandard`,
+where `TransparentAddress` cannot — an index that dropped non-standard outputs
+would answer "no history" for an address that has some.
+
+It lives in `zaino-primitives` rather than here because the chain head reports
+its half of an address's history under the same key, so a consumer merging the
+two joins them without translating. Two equivalent keys in two crates is how the
+two halves of one answer come to disagree.
 
 Raw blocks and raw transactions come from the validator. No port here offers
 them, so that nothing can mistake a store for a source of consensus data.

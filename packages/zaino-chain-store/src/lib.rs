@@ -65,7 +65,7 @@ pub use capability::{
 };
 pub use config::ChainStoreConfig;
 pub use error::{ChainStoreError, ChainStoreSourceError};
-pub use output::{SpenderRef, StoredAddress, StoredTxOut};
+pub use output::{SpenderRef, StoredTxOut};
 pub use ports::{
     ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability,
     ChainStoreService, ChainStoreSource, CompactBlockRead, CompactBlockReadCapability,
