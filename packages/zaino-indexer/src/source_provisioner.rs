@@ -25,16 +25,16 @@ use zaino_sync::engine::SyncEngine;
 
 use crate::IndexerError;
 
-/// Map a resilient-port [`SourceError`] onto an indexer error. `Unavailable`
-/// (the validator is unreachable after the decorator's retry ladder is spent) is
-/// kept distinct so the runtime can react to it as its own condition, rather
-/// than the provisioner re-implementing retry. No wildcard arm: a new
-/// `SourceError` variant must be classified here.
-fn map_source<E: core::fmt::Display + core::fmt::Debug>(err: SourceError<E>) -> IndexerError {
+/// Map a resilient-port [`SourceError`] onto an indexer error, preserving each
+/// cause typed (no stringification). `Unavailable` and `Fetch` are concrete;
+/// only the generic `Domain(E)` is boxed, since one non-generic `IndexerError`
+/// cannot hold every `E`. No wildcard arm: a new `SourceError` variant must be
+/// classified here.
+fn map_source<E: std::error::Error + Send + Sync + 'static>(err: SourceError<E>) -> IndexerError {
     match err {
-        SourceError::Unavailable(u) => IndexerError::Unavailable(u.to_string()),
-        SourceError::Domain(d) => IndexerError::Provision(d.to_string()),
-        SourceError::Fetch(f) => IndexerError::Provision(f.to_string()),
+        SourceError::Unavailable(u) => IndexerError::Unavailable(u),
+        SourceError::Fetch(f) => IndexerError::Fetch(f),
+        SourceError::Domain(d) => IndexerError::Domain(Box::new(d)),
     }
 }
 
@@ -82,8 +82,9 @@ where
         tx: mpsc::Sender<Ctx>,
     ) -> Result<(), IndexerError> {
         for h in u32::from(from)..=u32::from(to) {
-            let height = Height::try_from(h)
-                .map_err(|e| IndexerError::Provision(format!("invalid height {h}: {e}")))?;
+            // `h` lies within `[from, to]`, both valid `Height`s, so it cannot
+            // exceed the max height — the conversion is infallible by construction.
+            let height = Height::try_from(h).expect("height within a valid range is valid");
             let block = self.source.get_block(height).await.map_err(map_source)?;
             let ctx = (self.build)(block);
             if tx.send(ctx).await.is_err() {
@@ -153,17 +154,12 @@ where
         let start = self.start;
         let provision = tokio::spawn(async move { provisioner.provision(start, tip, tx).await });
 
-        engine
-            .sync_channel(rx)
-            .await
-            .map_err(|e| IndexerError::Sync(e.to_string()))?;
+        engine.sync_channel(rx).await?;
 
         // Surface a provisioning failure (the channel closed early because the
-        // provisioner errored, not because it finished).
-        match provision.await {
-            Ok(result) => result?,
-            Err(join) => return Err(IndexerError::Provision(join.to_string())),
-        }
+        // provisioner errored, not because it finished). `??`: the task's
+        // `JoinError` and the inner `IndexerError` both propagate typed.
+        provision.await??;
 
         // Caught up to the tip. (Tip-following via SubscribeChainTip is next.)
         caught_up.notify();

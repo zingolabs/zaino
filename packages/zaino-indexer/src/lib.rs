@@ -23,20 +23,35 @@ use zaino_sync::primitives::BlockHeight;
 use zaino_sync::provisioner::Provisioner;
 
 /// What can go wrong driving the sync engine.
+///
+/// Each variant chains the underlying typed error as its `source` — nothing is
+/// stringified, so the cause is inspectable and matchable. Only the source's
+/// generic `Domain(E)` case is boxed (a single non-generic `Error` type cannot
+/// hold every `E`); the operationally-important axes (unavailable, transport,
+/// sync) stay fully typed.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     /// The validator is unreachable after the resilient source's retry ladder is
-    /// spent (`SourceError::Unavailable`). Kept distinct from other provisioning
-    /// failures so the runtime can react to it as its own condition — the
-    /// provisioner never re-implements retry.
-    #[error("validator unavailable: {0}")]
-    Unavailable(String),
-    /// The provisioner could not supply block contexts.
-    #[error("provisioning failed: {0}")]
-    Provision(String),
+    /// spent (`SourceError::Unavailable`). Distinct so the runtime can react to
+    /// it as its own condition — the provisioner never re-implements retry.
+    #[error(transparent)]
+    Unavailable(#[from] zaino_source::UnavailableError),
+    /// A non-retryable transport failure from the source.
+    #[error(transparent)]
+    Fetch(#[from] zaino_source::FetchError),
+    /// The source answered with a domain-level rejection. Boxed because the
+    /// source's domain error is generic; the cause chain is preserved.
+    #[error("source rejected the request")]
+    Domain(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// The batch provisioner could not supply block contexts.
+    #[error(transparent)]
+    Provision(#[from] zaino_sync::provisioner::ProvisionError),
     /// The engine failed to build the index.
-    #[error("sync failed: {0}")]
-    Sync(String),
+    #[error(transparent)]
+    Sync(#[from] zaino_sync::engine::SyncError),
+    /// The provisioner task panicked or was cancelled.
+    #[error(transparent)]
+    Task(#[from] tokio::task::JoinError),
     /// `run` was called after the engine had already been consumed.
     #[error("indexer already run")]
     AlreadyRun,
@@ -99,14 +114,9 @@ where
 
         // Provision and build to the target. (sync_range is CPU-bound rayon
         // work; a source-backed driver will stream via sync_channel and offload
-        // to spawn_blocking.)
-        let blocks = self
-            .provisioner
-            .provision_range(self.start, self.target)
-            .map_err(|e| IndexerError::Provision(e.to_string()))?;
-        engine
-            .sync_range(blocks)
-            .map_err(|e| IndexerError::Sync(e.to_string()))?;
+        // to spawn_blocking.) Errors chain typed via `?` — nothing stringified.
+        let blocks = self.provisioner.provision_range(self.start, self.target)?;
+        engine.sync_range(blocks)?;
 
         // Caught up to the target — the component goes Ready. Then follow until
         // cancelled (a no-op until tip-following lands).
