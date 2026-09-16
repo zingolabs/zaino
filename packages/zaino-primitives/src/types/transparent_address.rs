@@ -64,18 +64,19 @@ impl TransparentAddress {
             .map_err(|e| TransparentAddressError::Undecodable(e.to_string()))?;
 
         // `convert` dispatches on the parsed address kind without checking the
-        // network, so acceptance is network-blind. The only failure it can
-        // produce for a successfully decoded address is `Unsupported`, raised by
-        // the defaulted non-transparent arms of `TransparentKind` below — hence
-        // any error here means "decoded, but not transparent".
-        let kind = parsed
-            .convert::<TransparentKind>()
+        // network, so acceptance is network-blind. The `(NetworkType, _)` impl
+        // pairs the network with the inner conversion's result. The only failure
+        // it can produce for a successfully decoded address is `Unsupported`,
+        // raised by the defaulted non-transparent arms of `ScriptType`'s impl
+        // below — hence any error here means "decoded, but not transparent".
+        let (network, script_type) = parsed
+            .convert::<(NetworkType, ScriptType)>()
             .map_err(|e| TransparentAddressError::NotTransparent(e.to_string()))?;
 
         Ok(Self {
             encoded,
-            network: kind.network,
-            script_type: kind.script_type,
+            network,
+            script_type,
         })
     }
 
@@ -112,40 +113,29 @@ impl From<TransparentAddress> for String {
     }
 }
 
-/// The transparent metadata extracted while parsing an address.
+/// Reads the script form off a parsed address.
 ///
-/// A private carrier for the `zcash_address` conversion: implementing
-/// [`TryFromAddress`] lets `convert` hand back exactly the two facts Zaino
-/// keeps — network and script form — for the transparent kinds, while the
-/// defaulted arms reject every other kind.
-struct TransparentKind {
-    network: NetworkType,
-    script_type: ScriptType,
-}
-
-impl TryFromAddress for TransparentKind {
+/// Only the two transparent arms are implemented; the defaulted arms reject
+/// every other kind (shielded, unified, Sprout, TEX) as `Unsupported`, which
+/// [`TransparentAddress::try_new`] reports as
+/// [`TransparentAddressError::NotTransparent`].
+impl TryFromAddress for ScriptType {
     // No transparent arm produces a user error, so the user-error channel is
     // uninhabited.
     type Error = core::convert::Infallible;
 
     fn try_from_transparent_p2pkh(
-        net: NetworkType,
+        _net: NetworkType,
         _data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(Self {
-            network: net,
-            script_type: ScriptType::P2PKH,
-        })
+        Ok(ScriptType::P2PKH)
     }
 
     fn try_from_transparent_p2sh(
-        net: NetworkType,
+        _net: NetworkType,
         _data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(Self {
-            network: net,
-            script_type: ScriptType::P2SH,
-        })
+        Ok(ScriptType::P2SH)
     }
 }
 
