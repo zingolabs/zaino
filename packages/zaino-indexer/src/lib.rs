@@ -36,9 +36,9 @@ pub enum IndexerError {
     /// it as its own condition — the provisioner never re-implements retry.
     #[error(transparent)]
     SourceUnreachable(#[from] zaino_source::UnavailableError),
-    /// A non-retryable transport failure from the source.
+    /// A non-retryable transport failure reaching the source.
     #[error(transparent)]
-    Fetch(#[from] zaino_source::FetchError),
+    Transport(#[from] zaino_source::FetchError),
     /// The source answered with a domain-level rejection. Boxed because the
     /// source's domain error is generic; the cause chain is preserved.
     #[error("source rejected the request")]
