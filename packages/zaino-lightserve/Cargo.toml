@@ -10,6 +10,10 @@ zaino-service = { path = "../zaino-service" }
 zaino-core = { path = "../zaino-core" }
 zaino-proto = { path = "../zaino-proto" }
 thiserror = { workspace = true }
+zaino-component = { path = "../zaino-component" }
+tonic.workspace = true
+futures.workspace = true
+tokio = { workspace = true }
 
 [dev-dependencies]
 zaino-service = { path = "../zaino-service", features = ["testing"] }

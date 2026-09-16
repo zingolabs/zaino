@@ -7,14 +7,20 @@
 //! not-yet-serviceable chain, and a domain broadcast rejection are three
 //! different wire outcomes, not one fused transport error.
 //!
-//! This is a slice (two RPCs), not the production `zaino-serve`, and it does not
-//! stand up a tonic server — it exercises the handler shape against the mock.
+//! The handler covers two RPCs; [`GrpcServer`] stands up a real tonic
+//! `CompactTxStreamer` server over it ([`Serve`](zaino_component::Serve)),
+//! serving those two and returning `Status::unimplemented` for the rest of the
+//! generated (fixed lightwalletd) contract until their handler methods exist.
 #![forbid(unsafe_code)]
 
 mod error;
+mod grpc;
+mod transport;
 mod wire;
 
 pub use error::ServeError;
+pub use grpc::GrpcService;
+pub use transport::{GrpcServeError, GrpcServer};
 
 use zaino_proto::proto::service as proto;
 use zaino_service::{LightServeService, Snapshot};
@@ -22,6 +28,7 @@ use zaino_service::{LightServeService, Snapshot};
 use crate::wire::{to_hex, ToWire};
 
 /// Lightwalletd-compatible handler over a [`LightServeService`] engine.
+#[derive(Clone)]
 pub struct LightServe<S: LightServeService> {
     engine: S,
 }
