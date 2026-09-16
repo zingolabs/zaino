@@ -1,7 +1,11 @@
 //! Cumulative proof-of-work.
 
 /// Cumulative chainwork at a block (256-bit big-endian).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Ordered, because ordering chainwork is how a chain is selected. The derive
+/// is correct rather than convenient: the bytes are big-endian, so comparing
+/// them left to right compares the number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChainWork([u8; 32]);
 
 impl ChainWork {
@@ -11,6 +15,36 @@ impl ChainWork {
     /// Wrap raw chainwork bytes (256-bit big-endian).
     pub fn new(bytes: [u8; 32]) -> Self {
         Self(bytes)
+    }
+
+    /// Widen a `u128` work value. Lossless: every `u128` fits 256 bits.
+    ///
+    /// For the boundaries that still carry work as a `u128`. Each is a place
+    /// the protocol's full range is not yet representable, so each is a place
+    /// this call marks.
+    pub fn from_u128(value: u128) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[16..].copy_from_slice(&value.to_be_bytes());
+        Self(bytes)
+    }
+
+    /// This total as a `u128`, or `None` if it does not fit.
+    ///
+    /// Narrowing, so it is fallible — the protocol permits a value this cannot
+    /// return. Callers that must have a `u128` handle the `None`; they do not
+    /// get a truncated one.
+    ///
+    /// NOTE / TODO: zebra still uses `u128` for block work, returning an error
+    /// for any blocks that exceed this range, but Zakura has moved to using a
+    /// 256 bit value for block work to handle very heavy blocks, that are
+    /// allowed by the protocol.
+    pub fn as_u128(self) -> Option<u128> {
+        if self.0[..16] != [0u8; 16] {
+            return None;
+        }
+        let mut low = [0u8; 16];
+        low.copy_from_slice(&self.0[16..]);
+        Some(u128::from_be_bytes(low))
     }
 
     /// Add one block's 256-bit work to this cumulative total.
@@ -62,6 +96,32 @@ impl From<[u8; 32]> for ChainWork {
 #[cfg(test)]
 mod tests {
     use super::ChainWork;
+
+    /// Ordering the bytes orders the number, including across the limb
+    /// boundary — which a comparison written over two `u128` halves in the
+    /// wrong order would get wrong, and chain selection would then pick the
+    /// lighter chain.
+    #[test]
+    fn ordering_is_numeric() {
+        let low_only = ChainWork::from_u128(u128::MAX);
+
+        let mut high_bytes = [0u8; 32];
+        high_bytes[15] = 1;
+        let one_above_the_low_limb = ChainWork::new(high_bytes);
+
+        assert!(low_only < one_above_the_low_limb);
+        assert!(ChainWork::ZERO < low_only);
+        assert!(ChainWork::from_u128(1) < ChainWork::from_u128(2));
+    }
+
+    /// Widening then narrowing is the identity; a value past `u128` refuses
+    /// rather than truncating.
+    #[test]
+    fn u128_round_trips_and_wider_values_refuse() {
+        assert_eq!(ChainWork::from_u128(12_345).as_u128(), Some(12_345));
+        assert_eq!(ChainWork::from_u128(u128::MAX).as_u128(), Some(u128::MAX));
+        assert_eq!(ChainWork::new([0xff; 32]).as_u128(), None);
+    }
 
     /// Encode a `u128` as a 256-bit big-endian work value.
     fn work_from_u128(work: u128) -> [u8; 32] {
