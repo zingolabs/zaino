@@ -38,11 +38,10 @@ fn two_block_graph() -> MapBackedSnapshot {
 #[test]
 fn extending_with_a_block_whose_parent_is_not_the_tip_is_refused() {
     let mut graph = two_block_graph();
+    let (tip, detached) = (graph.best_tip(), chain_head_block(2, 2, 0, 3));
+    let block = detached.reference;
 
-    assert_eq!(
-        graph.extend(chain_head_block(2, 2, 0, 3)),
-        Err(NotChildOfTip)
-    );
+    assert_eq!(graph.extend(detached), Err(NotChildOfTip { tip, block }));
 
     assert_eq!(graph.tip_block().hash(), hash(1));
     assert!(graph.block_by_hash(&hash(2)).is_none());
@@ -52,11 +51,10 @@ fn extending_with_a_block_whose_parent_is_not_the_tip_is_refused() {
 #[test]
 fn extending_with_a_block_at_the_wrong_height_is_refused() {
     let mut graph = two_block_graph();
+    let (tip, detached) = (graph.best_tip(), chain_head_block(3, 2, 1, 3));
+    let block = detached.reference;
 
-    assert_eq!(
-        graph.extend(chain_head_block(3, 2, 1, 3)),
-        Err(NotChildOfTip)
-    );
+    assert_eq!(graph.extend(detached), Err(NotChildOfTip { tip, block }));
 
     assert_eq!(graph.tip_block().hash(), hash(1));
     assert!(graph.block_by_hash(&hash(2)).is_none());

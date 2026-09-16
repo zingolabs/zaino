@@ -834,11 +834,8 @@ fn extend(
     graph: &mut MapBackedSnapshot,
     block: ChainHeadBlock,
 ) -> Result<(), ChainHeadAdvanceError> {
-    let (tip, served) = (graph.best_tip(), block.reference);
-    graph.extend(block).map_err(|NotChildOfTip| {
-        ChainHeadAdvanceError::InconsistentSource(format!(
-            "block {served:?} does not extend the tip {tip:?}"
-        ))
+    graph.extend(block).map_err(|refused: NotChildOfTip| {
+        ChainHeadAdvanceError::InconsistentSource(refused.to_string())
     })
 }
 

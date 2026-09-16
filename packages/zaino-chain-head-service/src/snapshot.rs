@@ -37,13 +37,26 @@ fn tx_index(position: usize) -> TxIndex {
 
 /// [`MapBackedSnapshot::rewind_to`] was asked for a block that is not a
 /// retained canonical block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("block is not a retained canonical block")]
 pub(crate) struct NotOnBestChain;
 
 /// [`MapBackedSnapshot::extend`] was given a block that is not a child of the
 /// tip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NotChildOfTip;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "block {} at height {} does not extend the tip {} at height {}",
+    block.hash,
+    block.height,
+    tip.hash,
+    tip.height
+)]
+pub(crate) struct NotChildOfTip {
+    /// The tip at the time of the refusal.
+    pub(crate) tip: BlockRef,
+    /// The refused block.
+    pub(crate) block: BlockRef,
+}
 
 /// The retained graph: its tip, and every other retained block in a hash map.
 ///
@@ -150,7 +163,10 @@ impl MapBackedSnapshot {
     pub(crate) fn extend(&mut self, block: ChainHeadBlock) -> Result<(), NotChildOfTip> {
         let child_height = self.tip.height().checked_add(1);
         if block.parent_hash != self.tip.hash() || child_height != Some(block.height()) {
-            return Err(NotChildOfTip);
+            return Err(NotChildOfTip {
+                tip: self.tip.reference,
+                block: block.reference,
+            });
         }
         self.heights_to_hashes.insert(block.height(), block.hash());
         self.replace_tip(block);
