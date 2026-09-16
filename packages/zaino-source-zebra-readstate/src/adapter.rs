@@ -522,10 +522,12 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
         // nothing.
         let tip = match read(&self.state, ReadRequest::Tip).await? {
             ReadResponse::Tip(Some((height, _))) => height,
+            // An empty state has no tip, so every requested height is above
+            // it: the same answer a non-empty state gives a range past its tip.
             ReadResponse::Tip(None) => {
-                return Err(
-                    FetchError::new(FailureMode::Parse, "no blocks in chain".to_string()).into(),
-                )
+                return Err(QueryError::Domain(
+                    zaino_source::GetAddressTxidsError::InvalidRange { start, end },
+                ))
             }
             _ => return Err(unexpected_response("Tip").into()),
         };

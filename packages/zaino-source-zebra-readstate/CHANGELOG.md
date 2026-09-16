@@ -9,12 +9,18 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- Fetch failures carry their underlying error as `source()` rather than in the
+  message. State data that violates an invariant (an out-of-range value, an
+  unexpected response variant, out-of-order index rows) is reported as
+  `FailureMode::InvalidSourceData` instead of `FailureMode::Parse`.
 ### Deprecated
 ### Removed
 ### Fixed
 - A malformed transparent address passed to an address-keyed port is answered
   with that port's `InvalidAddress` rejection, as the JSON-RPC adapter answers
   it, instead of a `FailureMode::Parse` fetch failure.
+- `get_address_txids` against an empty state answers `InvalidRange`, as it does
+  for any range above the tip, instead of a `FailureMode::Parse` fetch failure.
 
 ## [0.2.0] - 2026-08-28
 
