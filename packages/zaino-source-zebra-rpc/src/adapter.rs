@@ -27,7 +27,23 @@ impl ZebraRpcAdapter {
 
 /// Parse errors are always non-retryable.
 fn from_parse(e: parse::ParseError) -> FetchError {
-    FetchError::new(FailureMode::Parse, e.to_string())
+    FetchError::because(
+        FailureMode::Parse,
+        "validator response could not be parsed",
+        e,
+    )
+}
+
+/// A block that deserialized but does not convert to the domain type.
+///
+/// Not [`FailureMode::Parse`]: the bytes parsed, and the block they parsed to
+/// violates an invariant the domain type enforces.
+fn unconvertible_block(e: zaino_convert_zebra::ConvertError) -> FetchError {
+    FetchError::because(
+        FailureMode::InvalidSourceData,
+        "validator block does not convert to a domain block",
+        e,
+    )
 }
 
 /// The RPC error codes a validator uses to say "the thing you asked about does
@@ -223,8 +239,10 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
             ironwood_tree_size: 0,
         };
 
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
+        Ok(
+            zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
+                .map_err(unconvertible_block)?,
+        )
     }
 }
 
@@ -452,8 +470,10 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
             orchard_tree_size: 0,
             ironwood_tree_size: 0,
         };
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
+        Ok(
+            zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
+                .map_err(unconvertible_block)?,
+        )
     }
 }
 

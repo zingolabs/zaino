@@ -9,6 +9,10 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- Response parse failures carry the parse error as `source()` rather than in the
+  message. A block that deserializes but does not convert to a domain block is
+  reported as `FailureMode::InvalidSourceData` instead of `FailureMode::Parse`,
+  with the conversion error as `source()`.
 ### Deprecated
 ### Removed
 ### Fixed
