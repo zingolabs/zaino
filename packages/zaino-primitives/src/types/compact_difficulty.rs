@@ -31,7 +31,7 @@ mod u256;
 
 use core::fmt;
 
-use super::work::BlockWork;
+use super::work::SingleBlockWork;
 use u256::U256;
 
 /// Width of the mantissa field in bits, including its sign bit.
@@ -127,17 +127,17 @@ impl CompactDifficulty {
     /// The proof-of-work this difficulty contributes to its chain.
     ///
     /// `floor(2^256 / (target + 1))`, per specification §7.7.5, landing in the
-    /// work family's [`BlockWork`].
+    /// work family's [`SingleBlockWork`].
     ///
     /// Fallible even on a validated encoding: validity is a property of the
     /// *target* (256 bits), but work is recorded in 128 — and the encoding
     /// admits targets below `2^128` whose work does not fit. Those values are
     /// unreachable on a real chain, so the error marks input that did not come
     /// from one.
-    pub fn to_work(&self) -> Result<BlockWork, WorkOverWidth> {
+    pub fn to_work(&self) -> Result<SingleBlockWork, WorkOverWidth> {
         let target = expand(self.0).expect("validated at construction: nBits expands to a target");
         let work = target.work().ok_or(WorkOverWidth { bits: self.0 })?;
-        Ok(BlockWork::from(work))
+        Ok(SingleBlockWork::from(work))
     }
 }
 
