@@ -79,7 +79,7 @@ impl OrchestraBuilder {
         C: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
     {
         component.spawn().await.map_err(BootError::Spawn)?;
-        if !await_ready(&component).await {
+        if !await_running(&component).await {
             return Err(BootError::Unready(component.status().name));
         }
 
@@ -121,7 +121,7 @@ impl OrchestraBuilder {
         // An observed component is confirmed live before it is handed here
         // (e.g. the validator's `connect`), so it is already `Ready`; if it has
         // since failed, the babysitter's `observe` will escalate it.
-        let _ = await_ready(&component).await;
+        let _ = await_running(&component).await;
 
         let name = component.status().name;
         let handle: Arc<dyn StatusSource + Send + Sync> = Arc::new(component.clone());
@@ -278,13 +278,19 @@ fn spawn_signals(
     })
 }
 
-/// Wait until `component` reports `Ready` (returns `true`) or fails to come up —
-/// its health goes `Critical`, or it goes away (returns `false`).
-async fn await_ready<C: StatusWatch>(component: &C) -> bool {
+/// Wait until `component` reaches a **running** lifecycle — `Ready` or `Syncing`
+/// (returns `true`) — or fails to come up: health goes `Critical`, or it goes
+/// away (returns `false`).
+///
+/// Dependents boot once a component is *running*, not necessarily fully caught
+/// up: an indexer serves its dependents (the store, the servers) while it is
+/// still `Syncing`. Readiness gates on caught-up separately (see
+/// [`crate::signals`]).
+async fn await_running<C: StatusWatch>(component: &C) -> bool {
     let mut status = component.subscribe();
     loop {
         let current = *status.borrow_and_update();
-        if current.lifecycle == Lifecycle::Ready {
+        if matches!(current.lifecycle, Lifecycle::Ready | Lifecycle::Syncing) {
             return true;
         }
         if current.health == Health::Critical {
