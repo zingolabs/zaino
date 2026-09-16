@@ -1075,14 +1075,7 @@ impl IndexedBlock {
     }
 
     /// Returns the single-block proof-of-work contribution.
-    ///
-    /// Fallible with the difficulty pipeline itself: a stored difficulty is a
-    /// valid encoding, but the encoding admits targets whose work exceeds the
-    /// recorded 128 bits — see
-    /// [`WorkOverWidth`](zaino_primitives::types::WorkOverWidth).
-    pub fn work(
-        &self,
-    ) -> Result<crate::types::SingleBlockWork, zaino_primitives::types::WorkOverWidth> {
+    pub fn work(&self) -> crate::types::SingleBlockWork {
         self.data.bits.to_work()
     }
 

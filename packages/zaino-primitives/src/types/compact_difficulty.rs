@@ -13,8 +13,9 @@
 //! must fit 256 bits (an oversized exponent, or a boundary exponent whose
 //! mantissa is wider than the room left, overflows), and the expanded target
 //! must be non-zero (a zero mantissa, or one shifted entirely away by a small
-//! exponent, encodes no threshold). [`CompactDifficulty`] is the proof that a
-//! value passed those checks.
+//! exponent, encodes no threshold). On top of those, the target's work must fit
+//! the domain's 128-bit work width. [`CompactDifficulty`] is the proof that a
+//! value passed those checks, and carries the work they computed.
 //!
 //! The whole bits → target → work pipeline is native to this crate: the domain
 //! owns its arithmetic, and consensus implementations serve as differential
@@ -30,6 +31,7 @@
 mod u256;
 
 use core::fmt;
+use core::hash::{Hash, Hasher};
 
 use super::work::SingleBlockWork;
 use u256::U256;
@@ -45,13 +47,15 @@ const EXPONENT_OFFSET: u32 = 3;
 
 /// A validated compact difficulty (`nBits`) value from a block header.
 ///
-/// Invariant: the inner bits expand to a valid target — non-negative,
-/// non-zero, within 256 bits — so a consumer can treat the encoding itself as
-/// well-formed. The one derivation the encoding does *not* guarantee is that
-/// the target's work fits the domain's 128-bit work width; that check lives on
-/// [`to_work`](Self::to_work).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CompactDifficulty(u32);
+/// Invariant: `bits` expands to a valid target — non-negative, non-zero,
+/// within 256 bits — whose work fits 128 bits, and `work` is that target's
+/// work. `work` is a function of `bits`, so equality and hashing follow from
+/// `bits` alone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CompactDifficulty {
+    bits: u32,
+    work: SingleBlockWork,
+}
 
 /// Why a `u32` is not a valid compact difficulty encoding.
 ///
@@ -80,19 +84,15 @@ pub enum CompactDifficultyError {
         /// The rejected nBits value.
         bits: u32,
     },
-}
 
-/// Error when a valid target's work does not fit the recorded 128 bits.
-///
-/// The encoding admits targets below `2^128`, whose work exceeds `u128::MAX`.
-/// No real chain approaches such difficulty — Zcash's *cumulative* work is
-/// around `2^58` — so a value here did not come from a chain, and is refused
-/// rather than truncated into a lower (and wrongly ordered) work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("nBits {bits:#010x} yields work exceeding 128 bits")]
-pub struct WorkOverWidth {
-    /// The nBits value whose work does not fit.
-    pub bits: u32,
+    /// The target is below `2^128`, so its work does not fit 128 bits. No real
+    /// chain reaches such difficulty; the value is refused rather than
+    /// truncated into a lower, wrongly ordered work.
+    #[error("nBits {bits:#010x} yields work exceeding 128 bits")]
+    WorkOverWidth {
+        /// The rejected nBits value.
+        bits: u32,
+    },
 }
 
 impl CompactDifficulty {
@@ -102,8 +102,13 @@ impl CompactDifficulty {
     /// field, a stored row. Rejects every encoding outside the acceptance set,
     /// naming the broken rule.
     pub fn try_from_bits(bits: u32) -> Result<Self, CompactDifficultyError> {
-        expand(bits)?;
-        Ok(Self(bits))
+        let work = expand(bits)?
+            .work()
+            .ok_or(CompactDifficultyError::WorkOverWidth { bits })?;
+        Ok(Self {
+            bits,
+            work: SingleBlockWork::from(work),
+        })
     }
 
     /// Validate nBits carried as its four big-endian (display-order) bytes.
@@ -121,23 +126,20 @@ impl CompactDifficulty {
     /// For wire serialization and persistence; the value is guaranteed to be a
     /// valid compact encoding.
     pub fn as_bits(&self) -> u32 {
-        self.0
+        self.bits
     }
 
-    /// The proof-of-work this difficulty contributes to its chain.
-    ///
-    /// `floor(2^256 / (target + 1))`, per specification §7.7.5, landing in the
-    /// work family's [`SingleBlockWork`].
-    ///
-    /// Fallible even on a validated encoding: validity is a property of the
-    /// *target* (256 bits), but work is recorded in 128 — and the encoding
-    /// admits targets below `2^128` whose work does not fit. Those values are
-    /// unreachable on a real chain, so the error marks input that did not come
-    /// from one.
-    pub fn to_work(&self) -> Result<SingleBlockWork, WorkOverWidth> {
-        let target = expand(self.0).expect("validated at construction: nBits expands to a target");
-        let work = target.work().ok_or(WorkOverWidth { bits: self.0 })?;
-        Ok(SingleBlockWork::from(work))
+    /// The proof-of-work this difficulty contributes to its chain:
+    /// `floor(2^256 / (target + 1))`, per specification §7.7.5. Computed at
+    /// construction.
+    pub fn to_work(&self) -> SingleBlockWork {
+        self.work
+    }
+}
+
+impl Hash for CompactDifficulty {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bits.hash(state);
     }
 }
 
@@ -187,7 +189,7 @@ fn expand(bits: u32) -> Result<U256, CompactDifficultyError> {
 impl fmt::Debug for CompactDifficulty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("CompactDifficulty")
-            .field(&format_args!("{:#010x}", self.0))
+            .field(&format_args!("{:#010x}", self.bits))
             .finish()
     }
 }
@@ -195,7 +197,7 @@ impl fmt::Debug for CompactDifficulty {
 impl fmt::Display for CompactDifficulty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The hex form the wire renders: eight lowercase digits, no prefix.
-        write!(f, "{:08x}", self.0)
+        write!(f, "{:08x}", self.bits)
     }
 }
 
@@ -285,8 +287,7 @@ mod tests {
     fn work_of(bits: u32) -> u128 {
         let work = CompactDifficulty::try_from_bits(bits)
             .expect("valid")
-            .to_work()
-            .expect("work fits");
+            .to_work();
         NonZeroU128::from(work).get()
     }
 
@@ -311,12 +312,14 @@ mod tests {
         assert_eq!(work_of(0x1d00_ffff), 0x1_0001_0001);
     }
 
-    /// A target of 1 is a valid encoding whose work (`2^255`) does not fit
-    /// the 128-bit work width: valid to construct, refused at `to_work`.
+    /// A target of 1 is a well-formed encoding whose work (`2^255`) does not
+    /// fit the 128-bit work width, so construction refuses it.
     #[test]
     fn tiny_target_work_is_over_width() {
-        let cd = CompactDifficulty::try_from_bits(0x0101_0000).expect("target of 1 is valid");
-        assert_eq!(cd.to_work(), Err(WorkOverWidth { bits: 0x0101_0000 }));
+        assert_eq!(
+            CompactDifficulty::try_from_bits(0x0101_0000),
+            Err(CompactDifficultyError::WorkOverWidth { bits: 0x0101_0000 })
+        );
     }
 
     #[test]

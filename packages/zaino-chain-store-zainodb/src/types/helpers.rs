@@ -329,9 +329,8 @@ impl<'a> BlockWithMetadata<'a> {
 /// Shared so the fold and [`BlockWithMetadata`]'s own assembly cannot drift apart.
 pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<SingleBlockWork, String> {
     CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
-        .map_err(|e| format!("invalid nBits: {e}"))?
-        .to_work()
-        .map_err(|e| e.to_string())
+        .map(|bits| bits.to_work())
+        .map_err(|e| format!("invalid nBits: {e}"))
 }
 
 impl BlockMetadata {

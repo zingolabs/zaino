@@ -61,28 +61,13 @@ use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
     AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactDifficulty, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
-    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, SingleBlockWork, TransactionHash,
+    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, TransactionHash,
     TransparentCompactTx, TxInCompact, TxOutCompact,
 };
 
 /// A domain block could not be expressed as an [`IndexedBlock`].
 #[derive(Debug, thiserror::Error)]
 pub enum BlockConversionError {
-    /// The header's difficulty is a valid encoding whose work does not fit
-    /// the domain's recorded 128 bits.
-    ///
-    /// Encoding validity is already carried by the
-    /// [`CompactDifficulty`] type; the width of its work is not, and no block
-    /// from a real chain trips it — see
-    /// [`WorkOverWidth`](zaino_primitives::types::WorkOverWidth).
-    #[error("block {hash}: {source}")]
-    WorkOverWidth {
-        /// The block that could not be converted.
-        hash: BlockHash,
-        /// The over-width work derivation.
-        source: zaino_primitives::types::WorkOverWidth,
-    },
-
     /// A transparent output's value exceeds what the compact form can hold.
     #[error("block {hash} has a transparent output that cannot be compacted")]
     OutputNotCompactable {
@@ -132,22 +117,6 @@ pub enum BlockConversionError {
     },
 }
 
-/// This block's own proof-of-work contribution, ignoring its ancestry.
-///
-/// Split from [`chainwork_from_parent`] because a bulk sync folds the
-/// cumulative work over a run of already-fetched blocks *before* assembling any
-/// of them: the fold is the only ordering constraint in block building, and it
-/// is pure integer arithmetic, so it must not be held behind the expensive
-/// conversion.
-pub fn block_work(
-    header_bits: CompactDifficulty,
-    hash: BlockHash,
-) -> Result<SingleBlockWork, BlockConversionError> {
-    header_bits
-        .to_work()
-        .map_err(|source| BlockConversionError::WorkOverWidth { hash, source })
-}
-
 /// This block's chainwork, accumulated onto its parent's.
 ///
 /// Separate from [`indexed_block`] because the two callers arrive with
@@ -161,7 +130,7 @@ pub fn chainwork_from_parent(
     hash: BlockHash,
     parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<AbsoluteChainWork, BlockConversionError> {
-    let block_work = block_work(header_bits, hash)?;
+    let block_work = header_bits.to_work();
     match parent_chainwork {
         Some(parent) => {
             parent

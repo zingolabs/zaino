@@ -55,7 +55,7 @@ pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
 pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
-pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError, WorkOverWidth};
+pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use encrypted_ciphertext::EncryptedCiphertext;
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
