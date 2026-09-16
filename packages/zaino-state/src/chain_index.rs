@@ -26,6 +26,7 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 use zaino_chain_store_zainodb::store::FinalisedStateMode;
+use zaino_component::{ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
@@ -776,6 +777,37 @@ fn combine_component_statuses(
     own.combine(finalised).combine(mempool).combine(chain_head)
 }
 
+/// A component's two axes, back as the one status this index still folds.
+///
+/// The chain store and the chain head report through
+/// [`StatusSource`](zaino_component::StatusSource); the mempool and this
+/// index's own cell do not yet, and `combine` is defined on the fused type. So
+/// the two that have moved are folded back here rather than three vocabularies
+/// meeting in one expression.
+///
+/// Health first, because that is the axis `combine` ranks: a component that is
+/// broken or degraded is reported as such whatever phase it is in, which is
+/// what the fused model meant by those states. Only a healthy component is
+/// described by its phase.
+///
+/// Transitional in the same way its counterparts in the two adapters are. It
+/// goes when this index folds component statuses directly, which needs a rule
+/// for joining lifecycles that does not exist yet.
+fn fused(status: ComponentStatus) -> StatusType {
+    match status.health {
+        Health::Critical => StatusType::CriticalError,
+        Health::Recoverable => StatusType::RecoverableError,
+        Health::Offline => StatusType::Offline,
+        Health::Healthy => match status.lifecycle {
+            Lifecycle::Offline => StatusType::Offline,
+            Lifecycle::Spawning => StatusType::Spawning,
+            Lifecycle::Syncing => StatusType::Syncing,
+            Lifecycle::Ready => StatusType::Ready,
+            Lifecycle::Closing => StatusType::Closing,
+        },
+    }
+}
+
 impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     NodeBackedChainIndex<Source>
 {
@@ -943,9 +975,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     pub fn status(&self) -> StatusType {
         combine_component_statuses(
             self.status.load(),
-            zaino_chain_store::ChainStoreService::status(self.finalized_db.as_ref()),
+            fused(StatusSource::status(self.finalized_db.as_ref())),
             self.mempool.status(),
-            self.chain_head.status(),
+            fused(self.chain_head.status()),
         )
     }
 
@@ -1340,9 +1372,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     pub fn combined_status(&self) -> StatusType {
         combine_component_statuses(
             self.status.load(),
-            zaino_chain_store::ChainStoreReader::status(&self.finalized_state),
+            fused(StatusSource::status(&self.finalized_state)),
             self.mempool.status(),
-            self.chain_head.status(),
+            fused(self.chain_head.status()),
         )
     }
 

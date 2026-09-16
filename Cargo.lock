@@ -5880,6 +5880,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-chain-head",
+ "zaino-component",
  "zaino-consensus",
  "zaino-primitives",
  "zaino-source",
@@ -5894,10 +5895,10 @@ dependencies = [
  "futures",
  "thiserror 2.0.18",
  "tokio",
+ "zaino-component",
  "zaino-primitives",
  "zaino-source",
  "zaino-source-zebra",
- "zaino-status",
 ]
 
 [[package]]
@@ -5930,6 +5931,7 @@ dependencies = [
  "tracing-subscriber",
  "zaino-chain-store",
  "zaino-common",
+ "zaino-component",
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",
@@ -6193,6 +6195,7 @@ dependencies = [
  "zaino-chain-store",
  "zaino-chain-store-zainodb",
  "zaino-common",
+ "zaino-component",
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",

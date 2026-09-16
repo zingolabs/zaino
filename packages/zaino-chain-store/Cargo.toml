@@ -29,8 +29,9 @@ zaino-primitives = { workspace = true }
 zaino-source = { workspace = true }
 
 # Runtime status, so a consumer can ask how a store is faring through the same
-# vocabulary every other subsystem reports in.
-zaino-status = { workspace = true }
+# vocabulary every other subsystem reports in: a lifecycle phase and a health
+# condition, read through `StatusSource`.
+zaino-component = { workspace = true }
 
 # The UTXO-set commitment is a BLAKE2b-256 multiset hash. It is defined here
 # rather than in a backend because it is a contract between backends: two

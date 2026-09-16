@@ -126,6 +126,11 @@ zainod = { path = "packages/zainod" }
 # (`tracing`), so any subsystem can report its status without inheriting a
 # dependency graph to do it.
 zaino-status = { path = "packages/zaino-status", version = "0.1.1" }
+# What a supervised component is: a lifecycle phase and a health condition as
+# two independent axes, plus the ports to read and watch them. Replaces the
+# fused `zaino-status` model; consumers adopt it one at a time, so both are
+# declared here while that is in progress.
+zaino-component = { path = "packages/zaino-component", version = "0.1.0" }
 # Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
 # and the protocol-limit validation built on them. A leaf that depends on no
 # node implementation, so referencing a consensus fact costs neither a
