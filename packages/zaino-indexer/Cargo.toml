@@ -8,10 +8,13 @@ description = "The indexer writer wired as a runtime component: a SyncDriver ove
 [dependencies]
 zaino-component = { path = "../zaino-component" }
 zaino-sync = { path = "../zaino-sync" }
+zaino-source = { path = "../zaino-source" }
+zaino-primitives = { path = "../zaino-primitives" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
 zaino-sync = { path = "../zaino-sync", features = ["testing"] }
 zaino-runtime = { path = "../zaino-runtime" }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
 tokio = { workspace = true }

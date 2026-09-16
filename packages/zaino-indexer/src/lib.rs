@@ -11,6 +11,9 @@
 //! provisioner + toy index set in tests.
 #![forbid(unsafe_code)]
 
+mod source_provisioner;
+pub use source_provisioner::{SourceProvisioner, SourceSyncDriver};
+
 use std::sync::{Arc, Mutex};
 
 use zaino_component::{CancellationToken, ReadySignal, SyncDriver};

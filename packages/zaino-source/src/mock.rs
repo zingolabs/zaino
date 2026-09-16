@@ -144,10 +144,37 @@ impl crate::OneShotGetTreestate for MockChain {
     }
 }
 
+/// A minimal test [`Block`] at `height` with hash `[hash_byte; 32]`, for seeding
+/// a [`MockChain`] (or other source fixtures) from downstream crates. Behind the
+/// `testing` feature so it is reusable, not just an in-crate test helper.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_block(height: u32, hash_byte: u8) -> Block {
+    use zaino_primitives::types::{BlockHeader, ChainMetadata, EquihashSolution};
+    Block {
+        header: BlockHeader {
+            hash: BlockHash::from([hash_byte; 32]),
+            version: 4,
+            prev_hash: BlockHash::ZERO,
+            height: Height::try_from(height).expect("valid test height"),
+            time: 0,
+            merkle_root: [0; 32].into(),
+            block_commitments: [0; 32].into(),
+            bits: 0,
+            nonce: [0; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        },
+        transactions: vec![],
+        chain_metadata: ChainMetadata {
+            sapling_tree_size: 0,
+            orchard_tree_size: 0,
+            ironwood_tree_size: 0,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{BlockHeader, ChainMetadata, EquihashSolution};
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid test height")
@@ -155,30 +182,6 @@ mod tests {
 
     fn hash(byte: u8) -> BlockHash {
         BlockHash::from([byte; 32])
-    }
-
-    /// Build a minimal test block at a given height with a given hash.
-    fn test_block(h: u32, hash_byte: u8) -> Block {
-        Block {
-            header: BlockHeader {
-                hash: hash(hash_byte),
-                version: 4,
-                prev_hash: BlockHash::ZERO,
-                height: height(h),
-                time: 0,
-                merkle_root: [0; 32].into(),
-                block_commitments: [0; 32].into(),
-                bits: 0,
-                nonce: [0; 32],
-                solution: EquihashSolution::Regtest([0; 36]),
-            },
-            transactions: vec![],
-            chain_metadata: ChainMetadata {
-                sapling_tree_size: 0,
-                orchard_tree_size: 0,
-                ironwood_tree_size: 0,
-            },
-        }
     }
 
     #[tokio::test]
