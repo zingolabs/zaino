@@ -3,7 +3,7 @@
 use zcash_address::{ConversionError, TryFromAddress, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
 
-use crate::types::{AddressNetwork, ScriptType};
+use crate::types::ScriptType;
 
 /// A transparent Zcash address.
 ///
@@ -22,9 +22,9 @@ use crate::types::{AddressNetwork, ScriptType};
 /// a Zcash address at all is rejected as
 /// [`TransparentAddressError::Undecodable`] with the parser's reason preserved.
 ///
-/// The address library is an implementation detail: none of its types appear in
-/// this type's API. What the address *is* — its network and script form — is
-/// re-expressed in Zaino's own vocabulary ([`AddressNetwork`], [`ScriptType`]).
+/// The address library's parser stays inside this module. What the address
+/// *is* is exposed as its network, in the protocol's own [`NetworkType`], and
+/// its script form, as Zaino's [`ScriptType`].
 ///
 /// # Network-blindness
 ///
@@ -45,7 +45,7 @@ use crate::types::{AddressNetwork, ScriptType};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TransparentAddress {
     encoded: String,
-    network: AddressNetwork,
+    network: NetworkType,
     script_type: ScriptType,
 }
 
@@ -80,7 +80,11 @@ impl TransparentAddress {
     }
 
     /// The network this address encodes for.
-    pub fn network(&self) -> AddressNetwork {
+    ///
+    /// Transparent testnet and regtest addresses share one encoding, so an
+    /// address parsed from a string is only ever [`NetworkType::Main`] or
+    /// [`NetworkType::Test`].
+    pub fn network(&self) -> NetworkType {
         self.network
     }
 
@@ -113,10 +117,9 @@ impl From<TransparentAddress> for String {
 /// A private carrier for the `zcash_address` conversion: implementing
 /// [`TryFromAddress`] lets `convert` hand back exactly the two facts Zaino
 /// keeps — network and script form — for the transparent kinds, while the
-/// defaulted arms reject every other kind. It never crosses this module's
-/// boundary, so the address library stays contained here.
+/// defaulted arms reject every other kind.
 struct TransparentKind {
-    network: AddressNetwork,
+    network: NetworkType,
     script_type: ScriptType,
 }
 
@@ -130,7 +133,7 @@ impl TryFromAddress for TransparentKind {
         _data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(Self {
-            network: network_from(net),
+            network: net,
             script_type: ScriptType::P2PKH,
         })
     }
@@ -140,22 +143,9 @@ impl TryFromAddress for TransparentKind {
         _data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(Self {
-            network: network_from(net),
+            network: net,
             script_type: ScriptType::P2SH,
         })
-    }
-}
-
-/// Maps the protocol library's network tag onto Zaino's [`AddressNetwork`].
-///
-/// The match is exhaustive over `NetworkType`'s three variants, so a new kind
-/// of network in the library would surface here as a compile error rather than
-/// a silent mis-mapping.
-fn network_from(net: NetworkType) -> AddressNetwork {
-    match net {
-        NetworkType::Main => AddressNetwork::Mainnet,
-        NetworkType::Test => AddressNetwork::Testnet,
-        NetworkType::Regtest => AddressNetwork::Regtest,
     }
 }
 
@@ -190,7 +180,7 @@ mod tests {
     #[test]
     fn mainnet_p2pkh_accepted() {
         let a = TransparentAddress::try_new(MAINNET_P2PKH).expect("valid mainnet t1");
-        assert_eq!(a.network(), AddressNetwork::Mainnet);
+        assert_eq!(a.network(), NetworkType::Main);
         assert_eq!(a.script_type(), ScriptType::P2PKH);
         assert_eq!(a.as_str(), MAINNET_P2PKH);
     }
@@ -198,21 +188,21 @@ mod tests {
     #[test]
     fn mainnet_p2sh_accepted() {
         let a = TransparentAddress::try_new(MAINNET_P2SH).expect("valid mainnet t3");
-        assert_eq!(a.network(), AddressNetwork::Mainnet);
+        assert_eq!(a.network(), NetworkType::Main);
         assert_eq!(a.script_type(), ScriptType::P2SH);
     }
 
     #[test]
     fn testnet_p2pkh_accepted() {
         let a = TransparentAddress::try_new(TESTNET_P2PKH).expect("valid testnet tm");
-        assert_eq!(a.network(), AddressNetwork::Testnet);
+        assert_eq!(a.network(), NetworkType::Test);
         assert_eq!(a.script_type(), ScriptType::P2PKH);
     }
 
     #[test]
     fn testnet_p2sh_accepted() {
         let a = TransparentAddress::try_new(TESTNET_P2SH).expect("valid testnet t2");
-        assert_eq!(a.network(), AddressNetwork::Testnet);
+        assert_eq!(a.network(), NetworkType::Test);
         assert_eq!(a.script_type(), ScriptType::P2SH);
     }
 

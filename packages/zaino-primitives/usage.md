@@ -23,18 +23,20 @@ leak into the domain vocabulary:
   or JSON-RPC stack, a database — these belong at the boundaries that own them,
   never in the vocabulary every boundary shares.
 
-A **protocol-specification** library is admissible, on one condition: its API is
-**fully contained** — no type of its own appears in any public signature,
-re-export, or public error of this crate. Validation happens inside; everything
-exposed is ours. `zcash_address` is the first such dependency, used by
+A **protocol-specification** library is admissible, on one condition: its
+machinery stays **contained** — its parsers and errors never appear in a public
+signature, re-export, or public error of this crate. Validation happens inside.
+A plain protocol enum may appear where it names the protocol concept directly:
+`TransparentAddress::network()` returns `zcash_protocol`'s `NetworkType` rather
+than a Zaino copy of it. `zcash_address` is the first such dependency, used by
 [`TransparentAddress`](src/types/transparent_address.rs) to decide whether a
 string is a valid transparent address. The alternative was to hand-roll
 Base58Check and SHA-256 here, which buys risk, not ownership: the address
 encoding *is* the protocol, and the spec-steward's parser is the spec artifact,
 so re-implementing it would mean maintaining a second, drift-prone copy of a
-consensus rule. We take the parser and keep its types off our surface — the
-containment condition is what makes that a domain decision expressed in our own
-vocabulary rather than a leak of theirs.
+consensus rule. We take the parser and keep its machinery off our surface — the
+containment condition is what makes that a domain decision rather than a leak of
+theirs.
 
 Serialization, by contrast, lives at the boundary that owns the format:
 
@@ -88,8 +90,8 @@ A transaction's position is the block's to know, not the transaction's:
 disagree with the container.
 
 `TransparentAddress` is network-blind on construction: it accepts a valid
-transparent address for any network and reports which one via `network()` (an
-`AddressNetwork`) and the script form via `script_type()`. The primitive states
+transparent address for any network and reports which one via `network()` (a
+`zcash_protocol` `NetworkType`) and the script form via `script_type()`. The primitive states
 what the address *is*; whether that network is the one a query should act on is
 the consumer's policy, not the address's invariant.
 
