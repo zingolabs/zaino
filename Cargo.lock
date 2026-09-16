@@ -6261,6 +6261,7 @@ dependencies = [
  "tracing-subscriber",
  "whoami",
  "zaino-address",
+ "zaino-chain",
  "zaino-chain-head",
  "zaino-chain-head-service",
  "zaino-chain-store",
