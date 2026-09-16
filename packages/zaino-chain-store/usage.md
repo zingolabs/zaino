@@ -216,8 +216,9 @@ and the absence is the point.
 Chainwork is cumulative: it needs an unbroken chain *below* a block. The store
 is the party holding that chain, so it is the only one that can know the value —
 and it can always derive it, because freezing appends at `tip + 1` and a batch
-that would leave a gap stops there rather than writing above one. Each block's
-difficulty says what it contributes; the store's tip says what came before.
+that would leave a gap is refused with `ChainStoreError::FreezeGap`. Each
+block's difficulty says what it contributes; the store's tip says what came
+before.
 
 A caller has, at best, work measured from somewhere else. The chain head's is
 measured from its own anchor, because it never reads the finalised state. Handing

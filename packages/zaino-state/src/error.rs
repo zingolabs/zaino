@@ -521,6 +521,11 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
             // ChainIndex's own routing mistake, as the note above explains.
             Error::AboveWatermark { .. } => ChainIndexErrorKind::InternalServerError,
 
+            // A freeze outcome, on a path that only ever reads. It is the
+            // composer's to repair — build to `first_frozen - 1` and freeze
+            // again — so a caller seeing it means the repair did not happen.
+            Error::FreezeGap { .. } => ChainIndexErrorKind::InternalServerError,
+
             // A broken store. Neither is the caller's to fix.
             Error::MissingRow(_) | Error::CorruptRow { .. } | Error::Backend { .. } => {
                 ChainIndexErrorKind::InternalServerError
