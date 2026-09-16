@@ -393,6 +393,8 @@ pub(crate) fn parse_block_header_verbose(
         final_sapling_root: opt_field(value, "finalsaplingroot")
             .map(as_tree_root)
             .transpose()?,
+        // Not read: Zebra omits `chainwork` from `getblockheader` and does not
+        // plan to track it (ZcashFoundation/zebra#7109).
         chainwork: None,
         previous_block_hash: opt_field(value, "previousblockhash")
             .map(parse_block_hash)
@@ -861,6 +863,9 @@ pub(crate) fn parse_blockchain_info(
         best_block_hash: parse_block_hash(field(value, "bestblockhash")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
         verification_progress: as_f64(field(value, "verificationprogress")?)?,
+        // Not read: Zebra hardcodes `chainwork` to zero in `getblockchaininfo`
+        // and does not plan to track it (ZcashFoundation/zebra#7109). A reply
+        // without the key parses too, since the value is never consulted.
         chain_work: None,
         pruned: opt_field(value, "pruned")
             .map(as_bool)
@@ -960,6 +965,8 @@ pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerb
     Ok(BlockVerbose {
         confirmations: as_i64(field(value, "confirmations")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
+        // Not read: Zebra omits `chainwork` from `getblock` and does not plan
+        // to track it (ZcashFoundation/zebra#7109).
         chainwork: None,
         chain_supply: opt_field(value, "chainSupply")
             .map(parse_value_pool)
