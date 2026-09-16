@@ -63,6 +63,7 @@ use zaino_chain_store::{
     SpentOutputIndex, StoreCapabilities, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead,
     StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
+use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockTxPosition, ChainWork as DomainChainWork, CompactBlock,
     Height as DomainHeight, Outpoint as DomainOutpoint, TransactionId,
@@ -157,9 +158,16 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
             None => Ok(None),
         }
     }
+}
 
-    fn status(&self) -> StatusType {
-        DbReader::status(self)
+/// A reader reports the store's status, not one of its own.
+///
+/// It holds the `FinalisedState` it reads from, so there is one status and one
+/// name however many handles exist. A supervisor observing a reader and a
+/// service sees the same component.
+impl<T: ChainStoreSource> StatusSource for DbReader<T> {
+    fn status(&self) -> ComponentStatus {
+        component_status(self.inner.name(), DbReader::status(self))
     }
 }
 
@@ -538,10 +546,6 @@ impl<T: ChainStoreSource> ChainStoreService for FinalisedState<T> {
         FinalisedState::reader(self)
     }
 
-    fn status(&self) -> StatusType {
-        FinalisedState::status(self)
-    }
-
     fn subscribe_watermark(&self) -> tokio::sync::watch::Receiver<StoreWatermark> {
         self.subscribe_watermark()
     }
@@ -624,6 +628,47 @@ fn accumulate_chainwork(
                 header.hash
             ))
         })
+}
+
+impl<T: ChainStoreSource> StatusSource for FinalisedState<T> {
+    fn status(&self) -> ComponentStatus {
+        component_status(self.name(), FinalisedState::status(self))
+    }
+}
+
+/// This store's fused status, as the two axes a component reports.
+///
+/// Transitional, and deliberately the only place the two vocabularies meet.
+/// The store tracks the fused [`StatusType`] throughout; nothing inside it
+/// changes shape, and when it is rewritten to hold a phase and a condition
+/// separately this function goes rather than being threaded further in.
+///
+/// The mapping is exact but for the two error states. They are *health* in the
+/// split model, but in the fused one they overwrite the phase — a `Ready`
+/// store that hits a recoverable fault stops recording that it was ready — so
+/// the phase they came from is not recoverable here. A fixed phase is chosen,
+/// erring towards caution: a degraded store reports `Syncing` rather than
+/// claiming readiness it may not have, and a broken one reports `Offline`
+/// rather than a phase it is not really in.
+///
+/// `Busy` has no counterpart either; the component crate defers the load axis.
+/// It is only ever produced when the router cannot resolve a backend for core
+/// reads, which is a degraded store rather than a loaded one — so it maps that
+/// way, and not to the readiness the fused model gave it.
+fn component_status(name: ComponentName, status: StatusType) -> ComponentStatus {
+    let (lifecycle, health) = match status {
+        StatusType::Spawning => (Lifecycle::Spawning, Health::Healthy),
+        StatusType::Syncing => (Lifecycle::Syncing, Health::Healthy),
+        StatusType::Ready => (Lifecycle::Ready, Health::Healthy),
+        StatusType::Closing => (Lifecycle::Closing, Health::Healthy),
+        StatusType::Offline => (Lifecycle::Offline, Health::Offline),
+        StatusType::Busy | StatusType::RecoverableError => {
+            (Lifecycle::Syncing, Health::Recoverable)
+        }
+        StatusType::CriticalError => (Lifecycle::Offline, Health::Critical),
+    };
+
+    ComponentStatus::new(name, lifecycle, health)
 }
 
 impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {

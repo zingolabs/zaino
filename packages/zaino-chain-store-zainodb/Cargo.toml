@@ -85,6 +85,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 zaino-status.workspace = true
+zaino-component.workspace = true
 arc-swap.workspace = true
 dashmap.workspace = true
 tonic.workspace = true

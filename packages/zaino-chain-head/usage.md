@@ -83,10 +83,6 @@ index's sync worker, so tip freshness was decided by database write throughput.
 If a test needs deterministic stepping, the service crate has a path for it that
 is compiled out of production builds. Do not add one here.
 
-Lifecycle is absent for the same reason. Starting, stopping and status are
-inherent methods on the concrete service; a read handle cannot shut the chain
-head down because there is no method on it that could.
-
 ## Work is anchor-relative
 
 `ChainHeadWork` is accumulated from the chain head's **own anchor**, not from

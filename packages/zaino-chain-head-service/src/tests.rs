@@ -686,7 +686,10 @@ async fn shutdown_reports_closing() {
 
     service.shutdown();
 
-    assert_eq!(service.status(), zaino_status::StatusType::Closing);
+    assert_eq!(
+        service.status().lifecycle,
+        zaino_component::Lifecycle::Closing
+    );
 }
 
 /// The subscriber reads the runtime's status, not a copy taken when it was made.
@@ -697,17 +700,17 @@ async fn shutdown_reports_closing() {
 /// proves the two handles share one cell rather than merely agreeing once.
 #[tokio::test]
 async fn the_subscriber_observes_status_transitions() {
-    use zaino_status::{Status as _, StatusType};
+    use zaino_component::{Lifecycle, StatusSource as _};
 
     let validator = MockValidator::linear(5);
     let service = running(&validator, 100).await;
     let subscriber = service.subscriber();
     wait_for(&service, "readiness", |s| s.best_tip().height == height(4)).await;
 
-    assert_eq!(subscriber.status(), StatusType::Ready);
+    assert_eq!(subscriber.status().lifecycle, Lifecycle::Ready);
 
     service.shutdown();
 
-    assert_eq!(subscriber.status(), StatusType::Closing);
+    assert_eq!(subscriber.status().lifecycle, Lifecycle::Closing);
     assert_eq!(subscriber.status(), service.status());
 }
