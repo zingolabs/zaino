@@ -32,7 +32,7 @@ use crate::IndexerError;
 /// classified here.
 fn map_source<E: std::error::Error + Send + Sync + 'static>(err: SourceError<E>) -> IndexerError {
     match err {
-        SourceError::Unavailable(u) => IndexerError::Unavailable(u),
+        SourceError::Unavailable(u) => IndexerError::SourceUnreachable(u),
         SourceError::Fetch(f) => IndexerError::Fetch(f),
         SourceError::Domain(d) => IndexerError::Domain(Box::new(d)),
     }

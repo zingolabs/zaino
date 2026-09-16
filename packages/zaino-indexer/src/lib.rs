@@ -31,11 +31,11 @@ use zaino_sync::provisioner::Provisioner;
 /// sync) stay fully typed.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
-    /// The validator is unreachable after the resilient source's retry ladder is
+    /// The source is unreachable after the resilient source's retry ladder is
     /// spent (`SourceError::Unavailable`). Distinct so the runtime can react to
     /// it as its own condition — the provisioner never re-implements retry.
     #[error(transparent)]
-    Unavailable(#[from] zaino_source::UnavailableError),
+    SourceUnreachable(#[from] zaino_source::UnavailableError),
     /// A non-retryable transport failure from the source.
     #[error(transparent)]
     Fetch(#[from] zaino_source::FetchError),
