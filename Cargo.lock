@@ -5857,6 +5857,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-backend-lmdb"
+version = "0.1.0"
+dependencies = [
+ "lmdb",
+ "tempfile",
+ "zaino-persistence",
+]
+
+[[package]]
 name = "zaino-bench"
 version = "0.1.0"
 dependencies = [
@@ -6017,6 +6026,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-indexer"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-component",
+ "zaino-primitives",
+ "zaino-runtime",
+ "zaino-source",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-indexes"
+version = "0.1.0"
+dependencies = [
+ "zaino-primitives",
+ "zaino-sync",
+]
+
+[[package]]
 name = "zaino-lightserve"
 version = "0.1.0"
 dependencies = [
@@ -6070,6 +6100,14 @@ dependencies = [
  "zaino-component",
  "zaino-core",
  "zaino-service",
+]
+
+[[package]]
+name = "zaino-persistence"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-primitives",
 ]
 
 [[package]]
@@ -6304,6 +6342,21 @@ dependencies = [
  "zaino-chain-store",
  "zaino-core",
  "zaino-service",
+]
+
+[[package]]
+name = "zaino-sync"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-source",
 ]
 
 [[package]]
