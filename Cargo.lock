@@ -6290,6 +6290,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-store-service"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-chain-head",
+ "zaino-chain-store",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
 name = "zaino-wallet"
 version = "0.1.0"
 dependencies = [
