@@ -463,13 +463,22 @@ The commitment lives in this crate rather than in an implementation because two
 stores disagreeing about it would not fail — they would quietly mean different
 things by the same number.
 
-## Do not build on `StoreCapabilities`
+## `StoreCapabilities` routes; it does not advertise
 
-It is interim wiring: the backend's internal routing model, one bit per storage
-trait, surfaced so `ChainIndex` keeps working until the chain view lands. It is
-storage-shaped where the layer above needs "what is answerable to height H" per
-*domain* capability. Its replacement is planned; adding a consumer adds work to
-that replacement.
+It is the store's runtime index set: one bit per storage trait, saying what
+*this database* holds right now — which is a runtime fact, because a store on an
+older schema gains an index mid-migration.
+
+It is not a serving surface, despite the name. What a consumer is written
+against is
+`zaino_chain::ChainCapability`, which is domain-shaped ("address history",
+"spend status"), answers *to what height*, and describes the composed chain view
+rather than one database.
+
+The two are not duplicates. This set is an **input** to that one: a chain view
+derives its `ServiceabilityManifest` by combining it with the store's watermark,
+the chain head's readiness, and what the deployment offers. So read this to
+route, and advertise the other.
 
 Mechanically it is a `Copy` bit set: `new` takes any
 `IntoIterator<Item = StoreCapability>` and absorbs duplicates, `contains` is a
