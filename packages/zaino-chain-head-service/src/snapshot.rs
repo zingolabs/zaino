@@ -24,6 +24,9 @@ use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
 };
 
+#[cfg(test)]
+mod invariants;
+
 /// A transaction's block-order position, as a [`TxIndex`].
 ///
 /// The slot is a `usize` from iterating the block's transactions; the position
