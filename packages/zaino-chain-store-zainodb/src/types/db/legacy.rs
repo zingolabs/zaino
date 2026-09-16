@@ -835,8 +835,8 @@ impl BlockData {
     }
 
     /// Returns the validated compact difficulty.
-    pub fn bits(&self) -> &CompactDifficulty {
-        &self.bits
+    pub fn bits(&self) -> CompactDifficulty {
+        self.bits
     }
 
     /// Returns Equihash Nonse.
