@@ -1,0 +1,42 @@
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+New crate. ChainView: the unified chain read surface, composed from the \
+finalised store below the reorg seam, the chain head's recent window above it, \
+and validator passthrough for what neither indexes. Ships the ports and a \
+composer generic over them, so a deployment bringing its own store or head \
+uses the same crate. Where a tier cannot answer it reports `None` rather than \
+a guess — chainwork above the seam is meaningless until the store has built \
+far enough to say what the anchor's own work was."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+A deployment can offer less than its tiers can answer: `ServedCapabilities` and \
+a type-gated builder, so a capability cannot be advertised by a deployment \
+whose providers cannot supply it. What is served is a decision, not a \
+consequence of what happens to be wired up."""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+`ChainViewComposer::spawn_sync` feeds the finalised store from the chain head's \
+freeze stream, building to the height the store reports it is missing. There is \
+no separate catch-up phase: a block from the middle of the chain handed to an \
+empty store answers `FreezeGap`, and closing that gap is the initial sync, so a \
+cold start and a re-anchor after an outage take the same path. Asked for rather \
+than assumed, so a deployment driving its own store does not end up with two \
+writers on one database. The returned handle reports through `StatusSource` and \
+`StatusWatch`."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "feature"
+description = """
+`WithChainViewSource` reaches ChainView from `ChainIndex`'s source vocabulary, \
+and the mockchain source answers the remaining validator ports a chain view \
+passes through. `ChainIndex` still reads through its existing path; this makes \
+the view reachable, not yet load-bearing."""
