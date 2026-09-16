@@ -12,31 +12,13 @@
 //! the observed validator. The concrete sync engine (e.g. ChainView's sync)
 //! implements [`SyncDriver`]; this component is the runtime slot it plugs into.
 
-use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 use zaino_component::{
-    CancellationToken, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal,
-    StatusSource, StatusWatch, Task, TaskName,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, StatusSource,
+    StatusWatch, SyncDriver, Task, TaskName,
 };
-
-/// Drives index-building: sources blocks and writes the index.
-///
-/// `run` starts syncing, fires `caught_up` the first time it reaches the tip,
-/// and follows the chain until `cancel`. `Ok(())` is a clean stop; `Err` is a
-/// source/write failure — which makes the component `Critical`.
-pub trait SyncDriver: Send + Sync + 'static {
-    /// Why syncing could not continue.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Build the index until cancelled, firing `caught_up` once at the tip.
-    fn run(
-        self: Arc<Self>,
-        cancel: CancellationToken,
-        caught_up: ReadySignal,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-}
 
 /// A [`SyncDriver`] presented to the runtime as an owned component.
 pub struct IndexerComponent<D> {

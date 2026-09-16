@@ -28,10 +28,10 @@ mod supervisor;
 mod validator;
 
 pub use health::{HealthServeError, HealthServer};
-pub use indexer::{IndexerComponent, SyncDriver};
+pub use indexer::IndexerComponent;
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
 pub use serving::ServeComponent;
 pub use signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
 pub use supervisor::{observe, supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
-pub use validator::{ValidatorComponent, ValidatorProbe, ValidatorUnreachable};
-pub use zaino_component::Serve;
+pub use validator::{ValidatorComponent, ValidatorUnreachable};
+pub use zaino_component::{ReachabilityProbe, Serve, SyncDriver};

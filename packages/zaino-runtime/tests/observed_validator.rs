@@ -5,14 +5,14 @@ use std::time::Duration;
 use zaino_component::{ComponentName, Health, Lifecycle};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_runtime::{
-    OrchestraBuilder, RuntimeOutcome, ServeComponent, ValidatorComponent, ValidatorProbe,
+    OrchestraBuilder, ReachabilityProbe, RuntimeOutcome, ServeComponent, ValidatorComponent,
     ValidatorUnreachable,
 };
 use zaino_service::testing::{MockChain, MockIndexerService};
 
 /// A stub reachability probe.
 struct Probe(bool);
-impl ValidatorProbe for Probe {
+impl ReachabilityProbe for Probe {
     async fn reachable(&self) -> bool {
         self.0
     }

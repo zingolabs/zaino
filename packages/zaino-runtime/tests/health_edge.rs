@@ -8,11 +8,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use zaino_component::ComponentName;
 use zaino_runtime::{
-    HealthServer, OrchestraBuilder, ServeComponent, ValidatorComponent, ValidatorProbe,
+    HealthServer, OrchestraBuilder, ReachabilityProbe, ServeComponent, ValidatorComponent,
 };
 
 struct Up;
-impl ValidatorProbe for Up {
+impl ReachabilityProbe for Up {
     async fn reachable(&self) -> bool {
         true
     }

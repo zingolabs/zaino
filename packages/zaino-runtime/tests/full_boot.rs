@@ -12,12 +12,13 @@ use zaino_component::{ComponentName, Health, Lifecycle};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_noderpc::{JsonRpcServer, NodeRpc};
 use zaino_runtime::{
-    Orchestra, OrchestraBuilder, RuntimeOutcome, ServeComponent, ValidatorComponent, ValidatorProbe,
+    Orchestra, OrchestraBuilder, ReachabilityProbe, RuntimeOutcome, ServeComponent,
+    ValidatorComponent,
 };
 use zaino_service::testing::{MockChain, MockIndexerService};
 
 struct Probe(bool);
-impl ValidatorProbe for Probe {
+impl ReachabilityProbe for Probe {
     async fn reachable(&self) -> bool {
         self.0
     }

@@ -14,22 +14,12 @@
 //!
 //! [`report_health`]: ValidatorComponent::report_health
 
-use core::future::Future;
-
 use tokio::sync::watch;
 use zaino_component::{
-    ComponentName, ComponentStatus, Health, Lifecycle, StatusSource, StatusWatch,
+    ComponentName, ComponentStatus, Health, Lifecycle, ReachabilityProbe, StatusSource, StatusWatch,
 };
 
 const VALIDATOR: ComponentName = ComponentName("validator");
-
-/// A reachability check against the validator — the minimal thing the runtime
-/// needs to gate bringup. The real implementor is a source client; a test uses
-/// a stub.
-pub trait ValidatorProbe {
-    /// Whether the validator is reachable right now.
-    fn reachable(&self) -> impl Future<Output = bool> + Send;
-}
 
 /// The validator could not be reached at bringup; dependents must not boot.
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +37,7 @@ impl ValidatorComponent {
     ///
     /// Errors if the initial probe fails: the runtime gates dependents on the
     /// validator, so a missing validator is a boot failure, not a degraded start.
-    pub async fn connect<P: ValidatorProbe>(probe: &P) -> Result<Self, ValidatorUnreachable> {
+    pub async fn connect<P: ReachabilityProbe>(probe: &P) -> Result<Self, ValidatorUnreachable> {
         if !probe.reachable().await {
             return Err(ValidatorUnreachable);
         }
