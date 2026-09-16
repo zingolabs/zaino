@@ -13,12 +13,29 @@ mod bench;
 // source-backed provisioner is productionised over dev's `zaino-source`.
 // #[cfg(test)]
 // mod source_integration;
-#[cfg(test)]
-mod toy_indexes;
+
+/// Toy indexes over [`TestBlockContext`], for exercising the engine end to end
+/// (used by this crate's tests and by downstream driver crates behind the
+/// `testing` feature).
+#[cfg(any(test, feature = "testing"))]
+pub mod toy_indexes;
 
 // Re-export persistence testing backends.
 #[cfg(any(test, feature = "testing"))]
 pub use zaino_persistence::in_memory::{InMemoryBackend, SlowBackend};
+
+/// A toy index set (three BlockLocal indexes) over [`TestBlockContext`], for
+/// driving the engine in tests without a real chain source.
+#[cfg(any(test, feature = "testing"))]
+pub fn toy_index_set() -> crate::index_set::IndexSet<TestBlockContext> {
+    use toy_indexes::{
+        count_index::CountIndex, running_sum_index::RunningSumIndex, value_index::ValueIndex,
+    };
+    crate::index_set::IndexSet::new()
+        .with::<ValueIndex>()
+        .with::<CountIndex>()
+        .with::<RunningSumIndex>()
+}
 
 use crate::primitives::BlockHeight;
 use crate::provisioner::{ProvisionError, Provisioner};
