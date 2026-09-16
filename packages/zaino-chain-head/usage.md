@@ -85,14 +85,60 @@ is compiled out of production builds. Do not add one here.
 
 ## Work is anchor-relative
 
-`ChainHeadWork` is accumulated from the chain head's **own anchor**, not from
-genesis. It orders competing branches correctly, which is all the chain head
-needs, and it is not the absolute chainwork a validator reports.
+`AnchoredRelativeChainWork` is accumulated from the chain head's **own anchor**,
+not from genesis. It orders competing branches correctly, which is all the chain
+head needs, and it is not the absolute chainwork a validator reports.
 
-The distinct type is there to stop the two being confused. Do not serve a
-`ChainHeadWork` where an API promises chainwork, and do not compare one against
-a value from a validator — two chain heads with different anchors produce
-different numbers for the same block.
+The anchor is the parent of the window floor — the block immediately below the
+lowest one the graph retains. It is never itself retained and contributes no
+work, so for a block `B` the value sums block work over `(anchor, B]`, and the
+floor's own value is just the floor's block work.
+
+The distinct type is there to stop the two being confused. Do not serve an
+`AnchoredRelativeChainWork` where an API promises chainwork, and do not compare
+one against a value from a validator — two chain heads with different anchors
+produce different numbers for the same block.
+
+### Rebasing to absolute chainwork
+
+`ChainHeadSnapshot::work_anchor` names the anchor, so a consumer holding a
+finalised store can make the value absolute with one addition and no
+subtraction:
+
+```text
+absolute(B) = chainwork(anchor) + work(B)
+```
+
+`work_anchor` is `None` when the floor is genesis, which is the same statement
+with the anchor's chainwork at zero.
+
+`zaino-chain` does this for the composed chain view, and answers `None` rather
+than a guess while the store has not yet built as far as the anchor. A consumer
+doing it itself should do the same: there is no correct value to serve until the
+anchor's chainwork is known, and a wrong one written to disk does not come back.
+
+Two properties make the rebase safe, and both are worth knowing before relying
+on it:
+
+- **The anchor outlives the floor block.** Retention prunes the floor once the
+  tip moves far enough past it, while every surviving block's work still counts
+  from the same place. The lowest *retained* block is therefore not a substitute
+  for the anchor — its work is an accumulation, not its own block work.
+- **Re-anchoring replaces it.** When the chain moves further than the window
+  covers, the graph is rebuilt from a new floor and the anchor moves with it. A
+  consumer caching the anchor's absolute chainwork must key that cache to the
+  snapshot, not hold it for the life of the chain head.
+
+### Why the head is not given absolute work instead
+
+A port injecting absolute chainwork into the chain head is not a layering
+violation — it would be an ordinary driven port, and the head would still never
+read a store itself. It is ruled out for a different reason: chain selection
+compares `work` across the whole retained graph. A graph holding some absolute
+values and some relative ones has no usable ordering, because any absolute value
+dwarfs every relative one, so the heaviest branch would be chosen by which
+blocks happened to be rebased rather than by work. Keeping one uniform scale
+inside the graph, and rebasing at the edge, is what keeps that comparison exact.
 
 ## The driven port names only what is asked
 

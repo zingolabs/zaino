@@ -5,7 +5,7 @@
 //! force it:
 //!
 //! - the finalised state is gone. The old `sync` took an `Arc<FinalisedState>`
-//!   and read `db_height()` for both its anchor floor and its trim floor; both
+//!   and read `db_height()` for both its window floor and its trim floor; both
 //!   now come from the chain tip and the configured depth, which is the arm the
 //!   old code already took whenever the database lagged.
 //! - the source is the `zaino-source` ports rather than the wire-typed
@@ -44,10 +44,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _, ChainHeadWork,
+    AnchoredRelativeChainWork, ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig,
+    ChainHeadSnapshot as _,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
-use zaino_primitives::types::{BlockHash, BlockRef, ChainStateEpoch, Height, TreeRoots};
+use zaino_primitives::types::{BlockHash, BlockRef, ChainStateEpoch, ChainWork, Height, TreeRoots};
 use zaino_status::{NamedAtomicStatus, StatusType};
 
 use crate::{
@@ -107,8 +108,8 @@ impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
 impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// Anchors the graph, then starts the writer task that extends it.
     ///
-    /// Anchoring is the old `initialize` with `resolve_anchor_block`: one block
-    /// at the anchor height, which the writer task then extends one block at a
+    /// Anchoring is the old `initialize` with `resolve_floor_block`: one block
+    /// at the window floor, which the writer task then extends one block at a
     /// time. Doing it before returning is what makes
     /// `ChainHeadSubscriber::current` total — there is no state in which a
     /// ChainHead exists with nothing to answer from.
@@ -179,7 +180,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     ) -> Result<Arc<Self>, ChainHeadInitError> {
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
-        let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
+        let snapshot = floor_with_retry(&source, &config, &cancel).await?;
         info!(
             height = u32::from(snapshot.best_tip().height),
             hash = %snapshot.best_tip().hash,
@@ -202,10 +203,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             task: Mutex::new(None),
             config,
         });
-        // Still `Syncing`: the anchor is the window's floor, not its tip, so a
-        // reader served now would see a head up to `max_depth` below the
-        // chain. `Ready` is published by the first successful advance, which
-        // is the first moment the snapshot matches the validator's tip.
+        // Still `Syncing`: the graph starts at the window floor, not at the
+        // tip, so a reader served now would see a head up to `max_depth` below
+        // the chain. `Ready` is published by the first successful advance,
+        // which is the first moment the snapshot matches the validator's tip.
 
         Ok(service)
     }
@@ -387,12 +388,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // greater of the finalised database's height and this floor; with the
         // database gone the floor is the whole rule, and it is the arm the old
         // code took whenever the database lagged (#1261).
-        let anchor_height = height_below(chain_height, self.config.max_depth());
+        let floor_height = height_below(chain_height, self.config.max_depth());
 
-        let mut graph = if previous.best_tip().height < anchor_height {
+        let mut graph = if previous.best_tip().height < floor_height {
             // The chain moved further than the window covers. Re-anchor rather
             // than walking the gap one block at a time.
-            MapBackedSnapshot::from_initial_block(self.resolve_anchor_block(anchor_height).await?)
+            MapBackedSnapshot::from_initial_block(self.resolve_floor_block(floor_height).await?)
         } else {
             previous.clone()
         };
@@ -473,7 +474,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             .values()
             .max_by_key(|block| block.work)
             .cloned()
-            .expect("a graph always retains at least its anchor");
+            .expect("a graph always retains at least its floor block");
         if heaviest.work > tip_work {
             self.handle_reorg(&mut graph, &heaviest, 0).await?;
         }
@@ -644,22 +645,24 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             })
     }
 
-    /// Resolve the chain head's anchor (root) block at `anchor_height`.
+    /// Resolve the window floor — the graph's root block — at `floor_height`.
     ///
     /// The finalised-reader arm is gone with the finalised state; what remains
     /// is the fallback the old code used whenever the reader could not serve
     /// the height, which was every time the database lagged.
     ///
-    /// The anchor sits below the reorg-possible range, so its accumulated work
-    /// is the base of this window's own accumulation rather than an absolute
-    /// value — see `ChainHeadWork`.
-    async fn resolve_anchor_block(
+    /// Passing no parent work is what makes this block the floor: its work
+    /// accumulates from [`AnchoredRelativeChainWork::ZERO`], so the anchor
+    /// every block above it is measured from is this block's parent. See
+    /// [`AnchoredRelativeChainWork`] for why that is relative rather than
+    /// absolute.
+    async fn resolve_floor_block(
         &self,
-        anchor_height: Height,
+        floor_height: Height,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-        let block = self.block_at_height(anchor_height).await?.ok_or_else(|| {
+        let block = self.block_at_height(floor_height).await?.ok_or_else(|| {
             ChainHeadAdvanceError::InconsistentSource(format!(
-                "anchor block {anchor_height} unavailable from validator"
+                "floor block {floor_height} unavailable from validator"
             ))
         })?;
 
@@ -789,13 +792,18 @@ fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
 /// Builds a [`ChainHeadBlock`], accumulating work onto its parent's.
 ///
 /// The old `create_indexed_block_with_optional_roots`, less the parts only a
-/// persisted block needed. `parent_work` is `None` only for the anchor, whose
-/// accumulation starts at its own work — see `ChainHeadWork` for why that is
-/// anchor-relative rather than absolute.
+/// persisted block needed.
+///
+/// `parent_work` is `None` only for the window floor, which has no retained
+/// parent. It folds from [`AnchoredRelativeChainWork::ZERO`] rather than
+/// branching, because the anchor — the floor's parent — contributes no work by
+/// definition, so the floor is built by the same step as every block above it.
+/// See [`AnchoredRelativeChainWork`] for why the result is relative rather than
+/// absolute.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
     tree_roots: &TreeRoots,
-    parent_work: Option<ChainHeadWork>,
+    parent_work: Option<AnchoredRelativeChainWork>,
 ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
     let block_work = zaino_consensus::work_from_bits(block.header.bits).map_err(|error| {
         ChainHeadAdvanceError::InconsistentSource(format!(
@@ -804,15 +812,19 @@ fn chain_head_block(
         ))
     })?;
 
-    let work = match parent_work {
-        Some(parent) => parent.checked_add(block_work).ok_or_else(|| {
+    // Widened where it is produced. `work_from_bits` still answers in a
+    // `u128` and refuses above it, so the protocol's full range stops here
+    // rather than at the accumulator; widening at the call site is what lets
+    // that producer change without touching the chain head.
+    let work = parent_work
+        .unwrap_or(AnchoredRelativeChainWork::ZERO)
+        .checked_add(ChainWork::from_u128(block_work))
+        .ok_or_else(|| {
             ChainHeadAdvanceError::ReorgFailure(format!(
                 "accumulated work overflowed at block {}",
                 block.header.hash
             ))
-        })?,
-        None => ChainHeadWork::anchored_at(block_work),
-    };
+        })?;
 
     Ok(ChainHeadBlock {
         reference: BlockRef {
@@ -827,7 +839,7 @@ fn chain_head_block(
 }
 
 /// Anchors the graph, retrying transient source failures.
-async fn anchor_with_retry<S: ChainHeadBlockSource>(
+async fn floor_with_retry<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
     cancel: &CancellationToken,
@@ -840,7 +852,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
             return Err(ChainHeadInitError::Cancelled);
         }
 
-        match anchor(source, config).await {
+        match window_floor(source, config).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
                 failures += 1;
@@ -860,10 +872,11 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
     }
 }
 
-/// One attempt at anchoring: the block at `tip - depth`, alone.
+/// One attempt at anchoring: the window floor, the block at `tip - depth`,
+/// alone.
 ///
 /// The writer task extends from here one block at a time, exactly as before.
-async fn anchor<S: ChainHeadBlockSource>(
+async fn window_floor<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
 ) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
@@ -872,10 +885,10 @@ async fn anchor<S: ChainHeadBlockSource>(
         .await
         .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
 
-    let anchor_height = height_below(tip_height, config.max_depth());
+    let floor_height = height_below(tip_height, config.max_depth());
 
     let block = source
-        .get_block(anchor_height)
+        .get_block(floor_height)
         .await
         .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
     let tree_roots = source
