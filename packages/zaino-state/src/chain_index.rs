@@ -65,6 +65,8 @@ pub mod chain_head;
 /// ChainIndex's side of the ChainStore boundary: handing the finalised store a
 /// validator.
 pub mod chain_store;
+/// Reaching ChainView from this crate's source vocabulary.
+pub mod chain_view;
 mod mempool;
 
 /// How long the mempool may stay frozen before the sync loop says so.
