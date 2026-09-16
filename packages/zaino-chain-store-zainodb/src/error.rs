@@ -111,13 +111,55 @@ pub(crate) fn source_error<E: core::fmt::Debug + core::fmt::Display>(
         zaino_source::QueryError::Domain(error) => {
             ChainStoreSourceError::not_ready(error.to_string())
         }
-        zaino_source::QueryError::Fetch(error) => {
-            ChainStoreSourceError::unavailable(error.to_string())
-        }
+        // Handed over whole: `FetchError`'s message names what failed and its
+        // own source says why, which `to_string` would drop.
+        zaino_source::QueryError::Fetch(error) => ChainStoreSourceError::Unavailable {
+            message: "validator query failed".to_string(),
+            cause: Some(Box::new(error)),
+        },
     }
 }
 
 /// A validator answer the store cannot reconcile with what it asked for.
 pub(crate) fn inconsistent(message: impl Into<String>) -> StoreError {
     StoreError::Source(ChainStoreSourceError::inconsistent_data(message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_error;
+    use std::error::Error as _;
+    use zaino_chain_store::ChainStoreSourceError;
+    use zaino_source::{FailureMode, FetchError, QueryError};
+
+    /// A stand-in for an adapter's underlying error.
+    #[derive(Debug, thiserror::Error)]
+    #[error("row 7 is out of range")]
+    struct Underlying;
+
+    /// A fetch failure keeps its whole source chain, down to the adapter's
+    /// own cause.
+    #[test]
+    fn a_fetch_failure_keeps_its_cause() {
+        let error = source_error::<String>(QueryError::Fetch(FetchError::because(
+            FailureMode::InvalidSourceData,
+            "state service returned an invalid height",
+            Underlying,
+        )));
+
+        assert!(matches!(error, ChainStoreSourceError::Unavailable { .. }));
+        let chain: Vec<String> = std::iter::successors(
+            error.source(),
+            |&cause: &&(dyn std::error::Error + 'static)| cause.source(),
+        )
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(
+            chain,
+            [
+                "state service returned an invalid height",
+                "row 7 is out of range"
+            ]
+        );
+    }
 }
