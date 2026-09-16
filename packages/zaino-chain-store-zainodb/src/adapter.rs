@@ -629,20 +629,11 @@ fn accumulate_chainwork(
 impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
     /// Writes blocks the composer has already seen fall beyond reorg.
     ///
-    /// Idempotent on `(height, hash)` by delegation: the writer's put is a
-    /// byte-compare on conflict, so re-seeing a block it already holds is a
-    /// no-op and re-seeing a *different* block at the same height is an error
-    /// rather than a silent overwrite. That is the property the freeze stream
-    /// needs, because it can deliver the same heights twice across a reorg.
-    ///
-    /// Blocks below the store's tip are skipped rather than rejected. The
-    /// stream has a retention window in which a block is both emitted and still
-    /// held by the chain head, so a store that built past it through its own
-    /// source will legitimately be handed blocks it already has.
-    ///
-    /// A gap is not repaired here. The writer is append-only and contiguous, so
-    /// a block above `tip + 1` cannot be written; it is left for the
-    /// source-driven build path, which is why that path cannot be removed.
+    /// Idempotent at `tip + 1` by delegation: the writer's put is a
+    /// byte-compare on conflict, so re-seeing the block already there is a
+    /// no-op and re-seeing a *different* block there is an error rather than a
+    /// silent overwrite. That is the property the freeze stream needs, because
+    /// it can deliver the same heights twice across a reorg.
     async fn freeze(&self, blocks: &[FrozenBlock]) -> Result<(), ChainStoreError> {
         // Where this store is, and what the next block accumulates onto. Both
         // read once and advanced in step, because a block is only ever written
@@ -664,7 +655,13 @@ impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
                 continue;
             }
             if height > expected {
-                break;
+                // The tracked tip, not a fresh read: nothing has written to
+                // this store since the loop started but the loop itself, which
+                // is what `store_tip` has been following.
+                return Err(ChainStoreError::FreezeGap {
+                    store_tip: store_tip.map(domain_height).transpose()?,
+                    first_frozen: block.header.height,
+                });
             }
 
             let chainwork = accumulate_chainwork(parent_chainwork, &block.header)?;

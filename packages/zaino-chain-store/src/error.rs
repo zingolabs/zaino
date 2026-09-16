@@ -61,6 +61,28 @@ pub enum ChainStoreError {
         end: Height,
     },
 
+    /// A frozen block sits above the next height this store can accept.
+    ///
+    /// The writer is append-only and contiguous, so a block above `tip + 1`
+    /// cannot be written without leaving a hole. Reported rather than repaired
+    /// here: the store *can* fetch the missing range through
+    /// [`ChainStoreIngest::build_to`](crate::ChainStoreIngest::build_to), but it
+    /// cannot know whether doing so is wanted. A caller that has the missing
+    /// range covered another way — a chain view serving it from the validator
+    /// while the store catches up — may prefer to schedule that build itself
+    /// rather than have an unbounded historical fetch happen inside what looks
+    /// like a small batch write.
+    #[error(
+        "frozen block at height {first_frozen} is above the next height this store \
+         can accept (store tip: {store_tip:?})"
+    )]
+    FreezeGap {
+        /// The highest block the store holds, or `None` when it is empty.
+        store_tip: Option<Height>,
+        /// The lowest height in the batch that could not be written.
+        first_frozen: Height,
+    },
+
     /// This store does not offer the capability the query needs.
     ///
     /// Distinct from a miss and from a failure: the store is healthy and the
