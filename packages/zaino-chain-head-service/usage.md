@@ -122,12 +122,19 @@ This is not merely an optimisation to preserve. Without it every poll interval
 rebuilds and republishes the whole window, which in tests turned seconds into
 minutes.
 
-## Equal-work branches do not displace the incumbent
+## The source picks the tip; retained work only checks it
 
-Best-block selection compares strictly greater-than against the current tip's
-work. The original used `max_by_key` over the graph, which returns the last
-maximum encountered, so two branches of equal work were ordered by hash-map
-iteration order and the winner varied between runs.
+The chain head does not validate blocks and sees only what it retained, so the
+source's tip is the best chain. After every advance the tip's work is compared
+against the heaviest retained block. A heavier retained block means the source
+moved away from it — a rollback, an invalidation, or a misbehaving source — and
+is logged at `warn`, not followed. Selecting by retained work instead is kept as
+a crate-private policy (`TipSelection::HeaviestRetained`); under it a rollback
+is overridden rather than followed.
+
+The comparison is strictly greater-than. The original used `max_by_key` over the
+graph, which returns the last maximum encountered, so two branches of equal work
+were ordered by hash-map iteration order and the winner varied between runs.
 
 If you touch that comparison, keep it strict.
 

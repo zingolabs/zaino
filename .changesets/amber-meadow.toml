@@ -1,0 +1,11 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0ab68-4c95-7811-9047-c10c559a1de9"
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+The chain head now follows the validator when its tip moves to a lower block. \
+Previously a retained block with more work pulled the tip back up, so a \
+rollback was never followed. A heavier retained block is now logged as a \
+warning instead."""

@@ -19,8 +19,17 @@
 //! ever implemented `nonfinalized_listener`, so both were unreachable.
 //!
 //! Everything else — extending one block at a time, the recursive reorg walk,
-//! the non-higher reorg check, best-block selection by accumulated work, and
-//! trimming with its keep-the-highest rule — is as it was.
+//! the non-higher reorg check, and trimming with its keep-the-highest rule — is
+//! as it was.
+//!
+//! # Who picks the tip
+//!
+//! The source does. The chain head does not validate blocks, and it holds only
+//! the blocks it happened to retain, so a retained block carrying more work
+//! than the source's tip is evidence that the source rejected it, not grounds
+//! to prefer it. Retained work is still compared after every advance, as a
+//! check: a disagreement is logged, and [`TipSelection`] decides whether it is
+//! acted on.
 //!
 //! # Advancing is not an operation
 //!
@@ -66,6 +75,28 @@ const COMPONENT: &str = "ChainHead";
 /// window it maintains.
 const RETENTION_MARGIN: u32 = 10;
 
+/// What decides the best chain when the source's tip and retained work disagree.
+///
+/// A policy, not a capability: both arms run the same comparison after every
+/// advance, and differ only in what they do when a retained block outweighs the
+/// tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TipSelection {
+    /// The source's tip is the best chain. A heavier retained block is logged
+    /// and left where it is.
+    Source,
+    /// The heaviest retained block is the best chain, even when the source has
+    /// moved its tip elsewhere.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "kept as a selectable policy; only tests select it today"
+        )
+    )]
+    HeaviestRetained,
+}
+
 /// How many frozen blocks the handoff channel buffers before a slow consumer
 /// starts missing them.
 ///
@@ -92,6 +123,7 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
+    tip_selection: TipSelection,
 }
 
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
@@ -132,7 +164,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let service = Self::anchored(source, config, cancel).await?;
+        let service = Self::anchored(source, config, TipSelection::Source, cancel).await?;
 
         let worker = Arc::clone(&service);
         let handle = tokio::spawn(async move { worker.run().await });
@@ -157,7 +189,19 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, cancel).await
+        Self::anchored(source, config, TipSelection::Source, cancel).await
+    }
+
+    /// [`spawn_without_writer`](Self::spawn_without_writer) under a chosen
+    /// [`TipSelection`].
+    #[cfg(test)]
+    pub(crate) async fn spawn_without_writer_selecting(
+        source: Arc<S>,
+        config: ChainHeadConfig,
+        tip_selection: TipSelection,
+        cancel: CancellationToken,
+    ) -> Result<Arc<Self>, ChainHeadInitError> {
+        Self::anchored(source, config, tip_selection, cancel).await
     }
 
     /// Advances the graph by one iteration and publishes the result.
@@ -174,6 +218,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     async fn anchored(
         source: Arc<S>,
         config: ChainHeadConfig,
+        tip_selection: TipSelection,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
@@ -200,6 +245,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             cancel,
             task: Mutex::new(None),
             config,
+            tip_selection,
         });
         // Still `Syncing`: the anchor is the window's floor, not its tip, so a
         // reader served now would see a head up to `max_depth` below the
@@ -448,15 +494,16 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             self.max_retained_depth(),
         ));
 
-        // Best chain is the most-work branch retained, which a reorg may have
-        // left as something other than the block we just extended to.
+        // Check the source's tip against retained work. A heavier retained
+        // block is one the source has moved away from — a rollback, an
+        // invalidation, or a misbehaving source — and `tip_selection` decides
+        // whether that is followed or overridden.
         //
         // Strictly more work, not merely equal: two blocks at one height with
         // the same difficulty carry the same accumulated work, and picking
         // between them by which the map happened to yield last would let a tie
         // flip the tip away from the block the validator just told us is
-        // canonical. On a tie the validator's answer — which the walk above has
-        // already applied — wins.
+        // canonical.
         let tip_work = graph
             .blocks
             .get(&graph.best_tip().hash)
@@ -474,7 +521,16 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             .cloned()
             .expect("a graph always retains at least its anchor");
         if heaviest.work > tip_work {
-            self.handle_reorg(&mut graph, &heaviest, 0).await?;
+            match self.tip_selection {
+                TipSelection::Source => warn!(
+                    tip = ?graph.best_tip(),
+                    heavier = ?heaviest.reference,
+                    "a retained block outweighs the source's tip; following the source"
+                ),
+                TipSelection::HeaviestRetained => {
+                    self.handle_reorg(&mut graph, &heaviest, 0).await?;
+                }
+            }
         }
 
         Ok(graph)

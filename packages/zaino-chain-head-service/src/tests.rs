@@ -37,7 +37,10 @@ use zaino_source::{
     SubscribeBlocks,
 };
 
-use crate::{service::ChainHeadService, snapshot::MapBackedSnapshot};
+use crate::{
+    service::{ChainHeadService, TipSelection},
+    snapshot::MapBackedSnapshot,
+};
 
 /// A valid nBits value: non-negative, non-zero, no overflow.
 const VALID_BITS: u32 = 0x2007_ffff;
@@ -265,6 +268,22 @@ async fn stepped(
     .expect("mock validator is reachable")
 }
 
+/// An anchored chain head with no writer, selecting its tip by `selection`.
+async fn stepped_selecting(
+    validator: &MockValidator,
+    max_depth: u32,
+    selection: TipSelection,
+) -> Arc<ChainHeadService<MockValidator>> {
+    ChainHeadService::spawn_without_writer_selecting(
+        Arc::new(validator.clone()),
+        test_config(max_depth),
+        selection,
+        CancellationToken::new(),
+    )
+    .await
+    .expect("mock validator is reachable")
+}
+
 /// A chain head with its writer running, for behaviour tests.
 async fn running(
     validator: &MockValidator,
@@ -431,6 +450,40 @@ async fn a_same_height_reorg_is_caught_without_a_higher_block() {
     let snapshot = service.subscriber().current();
     assert_eq!(snapshot.best_tip().height, height(4));
     assert_eq!(snapshot.best_tip().hash, hash(40));
+}
+
+/// The source's tip drops below ours with nothing replacing the blocks above
+/// it, as after an `invalidateblock`. The source picks the tip, so the chain
+/// head follows it down even though the abandoned block carries more work.
+#[tokio::test]
+async fn a_rollback_lowers_the_tip() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+
+    validator.reorg(4, &[]);
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip().height, height(3));
+    assert_eq!(snapshot.best_tip().hash, hash(3));
+}
+
+/// Selecting by retained work instead lets local work override the source: the
+/// abandoned block outweighs the source's lower tip, so the rollback is not
+/// followed.
+#[tokio::test]
+async fn heaviest_retained_selection_overrides_a_rollback() {
+    let validator = MockValidator::linear(5);
+    let service = stepped_selecting(&validator, 100, TipSelection::HeaviestRetained).await;
+    step_to_tip(&service, &validator).await;
+
+    validator.reorg(4, &[]);
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip().height, height(4));
+    assert_eq!(snapshot.best_tip().hash, hash(4));
 }
 
 /// Growth past the window drops the oldest blocks, so retention stays bounded
