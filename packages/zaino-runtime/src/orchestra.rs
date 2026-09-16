@@ -21,7 +21,7 @@ use zaino_component::{
     ComponentName, ComponentStatus, Lifecycle, Managed, StatusSource, StatusWatch, Task, TaskName,
 };
 
-use crate::signals::RuntimeSignals;
+use crate::signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
 use crate::supervisor::{observe, supervise, RecoveryPolicy, SupervisionOutcome};
 
 /// A component could not be booted.
@@ -222,15 +222,19 @@ fn spawn_signals(
 ) -> (watch::Receiver<RuntimeSignals>, Task) {
     let mut receivers: Vec<watch::Receiver<ComponentStatus>> =
         watches.iter().map(|w| w.subscribe()).collect();
-    let initial = RuntimeSignals::project(&snapshot(&receivers), false);
-    let (tx, rx) = watch::channel(initial);
+    // Config seam: full mode (readiness gates on sync) until ephemeral mode wires
+    // this from config.
+    let criteria = ReadinessCriteria::default();
+    let initial_phase = classify(&criteria, &snapshot(&receivers), false);
+    let (tx, rx) = watch::channel(RuntimeSignals::from_phase(initial_phase));
 
     let task = Task::spawn(TaskName("runtime-signals"), move |cancel| async move {
-        let mut started = initial.started;
+        // The startup latch: has the runtime ever reached `Serving`.
+        let mut started = matches!(initial_phase, RuntimePhase::Serving);
         loop {
-            let signals = RuntimeSignals::project(&snapshot(&receivers), started);
-            started = signals.started;
-            let _ = tx.send(signals);
+            let phase = classify(&criteria, &snapshot(&receivers), started);
+            started = started || matches!(phase, RuntimePhase::Serving);
+            let _ = tx.send(RuntimeSignals::from_phase(phase));
 
             if receivers.is_empty() {
                 cancel.cancelled().await;
