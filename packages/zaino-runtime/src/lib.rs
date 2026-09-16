@@ -24,5 +24,6 @@ mod serving;
 mod supervisor;
 
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
-pub use serving::{Serve, ServeComponent};
+pub use serving::ServeComponent;
 pub use supervisor::{supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
+pub use zaino_component::Serve;

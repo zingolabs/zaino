@@ -20,6 +20,7 @@
 mod health;
 mod lifecycle;
 mod managed;
+mod serve;
 mod status;
 mod task;
 
@@ -29,6 +30,7 @@ mod tests;
 pub use health::Health;
 pub use lifecycle::{IllegalTransition, Lifecycle};
 pub use managed::Managed;
+pub use serve::Serve;
 pub use status::{ComponentName, ComponentStatus, StatusSource, StatusWatch};
 pub use task::{Task, TaskError, TaskName};
 

@@ -17,27 +17,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 use zaino_component::{
-    CancellationToken, ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource,
-    StatusWatch, Task, TaskName,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, Serve, StatusSource, StatusWatch,
+    Task, TaskName,
 };
-
-/// A long-running server the runtime supervises.
-///
-/// `serve` binds and runs until `cancel` fires. Returning `Ok(())` means a clean
-/// shutdown in response to the token; returning `Err` means the server could not
-/// start or its serve loop failed — which becomes a `Critical` component. The
-/// concrete transport server (tonic / jsonrpsee) implements this over its
-/// profile handle.
-pub trait Serve: Send + Sync + 'static {
-    /// Why the server could not start or keep running.
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Bind and serve until `cancel` fires.
-    fn serve(
-        self: Arc<Self>,
-        cancel: CancellationToken,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
-}
 
 /// A [`Serve`] server `A`, presented to the runtime as a component.
 pub struct ServeComponent<A> {
