@@ -71,6 +71,7 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-chain-head-service/          Non-finalised chain head: the runtime
   zaino-chain-store/                 Finalised state: vocabulary and ports
   zaino-chain-store-zainodb/         Finalised state: the LMDB implementation
+  zaino-chain/                       ChainView: the unified chain read surface, ports + composer
   zaino-state/                       Chain state and indexer service library
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
@@ -205,6 +206,7 @@ mistakes its design is trying to prevent.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
+- [`zaino-chain`](./packages/zaino-chain/usage.md): ChainView's ports, how coverage decides which provider answers, and what a hole between the tiers degrades versus what it refuses.
 
 
 ## Security Vulnerability Disclosure
