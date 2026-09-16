@@ -1,0 +1,96 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`ChainWork` is ordered, and converts to and from a `u128`. Ordering is what \
+chain selection does with chainwork, and the derive is correct rather than \
+convenient: the bytes are big-endian, so comparing them left to right compares \
+the number. `from_u128` widens losslessly; `as_u128` narrows and so returns \
+`Option`, because the protocol permits a value it cannot hold."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`ChainStoreService` and `ChainStoreReader` report health through \
+`zaino_component::StatusSource` rather than a `status` method of their own, so \
+a store is a component a supervisor can observe alongside every other \
+subsystem without knowing it is a store. Two axes rather than one: a lifecycle \
+phase the runtime moves, and a health condition that never overwrites it."""
+migration = """
+Remove `fn status(&self) -> StatusType` from both impls and add a single \
+`impl StatusSource`, returning a `ComponentStatus` built from a \
+`ComponentName`, a `Lifecycle` and a `Health`. Where a type is its own reader, \
+one impl serves both ports. Callers reading a status through a bare \
+`.status()` may need `StatusSource::status(&x)` if an inherent method of the \
+same name still shadows the trait."""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+The backend reports a `ComponentStatus`, and names itself: `FinalisedState` \
+carries a `ComponentName` set at construction, with `FinalisedState::COMPONENT` \
+as the default. The name belongs to the component because a deployment running \
+two stores wants two names, and a supervisor needs to know which one \
+escalated."""
+migration = """
+`ChainStoreService::status` and `ChainStoreReader::status` now come from \
+`StatusSource` and answer `ComponentStatus`. The fused `StatusType` is still \
+tracked internally and converted at the port; a caller matching on \
+`StatusType` reads `.lifecycle` and `.health` instead."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = """
+`ChainHeadWork` is now `AnchoredRelativeChainWork`, counted over `(anchor, B]` \
+from the parent of the window floor, and `ChainHeadSnapshot::work_anchor` names \
+that anchor so a consumer can rebase onto absolute chainwork. It wraps \
+`zaino_primitives::ChainWork` rather than a `u128`, because the protocol \
+permits a single block whose work exceeds one."""
+migration = """
+Rename `ChainHeadWork` to `AnchoredRelativeChainWork`. \
+`ChainHeadWork::anchored_at(work)` becomes \
+`AnchoredRelativeChainWork::ZERO.checked_add(work)`, which is the same value \
+because the anchor contributes none. `checked_add` now takes a `ChainWork`, so \
+a `u128` block work is widened with `ChainWork::from_u128`; `as_u128` becomes \
+`as_chainwork`. Implementors of `ChainHeadSnapshot` must add `work_anchor`, \
+returning the parent of the lowest block their graph accumulates from, or \
+`None` when that block is genesis."""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+description = """
+Transparent-history effects are keyed by `TransparentAddressKey` rather than by \
+the wallet-facing string, which is network-specific and cannot name a \
+non-standard output. Still declared, not implemented."""
+migration = """
+Behind the non-default `transparent_address_history_experimental` feature. \
+`TransparentHistoryQuery::addresses`, `LocatedTransparentOutput::address` and \
+`LocatedTransparentSpend::address` are now \
+`zaino_primitives::types::TransparentAddressKey`. Build one with \
+`TransparentAddressKey::from_script`, which shares `classify_script` with the \
+finalised store's indexing so the two halves of an address's history cannot \
+key differently."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = """
+Both concrete handles report through `zaino_component::StatusSource` rather \
+than `zaino_status::Status`, and answer a `ComponentStatus`."""
+migration = """
+`ChainHeadService::status` and `ChainHeadSubscriber::status` return \
+`ComponentStatus` instead of `StatusType`; read `.lifecycle` and `.health` \
+where a `StatusType` was matched. The trait to import is `StatusSource`. The \
+runtime still folds a tick outcome into one fused value internally and splits \
+it at the reporting boundary, so no transition changes."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The map-backed snapshot records its work anchor, and keeps it across pruning \
+and re-anchoring of the retention floor."""
