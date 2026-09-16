@@ -42,6 +42,8 @@ use crate::{
     snapshot::MapBackedSnapshot,
 };
 
+mod snapshot;
+
 /// A valid nBits value: non-negative, non-zero, no overflow.
 const VALID_BITS: u32 = 0x2007_ffff;
 

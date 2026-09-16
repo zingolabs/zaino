@@ -453,17 +453,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             let parent_hash = block.header.prev_hash;
             if parent_hash == graph.best_tip().hash {
                 // Normal chain progression
-                let prev_block = graph
-                    .blocks
-                    .get(&graph.best_tip().hash)
-                    .ok_or_else(|| {
-                        ChainHeadAdvanceError::ReorgFailure(format!(
-                            "graph is missing its own tip {:?}",
-                            graph.best_tip()
-                        ))
-                    })?
-                    .clone();
-                let chainblock = self.block_to_chainblock(&prev_block, &block).await?;
+                let chainblock = self.block_to_chainblock(graph.tip_block(), &block).await?;
                 info!(
                     height = u32::from(chainblock.height()),
                     hash = %chainblock.hash(),
@@ -490,30 +480,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         ));
 
         // Check the source's tip against retained work; `tip_selection`
-        // decides what a disagreement does.
-        //
-        // Strictly more work, not merely equal: two blocks at one height with
-        // the same difficulty carry the same accumulated work, and picking
-        // between them by which the map happened to yield last would let a tie
-        // flip the tip away from the block the validator just told us is
-        // canonical.
-        let tip_work = graph
-            .blocks
-            .get(&graph.best_tip().hash)
-            .map(|block| block.work)
-            .ok_or_else(|| {
-                ChainHeadAdvanceError::ReorgFailure(format!(
-                    "graph is missing its own tip {:?}",
-                    graph.best_tip()
-                ))
-            })?;
-        let heaviest = graph
-            .blocks
-            .values()
-            .max_by_key(|block| block.work)
-            .cloned()
-            .expect("a graph always retains at least its anchor");
-        if heaviest.work > tip_work {
+        // decides what a disagreement does. The heaviest block is the tip
+        // unless some block carries strictly more work.
+        let heaviest = graph.heaviest_block();
+        if heaviest.hash() != graph.best_tip().hash {
             match self.tip_selection {
                 TipSelection::Source => warn!(
                     tip = ?graph.best_tip(),
@@ -521,6 +491,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     "a retained block outweighs the source's tip; following the source"
                 ),
                 TipSelection::HeaviestRetained => {
+                    let heaviest = heaviest.clone();
                     self.handle_reorg(&mut graph, &heaviest, 0).await?;
                 }
             }
@@ -543,7 +514,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 "reorg handling recursed beyond reason".to_string(),
             ));
         }
-        let prev_block = match graph.blocks.get(&block.parent_hash()).cloned() {
+        let prev_block = match graph.block_by_hash(&block.parent_hash()).cloned() {
             // The parent is the fork point exactly when it is canonical, so the
             // rewind is also the test. The new branch is extended onto the fork
             // point as the recursion unwinds.

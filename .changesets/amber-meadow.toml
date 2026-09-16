@@ -17,3 +17,10 @@ description = """
 After a rollback or a reorg onto a shorter branch, heights above the new tip \
 are no longer reported as part of the best chain. The blocks there stay \
 available as a competing branch."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = """
+The in-memory chain head stores its tip block separately from the other \
+retained blocks, so it can never be empty."""
