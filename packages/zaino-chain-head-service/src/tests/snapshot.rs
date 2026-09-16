@@ -7,7 +7,7 @@ use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot as _, ChainHeadWork};
 use zaino_primitives::types::TreeRoots;
 
 use super::{best_chain_hashes, block, hash, height};
-use crate::snapshot::{MapBackedSnapshot, NotOnBestChain};
+use crate::snapshot::{MapBackedSnapshot, NotChildOfTip, NotOnBestChain};
 
 /// A retained block carrying `work`, independent of its parent's.
 fn chain_head_block(h: u32, id: u16, parent: u16, work: u128) -> ChainHeadBlock {
@@ -31,8 +31,36 @@ fn chain_head_block(h: u32, id: u16, parent: u16, work: u128) -> ChainHeadBlock 
 /// `0 -> 1`, with block 1 the tip.
 fn two_block_graph() -> MapBackedSnapshot {
     let mut graph = MapBackedSnapshot::from_initial_block(chain_head_block(0, 0, 0, 1));
-    graph.add_block_new_chaintip(chain_head_block(1, 1, 0, 2));
+    assert_eq!(graph.extend(chain_head_block(1, 1, 0, 2)), Ok(()));
     graph
+}
+
+#[test]
+fn extending_with_a_block_whose_parent_is_not_the_tip_is_refused() {
+    let mut graph = two_block_graph();
+
+    assert_eq!(
+        graph.extend(chain_head_block(2, 2, 0, 3)),
+        Err(NotChildOfTip)
+    );
+
+    assert_eq!(graph.tip_block().hash(), hash(1));
+    assert!(graph.block_by_hash(&hash(2)).is_none());
+    assert!(graph.best_block_by_height(height(2)).is_none());
+}
+
+#[test]
+fn extending_with_a_block_at_the_wrong_height_is_refused() {
+    let mut graph = two_block_graph();
+
+    assert_eq!(
+        graph.extend(chain_head_block(3, 2, 1, 3)),
+        Err(NotChildOfTip)
+    );
+
+    assert_eq!(graph.tip_block().hash(), hash(1));
+    assert!(graph.block_by_hash(&hash(2)).is_none());
+    assert!(graph.best_block_by_height(height(3)).is_none());
 }
 
 #[test]
@@ -99,7 +127,7 @@ fn the_tip_wins_an_equal_work_tie() {
         .expect("block 0 is retained")
         .reference;
     assert_eq!(graph.rewind_to(base), Ok(()));
-    graph.add_block_new_chaintip(chain_head_block(1, 11, 0, 2));
+    assert_eq!(graph.extend(chain_head_block(1, 11, 0, 2)), Ok(()));
 
     assert_eq!(graph.heaviest_block().hash(), hash(11));
 }

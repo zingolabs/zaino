@@ -24,3 +24,11 @@ kind = "internal"
 description = """
 The in-memory chain head stores its tip block separately from the other \
 retained blocks, so it can never be empty."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+A block from the validator that does not attach directly to the chain head's \
+tip (wrong height or wrong parent) now fails the update as inconsistent \
+validator data, instead of being added to the best chain."""

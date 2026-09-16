@@ -40,16 +40,27 @@ fn tx_index(position: usize) -> TxIndex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NotOnBestChain;
 
+/// [`MapBackedSnapshot::extend`] was given a block that is not a child of the
+/// tip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NotChildOfTip;
+
 /// The retained graph: its tip, and every other retained block in a hash map.
 ///
 /// `retained = {tip} ⊎ others`
 ///
-/// The tip is a field rather than a map entry, so the graph is never empty and
-/// `tip_block` always has an answer. `others` never holds
-/// the tip's hash; every write goes through a method here that keeps it so.
-///
 /// `heights_to_hashes` names the canonical block at each height, so a block is
 /// on the best chain exactly when the entry for its height is its own hash.
+///
+/// The tip is a field rather than a map entry, so the graph is never empty and
+/// `tip_block` always has an answer. The fields are private, and the methods
+/// here keep the remaining invariants:
+///
+/// - `others` never holds the tip's hash;
+/// - every canonical hash names a retained block;
+/// - the canonical heights run without gaps up to the tip, nothing above the
+///   tip is canonical, and each canonical block's parent is the canonical block
+///   one height below.
 #[derive(Debug, Clone)]
 pub struct MapBackedSnapshot {
     tip: ChainHeadBlock,
@@ -131,9 +142,19 @@ impl MapBackedSnapshot {
         }
     }
 
-    pub(crate) fn add_block_new_chaintip(&mut self, block: ChainHeadBlock) {
+    /// Makes `block`, a child of the tip, the new tip.
+    ///
+    /// Refused, with the graph unchanged, unless `block` names the tip as its
+    /// parent and sits one height above it. This is the only way a block
+    /// becomes canonical.
+    pub(crate) fn extend(&mut self, block: ChainHeadBlock) -> Result<(), NotChildOfTip> {
+        let child_height = self.tip.height().checked_add(1);
+        if block.parent_hash != self.tip.hash() || child_height != Some(block.height()) {
+            return Err(NotChildOfTip);
+        }
         self.heights_to_hashes.insert(block.height(), block.hash());
         self.replace_tip(block);
+        Ok(())
     }
 
     /// Makes `block` the tip; the previous tip becomes an ordinary retained

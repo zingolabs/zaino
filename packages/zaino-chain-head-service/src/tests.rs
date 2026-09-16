@@ -38,6 +38,7 @@ use zaino_source::{
 };
 
 use crate::{
+    error::ChainHeadAdvanceError,
     service::{ChainHeadService, TipSelection},
     snapshot::MapBackedSnapshot,
 };
@@ -729,6 +730,30 @@ async fn a_failed_advance_leaves_the_snapshot_intact() {
     validator.lock().fail_calls = usize::MAX;
     let _ = service.advance_once().await;
 
+    assert_eq!(service.subscriber().current().best_tip(), before);
+}
+
+/// A block served for the next height but labelled with another one does not
+/// extend the tip. The advance fails as inconsistent source data, and the
+/// published snapshot is unchanged.
+#[tokio::test]
+async fn a_block_labelled_with_the_wrong_height_fails_the_advance() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+    let before = service.subscriber().current().best_tip();
+
+    {
+        let mut state = validator.lock();
+        state.blocks.insert(hash(5), block(9, 5, 4));
+        state.best_chain.push(hash(5));
+    }
+    let outcome = service.advance_once().await;
+
+    assert!(
+        matches!(outcome, Err(ChainHeadAdvanceError::InconsistentSource(_))),
+        "unexpected outcome: {outcome:?}"
+    );
     assert_eq!(service.subscriber().current().best_tip(), before);
 }
 

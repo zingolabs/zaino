@@ -55,7 +55,7 @@ use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
-    snapshot::{MapBackedSnapshot, NotOnBestChain},
+    snapshot::{MapBackedSnapshot, NotChildOfTip, NotOnBestChain},
     subscriber::ChainHeadSubscriber,
 };
 
@@ -459,7 +459,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     hash = %chainblock.hash(),
                     "Syncing block"
                 );
-                graph.add_block_new_chaintip(chainblock);
+                extend(&mut graph, chainblock)?;
             } else {
                 // There's been a reorg. The fresh block is the new chaintip; we
                 // work backwards from it and update heights_to_hashes with it
@@ -535,7 +535,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             }
         };
         let chainblock = block.to_chain_head_block(&prev_block, self).await?;
-        graph.add_block_new_chaintip(chainblock.clone());
+        extend(graph, chainblock.clone())?;
         Ok(chainblock)
     }
 
@@ -822,6 +822,23 @@ fn chain_head_block(
         work,
         block,
         tree_roots: tree_roots.clone(),
+    })
+}
+
+/// Extends `graph` with a block the source served as the tip's child.
+///
+/// A refusal means the source's answer does not attach where it was asked
+/// for: a block at the wrong height, or one that does not name the tip as its
+/// parent.
+fn extend(
+    graph: &mut MapBackedSnapshot,
+    block: ChainHeadBlock,
+) -> Result<(), ChainHeadAdvanceError> {
+    let (tip, served) = (graph.best_tip(), block.reference);
+    graph.extend(block).map_err(|NotChildOfTip| {
+        ChainHeadAdvanceError::InconsistentSource(format!(
+            "block {served:?} does not extend the tip {tip:?}"
+        ))
     })
 }
 
