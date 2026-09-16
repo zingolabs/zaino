@@ -144,6 +144,11 @@ impl crate::OneShotGetTreestate for MockChain {
     }
 }
 
+// A static mock does not push tip updates; the default `None` says "no
+// subscription", so a consumer bound on `SubscribeChainTip` still accepts it
+// (and simply does not tip-follow).
+impl crate::SubscribeChainTip for MockChain {}
+
 /// A minimal test [`Block`] at `height` with hash `[hash_byte; 32]`, for seeding
 /// a [`MockChain`] (or other source fixtures) from downstream crates. Behind the
 /// `testing` feature so it is reusable, not just an in-crate test helper.

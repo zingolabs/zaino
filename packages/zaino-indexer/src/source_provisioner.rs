@@ -17,9 +17,11 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
+use tokio::sync::watch;
+
 use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
 use zaino_primitives::types::{Block, Height};
-use zaino_source::{GetBlock, GetChainTip, SourceError};
+use zaino_source::{GetBlock, GetChainTip, SourceError, SubscribeChainTip, TipObservation};
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::SyncEngine;
 
@@ -51,7 +53,7 @@ pub struct SourceProvisioner<S, Ctx, F> {
 
 impl<S, Ctx, F> SourceProvisioner<S, Ctx, F>
 where
-    S: GetBlock + GetChainTip + Send + Sync + 'static,
+    S: GetBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
     F: Fn(Block) -> Ctx + Send + Sync + 'static,
     Ctx: Send + 'static,
 {
@@ -71,6 +73,12 @@ where
             .await
             .map(|(_hash, height)| height)
             .map_err(map_source)
+    }
+
+    /// A push subscription to the source's tip, or `None` if the source does not
+    /// push (in which case the indexer stays at its initial catch-up height).
+    pub fn subscribe_tip(&self) -> Option<watch::Receiver<TipObservation>> {
+        self.source.subscribe_to_chain_tip()
     }
 
     /// Fetch `[from, to]` and send each projected context into `tx`, in order.
@@ -124,9 +132,35 @@ impl<S, B: Backend, Ctx, F> SourceSyncDriver<S, B, Ctx, F> {
     }
 }
 
+impl<S, B, Ctx, F> SourceSyncDriver<S, B, Ctx, F>
+where
+    S: GetBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
+    B: Backend + Send + Sync + 'static,
+    Ctx: Send + Sync + 'static,
+    F: Fn(Block) -> Ctx + Send + Sync + 'static,
+{
+    /// Provision `[from, to]` through the engine: the provisioner feeds a bounded
+    /// channel which the engine drains, then both are joined typed.
+    async fn sync_to(
+        &self,
+        engine: &mut SyncEngine<Ctx, B>,
+        from: Height,
+        to: Height,
+    ) -> Result<(), IndexerError> {
+        let (tx, rx) = mpsc::channel(self.channel_capacity);
+        let provisioner = Arc::clone(&self.provisioner);
+        let provision = tokio::spawn(async move { provisioner.provision(from, to, tx).await });
+        // Dropping `tx` (moved into the task) at its end closes the channel, so
+        // `sync_channel` returns once the range is drained.
+        engine.sync_channel(rx).await?;
+        provision.await??;
+        Ok(())
+    }
+}
+
 impl<S, B, Ctx, F> SyncDriver for SourceSyncDriver<S, B, Ctx, F>
 where
-    S: GetBlock + GetChainTip + Send + Sync + 'static,
+    S: GetBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
     B: Backend + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
     F: Fn(Block) -> Ctx + Send + Sync + 'static,
@@ -145,25 +179,36 @@ where
             .take()
             .ok_or(IndexerError::AlreadyRun)?;
 
-        let tip = self.provisioner.current_tip().await?;
-
-        // Provision [start, tip] into the engine's channel; dropping `tx` at the
-        // end closes the channel so `sync_channel` returns once drained.
-        let (tx, rx) = mpsc::channel(self.channel_capacity);
-        let provisioner = Arc::clone(&self.provisioner);
-        let start = self.start;
-        let provision = tokio::spawn(async move { provisioner.provision(start, tip, tx).await });
-
-        engine.sync_channel(rx).await?;
-
-        // Surface a provisioning failure (the channel closed early because the
-        // provisioner errored, not because it finished). `??`: the task's
-        // `JoinError` and the inner `IndexerError` both propagate typed.
-        provision.await??;
-
-        // Caught up to the tip. (Tip-following via SubscribeChainTip is next.)
+        // Initial catch-up: sync [start, tip], then the component is Ready.
+        let mut synced = self.provisioner.current_tip().await?;
+        self.sync_to(&mut engine, self.start, synced).await?;
         caught_up.notify();
-        cancel.cancelled().await;
-        Ok(())
+
+        // Steady-state follow: index each new range as the tip advances. If the
+        // source does not push a tip (`None`), stay at the caught-up height.
+        let Some(mut tips) = self.provisioner.subscribe_tip() else {
+            cancel.cancelled().await;
+            return Ok(());
+        };
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return Ok(()),
+                changed = tips.changed() => {
+                    if changed.is_err() {
+                        // The source stopped publishing; nothing more to follow.
+                        return Ok(());
+                    }
+                    // Copy the height out before awaiting (drop the watch borrow).
+                    let tip = tips.borrow_and_update().height;
+                    if tip > synced {
+                        let from = synced
+                            .checked_add(1)
+                            .expect("tip below max height has a successor");
+                        self.sync_to(&mut engine, from, tip).await?;
+                        synced = tip;
+                    }
+                }
+            }
+        }
     }
 }
