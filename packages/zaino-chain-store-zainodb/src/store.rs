@@ -254,6 +254,7 @@ use zaino_chain_store::ChainStoreConfig;
 
 use crate::config::{StoreSettings, ZainoDbConfig};
 use crate::error::StoreError;
+use zaino_component::ComponentName;
 use zaino_status::StatusType;
 
 use std::{sync::Arc, time::Duration};
@@ -504,6 +505,16 @@ pub struct FinalisedState<T: ChainStoreSource> {
 
     /// Immutable configuration snapshot used for sync and metadata construction.
     cfg: StoreSettings,
+
+    /// What this store calls itself when it reports its status.
+    ///
+    /// A field rather than a constant read at the reporting site, because the
+    /// name belongs to the component: a deployment running two stores wants
+    /// two names, and a supervisor observing them needs to tell which one
+    /// escalated. Nothing configures it yet — every construction path takes
+    /// [`Self::COMPONENT`] — but the shape is the one a runtime needs, and
+    /// widening it later does not touch the port.
+    name: ComponentName,
 }
 
 /// Cloned by hand rather than derived.
@@ -518,6 +529,7 @@ impl<T: ChainStoreSource> Clone for FinalisedState<T> {
             source: Arc::clone(&self.source),
             db: Arc::clone(&self.db),
             cfg: self.cfg.clone(),
+            name: self.name,
         }
     }
 }
@@ -580,6 +592,17 @@ async fn refresh_watermark<T: ChainStoreSource>(router: &Arc<Router<T>>) {
 /// - the storage engine details are encapsulated behind [`FinalisedSource`] and the capability traits,
 /// - higher-level query routing is provided by [`DbReader`].
 impl<T: ChainStoreSource> FinalisedState<T> {
+    /// The name a store reports itself under when nothing else names it.
+    ///
+    /// One literal, in one place, rather than a name invented wherever a
+    /// status is read. See [`FinalisedState::name`](Self::name).
+    pub const COMPONENT: &'static str = "finalised-state";
+
+    /// What this store calls itself.
+    pub fn name(&self) -> ComponentName {
+        self.name
+    }
+
     // ***** DB control *****
 
     /// Spawns a `FinalisedState` instance.
@@ -642,6 +665,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
                 source,
                 db: Arc::new(Router::new(ephemeral)),
                 cfg,
+                name: ComponentName(Self::COMPONENT),
             };
             state.refresh_watermark().await;
             return Ok(state);
@@ -758,6 +782,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
                 source,
                 db: router,
                 cfg,
+                name: ComponentName(Self::COMPONENT),
             };
             state.refresh_watermark().await;
             Ok(state)
@@ -1414,6 +1439,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             source,
             db: router,
             cfg,
+            name: ComponentName(Self::COMPONENT),
         };
         state.refresh_watermark().await;
         Ok(state)

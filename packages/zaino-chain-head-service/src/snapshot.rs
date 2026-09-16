@@ -49,6 +49,17 @@ pub struct MapBackedSnapshot {
     pub(crate) blocks: HashMap<BlockHash, ChainHeadBlock>,
     pub(crate) heights_to_hashes: HashMap<Height, BlockHash>,
     pub(crate) best_tip: BlockRef,
+    /// The block this graph's work is counted from, exclusive.
+    ///
+    /// Derived once from the floor block in
+    /// [`from_initial_block`](Self::from_initial_block) and carried unchanged
+    /// for the graph's life, because retention deletes the floor block long
+    /// before it stops being what the surviving work is measured from.
+    ///
+    /// Private for the same reason as `generation`: it is a fact about how this
+    /// graph was anchored, and a field the writer could assign is a field the
+    /// writer could assign wrongly.
+    work_anchor: Option<BlockRef>,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
     ///
     /// Private even to the rest of this crate, and written only by
@@ -89,11 +100,22 @@ impl MapBackedSnapshot {
         };
     }
 
-    /// Create initial snapshot from a single block
+    /// Create initial snapshot from a single block.
+    ///
+    /// The block is the window floor, and its work accumulates from
+    /// [`AnchoredRelativeChainWork::ZERO`](zaino_chain_head::AnchoredRelativeChainWork::ZERO),
+    /// so the anchor is its parent by construction. Derived here rather than
+    /// passed in: the two are the same fact, and a caller that could supply one
+    /// independently of the other could contradict it.
     pub(crate) fn from_initial_block(block: ChainHeadBlock) -> Self {
         let best_tip = block.reference;
         let hash = block.hash();
         let height = block.height();
+        // `None` at genesis: no block below it, so the work is already absolute.
+        let work_anchor = height.checked_sub(1).map(|height| BlockRef {
+            hash: block.parent_hash,
+            height,
+        });
 
         let mut blocks = HashMap::new();
         let mut heights_to_hashes = HashMap::new();
@@ -105,6 +127,7 @@ impl MapBackedSnapshot {
             blocks,
             heights_to_hashes,
             best_tip,
+            work_anchor,
             generation: 0,
         }
     }
@@ -165,6 +188,10 @@ impl MapBackedSnapshot {
 impl ChainHeadSnapshot for MapBackedSnapshot {
     fn best_tip(&self) -> BlockRef {
         self.best_tip
+    }
+
+    fn work_anchor(&self) -> Option<BlockRef> {
+        self.work_anchor
     }
 
     fn epoch(&self) -> ChainStateEpoch {

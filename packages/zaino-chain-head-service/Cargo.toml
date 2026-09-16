@@ -33,6 +33,7 @@ zaino-consensus = { workspace = true }
 zaino-primitives = { workspace = true }
 zaino-source = { workspace = true }
 zaino-status = { workspace = true }
+zaino-component = { workspace = true }
 
 arc-swap = { workspace = true }
 futures = { workspace = true }

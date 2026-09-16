@@ -12,9 +12,28 @@
 //! created below its floor — it does not hold that output, and going to look
 //! for one would be the historical scan this crate exists to avoid. Joining
 //! those cross-boundary spends is the consumer's job.
+//!
+//! # Addresses are keyed, not encoded
+//!
+//! Every address here is a
+//! [`TransparentAddressKey`](zaino_primitives::types::TransparentAddressKey):
+//! a 20-byte hash and the script form it came from, which is what
+//! [`classify_script`](zaino_primitives::types::classify_script) produces.
+//!
+//! Not the wallet-facing string, for two reasons. A window contains outputs
+//! with no address at all, and an index that could not name them would report
+//! "no history" for an address that has some. And the string is
+//! network-specific — the same 20 bytes are `t1` on mainnet and `tm` on testnet
+//! — so producing one needs a network the chain head has no other reason to
+//! hold, and address encoding belongs to the serving layer.
+//!
+//! It is the same key the finalised store indexes by, which is the point: a
+//! consumer merging the two halves joins them directly. Two equivalent keys in
+//! two crates is how the two halves of one answer come to disagree about what
+//! they are describing.
 
 use zaino_primitives::types::{
-    BlockRef, Height, Outpoint, Script, TransactionId, TransparentAddress, TxIndex, Zatoshis,
+    BlockRef, Height, Outpoint, Script, TransactionId, TransparentAddressKey, TxIndex, Zatoshis,
 };
 
 /// Which addresses to report effects for, over which part of the window.
@@ -23,8 +42,17 @@ use zaino_primitives::types::{
 // would leave no way to build one. The result types below are sealed instead —
 // they are ours to extend.
 pub struct TransparentHistoryQuery {
-    /// The addresses to report on.
-    pub addresses: Vec<TransparentAddress>,
+    /// The addresses to report on, as an index keys them.
+    ///
+    /// [`TransparentAddressKey`] rather than the wallet-facing string, for the
+    /// two reasons that type exists. A window contains outputs with no address
+    /// at all, and naming them is the only way to report on them. And the
+    /// string form is network-specific, so producing one needs a network the
+    /// chain head has no other reason to hold — encoding is a serving concern.
+    ///
+    /// It is also the key the finalised store indexes by, which is what makes
+    /// the two halves of an address's history joinable without translating.
+    pub addresses: Vec<TransparentAddressKey>,
     /// Lowest height to consider, inclusive.
     pub start: Height,
     /// Highest height to consider, inclusive.
@@ -35,8 +63,8 @@ pub struct TransparentHistoryQuery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LocatedTransparentOutput {
-    /// The address the output pays.
-    pub address: TransparentAddress,
+    /// The address the output pays, as an index keys it.
+    pub address: TransparentAddressKey,
     /// The output itself.
     pub outpoint: Outpoint,
     /// Value in zatoshis.
@@ -58,8 +86,8 @@ pub struct LocatedTransparentOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LocatedTransparentSpend {
-    /// The address whose output was spent.
-    pub address: TransparentAddress,
+    /// The address whose output was spent, as an index keys it.
+    pub address: TransparentAddressKey,
     /// The output that was spent.
     pub outpoint: Outpoint,
     /// Value in zatoshis.

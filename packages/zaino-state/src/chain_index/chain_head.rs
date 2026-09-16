@@ -16,7 +16,7 @@
 //!
 //! Until then, one thing about the result is load-bearing: its `chainwork` is
 //! **anchor-relative**, because ChainHead accumulates from its own window
-//! rather than from genesis (see [`ChainHeadWork`]). Blocks produced here are
+//! rather than from genesis (see [`AnchoredRelativeChainWork`]). Blocks produced here are
 //! served, never persisted — the finalised state syncs from the validator
 //! independently and computes absolute chainwork itself. Writing one of these
 //! to the database would put a wrong chainwork on disk.
@@ -28,7 +28,7 @@ use crate::chain_index::{
     validator_source::ValidatorSource,
 };
 use crate::IndexedBlock;
-use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource, ChainHeadWork};
+use zaino_chain_head::{AnchoredRelativeChainWork, ChainHeadBlock, ChainHeadBlockSource};
 
 /// A source that can also answer ChainHead's questions.
 ///
@@ -121,13 +121,27 @@ pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadCo
 
 /// ChainHead's anchor-relative work, as the type `IndexedBlock` stores.
 ///
-/// Non-zero by construction: ChainHead starts each accumulation at the anchor
-/// block's own work rather than at zero, precisely so this conversion cannot
-/// fail.
-fn chainwork(work: ChainHeadWork) -> ChainWork {
+/// # This is not absolute chainwork
+///
+/// `IndexedBlock` holds the value a validator would report, and this is the
+/// value measured from the chain head's own anchor. Serving one as the other is
+/// wrong, and knowingly so: it is what the pre-ChainView path did, and it goes
+/// when `ChainIndex` reads through `zaino-chain`, which rebases against the
+/// finalised store and answers `None` rather than guessing. Nothing
+/// client-facing reads it meanwhile.
+///
+/// Non-zero by construction: every retained block is at least its own block
+/// work above the anchor, and a block's work cannot be zero, so this conversion
+/// cannot fail.
+fn chainwork(work: AnchoredRelativeChainWork) -> ChainWork {
     ChainWork::new(
-        std::num::NonZeroU128::new(work.as_u128())
-            .expect("chain head work is accumulated from a non-zero anchor"),
+        work.as_chainwork()
+            .as_u128()
+            .and_then(std::num::NonZeroU128::new)
+            .expect(
+                "a retained block carries at least its own non-zero block work, and no window \
+                 this size accumulates past u128",
+            ),
     )
 }
 
@@ -165,7 +179,7 @@ mod tests {
         let vectors = load_test_vectors().expect("test vectors load");
         let expected: Vec<IndexedBlock> = indexed_block_chain(&vectors.blocks).collect();
 
-        let mut work: Option<ChainHeadWork> = None;
+        let mut work: Option<AnchoredRelativeChainWork> = None;
         for (vector, expected) in vectors.blocks.iter().zip(&expected) {
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
@@ -177,12 +191,14 @@ mod tests {
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = zaino_consensus::work_from_bits(block.header.bits)
-                .expect("vector block has valid difficulty");
-            let accumulated = match work {
-                Some(parent) => parent.checked_add(block_work).expect("no overflow"),
-                None => ChainHeadWork::anchored_at(block_work),
-            };
+            let block_work = zaino_primitives::types::ChainWork::from_u128(
+                zaino_consensus::work_from_bits(block.header.bits)
+                    .expect("vector block has valid difficulty"),
+            );
+            let accumulated = work
+                .unwrap_or(AnchoredRelativeChainWork::ZERO)
+                .checked_add(block_work)
+                .expect("no overflow");
             work = Some(accumulated);
 
             let chain_head_block = ChainHeadBlock {
