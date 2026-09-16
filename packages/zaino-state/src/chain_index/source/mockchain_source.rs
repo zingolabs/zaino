@@ -788,14 +788,15 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
-    async fn get_block_verbose_by_hash(
+impl MockchainSource {
+    /// The cumulative chain state at a served block, by position.
+    ///
+    /// Shared by the by-height and by-hash verbose ports: they differ only in
+    /// how they resolve a block, so the body that builds the answer lives once.
+    fn verbose_at(
         &self,
-        hash: domain::BlockHash,
+        index: usize,
     ) -> Result<domain::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>> {
-        let index = self
-            .served_index_at_hash(hash)
-            .ok_or_else(|| port_fault::<zaino_source::GetBlockVerboseError>("block not found"))?;
         let block = &self.blocks[index];
         let height = block.coinbase_height().ok_or_else(|| {
             port_fault::<zaino_source::GetBlockVerboseError>("block missing coinbase height")
@@ -826,6 +827,50 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
                 .next_block_hash(index)
                 .map(|hash| domain::BlockHash::from(hash.0)),
         })
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
+    async fn get_block_verbose_by_hash(
+        &self,
+        hash: domain::BlockHash,
+    ) -> Result<domain::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>> {
+        let index = self
+            .served_index_at_hash(hash)
+            .ok_or_else(|| port_fault::<zaino_source::GetBlockVerboseError>("block not found"))?;
+        self.verbose_at(index)
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerbose for MockchainSource {
+    async fn get_block_verbose(
+        &self,
+        height: domain::Height,
+    ) -> Result<domain::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>> {
+        let index = self
+            .served_index_at_height(height)
+            .ok_or_else(|| port_fault::<zaino_source::GetBlockVerboseError>("block not found"))?;
+        self.verbose_at(index)
+    }
+}
+
+impl zaino_source::OneShotGetPreIndexCompactBlock for MockchainSource {
+    /// The compact projection of a served block.
+    ///
+    /// Derived from the parsed block rather than stored separately: the mock
+    /// holds one representation of the chain, so a second would be a second
+    /// thing to keep in step.
+    async fn get_pre_index_compact_block(
+        &self,
+        height: domain::Height,
+    ) -> Result<domain::PreIndexCompactBlock, PortError<zaino_source::GetBlockError>> {
+        let index = self
+            .served_index_at_height(height)
+            .ok_or(PortError::Domain(
+                zaino_source::GetBlockError::HeightNotFound(height),
+            ))?;
+        let block = self.domain_block_at(index).map_err(port_fault)?;
+        Ok(domain::PreIndexCompactBlock::from(&block))
     }
 }
 
