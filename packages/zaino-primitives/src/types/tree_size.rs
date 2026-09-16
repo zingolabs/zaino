@@ -3,17 +3,17 @@
 use core::fmt;
 
 /// Cumulative count of note commitments in a pool's commitment tree, as of a
-/// given block.
+/// given block — a size the wire/storage formats can carry.
 ///
-/// One quantity, one width. The same count is reported by a validator as a
-/// `u64`, carried through the domain, and finally narrowed to the `u32` the
-/// proto/DB surface uses. Modelling it as a single `u64`-backed newtype moves
-/// that narrowing to one checked door ([`try_to_u32`](Self::try_to_u32)) instead
-/// of leaving a silent `as u32` truncation at each boundary (issue #549).
-///
-/// `u64` is the natural width the count is delivered in, so construction is
-/// infallible: there is no bound to check beyond machine representability, which
-/// a `u64` satisfies by definition.
+/// Sapling, Orchard and Ironwood trees have depth 32, so a pool's size ranges
+/// over `0..=2^32`. Every format Zaino writes a size to (the proto
+/// `ChainMetadata` and the v1 database) holds it as a `u32`, which covers
+/// `0..=2^32 - 1`: one value short. `TreeSize` is `u32`-backed, so the
+/// invariant is the formats' range, and a size outside it is refused where it
+/// enters, at the single fallible door [`TryFrom<u64>`]. A full tree
+/// (exactly `2^32` notes) is reachable on a chain but is not representable
+/// here; it fails loudly at ingest instead of being written as `0` (issue
+/// #549). Conversions onto the `u32` formats are then infallible.
 ///
 /// # A relation this type does not enforce
 ///
@@ -23,18 +23,17 @@ use core::fmt;
 /// invariant of a single value, so it is not encoded here. A future relation
 /// over a block sequence could carry it; today it lives in prose.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct TreeSize(u64);
+pub struct TreeSize(u32);
 
-/// Error returned when a [`TreeSize`] does not fit the `u32` proto/DB surface.
+/// A reported tree size exceeds the compact protocol's `u32` range.
 ///
-/// A commitment tree past `2^32 - 1` notes is impossible on today's chain and
-/// would mean corruption. It is rejected rather than truncated: a silently
-/// wrapped size would put a wrong treestate on the wire or on disk, which no
-/// later read could detect (issue #549).
+/// Raised by [`TreeSize::try_from`] on a `u64` size, which is the width
+/// validators report. The only in-protocol value that trips it is a full
+/// depth-32 tree (`2^32`); anything larger is a malformed report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("commitment tree size {got} does not fit into u32")]
-pub struct TreeSizeOverflow {
-    /// The size that did not fit.
+#[error("tree size {got} exceeds the compact protocol's u32 range")]
+pub struct TreeSizeOutOfRange {
+    /// The reported size.
     pub got: u64,
 }
 
@@ -42,50 +41,37 @@ impl TreeSize {
     /// The empty tree — a pool that has committed no notes.
     pub const ZERO: Self = Self(0);
 
-    /// Wrap a cumulative note count.
-    ///
-    /// Infallible: `u64` is the count's natural width.
-    pub const fn new(count: u64) -> Self {
-        Self(count)
-    }
-
-    /// The cumulative note count as a `u64`.
-    pub const fn get(self) -> u64 {
+    /// The cumulative note count.
+    pub const fn get(self) -> u32 {
         self.0
-    }
-
-    /// Narrow to the `u32` the proto/DB surface uses, rejecting a size that does
-    /// not fit rather than truncating it.
-    ///
-    /// The one checked door onto the narrow surface: every boundary that writes
-    /// a tree size as a `u32` goes through here, so the truncation that issue
-    /// #549 reported cannot happen silently.
-    pub fn try_to_u32(self) -> Result<u32, TreeSizeOverflow> {
-        u32::try_from(self.0).map_err(|_| TreeSizeOverflow { got: self.0 })
-    }
-}
-
-impl From<u64> for TreeSize {
-    fn from(count: u64) -> Self {
-        Self(count)
     }
 }
 
 impl From<u32> for TreeSize {
-    /// Widen a `u32` tree size to the `u64` the domain carries.
-    ///
-    /// Lossless and always valid: every `u32` is a representable count, so the
-    /// widen never fails. This is the infallible inverse direction of
-    /// [`try_to_u32`](Self::try_to_u32), which is fallible because narrowing
-    /// back to the `u32` proto/DB surface can overflow.
     fn from(count: u32) -> Self {
-        Self(u64::from(count))
+        Self(count)
+    }
+}
+
+impl TryFrom<u64> for TreeSize {
+    type Error = TreeSizeOutOfRange;
+
+    fn try_from(count: u64) -> Result<Self, Self::Error> {
+        u32::try_from(count)
+            .map(Self)
+            .map_err(|_| TreeSizeOutOfRange { got: count })
+    }
+}
+
+impl From<TreeSize> for u32 {
+    fn from(size: TreeSize) -> Self {
+        size.0
     }
 }
 
 impl From<TreeSize> for u64 {
     fn from(size: TreeSize) -> Self {
-        size.0
+        u64::from(size.0)
     }
 }
 
@@ -112,42 +98,31 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_u64() {
-        let count = 123_456_789_u64;
-        assert_eq!(u64::from(TreeSize::new(count)), count);
-        assert_eq!(TreeSize::from(count).get(), count);
+    fn round_trips_u32() {
+        let count = 123_456_789_u32;
+        assert_eq!(u32::from(TreeSize::from(count)), count);
+        assert_eq!(u64::from(TreeSize::from(count)), u64::from(count));
     }
 
     #[test]
-    fn narrows_within_range() {
-        let size = TreeSize::new(u64::from(u32::MAX));
-        assert_eq!(size.try_to_u32(), Ok(u32::MAX));
+    fn accepts_u32_max_from_u64() {
+        let size = TreeSize::try_from(u64::from(u32::MAX));
+        assert_eq!(size, Ok(TreeSize::from(u32::MAX)));
     }
 
     #[test]
-    fn narrows_zero() {
-        assert_eq!(TreeSize::ZERO.try_to_u32(), Ok(0));
-    }
-
-    #[test]
-    fn rejects_the_off_by_one_at_two_to_the_32() {
-        // The exact #549 boundary: 2^32 is the first value a u32 cannot hold.
-        let over = u64::from(u32::MAX) + 1;
+    fn rejects_a_full_tree_from_u64() {
+        // A full depth-32 tree holds 2^32 notes, the first value a u32 cannot
+        // hold: the exact #549 boundary.
+        let full = 1_u64 << 32;
         assert_eq!(
-            TreeSize::new(over).try_to_u32(),
-            Err(TreeSizeOverflow { got: over })
+            TreeSize::try_from(full),
+            Err(TreeSizeOutOfRange { got: full })
         );
     }
 
     #[test]
-    fn narrows_then_widens_within_range() {
-        let size = TreeSize::new(42);
-        let narrowed = size.try_to_u32().expect("42 fits u32");
-        assert_eq!(TreeSize::new(u64::from(narrowed)), size);
-    }
-
-    #[test]
     fn ordering_follows_count() {
-        assert!(TreeSize::new(1) < TreeSize::new(2));
+        assert!(TreeSize::from(1) < TreeSize::from(2));
     }
 }

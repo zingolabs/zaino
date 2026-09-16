@@ -236,6 +236,11 @@ pub(crate) fn fake_validator_with_tip(
     ))
 }
 
+/// A vector's `u64` tree size, as the domain carries it.
+fn vector_tree_size(size: u64) -> zaino_primitives::types::TreeSize {
+    zaino_primitives::types::TreeSize::try_from(size).expect("vector tree sizes fit u32")
+}
+
 fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeBlock> {
     blocks
         .iter()
@@ -243,8 +248,8 @@ fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeB
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
                 zaino_primitives::types::ChainMetadata::new(
-                    vector.sapling_tree_size,
-                    vector.orchard_tree_size,
+                    vector_tree_size(vector.sapling_tree_size),
+                    vector_tree_size(vector.orchard_tree_size),
                     zaino_primitives::types::TreeSize::ZERO,
                 ),
             )
@@ -255,11 +260,11 @@ fn fake_blocks_from_vectors(blocks: &[super::vectors::VectorBlock]) -> Vec<FakeB
                 tree_roots: TreeRoots {
                     sapling: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.sapling_root).into(),
-                        size: zaino_primitives::types::TreeSize::new(vector.sapling_tree_size),
+                        size: vector_tree_size(vector.sapling_tree_size),
                     }),
                     orchard: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.orchard_root).into(),
-                        size: zaino_primitives::types::TreeSize::new(vector.orchard_tree_size),
+                        size: vector_tree_size(vector.orchard_tree_size),
                     }),
                     // The vector chain predates NU6.3, so no block in it has an
                     // ironwood treestate. `None`, not a zero root: the two are

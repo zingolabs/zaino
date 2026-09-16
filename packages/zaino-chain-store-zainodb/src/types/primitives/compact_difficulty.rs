@@ -10,7 +10,7 @@
 
 use std::fmt;
 
-use super::BlockWork;
+use super::SingleBlockWork;
 
 /// A validated compact difficulty value from a block header.
 ///
@@ -68,21 +68,22 @@ impl CompactDifficulty {
         u32::from_be_bytes(self.0.bytes_in_display_order())
     }
 
-    /// Compute the single-block proof-of-work contribution as a [`BlockWork`].
+    /// Compute the single-block proof-of-work contribution as a [`SingleBlockWork`].
     ///
     /// Walks the full Zebra conversion chain internally:
-    /// `CompactDifficulty → ExpandedDifficulty → Work → BlockWork`. This is
+    /// `CompactDifficulty → ExpandedDifficulty → Work → SingleBlockWork`. This is
     /// the consensus-side derivation the primitives crate deliberately does
     /// not own — the work integer comes from Zebra's consensus-tested
     /// conversion, and only the strictly-positive bound is re-established at
     /// the primitives door.
-    pub fn to_work(&self) -> BlockWork {
+    pub fn to_work(&self) -> SingleBlockWork {
         let work = self
             .0
             .to_work()
             .expect("validated at construction: nBits encodes a valid target");
         // A valid, nonzero target always produces nonzero work.
-        BlockWork::try_new(work.as_u128()).expect("valid compact difficulty produces nonzero work")
+        SingleBlockWork::try_new(work.as_u128())
+            .expect("valid compact difficulty produces nonzero work")
     }
 
     /// Returns a human-readable difficulty as a multiple of the network's
@@ -150,7 +151,7 @@ mod tests {
         assert!(std::num::NonZeroU128::from(cd.to_work()).get() > 0);
     }
 
-    /// Full pipeline: on-disk u32 → CompactDifficulty → BlockWork → fold.
+    /// Full pipeline: on-disk u32 → CompactDifficulty → SingleBlockWork → fold.
     ///
     /// Exercises the complete conversion chain that block indexing performs,
     /// without needing real block data.
@@ -161,7 +162,7 @@ mod tests {
         let block_work = bits.to_work();
 
         // Genesis: cumulative work = the block's own work, counted once.
-        let genesis_chainwork = zaino_primitives::types::ChainWork::genesis(block_work);
+        let genesis_chainwork = zaino_primitives::types::AbsoluteChainWork::genesis(block_work);
         assert_eq!(
             std::num::NonZeroU128::from(genesis_chainwork),
             std::num::NonZeroU128::from(block_work)

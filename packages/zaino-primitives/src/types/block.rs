@@ -134,9 +134,9 @@ impl ChainMetadata {
     /// Build from the three cumulative pool sizes, in Sapling / Orchard /
     /// Ironwood order.
     ///
-    /// Each argument accepts anything that widens into a [`TreeSize`] (a `u32`
-    /// or `u64` count, or a `TreeSize` itself), so a caller holding raw counts
-    /// need not wrap them first.
+    /// Each argument accepts anything that converts infallibly into a
+    /// [`TreeSize`] (a `u32` count, or a `TreeSize` itself), so a caller holding
+    /// raw counts need not wrap them first.
     pub fn new(
         sapling_tree_size: impl Into<TreeSize>,
         orchard_tree_size: impl Into<TreeSize>,

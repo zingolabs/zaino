@@ -31,11 +31,11 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
         ScriptPubKey, SpentInfo, TxOut,
     },
-    AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
-    BlockchainInfo, ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
+    AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
+    BlockVerbose, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
     NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, TreeSize,
-    Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -297,7 +297,11 @@ pub(crate) enum ParseError {
 
     /// Reported chainwork does not fit the domain's recorded width.
     #[error("chainwork: {0}")]
-    ChainWork(zaino_primitives::types::ChainWorkOverWidth),
+    AbsoluteChainWork(zaino_primitives::types::ChainWorkOverWidth),
+
+    /// A reported commitment tree size does not fit a [`TreeSize`].
+    #[error("tree size: {0}")]
+    TreeSize(#[from] TreeSizeOutOfRange),
 
     /// Height validation failed.
     #[error("invalid height: {0}")]
@@ -837,7 +841,7 @@ where
     let tree = read_tree::<N>(&bytes)?;
     Ok(Some(TreeRootInfo {
         root: TreeRoot::new(root_bytes(tree.root())),
-        size: TreeSize::new(tree.size() as u64),
+        size: tree_size(tree.size())?,
     }))
 }
 
@@ -900,11 +904,13 @@ pub(crate) fn parse_blockchain_info(
 /// The legacy full node sends a hex string. Zebra types the field as a 64-bit
 /// integer, so it arrives as a JSON number, and hardcodes it to zero because
 /// it does not store cumulative work per height. Both encodings land on the
-/// same door, [`ChainWork::try_from_reported`], which owns the reported-value
+/// same door, [`AbsoluteChainWork::try_from_reported`], which owns the reported-value
 /// semantics: all-zero reads as `None` — "not reported", never a zero a
 /// consumer could compare — and a value past the domain's 128-bit width is
 /// refused rather than truncated.
-fn parse_reported_chain_work(value: &serde_json::Value) -> Result<Option<ChainWork>, ParseError> {
+fn parse_reported_chain_work(
+    value: &serde_json::Value,
+) -> Result<Option<AbsoluteChainWork>, ParseError> {
     let be = if let Some(number) = value.as_u64() {
         let mut be = [0u8; 32];
         be[24..].copy_from_slice(&number.to_be_bytes());
@@ -912,7 +918,7 @@ fn parse_reported_chain_work(value: &serde_json::Value) -> Result<Option<ChainWo
     } else {
         chain_work_be_bytes(value)?
     };
-    ChainWork::try_from_reported(be).map_err(ParseError::ChainWork)
+    AbsoluteChainWork::try_from_reported(be).map_err(ParseError::AbsoluteChainWork)
 }
 
 /// Cumulative chainwork as a hex string, decoded to the wire's 32 big-endian
@@ -1039,7 +1045,14 @@ fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<TreeS
     else {
         return Ok(TreeSize::ZERO);
     };
-    as_u64(size).map(TreeSize::new)
+    Ok(TreeSize::try_from(as_u64(size)?)?)
+}
+
+/// A deserialised tree's `usize` note count, as a [`TreeSize`].
+fn tree_size(count: usize) -> Result<TreeSize, ParseError> {
+    let count = u64::try_from(count)
+        .map_err(|_| ParseError::Deserialize(format!("tree size {count} does not fit u64")))?;
+    Ok(TreeSize::try_from(count)?)
 }
 
 /// Parse a `getblockdeltas` response.
@@ -1200,7 +1213,12 @@ mod tests {
     fn chainwork_left_pads_a_trimmed_value() {
         let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
 
-        assert_eq!(trimmed, Some(ChainWork::try_new(0xff).expect("nonzero")));
+        assert_eq!(
+            trimmed,
+            Some(AbsoluteChainWork::new(
+                core::num::NonZeroU128::new(0xff).expect("nonzero")
+            ))
+        );
     }
 
     /// Zero off the wire — either validator's encoding — is "not reported",
@@ -1221,7 +1239,27 @@ mod tests {
         let over = format!("01{}", "00".repeat(31));
         assert!(matches!(
             parse_reported_chain_work(&json!(over)),
-            Err(ParseError::ChainWork(_))
+            Err(ParseError::AbsoluteChainWork(_))
+        ));
+    }
+
+    /// A reported tree size is accepted up to `u32::MAX` and a full depth-32
+    /// tree (`2^32`) is refused at parse rather than stored as a wrapped value
+    /// (issue #549).
+    #[test]
+    fn tree_size_past_u32_is_refused() {
+        let trees = |size: u64| json!({ "sapling": { "size": size } });
+
+        let max = u64::from(u32::MAX);
+        assert_eq!(
+            pool_tree_size(Some(&trees(max)), "sapling").expect("u32::MAX fits"),
+            TreeSize::from(u32::MAX)
+        );
+
+        let full = 1_u64 << 32;
+        assert!(matches!(
+            pool_tree_size(Some(&trees(full)), "sapling"),
+            Err(ParseError::TreeSize(TreeSizeOutOfRange { got })) if got == full
         ));
     }
 

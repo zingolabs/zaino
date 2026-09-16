@@ -1551,21 +1551,11 @@ fn has_pool_data(tx: &zaino_primitives::types::PreIndexCompactTx) -> bool {
 /// legacy inherent reads still return proto blocks to consumers that have not
 /// moved onto the ports; it goes with them, along with this crate's dependency
 /// on `zaino-proto`.
-///
-/// Fallible because the wire form counts tree sizes in `u32` where the domain
-/// counts them in `u64`: the narrowing goes through the one checked door
-/// ([`TreeSize::try_to_u32`](zaino_primitives::types::TreeSize::try_to_u32)) and
-/// a size the wire cannot hold is refused rather than truncated. A block read
-/// back from the store cannot trip this — its sizes were stored as `u32` — but
-/// the signature does not assume the caller's block came from disk.
 pub fn compact_block_to_wire(
     block: &zaino_primitives::types::CompactBlock,
-) -> Result<
-    zaino_proto::proto::compact_formats::CompactBlock,
-    zaino_primitives::types::TreeSizeOverflow,
-> {
+) -> zaino_proto::proto::compact_formats::CompactBlock {
     let metadata = &block.chain_metadata;
-    Ok(zaino_proto::proto::compact_formats::CompactBlock {
+    zaino_proto::proto::compact_formats::CompactBlock {
         height: u64::from(block.height),
         hash: <[u8; 32]>::from(block.hash).to_vec(),
         prev_hash: <[u8; 32]>::from(block.prev_hash).to_vec(),
@@ -1579,11 +1569,11 @@ pub fn compact_block_to_wire(
             .map(|(index, tx)| compact_tx_to_proto(index, tx))
             .collect(),
         chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
-            sapling_commitment_tree_size: metadata.sapling_tree_size.try_to_u32()?,
-            orchard_commitment_tree_size: metadata.orchard_tree_size.try_to_u32()?,
-            ironwood_commitment_tree_size: metadata.ironwood_tree_size.try_to_u32()?,
+            sapling_commitment_tree_size: u32::from(metadata.sapling_tree_size),
+            orchard_commitment_tree_size: u32::from(metadata.orchard_tree_size),
+            ironwood_commitment_tree_size: u32::from(metadata.ironwood_tree_size),
         }),
-    })
+    }
 }
 
 fn compact_tx_to_proto(

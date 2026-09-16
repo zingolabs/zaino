@@ -11,11 +11,11 @@ use super::error_map::corrupt_row_because;
 use zaino_chain_store::{ChainStoreError, StoredBlock, StoredTx};
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockTxPosition, EncryptedCiphertext, Height as DomainHeight,
-    OrchardAction, Outpoint as DomainOutpoint, ScriptType, SignedZatoshis, TreeRoots,
+    OrchardAction, Outpoint as DomainOutpoint, ScriptType, SignedZatoshis,
 };
 
 use crate::types::{
-    BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock, Outpoint, TransactionHash,
+    BlockHash, CompactTxData, Height, IndexedBlock, Outpoint, TransactionHash,
     TransparentCompactTx, TxLocation,
 };
 
@@ -68,9 +68,6 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
     let context = crate::types::BlockContext::new(
         hash,
         stored_hash(header.prev_hash),
-        // The primitives type already carries the non-zero and width
-        // invariants this bridge used to re-derive by hand, so a stored
-        // block's chainwork passes through unchanged.
         block.chainwork,
         Height(u32::from(header.height)),
     );
@@ -99,7 +96,7 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
         context,
         data,
         transactions,
-        commitment_tree_data(&block.tree_roots, hash)?,
+        crate::conversion::commitment_tree_data(&block.tree_roots),
     ))
 }
 
@@ -216,27 +213,9 @@ pub(super) fn stored_script_tag(script_type: ScriptType) -> u8 {
     }
 }
 
-/// The domain treestate, as the shape the writer stores.
-///
-/// Delegates to [`crate::conversion::commitment_tree_data`] rather than
-/// repeating the field mapping. That matters for one field in particular: a
-/// tree size that does not fit the stored width is *refused* there. A second
-/// copy here narrowed it with a cast, which put a wrong size on disk for a
-/// block whose real size nothing downstream re-derives — a silent wrong answer
-/// on the write path, and exactly the drift a single definition prevents.
-pub(super) fn commitment_tree_data(
-    roots: &TreeRoots,
-    hash: BlockHash,
-) -> Result<CommitmentTreeData, ChainStoreError> {
-    crate::conversion::commitment_tree_data(roots, hash).map_err(|error| {
-        ChainStoreError::backend(format!("block {hash} has an unstorable treestate: {error}"))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::TreeRootInfo;
 
     /// A position past what the stored form can key is an answer, not an error.
     ///
@@ -256,44 +235,5 @@ mod tests {
             tx_index: u32::from(u16::MAX) + 1,
         })
         .is_none());
-    }
-
-    /// A treestate the stored width cannot hold is refused, not narrowed.
-    ///
-    /// Regression test. This conversion used to carry its own copy of the field
-    /// mapping, whose tree-size step was an `as u32` — so a size above the
-    /// stored width was written to disk narrowed, on the *write* path, for a
-    /// block whose real size nothing downstream re-derives. It now delegates to
-    /// the one mapping that rejects, and this pins that it still does.
-    #[test]
-    fn a_treestate_the_store_cannot_hold_is_refused() {
-        use zaino_primitives::types::{TreeRoot, TreeSize};
-
-        let hash = BlockHash([7u8; 32]);
-        let oversized = TreeRoots {
-            sapling: Some(TreeRootInfo {
-                root: TreeRoot::from([0u8; 32]),
-                size: TreeSize::from(u64::from(u32::MAX) + 1),
-            }),
-            orchard: None,
-            ironwood: None,
-        };
-
-        assert!(matches!(
-            commitment_tree_data(&oversized, hash),
-            Err(ChainStoreError::Backend { .. })
-        ));
-
-        // The same treestate one below the boundary is accepted, so the
-        // rejection is about the width and not about the field being present.
-        let representable = TreeRoots {
-            sapling: Some(TreeRootInfo {
-                root: TreeRoot::from([0u8; 32]),
-                size: TreeSize::from(u32::MAX),
-            }),
-            orchard: None,
-            ironwood: None,
-        };
-        assert!(commitment_tree_data(&representable, hash).is_ok());
     }
 }

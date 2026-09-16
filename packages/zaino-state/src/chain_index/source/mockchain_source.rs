@@ -447,6 +447,11 @@ pub(crate) fn port_fault<E: std::fmt::Debug + std::fmt::Display>(
     PortError::Fetch(FetchError::new(FailureMode::Parse, message.into()))
 }
 
+/// A vector's `u64` tree size, as the domain carries it.
+fn tree_size(size: u64) -> domain::TreeSize {
+    domain::TreeSize::try_from(size).expect("test vector tree sizes fit u32")
+}
+
 impl MockchainSource {
     /// `Err` when a test has armed [`Self::set_failing`].
     fn forced_failure<E: std::fmt::Debug + std::fmt::Display>(&self) -> Option<PortError<E>> {
@@ -510,12 +515,8 @@ impl MockchainSource {
     fn domain_block_at(&self, index: usize) -> Result<domain::Block, String> {
         let (sapling, orchard) = self.roots[index];
         let chain_metadata = domain::ChainMetadata {
-            sapling_tree_size: sapling.map_or(domain::TreeSize::ZERO, |(_, size)| {
-                domain::TreeSize::new(size)
-            }),
-            orchard_tree_size: orchard.map_or(domain::TreeSize::ZERO, |(_, size)| {
-                domain::TreeSize::new(size)
-            }),
+            sapling_tree_size: sapling.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
+            orchard_tree_size: orchard.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
             // The test vectors carry no ironwood tree.
             ironwood_tree_size: domain::TreeSize::ZERO,
         };
@@ -780,7 +781,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
         let (sapling, orchard) = self.roots[index];
         let info = |root: [u8; 32], size: u64| domain::TreeRootInfo {
             root: domain::TreeRoot::from(root),
-            size: domain::TreeSize::new(size),
+            size: tree_size(size),
         };
 
         Ok(domain::TreeRoots {
@@ -809,10 +810,10 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
         let (sapling_size, orchard_size) = (
             self.roots[index]
                 .0
-                .map(|(_, size)| domain::TreeSize::new(size))
+                .map(|(_, size)| tree_size(size))
                 .unwrap_or(domain::TreeSize::ZERO),
             orchard
-                .map(|(_, size)| domain::TreeSize::new(size))
+                .map(|(_, size)| tree_size(size))
                 .unwrap_or(domain::TreeSize::ZERO),
         );
 
