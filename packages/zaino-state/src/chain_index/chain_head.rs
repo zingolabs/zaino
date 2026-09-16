@@ -136,7 +136,12 @@ mod tests {
     use super::*;
     use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
     use crate::chain_index::types::TxInCompact;
-    use zaino_primitives::types::TreeRoots;
+    use zaino_primitives::types::{TreeRoots, TreeSize};
+
+    /// A vector's `u64` tree size, as the domain carries it.
+    fn vector_tree_size(size: u64) -> TreeSize {
+        TreeSize::try_from(size).expect("vector tree sizes fit u32")
+    }
 
     /// This conversion and the finalised state's must produce the same
     /// `IndexedBlock` from the same block.
@@ -170,12 +175,8 @@ mod tests {
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
                 zaino_primitives::types::ChainMetadata {
-                    sapling_tree_size: zaino_primitives::types::TreeSize::new(
-                        vector.sapling_tree_size,
-                    ),
-                    orchard_tree_size: zaino_primitives::types::TreeSize::new(
-                        vector.orchard_tree_size,
-                    ),
+                    sapling_tree_size: vector_tree_size(vector.sapling_tree_size),
+                    orchard_tree_size: vector_tree_size(vector.orchard_tree_size),
                     ironwood_tree_size: zaino_primitives::types::TreeSize::ZERO,
                 },
             )
@@ -200,11 +201,11 @@ mod tests {
                 tree_roots: TreeRoots {
                     sapling: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.sapling_root).into(),
-                        size: zaino_primitives::types::TreeSize::new(vector.sapling_tree_size),
+                        size: vector_tree_size(vector.sapling_tree_size),
                     }),
                     orchard: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.orchard_root).into(),
-                        size: zaino_primitives::types::TreeSize::new(vector.orchard_tree_size),
+                        size: vector_tree_size(vector.orchard_tree_size),
                     }),
                     ironwood: None,
                 },

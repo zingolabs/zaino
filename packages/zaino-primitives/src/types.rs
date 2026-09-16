@@ -80,7 +80,7 @@ pub use transaction_location::TransactionLocation;
 pub use transparent_address::TransparentAddress;
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
-pub use tree_size::{TreeSize, TreeSizeOverflow};
+pub use tree_size::{TreeSize, TreeSizeOutOfRange};
 pub use treestate::{PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;

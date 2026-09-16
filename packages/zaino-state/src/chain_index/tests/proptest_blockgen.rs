@@ -1403,7 +1403,8 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
 
         let info = |root: [u8; 32], size: u64| zaino_primitives::types::TreeRootInfo {
             root: zaino_primitives::types::TreeRoot::from(root),
-            size: zaino_primitives::types::TreeSize::new(size),
+            size: zaino_primitives::types::TreeSize::try_from(size)
+                .expect("generated trees hold fewer than 2^32 notes"),
         };
 
         // An empty pool reports the empty-tree root, not an absent one. A

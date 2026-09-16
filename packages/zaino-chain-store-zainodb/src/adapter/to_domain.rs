@@ -331,15 +331,15 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     TreeRoots {
         sapling: Some(TreeRootInfo {
             root: (*roots.sapling()).into(),
-            size: TreeSize::new(u64::from(sizes.sapling())),
+            size: TreeSize::from(sizes.sapling()),
         }),
         orchard: Some(TreeRootInfo {
             root: (*roots.orchard()).into(),
-            size: TreeSize::new(u64::from(sizes.orchard())),
+            size: TreeSize::from(sizes.orchard()),
         }),
         ironwood: roots.ironwood().map(|root| TreeRootInfo {
             root: root.into(),
-            size: TreeSize::new(u64::from(sizes.ironwood())),
+            size: TreeSize::from(sizes.ironwood()),
         }),
     }
 }

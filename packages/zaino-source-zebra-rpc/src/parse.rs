@@ -35,7 +35,7 @@ use zaino_primitives::types::{
     BlockVerbose, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
     NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, TreeSize,
-    Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -298,6 +298,10 @@ pub(crate) enum ParseError {
     /// Reported chainwork does not fit the domain's recorded width.
     #[error("chainwork: {0}")]
     AbsoluteChainWork(zaino_primitives::types::ChainWorkOverWidth),
+
+    /// A reported commitment tree size does not fit a [`TreeSize`].
+    #[error("tree size: {0}")]
+    TreeSize(#[from] TreeSizeOutOfRange),
 
     /// Height validation failed.
     #[error("invalid height: {0}")]
@@ -837,7 +841,7 @@ where
     let tree = read_tree::<N>(&bytes)?;
     Ok(Some(TreeRootInfo {
         root: TreeRoot::new(root_bytes(tree.root())),
-        size: TreeSize::new(tree.size() as u64),
+        size: tree_size(tree.size())?,
     }))
 }
 
@@ -1041,7 +1045,14 @@ fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<TreeS
     else {
         return Ok(TreeSize::ZERO);
     };
-    as_u64(size).map(TreeSize::new)
+    Ok(TreeSize::try_from(as_u64(size)?)?)
+}
+
+/// A deserialised tree's `usize` note count, as a [`TreeSize`].
+fn tree_size(count: usize) -> Result<TreeSize, ParseError> {
+    let count = u64::try_from(count)
+        .map_err(|_| ParseError::Deserialize(format!("tree size {count} does not fit u64")))?;
+    Ok(TreeSize::try_from(count)?)
 }
 
 /// Parse a `getblockdeltas` response.
@@ -1229,6 +1240,26 @@ mod tests {
         assert!(matches!(
             parse_reported_chain_work(&json!(over)),
             Err(ParseError::AbsoluteChainWork(_))
+        ));
+    }
+
+    /// A reported tree size is accepted up to `u32::MAX` and a full depth-32
+    /// tree (`2^32`) is refused at parse rather than stored as a wrapped value
+    /// (issue #549).
+    #[test]
+    fn tree_size_past_u32_is_refused() {
+        let trees = |size: u64| json!({ "sapling": { "size": size } });
+
+        let max = u64::from(u32::MAX);
+        assert_eq!(
+            pool_tree_size(Some(&trees(max)), "sapling").expect("u32::MAX fits"),
+            TreeSize::from(u32::MAX)
+        );
+
+        let full = 1_u64 << 32;
+        assert!(matches!(
+            pool_tree_size(Some(&trees(full)), "sapling"),
+            Err(ParseError::TreeSize(TreeSizeOutOfRange { got })) if got == full
         ));
     }
 

@@ -186,12 +186,10 @@ pub(crate) async fn compact_block<R: CompactBlockRead>(
     };
     let filter = zaino_chain_store_zainodb::conversion::pool_filter_from_wire(pools);
     let blocks = absent(reader.compact_chunk(domain, domain, filter).await.map(Some))?;
-    blocks
+    Ok(blocks
         .and_then(|mut blocks| blocks.pop())
         .as_ref()
-        .map(zaino_chain_store_zainodb::conversion::compact_block_to_wire)
-        .transpose()
-        .map_err(ChainIndexError::internal_from)
+        .map(zaino_chain_store_zainodb::conversion::compact_block_to_wire))
 }
 
 /// Compact blocks over `start..=end`, ascending, in the wire shape.
@@ -308,17 +306,14 @@ pub(crate) type WireCompactBlocks =
 fn wire_chunk(
     chunk: Result<Vec<zaino_primitives::types::CompactBlock>, ChainStoreError>,
 ) -> futures::stream::Iter<std::vec::IntoIter<Result<CompactBlock, tonic::Status>>> {
-    let results: Vec<Result<CompactBlock, tonic::Status>> = match chunk {
+    futures::stream::iter(match chunk {
         Ok(blocks) => blocks
             .iter()
-            .map(|block| {
-                zaino_chain_store_zainodb::conversion::compact_block_to_wire(block)
-                    .map_err(|error| tonic::Status::internal(error.to_string()))
-            })
+            .map(zaino_chain_store_zainodb::conversion::compact_block_to_wire)
+            .map(Ok)
             .collect(),
         Err(error) => vec![Err(wire_status(error))],
-    };
-    futures::stream::iter(results)
+    })
 }
 
 /// A store failure, as the gRPC status the block stream carries.

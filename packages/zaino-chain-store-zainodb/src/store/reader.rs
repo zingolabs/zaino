@@ -604,8 +604,7 @@ impl<T: ChainStoreSource> DbReader<T> {
                 ),
             )
             .await?;
-        crate::store::finalised_source::v1::compact_block::compact_block_to_wire(&block)
-            .map_err(|error| StoreError::Custom(error.to_string()))
+        Ok(crate::store::finalised_source::v1::compact_block::compact_block_to_wire(&block))
     }
 
     /// Returns every compact block in `start..=end`, ascending, under one read

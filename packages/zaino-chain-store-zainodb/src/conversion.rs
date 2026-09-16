@@ -97,8 +97,8 @@ pub enum BlockConversionError {
     /// width.
     ///
     /// The block-order position is a `usize`; the stored compact form records
-    /// it as `u64`. Rejected rather than truncated for the same reason as the
-    /// tree sizes: a wrapped position would put a wrong index on disk. This
+    /// it as `u64`. Rejected rather than truncated: a wrapped position would
+    /// put a wrong index on disk. This
     /// cannot happen for any real block — the block size limit bounds the
     /// transaction count far below `u64::MAX` — but the conversion refuses it
     /// rather than assert it away.
@@ -108,21 +108,6 @@ pub enum BlockConversionError {
         hash: BlockHash,
         /// The position that did not fit.
         position: usize,
-    },
-
-    /// A commitment tree has grown past what the stored form can record.
-    ///
-    /// The domain counts tree sizes in `u64` where the stored form uses `u32`.
-    /// Rejected rather than truncated: a silently wrapped size would put a
-    /// wrong treestate on disk, which no later read could detect.
-    #[error("block {hash} has a {pool} commitment tree size that does not fit into u32: {size}")]
-    TreeSizeOverflow {
-        /// The block that could not be converted.
-        hash: BlockHash,
-        /// Which pool's tree overflowed.
-        pool: &'static str,
-        /// The size that did not fit.
-        size: u64,
     },
 }
 
@@ -203,7 +188,7 @@ pub fn indexed_block(
         context,
         data,
         transactions,
-        commitment_tree_data(tree_roots, hash)?,
+        commitment_tree_data(tree_roots),
     ))
 }
 
@@ -262,45 +247,27 @@ fn solution(solution: &zaino_primitives::types::EquihashSolution) -> EquihashSol
 /// pre-activation heights — so it is preserved rather than tidied.
 ///
 /// Public so the port layer converts a treestate through this rather than
-/// through a second copy of the mapping. The tree-size narrowing below is why
-/// that matters: it refuses a size the stored width cannot hold, where a cast
-/// would write a smaller one and nothing downstream would notice.
-pub fn commitment_tree_data(
-    roots: &TreeRoots,
-    hash: BlockHash,
-) -> Result<CommitmentTreeData, BlockConversionError> {
+/// through a second copy of the mapping.
+pub fn commitment_tree_data(roots: &TreeRoots) -> CommitmentTreeData {
     let root_bytes = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
         root.as_ref().map(|info| <[u8; 32]>::from(info.root))
     };
-    let size = |root: &Option<zaino_primitives::types::TreeRootInfo>,
-                pool: &'static str|
-     -> Result<u32, BlockConversionError> {
-        match root.as_ref() {
-            Some(info) => {
-                info.size
-                    .try_to_u32()
-                    .map_err(|_| BlockConversionError::TreeSizeOverflow {
-                        hash,
-                        pool,
-                        size: info.size.get(),
-                    })
-            }
-            None => Ok(0),
-        }
+    let size = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
+        root.as_ref().map_or(0, |info| u32::from(info.size))
     };
 
-    Ok(CommitmentTreeData::new(
+    CommitmentTreeData::new(
         CommitmentTreeRoots::new(
             root_bytes(&roots.sapling).unwrap_or_default(),
             root_bytes(&roots.orchard).unwrap_or_default(),
             root_bytes(&roots.ironwood),
         ),
         CommitmentTreeSizes::new(
-            size(&roots.sapling, "sapling")?,
-            size(&roots.orchard, "orchard")?,
-            size(&roots.ironwood, "ironwood")?,
+            size(&roots.sapling),
+            size(&roots.orchard),
+            size(&roots.ironwood),
         ),
-    ))
+    )
 }
 
 /// `position` is the transaction's slot in block order, the sole authority for
