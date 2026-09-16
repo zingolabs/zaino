@@ -84,6 +84,48 @@ async fn the_whole_runtime_boots_in_dependency_order() {
 }
 
 #[tokio::test]
+async fn the_signals_track_the_runtime() {
+    let (validator, orchestra) = boot_zaino(MockIndexerService::new(MockChain::default())).await;
+    let mut signals = orchestra.signals();
+
+    // Booted: startup latched, ready, live.
+    let booted = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let s = *signals.borrow();
+            if s.started && s.ready && s.live {
+                return;
+            }
+            if signals.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(booted.is_ok(), "runtime reaches started + ready");
+
+    // The validator drops -> readiness falls, but startup stays latched (it
+    // booted; this is a readiness change, not an un-boot).
+    validator.report_health(Health::Critical);
+    let dropped = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if !signals.borrow().ready {
+                return;
+            }
+            if signals.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(dropped.is_ok(), "a critical component drops readiness");
+    let s = *signals.borrow();
+    assert!(!s.ready);
+    assert!(s.started, "startup stays latched after boot");
+
+    orchestra.shutdown();
+}
+
+#[tokio::test]
 async fn a_validator_drop_brings_the_whole_app_down() {
     let (validator, orchestra) = boot_zaino(MockIndexerService::new(MockChain::default())).await;
 

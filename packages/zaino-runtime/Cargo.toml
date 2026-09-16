@@ -9,6 +9,7 @@ description = "The orchestrator: composes the finalised (zaino-fs) and non-final
 zaino-component = { path = "../zaino-component" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }

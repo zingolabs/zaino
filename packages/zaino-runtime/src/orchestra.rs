@@ -16,11 +16,12 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use zaino_component::{
     ComponentName, ComponentStatus, Lifecycle, Managed, StatusSource, StatusWatch, Task, TaskName,
 };
 
+use crate::signals::RuntimeSignals;
 use crate::supervisor::{observe, supervise, RecoveryPolicy, SupervisionOutcome};
 
 /// A component could not be booted.
@@ -37,6 +38,7 @@ pub struct OrchestraBuilder {
     escalations_rx: mpsc::UnboundedReceiver<ComponentName>,
     babysitters: Vec<Task>,
     statuses: Vec<Arc<dyn StatusSource + Send + Sync>>,
+    watches: Vec<Arc<dyn StatusWatch + Send + Sync>>,
 }
 
 impl OrchestraBuilder {
@@ -48,6 +50,7 @@ impl OrchestraBuilder {
             escalations_rx,
             babysitters: Vec::new(),
             statuses: Vec::new(),
+            watches: Vec::new(),
         }
     }
 
@@ -64,6 +67,8 @@ impl OrchestraBuilder {
         let name = component.status().name;
         let handle: Arc<dyn StatusSource + Send + Sync> = Arc::new(component.clone());
         self.statuses.push(handle);
+        let watch_handle: Arc<dyn StatusWatch + Send + Sync> = Arc::new(component.clone());
+        self.watches.push(watch_handle);
 
         let escalations = self.escalations_tx.clone();
         let watched = component;
@@ -99,6 +104,8 @@ impl OrchestraBuilder {
         let name = component.status().name;
         let handle: Arc<dyn StatusSource + Send + Sync> = Arc::new(component.clone());
         self.statuses.push(handle);
+        let watch_handle: Arc<dyn StatusWatch + Send + Sync> = Arc::new(component.clone());
+        self.watches.push(watch_handle);
 
         let escalations = self.escalations_tx.clone();
         let watched = component;
@@ -117,11 +124,14 @@ impl OrchestraBuilder {
     }
 
     /// Finish booting; hand back the running [`Orchestra`].
-    pub fn build(self) -> Orchestra {
+    pub fn build(mut self) -> Orchestra {
+        let (signals, aggregator) = spawn_signals(self.watches);
+        self.babysitters.push(aggregator);
         Orchestra {
             babysitters: self.babysitters,
             statuses: self.statuses,
             escalations: self.escalations_rx,
+            signals,
         }
     }
 }
@@ -137,6 +147,7 @@ pub struct Orchestra {
     babysitters: Vec<Task>,
     statuses: Vec<Arc<dyn StatusSource + Send + Sync>>,
     escalations: mpsc::UnboundedReceiver<ComponentName>,
+    signals: watch::Receiver<RuntimeSignals>,
 }
 
 /// The result of running the orchestra to completion.
@@ -183,12 +194,64 @@ impl Orchestra {
         self.statuses.iter().map(|s| s.status()).collect()
     }
 
+    /// A live view of the runtime's cloud-native signals (startup / liveness /
+    /// readiness), projected from the components. Each edge holds a clone and
+    /// reads `*rx.borrow()` per probe; `changed()` wakes on each transition.
+    pub fn signals(&self) -> watch::Receiver<RuntimeSignals> {
+        self.signals.clone()
+    }
+
     /// Stop supervising every component.
     pub fn shutdown(&self) {
         for babysitter in &self.babysitters {
             babysitter.cancel();
         }
     }
+}
+
+/// Snapshot every component's current status.
+fn snapshot(receivers: &[watch::Receiver<ComponentStatus>]) -> Vec<ComponentStatus> {
+    receivers.iter().map(|r| *r.borrow()).collect()
+}
+
+/// Spawn the signals aggregator: recompute the runtime signals whenever any
+/// component's status changes, and publish them on a `watch`. Returns the
+/// receiver the edges read and the aggregator task (cancelled on shutdown).
+fn spawn_signals(
+    watches: Vec<Arc<dyn StatusWatch + Send + Sync>>,
+) -> (watch::Receiver<RuntimeSignals>, Task) {
+    let mut receivers: Vec<watch::Receiver<ComponentStatus>> =
+        watches.iter().map(|w| w.subscribe()).collect();
+    let initial = RuntimeSignals::project(&snapshot(&receivers), false);
+    let (tx, rx) = watch::channel(initial);
+
+    let task = Task::spawn(TaskName("runtime-signals"), move |cancel| async move {
+        let mut started = initial.started;
+        loop {
+            let signals = RuntimeSignals::project(&snapshot(&receivers), started);
+            started = signals.started;
+            let _ = tx.send(signals);
+
+            if receivers.is_empty() {
+                cancel.cancelled().await;
+                break;
+            }
+
+            // Wake on the first component whose status changes (or on cancel).
+            let changes = receivers.iter_mut().map(|r| Box::pin(r.changed()));
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                (result, _, _) = futures::future::select_all(changes) => {
+                    // A closed channel means a component went away; stop aggregating.
+                    if result.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    (rx, task)
 }
 
 /// Wait until `component` reports `Ready` (or goes away).
