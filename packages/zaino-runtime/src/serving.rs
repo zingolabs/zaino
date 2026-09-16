@@ -1,31 +1,48 @@
-//! A serve adapter as a supervised component.
+//! A server as a supervised component.
 //!
-//! Wraps a serve adapter (the light-serve or node-rpc handler over one profile)
-//! into a [`zaino_component`] the runtime can boot and supervise: it reports a
-//! [`ComponentStatus`], publishes it on a `watch`, and is [`Managed`] (spawn /
-//! restart / stop). The server's own status is gone — lifecycle and health are
-//! owned here and observed by the Orchestra, replacing the hand-rolled
-//! `NamedAtomicStatus` the old servers polled.
+//! [`Serve`] is the seam between the runtime's supervision and a concrete
+//! transport server (tonic / jsonrpsee): a long-running workload that binds and
+//! runs until cancelled. [`ServeComponent`] drives a `Serve` as a
+//! [`zaino_component`] component — it reports a [`ComponentStatus`], publishes it
+//! on a `watch`, and is [`Managed`]. Lifecycle and health are owned here and
+//! observed by the Orchestra, replacing the servers' hand-rolled
+//! `NamedAtomicStatus`.
 //!
-//! The serve loop is a [`Task`] holding the adapter for its lifetime; in this
-//! scaffold it simply serves until cancelled. A real transport server (tonic /
-//! jsonrpsee) drops in as the task body, calling [`signal_health`] when its
-//! serve task fails.
-//!
-//! [`signal_health`]: ServeComponent::signal_health
+//! Health is driven by the serve task's outcome, not injected: a clean shutdown
+//! (the token fired, `Ok`) settles the component `Offline`; an early `Err` (a
+//! bind failure, a serve loop that died) flips it `Critical`, which the
+//! Orchestra escalates.
 
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 use zaino_component::{
-    ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource, StatusWatch, Task,
-    TaskName,
+    CancellationToken, ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource,
+    StatusWatch, Task, TaskName,
 };
 
-/// A serve adapter of type `A`, presented to the runtime as a component.
+/// A long-running server the runtime supervises.
+///
+/// `serve` binds and runs until `cancel` fires. Returning `Ok(())` means a clean
+/// shutdown in response to the token; returning `Err` means the server could not
+/// start or its serve loop failed — which becomes a `Critical` component. The
+/// concrete transport server (tonic / jsonrpsee) implements this over its
+/// profile handle.
+pub trait Serve: Send + Sync + 'static {
+    /// Why the server could not start or keep running.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Bind and serve until `cancel` fires.
+    fn serve(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+}
+
+/// A [`Serve`] server `A`, presented to the runtime as a component.
 pub struct ServeComponent<A> {
     name: ComponentName,
-    adapter: Arc<A>,
+    server: Arc<A>,
     status: watch::Sender<ComponentStatus>,
     task: Arc<Mutex<Option<Task>>>,
 }
@@ -34,7 +51,7 @@ impl<A> Clone for ServeComponent<A> {
     fn clone(&self) -> Self {
         Self {
             name: self.name,
-            adapter: Arc::clone(&self.adapter),
+            server: Arc::clone(&self.server),
             status: self.status.clone(),
             task: Arc::clone(&self.task),
         }
@@ -42,8 +59,8 @@ impl<A> Clone for ServeComponent<A> {
 }
 
 impl<A> ServeComponent<A> {
-    /// A component named `name` serving over `adapter`, initially `Offline`.
-    pub fn new(name: ComponentName, adapter: A) -> Self {
+    /// A component named `name` supervising `server`, initially `Offline`.
+    pub fn new(name: ComponentName, server: A) -> Self {
         let (status, _) = watch::channel(ComponentStatus::new(
             name,
             Lifecycle::Offline,
@@ -51,16 +68,10 @@ impl<A> ServeComponent<A> {
         ));
         Self {
             name,
-            adapter: Arc::new(adapter),
+            server: Arc::new(server),
             status,
             task: Arc::new(Mutex::new(None)),
         }
-    }
-
-    /// Flip the health condition — what a real serve task calls when it fails or
-    /// recovers. (In this scaffold, the driver of an escalation in tests.)
-    pub fn signal_health(&self, health: Health) {
-        self.status.send_modify(|s| s.health = health);
     }
 }
 
@@ -76,26 +87,35 @@ impl<A: Send + Sync + 'static> StatusWatch for ServeComponent<A> {
     }
 }
 
-impl<A: Send + Sync + 'static> Managed for ServeComponent<A> {
-    // Bringing a server up cannot fail in this scaffold; a real transport bind
-    // failure becomes a typed error here.
+impl<A: Serve> Managed for ServeComponent<A> {
+    // Starting a component never fails synchronously: a bind failure surfaces as
+    // the serve task's early `Err`, which flips health `Critical` for the
+    // Orchestra to escalate — the same reactive path as a mid-run failure.
     type Error = std::convert::Infallible;
 
     async fn spawn(&self) -> Result<(), Self::Error> {
+        // Publish `Ready` before the serve task runs, so the task's own
+        // terminal transition (Offline on clean stop, Critical on failure)
+        // always follows Ready rather than racing it.
         self.status
             .send_modify(|s| s.lifecycle = Lifecycle::Spawning);
-        let adapter = Arc::clone(&self.adapter);
-        let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
-            // Hold the adapter for the server's lifetime and serve until asked
-            // to stop. A real transport server's accept loop lives here.
-            let _serving = adapter;
-            cancel.cancelled().await;
-        });
-        *self.task.lock().expect("serve task mutex poisoned") = Some(task);
         self.status.send_modify(|s| {
             s.lifecycle = Lifecycle::Ready;
             s.health = Health::Healthy;
         });
+
+        let server = Arc::clone(&self.server);
+        let status = self.status.clone();
+        let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
+            match server.serve(cancel).await {
+                Ok(()) => status.send_modify(|s| {
+                    s.lifecycle = Lifecycle::Offline;
+                    s.health = Health::Offline;
+                }),
+                Err(_) => status.send_modify(|s| s.health = Health::Critical),
+            }
+        });
+        *self.task.lock().expect("serve task mutex poisoned") = Some(task);
         Ok(())
     }
 
