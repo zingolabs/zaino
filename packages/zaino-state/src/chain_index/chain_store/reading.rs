@@ -365,6 +365,12 @@ fn wire_status(error: ChainStoreError) -> tonic::Status {
         ChainStoreError::CorruptRow { .. } | ChainStoreError::Backend { .. } => {
             tonic::Status::internal(message)
         }
+
+        // A freeze outcome, reached from a read. Freezing is the composer's
+        // repair to make — build to `first_frozen - 1`, freeze again — and a
+        // client has no part in it, so reaching a client means that repair did
+        // not happen. `internal` is both true and the only useful answer.
+        ChainStoreError::FreezeGap { .. } => tonic::Status::internal(message),
     }
 }
 

@@ -208,6 +208,28 @@ and frozen into another loses it silently. Both directions decode, both hash,
 and only the rows differ. The backend's port suite checks exactly this by
 reading a chain out of one store and freezing it into an empty one.
 
+## A frozen block carries no chainwork
+
+`freeze` takes `FrozenBlock`, which is `StoredBlock` without its `chainwork`,
+and the absence is the point.
+
+Chainwork is cumulative: it needs an unbroken chain *below* a block. The store
+is the party holding that chain, so it is the only one that can know the value —
+and it can always derive it, because freezing appends at `tip + 1` and a batch
+that would leave a gap is refused with `ChainStoreError::FreezeGap`. Each
+block's difficulty says what it contributes; the store's tip says what came
+before.
+
+A caller has, at best, work measured from somewhere else. The chain head's is
+measured from its own anchor, because it never reads the finalised state. Handing
+that over would put a wrong absolute chainwork on disk — undetectably, since
+nothing downstream can tell a plausible number from a right one, and permanently,
+since every later block accumulates onto it.
+
+So there is no field to fill wrongly. A caller converting a chain-head block for
+freezing drops the work rather than rebasing it; rebasing is for *serving* a
+value, which `zaino-chain` does, and is a different job from writing one down.
+
 ## Chunks, not blocks
 
 There is no `get_block(height)`, and that is deliberate. A single block is
@@ -378,8 +400,15 @@ absence. That is what `gettxout` wants.
 
 What is stored is a projection — the fields an index reads, not the bytes a
 block hash commits to. A `StoredTxOut` carries a 20-byte address key and a
-value; the locking script is not recoverable. `StoredAddress` can express
-`NonStandard`, which `TransparentAddress` cannot, and that is why it exists.
+value; the locking script is not recoverable. That key is
+`zaino_primitives::TransparentAddressKey`, which can express `NonStandard`,
+where `TransparentAddress` cannot — an index that dropped non-standard outputs
+would answer "no history" for an address that has some.
+
+It lives in `zaino-primitives` rather than here because the chain head reports
+its half of an address's history under the same key, so a consumer merging the
+two joins them without translating. Two equivalent keys in two crates is how the
+two halves of one answer come to disagree.
 
 Raw blocks and raw transactions come from the validator. No port here offers
 them, so that nothing can mistake a store for a source of consensus data.
