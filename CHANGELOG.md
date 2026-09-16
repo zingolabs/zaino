@@ -8,31 +8,6 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Added
-- **`zaino-bench`** — a benchmark harness answering three operational questions
-  against a running zainod, from the outside, over the interfaces a real client
-  uses. A workspace member but not a `default-member`, so a bare
-  `cargo nextest run` never builds it; select it with `makers bench` or
-  `-p zaino-bench`.
-  - `sync` — initial-sync time, sampled from zainod's existing Prometheus
-    endpoint (`zaino.sync.*`). No new instrumentation: it reads what
-    `zaino-state` already emits behind the `prometheus` feature, with a unit
-    test pinning the metric names to `zaino_state::metric_names` so a rename
-    fails the build rather than the run. `--csv` writes the sync curve.
-  - `concurrent` — concurrent-connection load test with a `--sweep` mode that
-    locates the knee, tail percentiles (p50/p95/p99) alongside min/mean/max, and
-    an `RLIMIT_NOFILE` preflight so a client-side `ulimit` is not mistaken for a
-    server-side ceiling. Ported from the `zaino-admin concurrent-test` tool on
-    the `hahn/store` branch.
-  - `serve` — single-stream block serve rate, verifying every `prev_hash` link
-    in the same pass. Ported from that branch's `zaino-admin check`.
-  - `docs/perf.md` records the results and, next to them, the machine spec and
-    node configs that produced them:
-    `docs/example_configs/zainod-bench-mainnet{,-ephemeral}.toml`. Both select
-    `backend = 'direct'` deliberately — the fastest path Zaino has, and so the
-    honest ceiling to quote — and differ only in
-    `ephemeral_finalised_state`. `concurrent` and `serve` are reported under
-    both modes, since a finalised read is answered from Zaino's own index in one
-    and by passthrough to the validator in the other; `sync` is persistent-only.
 - **Eight new crates** implementing validator access as a hexagonal port /
   adapter stack (ADR-0008, ADR-0009). Each carries a `usage.md`:
   - `zaino-primitives` — Zaino's domain vocabulary. Depends on `thiserror` and
@@ -237,6 +212,14 @@ and this library adheres to Rust's notion of
   gates code (ADR-0001, ADR-0005).
 
 ### Fixed
+- `GetBlock` and `GetBlockNullifiers` served every pool unconditionally, while
+  `GetBlockRange`/`GetBlockRangeNullifiers` honoured the request's `poolTypes`
+  and default to the legacy shielded-only set. The same height therefore came
+  back with different contents depending on which RPC asked for it — a
+  transparent-only transaction was present in the single-block form and absent
+  from the range form. `BlockID` carries no `poolTypes` field, so both
+  single-block RPCs now serve the unfiltered default, matching both the range
+  form and lightwalletd.
 - JSON-RPC responses are read against a 32 MiB cap, chunk-wise. Every response
   is deserialized into memory, so an uncapped read let a compromised,
   misconfigured or impersonated validator exhaust Zaino's memory with one reply.
@@ -260,6 +243,8 @@ and this library adheres to Rust's notion of
 - `getblockdeltas` is served on zebrad-backed deployments. zebrad does not
   implement the method, and the read-state derivation that answered it had been
   omitted on the mistaken reasoning that the validator already provided it.
+- added `getaddressdeltas` stub to json-rpc server
+- Errors relayed from backing validator properly propagate the error message
 - `getblockchaininfo` and `z_getblock` work against zebra 6.0, which serialises
   the deferred-development-fund value pool as `lockbox` where zcashd calls it
   `deferred`.

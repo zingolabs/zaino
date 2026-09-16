@@ -22,7 +22,7 @@ use zaino_chain_head::{
 };
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId,
+    BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
 };
 
 use crate::snapshot::imbl_nonempty_wrappers::ImblNonEmptyVec;
@@ -45,6 +45,17 @@ impl ImblBackedSnapshot {
             chains: imbl::hashset![chain.clone()],
         }
     }
+}
+
+/// A transaction's block-order position, as a [`TxIndex`].
+///
+/// The slot is a `usize` from iterating the block's transactions; the position
+/// type is `u32`. A block's transaction count is bounded well below `u32::MAX`
+/// by the consensus block-size limit, so the narrowing cannot fail for any real
+/// block — the `expect` names that invariant rather than asserting a hope.
+fn tx_index(position: usize) -> TxIndex {
+    TxIndex::try_from(position)
+        .expect("a block's transaction count fits TxIndex; consensus bounds it below u32::MAX")
 }
 
 /// The retained graph, held in hash maps.
@@ -381,18 +392,19 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
         let mut locations = ChainHeadTransactionLocations::default();
 
         for block in self.blocks.values() {
-            let Some(transaction) = block
+            let Some((slot, _transaction)) = block
                 .block
                 .transactions
                 .iter()
-                .find(|transaction| &transaction.txid == txid)
+                .enumerate()
+                .find(|(_, transaction)| &transaction.txid == txid)
             else {
                 continue;
             };
 
             let position = ChainHeadTxPosition {
                 block: block.reference,
-                tx_index: transaction.index,
+                tx_index: tx_index(slot),
             };
             if self.is_on_best_chain(block.reference) {
                 locations.best_chain = Some(position);
@@ -419,7 +431,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
             let Some(block) = self.blocks.get(hash) else {
                 continue;
             };
-            for transaction in &block.block.transactions {
+            for (slot, transaction) in block.block.transactions.iter().enumerate() {
                 for input in &transaction.transparent.inputs {
                     spenders.insert(
                         Outpoint {
@@ -429,7 +441,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
                         SpenderLocation {
                             block: block.reference,
                             txid: transaction.txid,
-                            tx_index: transaction.index,
+                            tx_index: tx_index(slot),
                         },
                     );
                 }

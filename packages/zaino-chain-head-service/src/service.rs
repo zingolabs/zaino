@@ -109,7 +109,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// Anchoring is the old `initialize` with `resolve_anchor_block`: one block
     /// at the anchor height, which the writer task then extends one block at a
     /// time. Doing it before returning is what makes
-    /// [`ChainHeadSubscriber::current`] total — there is no state in which a
+    /// `ChainHeadSubscriber::current` total — there is no state in which a
     /// ChainHead exists with nothing to answer from.
     ///
     /// # Shutdown contract
@@ -148,7 +148,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// test is the only thing advancing the graph, so what it observes is
     /// exactly what it caused.
     ///
-    /// Shares [`anchored`](Self::anchored) with [`spawn`](Self::spawn), so the
+    /// Shares `anchored` with [`spawn`](Self::spawn), so the
     /// two construction paths cannot drift — they differ only in whether the
     /// task is started.
     #[cfg(any(test, feature = "testing"))]

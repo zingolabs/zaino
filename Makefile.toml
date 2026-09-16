@@ -1,284 +1,111 @@
-extend = [
-    { path = "tools/makefiles/lints.toml" },
-    { path = "tools/makefiles/notify.toml" },
-    { path = "tools/makefiles/rocksdb.toml" },
-]
-env_files = [".env.testing-artifacts"]
-
 [config]
 default_to_workspace = false
 
-[env]
-IMAGE_NAME = "zingodevops/zaino-ci"
-TEST_BINARIES_DIR = "/home/container_user/artifacts"
-CONTAINERS_CONF_OVERRIDE = "${CARGO_MAKE_WORKING_DIRECTORY}/.config/containers.conf"
-# Single source of truth: rust-toolchain.toml's `channel`, extracted via the
-# workbench `get-rust-version` binary. Replaces RUST_VERSION in
-# .env.testing-artifacts.
-RUST_VERSION = { script = ["cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version"] }
+[tasks.fmt]
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
 
-[tasks.help]
-description = "List available commands and usage notes"
+[tasks.clippy]
+command = "cargo"
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.lint-boundary-conversions]
+description = "Forbid From/TryFrom impls across the persistence and wire boundaries. Both must use named inherent methods (from_business/into_business for persistence; to_wire/try_from_wire for wire)."
+# See CLAUDE.md §'Persistence-boundary conversions' and §'Wire-boundary
+# conversions'. Reference implementations:
+#   - packages/zaino-state/src/chain_index/types/db/block.rs     (DB)
+#   - packages/zaino-state/src/chain_index/types/wire.rs         (wire)
 script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/help.sh"'
+script = [
+    '''
+    set -euo pipefail
 
-[tasks.base-script]
-# The pre-script lives in tools/scripts/base-script-pre.sh and is *sourced*
-# (not executed) so the TAG var, podman_cleanup function, and cleanup trap it
-# defines stay in scope for each consuming task's script.main. cargo-make
-# concatenates pre/main/post into one shell program, so sourcing keeps them in
-# the same shell.
-script_runner = "bash"
-script.pre = 'source "./tools/scripts/base-script-pre.sh"'
-script.main = "err 'default main script. define a proper script to skip this one'"
-script.post = ""
+    # === Persistence boundary ===
+    # Matches either direction of a From/TryFrom where the `Persistent*`
+    # side of the boundary appears.
+    persistent_on_rhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*>[[:space:]]+for[[:space:]]+(Persistent|[A-Za-z0-9_:]+::Persistent)'
+    persistent_on_lhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*Persistent[^>]*>[[:space:]]+for[[:space:]]+'
 
-# -------------------------------------------------------------------
+    # === Wire boundary ===
+    # Matches either direction of a From/TryFrom where a zaino-proto type
+    # (anything under `proto::` or a `::proto::` path) sits opposite a
+    # business-layer target. We flag any impl that *mentions* a `proto::`
+    # type on either side of a From/TryFrom — intentional because there
+    # should be zero such impls once wire conversions are all named methods.
+    proto_on_rhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*>[[:space:]]+for[[:space:]]+[A-Za-z0-9_:]*proto::'
+    proto_on_lhs='^[[:space:]]*impl[[:space:]]+(From|TryFrom)[[:space:]]*<[^>]*proto::[^>]*>[[:space:]]+for[[:space:]]+'
 
-[tasks.init-podman-volumes]
-description = "Initialize named podman volumes for container builds"
-script_runner = "bash"
-script = 'source "./tools/scripts/init-podman-volumes.sh"'
+    # Scan all Rust sources; exclude generated / vendored paths and the
+    # zaino-proto package itself (it legitimately re-exports via prost-derived
+    # Froms between scalar types).
+    hits=$(
+      git ls-files '*.rs' ':!target/*' ':!packages/zaino-proto/*' \
+      | xargs -r grep -nE "$persistent_on_rhs|$persistent_on_lhs|$proto_on_rhs|$proto_on_lhs" \
+      || true
+    )
 
-# -------------------------------------------------------------------
+    if [ -n "$hits" ]; then
+      echo ""
+      echo "Boundary-conversion lint: forbidden From/TryFrom impls found."
+      echo "Persistence boundary conversions must be named inherent methods on the"
+      echo "Persistent* type (canonical: from_business / into_business)."
+      echo "Wire boundary conversions must be named inherent methods on the"
+      echo "business-layer type (canonical: to_wire / try_from_wire)."
+      echo "See CLAUDE.md for the rules."
+      echo ""
+      echo "$hits"
+      exit 1
+    fi
+    '''
+]
 
-[tasks.compute-image-tag]
-description = "Compute image tag from version vars"
-script_runner = "bash"
-script = 'source "./tools/scripts/compute-image-tag.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.get-podman-hash]
-description = "Get the current CONTAINER_DIR_HASH"
-script_runner = "bash"
-script = 'source "./tools/scripts/get-podman-hash.sh"'
-
-[tasks.ensure-image-exists]
-description = "Ensure the image exists locally, building if needed"
-dependencies = ["init-podman-volumes"]
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/ensure-image-exists.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.pull-ci-image]
-description = "Pull the CI image from the registry"
-extend = "base-script"
-script.main = 'source "./tools/scripts/pull-ci-image.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.build-image]
-description = "Build the container image for testing artifacts"
-# Note: This task builds the container image from the live-tests/test_environment
-# directory, which contains the Containerfile and entrypoint.sh for the CI/test environment.
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/build-image.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.push-image]
-description = "Push image if running in CI"
-# condition = { env_set = ["CI"] }
-dependencies = ["ensure-image-exists"]
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/push-image.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.container-test]
-clear = true
-description = "Engine: run nextest in the local CI container, forwarding args. Devs use `makers test [packages|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
-# This task runs tests inside the container built from live-tests/test_environment.
-# The entrypoint.sh script in the container sets up test binaries (zebrad, zcash-devtool)
-# by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
-dependencies = ["init-podman-volumes", "ensure-image-exists"]
-script_runner = "bash"
-extend = "base-script"
-# The container-test binary (tools/test-runner, a std-only cargo crate — no
-# rust-script needed) owns the podman run; `set -e` makes a test failure abort
-# the script (so `script.post = notify` is skipped on failure, as before).
-script.main = '''
-set -euo pipefail
-cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin container-test -- "${@}"
-'''
-script.post = "makers notify"
-
-# -------------------------------------------------------------------
-
-[tasks.live-clientless]
-description = "Run the `clientless` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { PACKAGE = "clientless", PACKAGE_DESC = "clientless partition" }
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.live-e2e]
-description = "Run the `e2e` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { PACKAGE = "e2e", PACKAGE_DESC = "e2e partition" }
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
-
-# -------------------------------------------------------------------
-
-# ===================================================================
-# Developer-facing test front door: a single `makers test [SET]` task.
-#
-#   makers test                packages (the default)
-#   makers test packages       packages/* production-crate tests (no validator)
-#   makers test e2e            the e2e live partition
-#   makers test clientless     the clientless live partition
-#   makers test live           both live partitions + combined summary
-#   makers test all            packages then live (everything)
-#
-# SET names mirror the crate/dir names (`e2e`, `clientless`); `packages`,
-# `live`, and `all` are the groupings. `live` = all non-packages tests; `all`
-# = `packages` + `live` (see live-tests/CONTEXT.md). Each set delegates to an
-# existing engine rather than re-implementing a run.
-# ===================================================================
-
-[tasks.test]
-# clear = true fully replaces cargo-make's built-in `test` task (which runs
-# `cargo test`); without it our `script` would merge with the builtin `command`.
-clear = true
-description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages)."
+[tasks.lint-tools]
+description = "Format-check, clippy, and test the tools/workbench workspace (not a member of the root workspace)."
 script_runner = "bash"
 script = '''
-set -uo pipefail
-
-usage() {
-  echo "usage: makers test [packages|e2e|clientless|live|all|ironwood] [-- nextest args]" >&2
-  echo "  packages (default) packages/* tests, no live validator" >&2
-  echo "  e2e | clientless   that single live partition" >&2
-  echo "  live               both live partitions + combined summary" >&2
-  echo "  all                packages then live (everything)" >&2
-  echo "  ironwood           the ironwood tests of every set, packages then clientless then e2e" >&2
-}
-
-# A non-flag first arg selects the set and must be a known name; a flag first
-# arg (or none) keeps the default `packages` and is forwarded to nextest, while
-# a mistyped set name errors instead of silently running the default.
-set="packages"
-if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
-  case "$1" in
-    packages|e2e|clientless|live|all|ironwood) set="$1"; shift ;;
-    *) echo "makers test: unknown set '$1'" >&2; usage; exit 2 ;;
-  esac
-fi
-
-case "$set" in
-  packages)   exec makers container-test "$@" ;;
-  e2e)        exec makers live-e2e "$@" ;;
-  clientless) exec makers live-clientless "$@" ;;
-  live)       exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" ;;
-  all)
-    # The summary runner's --all mode runs the packages set and both live
-    # partitions (each set runs even when an earlier one fails, and the exit
-    # code reflects any failure), so the combined table covers everything.
-    exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- --all "$@" ;;
-  ironwood)
-    # The one definition of the ironwood selection: the two dedicated test
-    # binaries, plus every test whose name carries the pool's name (the
-    # CONTEXT.md era-naming convention keeps new ironwood tests inside this
-    # net). The same expression serves every engine — a selector naming a
-    # binary a partition lacks simply matches nothing there. The engines are
-    # invoked directly rather than through the `live` summary runner, which
-    # forwards no nextest args. Run every set even if an earlier one fails,
-    # as in `all`.
-    ironwood_filter='binary(ironwood_activation) | binary(the_pub_testnet_ironwood_boundary) | test(ironwood)'
-    rc=0
-    makers container-test -E "$ironwood_filter" "$@" || rc=1
-    makers live-clientless -E "$ironwood_filter" "$@" || rc=1
-    makers live-e2e -E "$ironwood_filter" "$@" || rc=1
-    exit "$rc" ;;
-esac
+set -euo pipefail
+for manifest in tools/workbench/Cargo.toml; do
+  cargo fmt --manifest-path "$manifest" --all -- --check
+  cargo clippy --locked --manifest-path "$manifest" --workspace --all-targets -- -D warnings
+  cargo nextest run --locked --manifest-path "$manifest" --workspace
+done
 '''
 
-# -------------------------------------------------------------------
+[tasks.lint-crypto-provider]
+description = "Assert rustls resolves with aws-lc-rs + prefer-post-quantum and that the only ring-selecting feature edges are the tolerated zebra path (ADR-0006). Fails loud in both directions: new edges and vanished edges."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-crypto-provider"]
 
-[tasks.bench]
-# clear = true fully replaces cargo-make's built-in `bench` task (which runs
-# `cargo bench`); without it our `script` would merge with the builtin `command`.
-clear = true
-description = "Run the zaino-bench harness against a running zainod (sync | concurrent | serve)"
-# Release, always: a debug load generator measures itself rather than the
-# server. Not a member of `default-members`, so `-p` is required to select it.
+[tasks.lint-no-openssl-apt]
+description = "Fail if any Dockerfile installs a libssl*/openssl* apt package. TLS is rustls; the system-package companion to deny.toml's openssl crate ban."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-no-openssl-apt"]
+
+[tasks.lint-code-duplication]
+description = "Fail on any exact or near duplicate Rust logic (AST-normalized, min 50 nodes) in packages/ (minus generated zaino-proto and in-crate tests/), live-tests/, and tools/. Escape hatch: annotated entries in .dupes-ignore.toml."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-code-duplication"]
+
+[tasks.deny]
+description = "Enforce deny.toml's crate bans (openssl/openssl-sys/boring*). Scoped to `bans`: advisories/licenses have pre-existing failures (e.g. RUSTSEC-2022-0001 lmdb) tracked separately."
+command = "cargo"
+args = ["deny", "check", "bans"]
+
+[tasks.lint-shell]
+description = "Lint every tracked shell script with shellcheck"
 script_runner = "bash"
-script = 'exec cargo run --release -p zaino-bench -- "$@"'
+script = "git ls-files -z '*.sh' | xargs -0 -r shellcheck"
 
-# -------------------------------------------------------------------
-
-[tasks.check-matching-zebras]
-description = "Check that zebra versions in .env.testing-artifacts match what's in Cargo.toml"
-extend = "base-script"
-script_runner = "bash"
-script.main = 'source "./tools/scripts/check-matching-zebras.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.validate-makefile-tasks]
-description = "Validate all tasks work correctly with minimal execution"
-dependencies = ["init-podman-volumes"]
-script_runner = "@rust"
-script = { file = "tools/scripts/validate-makefile-tasks.rs" }
-
-# -------------------------------------------------------------------
-
-[tasks.validate-test-targets]
-description = "Validate that nextest targets match CI workflow matrix"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/validate-test-targets.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.update-test-targets]
-description = "Update CI workflow matrix to match nextest targets"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/update-test-targets.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.container-test-save-failures]
-description = "Run container-test and save failed test names for later retry"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-test-save-failures.sh"'
-script.post = "makers notify"
-
-# -------------------------------------------------------------------
-
-[tasks.container-test-retry-failures]
-description = "Rerun only failed tests from previous container-test-save-failures"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-test-retry-failures.sh"'
-script.post = "makers notify"
-
-# -------------------------------------------------------------------
-
-[tasks.verify-all]
-description = "Exercise every Makefile.toml task for correctness (idempotent)"
-script_runner = "bash"
-script = 'source "./tools/scripts/verify-all.sh"'
-
-# -------------------------------------------------------------------
-
-# The workspace test archive is built with `--no-default-features`, so
-# `zaino-proto`'s separate `heavy` default feature must survive that build.
-[tasks.check-zaino-proto-heavy]
-description = "Guard: zaino-proto `heavy` must stay enabled under --no-default-features (else the test build silently loses zebra-state/zebra-chain/which)"
-script_runner = "@rust"
-script = { file = "tools/scripts/check-zaino-proto-heavy.rs" }
-
-# -------------------------------------------------------------------
-
+[tasks.lint]
+description = "Run every lint CI runs. Enable as a pre-push hook with `git config core.hooksPath .githooks`."
+dependencies = [
+    "fmt",
+    "lint-boundary-conversions",
+    "lint-shell",
+    "deny",
+    "lint-crypto-provider",
+    "lint-no-openssl-apt",
+    "lint-code-duplication",
+    "lint-tools",
+    "clippy",
+]

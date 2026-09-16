@@ -26,10 +26,9 @@ pub struct MempoolInfoWire {
 impl MempoolInfoWire {
     /// Renders Zaino's mempool statistics.
     ///
-    /// The domain type is `chain_index::types::db::metadata::MempoolInfo`, which
-    /// is an on-disk shape rather than one of `zaino-primitives`' types. That is
-    /// deliberate for now: it carries a `ZainoVersionedSerde` impl, so moving it
-    /// belongs with the persistence rework rather than here.
+    /// The domain type is [`zaino_primitives::types::MempoolInfo`], re-exported
+    /// by `zaino-state`. A plain field copy: the wire shape and the domain shape
+    /// agree, and the mempool is live state with no on-disk form to translate.
     pub fn from_domain(info: zaino_state::MempoolInfo) -> Self {
         Self {
             size: info.size,

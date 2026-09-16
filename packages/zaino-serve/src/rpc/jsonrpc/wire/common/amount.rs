@@ -1,6 +1,26 @@
 //! Common types for handling ZEC and Zatoshi amounts.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zaino_primitives::types as domain;
+use zebra_chain::amount::{Amount, NegativeAllowed, NonNegative, MAX_MONEY};
+
+// The renders below are total only because the domain's supply bound and
+// the wire's money range are the same number; a zebra bump that moves
+// MAX_MONEY fails here instead of panicking in a served response.
+const _: () = assert!(domain::Zatoshis::MAX.as_u64() == MAX_MONEY as u64);
+const _: () = assert!(domain::SignedZatoshis::MAX.as_i64() == MAX_MONEY);
+
+/// Renders a domain amount as the wire's non-negative money type.
+pub(crate) fn non_negative(amount: domain::Zatoshis) -> Amount<NonNegative> {
+    Amount::try_from(amount.as_u64())
+        .expect("Zatoshis::MAX equals MAX_MONEY, asserted at compile time above")
+}
+
+/// Renders a domain signed value as the wire's signed money type.
+pub(crate) fn negative_allowed(value: domain::SignedZatoshis) -> Amount<NegativeAllowed> {
+    Amount::try_from(value.as_i64())
+        .expect("SignedZatoshis::MAX equals MAX_MONEY, asserted at compile time above")
+}
 
 /// Zatoshis per ZEC.
 pub const ZATS_PER_ZEC: u64 = 100_000_000;
@@ -146,6 +166,17 @@ impl From<ZecAmount> for u64 {
 
 #[cfg(test)]
 mod tests {
+    mod money {
+        use zaino_primitives::types::{SignedZatoshis, Zatoshis};
+        use zebra_chain::amount::MAX_MONEY;
+
+        /// The domain's supply bound and the wire's money range are one number.
+        #[test]
+        fn domain_supply_bound_is_the_wire_money_range() {
+            assert_eq!(u64::from(Zatoshis::MAX), MAX_MONEY as u64);
+            assert_eq!(i64::from(SignedZatoshis::MAX), MAX_MONEY);
+        }
+    }
 
     mod zatoshis {
         use crate::rpc::jsonrpc::wire::common::amount::Zatoshis;
