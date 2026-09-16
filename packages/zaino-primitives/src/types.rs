@@ -56,7 +56,7 @@ pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
 pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
 pub use compact_ciphertext::{CompactCiphertext, CompactCiphertextLength};
-pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError, WorkOverWidth};
+pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
 pub use height::{Height, HeightOverflow};
@@ -85,7 +85,7 @@ pub use treestate::{PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
 pub use work::{
-    BlockWork, ChainWork, ChainWorkOverWidth, RelativeWork, WorkOverflow, WorkUnderflow, ZeroWork,
+    AbsoluteChainWork, ChainWorkOverWidth, SingleBlockWork, WorkOverflow, WorkUnderflow, ZeroWork,
 };
 pub use zatoshis::{
     SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisFlowSum, ZatoshisOverflow,

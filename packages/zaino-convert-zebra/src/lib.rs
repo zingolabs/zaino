@@ -361,15 +361,21 @@ mod difficulty_agreement {
 
     use proptest::prelude::*;
 
-    use zaino_primitives::types::CompactDifficulty;
+    use zaino_primitives::types::{CompactDifficulty, CompactDifficultyError};
 
     /// Both pipeline judgements at once: `None` for a rejected encoding,
-    /// `Some(None)` for a valid encoding whose work does not fit `u128`,
+    /// `Some(None)` for a well-formed target whose work does not fit `u128`,
     /// `Some(Some(work))` otherwise.
     fn primitives_view(bits: u32) -> Option<Option<u128>> {
-        CompactDifficulty::try_from_bits(bits)
-            .ok()
-            .map(|cd| cd.to_work().ok().map(|work| NonZeroU128::from(work).get()))
+        match CompactDifficulty::try_from_bits(bits) {
+            Ok(cd) => Some(Some(NonZeroU128::from(cd.to_work()).get())),
+            Err(CompactDifficultyError::WorkOverWidth { .. }) => Some(None),
+            Err(
+                CompactDifficultyError::NegativeTarget { .. }
+                | CompactDifficultyError::ZeroTarget { .. }
+                | CompactDifficultyError::OverflowTarget { .. },
+            ) => None,
+        }
     }
 
     /// Zebra's judgements in the same shape. Construction succeeds exactly

@@ -203,7 +203,7 @@ async fn sync_to_height_across_many_write_batches() {
     // Gap-free, not just tip-correct: a pipeline that dropped or double-committed a batch could
     // still land on the right tip.
     let reader = std::sync::Arc::new(zaino_db).to_reader();
-    let mut previous_chainwork: Option<crate::types::ChainWork> = None;
+    let mut previous_chainwork: Option<crate::types::AbsoluteChainWork> = None;
     for height in 0..=200u32 {
         let header = reader
             .get_block_header(Height(height))
@@ -214,13 +214,13 @@ async fn sync_to_height_across_many_write_batches() {
         // folded in height order, then assembled concurrently. A fold that paired a block with the
         // wrong parent still yields a readable, gap-free, strictly-increasing range — so assert the
         // exact increment against this block's own stored difficulty, which an off-by-one breaks.
-        let chainwork = *header.context.chainwork();
-        let block_work = header.data().bits.to_work().expect("vector work fits");
+        let chainwork = header.context.chainwork();
+        let block_work = header.data().bits.to_work();
         let expected = match previous_chainwork {
             Some(previous) => previous
                 .accumulate(block_work)
                 .expect("no overflow in test vectors"),
-            None => crate::types::ChainWork::genesis(block_work),
+            None => crate::types::AbsoluteChainWork::genesis(block_work),
         };
         assert_eq!(
             chainwork, expected,

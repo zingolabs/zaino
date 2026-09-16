@@ -1,6 +1,6 @@
 //! Chain-state facts about a block that are not in the block itself.
 
-use super::{BlockHash, ChainWork, Confirmations, Difficulty, ValuePoolBalance};
+use super::{AbsoluteChainWork, BlockHash, Confirmations, Difficulty, ValuePoolBalance};
 
 /// What a verbose block query adds to the block's own bytes.
 ///
@@ -28,7 +28,7 @@ pub struct BlockVerbose {
     ///
     /// `None` from validators that do not track it — Zebra does not store
     /// cumulative work per height (ZcashFoundation/zebra#7109).
-    pub chainwork: Option<ChainWork>,
+    pub chainwork: Option<AbsoluteChainWork>,
 
     /// Total chain value as of this block.
     ///

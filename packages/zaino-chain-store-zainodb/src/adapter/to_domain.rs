@@ -171,7 +171,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
             .map(stored_compact_tx)
             .collect::<Result<Vec<_>, _>>()?,
         tree_roots: tree_roots(&block.commitment_tree_data),
-        chainwork: *context.chainwork(),
+        chainwork: context.chainwork(),
     })
 }
 

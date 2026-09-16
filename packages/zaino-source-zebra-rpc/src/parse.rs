@@ -31,8 +31,8 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
         ScriptPubKey, SpentInfo, TxOut,
     },
-    AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
-    BlockchainInfo, ChainWork, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
+    AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
+    BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
     MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot,
     TransactionId, TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots,
     Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
@@ -297,7 +297,7 @@ pub(crate) enum ParseError {
 
     /// Reported chainwork does not fit the domain's recorded width.
     #[error("chainwork: {0}")]
-    ChainWork(zaino_primitives::types::ChainWorkOverWidth),
+    AbsoluteChainWork(zaino_primitives::types::ChainWorkOverWidth),
 
     /// Reported nBits is not a valid compact difficulty encoding.
     #[error("nBits: {0}")]
@@ -906,11 +906,13 @@ pub(crate) fn parse_blockchain_info(
 /// The legacy full node sends a hex string. Zebra types the field as a 64-bit
 /// integer, so it arrives as a JSON number, and hardcodes it to zero because
 /// it does not store cumulative work per height. Both encodings land on the
-/// same door, [`ChainWork::try_from_reported`], which owns the reported-value
+/// same door, [`AbsoluteChainWork::try_from_reported`], which owns the reported-value
 /// semantics: all-zero reads as `None` — "not reported", never a zero a
 /// consumer could compare — and a value past the domain's 128-bit width is
 /// refused rather than truncated.
-fn parse_reported_chain_work(value: &serde_json::Value) -> Result<Option<ChainWork>, ParseError> {
+fn parse_reported_chain_work(
+    value: &serde_json::Value,
+) -> Result<Option<AbsoluteChainWork>, ParseError> {
     let be = if let Some(number) = value.as_u64() {
         let mut be = [0u8; 32];
         be[24..].copy_from_slice(&number.to_be_bytes());
@@ -918,7 +920,7 @@ fn parse_reported_chain_work(value: &serde_json::Value) -> Result<Option<ChainWo
     } else {
         chain_work_be_bytes(value)?
     };
-    ChainWork::try_from_reported(be).map_err(ParseError::ChainWork)
+    AbsoluteChainWork::try_from_reported(be).map_err(ParseError::AbsoluteChainWork)
 }
 
 /// Cumulative chainwork as a hex string, decoded to the wire's 32 big-endian
@@ -1206,7 +1208,12 @@ mod tests {
     fn chainwork_left_pads_a_trimmed_value() {
         let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
 
-        assert_eq!(trimmed, Some(ChainWork::try_new(0xff).expect("nonzero")));
+        assert_eq!(
+            trimmed,
+            Some(AbsoluteChainWork::new(
+                core::num::NonZeroU128::new(0xff).expect("nonzero")
+            ))
+        );
     }
 
     /// Zero off the wire — either validator's encoding — is "not reported",
@@ -1227,7 +1234,7 @@ mod tests {
         let over = format!("01{}", "00".repeat(31));
         assert!(matches!(
             parse_reported_chain_work(&json!(over)),
-            Err(ParseError::ChainWork(_))
+            Err(ParseError::AbsoluteChainWork(_))
         ));
     }
 

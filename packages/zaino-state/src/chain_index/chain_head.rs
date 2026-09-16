@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use crate::chain_index::{
-    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::ChainWork,
+    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::AbsoluteChainWork,
     validator_source::ValidatorSource,
 };
 use crate::IndexedBlock;
@@ -124,9 +124,11 @@ pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadCo
 /// Non-zero by construction: ChainHead starts each accumulation at the anchor
 /// block's own work rather than at zero, precisely so this conversion cannot
 /// fail.
-fn chainwork(work: ChainHeadWork) -> ChainWork {
-    ChainWork::try_new(work.as_u128())
-        .expect("chain head work is accumulated from a non-zero anchor")
+fn chainwork(work: ChainHeadWork) -> AbsoluteChainWork {
+    AbsoluteChainWork::new(
+        core::num::NonZeroU128::new(work.as_u128())
+            .expect("chain head work is accumulated from a non-zero anchor"),
+    )
 }
 
 #[cfg(test)]
@@ -175,14 +177,7 @@ mod tests {
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = std::num::NonZeroU128::from(
-                block
-                    .header
-                    .bits
-                    .to_work()
-                    .expect("vector block work fits 128 bits"),
-            )
-            .get();
+            let block_work = std::num::NonZeroU128::from(block.header.bits.to_work()).get();
             let accumulated = match work {
                 Some(parent) => parent.checked_add(block_work).expect("no overflow"),
                 None => ChainHeadWork::anchored_at(block_work),
