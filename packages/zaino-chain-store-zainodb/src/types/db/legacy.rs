@@ -35,7 +35,7 @@ use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
-use crate::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty};
 use zaino_encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
@@ -1069,8 +1069,8 @@ impl IndexedBlock {
         self.context.height()
     }
 
-    /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &ChainWork {
+    /// Returns the total chain work.
+    pub fn chainwork(&self) -> AbsoluteChainWork {
         self.context.chainwork()
     }
 
@@ -1080,7 +1080,9 @@ impl IndexedBlock {
     /// valid encoding, but the encoding admits targets whose work exceeds the
     /// recorded 128 bits — see
     /// [`WorkOverWidth`](zaino_primitives::types::WorkOverWidth).
-    pub fn work(&self) -> Result<crate::types::BlockWork, zaino_primitives::types::WorkOverWidth> {
+    pub fn work(
+        &self,
+    ) -> Result<crate::types::SingleBlockWork, zaino_primitives::types::WorkOverWidth> {
         self.data.bits.to_work()
     }
 

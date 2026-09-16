@@ -171,10 +171,10 @@ mod from_domain_tests {
             difficulty: 1.0,
             block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
             final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),
-            chainwork: Some(
-                domain::ChainWork::try_new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff)
+            chainwork: Some(domain::AbsoluteChainWork::new(
+                core::num::NonZeroU128::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff)
                     .expect("nonzero"),
-            ),
+            )),
             previous_block_hash: Some(domain::BlockHash::from(ASYMMETRIC)),
             next_block_hash: None,
         }

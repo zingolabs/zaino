@@ -1,39 +1,64 @@
-//! Proof-of-work quantities for chain selection.
+//! Proof-of-work quantities.
 //!
-//! Work is one unit, but three different quantities wear it. The expected
-//! work of a single block — derived from its difficulty target — the
-//! cumulative work at a block — the fold of block works along its chain — and
-//! the work a branch accumulates since an anchor are related but not
-//! interchangeable: adding two cumulative values is meaningless (no chain is
-//! the concatenation of two chains), a single block's work is not a
-//! chain-selection candidate, and a branch's relative work admits zero where
-//! cumulative work cannot. So each quantity is its own type:
+//! Work is one unit, but two quantities are measured in it:
 //!
-//! - [`BlockWork`] — the expected work of one block. Strictly positive.
-//! - [`ChainWork`] — cumulative work at a block. Strictly positive, and
-//!   ordered: comparing cumulative work is chain selection.
-//! - [`RelativeWork`] — work accumulated since an anchor: what a branch adds
-//!   on top of the absolute cumulative work at the block it forks from. Zero
-//!   is admissible — a branch whose tip is the anchor has accumulated
-//!   nothing.
+//! - [`SingleBlockWork`] — the work one block is expected to take, derived
+//!   from its difficulty target.
+//! - [`AbsoluteChainWork`] — the total work of a chain up to and including a
+//!   block. This is the value validators report as `chainwork`.
 //!
-//! Folding block works into cumulative work — seeding at genesis, accumulating
-//! forward, rolling back on reorg — is a set of relations between the two
-//! types; they live in the [`arithmetic`] module alongside the algebra that
-//! governs them. See ADR-0013 for the doctrine.
+//! They are separate types because merging them would let two wrong statements
+//! compile.
 //!
-//! Deriving a [`BlockWork`] from a difficulty target lives on
-//! [`CompactDifficulty`](super::CompactDifficulty), whose
-//! [`to_work`](super::CompactDifficulty::to_work) runs the native
-//! nBits → target → work pipeline and lands here. [`BlockWork::try_new`]
-//! remains the door for a work integer computed elsewhere.
+//! **Ordering.** Comparing total chain work is how the best chain is chosen, so
+//! [`AbsoluteChainWork`] is `Ord`. [`SingleBlockWork`] is not. Difficulty is
+//! fixed within a retarget interval, so two competing blocks at the same height
+//! have equal work. An ordering on single blocks would report a tie for exactly
+//! the case chain selection exists to resolve.
+//!
+//! **Seeding.** A chain of one block has total work equal to that block's work,
+//! but the two remain different quantities. With one type the seed and the
+//! summand have the same signature, so passing the wrong one at the start of a
+//! fold compiles and corrupts every value after it. With two types, only
+//! [`AbsoluteChainWork::genesis`] crosses between them.
+//!
+//! A third work quantity exists in the workspace: work accumulated since an
+//! anchor block rather than since genesis, which `zaino-chain-head` models as
+//! its crate-local `ChainHeadWork`. It is deliberately not
+//! [`AbsoluteChainWork`]. The two are measured from different origins, so a
+//! value of one served or compared as the other is wrong by the difference
+//! between the anchor and genesis. Promoting it to a primitive is a planned
+//! follow-up.
+//!
+//! # The algebra
+//!
+//! Write `W` for [`SingleBlockWork`] and `C` for [`AbsoluteChainWork`]. Each
+//! relation is a method on the type it returns:
+//!
+//! ```text
+//! W ∈ (0, 2^128)
+//! C ∈ (0, 2^128)
+//!
+//! genesis    : W → C      a chain of one block
+//! accumulate : C × W → C  extend the chain by one block
+//! rollback   : C × W → C  unwind one block, on reorg
+//! ```
+//!
+//! Those three, with `C`'s ordering, are the whole algebra. `C × C` is not
+//! defined: no chain is the concatenation of two chains, so the sum of two
+//! total chain works is not a quantity in this domain and no operation returns
+//! one.
+//!
+//! Every fold is checked. Neither bound is reachable on a real chain; they stay
+//! checked so a corrupt input fails loud instead of wrapping into a small value
+//! that would then sort as a light chain. See ADR-0013 for the doctrine.
+//!
+//! [`SingleBlockWork`] is derived from a difficulty target by
+//! [`CompactDifficulty::to_work`](super::CompactDifficulty::to_work).
+//! [`SingleBlockWork::try_new`] takes a work integer computed elsewhere.
 
-mod arithmetic;
-mod block_work;
-mod chain_work;
-mod relative_work;
+mod absolute_chain_work;
+mod single_block_work;
 
-pub use arithmetic::{WorkOverflow, WorkUnderflow};
-pub use block_work::{BlockWork, ZeroWork};
-pub use chain_work::{ChainWork, ChainWorkOverWidth};
-pub use relative_work::RelativeWork;
+pub use absolute_chain_work::{AbsoluteChainWork, ChainWorkOverWidth, WorkOverflow, WorkUnderflow};
+pub use single_block_work::{SingleBlockWork, ZeroWork};

@@ -59,10 +59,10 @@ use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
-    BlockContext, BlockData, BlockHash, BlockWork, ChainWork, CompactDifficulty,
-    CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTxData,
-    EquihashSolution, Height, IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType,
-    TransactionHash, TransparentCompactTx, TxInCompact, TxOutCompact,
+    AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactDifficulty, CompactOrchardAction,
+    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
+    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, SingleBlockWork, TransactionHash,
+    TransparentCompactTx, TxInCompact, TxOutCompact,
 };
 
 /// A domain block could not be expressed as an [`IndexedBlock`].
@@ -142,7 +142,7 @@ pub enum BlockConversionError {
 pub fn block_work(
     header_bits: CompactDifficulty,
     hash: BlockHash,
-) -> Result<BlockWork, BlockConversionError> {
+) -> Result<SingleBlockWork, BlockConversionError> {
     header_bits
         .to_work()
         .map_err(|source| BlockConversionError::WorkOverWidth { hash, source })
@@ -159,8 +159,8 @@ pub fn block_work(
 pub fn chainwork_from_parent(
     header_bits: CompactDifficulty,
     hash: BlockHash,
-    parent_chainwork: Option<ChainWork>,
-) -> Result<ChainWork, BlockConversionError> {
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<AbsoluteChainWork, BlockConversionError> {
     let block_work = block_work(header_bits, hash)?;
     match parent_chainwork {
         Some(parent) => {
@@ -171,7 +171,7 @@ pub fn chainwork_from_parent(
                     reason: error.to_string(),
                 })
         }
-        None => Ok(ChainWork::genesis(block_work)),
+        None => Ok(AbsoluteChainWork::genesis(block_work)),
     }
 }
 
@@ -187,7 +187,7 @@ pub fn chainwork_from_parent(
 pub fn indexed_block(
     block: &Block,
     tree_roots: &TreeRoots,
-    chainwork: ChainWork,
+    chainwork: AbsoluteChainWork,
 ) -> Result<IndexedBlock, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
