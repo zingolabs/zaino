@@ -105,6 +105,30 @@ where
     }
 }
 
+/// Observe a component the runtime does **not** own: watch its health and
+/// escalate on `Critical`, never restart.
+///
+/// The counterpart to [`supervise`] for a component with no [`Managed`] — an
+/// external dependency (e.g. the validator) whose lifecycle the runtime cannot
+/// drive, only react to. There is no policy: you cannot restart what you do not
+/// own, so `Critical` always escalates. Returns [`SupervisionOutcome::Observed`]
+/// if the component is dropped without ever escalating.
+pub async fn observe<C>(component: &C) -> SupervisionOutcome
+where
+    C: StatusWatch,
+{
+    let mut status = component.subscribe();
+    loop {
+        let health = status.borrow_and_update().health;
+        if matches!(health, Health::Critical) {
+            return SupervisionOutcome::Escalated;
+        }
+        if status.changed().await.is_err() {
+            return SupervisionOutcome::Observed;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};

@@ -22,8 +22,10 @@
 mod orchestra;
 mod serving;
 mod supervisor;
+mod validator;
 
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
 pub use serving::ServeComponent;
-pub use supervisor::{supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
+pub use supervisor::{observe, supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
+pub use validator::{ValidatorComponent, ValidatorProbe, ValidatorUnreachable};
 pub use zaino_component::Serve;

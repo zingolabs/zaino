@@ -21,7 +21,7 @@ use zaino_component::{
     ComponentName, ComponentStatus, Lifecycle, Managed, StatusSource, StatusWatch, Task, TaskName,
 };
 
-use crate::supervisor::{supervise, RecoveryPolicy, SupervisionOutcome};
+use crate::supervisor::{observe, supervise, RecoveryPolicy, SupervisionOutcome};
 
 /// A component could not be booted.
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +81,39 @@ impl OrchestraBuilder {
         });
         self.babysitters.push(babysitter);
         Ok(self)
+    }
+
+    /// Boot an **observed** component: one the runtime does not own (no
+    /// [`Managed`]) but gates bringup on and reacts to — the validator (ADR-0014).
+    ///
+    /// It is not spawned (it is external); we confirm it is `Ready`, then observe
+    /// it, escalating on `Critical` exactly like an owned component but never
+    /// restarting it. Because there is nothing to spawn, this cannot fail to
+    /// boot — it returns `Self`, not a `Result`.
+    pub async fn boot_observed<C>(mut self, component: C) -> Self
+    where
+        C: StatusSource + StatusWatch + Clone + Send + Sync + 'static,
+    {
+        await_ready(&component).await;
+
+        let name = component.status().name;
+        let handle: Arc<dyn StatusSource + Send + Sync> = Arc::new(component.clone());
+        self.statuses.push(handle);
+
+        let escalations = self.escalations_tx.clone();
+        let watched = component;
+        let babysitter = Task::spawn(TaskName(name.0), move |cancel| async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                outcome = observe(&watched) => {
+                    if matches!(outcome, SupervisionOutcome::Escalated) {
+                        let _ = escalations.send(watched.status().name);
+                    }
+                }
+            }
+        });
+        self.babysitters.push(babysitter);
+        self
     }
 
     /// Finish booting; hand back the running [`Orchestra`].
