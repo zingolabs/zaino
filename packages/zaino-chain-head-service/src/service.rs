@@ -23,12 +23,8 @@
 //!
 //! # Who picks the tip
 //!
-//! The source does. The chain head does not validate blocks, and it holds only
-//! the blocks it happened to retain, so a retained block carrying more work
-//! than the source's tip is evidence that the source rejected it, not grounds
-//! to prefer it. Retained work is still compared after every advance, as a
-//! check: a disagreement is logged, and [`TipSelection`] decides whether it is
-//! acted on.
+//! The source does. Retained work only checks the source's answer; see
+//! [`TipSelection`] and the crate's `usage.md`.
 //!
 //! # Advancing is not an operation
 //!
@@ -493,10 +489,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             self.max_retained_depth(),
         ));
 
-        // Check the source's tip against retained work. A heavier retained
-        // block is one the source has moved away from — a rollback, an
-        // invalidation, or a misbehaving source — and `tip_selection` decides
-        // whether that is followed or overridden.
+        // Check the source's tip against retained work; `tip_selection`
+        // decides what a disagreement does.
         //
         // Strictly more work, not merely equal: two blocks at one height with
         // the same difficulty carry the same accumulated work, and picking

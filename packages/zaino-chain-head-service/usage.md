@@ -128,13 +128,12 @@ The chain head does not validate blocks and sees only what it retained, so the
 source's tip is the best chain. After every advance the tip's work is compared
 against the heaviest retained block. A heavier retained block means the source
 moved away from it — a rollback, an invalidation, or a misbehaving source — and
-is logged at `warn`, not followed. Selecting by retained work instead is kept as
-a crate-private policy (`TipSelection::HeaviestRetained`); under it a rollback
-is overridden rather than followed.
+is logged at `warn`, not followed. Selection by retained work remains available
+inside the crate as a policy; under it, a rollback is overridden.
 
-The comparison is strictly greater-than. The original used `max_by_key` over the
-graph, which returns the last maximum encountered, so two branches of equal work
-were ordered by hash-map iteration order and the winner varied between runs.
+The comparison against the tip is strictly greater-than. Taking the heaviest
+block by `max_by_key` alone would settle an equal-work tie by hash-map iteration
+order, which differs between runs.
 
 If you touch that comparison, keep it strict.
 
