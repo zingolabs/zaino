@@ -129,37 +129,33 @@ primitive.
 
 ## The work quantity family
 
-The same doctrine, applied to proof-of-work. Three quantities share the unit
-and are not interchangeable:
+Two quantities share the proof-of-work unit and are not interchangeable:
 
 | type | is |
 |---|---|
-| `BlockWork` | the expected work of **one** block, from its difficulty target |
-| `ChainWork` | **cumulative** work at a block — the fold of block works along its chain; `Ord`, because comparing it *is* chain selection |
-| `RelativeWork` | work accumulated **since an anchor** — what a non-finalised branch adds on top of the absolute value at the block it forks from |
+| `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
+| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
 
-`BlockWork` and `ChainWork` are strictly positive; `RelativeWork` admits zero
-(a branch whose tip is the anchor has accumulated nothing), so its constructor
-`RelativeWork::new` is infallible. The fold is the algebra, in the
-`work::arithmetic` module: `ChainWork::genesis(block_work)` seeds it (genesis's
-cumulative work is its own block work), `accumulate` extends it — on either
-quantity: the relative fold seeds at `RelativeWork::ZERO` instead — and
-`rollback` unwinds it on reorg, each checked, with a typed error. Two
-relations bridge absolute and relative: `ChainWork::extend(relative)` combines
-an anchor's absolute work with a branch's relative work into the absolute work
-at the branch tip, and `ChainWork::since(anchor)` measures a value's work
-above an anchor. `since` is the one legal `ChainWork × ChainWork`, and its
-result is relative, never absolute — there is still no
-`ChainWork + ChainWork`: no chain is the concatenation of two chains.
+Each fold is a method on the type it returns, and each is checked:
 
-Boundary doors on `ChainWork`: `try_from_reported` reads the 32 big-endian
-bytes a validator reports — all-zero is `Ok(None)` ("not reported"; absence is
-`Option`, never a zero sentinel) and a value past the recorded 128 bits is
-refused rather than truncated — and `to_be_bytes` renders back for the wire.
-`try_new` / `BlockWork::try_new` take an already-computed integer and enforce
-only the non-zero bound. The difficulty → work derivation itself is consensus
-logic and deliberately lives outside this crate, next to the consensus
-implementation that owns it.
+```rust,ignore
+// A chain of one block has that block's work.
+let mut total = AbsoluteChainWork::genesis(block_work);
+
+// Extend by one block; unwind one on reorg. Both checked, with typed errors.
+total = total.accumulate(next_block_work)?;
+total = total.rollback(next_block_work)?;
+```
+
+`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
+sends, and answers `Ok(None)` when the validator does not track the value;
+`to_be_bytes` renders back for the wire. For an integer you already hold, use
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+
+The difficulty-to-work derivation is consensus logic and lives outside this
+crate. The `types::work` module documentation covers why these are separate
+types, and what `AbsoluteChainWork` is *not* — in particular
+`zaino-chain-head`'s anchor-relative work, which is a third quantity.
 
 ## Byte order
 

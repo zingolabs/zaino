@@ -12,7 +12,7 @@
 //! - BlockWithMetadata - Block with associated metadata
 
 use super::db::legacy::*;
-use crate::types::{BlockContext, BlockWork, ChainWork, CompactDifficulty};
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty, SingleBlockWork};
 
 /// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
 ///
@@ -119,7 +119,7 @@ pub struct BlockMetadata {
     /// treestate (below NU6.3 activation, or a network with no NU6.3 activation height)
     pub ironwood: Option<(zebra_chain::orchard::tree::Root, u32)>,
     /// Parent block's chainwork (`None` for genesis).
-    pub parent_chainwork: Option<ChainWork>,
+    pub parent_chainwork: Option<AbsoluteChainWork>,
     /// Network for block validation
     pub network: zebra_chain::parameters::Network,
 }
@@ -315,7 +315,7 @@ impl<'a> BlockWithMetadata<'a> {
             Some(parent) => parent
                 .accumulate(block_work)
                 .map_err(|e| format!("chainwork overflow: {e}"))?,
-            None => ChainWork::genesis(block_work),
+            None => AbsoluteChainWork::genesis(block_work),
         };
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
@@ -327,7 +327,7 @@ impl<'a> BlockWithMetadata<'a> {
 /// Depends on nothing but this one header, which is what makes the cumulative chainwork a running
 /// sum that can be folded over already-fetched blocks in a separate pass from assembling them.
 /// Shared so the fold and [`BlockWithMetadata`]'s own assembly cannot drift apart.
-pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<BlockWork, String> {
+pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<SingleBlockWork, String> {
     let bits =
         CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
             .map_err(|e| format!("invalid nBits: {e}"))?;
