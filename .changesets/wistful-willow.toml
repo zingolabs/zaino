@@ -10,8 +10,8 @@ migration   = "Prove the value non-zero before the call: SingleBlockWork::new(No
 [[changes]]
 crate       = "zaino-primitives"
 kind        = "breaking"
-description = "AbsoluteChainWork::try_from_reported and ChainWorkOverWidth are removed; no validator Zaino reads reports chainwork, so nothing converts wire bytes into the type. to_be_bytes stays as the wire render."
-migration   = "Build an AbsoluteChainWork from a NonZeroU128 through new, or fold it from SingleBlockWork values. A 32-byte row is decoded by the store's own conversion, which keeps the 128-bit width check."
+description = "AbsoluteChainWork::try_from_reported and ChainWorkOverWidth are removed; no validator Zaino reads reports chainwork, so no wire value converts into the type. to_be_bytes and a new from_be_bytes, with ChainWorkBytesError, are the one definition of the 32-byte form."
+migration   = "Build an AbsoluteChainWork from a NonZeroU128 through new, or fold it from SingleBlockWork values. Read 32 stored bytes with from_be_bytes, which refuses an over-width or all-zero value; there is no absence case."
 
 [[changes]]
 crate       = "zaino-source-zebra-rpc"

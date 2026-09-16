@@ -27,6 +27,20 @@ pub struct AbsoluteChainWork(NonZeroU128);
 #[error("unwinding a block's work would take the total to or below zero")]
 pub struct WorkUnderflow;
 
+/// Error when 32 big-endian bytes are not the byte form of a value of this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ChainWorkBytesError {
+    /// The high-order 128 bits are set, so the value does not fit the recorded width.
+    #[error("chainwork does not fit 128 bits (high half {high:#034x})")]
+    OverWidth {
+        /// The non-zero high-order 128 bits.
+        high: u128,
+    },
+    /// The bytes are all zero, which no chain's total work can be.
+    #[error("chainwork is zero")]
+    Zero,
+}
+
 impl AbsoluteChainWork {
     /// Create a total chain work value.
     ///
@@ -41,6 +55,19 @@ impl AbsoluteChainWork {
         let mut bytes = [0u8; 32];
         bytes[16..].copy_from_slice(&self.0.get().to_be_bytes());
         bytes
+    }
+
+    /// Reads the 32 big-endian byte form back, the inverse of [`to_be_bytes`](Self::to_be_bytes).
+    pub fn from_be_bytes(bytes: [u8; 32]) -> Result<Self, ChainWorkBytesError> {
+        let (high, low) = bytes.split_at(16);
+        let high = u128::from_be_bytes(high.try_into().expect("split_at(16) leaves 16 bytes"));
+        if high != 0 {
+            return Err(ChainWorkBytesError::OverWidth { high });
+        }
+        let low = u128::from_be_bytes(low.try_into().expect("split_at(16) leaves 16 bytes"));
+        NonZeroU128::new(low)
+            .map(Self)
+            .ok_or(ChainWorkBytesError::Zero)
     }
 
     /// `genesis : W → C`. A chain of one block has that block's work.
@@ -98,13 +125,38 @@ mod tests {
         AbsoluteChainWork::new(NonZeroU128::new(value).expect("test value must be nonzero"))
     }
 
-    /// The wire form is the value's 16 big-endian bytes in the low half.
+    /// The byte form is the value's 16 big-endian bytes in the low half, and
+    /// reading it back is the identity.
     #[test]
-    fn to_be_bytes_fills_the_low_half() {
-        let bytes = work(0x00de_ad00_beef).to_be_bytes();
+    fn be_bytes_round_trip() {
+        let value = work(0x00de_ad00_beef);
+        let bytes = value.to_be_bytes();
 
         assert_eq!(bytes[..16], [0u8; 16]);
         assert_eq!(bytes[16..], 0x00de_ad00_beefu128.to_be_bytes());
+        assert_eq!(AbsoluteChainWork::from_be_bytes(bytes), Ok(value));
+    }
+
+    /// A set high half is refused, not truncated: a truncated value would be
+    /// a lower total, which reorders chain selection.
+    #[test]
+    fn over_width_bytes_are_refused() {
+        let mut bytes = [0u8; 32];
+        bytes[0] = 1;
+
+        assert_eq!(
+            AbsoluteChainWork::from_be_bytes(bytes),
+            Err(ChainWorkBytesError::OverWidth { high: 1 << 120 })
+        );
+    }
+
+    /// All-zero bytes are not a value of the type.
+    #[test]
+    fn zero_bytes_are_refused() {
+        assert_eq!(
+            AbsoluteChainWork::from_be_bytes([0u8; 32]),
+            Err(ChainWorkBytesError::Zero)
+        );
     }
 
     #[test]

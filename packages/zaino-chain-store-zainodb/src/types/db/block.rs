@@ -15,8 +15,6 @@
 //! The `From` conversions between `BlockContext` and
 //! `PersistentBlockContext` are defined here, alongside PBC.
 
-use core::num::NonZeroU128;
-
 use corez::io::{self, Read, Write};
 
 use crate::types::{
@@ -46,17 +44,8 @@ impl PersistentChainWork {
     }
 
     pub(super) fn into_business(self) -> io::Result<AbsoluteChainWork> {
-        let (high, low) = self.0.split_at(16);
-        if high.iter().any(|byte| *byte != 0) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "chainwork exceeds u128 range",
-            ));
-        }
-        let value = u128::from_be_bytes(low.try_into().expect("split_at(16) leaves 16 bytes"));
-        NonZeroU128::new(value)
-            .map(AbsoluteChainWork::new)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
+        AbsoluteChainWork::from_be_bytes(self.0)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
     }
 }
 
