@@ -4,7 +4,7 @@
 //! sapling, orchard, hash→height, txid→location, and outpoint→spender.
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionHash,
+    Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
 };
 use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::BlockHeight;
@@ -35,11 +35,11 @@ pub struct CurrentZainoContext {
     /// Compact difficulty.
     pub bits: CompactDifficulty,
     /// Transaction ids.
-    pub txids: Vec<TransactionHash>,
+    pub txids: Vec<TransactionId>,
     /// Transparent spends: (prev_txid, prev_index, spending_txid).
-    pub spends: Vec<(TransactionHash, OutputIndex, TransactionHash)>,
+    pub spends: Vec<(TransactionId, OutputIndex, TransactionId)>,
     /// Txid locations: (txid, height, tx_index).
-    pub txid_locations: Vec<(TransactionHash, BlockHeight, u32)>,
+    pub txid_locations: Vec<(TransactionId, BlockHeight, u32)>,
     /// Per-tx transparent data.
     pub transparent_txs: Vec<TransparentTxCompact>,
     /// Per-tx sapling data.
@@ -52,9 +52,9 @@ pub struct CurrentZainoContext {
 pub fn context_from_block(block: &Block) -> CurrentZainoContext {
     let height = BlockHeight::new(u64::from(block.header.height));
 
-    let txids: Vec<TransactionHash> = block.transactions.iter().map(|tx| tx.txid).collect();
+    let txids: Vec<TransactionId> = block.transactions.iter().map(|tx| tx.txid).collect();
 
-    let spends: Vec<(TransactionHash, OutputIndex, TransactionHash)> = block
+    let spends: Vec<(TransactionId, OutputIndex, TransactionId)> = block
         .transactions
         .iter()
         .flat_map(|tx| {
@@ -65,7 +65,7 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
         })
         .collect();
 
-    let txid_locations: Vec<(TransactionHash, BlockHeight, u32)> = block
+    let txid_locations: Vec<(TransactionId, BlockHeight, u32)> = block
         .transactions
         .iter()
         .map(|tx| (tx.txid, height, tx.index))

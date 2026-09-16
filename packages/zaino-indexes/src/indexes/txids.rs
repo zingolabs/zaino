@@ -1,6 +1,6 @@
 //! TxidsIndex (BlockLocal × Append): height → list of transaction ids.
 
-use zaino_primitives::types::TransactionHash;
+use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{
@@ -12,7 +12,7 @@ pub struct TxidsCtx {
     /// Block height.
     pub height: BlockHeight,
     /// Transaction ids in block order.
-    pub txids: Vec<TransactionHash>,
+    pub txids: Vec<TransactionId>,
 }
 
 /// Delta.
@@ -20,12 +20,12 @@ pub struct TxidsEntry {
     /// Block height (key).
     pub height: BlockHeight,
     /// Txids (value).
-    pub txids: Vec<TransactionHash>,
+    pub txids: Vec<TransactionId>,
 }
 
 /// Persisted value: concatenated 32-byte txids.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxidsValue(pub Vec<TransactionHash>);
+pub struct TxidsValue(pub Vec<TransactionId>);
 
 /// Index definition.
 pub struct TxidsIndex;
@@ -104,7 +104,7 @@ impl Schema<Vec<TxidsEntry>> for TxidsIndex {
             .map(|c| {
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(c);
-                TransactionHash::from(arr)
+                TransactionId::from(arr)
             })
             .collect();
         Ok(TxidsValue(txids))

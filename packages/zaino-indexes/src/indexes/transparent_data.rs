@@ -1,6 +1,6 @@
 //! TransparentDataIndex (BlockLocal × Append): height → compact transparent data per block.
 
-use zaino_primitives::types::{OutputIndex, Script, TransactionHash, Zatoshis};
+use zaino_primitives::types::{OutputIndex, Script, TransactionId, Zatoshis};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{
@@ -11,7 +11,7 @@ use zaino_sync::traits::{
 #[derive(Debug, Clone)]
 pub struct TransparentTxCompact {
     /// Transparent inputs: (prev_txid, prev_index).
-    pub inputs: Vec<(TransactionHash, OutputIndex)>,
+    pub inputs: Vec<(TransactionId, OutputIndex)>,
     /// Transparent outputs: (value, script).
     pub outputs: Vec<(Zatoshis, Script)>,
 }

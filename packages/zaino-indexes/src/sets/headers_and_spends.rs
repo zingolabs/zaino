@@ -3,7 +3,7 @@
 //! Set-wide context carries header fields + transparent spend data.
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionHash,
+    Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
 };
 use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::BlockHeight;
@@ -26,12 +26,12 @@ pub struct HeadersAndSpendsContext {
     /// Compact difficulty (nBits).
     pub bits: CompactDifficulty,
     /// All transparent spends: (prev_txid, prev_index, spending_txid).
-    pub spends: Vec<(TransactionHash, OutputIndex, TransactionHash)>,
+    pub spends: Vec<(TransactionId, OutputIndex, TransactionId)>,
 }
 
 /// Build context from a domain Block.
 pub fn context_from_block(block: &Block) -> HeadersAndSpendsContext {
-    let spends: Vec<(TransactionHash, OutputIndex, TransactionHash)> = block
+    let spends: Vec<(TransactionId, OutputIndex, TransactionId)> = block
         .transactions
         .iter()
         .flat_map(|tx| {

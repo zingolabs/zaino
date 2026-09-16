@@ -3,7 +3,7 @@
 //! For each transparent input in each transaction, records which
 //! transaction spent that outpoint.
 
-use zaino_primitives::types::{OutputIndex, TransactionHash};
+use zaino_primitives::types::{OutputIndex, TransactionId};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::IndexId;
 use zaino_sync::traits::{
@@ -13,24 +13,24 @@ use zaino_sync::traits::{
 /// Per-index context: the block's transparent inputs.
 pub struct SpendCtx {
     /// All transparent spends in the block: (prev_txid, prev_index, spending_txid).
-    pub spends: Vec<(TransactionHash, OutputIndex, TransactionHash)>,
+    pub spends: Vec<(TransactionId, OutputIndex, TransactionId)>,
 }
 
 /// One spend entry.
 pub struct SpendEntry {
     /// The outpoint being spent (txid + output index).
-    pub prev_txid: TransactionHash,
+    pub prev_txid: TransactionId,
     /// Output index within the previous transaction.
     pub prev_index: OutputIndex,
     /// The transaction that spent this outpoint.
-    pub spending_txid: TransactionHash,
+    pub spending_txid: TransactionId,
 }
 
 /// Persisted key: prev_txid(32) + prev_index(4) = 36 bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutpointKey {
     /// Previous transaction hash.
-    pub prev_txid: TransactionHash,
+    pub prev_txid: TransactionId,
     /// Output index.
     pub prev_index: OutputIndex,
 }
@@ -68,7 +68,7 @@ impl MergeAppend for TransparentSpendsIndex {}
 
 impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
     type Key = OutpointKey;
-    type Value = TransactionHash;
+    type Value = TransactionId;
 
     fn into_entries(batches: Vec<Vec<SpendEntry>>) -> Vec<(Self::Key, Self::Value)> {
         batches
@@ -104,7 +104,7 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
         buf
     }
 
-    fn encode_value(value: &TransactionHash) -> Vec<u8> {
+    fn encode_value(value: &TransactionId) -> Vec<u8> {
         <[u8; 32]>::from(*value).to_vec()
     }
 
@@ -119,12 +119,12 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
         txid.copy_from_slice(&bytes[0..32]);
         let index = u32::from_le_bytes(bytes[32..36].try_into().expect("4 bytes"));
         Ok(OutpointKey {
-            prev_txid: TransactionHash::from(txid),
+            prev_txid: TransactionId::from(txid),
             prev_index: index,
         })
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<TransactionHash, SchemaDecodeError> {
+    fn decode_value(bytes: &[u8]) -> Result<TransactionId, SchemaDecodeError> {
         if bytes.len() != 32 {
             return Err(SchemaDecodeError::Invalid(format!(
                 "expected 32 bytes, got {}",
@@ -133,6 +133,6 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
         }
         let mut txid = [0u8; 32];
         txid.copy_from_slice(bytes);
-        Ok(TransactionHash::from(txid))
+        Ok(TransactionId::from(txid))
     }
 }

@@ -1,6 +1,6 @@
 //! TxidLocationIndex (BlockLocal × Append): txid → (height, tx_index).
 
-use zaino_primitives::types::TransactionHash;
+use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{
@@ -10,13 +10,13 @@ use zaino_sync::traits::{
 /// Per-index context.
 pub struct TxidLocationCtx {
     /// (txid, height, tx_index) for each transaction.
-    pub locations: Vec<(TransactionHash, BlockHeight, u32)>,
+    pub locations: Vec<(TransactionId, BlockHeight, u32)>,
 }
 
 /// Delta: one entry per transaction.
 pub struct TxidLocationEntry {
     /// Transaction hash (key).
-    pub txid: TransactionHash,
+    pub txid: TransactionId,
     /// Location (value).
     pub location: TxLocation,
 }
@@ -63,7 +63,7 @@ impl ExtractLocal for TxidLocationIndex {
 impl MergeAppend for TxidLocationIndex {}
 
 impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
-    type Key = TransactionHash;
+    type Key = TransactionId;
     type Value = TxLocation;
 
     fn into_entries(batches: Vec<Vec<TxidLocationEntry>>) -> Vec<(Self::Key, Self::Value)> {
@@ -81,7 +81,7 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
             .collect()]
     }
 
-    fn encode_key(key: &TransactionHash) -> Vec<u8> {
+    fn encode_key(key: &TransactionId) -> Vec<u8> {
         <[u8; 32]>::from(*key).to_vec()
     }
 
@@ -92,7 +92,7 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
         buf
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<TransactionHash, SchemaDecodeError> {
+    fn decode_key(bytes: &[u8]) -> Result<TransactionId, SchemaDecodeError> {
         let mut arr = [0u8; 32];
         if bytes.len() != 32 {
             return Err(SchemaDecodeError::Invalid(format!(
@@ -101,7 +101,7 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
             )));
         }
         arr.copy_from_slice(bytes);
-        Ok(TransactionHash::from(arr))
+        Ok(TransactionId::from(arr))
     }
 
     fn decode_value(bytes: &[u8]) -> Result<TxLocation, SchemaDecodeError> {
