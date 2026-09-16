@@ -41,10 +41,7 @@ struct ImblBackedSnapshot {
 
 impl ImblBackedSnapshot {
     fn new_from_block(block: ChainHeadBlock) -> Self {
-        let chain = (
-            imbl::shared_ptr::SharedPointer::new(block),
-            imbl::Vector::new(),
-        );
+        let chain = ImblNonEmptyVec::new(block);
         Self {
             chains: imbl::hashset![chain.clone()],
             best_chain: chain,
