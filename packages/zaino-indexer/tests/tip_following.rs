@@ -124,6 +124,7 @@ async fn the_indexer_follows_the_tip() {
         engine,
         provisioner,
         Height::try_from(0).expect("valid height"),
+        0, // finalised_depth: non-reorging mock, index right to the tip
         16,
     );
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
@@ -156,6 +157,57 @@ async fn the_indexer_follows_the_tip() {
     })
     .await
     .expect("followed the tip to 6");
+
+    indexer.stop().await.expect("stop");
+}
+
+#[tokio::test]
+async fn the_indexer_stops_at_the_finalised_boundary() {
+    // Tip 6, finalised_depth 2 → the indexer builds only the append-only range
+    // [0, 4]; the volatile window (5, 6) is the chain-head's concern, not the
+    // finalised index's.
+    let source = GrowingSource::new(6);
+    let backend = InMemoryBackend::new();
+    let engine = SyncEngine::from_index_set(
+        toy_index_set(),
+        backend.clone(),
+        EngineConfig {
+            batch_size: 4,
+            start_height: BlockHeight::new(0),
+        },
+    )
+    .expect("valid index set");
+
+    let validator = ValidatorClient::new(source, RetryPolicy::default());
+    let provisioner = Arc::new(SourceProvisioner::new(Arc::new(validator), to_context));
+    let driver = SourceSyncDriver::new(
+        engine,
+        provisioner,
+        Height::try_from(0).expect("valid height"),
+        2, // finalised_depth
+        16,
+    );
+    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+
+    indexer.spawn().await.expect("spawn");
+
+    let mut status = indexer.subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if status.borrow_and_update().lifecycle == Lifecycle::Ready {
+                return;
+            }
+            status.changed().await.expect("status stream open");
+        }
+    })
+    .await
+    .expect("caught up to the finalised boundary");
+
+    assert_eq!(
+        indexed_block_count(&backend),
+        5,
+        "only blocks 0..=4 (tip 6 − depth 2) are indexed; 5 and 6 stay volatile",
+    );
 
     indexer.stop().await.expect("stop");
 }

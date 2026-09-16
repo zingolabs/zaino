@@ -54,6 +54,7 @@ async fn the_runtime_indexes_from_a_source() {
         engine,
         provisioner,
         Height::try_from(0).expect("valid height"),
+        0, // finalised_depth: non-reorging mock, index right to the tip
         16,
     );
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);

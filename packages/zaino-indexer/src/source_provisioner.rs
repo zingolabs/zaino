@@ -111,24 +111,47 @@ pub struct SourceSyncDriver<S, B: Backend, Ctx, F> {
     engine: Mutex<Option<SyncEngine<Ctx, B>>>,
     provisioner: Arc<SourceProvisioner<S, Ctx, F>>,
     start: Height,
+    finalised_depth: u32,
     channel_capacity: usize,
 }
 
 impl<S, B: Backend, Ctx, F> SourceSyncDriver<S, B, Ctx, F> {
-    /// A driver syncing from `start` to the source tip, buffering up to
-    /// `channel_capacity` contexts between the provisioner and the engine.
+    /// A driver syncing from `start` to the **finalised boundary**, buffering up
+    /// to `channel_capacity` contexts between the provisioner and the engine.
+    ///
+    /// The engine builds only the finalised, append-only range, so bulk sync and
+    /// tip-following are one operation and no reorg handling is needed here — the
+    /// volatile window above the boundary is the chain-head's concern.
+    ///
+    /// **`finalised_depth` is the *standalone* seam derivation** (`tip − depth`,
+    /// for an indexer with no chain-head — e.g. a benchmark or an isolated
+    /// finalised store). In the composed runtime the seam has a single owner —
+    /// the chain-head's floor — which the indexer must *consume*, not re-derive,
+    /// so FS-ceiling and NFS-floor cannot drift (see the design decision
+    /// "the seam has one owner"). That path replaces this depth with the
+    /// chain-head's published seam when the chain-head is wired in.
+    /// Pass `zaino_consensus::MAX_BLOCK_REORG_HEIGHT` standalone; `0` in tests
+    /// over a non-reorging source.
     pub fn new(
         engine: SyncEngine<Ctx, B>,
         provisioner: Arc<SourceProvisioner<S, Ctx, F>>,
         start: Height,
+        finalised_depth: u32,
         channel_capacity: usize,
     ) -> Self {
         Self {
             engine: Mutex::new(Some(engine)),
             provisioner,
             start,
+            finalised_depth,
             channel_capacity,
         }
+    }
+
+    /// The finalised boundary for a given source tip: `tip − finalised_depth`,
+    /// saturating at genesis. Append-only, so it is a safe sync target.
+    fn finalised(&self, tip: Height) -> Height {
+        tip.saturating_sub(self.finalised_depth)
     }
 }
 
@@ -179,9 +202,13 @@ where
             .take()
             .ok_or(IndexerError::AlreadyRun)?;
 
-        // Initial catch-up: sync [start, tip], then the component is Ready.
-        let mut synced = self.provisioner.current_tip().await?;
-        self.sync_to(&mut engine, self.start, synced).await?;
+        // Initial catch-up: sync [start, finalised-boundary], then Ready. Only
+        // the append-only finalised range is built; the volatile window above it
+        // is the chain-head's concern.
+        let mut synced = self.finalised(self.provisioner.current_tip().await?);
+        if u32::from(synced) >= u32::from(self.start) {
+            self.sync_to(&mut engine, self.start, synced).await?;
+        }
         caught_up.notify();
 
         // Steady-state follow: index each new range as the tip advances. If the
@@ -198,8 +225,9 @@ where
                         // The source stopped publishing; nothing more to follow.
                         return Ok(());
                     }
-                    // Copy the height out before awaiting (drop the watch borrow).
-                    let tip = tips.borrow_and_update().height;
+                    // Copy the height out before awaiting (drop the watch borrow),
+                    // then cap at the finalised boundary — we only index append-only.
+                    let tip = self.finalised(tips.borrow_and_update().height);
                     if tip > synced {
                         let from = synced
                             .checked_add(1)
