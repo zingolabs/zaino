@@ -98,7 +98,9 @@ pub enum QueryError<E: fmt::Debug + fmt::Display> {
     Domain(E),
 
     /// Transport-level failure.
-    #[error("{0}")]
+    ///
+    /// Transparent, so the [`FetchError`]'s cause stays on the source chain.
+    #[error(transparent)]
     Fetch(FetchError),
 }
 
@@ -110,11 +112,12 @@ impl<E: fmt::Debug + fmt::Display> From<FetchError> for QueryError<E> {
 
 /// Retries exhausted while trying to reach the validator.
 #[derive(Debug, thiserror::Error)]
-#[error("unavailable after {attempts} attempts: {last_error}")]
+#[error("unavailable after {attempts} attempts")]
 pub struct UnavailableError {
     /// Number of attempts made.
     pub attempts: u32,
     /// The last transport error before giving up.
+    #[source]
     pub last_error: FetchError,
 }
 
@@ -130,11 +133,15 @@ pub enum SourceError<E: fmt::Debug + fmt::Display> {
     Domain(E),
 
     /// Non-retryable transport failure.
-    #[error("{0}")]
+    ///
+    /// Transparent, so the [`FetchError`]'s cause stays on the source chain.
+    #[error(transparent)]
     Fetch(FetchError),
 
     /// Retries exhausted — the validator is unreachable.
-    #[error("{0}")]
+    ///
+    /// Transparent, so the last attempt's error stays on the source chain.
+    #[error(transparent)]
     Unavailable(UnavailableError),
 }
 
@@ -165,6 +172,42 @@ mod tests {
         assert_eq!(
             error.source().map(ToString::to_string),
             Some("row 7 is out of range".to_string()),
+        );
+    }
+
+    /// Wrapping a failure in a port error keeps its cause reachable.
+    #[test]
+    fn a_query_error_forwards_the_cause() {
+        let error: super::QueryError<String> = FetchError::because(
+            FailureMode::InvalidSourceData,
+            "state service returned an invalid height",
+            Underlying,
+        )
+        .into();
+
+        assert_eq!(
+            error.to_string(),
+            "state service returned an invalid height"
+        );
+        assert_eq!(
+            error.source().map(ToString::to_string),
+            Some("row 7 is out of range".to_string()),
+        );
+    }
+
+    /// Exhausted retries report the last attempt as the cause rather than
+    /// repeating it in the message.
+    #[test]
+    fn an_unavailable_error_reports_the_last_attempt_as_its_source() {
+        let error = super::UnavailableError {
+            attempts: 3,
+            last_error: FetchError::new(FailureMode::Timeout, "no answer"),
+        };
+
+        assert_eq!(error.to_string(), "unavailable after 3 attempts");
+        assert_eq!(
+            error.source().map(ToString::to_string),
+            Some("no answer".to_string()),
         );
     }
 

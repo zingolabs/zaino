@@ -14,6 +14,10 @@ and this library adheres to Rust's notion of
 - `FailureMode::InvalidSourceData`, for an answer that violates an invariant
   without failing to deserialize. Not retried by `ValidatorClient`.
 ### Changed
+- `QueryError::Fetch`, `SourceError::Fetch` and `SourceError::Unavailable` are
+  transparent, so the wrapped error's cause is their `source()`.
+- `UnavailableError` reports its last attempt as `source()`, and its message no
+  longer repeats that attempt's text.
 ### Deprecated
 ### Removed
 ### Fixed
