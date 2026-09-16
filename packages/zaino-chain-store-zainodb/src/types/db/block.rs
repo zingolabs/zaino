@@ -42,9 +42,7 @@ pub(super) struct PersistentChainWork([u8; 32]);
 
 impl PersistentChainWork {
     pub(super) fn from_business(cw: &AbsoluteChainWork) -> Self {
-        let mut row = [0u8; 32];
-        row[16..].copy_from_slice(&NonZeroU128::from(*cw).get().to_be_bytes());
-        Self(row)
+        Self(cw.to_be_bytes())
     }
 
     pub(super) fn into_business(self) -> io::Result<AbsoluteChainWork> {
@@ -425,6 +423,17 @@ mod tests {
         #[test]
         fn new_encoder_matches_recovered_original(value in 1u128..=u128::MAX) {
             assert_encoders_agree(value);
+        }
+
+        /// The row is the primitive's own wire render, and the read side
+        /// inverts it: the two byte layouts cannot drift apart in silence.
+        #[test]
+        fn row_bytes_are_the_wire_render_and_round_trip(value in 1u128..=u128::MAX) {
+            let cw = AbsoluteChainWork::new(NonZeroU128::new(value).expect("nonzero"));
+            let row = PersistentChainWork::from_business(&cw);
+
+            proptest::prop_assert_eq!(row.0, cw.to_be_bytes());
+            proptest::prop_assert_eq!(row.into_business().expect("valid chainwork"), cw);
         }
     }
 
