@@ -130,6 +130,7 @@ fn is_retryable(kind: &FailureMode) -> bool {
         FailureMode::RpcError(code) => *code == WORK_QUEUE_FULL || *code == IN_WARMUP,
         FailureMode::Parse => false,
         FailureMode::Auth => false,
+        FailureMode::InvalidSourceData => false,
     }
 }
 
@@ -288,6 +289,11 @@ mod tests {
     #[test]
     fn auth_is_not_retryable() {
         assert!(!is_retryable(&FailureMode::Auth));
+    }
+
+    #[test]
+    fn invalid_source_data_is_not_retryable() {
+        assert!(!is_retryable(&FailureMode::InvalidSourceData));
     }
 
     #[test]

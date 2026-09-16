@@ -8,6 +8,11 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `FetchError::because(mode, message, cause)`, which keeps the underlying
+  error as `source()` instead of formatting it into the message, and the
+  `BoxCause` alias it stores the cause as.
+- `FailureMode::InvalidSourceData`, for an answer that violates an invariant
+  without failing to deserialize. Not retried by `ValidatorClient`.
 ### Changed
 ### Deprecated
 ### Removed

@@ -50,8 +50,20 @@ returning.** If the validator replied at all, it is almost certainly `Domain`.
 ```rust
 pub enum FailureMode {
     Connection, Timeout, HttpStatus(u16), RpcError(i64), Parse, Auth,
+    InvalidSourceData,
 }
 ```
+
+`Parse` is a response that failed to deserialize. `InvalidSourceData` is an
+answer that deserialized, or needed no deserializing, and still violates an
+invariant: an out-of-range value, a response variant that does not match the
+request. An in-process adapter such as the Zebra ReadState one reports the
+latter, never the former.
+
+Build a `FetchError` with `FetchError::because(mode, message, cause)` whenever
+there is an underlying error, and with `FetchError::new(mode, message)` only
+when there is none. `message` names what failed; the cause is reported through
+`std::error::Error::source`, so do not format it into the message as well.
 
 `RpcError(i64)` is what lets a legacy full-node legacy code survive from the validator to
 the served response.
