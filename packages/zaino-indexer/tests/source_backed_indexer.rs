@@ -14,6 +14,7 @@ use zaino_indexer::{SourceProvisioner, SourceSyncDriver};
 use zaino_primitives::types::{Block, Height};
 use zaino_runtime::IndexerComponent;
 use zaino_source::mock::{test_block, MockChain};
+use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::testing::{toy_index_set, InMemoryBackend, TestBlockContext};
@@ -44,7 +45,11 @@ async fn the_runtime_indexes_from_a_source() {
     )
     .expect("valid index set");
 
-    let provisioner = Arc::new(SourceProvisioner::new(Arc::new(chain), to_context));
+    // Wrap the raw mock adapter in the resilient decorator — the provisioner
+    // binds the resilient ports (GetBlock/GetChainTip), so retry/backoff and
+    // SourceError::Unavailable come from ValidatorClient, not from the consumer.
+    let source = ValidatorClient::new(chain, RetryPolicy::default());
+    let provisioner = Arc::new(SourceProvisioner::new(Arc::new(source), to_context));
     let driver = SourceSyncDriver::new(
         engine,
         provisioner,

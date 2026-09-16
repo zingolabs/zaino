@@ -25,6 +25,12 @@ use zaino_sync::provisioner::Provisioner;
 /// What can go wrong driving the sync engine.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
+    /// The validator is unreachable after the resilient source's retry ladder is
+    /// spent (`SourceError::Unavailable`). Kept distinct from other provisioning
+    /// failures so the runtime can react to it as its own condition — the
+    /// provisioner never re-implements retry.
+    #[error("validator unavailable: {0}")]
+    Unavailable(String),
     /// The provisioner could not supply block contexts.
     #[error("provisioning failed: {0}")]
     Provision(String),

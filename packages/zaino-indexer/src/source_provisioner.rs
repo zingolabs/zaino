@@ -19,11 +19,24 @@ use tokio::sync::mpsc;
 
 use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
 use zaino_primitives::types::{Block, Height};
-use zaino_source::{OneShotGetBlock, OneShotGetChainTip};
+use zaino_source::{GetBlock, GetChainTip, SourceError};
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::SyncEngine;
 
 use crate::IndexerError;
+
+/// Map a resilient-port [`SourceError`] onto an indexer error. `Unavailable`
+/// (the validator is unreachable after the decorator's retry ladder is spent) is
+/// kept distinct so the runtime can react to it as its own condition, rather
+/// than the provisioner re-implementing retry. No wildcard arm: a new
+/// `SourceError` variant must be classified here.
+fn map_source<E: core::fmt::Display + core::fmt::Debug>(err: SourceError<E>) -> IndexerError {
+    match err {
+        SourceError::Unavailable(u) => IndexerError::Unavailable(u.to_string()),
+        SourceError::Domain(d) => IndexerError::Provision(d.to_string()),
+        SourceError::Fetch(f) => IndexerError::Provision(f.to_string()),
+    }
+}
 
 /// Fetches blocks from a validator source and projects them into the engine's
 /// set-wide context `Ctx` via `build`.
@@ -38,7 +51,7 @@ pub struct SourceProvisioner<S, Ctx, F> {
 
 impl<S, Ctx, F> SourceProvisioner<S, Ctx, F>
 where
-    S: OneShotGetBlock + OneShotGetChainTip + Send + Sync + 'static,
+    S: GetBlock + GetChainTip + Send + Sync + 'static,
     F: Fn(Block) -> Ctx + Send + Sync + 'static,
     Ctx: Send + 'static,
 {
@@ -57,7 +70,7 @@ where
             .get_chain_tip()
             .await
             .map(|(_hash, height)| height)
-            .map_err(|e| IndexerError::Provision(e.to_string()))
+            .map_err(map_source)
     }
 
     /// Fetch `[from, to]` and send each projected context into `tx`, in order.
@@ -69,12 +82,9 @@ where
         tx: mpsc::Sender<Ctx>,
     ) -> Result<(), IndexerError> {
         for h in u32::from(from)..=u32::from(to) {
-            let height = Height::try_from(h).map_err(|e| IndexerError::Provision(e.to_string()))?;
-            let block = self
-                .source
-                .get_block(height)
-                .await
-                .map_err(|e| IndexerError::Provision(e.to_string()))?;
+            let height = Height::try_from(h)
+                .map_err(|e| IndexerError::Provision(format!("invalid height {h}: {e}")))?;
+            let block = self.source.get_block(height).await.map_err(map_source)?;
             let ctx = (self.build)(block);
             if tx.send(ctx).await.is_err() {
                 // Receiver dropped: the engine stopped consuming; nothing to do.
@@ -115,7 +125,7 @@ impl<S, B: Backend, Ctx, F> SourceSyncDriver<S, B, Ctx, F> {
 
 impl<S, B, Ctx, F> SyncDriver for SourceSyncDriver<S, B, Ctx, F>
 where
-    S: OneShotGetBlock + OneShotGetChainTip + Send + Sync + 'static,
+    S: GetBlock + GetChainTip + Send + Sync + 'static,
     B: Backend + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
     F: Fn(Block) -> Ctx + Send + Sync + 'static,
