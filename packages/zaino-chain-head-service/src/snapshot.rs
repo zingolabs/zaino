@@ -35,6 +35,10 @@ fn tx_index(position: usize) -> TxIndex {
         .expect("a block's transaction count fits TxIndex; consensus bounds it below u32::MAX")
 }
 
+/// [`MapBackedSnapshot::rewind_to`] was asked for a block that is not canonical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NotOnBestChain;
+
 /// The retained graph, held in hash maps.
 ///
 /// `blocks` holds every retained block, canonical and competing alike.
@@ -112,6 +116,26 @@ impl MapBackedSnapshot {
     pub(crate) fn add_block_new_chaintip(&mut self, block: ChainHeadBlock) {
         self.best_tip = block.reference;
         self.add_block(block)
+    }
+
+    /// Moves the tip down to `block`, which must already be canonical.
+    ///
+    /// `best_chain' = { b ∈ best_chain | height(b) ≤ height(block) }`
+    ///
+    /// Heights above `block` stop being canonical; the blocks there stay
+    /// retained as a competing branch. A branch switch is a rewind to the fork
+    /// point followed by extensions; a rollback is a rewind alone.
+    ///
+    /// Refused, with the graph unchanged, when `block` is not canonical: the
+    /// fork point is further down.
+    pub(crate) fn rewind_to(&mut self, block: BlockRef) -> Result<(), NotOnBestChain> {
+        if !self.is_on_best_chain(block) {
+            return Err(NotOnBestChain);
+        }
+        self.heights_to_hashes
+            .retain(|height, _hash| *height <= block.height);
+        self.best_tip = block;
+        Ok(())
     }
 
     pub(crate) fn remove_finalized_blocks(&mut self, finalized_height: Height) {

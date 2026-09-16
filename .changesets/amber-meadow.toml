@@ -9,3 +9,11 @@ The chain head now follows the validator when its tip moves to a lower block. \
 Previously a retained block with more work pulled the tip back up, so a \
 rollback was never followed. A heavier retained block is now logged as a \
 warning instead."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+After a rollback or a reorg onto a shorter branch, heights above the new tip \
+are no longer reported as part of the best chain. The blocks there stay \
+available as a competing branch."""

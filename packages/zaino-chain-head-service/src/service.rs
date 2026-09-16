@@ -18,9 +18,8 @@
 //! The block-carrying listener and `add_nonbest_block` are not here: no source
 //! ever implemented `nonfinalized_listener`, so both were unreachable.
 //!
-//! Everything else — extending one block at a time, the recursive reorg walk,
-//! the non-higher reorg check, and trimming with its keep-the-highest rule — is
-//! as it was.
+//! Everything else — extending one block at a time, the non-higher reorg check,
+//! and trimming with its keep-the-highest rule — is as it was.
 //!
 //! # Who picks the tip
 //!
@@ -60,7 +59,7 @@ use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
-    snapshot::MapBackedSnapshot,
+    snapshot::{MapBackedSnapshot, NotOnBestChain},
     subscriber::ChainHeadSubscriber,
 };
 
@@ -551,13 +550,15 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             ));
         }
         let prev_block = match graph.blocks.get(&block.parent_hash()).cloned() {
-            Some(prev_block) => {
-                if graph.is_on_best_chain(prev_block.reference) {
-                    prev_block
-                } else {
+            // The parent is the fork point exactly when it is canonical, so the
+            // rewind is also the test. The new branch is extended onto the fork
+            // point as the recursion unwinds.
+            Some(prev_block) => match graph.rewind_to(prev_block.reference) {
+                Ok(()) => prev_block,
+                Err(NotOnBestChain) => {
                     Box::pin(self.handle_reorg(graph, &prev_block, recursion_count + 1)).await?
                 }
-            }
+            },
             None => {
                 let prev_block = self.block_at_hash(block.parent_hash()).await?.ok_or(
                     ChainHeadAdvanceError::InconsistentSource(format!(

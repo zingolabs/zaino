@@ -317,6 +317,11 @@ async fn wait_for(
     panic!("chain head never satisfied: {what}");
 }
 
+/// The canonical chain's hashes, lowest first.
+fn best_chain_hashes(snapshot: &MapBackedSnapshot) -> Vec<BlockHash> {
+    snapshot.best_chain().map(|block| block.hash()).collect()
+}
+
 /// Advances the stepped service to the source's current tip.
 async fn step_to_tip(service: &ChainHeadService<MockValidator>, validator: &MockValidator) {
     let _ = validator.tip();
@@ -467,6 +472,94 @@ async fn a_rollback_lowers_the_tip() {
     let snapshot = service.subscriber().current();
     assert_eq!(snapshot.best_tip().height, height(3));
     assert_eq!(snapshot.best_tip().hash, hash(3));
+}
+
+/// After a rollback nothing is canonical above the new tip. The abandoned block
+/// stays retained, as a competing tip one block off the best chain.
+#[tokio::test]
+async fn a_rollback_abandons_the_heights_above_the_new_tip() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+
+    validator.reorg(4, &[]);
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert!(snapshot.best_block_by_height(height(4)).is_none());
+    assert_eq!(
+        snapshot.best_chain().last().map(|block| block.hash()),
+        Some(hash(3))
+    );
+    let abandoned = snapshot
+        .block_by_hash(&hash(4))
+        .expect("the abandoned block is retained");
+    assert!(!snapshot.is_on_best_chain(abandoned.reference));
+    assert_eq!(
+        snapshot.chain_tips(),
+        vec![
+            ChainTip {
+                height: height(4),
+                hash: hash(4),
+                branch_len: 1,
+                status: ChainTipStatus::ValidFork,
+            },
+            ChainTip {
+                height: height(3),
+                hash: hash(3),
+                branch_len: 0,
+                status: ChainTipStatus::Active,
+            },
+        ]
+    );
+}
+
+/// A reorg onto a shorter branch: the new tip is lower than the old one, and
+/// the old branch's top height is no longer canonical.
+#[tokio::test]
+async fn a_lower_reorg_abandons_the_heights_above_the_new_tip() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+
+    validator.reorg(3, &[30]);
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip().height, height(3));
+    assert_eq!(snapshot.best_tip().hash, hash(30));
+    assert!(snapshot.best_block_by_height(height(4)).is_none());
+    assert_eq!(
+        best_chain_hashes(&snapshot),
+        vec![hash(0), hash(1), hash(2), hash(30)]
+    );
+}
+
+/// Reorging back onto a branch the chain head still retains walks down through
+/// the retained blocks to the fork point instead of refetching them.
+#[tokio::test]
+async fn a_reorg_back_onto_a_retained_branch_restores_it() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+
+    validator.reorg(3, &[30, 31]);
+    step_to_tip(&service, &validator).await;
+    validator.reorg(3, &[3, 4, 5]);
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip().hash, hash(5));
+    assert_eq!(
+        best_chain_hashes(&snapshot),
+        vec![hash(0), hash(1), hash(2), hash(3), hash(4), hash(5)]
+    );
+    for displaced in [30, 31] {
+        let block = snapshot
+            .block_by_hash(&hash(displaced))
+            .expect("the displaced branch is retained");
+        assert!(!snapshot.is_on_best_chain(block.reference));
+    }
 }
 
 /// Selecting by retained work instead lets local work override the source: the
