@@ -44,19 +44,31 @@ pub struct OrchestraBuilder {
     babysitters: Vec<Task>,
     statuses: Vec<Arc<dyn StatusSource + Send + Sync>>,
     watches: Vec<Arc<dyn StatusWatch + Send + Sync>>,
+    signals_tx: watch::Sender<RuntimeSignals>,
 }
 
 impl OrchestraBuilder {
     /// A fresh builder, nothing booted yet.
     pub fn new() -> Self {
         let (escalations_tx, escalations_rx) = mpsc::unbounded_channel();
+        // The signals channel exists from the start (initial `Booting`) so an
+        // edge can hold the receiver before the components are booted; the
+        // aggregator starts publishing to it at `build`.
+        let (signals_tx, _) = watch::channel(RuntimeSignals::from_phase(RuntimePhase::Booting));
         Self {
             escalations_tx,
             escalations_rx,
             babysitters: Vec::new(),
             statuses: Vec::new(),
             watches: Vec::new(),
+            signals_tx,
         }
+    }
+
+    /// A receiver for the runtime signals, available *before* `build` so a health
+    /// edge can be constructed with it and then booted.
+    pub fn signals(&self) -> watch::Receiver<RuntimeSignals> {
+        self.signals_tx.subscribe()
     }
 
     /// Boot `component`: spawn it, wait until it is `Ready`, then start
@@ -135,7 +147,8 @@ impl OrchestraBuilder {
 
     /// Finish booting; hand back the running [`Orchestra`].
     pub fn build(mut self) -> Orchestra {
-        let (signals, aggregator) = spawn_signals(self.watches);
+        let signals = self.signals_tx.subscribe();
+        let aggregator = spawn_signals(self.signals_tx.clone(), self.watches);
         self.babysitters.push(aggregator);
         Orchestra {
             babysitters: self.babysitters,
@@ -225,22 +238,21 @@ fn snapshot(receivers: &[watch::Receiver<ComponentStatus>]) -> Vec<ComponentStat
 }
 
 /// Spawn the signals aggregator: recompute the runtime signals whenever any
-/// component's status changes, and publish them on a `watch`. Returns the
-/// receiver the edges read and the aggregator task (cancelled on shutdown).
+/// component's status changes, and publish them to `tx`. Returns the aggregator
+/// task (cancelled on shutdown).
 fn spawn_signals(
+    tx: watch::Sender<RuntimeSignals>,
     watches: Vec<Arc<dyn StatusWatch + Send + Sync>>,
-) -> (watch::Receiver<RuntimeSignals>, Task) {
+) -> Task {
     let mut receivers: Vec<watch::Receiver<ComponentStatus>> =
         watches.iter().map(|w| w.subscribe()).collect();
     // Config seam: full mode (readiness gates on sync) until ephemeral mode wires
     // this from config.
     let criteria = ReadinessCriteria::default();
-    let initial_phase = classify(&criteria, &snapshot(&receivers), false);
-    let (tx, rx) = watch::channel(RuntimeSignals::from_phase(initial_phase));
 
-    let task = Task::spawn(TaskName("runtime-signals"), move |cancel| async move {
+    Task::spawn(TaskName("runtime-signals"), move |cancel| async move {
         // The startup latch: has the runtime ever reached `Serving`.
-        let mut started = matches!(initial_phase, RuntimePhase::Serving);
+        let mut started = false;
         loop {
             let phase = classify(&criteria, &snapshot(&receivers), started);
             started = started || matches!(phase, RuntimePhase::Serving);
@@ -263,9 +275,7 @@ fn spawn_signals(
                 }
             }
         }
-    });
-
-    (rx, task)
+    })
 }
 
 /// Wait until `component` reports `Ready` (returns `true`) or fails to come up —

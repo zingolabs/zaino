@@ -19,12 +19,14 @@
 //! [`run`]: Orchestra::run
 #![forbid(unsafe_code)]
 
+mod health;
 mod orchestra;
 mod serving;
 mod signals;
 mod supervisor;
 mod validator;
 
+pub use health::{HealthServeError, HealthServer};
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
 pub use serving::ServeComponent;
 pub use signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
