@@ -12,9 +12,13 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod rpc;
+mod transport;
 mod wire;
 
 pub use error::RpcError;
+pub use rpc::NodeRpcApiServer;
+pub use transport::{JsonRpcServeError, JsonRpcServer};
 
 use zaino_core::{Outpoint, PassthroughQuery};
 use zaino_service::{ChainInfoRead, NodeRpcService, Snapshot, SpendRead};
@@ -22,6 +26,7 @@ use zaino_service::{ChainInfoRead, NodeRpcService, Snapshot, SpendRead};
 use crate::wire::{bytes_from_hex, spend_status_to_wire, to_hex, txid_from_hex};
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
+#[derive(Clone)]
 pub struct NodeRpc<S: NodeRpcService> {
     engine: S,
 }
