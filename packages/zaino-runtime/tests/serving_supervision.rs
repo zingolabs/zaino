@@ -1,44 +1,70 @@
-//! POC: the runtime supervises servers through the `Serve` seam.
+//! Supervising servers through the `Serve` seam.
 //!
-//! Each server is a `Serve` impl wrapped in a `ServeComponent` and handed to the
-//! Orchestra, which boots them in order and babysits them. Health is driven by
-//! the serve task's outcome: a server whose serve loop fails goes `Critical`,
-//! the escalation funnels up, and under the everything-fatal policy it brings
-//! the app down naming the offender. No health is injected — the failure is
-//! real.
+//! Health is driven by the serve task's real outcome: a bind failure means the
+//! component never becomes `Ready` (a boot failure); a serve loop that dies
+//! *after* binding goes `Critical` and escalates.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use zaino_component::{CancellationToken, ComponentName, Lifecycle};
-use zaino_runtime::{OrchestraBuilder, RuntimeOutcome, Serve, ServeComponent};
+use zaino_component::{CancellationToken, ComponentName, Lifecycle, ReadySignal};
+use zaino_runtime::{BootError, OrchestraBuilder, RuntimeOutcome, Serve, ServeComponent};
 
-/// A stub transport server: serves until cancelled, or fails to start if `fail`.
-/// Stands in for a real tonic / jsonrpsee server over a profile handle.
+/// A stub transport server with a scriptable behavior.
+enum Behavior {
+    /// Bind, report ready, serve until cancelled.
+    ServeUntilCancel,
+    /// Fail before binding (never reports ready).
+    FailToBind,
+    /// Report ready, then the serve loop dies.
+    FailAfterReady,
+}
+
 struct StubServer {
-    fail: bool,
+    behavior: Behavior,
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("stub server failed to start")]
+#[error("stub server failed")]
 struct StubError;
 
 impl Serve for StubServer {
     type Error = StubError;
 
-    async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<(), StubError> {
-        if self.fail {
-            return Err(StubError);
+    async fn serve(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        ready: ReadySignal,
+    ) -> Result<(), StubError> {
+        match self.behavior {
+            Behavior::FailToBind => Err(StubError),
+            Behavior::ServeUntilCancel => {
+                ready.notify();
+                cancel.cancelled().await;
+                Ok(())
+            }
+            Behavior::FailAfterReady => {
+                ready.notify();
+                Err(StubError)
+            }
         }
-        cancel.cancelled().await;
-        Ok(())
     }
 }
 
 #[tokio::test]
-async fn a_failing_server_escalates_and_is_fatal() {
-    let light = ServeComponent::new(ComponentName("light-serve"), StubServer { fail: false });
-    let node = ServeComponent::new(ComponentName("node-rpc"), StubServer { fail: true });
+async fn a_serve_loop_failure_after_ready_escalates_and_is_fatal() {
+    let light = ServeComponent::new(
+        ComponentName("light-serve"),
+        StubServer {
+            behavior: Behavior::ServeUntilCancel,
+        },
+    );
+    let node = ServeComponent::new(
+        ComponentName("node-rpc"),
+        StubServer {
+            behavior: Behavior::FailAfterReady,
+        },
+    );
 
     let orchestra = OrchestraBuilder::new()
         .boot(light.clone())
@@ -46,15 +72,12 @@ async fn a_failing_server_escalates_and_is_fatal() {
         .expect("boot light-serve")
         .boot(node.clone())
         .await
-        .expect("boot node-rpc")
+        .expect("boot node-rpc") // becomes Ready (notify), then its serve loop dies
         .build();
 
-    // Both reached Ready (readiness is a lifecycle fact; node's serve loop then
-    // fails, flipping its health rather than its phase).
     let phases: Vec<_> = orchestra.statuses().iter().map(|s| s.lifecycle).collect();
     assert_eq!(phases, vec![Lifecycle::Ready, Lifecycle::Ready]);
 
-    // node-rpc's serve task failed → Critical → escalation → fatal, naming it.
     let outcome = tokio::time::timeout(Duration::from_secs(1), orchestra.run())
         .await
         .expect("orchestra ran to a decision");
@@ -64,4 +87,19 @@ async fn a_failing_server_escalates_and_is_fatal() {
             component: ComponentName("node-rpc")
         }
     );
+}
+
+#[tokio::test]
+async fn a_bind_failure_fails_to_boot() {
+    let node = ServeComponent::new(
+        ComponentName("node-rpc"),
+        StubServer {
+            behavior: Behavior::FailToBind,
+        },
+    );
+    let result = OrchestraBuilder::new().boot(node).await;
+    assert!(matches!(
+        result,
+        Err(BootError::Unready(ComponentName("node-rpc")))
+    ));
 }

@@ -18,7 +18,8 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
 use zaino_component::{
-    ComponentName, ComponentStatus, Lifecycle, Managed, StatusSource, StatusWatch, Task, TaskName,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource, StatusWatch, Task,
+    TaskName,
 };
 
 use crate::signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
@@ -30,6 +31,10 @@ pub enum BootError<E: std::error::Error + Send + Sync + 'static> {
     /// The component's own `spawn` failed.
     #[error("component failed to spawn")]
     Spawn(#[source] E),
+    /// The component spawned but never became `Ready` — it failed to bind / come
+    /// up (its health went `Critical` before reaching `Ready`).
+    #[error("component '{0}' failed to become ready")]
+    Unready(ComponentName),
 }
 
 /// Boots components in order and wires their supervision.
@@ -62,7 +67,9 @@ impl OrchestraBuilder {
         C: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
     {
         component.spawn().await.map_err(BootError::Spawn)?;
-        await_ready(&component).await;
+        if !await_ready(&component).await {
+            return Err(BootError::Unready(component.status().name));
+        }
 
         let name = component.status().name;
         let handle: Arc<dyn StatusSource + Send + Sync> = Arc::new(component.clone());
@@ -99,7 +106,10 @@ impl OrchestraBuilder {
     where
         C: StatusSource + StatusWatch + Clone + Send + Sync + 'static,
     {
-        await_ready(&component).await;
+        // An observed component is confirmed live before it is handed here
+        // (e.g. the validator's `connect`), so it is already `Ready`; if it has
+        // since failed, the babysitter's `observe` will escalate it.
+        let _ = await_ready(&component).await;
 
         let name = component.status().name;
         let handle: Arc<dyn StatusSource + Send + Sync> = Arc::new(component.clone());
@@ -258,15 +268,20 @@ fn spawn_signals(
     (rx, task)
 }
 
-/// Wait until `component` reports `Ready` (or goes away).
-async fn await_ready<C: StatusWatch>(component: &C) {
+/// Wait until `component` reports `Ready` (returns `true`) or fails to come up —
+/// its health goes `Critical`, or it goes away (returns `false`).
+async fn await_ready<C: StatusWatch>(component: &C) -> bool {
     let mut status = component.subscribe();
     loop {
-        if status.borrow_and_update().lifecycle == Lifecycle::Ready {
-            return;
+        let current = *status.borrow_and_update();
+        if current.lifecycle == Lifecycle::Ready {
+            return true;
+        }
+        if current.health == Health::Critical {
+            return false;
         }
         if status.changed().await.is_err() {
-            return;
+            return false;
         }
     }
 }

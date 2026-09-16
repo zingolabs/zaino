@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use jsonrpsee::server::ServerBuilder;
-use zaino_component::{CancellationToken, Serve};
+use zaino_component::{CancellationToken, ReadySignal, Serve};
 use zaino_service::NodeRpcService;
 
 use crate::rpc::NodeRpcApiServer;
@@ -40,13 +40,19 @@ impl<S: NodeRpcService + Clone + 'static> JsonRpcServer<S> {
 impl<S: NodeRpcService + Clone + 'static> Serve for JsonRpcServer<S> {
     type Error = JsonRpcServeError;
 
-    async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<(), JsonRpcServeError> {
+    async fn serve(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        ready: ReadySignal,
+    ) -> Result<(), JsonRpcServeError> {
         // build() binds the socket, so a bind failure surfaces here as the
         // error rather than being swallowed inside the serve loop.
         let server = ServerBuilder::default()
             .build(self.bind)
             .await
             .map_err(|e| JsonRpcServeError::Start(e.to_string()))?;
+        // Bound — safe to report Ready.
+        ready.notify();
         let handle = server.start(self.handler.clone().into_rpc());
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -75,7 +81,7 @@ mod tests {
 
         let task = tokio::spawn({
             let cancel = cancel.clone();
-            async move { server.serve(cancel).await }
+            async move { server.serve(cancel, ReadySignal::new(|| {})).await }
         });
         // Let the server bind, then ask it to stop.
         tokio::task::yield_now().await;

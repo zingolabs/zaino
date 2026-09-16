@@ -8,8 +8,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
-use zaino_component::{CancellationToken, Serve};
+use zaino_component::{CancellationToken, ReadySignal, Serve};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 use zaino_service::LightServeService;
 
@@ -40,11 +41,20 @@ impl<S: LightServeService + Clone> GrpcServer<S> {
 impl<S: LightServeService + Clone + 'static> Serve for GrpcServer<S> {
     type Error = GrpcServeError;
 
-    async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<(), GrpcServeError> {
+    async fn serve(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        ready: ReadySignal,
+    ) -> Result<(), GrpcServeError> {
+        // Bind synchronously so a bind failure (EADDRINUSE) surfaces before we
+        // report Ready, rather than being swallowed inside the serve future (#1081).
+        let incoming = TcpIncoming::bind(self.bind)
+            .map_err(|e| GrpcServeError::Serve(format!("bind failed: {e}")))?;
+        ready.notify();
         let service = CompactTxStreamerServer::new(GrpcService::new(self.handler.clone()));
         Server::builder()
             .add_service(service)
-            .serve_with_shutdown(self.bind, async move { cancel.cancelled().await })
+            .serve_with_incoming_shutdown(incoming, async move { cancel.cancelled().await })
             .await
             .map_err(|e| GrpcServeError::Serve(e.to_string()))
     }
@@ -67,7 +77,7 @@ mod tests {
 
         let task = tokio::spawn({
             let cancel = cancel.clone();
-            async move { server.serve(cancel).await }
+            async move { server.serve(cancel, ReadySignal::new(|| {})).await }
         });
         tokio::task::yield_now().await;
         cancel.cancel();

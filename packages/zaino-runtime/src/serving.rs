@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 use zaino_component::{
-    ComponentName, ComponentStatus, Health, Lifecycle, Managed, Serve, StatusSource, StatusWatch,
-    Task, TaskName,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve, StatusSource,
+    StatusWatch, Task, TaskName,
 };
 
 /// A [`Serve`] server `A`, presented to the runtime as a component.
@@ -76,24 +76,30 @@ impl<A: Serve> Managed for ServeComponent<A> {
     type Error = std::convert::Infallible;
 
     async fn spawn(&self) -> Result<(), Self::Error> {
-        // Publish `Ready` before the serve task runs, so the task's own
-        // terminal transition (Offline on clean stop, Critical on failure)
-        // always follows Ready rather than racing it.
         self.status
             .send_modify(|s| s.lifecycle = Lifecycle::Spawning);
-        self.status.send_modify(|s| {
-            s.lifecycle = Lifecycle::Ready;
-            s.health = Health::Healthy;
+
+        // Report `Ready` only when the server has bound (fires `ReadySignal`),
+        // not optimistically here — so readiness never claims the socket is
+        // accepting before it is.
+        let ready_status = self.status.clone();
+        let ready = ReadySignal::new(move || {
+            ready_status.send_modify(|s| {
+                s.lifecycle = Lifecycle::Ready;
+                s.health = Health::Healthy;
+            });
         });
 
         let server = Arc::clone(&self.server);
         let status = self.status.clone();
         let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
-            match server.serve(cancel).await {
+            match server.serve(cancel, ready).await {
+                // Clean shutdown after the token fired.
                 Ok(()) => status.send_modify(|s| {
                     s.lifecycle = Lifecycle::Offline;
                     s.health = Health::Offline;
                 }),
+                // Bind failure (never became Ready) or a dead serve loop.
                 Err(_) => status.send_modify(|s| s.health = Health::Critical),
             }
         });
