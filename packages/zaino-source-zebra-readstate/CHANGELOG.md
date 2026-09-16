@@ -12,6 +12,9 @@ and this library adheres to Rust's notion of
 ### Deprecated
 ### Removed
 ### Fixed
+- A malformed transparent address passed to an address-keyed port is answered
+  with that port's `InvalidAddress` rejection, as the JSON-RPC adapter answers
+  it, instead of a `FailureMode::Parse` fetch failure.
 
 ## [0.2.0] - 2026-08-28
 

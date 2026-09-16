@@ -363,7 +363,10 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
         zaino_primitives::types::AddressBalance,
         QueryError<zaino_source::GetAddressBalanceError>,
     > {
-        let valid = parse_addresses(addresses)?;
+        let valid = parse_addresses(
+            addresses,
+            zaino_source::GetAddressBalanceError::InvalidAddress,
+        )?;
 
         match read(&self.state, ReadRequest::AddressBalance(valid)).await? {
             ReadResponse::AddressBalance { balance, received } => {
@@ -386,8 +389,11 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
 ///
 /// Rejection here is a domain error, not a transport one: the caller asked
 /// about something that is not an address, and retrying will not change that.
+/// `invalid` names the port's own rejection, which carries the first address
+/// that failed to parse.
 fn parse_addresses<E>(
     addresses: Vec<String>,
+    invalid: impl Fn(String) -> E,
 ) -> Result<std::collections::HashSet<zebra_chain::transparent::Address>, QueryError<E>>
 where
     E: std::fmt::Debug + std::fmt::Display,
@@ -395,14 +401,11 @@ where
     addresses
         .into_iter()
         .map(|address| {
+            // The parse error only restates that the input is not an address;
+            // the domain rejection carries the input itself.
             address
                 .parse::<zebra_chain::transparent::Address>()
-                .map_err(|e| {
-                    QueryError::Fetch(FetchError::new(
-                        FailureMode::Parse,
-                        format!("invalid transparent address `{address}`: {e}"),
-                    ))
-                })
+                .map_err(|_not_an_address| QueryError::Domain(invalid(address)))
         })
         .collect()
 }
@@ -425,7 +428,10 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
     {
         use zaino_primitives::types::{Script, TransparentAddress, Utxo, Zatoshis};
 
-        let valid = parse_addresses(addresses)?;
+        let valid = parse_addresses(
+            addresses,
+            zaino_source::GetAddressUtxosError::InvalidAddress,
+        )?;
 
         let response = read(&self.state, ReadRequest::UtxosByAddresses(valid)).await?;
         let utxos = match response {
@@ -506,7 +512,10 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
         }
 
         let request = ReadRequest::TransactionIdsByAddresses {
-            addresses: parse_addresses(addresses)?,
+            addresses: parse_addresses(
+                addresses,
+                zaino_source::GetAddressTxidsError::InvalidAddress,
+            )?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
         };
@@ -572,7 +581,10 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         }
 
         let request = ReadRequest::TransactionIdsByAddresses {
-            addresses: parse_addresses(addresses.clone())?,
+            addresses: parse_addresses(
+                addresses.clone(),
+                zaino_source::GetAddressDeltasError::InvalidAddress,
+            )?,
             height_range: zebra_chain::block::Height(u32::from(start))
                 ..=zebra_chain::block::Height(u32::from(end)),
         };
@@ -1425,6 +1437,31 @@ mod block_difficulty_tests {
         assert!(
             difficulty > 1.0,
             "a target below the network minimum must report difficulty above 1.0, got {difficulty}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod parse_addresses_tests {
+    use super::parse_addresses;
+    use zaino_source::{GetAddressBalanceError, QueryError};
+
+    /// A string that is not an address is the caller's mistake, answered as
+    /// the port's rejection rather than as a source failure.
+    #[test]
+    fn a_malformed_address_is_a_domain_rejection() {
+        let result = parse_addresses(
+            vec!["not-an-address".to_string()],
+            GetAddressBalanceError::InvalidAddress,
+        );
+
+        assert!(
+            matches!(
+                result,
+                Err(QueryError::Domain(GetAddressBalanceError::InvalidAddress(ref address)))
+                    if address == "not-an-address"
+            ),
+            "expected an InvalidAddress rejection, got {result:?}"
         );
     }
 }
