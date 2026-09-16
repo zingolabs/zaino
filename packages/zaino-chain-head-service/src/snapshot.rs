@@ -33,10 +33,9 @@ mod imbl_nonempty_wrappers;
 
 struct ImblBackedSnapshot {
     chains: imbl::HashSet<ImblNonEmptyVec<ChainHeadBlock>>,
-
     // Cloning the best chain is effectively free due to imbl
     // immutable data structure benefits
-    best_chain: ImblNonEmptyVec<ChainHeadBlock>,
+    // best_chain: ImblNonEmptyVec<ChainHeadBlock>,
 }
 
 impl ImblBackedSnapshot {
@@ -44,7 +43,6 @@ impl ImblBackedSnapshot {
         let chain = ImblNonEmptyVec::new(block);
         Self {
             chains: imbl::hashset![chain.clone()],
-            best_chain: chain,
         }
     }
 }
@@ -76,7 +74,7 @@ pub struct MapBackedSnapshot {
 impl ChainHeadSnapshot for ImblBackedSnapshot {
     fn best_tip(&self) -> BlockRef {
         // TODO: Move this logic to best_tip initialzation
-        self.best_chain
+        self.best_chain()
             .last()
             .expect("cannot create empty snapshot. TODO: make compile-time guarentee")
             .reference
@@ -92,7 +90,7 @@ impl ChainHeadSnapshot for ImblBackedSnapshot {
     fn block_by_hash(&self, hash: &BlockHash) -> Option<&ChainHeadBlock> {
         self.chains
             .iter()
-            .map(Vector::iter)
+            .map(ImblNonEmptyVec::iter)
             .flatten()
             .find(|block| block.reference.hash == *hash)
     }
@@ -124,7 +122,12 @@ impl ChainHeadSnapshot for ImblBackedSnapshot {
     }
 
     fn best_chain(&self) -> ChainHeadBlockIter<'_> {
-        ChainHeadBlockIter::new(self.best_chain.iter())
+        let best_chain = self
+            .chains
+            .iter()
+            .max_by_key(|chain| chain.last().work)
+            .expect("TODO: nonemptyify");
+        ChainHeadBlockIter::new(best_chain.iter())
     }
 
     fn best_chain_blocks(
