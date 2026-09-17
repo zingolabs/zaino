@@ -6,8 +6,13 @@
 //! here is a difference in the code, not in the machine.
 //!
 //! ```text
-//! cargo bench -p zaino-chain-head-service --features testing --bench allocations
+//! cargo bench -p zaino-chain-head-service --features testing --bench allocations \
+//!     -- --noplot
 //! ```
+//!
+//! `--noplot` is required, not a preference: these measurements are exactly
+//! constant across samples, and criterion's plotting works from a kernel
+//! density estimate, which panics on a sample with no variance.
 //!
 //! Counting is not free, and it taxes the allocation-heavy side hardest, so
 //! **times measured here mean nothing**; `publication.rs` measures those,
