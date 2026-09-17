@@ -44,8 +44,21 @@ tracing = { workspace = true }
 metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "test-util"] }
+
+# The library has no benchmarks of its own; without this, `cargo bench` runs
+# the test harness too and it rejects the benchmark's arguments.
+[lib]
+bench = false
+
+# Drives the published service through its stepping entry points, so it needs
+# the same feature a downstream test crate does.
+[[bench]]
+name = "publication"
+harness = false
+required-features = ["testing"]
 
 [lints.rust]
 unsafe_code = "forbid"
