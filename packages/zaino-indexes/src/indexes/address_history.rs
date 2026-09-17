@@ -109,12 +109,16 @@ impl ExtractLocal for AddressHistoryIndex {
         for (txid, outputs) in &ctx.txs {
             for (out_index, (value, script)) in outputs.iter().enumerate() {
                 let (hash, script_type) = classify_script(&Vec::<u8>::from(script.clone()));
+                // A transaction's output count is bounded by the block-size
+                // consensus limit, so it always fits u32 — an invariant, not a
+                // runtime error to map lossily.
+                let output_index = OutputIndex::try_from(out_index)
+                    .expect("output index fits u32 (block-size bound)");
                 receives.push(AddressReceive {
                     addr: AddrId { script_type, hash },
                     height: ctx.height,
                     txid: *txid,
-                    output_index: OutputIndex::try_from(out_index)
-                        .map_err(|_| ExtractError::Failed("output index exceeds u32".into()))?,
+                    output_index,
                     value: *value,
                 });
             }
