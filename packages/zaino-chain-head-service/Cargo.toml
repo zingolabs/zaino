@@ -7,6 +7,9 @@ homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
 version = "0.1.0"
+# The benchmarks share `benches/harness.rs`, which is a module rather than a
+# target of its own; without this, cargo would build it as one.
+autobenches = false
 
 [features]
 default = []
@@ -44,8 +47,28 @@ tracing = { workspace = true }
 metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
+stats_alloc = "0.1.10"
 tokio = { workspace = true, features = ["macros", "test-util"] }
+
+# The library has no benchmarks of its own; without this, `cargo bench` runs
+# the test harness too and it rejects the benchmark's arguments.
+[lib]
+bench = false
+
+# Drives the published service through its stepping entry points, so it needs
+# the same feature a downstream test crate does.
+[[bench]]
+name = "publication"
+harness = false
+required-features = ["testing"]
+
+# The same scenarios counted in allocations rather than timed.
+[[bench]]
+name = "allocations"
+harness = false
+required-features = ["testing"]
 
 [lints.rust]
 unsafe_code = "forbid"
