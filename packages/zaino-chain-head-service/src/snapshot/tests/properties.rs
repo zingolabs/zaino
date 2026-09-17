@@ -14,7 +14,8 @@ use zaino_primitives::types::{rpc::ChainTipStatus, BlockHash, BlockRef};
 
 use super::chain_head_block;
 use crate::{
-    snapshot::{MapBackedSnapshot, NotChildOfTip, NotOnBestChain},
+    graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
+    snapshot::MapBackedSnapshot,
     tests::{best_chain_hashes, hash, height},
 };
 

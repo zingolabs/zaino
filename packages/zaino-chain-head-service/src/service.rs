@@ -55,7 +55,8 @@ use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
-    snapshot::{MapBackedSnapshot, NotChildOfTip, NotOnBestChain},
+    graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
+    snapshot::MapBackedSnapshot,
     subscriber::ChainHeadSubscriber,
 };
 

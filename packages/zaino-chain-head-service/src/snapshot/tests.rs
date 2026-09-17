@@ -8,8 +8,11 @@
 use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot as _, ChainHeadWork};
 use zaino_primitives::types::TreeRoots;
 
-use super::{MapBackedSnapshot, NotChildOfTip, NotOnBestChain};
-use crate::tests::{best_chain_hashes, block, hash, height};
+use super::MapBackedSnapshot;
+use crate::{
+    graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
+    tests::{best_chain_hashes, block, hash, height},
+};
 
 mod invariants;
 mod properties;
