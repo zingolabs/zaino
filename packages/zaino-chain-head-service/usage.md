@@ -142,7 +142,10 @@ If you touch that comparison, keep it strict.
 It is this crate's `ChainHeadSnapshot` implementation and the only place the
 graph's representation is decided. Consumers name the trait.
 
-Replacing it — persistent structures sharing unchanged subtrees between publishes
-rather than maps cloned on each one — is a change to this crate alone, and that
-is the arrangement to protect. Do not let a consumer come to depend on the
-concrete type.
+Replacing it is a change to this crate alone, and that is the arrangement to
+protect. Do not let a consumer come to depend on the concrete type.
+
+It holds the graph in `imbl`'s persistent collections, so publishing a snapshot
+shares structure with the previous one rather than copying every block. The
+benchmarks under `benches/` measure that: `cargo bench -p
+zaino-chain-head-service --features testing`.

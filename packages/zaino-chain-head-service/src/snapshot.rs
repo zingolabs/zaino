@@ -1,14 +1,18 @@
-//! A map-backed implementation of the ChainHead view.
+//! The ChainHead view, held in persistent collections.
 //!
 //! The graph's only stored edge is each block's parent hash. Everything else —
 //! which blocks are tips, how far a branch is from the canonical chain, where a
 //! transaction sits — is derived by walking that edge.
 //!
+//! The collections are `imbl`'s, and blocks sit behind [`Arc`], so a clone
+//! shares its structure with the graph it came from rather than copying every
+//! block. The service clones the published graph once per publication and
+//! readers keep earlier ones alive, so that is the cost that decides what a
+//! chain head is worth: see this crate's benchmarks.
+//!
 //! The representation lives here rather than in `zaino-chain-head` on purpose:
 //! `ChainHeadSnapshot` is a capability, and how the graph is stored is this
-//! runtime's business. A future runtime holding the same graph in persistent
-//! structures — sharing unchanged subtrees between snapshots instead of cloning
-//! maps on every publish — implements the same trait, and no consumer notices.
+//! runtime's business.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -41,7 +45,8 @@ fn tx_index(position: usize) -> TxIndex {
         .expect("a block's transaction count fits TxIndex; consensus bounds it below u32::MAX")
 }
 
-/// The retained graph: its tip, and every other retained block in a hash map.
+/// The retained graph: its tip, and every other retained block in a persistent
+/// hash map.
 ///
 /// `retained = {tip} ⊎ others`
 ///
