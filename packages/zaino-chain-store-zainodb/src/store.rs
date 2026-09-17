@@ -335,10 +335,8 @@ impl FetchedBlock {
     /// Lets a caller fold the cumulative chainwork over a run of already-fetched blocks before
     /// assembling any of them — the fold is the only ordering constraint in block building, and it
     /// is pure integer arithmetic, so it must not hold the expensive conversion in block order.
-    pub(crate) fn block_work(&self) -> Result<crate::types::SingleBlockWork, StoreError> {
-        let hash = crate::types::BlockHash(self.block.header.hash.into());
-        crate::conversion::block_work(self.block.header.bits, hash)
-            .map_err(|error| inconsistent(error.to_string()))
+    pub(crate) fn block_work(&self) -> crate::types::SingleBlockWork {
+        self.block.header.bits.to_work()
     }
 }
 
