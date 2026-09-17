@@ -3,7 +3,7 @@
 ## Status
 
 Authoritative statement of Zaino's branching, gating, versioning, changelog,
-and release policy. **Supersedes [zingolabs ADR 003](#relationship-to-adr-003)**
+and release policy. **Supersedes [org record 003](#relationship-to-adr-003)**
 (deprecated). Inherited ADR-003 rules that this document does not change are
 reproduced verbatim under [Cross References](#cross-references).
 
@@ -19,7 +19,7 @@ reproduced verbatim under [Cross References](#cross-references).
   travels with the *what*.
 - **(prior) — periodic release flow.** Resolved ADR 003's deferred cadence and
   RC-validation TODOs. Superseded; kept as
-  [ADR-0015](../adr/0015-periodic-release-flow.md).
+  [ADR-0015](../adr/zaino/0015-periodic-release-flow.md).
 
 ## Framing Principle
 
@@ -64,7 +64,7 @@ list mirrors it.
 
 ### Relationship to ADR 003
 
-[Zingolabs ADR 003](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md)
+[Org record 003](../adr/003-zaino-branching-versioning-and-release-strategy.md)
 previously stated Zaino's branching, versioning, changelog, public-interface,
 and release policy at the level of the broader zingolabs organization. That ADR
 explicitly deferred two items: a fixed release cadence ("A stable release
@@ -73,20 +73,18 @@ validating release candidates (a TODO in its "Release steps" and an entry in
 its "Actions" list). This document resolves both, and revises the branch and
 gate model beyond what ADR 003 described.
 
-**Governance principle**: a decision record versioned alongside the code it
-governs is authoritative over a decision record held in a separate, generic
-repository. Release policy, branching rules, and public-interface governance
-are only meaningful relative to a specific state of the code; divorcing them
-from the `Cargo.toml`, `CODEOWNERS`, and crate graph they constrain makes the
-policy impossible to evolve coherently (a change to the governed public-item
-list in one repo has no way to land atomically with the code change it
-describes in another). This ADR therefore **supersedes ADR 003** as the
-authoritative statement of Zaino's branching, versioning, public-interface,
-changelog, and release policy. ADR 003 is **deprecated**; the text this
-document inherits from it is reproduced verbatim under [Cross
+**Governance principle**: the specification of governed behaviour travels
+with the code it governs. Release policy, branching rules, and
+public-interface governance are only meaningful relative to a specific state
+of the code, so this document, revised in place beside the `Cargo.toml`,
+`CODEOWNERS`, and crate graph it constrains, is the authoritative statement
+of them. The decision that adopted it is
+[ADR-0016](../adr/zaino/0016-changeset-derived-release-pipeline.md), which **supersedes org record 003**. Both
+records live in zingo-adrs, reached through the submodule at `docs/adr/`.
+The text this document inherits from 003 is reproduced verbatim under [Cross
 References](#cross-references) with per-section back-references to the
-original. Future changes to any of these rules should be made here, not in
-zingo-adrs.
+original. Future changes to any of these rules are made here; a change of
+decision gets a new record in zingo-adrs.
 
 ## Two Axes: Test Taxonomy vs. Gates
 
@@ -173,15 +171,9 @@ of them:
 
 - `rc-gate` signal — any producer that posts a `success` check-run/commit-status
   with context `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the tested
-  commit. `CI - Nightly` (`ci-nightly.yaml`) carries a reference producer: it runs
-  the full suite (the complete `nextest` run plus check/fmt/clippy/doc/whitespace/
-  cargo-hack) and, once every job is green, its `publish-rc-gate-signal` job posts
-  that status. **Caveat (current):** those suite jobs run on self-hosted
-  `arc-sh-runners`, of which there are none right now — so the publish job's
-  `needs` are unmet and no signal is produced (the gate simply won't advance
-  without `force`; no false green). The anticipated real producer is a **cluster
-  job driven by `ztest`** that runs the suite and posts the same status; when it
-  lands it becomes the publisher with no change to the gate. `GITHUB_TOKEN`
+  commit. **No producer is wired yet** (the gate won't advance without `force`).
+  The anticipated producer is a **cluster job driven by `ztest`** that runs the
+  live suite and posts the status; it lands with no change to the gate. `GITHUB_TOKEN`
   suffices for whichever producer runs inside Actions — the gate only reads.
 - `release-gate` (deployment) signal — normally the cluster deployment gate posts
   a `deployment_status` back (poller → live-chain WorkflowTemplate). The manual
@@ -239,10 +231,9 @@ network-flaky — they are `rc`-tier on provisioning cost, not on flakiness.
 
 **The manifest (contract 1 — committed, first cut).** One declarative artifact
 maps each nextest-realized gate to a selection. It is the single source of truth
-the runner *and* CI read; nothing else enumerates tests. Lives at
-`.release/gate-suites.toml`, sibling to `.release/consumed-ledger.toml`; no
-consumer reads it yet (wired when the runner lands), but the classification is
-now data rather than scattered YAML. `release-gate` is intentionally absent — not
+the runner *and* CI read; nothing else enumerates tests. It lands at
+`.release/gate-suites.toml`, sibling to `.release/consumed-ledger.toml`, together
+with the runner that reads it. `release-gate` is intentionally absent — not
 a nextest suite; it answers via `deployment_status` from the devops repo.
 
 ```toml
@@ -295,7 +286,7 @@ When (and only when) a second live producer exists, that shape is a thin
   "commit":     "<sha>",
   "gate":       "rc-gate",
   "verdict":    "success | failure",
-  "producer":   "ztest | ci-nightly | deployment-soak",
+  "producer":   "ztest | deployment-soak",
   "detail_ref": "<url to the run / junit / soak dashboard>",
   "at":         "<iso8601>"
 }
@@ -742,7 +733,8 @@ crates. The release CLI needs the opposite — real dependencies (`toml_edit`,
 `semver`, `serde`/`toml`) and a subcommand router (`clap`) so `changeset` /
 `bump` / `changelog` operations can share the crate-graph logic. Adding those to
 `workbench` would break its documented "tiny, never touch the production graph"
-contract. Instead, a **new sibling crate under `tools/`** (e.g. `tools/relman`)
+contract. Instead, a **separate tool, `relman`** (now its own repository,
+[zingolabs/release_manager](https://github.com/zingolabs/release_manager))
 **copies workbench's isolation pattern** — its own workspace, `publish = false`,
 fmt/clippy/tested in CI — but is a clap-based multi-subcommand binary carrying
 the release deps. That isolation is exactly what licenses using those crates
@@ -760,12 +752,11 @@ replacement):
 
 | Workflow | Verdict |
 | -------- | ------- |
-| `auto-tag-rc.yml` | **keep until cutover** — derives version from the `rc/<version>` branch name; gated off by `RELMAN_PIPELINE_ACTIVE=true`, delete afterwards |
-| `final-tag-on-stable.yml` | **keep until cutover** — same branch-name→version coupling; gated off by `RELMAN_PIPELINE_ACTIVE=true`, replaced by blessing-time tagging from changesets |
-| `release.yaml` | **reworked** — also fires on the `zainod-X.Y.Z` provenance tag and takes the image version from it; the GitHub Release job runs only for legacy tags |
-| `publish-dry-run.yml` + `check-published-versions` | **kept** — blocking on `stable` pushes, advisory elsewhere (`rc` is version-agnostic); the Rust guard also runs in blessing's pre-flight |
-| `ci.yml`, `ci-nightly.yaml` | **rework** into the `dev`-gate and `rc`-gate suite runners |
-| `compute-tag.yml`, `build-n-push-ci-image.yaml`, `trigger-integration-tests.yml`, `shellcheck.yaml` | **keep** — orthogonal to release versioning |
+| `auto-tag-rc.yml`, `final-tag-on-stable.yml` | **deleted** — `rc-gate` / blessing tag via `relman tags` |
+| `release.yaml` | **reworked** — images only, on the `zainod-X.Y.Z` provenance tag; blessing owns the GitHub Release |
+| `publish-dry-run.yml` | **deleted** — blessing's pre-flight runs `check-published-versions` + a per-crate `cargo publish --dry-run` over `relman publish-plan` |
+| `ci.yml` | **rework** into the `dev`-gate suite runner |
+| `trigger-integration-tests.yml` | **keep** — orthogonal to release versioning |
 
 ## Open Questions (deferred to the build slice)
 
@@ -860,21 +851,20 @@ needed. `release-ready` says "eligible to ship," not "shipped."
 
 ## Cross References
 
-This ADR inherits a body of rules from [zingolabs ADR
-003](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md).
+This document inherits a body of rules from [org record
+003](../adr/003-zaino-branching-versioning-and-release-strategy.md).
 The inherited text is reproduced here verbatim so that the authoritative
 statement of each rule travels with the code it governs. Each subsection
 attributes the source section of ADR 003.
 
-**ADR 003 is deprecated** by this document, per the governance principle in
-[Relationship to ADR 003](#relationship-to-adr-003): a repo-bound,
-version-bound decision record supersedes a generic cross-repo decision record
-on matters specific to this repo. Future changes to any rule below must be
-made in this file, not in `zingolabs/zingo-adrs`.
+**Org record 003 is superseded** by [ADR-0016](../adr/zaino/0016-changeset-derived-release-pipeline.md), per the
+governance principle in [Relationship to ADR 003](#relationship-to-adr-003).
+Future changes to any rule below are made in this file; a change of decision
+gets a new record in zingo-adrs.
 
 ### Branching and approvals (inherited from ADR 003 §1)
 
-From [ADR 003 §1, "Branch / development strategy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#1-branch--development-strategy):
+From [ADR 003 §1, "Branch / development strategy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
 
 > **Branches**
 > - `dev`: primary development branch (default branch).
@@ -905,7 +895,7 @@ authoritative.
 
 ### CI test execution (refined by this ADR)
 
-From [ADR 003 §1, "CI / test execution rules"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#1-branch--development-strategy):
+From [ADR 003 §1, "CI / test execution rules"](../adr/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
 
 > - PRs into `dev`: run a **fast test set** (unit tests where available, small subset of integration tests included while unit tests are missing).
 > - Nightly on `dev`: run the **full test suite**.
@@ -937,14 +927,14 @@ a synchronous PR on days-long operations.
 
 ### Dependency policy (inherited from ADR 003 §1)
 
-From [ADR 003 §1, "Dependency rules"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#1-branch--development-strategy):
+From [ADR 003 §1, "Dependency rules"](../adr/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
 
 > All non-test dependencies must be crates.io imports on stable.
 > Dev may temporarily use feature branches via `[patch.crates-io]`.
 
 ### Versioning semantics (inherited from ADR 003 §2)
 
-From [ADR 003 §2, "Versioning strategy (SemVer)"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#2-versioning-strategy-semver-and-what-it-means-in-zaino):
+From [ADR 003 §2, "Versioning strategy (SemVer)"](../adr/003-zaino-branching-versioning-and-release-strategy.md#2-versioning-strategy-semver-and-what-it-means-in-zaino):
 
 > Zaino follows **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`.
 >
@@ -976,7 +966,7 @@ From [ADR 003 §2, "Versioning strategy (SemVer)"](https://github.com/zingolabs/
 
 ### Documentation publication (inherited from ADR 003 §3)
 
-From [ADR 003 §3, "GitHub Pages + crates.io documentation update strategy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#3-github-pages--cratesio-documentation-update-strategy):
+From [ADR 003 §3, "GitHub Pages + crates.io documentation update strategy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#3-github-pages--cratesio-documentation-update-strategy):
 
 > **Docs targets**
 > - **GitHub Pages (gh-pages)**: the canonical "workspace documentation" site.
@@ -992,7 +982,7 @@ until that is automated.
 
 ### Changelog policy (inherited from ADR 003 §4)
 
-From [ADR 003 §4, "Changelog policy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#4-changelog-policy):
+From [ADR 003 §4, "Changelog policy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#4-changelog-policy):
 
 > **Changelog locations**
 > - **Workspace changelog:** one primary changelog for the repository/workspace (covers cross-cutting changes and release-level summaries).
@@ -1014,7 +1004,7 @@ cadence.
 
 ### Governed public interfaces (inherited from ADR 003 §5)
 
-From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#5-public-interfaces-governed-by-this-adr-and-officially-supported-in-zaino):
+From [ADR 003 §5, "Public interfaces governed by this ADR"](../adr/003-zaino-branching-versioning-and-release-strategy.md#5-public-interfaces-governed-by-this-adr-and-officially-supported-in-zaino):
 
 > This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
 
@@ -1161,4 +1151,4 @@ are resolved in the body of this document:
 - **Release steps** — [Blessing: the Only Human Decision](#blessing-the-only-human-decision)
 - **Container image publication** — follows ADR 003 §6 step 7: images MUST be tagged with the release version (`vMAJOR.MINOR.PATCH`) and SHOULD also be tagged with the Git commit SHA (see [Release Identity](#release-identity-versions-tags-changesets)).
 
-Source: [ADR 003 §6, "Release strategy"](https://github.com/zingolabs/zingo-adrs/blob/dev/ADR%20003-Zaino%20Branching%2C%20Versioning%2C%20Documentation%2C%20Public%20Interfaces%2C%20and%20Release%20Strategy.md#6-release-strategy).
+Source: [ADR 003 §6, "Release strategy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#6-release-strategy).

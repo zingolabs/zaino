@@ -34,6 +34,7 @@ mod transaction_location;
 mod transparent_address;
 mod tree_root;
 mod tree_roots;
+mod tree_size;
 mod treestate;
 mod tx_out_set_info;
 mod utxo;
@@ -43,8 +44,7 @@ mod zatoshis;
 pub use address_balance::AddressBalance;
 pub use address_delta::AddressDelta;
 pub use aliases::{
-    BlockTime, Confirmations, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TreeSize,
-    TxIndex,
+    BlockTime, Confirmations, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TxIndex,
 };
 pub use block::{Block, BlockError, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
@@ -81,6 +81,7 @@ pub use transaction_location::TransactionLocation;
 pub use transparent_address::TransparentAddress;
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
+pub use tree_size::{TreeSize, TreeSizeOutOfRange};
 pub use treestate::{PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
