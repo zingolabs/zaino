@@ -9,7 +9,6 @@ use zaino_primitives::types::TreeRoots;
 use super::{best_chain_hashes, block, hash, height};
 use crate::snapshot::{MapBackedSnapshot, NotChildOfTip, NotOnBestChain};
 
-mod invariants;
 mod properties;
 
 /// A retained block carrying `work`, independent of its parent's.

@@ -12,10 +12,7 @@ use proptest::{prelude::*, test_runner::TestCaseError};
 use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::{rpc::ChainTipStatus, BlockHash, BlockRef};
 
-use super::{
-    chain_head_block,
-    invariants::{check_invariants, retained_hashes},
-};
+use super::chain_head_block;
 use crate::{
     snapshot::{MapBackedSnapshot, NotChildOfTip, NotOnBestChain},
     tests::{best_chain_hashes, hash, height},
@@ -122,7 +119,7 @@ fn fingerprint(graph: &MapBackedSnapshot) -> (BlockRef, Vec<BlockHash>, HashSet<
     (
         graph.best_tip(),
         best_chain_hashes(graph),
-        retained_hashes(graph),
+        graph.retained_hashes(),
     )
 }
 
@@ -233,14 +230,14 @@ fn apply(
 }
 
 fn check(graph: &MapBackedSnapshot, model: &Model) -> Result<(), TestCaseError> {
-    check_invariants(graph).map_err(TestCaseError::fail)?;
+    graph.check_invariants().map_err(TestCaseError::fail)?;
 
     let tip_id = model.tip_id();
     prop_assert_eq!(graph.best_tip(), model.reference(tip_id));
     let chain: Vec<BlockHash> = model.chain.iter().map(|id| hash(*id)).collect();
     prop_assert_eq!(best_chain_hashes(graph), chain);
     let retained: HashSet<BlockHash> = model.retained.keys().map(|id| hash(*id)).collect();
-    prop_assert_eq!(retained_hashes(graph), retained.clone());
+    prop_assert_eq!(graph.retained_hashes(), retained.clone());
     prop_assert_eq!(graph.retained_block_count(), model.retained.len());
 
     let max_work = model
