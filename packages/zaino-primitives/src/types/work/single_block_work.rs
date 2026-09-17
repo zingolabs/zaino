@@ -14,22 +14,10 @@ use core::num::NonZeroU128;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SingleBlockWork(NonZeroU128);
 
-/// Error when a work value is zero.
-///
-/// Zero is not a work value. It signals an integer that is not work at all — an
-/// unset field, a corrupt row — so it is refused rather than accepted as a
-/// smallest element that would sort below every real chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("work is strictly positive; zero is not a work value")]
-pub struct ZeroWork;
-
 impl SingleBlockWork {
-    /// Create a block work value, rejecting zero.
-    ///
-    /// Takes a work integer that has already been computed, normally by a
-    /// consensus implementation's difficulty-to-work conversion.
-    pub fn try_new(value: u128) -> Result<Self, ZeroWork> {
-        NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
+    /// Wraps an already non-zero block work value.
+    pub const fn new(value: NonZeroU128) -> Self {
+        Self(value)
     }
 
     /// The raw value, for the relations that fold it into a chain total.
@@ -62,14 +50,11 @@ impl fmt::Display for SingleBlockWork {
 mod tests {
     use super::*;
 
-    #[test]
-    fn zero_is_rejected() {
-        assert_eq!(SingleBlockWork::try_new(0), Err(ZeroWork));
-    }
+    const SAMPLE: NonZeroU128 = NonZeroU128::new(0x1f1f).expect("nonzero literal");
 
     #[test]
     fn nonzero_round_trips() {
-        let work = SingleBlockWork::try_new(0x1f1f).expect("nonzero");
-        assert_eq!(NonZeroU128::from(work).get(), 0x1f1f);
+        let work = SingleBlockWork::new(SAMPLE);
+        assert_eq!(NonZeroU128::from(work), SAMPLE);
     }
 }

@@ -54,10 +54,12 @@ impl fmt::Display for RelativeChainWork {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU128;
+
     use super::*;
 
     fn block(value: u128) -> SingleBlockWork {
-        SingleBlockWork::try_new(value).expect("test value must be nonzero")
+        SingleBlockWork::new(NonZeroU128::new(value).expect("test value must be nonzero"))
     }
 
     fn run(values: [u128; 2]) -> RelativeChainWork {
