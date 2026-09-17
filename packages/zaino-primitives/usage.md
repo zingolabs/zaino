@@ -56,7 +56,13 @@ Types enforce what they claim:
 ```rust
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
+let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
 ```
+
+A transaction's position is the block's to know, not the transaction's:
+`Transaction` stores no index, and coinbase-ness is read from block order via
+`Block::coinbase()` (position 0), never from a per-transaction field that could
+disagree with the container.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the
@@ -71,65 +77,86 @@ ADR-0013 for the doctrine.
 
 | type | range | is |
 |---|---|---|
-| `Zatoshis` | `0 ..= supply` | an amount held — a balance, a UTXO value |
+| `Zatoshis` | `0 ..= supply` | an amount of ZEC counted in zatoshis — a balance, a UTXO value, a single movement |
 | `ZatoshisFlowSum` | `0 ..= u128::MAX` | an accumulation of movements, **not** supply-bounded |
 | `SignedZatoshis` | `-supply ..= supply` | a signed value: a movement or a difference |
 
 A sum of *movements* — every output paying an address, every input it spent —
 counts the same coins each time they move, so it is not bounded by the supply;
 that is why it is its own type and not another `Zatoshis`. A sum of *coexisting*
-balances would be supply-bounded, and is a real fourth member of this family,
-but has no consumer yet and is not built (it is named in the arithmetic
-module's docs).
+balances stays supply-bounded — coins that coexist cannot total more than
+exist — so that precondition keeps the total inside `Zatoshis` and there is no
+fourth type: that sum is the operation `Zatoshis::sum_balances`, a checked fold
+landing back in `Zatoshis`. The set of `Zatoshis` is still not closed under
+addition; the fold refuses a total past the supply rather than pretend the
+precondition held.
 
 The operations relate the types and live beside them:
 
 ```rust
 use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
 
-// Sum amounts as flow. `None` only on machine overflow (unreachable in
+// Sum amounts as flow. `None` only past `u128::MAX` (unreachable in
 // practice), never on passing the supply — gross flow legitimately can.
 let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
 let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
 
+// Adopt a flow total a backend delivered already summed as a u64.
+// Infallible: a u64 always fits the u128 accumulator, and u128::MAX
+// is the flow sum's only bound.
+let lifetime = ZatoshisFlowSum::from_summed(received_total);
+
 // Net of a received flow minus a spent flow for one balance, as a signed
 // value. `None` if the two flows don't describe a coherent balance.
 let net: Option<SignedZatoshis> = received.net(spent);
+
+// Sum balances that coexist at one moment. Supply-capped, and under that
+// precondition the total lands back in `Zatoshis`. `None` means the total
+// passed the supply, which under the coexistence contract is overlapping or
+// double-counted input, not a large number.
+let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
 ```
 
-`ZatoshisFlowSum` has no other constructor: a flow sum is only ever the checked
-sum of some amounts. `SignedZatoshis` has two validated doors and no unchecked
-one — `ZatoshisFlowSum::net` for a value *derived* in the domain, and
-`SignedZatoshis::try_new` for one *parsed at a boundary* (a movement read off the
-wire or disk). `try_new` is the external-input validation step for a signed
-value, the
-same discipline the crate applies at every wire and persistence boundary,
-pushed down to the primitive.
+`ZatoshisFlowSum` has two validated doors and no unchecked one:
+`try_accumulate` for a total *derived* in the domain as the checked sum of
+some amounts, and `from_summed` for a total a source *delivers already
+summed*. `SignedZatoshis` likewise — `ZatoshisFlowSum::net` for a value
+*derived* in the domain, and `SignedZatoshis::try_new` for one *parsed at a
+boundary* (a movement read off the wire or disk). `try_new` is the
+external-input validation step for a signed value, the same discipline the
+crate applies at every wire and persistence boundary, pushed down to the
+primitive.
 
 ## The work quantity family
 
-The same doctrine, applied to proof-of-work. Two quantities share the unit and
-are not interchangeable:
+Two quantities share the proof-of-work unit and are not interchangeable:
 
 | type | is |
 |---|---|
-| `BlockWork` | the expected work of **one** block, from its difficulty target |
-| `ChainWork` | **cumulative** work at a block — the fold of block works along its chain; `Ord`, because comparing it *is* chain selection |
+| `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
+| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
 
-Both are strictly positive. The fold is the algebra, in the `work::arithmetic`
-module: `ChainWork::genesis(block_work)` seeds it (genesis's cumulative work is
-its own block work), `accumulate` extends it, `rollback` unwinds it on reorg —
-each checked, with a typed error. There is deliberately no
-`ChainWork + ChainWork`: no chain is the concatenation of two chains.
+Each fold is a method on the type it returns, and each is checked:
 
-Boundary doors on `ChainWork`: `try_from_reported` reads the 32 big-endian
-bytes a validator reports — all-zero is `Ok(None)` ("not reported"; absence is
-`Option`, never a zero sentinel) and a value past the recorded 128 bits is
-refused rather than truncated — and `to_be_bytes` renders back for the wire.
-`try_new` / `BlockWork::try_new` take an already-computed integer and enforce
-only the non-zero bound.
+```rust,ignore
+// A chain of one block has that block's work.
+let mut total = AbsoluteChainWork::genesis(block_work);
 
-### Where `BlockWork` comes from: `CompactDifficulty`
+// Extend by one block; unwind one on reorg. Both checked, with typed errors.
+total = total.accumulate(next_block_work)?;
+total = total.rollback(next_block_work)?;
+```
+
+`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
+sends, and answers `Ok(None)` when the validator does not track the value;
+`to_be_bytes` renders back for the wire. For an integer you already hold, use
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+
+The `types::work` module documentation covers why these are separate
+types, and what `AbsoluteChainWork` is *not* — in particular
+`zaino-chain-head`'s anchor-relative work, which is a third quantity.
+
+### Where `SingleBlockWork` comes from: `CompactDifficulty`
 
 The nBits encoding from the block header is its own validated type,
 `CompactDifficulty`, and the whole bits → target → work conversion is native
@@ -141,16 +168,14 @@ Construction is only through checked doors — `try_from_bits(u32)` for a value
 carried numerically, `try_from_be_bytes([u8; 4])` for one carried as its
 display-order bytes. Both apply the acceptance set a validator enforces before
 comparing a hash (clear sign bit, target within 256 bits, non-zero target),
-with one typed `CompactDifficultyError` variant per rejected rule. `as_bits`
+plus one domain rule: the target's work must fit the 128 bits work is recorded
+in. Each rejected rule has its own `CompactDifficultyError` variant. `as_bits`
 reads the raw `u32` back out for wire and persistence renders.
 
-`to_work()` derives the block's `BlockWork` — `floor(2^256 / (target + 1))` —
-and stays fallible on a *valid* encoding: validity is a property of the
-256-bit target, but work is recorded in 128 bits, and the encoding admits
-targets below `2^128` whose work does not fit. No block from a real chain
-trips `WorkOverWidth`; a value that does did not come from one. The expanded
-256-bit target itself never leaves the type: no consumer reasons about
-targets, only about validity and work.
+The work — `floor(2^256 / (target + 1))` — is computed once at construction,
+so `to_work()` is an infallible getter returning the block's
+`SingleBlockWork`. The expanded 256-bit target itself never leaves the type:
+no consumer reasons about targets, only about validity and work.
 
 ## Confirmation state
 

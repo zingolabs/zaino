@@ -132,7 +132,7 @@ mod tests {
 
     /// The largest amount the protocol allows, so two of them on one side
     /// exceed the supply magnitude a net delta may hold.
-    const MAX: u64 = 21_000_000 * 100_000_000;
+    const MAX: u64 = Zatoshis::MAX.as_u64();
 
     fn amount(value: u64) -> StoredTxOut {
         StoredTxOut::new(

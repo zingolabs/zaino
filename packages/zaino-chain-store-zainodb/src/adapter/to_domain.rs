@@ -171,7 +171,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
             .map(stored_compact_tx)
             .collect::<Result<Vec<_>, _>>()?,
         tree_roots: tree_roots(&block.commitment_tree_data),
-        chainwork: *context.chainwork(),
+        chainwork: context.chainwork(),
     })
 }
 
@@ -331,15 +331,15 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     TreeRoots {
         sapling: Some(TreeRootInfo {
             root: (*roots.sapling()).into(),
-            size: u64::from(sizes.sapling()),
+            size: sizes.sapling().into(),
         }),
         orchard: Some(TreeRootInfo {
             root: (*roots.orchard()).into(),
-            size: u64::from(sizes.orchard()),
+            size: sizes.orchard().into(),
         }),
         ironwood: roots.ironwood().map(|root| TreeRootInfo {
             root: root.into(),
-            size: u64::from(sizes.ironwood()),
+            size: sizes.ironwood().into(),
         }),
     }
 }

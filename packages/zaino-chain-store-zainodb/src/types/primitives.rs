@@ -12,5 +12,5 @@ pub use block_index::BlockIndex;
 // persists the same quantities every other layer reads, so there is nothing
 // store-specific to add to them.
 pub use zaino_primitives::types::{
-    BlockWork, ChainWork, CompactDifficulty, CompactDifficultyError,
+    AbsoluteChainWork, CompactDifficulty, CompactDifficultyError, SingleBlockWork,
 };

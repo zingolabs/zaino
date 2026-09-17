@@ -1142,7 +1142,6 @@ impl DbV1 {
                     };
 
                     let compact_block = zaino_proto::proto::compact_formats::CompactBlock {
-                        proto_version: 0,
                         height: header.context.height().0 as u64,
                         hash: header.context.hash().0.to_vec(),
                         prev_hash: header.context.parent_hash().0.to_vec(),
@@ -1398,13 +1397,13 @@ fn assemble_compact_block(
                 header.data().time()
             ))
         })?,
-        bits: *header.data().bits(),
+        bits: header.data().bits(),
         transactions,
-        chain_metadata: zaino_primitives::types::ChainMetadata {
-            sapling_tree_size: commitment_tree_data.sizes().sapling(),
-            orchard_tree_size: commitment_tree_data.sizes().orchard(),
-            ironwood_tree_size: commitment_tree_data.sizes().ironwood(),
-        },
+        chain_metadata: zaino_primitives::types::ChainMetadata::new(
+            commitment_tree_data.sizes().sapling(),
+            commitment_tree_data.sizes().orchard(),
+            commitment_tree_data.sizes().ironwood(),
+        ),
     })
 }
 
@@ -1555,8 +1554,8 @@ fn has_pool_data(tx: &zaino_primitives::types::PreIndexCompactTx) -> bool {
 pub fn compact_block_to_wire(
     block: &zaino_primitives::types::CompactBlock,
 ) -> zaino_proto::proto::compact_formats::CompactBlock {
+    let metadata = &block.chain_metadata;
     zaino_proto::proto::compact_formats::CompactBlock {
-        proto_version: 0,
         height: u64::from(block.height),
         hash: <[u8; 32]>::from(block.hash).to_vec(),
         prev_hash: <[u8; 32]>::from(block.prev_hash).to_vec(),
@@ -1570,9 +1569,9 @@ pub fn compact_block_to_wire(
             .map(|(index, tx)| compact_tx_to_proto(index, tx))
             .collect(),
         chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
-            sapling_commitment_tree_size: block.chain_metadata.sapling_tree_size,
-            orchard_commitment_tree_size: block.chain_metadata.orchard_tree_size,
-            ironwood_commitment_tree_size: block.chain_metadata.ironwood_tree_size,
+            sapling_commitment_tree_size: u32::from(metadata.sapling_tree_size),
+            orchard_commitment_tree_size: u32::from(metadata.orchard_tree_size),
+            ironwood_commitment_tree_size: u32::from(metadata.ironwood_tree_size),
         }),
     }
 }
@@ -1680,13 +1679,13 @@ pub(crate) fn compact_block_from_indexed(
                 block.data.time()
             ))
         })?,
-        bits: *block.data.bits(),
+        bits: block.data.bits(),
         transactions,
-        chain_metadata: zaino_primitives::types::ChainMetadata {
-            sapling_tree_size: sizes.sapling(),
-            orchard_tree_size: sizes.orchard(),
-            ironwood_tree_size: sizes.ironwood(),
-        },
+        chain_metadata: zaino_primitives::types::ChainMetadata::new(
+            sizes.sapling(),
+            sizes.orchard(),
+            sizes.ironwood(),
+        ),
     })
 }
 

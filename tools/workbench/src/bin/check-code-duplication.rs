@@ -6,9 +6,10 @@
 //!
 //! - `packages/` — the production crates, excluding `zaino-proto` (tonic/prost
 //!   generated code) and in-crate `tests/` module directories.
-//! - `live-tests/` — the e2e and clientless harness crates, including their
-//!   integration-test helper code.
 //! - `tools/` — the developer tooling.
+//!
+//! `live-tests/` is deliberately unscanned: its CLAUDE.md mandates that every test spell out its
+//! own topology inline, so duplication there is the required shape, not a regression.
 //!
 //! `#[test]` functions and `#[cfg(test)]` modules visible per-file are excluded in
 //! every scope. The tree was deduplicated to zero groups when this gate landed, so
@@ -45,10 +46,6 @@ const SCOPES: &[Scope] = &[
     Scope {
         path: "packages",
         excludes: &["zaino-proto", "/tests/"],
-    },
-    Scope {
-        path: "live-tests",
-        excludes: &[],
     },
     Scope {
         path: "tools",

@@ -457,6 +457,11 @@ pub(crate) fn port_fault<E: std::fmt::Debug + std::fmt::Display>(
     PortError::Fetch(FetchError::new(FailureMode::Parse, message.into()))
 }
 
+/// A vector's `u64` tree size, as the domain carries it.
+fn tree_size(size: u64) -> domain::TreeSize {
+    domain::TreeSize::try_from(size).expect("test vector tree sizes fit u32")
+}
+
 impl MockchainSource {
     /// `Err` when a test has armed [`Self::set_failing`].
     fn forced_failure<E: std::fmt::Debug + std::fmt::Display>(&self) -> Option<PortError<E>> {
@@ -520,10 +525,10 @@ impl MockchainSource {
     fn domain_block_at(&self, index: usize) -> Result<domain::Block, String> {
         let (sapling, orchard) = self.roots[index];
         let chain_metadata = domain::ChainMetadata {
-            sapling_tree_size: sapling.map_or(0, |(_, size)| size as u32),
-            orchard_tree_size: orchard.map_or(0, |(_, size)| size as u32),
+            sapling_tree_size: sapling.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
+            orchard_tree_size: orchard.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
             // The test vectors carry no ironwood tree.
-            ironwood_tree_size: 0,
+            ironwood_tree_size: domain::TreeSize::ZERO,
         };
 
         zaino_convert_zebra::block_from_zebra(&self.blocks[index], chain_metadata)
@@ -786,7 +791,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
         let (sapling, orchard) = self.roots[index];
         let info = |root: [u8; 32], size: u64| domain::TreeRootInfo {
             root: domain::TreeRoot::from(root),
-            size,
+            size: tree_size(size),
         };
 
         Ok(domain::TreeRoots {
@@ -813,8 +818,13 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
 
         let (_, orchard) = self.roots[index];
         let (sapling_size, orchard_size) = (
-            self.roots[index].0.map(|(_, size)| size).unwrap_or(0),
-            orchard.map(|(_, size)| size).unwrap_or(0),
+            self.roots[index]
+                .0
+                .map(|(_, size)| tree_size(size))
+                .unwrap_or(domain::TreeSize::ZERO),
+            orchard
+                .map(|(_, size)| tree_size(size))
+                .unwrap_or(domain::TreeSize::ZERO),
         );
 
         Ok(domain::BlockVerbose {
@@ -831,7 +841,7 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
             tree_sizes: domain::BlockTreeSizes {
                 sapling: sapling_size,
                 orchard: orchard_size,
-                ironwood: 0,
+                ironwood: domain::TreeSize::ZERO,
             },
             next_block_hash: self
                 .next_block_hash(index)
@@ -1058,30 +1068,39 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
         let matching = self.matching_transparent_outputs(&valid, &network);
         let spent = self.spent_transparent_outpoints();
 
-        let mut balance = 0_u64;
-        let mut received = 0_u64;
+        let mut received_values = Vec::new();
+        let mut balance_values = Vec::new();
         for (outpoint, output) in matching {
-            let value = u64::from(output.output.value());
-            received = received.checked_add(value).ok_or_else(|| {
-                port_fault::<zaino_source::GetAddressBalanceError>(
-                    "address received amount overflowed u64",
-                )
-            })?;
+            let value = domain::Zatoshis::new(u64::from(output.output.value()))
+                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?;
+            received_values.push(value);
             if !spent.contains(&outpoint) {
-                balance = balance.checked_add(value).ok_or_else(|| {
-                    port_fault::<zaino_source::GetAddressBalanceError>(
-                        "address balance amount overflowed u64",
-                    )
-                })?;
+                balance_values.push(value);
             }
         }
 
-        Ok(domain::AddressBalance {
-            balance: domain::Zatoshis::new(balance)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-            received: domain::Zatoshis::new(received)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-        })
+        // Every matching output is a receipt, so the lifetime received total
+        // is a flow: it is derived here by the flow accumulate, not bounded by
+        // the supply.
+        let received = domain::ZatoshisFlowSum::try_accumulate(received_values.into_iter())
+            .ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "address received flow overflowed its accumulator",
+                )
+            })?;
+
+        // The unspent outputs coexist on the chain, so their total is a
+        // supply-bounded balance; a total past the supply means the UTXO set
+        // overlaps or double-counts, and is refused rather than wrapped.
+        let balance =
+            domain::Zatoshis::sum_balances(balance_values.into_iter()).ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "unspent output values total past the money supply: \
+                     overlapping or corrupt UTXO set",
+                )
+            })?;
+
+        Ok(domain::AddressBalance { balance, received })
     }
 }
 

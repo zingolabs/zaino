@@ -35,6 +35,7 @@ mod transaction_location;
 mod transparent_address;
 mod tree_root;
 mod tree_roots;
+mod tree_size;
 mod treestate;
 mod tx_out_set_info;
 mod utxo;
@@ -44,9 +45,9 @@ mod zatoshis;
 pub use address_balance::AddressBalance;
 pub use address_delta::AddressDelta;
 pub use aliases::{
-    BlockTime, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TreeSize, TxIndex,
+    BlockTime, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TxIndex,
 };
-pub use block::{Block, BlockHeader, ChainMetadata};
+pub use block::{Block, BlockError, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
@@ -55,7 +56,7 @@ pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
 pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
-pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError, WorkOverWidth};
+pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use confirmations::{BlockConfirmations, ConfirmationsCodecError, TxConfirmations};
 pub use encrypted_ciphertext::EncryptedCiphertext;
 pub use ephemeral_key::EphemeralKey;
@@ -82,10 +83,13 @@ pub use transaction_location::TransactionLocation;
 pub use transparent_address::TransparentAddress;
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
+pub use tree_size::{TreeSize, TreeSizeOutOfRange};
 pub use treestate::{PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
-pub use work::{BlockWork, ChainWork, ChainWorkOverWidth, WorkOverflow, WorkUnderflow, ZeroWork};
+pub use work::{
+    AbsoluteChainWork, ChainWorkOverWidth, SingleBlockWork, WorkOverflow, WorkUnderflow, ZeroWork,
+};
 pub use zatoshis::{
     SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisFlowSum, ZatoshisOverflow,
 };

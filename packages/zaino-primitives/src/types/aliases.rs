@@ -9,9 +9,6 @@ pub type OutputIndex = u32;
 /// Difficulty target. Protocol-specific float representation.
 pub type Difficulty = f64;
 
-/// Cumulative number of notes in a commitment tree.
-pub type TreeSize = u64;
-
 /// Subtree index within a shielded pool's commitment tree.
 pub type SubtreeIndex = u16;
 

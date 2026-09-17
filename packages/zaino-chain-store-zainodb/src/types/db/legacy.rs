@@ -35,7 +35,7 @@ use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
-use crate::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty};
 use zaino_encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
@@ -835,8 +835,8 @@ impl BlockData {
     }
 
     /// Returns the validated compact difficulty.
-    pub fn bits(&self) -> &CompactDifficulty {
-        &self.bits
+    pub fn bits(&self) -> CompactDifficulty {
+        self.bits
     }
 
     /// Returns Equihash Nonse.
@@ -1069,18 +1069,13 @@ impl IndexedBlock {
         self.context.height()
     }
 
-    /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &ChainWork {
+    /// Returns the total chain work.
+    pub fn chainwork(&self) -> AbsoluteChainWork {
         self.context.chainwork()
     }
 
     /// Returns the single-block proof-of-work contribution.
-    ///
-    /// Fallible with the difficulty pipeline itself: a stored difficulty is a
-    /// valid encoding, but the encoding admits targets whose work exceeds the
-    /// recorded 128 bits — see
-    /// [`WorkOverWidth`](zaino_primitives::types::WorkOverWidth).
-    pub fn work(&self) -> Result<crate::types::BlockWork, zaino_primitives::types::WorkOverWidth> {
+    pub fn work(&self) -> crate::types::SingleBlockWork {
         self.data.bits.to_work()
     }
 
@@ -1107,7 +1102,6 @@ impl IndexedBlock {
         let ironwood_commitment_tree_size = self.commitment_tree_data().sizes().ironwood();
 
         zaino_proto::proto::compact_formats::CompactBlock {
-            proto_version: 0,
             height,
             hash,
             prev_hash,

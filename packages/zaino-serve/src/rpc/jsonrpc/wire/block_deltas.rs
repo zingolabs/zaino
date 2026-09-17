@@ -2,28 +2,12 @@
 
 use zebra_chain::amount::{Amount, NonNegative};
 
+use crate::rpc::jsonrpc::wire::common::amount;
 use crate::rpc::jsonrpc::wire::display_hex;
 
 impl BlockDeltas {
     /// Renders the domain type as the served JSON shape.
-    ///
-    /// The wire's `Amount` enforces the money range `[-MAX_MONEY, MAX_MONEY]`.
-    /// Every amount rendered here comes from a domain quantity already bounded to
-    /// that same range — a
-    /// [`SignedZatoshis`](zaino_primitives::types::SignedZatoshis) for an input (a
-    /// magnitude within the supply, sign unconstrained) rendered as an
-    /// `Amount<NegativeAllowed>`, and a
-    /// [`Zatoshis`](zaino_primitives::types::Zatoshis) for an output (unsigned,
-    /// so non-negative and within the supply) rendered as an
-    /// `Amount<NonNegative>`. Both bounds are guaranteed at construction, so the
-    /// range check on the wire's `Amount` cannot reject a well-formed value and
-    /// the conversion is infallible.
     pub fn from_domain(deltas: zaino_primitives::types::rpc::BlockDeltas) -> Self {
-        fn amount<C: zebra_chain::amount::Constraint>(zats: i64) -> Amount<C> {
-            Amount::try_from(zats)
-                .expect("domain zatoshi quantities are bounded to the money range")
-        }
-
         Self {
             hash: display_hex(deltas.hash.into()),
             confirmations: deltas.confirmations.to_rpc_i64(),
@@ -49,7 +33,7 @@ impl BlockDeltas {
                         .into_iter()
                         .map(|input| InputDelta {
                             address: String::from(input.address),
-                            satoshis: amount(i64::from(input.satoshis)),
+                            satoshis: amount::negative_allowed(input.satoshis),
                             index: input.index,
                             prevtxid: display_hex(input.prev_txid.into()),
                             prevout: input.prev_output,
@@ -60,11 +44,7 @@ impl BlockDeltas {
                         .into_iter()
                         .map(|output| OutputDelta {
                             address: String::from(output.address),
-                            satoshis: amount(
-                                i64::try_from(u64::from(output.satoshis)).expect(
-                                    "Zatoshis is bounded to the money range, which fits i64",
-                                ),
-                            ),
+                            satoshis: amount::non_negative(output.satoshis),
                             index: output.index,
                         })
                         .collect(),
@@ -277,15 +257,15 @@ mod tests {
     /// [`SignedZatoshis::try_new`] refuses it upstream when the delta is built.
     #[test]
     fn an_input_at_the_supply_extreme_renders() {
-        const MAX: i64 = 21_000_000 * 100_000_000;
+        let max = i64::from(SignedZatoshis::MAX);
 
         let mut deltas = sample();
         deltas.deltas[0].inputs[0].satoshis =
-            SignedZatoshis::try_new(-MAX).expect("the supply extreme is a valid delta");
+            SignedZatoshis::try_new(-max).expect("the supply extreme is a valid delta");
 
         let wire = BlockDeltas::from_domain(deltas);
         let json = serde_json::to_value(&wire).unwrap();
 
-        assert_eq!(json["deltas"][0]["inputs"][0]["satoshis"], -MAX);
+        assert_eq!(json["deltas"][0]["inputs"][0]["satoshis"], -max);
     }
 }

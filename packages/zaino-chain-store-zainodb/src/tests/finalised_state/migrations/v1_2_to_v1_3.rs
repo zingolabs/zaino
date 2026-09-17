@@ -16,7 +16,9 @@ use crate::config::{StoreSettings, ZainoDbConfig};
 use crate::store::capability::{DbVersion, MigrationStatus};
 use crate::store::finalised_source::v1::DB_VERSION_V1;
 use crate::store::FinalisedState;
-use crate::tests::fixtures::{fake_validator_with_tip, load_test_vectors, TestVectorData};
+use crate::tests::fixtures::{
+    fake_validator_with_tip, indexed_block_chain, load_test_vectors, TestVectorData,
+};
 use crate::tests::init_tracing;
 use crate::types::Height;
 use zaino_chain_store::ChainStoreConfig;
@@ -72,13 +74,15 @@ async fn v1_2_1_cache_migrates_to_current_then_validates() {
     // Reopen through the production spawn path: it runs the v1.2.1 → v1.3.0 migration and only then
     // starts the validator. Before the ordering fix this raced the migration and latched
     // `CriticalError`; now it must migrate first and validate cleanly.
-    let migrated_database = FinalisedState::spawn(
-        database_config.store.clone(),
-        database_config.db.clone(),
-        source.clone(),
-    )
-    .await
-    .unwrap();
+    let migrated_database = std::sync::Arc::new(
+        FinalisedState::spawn(
+            database_config.store.clone(),
+            database_config.db.clone(),
+            source.clone(),
+        )
+        .await
+        .unwrap(),
+    );
     migrated_database.wait_until_synced().await;
 
     assert_eq!(
@@ -93,6 +97,33 @@ async fn v1_2_1_cache_migrates_to_current_then_validates() {
 
     let migrated_height = migrated_database.db_height().await.unwrap().unwrap();
     assert_eq!(migrated_height, active_height);
+
+    // Reaching `Ready` only proves the rebuilt rows are self-consistent; these assertions prove
+    // they still carry the roots and sizes the source served.
+    let reader = migrated_database.to_reader();
+    let rebuilt = reader
+        .get_block_range_commitment_tree_data(Height(0), active_height)
+        .await
+        .unwrap();
+    assert_eq!(
+        rebuilt.len(),
+        active_height.0 as usize + 1,
+        "the rebuild must cover every indexed height"
+    );
+    for (expected, rebuilt) in indexed_block_chain(&blocks).zip(&rebuilt) {
+        assert_eq!(
+            rebuilt,
+            expected.commitment_tree_data(),
+            "commitment row at height {} did not survive the v1.2.1 -> v1.3.0 rebuild",
+            expected.height().0
+        );
+        assert_eq!(
+            rebuilt.roots().ironwood(),
+            &None,
+            "below NU6.3 the rebuild must not mint an ironwood root (height {})",
+            expected.height().0
+        );
+    }
 
     migrated_database.shutdown().await.unwrap();
 }

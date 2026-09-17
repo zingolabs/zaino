@@ -249,7 +249,7 @@ use crate::metric_names::*;
 
 use crate::adapter::domain_block_ref;
 use crate::store::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode};
-use crate::types::{BlockHash, ChainWork, Height, IndexedBlock, GENESIS_HEIGHT};
+use crate::types::{AbsoluteChainWork, BlockHash, Height, IndexedBlock, GENESIS_HEIGHT};
 use zaino_chain_store::ChainStoreConfig;
 
 use crate::config::{StoreSettings, ZainoDbConfig};
@@ -303,7 +303,7 @@ pub(crate) async fn build_indexed_block_from_source<S: ChainStoreSource + ?Sized
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
-    parent_chainwork: Option<ChainWork>,
+    parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<IndexedBlock, StoreError> {
     let fetched = fetch_block_for_indexing(source, height_int).await?;
     assemble_indexed_block(
@@ -335,10 +335,8 @@ impl FetchedBlock {
     /// Lets a caller fold the cumulative chainwork over a run of already-fetched blocks before
     /// assembling any of them — the fold is the only ordering constraint in block building, and it
     /// is pure integer arithmetic, so it must not hold the expensive conversion in block order.
-    pub(crate) fn block_work(&self) -> Result<crate::types::BlockWork, StoreError> {
-        let hash = crate::types::BlockHash(self.block.header.hash.into());
-        crate::conversion::block_work(self.block.header.bits, hash)
-            .map_err(|error| inconsistent(error.to_string()))
+    pub(crate) fn block_work(&self) -> crate::types::SingleBlockWork {
+        self.block.header.bits.to_work()
     }
 }
 
@@ -363,7 +361,7 @@ pub(crate) fn assemble_indexed_block(
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
-    parent_chainwork: Option<ChainWork>,
+    parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<IndexedBlock, StoreError> {
     let FetchedBlock { block, tree_roots } = fetched;
 
@@ -444,7 +442,7 @@ async fn fetch_tree_roots<S: ChainStoreSource + ?Sized>(
 pub(crate) fn indexed_block_from_parts(
     block: &zaino_primitives::types::Block,
     tree_roots: &zaino_primitives::types::TreeRoots,
-    parent_chainwork: Option<ChainWork>,
+    parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<IndexedBlock, StoreError> {
     let hash = crate::types::BlockHash(block.header.hash.into());
     let chainwork =
@@ -1452,7 +1450,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             .activation_upgrade()
             .activation_height(cfg.db.network());
 
-        let mut parent_chainwork: Option<ChainWork> = None;
+        let mut parent_chainwork: Option<AbsoluteChainWork> = None;
 
         for height in crate::types::GENESIS_HEIGHT.0..=tip.0 {
             let block = fetch_block(source.as_ref(), height).await?;
