@@ -27,8 +27,8 @@ use zaino_chain_head::{
 };
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
-    MerkleRoot, TreeRoots,
+    Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata, EquihashSolution,
+    Height, MerkleRoot, TreeRoots,
 };
 use zaino_source::{
     FailureMode, FetchError, GetBlockByHashError, GetBlockError, GetChainTipError,
@@ -323,6 +323,38 @@ pub(crate) fn best_chain_hashes(snapshot: &impl ChainHeadSnapshot) -> Vec<BlockH
     snapshot.best_chain().map(|block| block.hash()).collect()
 }
 
+/// A stepped chain head selecting its tip by `selection`, synced to a
+/// five-block chain `0 -> 4`.
+async fn synced_on_five_blocks(
+    selection: TipSelection,
+) -> (MockValidator, Arc<ChainHeadService<MockValidator>>) {
+    let validator = MockValidator::linear(5);
+    let service = stepped_selecting(&validator, 100, selection).await;
+    step_to_tip(&service, &validator).await;
+    (validator, service)
+}
+
+/// Applies `validator.reorg(from_height, ids)`, advances once, and returns the
+/// published snapshot.
+async fn reorg_and_advance(
+    service: &ChainHeadService<MockValidator>,
+    validator: &MockValidator,
+    from_height: u32,
+    ids: &[u16],
+) -> Arc<MapBackedSnapshot> {
+    validator.reorg(from_height, ids);
+    step_to_tip(service, validator).await;
+    service.subscriber().current()
+}
+
+/// The reference to test block `id` at height `h`.
+fn block_ref(h: u32, id: u16) -> BlockRef {
+    BlockRef {
+        hash: hash(id),
+        height: height(h),
+    }
+}
+
 /// Advances the stepped service to the source's current tip.
 async fn step_to_tip(service: &ChainHeadService<MockValidator>, validator: &MockValidator) {
     let _ = validator.tip();
@@ -422,16 +454,11 @@ async fn work_accumulates_along_the_chain() {
 /// through the reorg that created one.
 #[tokio::test]
 async fn a_higher_reorg_retains_the_displaced_branch() {
-    let validator = MockValidator::linear(5);
-    let service = stepped(&validator, 100).await;
-    step_to_tip(&service, &validator).await;
+    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
 
-    validator.reorg(4, &[40, 41]);
-    step_to_tip(&service, &validator).await;
+    let snapshot = reorg_and_advance(&service, &validator, 4, &[40, 41]).await;
 
-    let snapshot = service.subscriber().current();
-    assert_eq!(snapshot.best_tip().height, height(5));
-    assert_eq!(snapshot.best_tip().hash, hash(41));
+    assert_eq!(snapshot.best_tip(), block_ref(5, 41));
     assert_eq!(
         snapshot.best_block_by_height(height(4)).map(|b| b.hash()),
         Some(hash(40))
@@ -446,16 +473,11 @@ async fn a_higher_reorg_retains_the_displaced_branch() {
 /// finds no higher block — so `check_for_nonhigher_reorgs` is what catches it.
 #[tokio::test]
 async fn a_same_height_reorg_is_caught_without_a_higher_block() {
-    let validator = MockValidator::linear(5);
-    let service = stepped(&validator, 100).await;
-    step_to_tip(&service, &validator).await;
+    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
 
-    validator.reorg(4, &[40]);
-    step_to_tip(&service, &validator).await;
+    let snapshot = reorg_and_advance(&service, &validator, 4, &[40]).await;
 
-    let snapshot = service.subscriber().current();
-    assert_eq!(snapshot.best_tip().height, height(4));
-    assert_eq!(snapshot.best_tip().hash, hash(40));
+    assert_eq!(snapshot.best_tip(), block_ref(4, 40));
 }
 
 /// The source's tip drops below ours with nothing replacing the blocks above
@@ -463,30 +485,21 @@ async fn a_same_height_reorg_is_caught_without_a_higher_block() {
 /// head follows it down even though the abandoned block carries more work.
 #[tokio::test]
 async fn a_rollback_lowers_the_tip() {
-    let validator = MockValidator::linear(5);
-    let service = stepped(&validator, 100).await;
-    step_to_tip(&service, &validator).await;
+    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
 
-    validator.reorg(4, &[]);
-    step_to_tip(&service, &validator).await;
+    let snapshot = reorg_and_advance(&service, &validator, 4, &[]).await;
 
-    let snapshot = service.subscriber().current();
-    assert_eq!(snapshot.best_tip().height, height(3));
-    assert_eq!(snapshot.best_tip().hash, hash(3));
+    assert_eq!(snapshot.best_tip(), block_ref(3, 3));
 }
 
 /// After a rollback nothing is canonical above the new tip. The abandoned block
 /// stays retained, as a competing tip one block off the best chain.
 #[tokio::test]
 async fn a_rollback_abandons_the_heights_above_the_new_tip() {
-    let validator = MockValidator::linear(5);
-    let service = stepped(&validator, 100).await;
-    step_to_tip(&service, &validator).await;
+    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
 
-    validator.reorg(4, &[]);
-    step_to_tip(&service, &validator).await;
+    let snapshot = reorg_and_advance(&service, &validator, 4, &[]).await;
 
-    let snapshot = service.subscriber().current();
     assert!(snapshot.best_block_by_height(height(4)).is_none());
     assert_eq!(
         snapshot.best_chain().last().map(|block| block.hash()),
@@ -519,16 +532,11 @@ async fn a_rollback_abandons_the_heights_above_the_new_tip() {
 /// the old branch's top height is no longer canonical.
 #[tokio::test]
 async fn a_lower_reorg_abandons_the_heights_above_the_new_tip() {
-    let validator = MockValidator::linear(5);
-    let service = stepped(&validator, 100).await;
-    step_to_tip(&service, &validator).await;
+    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
 
-    validator.reorg(3, &[30]);
-    step_to_tip(&service, &validator).await;
+    let snapshot = reorg_and_advance(&service, &validator, 3, &[30]).await;
 
-    let snapshot = service.subscriber().current();
-    assert_eq!(snapshot.best_tip().height, height(3));
-    assert_eq!(snapshot.best_tip().hash, hash(30));
+    assert_eq!(snapshot.best_tip(), block_ref(3, 30));
     assert!(snapshot.best_block_by_height(height(4)).is_none());
     assert_eq!(
         best_chain_hashes(&snapshot),
@@ -540,17 +548,12 @@ async fn a_lower_reorg_abandons_the_heights_above_the_new_tip() {
 /// the retained blocks to the fork point instead of refetching them.
 #[tokio::test]
 async fn a_reorg_back_onto_a_retained_branch_restores_it() {
-    let validator = MockValidator::linear(5);
-    let service = stepped(&validator, 100).await;
-    step_to_tip(&service, &validator).await;
+    let (validator, service) = synced_on_five_blocks(TipSelection::Source).await;
 
-    validator.reorg(3, &[30, 31]);
-    step_to_tip(&service, &validator).await;
-    validator.reorg(3, &[3, 4, 5]);
-    step_to_tip(&service, &validator).await;
+    reorg_and_advance(&service, &validator, 3, &[30, 31]).await;
+    let snapshot = reorg_and_advance(&service, &validator, 3, &[3, 4, 5]).await;
 
-    let snapshot = service.subscriber().current();
-    assert_eq!(snapshot.best_tip().hash, hash(5));
+    assert_eq!(snapshot.best_tip(), block_ref(5, 5));
     assert_eq!(
         best_chain_hashes(&snapshot),
         vec![hash(0), hash(1), hash(2), hash(3), hash(4), hash(5)]
@@ -568,16 +571,11 @@ async fn a_reorg_back_onto_a_retained_branch_restores_it() {
 /// followed.
 #[tokio::test]
 async fn heaviest_retained_selection_overrides_a_rollback() {
-    let validator = MockValidator::linear(5);
-    let service = stepped_selecting(&validator, 100, TipSelection::HeaviestRetained).await;
-    step_to_tip(&service, &validator).await;
+    let (validator, service) = synced_on_five_blocks(TipSelection::HeaviestRetained).await;
 
-    validator.reorg(4, &[]);
-    step_to_tip(&service, &validator).await;
+    let snapshot = reorg_and_advance(&service, &validator, 4, &[]).await;
 
-    let snapshot = service.subscriber().current();
-    assert_eq!(snapshot.best_tip().height, height(4));
-    assert_eq!(snapshot.best_tip().hash, hash(4));
+    assert_eq!(snapshot.best_tip(), block_ref(4, 4));
 }
 
 /// Growth past the window drops the oldest blocks, so retention stays bounded
