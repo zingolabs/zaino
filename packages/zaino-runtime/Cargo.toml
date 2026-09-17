@@ -10,6 +10,7 @@ zaino-component = { path = "../zaino-component" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 futures.workspace = true
+zaino-core = { path = "../zaino-core" }
 
 [dev-dependencies]
 tokio = { workspace = true }

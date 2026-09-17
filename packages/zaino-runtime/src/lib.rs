@@ -22,6 +22,7 @@
 mod health;
 mod indexer;
 mod orchestra;
+mod resolve;
 mod serving;
 mod signals;
 mod supervisor;
@@ -30,6 +31,7 @@ mod validator;
 pub use health::{HealthServeError, HealthServer};
 pub use indexer::IndexerComponent;
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
+pub use resolve::{strategy, tier_of, Strategy, Tier};
 pub use serving::ServeComponent;
 pub use signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
 pub use supervisor::{observe, supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
