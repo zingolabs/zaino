@@ -1039,6 +1039,45 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))
             };
 
+        // Every pool the interface has a slot for, in its order. Omitting one
+        // reports it as zero, which is indistinguishable from an empty pool —
+        // that is how ironwood read as empty across NU6.3 activation.
+        let pools = [
+            ("transparent", balance.transparent_amount()),
+            ("sprout", balance.sprout_amount()),
+            ("sapling", balance.sapling_amount()),
+            ("orchard", balance.orchard_amount()),
+            ("lockbox", balance.deferred_amount()),
+            ("ironwood", balance.ironwood_amount()),
+        ];
+        let value_pools = pools
+            .iter()
+            .map(|(id, amount)| {
+                Ok(ValuePoolBalance {
+                    id: (*id).to_string(),
+                    chain_value: to_zatoshis(*amount)?,
+                    monitored: amount.zatoshis() != 0,
+                    value_delta: None,
+                })
+            })
+            .collect::<Result<Vec<_>, FetchError>>()?;
+
+        // `chainSupply` is the sum over those pools, carried unnamed — a total,
+        // not a pool. It is not the transparent balance.
+        let supply = pools
+            .iter()
+            .try_fold(
+                zebra_chain::amount::Amount::<zebra_chain::amount::NonNegative>::zero(),
+                |acc, (_, amount)| acc + *amount,
+            )
+            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+        let chain_supply = ValuePoolBalance {
+            id: String::new(),
+            chain_value: to_zatoshis(supply)?,
+            monitored: supply.zatoshis() != 0,
+            value_delta: None,
+        };
+
         Ok(BlockchainInfo {
             chain: self.network.bip70_network_name(),
             blocks: Height::try_from(height.0)
@@ -1061,32 +1100,8 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
             // Not tracked by the read-state; the legacy full node counts sprout commitments
             // only, which has no meaning for a modern chain.
             commitments: 0,
-            chain_supply: ValuePoolBalance {
-                id: "transparent".to_string(),
-                chain_value: to_zatoshis(balance.transparent_amount())?,
-                monitored: true,
-                value_delta: None,
-            },
-            value_pools: vec![
-                ValuePoolBalance {
-                    id: "sprout".to_string(),
-                    chain_value: to_zatoshis(balance.sprout_amount())?,
-                    monitored: true,
-                    value_delta: None,
-                },
-                ValuePoolBalance {
-                    id: "sapling".to_string(),
-                    chain_value: to_zatoshis(balance.sapling_amount())?,
-                    monitored: true,
-                    value_delta: None,
-                },
-                ValuePoolBalance {
-                    id: "orchard".to_string(),
-                    chain_value: to_zatoshis(balance.orchard_amount())?,
-                    monitored: true,
-                    value_delta: None,
-                },
-            ],
+            chain_supply,
+            value_pools,
             upgrades,
             consensus: ConsensusBranchIds {
                 chain_tip: branch_at(height),
