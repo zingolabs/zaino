@@ -16,6 +16,7 @@
 use zaino_primitives::types::{
     classify_script, OutputIndex, Script, ScriptType, TransactionId, Zatoshis,
 };
+use zaino_sync::backend::{BackendReader, ReadError};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{
@@ -219,6 +220,44 @@ impl Schema<Vec<Vec<AddressReceive>>> for AddressHistoryIndex {
     }
 }
 
+/// A read of the address-history index failed.
+#[derive(Debug, thiserror::Error)]
+pub enum ReceivesReadError {
+    /// The backend read failed.
+    #[error(transparent)]
+    Backend(#[from] ReadError),
+    /// A persisted entry could not be decoded.
+    #[error(transparent)]
+    Decode(#[from] SchemaDecodeError),
+}
+
+/// Read all receives for `addr`, height-ordered — the read side of this index.
+///
+/// Decodes back exactly what the engine wrote via this index's [`Schema`]. It
+/// scans the namespace and filters by the address prefix; a prefix range scan is
+/// a future backend optimisation (the key is address-prefixed precisely to
+/// enable it, so this fn's contract does not change when it lands).
+pub fn read_receives(
+    reader: &dyn BackendReader,
+    addr: AddrId,
+) -> Result<Vec<AddressReceive>, ReceivesReadError> {
+    let mut out = Vec::new();
+    for (raw_key, raw_value) in reader.scan(ID.into())? {
+        let key = AddressHistoryIndex::decode_key(&raw_key)?;
+        if key.addr == addr {
+            out.push(AddressReceive {
+                addr: key.addr,
+                height: key.height,
+                txid: key.txid,
+                output_index: key.output_index,
+                value: AddressHistoryIndex::decode_value(&raw_value)?,
+            });
+        }
+    }
+    out.sort_by_key(|r| (r.height.value(), r.output_index));
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +323,75 @@ mod tests {
             AddressHistoryIndex::decode_value(&bytes).expect("decode"),
             Zatoshis::new(12345).expect("valid")
         );
+    }
+
+    #[test]
+    fn receives_round_trip_through_the_backend() {
+        use zaino_persistence::in_memory::InMemoryBackend;
+        use zaino_persistence::{Backend, BackendWriter, WriteOp};
+
+        let addr_a = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [7; 20],
+        };
+        let addr_b = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [9; 20],
+        };
+        let z = |n| Zatoshis::new(n).expect("valid");
+        let receives = vec![
+            AddressReceive {
+                addr: addr_a,
+                height: BlockHeight::new(10),
+                txid: txid(1),
+                output_index: 0,
+                value: z(500),
+            },
+            AddressReceive {
+                addr: addr_b,
+                height: BlockHeight::new(11),
+                txid: txid(2),
+                output_index: 0,
+                value: z(300),
+            },
+            AddressReceive {
+                addr: addr_a,
+                height: BlockHeight::new(12),
+                txid: txid(3),
+                output_index: 1,
+                value: z(700),
+            },
+        ];
+
+        // Write exactly as the engine's persist step does: into_entries -> encode
+        // -> Put. So this reads back what the running indexer would have written.
+        let ops: Vec<WriteOp> = AddressHistoryIndex::into_entries(vec![receives])
+            .into_iter()
+            .map(|(k, v)| WriteOp::Put {
+                namespace: ID.into(),
+                key: AddressHistoryIndex::encode_key(&k),
+                value: AddressHistoryIndex::encode_value(&v),
+            })
+            .collect();
+        let backend = InMemoryBackend::new();
+        let mut writer = backend.writer().expect("writer");
+        writer.commit(ops).expect("commit");
+        let reader = backend.reader().expect("reader");
+
+        // addr_a: two receives, height-ordered (10 then 12).
+        let a = read_receives(&reader, addr_a).expect("read a");
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0].height, BlockHeight::new(10));
+        assert_eq!(a[0].value, z(500));
+        assert_eq!(a[1].height, BlockHeight::new(12));
+        assert_eq!(a[1].output_index, 1);
+
+        // addr_b: one receive; a different address: none.
+        assert_eq!(read_receives(&reader, addr_b).expect("read b").len(), 1);
+        let addr_c = AddrId {
+            script_type: ScriptType::P2SH,
+            hash: [1; 20],
+        };
+        assert!(read_receives(&reader, addr_c).expect("read c").is_empty());
     }
 }

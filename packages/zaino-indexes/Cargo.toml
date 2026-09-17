@@ -9,9 +9,13 @@ license.workspace = true
 description = "Zcash index definitions for the zaino sync engine."
 
 [dependencies]
+thiserror.workspace = true
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[dev-dependencies]
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
