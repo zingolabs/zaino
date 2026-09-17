@@ -3,7 +3,7 @@
 use super::transaction::Transaction;
 use super::{
     BlockCommitments, BlockHash, BlockTime, CompactDifficulty, EquihashNonce, EquihashSolution,
-    Height, MerkleRoot,
+    Height, MerkleRoot, TreeSize,
 };
 
 /// Block header — every consensus field, plus the hash and height that name
@@ -111,11 +111,43 @@ impl Block {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainMetadata {
     /// Cumulative Sapling note commitment tree size after this block.
-    pub sapling_tree_size: u32,
+    pub sapling_tree_size: TreeSize,
     /// Cumulative Orchard note commitment tree size after this block.
-    pub orchard_tree_size: u32,
+    pub orchard_tree_size: TreeSize,
     /// Cumulative Ironwood note commitment tree size after this block (NU6.3).
-    pub ironwood_tree_size: u32,
+    pub ironwood_tree_size: TreeSize,
+}
+
+impl ChainMetadata {
+    /// Empty placeholder: every pool size zero.
+    ///
+    /// A source adapter that does not yet know the commitment tree sizes emits
+    /// this; the indexer fills the real sizes in later. All-zero is not a
+    /// "missing" sentinel — a genuinely empty tree is also all-zero — but at the
+    /// adapter layer it is the documented stand-in for "not computed here yet".
+    pub const ZERO: Self = Self {
+        sapling_tree_size: TreeSize::ZERO,
+        orchard_tree_size: TreeSize::ZERO,
+        ironwood_tree_size: TreeSize::ZERO,
+    };
+
+    /// Build from the three cumulative pool sizes, in Sapling / Orchard /
+    /// Ironwood order.
+    ///
+    /// Each argument accepts anything that converts infallibly into a
+    /// [`TreeSize`] (a `u32` count, or a `TreeSize` itself), so a caller holding
+    /// raw counts need not wrap them first.
+    pub fn new(
+        sapling_tree_size: impl Into<TreeSize>,
+        orchard_tree_size: impl Into<TreeSize>,
+        ironwood_tree_size: impl Into<TreeSize>,
+    ) -> Self {
+        Self {
+            sapling_tree_size: sapling_tree_size.into(),
+            orchard_tree_size: orchard_tree_size.into(),
+            ironwood_tree_size: ironwood_tree_size.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -141,9 +173,9 @@ mod tests {
 
     fn chain_metadata() -> ChainMetadata {
         ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         }
     }
 

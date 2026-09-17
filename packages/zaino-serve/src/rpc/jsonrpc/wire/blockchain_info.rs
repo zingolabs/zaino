@@ -5,6 +5,7 @@
 //! layer, because this response reshapes value pools into a fixed array and
 //! renames network upgrades by consensus branch id.
 
+use crate::rpc::jsonrpc::wire::common::amount;
 use zaino_primitives::types::{BlockchainInfo, ValuePoolBalance};
 use zebra_chain::parameters::Network;
 use zebra_rpc::methods::GetBlockchainInfoResponse;
@@ -34,23 +35,8 @@ fn pool_balance(
 ) -> Result<zebra_rpc::client::GetBlockchainInfoBalance, BlockchainInfoWireError> {
     use zebra_rpc::client::GetBlockchainInfoBalance;
 
-    // Both amounts come from domain quantities already bounded to the money
-    // range: `chain_value` is a `Zatoshis` (unsigned, so non-negative and within
-    // the supply) rendered as an `Amount<NonNegative>`, and `value_delta` is a
-    // `SignedZatoshis` (a magnitude within the supply, sign unconstrained)
-    // rendered as an `Amount<NegativeAllowed>`. Both bounds hold at
-    // construction, so the range check on the wire's `Amount` cannot reject a
-    // well-formed value and the rendering is infallible.
-    fn amount<C: zebra_chain::amount::Constraint>(zats: i64) -> zebra_chain::amount::Amount<C> {
-        zebra_chain::amount::Amount::try_from(zats)
-            .expect("domain zatoshi quantities are bounded to the money range")
-    }
-
-    let value = amount(
-        i64::try_from(u64::from(balance.chain_value))
-            .expect("Zatoshis is bounded to the money range, which fits i64"),
-    );
-    let delta = balance.value_delta.map(|d| amount(i64::from(d)));
+    let value = amount::non_negative(balance.chain_value);
+    let delta = balance.value_delta.map(amount::negative_allowed);
 
     Ok(match balance.id.as_str() {
         "transparent" => GetBlockchainInfoBalance::transparent(value, delta),

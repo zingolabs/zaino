@@ -28,14 +28,10 @@ pub mod metric_names {
     //!
     //! The finalised store's write-path metrics are emitted from
     //! `zaino-chain-store-zainodb` and so are defined there and re-exported
-    //! here. Restating them would put the live string and the pinned string in
-    //! different crates: a rename where the metric is emitted would break every
-    //! dashboard built on it while the pin test — which reads this module —
-    //! went on comparing a copy nothing publishes. A re-export cannot drift.
+    //! here (a restated copy drifts from the emitted name; a re-export cannot).
     //!
     //! This module remains the single import site, so `zainod`'s `describe_*`
-    //! registrations and the bench harness are unaffected by where a given
-    //! name lives.
+    //! registrations are unaffected by where a given name lives.
     pub use zaino_chain_store_zainodb::metric_names::*;
 
     pub const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
