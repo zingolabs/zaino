@@ -216,6 +216,8 @@ and this library adheres to Rust's notion of
   reversal that turns a Sapling root into display order is Sapling's alone — a
   Pallas root's `to_repr` is already display order — so both pools named a root
   no chain ever had.
+- `getrawtransaction` in verbose mode omitted `time` and `blocktime`. Both come
+  from the containing block's header, which the index already holds.
 - `GetBlock` and `GetBlockNullifiers` served every pool unconditionally, while
   `GetBlockRange`/`GetBlockRangeNullifiers` honoured the request's `poolTypes`
   and default to the legacy shielded-only set. The same height therefore came
