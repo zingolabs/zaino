@@ -11,6 +11,9 @@
 use zaino_chain_head::{snapshot::ChainHeadTransactionService, ChainHeadBlock, ChainHeadSnapshot};
 use zaino_primitives::types::{BlockRef, Height};
 
+#[cfg(test)]
+pub(crate) mod tests;
+
 /// A ChainHead graph under construction.
 ///
 /// Every implementation keeps these invariants after every move:

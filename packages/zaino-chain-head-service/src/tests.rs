@@ -23,7 +23,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 use zaino_chain_head::{
-    ChainHeadBlockService as _, ChainHeadConfig, ChainHeadFreezeEvents as _, ChainHeadSnapshot as _,
+    ChainHeadBlockService as _, ChainHeadConfig, ChainHeadFreezeEvents as _, ChainHeadSnapshot,
 };
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
@@ -319,7 +319,7 @@ async fn wait_for(
 }
 
 /// The canonical chain's hashes, lowest first.
-pub(crate) fn best_chain_hashes(snapshot: &MapBackedSnapshot) -> Vec<BlockHash> {
+pub(crate) fn best_chain_hashes(snapshot: &impl ChainHeadSnapshot) -> Vec<BlockHash> {
     snapshot.best_chain().map(|block| block.hash()).collect()
 }
 

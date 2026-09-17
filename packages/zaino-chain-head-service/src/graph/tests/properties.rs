@@ -1,21 +1,20 @@
-//! Random move sequences on [`MapBackedSnapshot`], checked against a model.
+//! Random move sequences on a [`ChainGraph`](crate::graph::ChainGraph),
+//! checked against a model.
 //!
 //! The model is the plain reading of each move: the canonical chain is a list
 //! that grows by extension and shrinks by rewinding or trimming, and the
 //! retained set grows only by extension and shrinks only by trimming. After
-//! every move the snapshot must agree with the model and pass its own
-//! invariant check. Refused moves must leave the snapshot unchanged.
+//! every move the graph must agree with the model and pass its own invariant
+//! check. Refused moves must leave the graph unchanged.
 
 use std::collections::{HashMap, HashSet};
 
 use proptest::{prelude::*, test_runner::TestCaseError};
-use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::{rpc::ChainTipStatus, BlockHash, BlockRef};
 
-use super::chain_head_block;
+use super::{chain_head_block, InspectableGraph};
 use crate::{
-    graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
-    snapshot::MapBackedSnapshot,
+    graph::{NotChildOfTip, NotOnBestChain},
     tests::{best_chain_hashes, hash, height},
 };
 
@@ -24,7 +23,7 @@ use crate::{
 const BASE_HEIGHT: u32 = 100;
 
 #[derive(Debug, Clone)]
-enum Move {
+pub(super) enum Move {
     /// A child of the tip carrying `work` more than the tip.
     Extend { work: u8 },
     /// A retained child of the tip off the best chain, as when a reorg returns
@@ -44,7 +43,7 @@ enum Move {
     Trim { shift: u8 },
 }
 
-fn a_move() -> impl Strategy<Value = Move> {
+pub(super) fn a_move() -> impl Strategy<Value = Move> {
     prop_oneof![
         4 => (1u8..=8).prop_map(|work| Move::Extend { work }),
         2 => any::<u8>().prop_map(|pick| Move::ExtendRetained { pick }),
@@ -116,7 +115,7 @@ impl Model {
 }
 
 /// What a refused move must leave untouched.
-fn fingerprint(graph: &MapBackedSnapshot) -> (BlockRef, Vec<BlockHash>, HashSet<BlockHash>) {
+fn fingerprint<G: InspectableGraph>(graph: &G) -> (BlockRef, Vec<BlockHash>, HashSet<BlockHash>) {
     (
         graph.best_tip(),
         best_chain_hashes(graph),
@@ -124,8 +123,8 @@ fn fingerprint(graph: &MapBackedSnapshot) -> (BlockRef, Vec<BlockHash>, HashSet<
     )
 }
 
-fn apply(
-    graph: &mut MapBackedSnapshot,
+fn apply<G: InspectableGraph>(
+    graph: &mut G,
     model: &mut Model,
     step: &Move,
 ) -> Result<(), TestCaseError> {
@@ -230,7 +229,7 @@ fn apply(
     Ok(())
 }
 
-fn check(graph: &MapBackedSnapshot, model: &Model) -> Result<(), TestCaseError> {
+fn check<G: InspectableGraph>(graph: &G, model: &Model) -> Result<(), TestCaseError> {
     graph.check_invariants().map_err(TestCaseError::fail)?;
 
     let tip_id = model.tip_id();
@@ -270,22 +269,18 @@ fn check(graph: &MapBackedSnapshot, model: &Model) -> Result<(), TestCaseError> 
     Ok(())
 }
 
-proptest! {
-    #[test]
-    fn random_moves_keep_the_snapshot_consistent(
-        moves in prop::collection::vec(a_move(), 1..64)
-    ) {
-        let mut model = Model::new();
-        let first = chain_head_block(BASE_HEIGHT, Model::FIRST_ID, 0, 1);
-        let mut graph = MapBackedSnapshot::from_initial_block(first);
-        check(&graph, &model)?;
+/// Applies `moves` to a fresh graph, checking it against the model after each.
+pub(super) fn random_moves<G: InspectableGraph>(moves: &[Move]) -> Result<(), TestCaseError> {
+    let mut model = Model::new();
+    let first = chain_head_block(BASE_HEIGHT, Model::FIRST_ID, 0, 1);
+    let mut graph = G::from_initial_block(first);
+    check(&graph, &model)?;
 
-        for (index, step) in moves.iter().enumerate() {
-            let context = |error: TestCaseError| {
-                TestCaseError::fail(format!("move {index} {step:?}: {error}"))
-            };
-            apply(&mut graph, &mut model, step).map_err(context)?;
-            check(&graph, &model).map_err(context)?;
-        }
+    for (index, step) in moves.iter().enumerate() {
+        let context =
+            |error: TestCaseError| TestCaseError::fail(format!("move {index} {step:?}: {error}"));
+        apply(&mut graph, &mut model, step).map_err(context)?;
+        check(&graph, &model).map_err(context)?;
     }
+    Ok(())
 }

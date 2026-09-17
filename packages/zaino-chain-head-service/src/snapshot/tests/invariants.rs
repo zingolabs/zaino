@@ -1,31 +1,34 @@
-//! The invariants [`MapBackedSnapshot`] documents, checked against its private
-//! fields.
+//! [`MapBackedSnapshot`]'s invariants, checked against its private fields.
 //!
-//! Test-only. A property test runs this after every move, so a move that
-//! breaks an invariant fails at the step that broke it.
+//! The contract suite's property test runs this after every move, so a move
+//! that breaks an invariant fails at the step that broke it.
 
 use std::collections::HashSet;
 
 use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::{BlockHash, Height};
 
-use crate::snapshot::MapBackedSnapshot;
+use crate::{graph::tests::InspectableGraph, snapshot::MapBackedSnapshot};
 
-impl MapBackedSnapshot {
-    /// Every retained block's hash, the tip included.
-    pub(crate) fn retained_hashes(&self) -> HashSet<BlockHash> {
+impl InspectableGraph for MapBackedSnapshot {
+    fn retained_hashes(&self) -> HashSet<BlockHash> {
         self.blocks().map(|block| block.hash()).collect()
     }
 
-    /// The first documented invariant that does not hold, if any.
-    pub(crate) fn check_invariants(&self) -> Result<(), String> {
+    fn retained_block_count(&self) -> usize {
+        Self::retained_block_count(self)
+    }
+
+    fn check_invariants(&self) -> Result<(), String> {
         self.check_tip_not_in_others()?;
         self.check_others_keyed_by_hash()?;
         self.check_canonical_hashes_retained()?;
         self.check_canonical_chain_ends_at_tip()?;
         self.check_canonical_chain_is_linked()
     }
+}
 
+impl MapBackedSnapshot {
     fn check_tip_not_in_others(&self) -> Result<(), String> {
         if self.others.contains_key(&self.tip.hash()) {
             return Err(format!("others holds the tip {}", self.tip.hash()));
