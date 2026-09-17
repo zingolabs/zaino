@@ -1,13 +1,15 @@
 //! The [`ChainGraph`] contract, run against every implementation.
 //!
-//! [`checks`] holds example tests for single moves, and [`properties`] runs
-//! random move sequences against a model. Both are generic, so an
-//! implementation joins the suite with one [`graph_contract!`] line.
+//! The suite has three parts, all generic over the graph type:
 //!
-//! After every move the property test checks the [`ChainGraph`] invariants
-//! through the read traits alone ([`contract`]), then the implementation's own
-//! representation invariants through [`InspectableGraph`], which each
-//! implementation provides where its private fields are visible.
+//! - [`checks`]: example tests, one move each.
+//! - [`properties`]: random move sequences, compared with a simple model after
+//!   every move.
+//! - [`contract`]: the [`ChainGraph`] invariants, checked through the read
+//!   traits alone. The property test runs it after every move.
+//!
+//! To join the suite, an implementation provides [`InspectableGraph`] in its
+//! own test module and adds one [`graph_contract!`] line.
 
 use std::collections::HashSet;
 
@@ -21,22 +23,33 @@ mod checks;
 mod contract;
 mod properties;
 
-/// What the contract suite needs to see inside an implementation.
+/// What the suite needs from inside an implementation.
 ///
-/// Test-only: it exists in test builds, and each implementation provides it in
-/// its own test module.
+/// A requirement, not a helper: implementing it adds nothing to the type. It
+/// gives the suite what the read traits cannot, and it exists only in test
+/// builds. Each implementation provides it in its own test module, where its
+/// private fields are visible.
 pub(crate) trait InspectableGraph: ChainGraph {
-    /// Every retained block's hash, the tip included. The read traits have no
-    /// way to list them.
+    /// Every retained block's hash, the tip included.
+    ///
+    /// The property test compares this set with its model, and uses it to
+    /// confirm that a refused move changed nothing. The read traits have no
+    /// way to list every retained block.
     fn retained_hashes(&self) -> HashSet<BlockHash>;
 
-    /// How many blocks the implementation reports as retained.
+    /// How many blocks the implementation holds.
+    ///
+    /// Compared with the model, so a block held twice is caught even without a
+    /// representation check.
     fn retained_block_count(&self) -> usize;
 
     /// The first invariant of this representation that does not hold, if any.
     ///
-    /// Only what the read traits cannot show: the [`ChainGraph`] invariants
-    /// are checked generically.
+    /// The property test runs it after every move, so the implementation's
+    /// internal invariants are exercised by every random sequence without a
+    /// generator of its own. It checks only what the read traits cannot show:
+    /// [`contract`] checks the [`ChainGraph`] invariants for every
+    /// implementation.
     fn check_representation(&self) -> Result<(), String>;
 }
 
