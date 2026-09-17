@@ -4,15 +4,16 @@
 //! The model is the plain reading of each move: the canonical chain is a list
 //! that grows by extension and shrinks by rewinding or trimming, and the
 //! retained set grows only by extension and shrinks only by trimming. After
-//! every move the graph must agree with the model and pass its own invariant
-//! check. Refused moves must leave the graph unchanged.
+//! every move the graph must agree with the model and pass both the contract
+//! check and its own representation check. Refused moves must leave the graph
+//! unchanged.
 
 use std::collections::{HashMap, HashSet};
 
 use proptest::{prelude::*, test_runner::TestCaseError};
 use zaino_primitives::types::{rpc::ChainTipStatus, BlockHash, BlockRef};
 
-use super::{chain_head_block, InspectableGraph};
+use super::{chain_head_block, contract::check_contract, InspectableGraph};
 use crate::{
     graph::{NotChildOfTip, NotOnBestChain},
     tests::{best_chain_hashes, hash, height},
@@ -230,7 +231,8 @@ fn apply<G: InspectableGraph>(
 }
 
 fn check<G: InspectableGraph>(graph: &G, model: &Model) -> Result<(), TestCaseError> {
-    graph.check_invariants().map_err(TestCaseError::fail)?;
+    check_contract(graph).map_err(TestCaseError::fail)?;
+    graph.check_representation().map_err(TestCaseError::fail)?;
 
     let tip_id = model.tip_id();
     prop_assert_eq!(graph.best_tip(), model.reference(tip_id));

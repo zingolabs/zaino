@@ -4,9 +4,10 @@
 //! random move sequences against a model. Both are generic, so an
 //! implementation joins the suite with one [`graph_contract!`] line.
 //!
-//! Behaviour is checked through the traits. Each implementation also checks its
-//! own representation, through [`InspectableGraph`], which it implements where
-//! its private fields are visible.
+//! After every move the property test checks the [`ChainGraph`] invariants
+//! through the read traits alone ([`contract`]), then the implementation's own
+//! representation invariants through [`InspectableGraph`], which each
+//! implementation provides where its private fields are visible.
 
 use std::collections::HashSet;
 
@@ -17,18 +18,26 @@ use super::ChainGraph;
 use crate::tests::block;
 
 mod checks;
+mod contract;
 mod properties;
 
 /// What the contract suite needs to see inside an implementation.
+///
+/// Test-only: it exists in test builds, and each implementation provides it in
+/// its own test module.
 pub(crate) trait InspectableGraph: ChainGraph {
-    /// Every retained block's hash, the tip included.
+    /// Every retained block's hash, the tip included. The read traits have no
+    /// way to list them.
     fn retained_hashes(&self) -> HashSet<BlockHash>;
 
     /// How many blocks the implementation reports as retained.
     fn retained_block_count(&self) -> usize;
 
-    /// The first invariant that does not hold in the representation, if any.
-    fn check_invariants(&self) -> Result<(), String>;
+    /// The first invariant of this representation that does not hold, if any.
+    ///
+    /// Only what the read traits cannot show: the [`ChainGraph`] invariants
+    /// are checked generically.
+    fn check_representation(&self) -> Result<(), String>;
 }
 
 /// A retained block carrying `work`, independent of its parent's.
