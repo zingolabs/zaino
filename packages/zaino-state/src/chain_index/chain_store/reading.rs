@@ -213,16 +213,7 @@ pub(crate) async fn compact_blocks_ascending<R: CompactBlockRead>(
     let filter = zaino_chain_store_zainodb::conversion::pool_filter_from_wire(pools);
 
     let chunks = reader.compact_stream(start, end, filter).await?;
-    Ok(Box::pin(chunks.flat_map(|chunk| {
-        futures::stream::iter(match chunk {
-            Ok(blocks) => blocks
-                .iter()
-                .map(zaino_chain_store_zainodb::conversion::compact_block_to_wire)
-                .map(Ok)
-                .collect::<Vec<_>>(),
-            Err(error) => vec![Err(wire_status(error))],
-        })
-    })))
+    Ok(Box::pin(chunks.flat_map(wire_chunk)))
 }
 
 /// Compact blocks over `end..=start`, descending, in the wire shape.
@@ -273,16 +264,7 @@ pub(crate) async fn compact_blocks_descending<R: CompactBlockRead + Clone + 'sta
         }
     });
 
-    Ok(Box::pin(stream.flat_map(|chunk| {
-        futures::stream::iter(match chunk {
-            Ok(blocks) => blocks
-                .iter()
-                .map(zaino_chain_store_zainodb::conversion::compact_block_to_wire)
-                .map(Ok)
-                .collect::<Vec<_>>(),
-            Err(error) => vec![Err(wire_status(error))],
-        })
-    })))
+    Ok(Box::pin(stream.flat_map(wire_chunk)))
 }
 
 /// The lowest height a descending chunk starting at `top` should cover.
@@ -314,6 +296,25 @@ const DESCENDING_CHUNK: u32 = 1024;
 /// boundary.
 pub(crate) type WireCompactBlocks =
     std::pin::Pin<Box<dyn Stream<Item = Result<CompactBlock, tonic::Status>> + Send>>;
+
+/// Flatten one chunk from the compact block port into the wire results the
+/// stream yields.
+///
+/// A read failure becomes a single status; a chunk of blocks becomes one wire
+/// result per block. Shared by the ascending and descending streams, which
+/// flatten their chunks the same way and differ only in how the chunks arrive.
+fn wire_chunk(
+    chunk: Result<Vec<zaino_primitives::types::CompactBlock>, ChainStoreError>,
+) -> futures::stream::Iter<std::vec::IntoIter<Result<CompactBlock, tonic::Status>>> {
+    futures::stream::iter(match chunk {
+        Ok(blocks) => blocks
+            .iter()
+            .map(zaino_chain_store_zainodb::conversion::compact_block_to_wire)
+            .map(Ok)
+            .collect(),
+        Err(error) => vec![Err(wire_status(error))],
+    })
+}
 
 /// A store failure, as the gRPC status the block stream carries.
 ///
