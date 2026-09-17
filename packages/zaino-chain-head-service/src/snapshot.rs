@@ -24,9 +24,6 @@ use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
 };
 
-#[cfg(test)]
-mod invariants;
-
 /// A transaction's block-order position, as a [`TxIndex`].
 ///
 /// The slot is a `usize` from iterating the block's transactions; the position
@@ -245,6 +242,19 @@ impl MapBackedSnapshot {
             };
             current = parent;
         }
+    }
+}
+
+/// Read-only views of the representation, for the invariant checks in the
+/// crate's tests.
+#[cfg(test)]
+impl MapBackedSnapshot {
+    pub(crate) fn others(&self) -> &HashMap<BlockHash, ChainHeadBlock> {
+        &self.others
+    }
+
+    pub(crate) fn heights_to_hashes(&self) -> &HashMap<Height, BlockHash> {
+        &self.heights_to_hashes
     }
 }
 
