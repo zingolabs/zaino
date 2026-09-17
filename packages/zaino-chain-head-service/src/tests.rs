@@ -43,12 +43,10 @@ use crate::{
     snapshot::MapBackedSnapshot,
 };
 
-mod snapshot;
-
 /// A valid nBits value: non-negative, non-zero, no overflow.
 const VALID_BITS: u32 = 0x2007_ffff;
 
-fn hash(id: u16) -> BlockHash {
+pub(crate) fn hash(id: u16) -> BlockHash {
     let mut bytes = [0; 32];
     bytes[..2].copy_from_slice(&id.to_le_bytes());
     BlockHash::from(bytes)
@@ -60,12 +58,12 @@ fn id_of(hash: &BlockHash) -> u16 {
     u16::from_le_bytes([bytes[0], bytes[1]])
 }
 
-fn height(h: u32) -> Height {
+pub(crate) fn height(h: u32) -> Height {
     Height::try_from(h).expect("test height in range")
 }
 
 /// A block identified by a small integer, so test chains read as `1 -> 2 -> 3`.
-fn block(h: u32, id: u16, parent: u16) -> Block {
+pub(crate) fn block(h: u32, id: u16, parent: u16) -> Block {
     Block {
         header: BlockHeader {
             hash: hash(id),
@@ -321,7 +319,7 @@ async fn wait_for(
 }
 
 /// The canonical chain's hashes, lowest first.
-fn best_chain_hashes(snapshot: &MapBackedSnapshot) -> Vec<BlockHash> {
+pub(crate) fn best_chain_hashes(snapshot: &MapBackedSnapshot) -> Vec<BlockHash> {
     snapshot.best_chain().map(|block| block.hash()).collect()
 }
 
