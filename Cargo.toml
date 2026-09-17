@@ -198,6 +198,7 @@ config = { version = "0.15", default-features = false, features = ["toml"] }
 proptest = "~1.11"
 arc-swap = "1.7.1"
 criterion = "0.8.2"
+imbl = "7.0.2"
 
 [profile.test]
 opt-level = 3
