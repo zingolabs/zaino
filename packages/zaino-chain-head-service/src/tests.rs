@@ -78,11 +78,7 @@ pub(crate) fn block(h: u32, id: u16, parent: u16) -> Block {
             solution: EquihashSolution::Regtest([0; 36]),
         },
         transactions: vec![],
-        chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
-        },
+        chain_metadata: ChainMetadata::ZERO,
     }
 }
 
