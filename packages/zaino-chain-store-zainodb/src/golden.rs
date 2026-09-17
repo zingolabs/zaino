@@ -46,7 +46,6 @@
 //! [`zaino_primitives::types::MempoolInfo`] with no encoding to pin.
 
 use std::fmt::Debug;
-use std::num::NonZeroU128;
 
 use crate::entry::{StoredEntryFixed, StoredEntryVar};
 use crate::store::capability::{DbMetadata, DbVersion, MigrationStatus};
@@ -55,11 +54,11 @@ use crate::types::db::legacy::AddrEventBytes;
 use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::types::EquihashSolution;
 use crate::types::{
-    AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, ChainWork,
-    CompactDifficulty, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, Height,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, ScriptType,
-    ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TxInCompact,
-    TxLocation, TxOutCompact, TxidList,
+    AbsoluteChainWork, AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash,
+    BlockHeaderData, CompactDifficulty, CompactOrchardAction, CompactSaplingOutput,
+    CompactSaplingSpend, Height, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
+    SaplingTxList, ScriptType, ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx,
+    TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
 use zaino_encoding::{FixedEncodedLen, ZainoVersionedSerde};
 
@@ -184,7 +183,7 @@ fn block_context() -> BlockContext {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        ChainWork::new(NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
+        AbsoluteChainWork::new(core::num::NonZeroU128::new(0x0dec_0de0).expect("nonzero")),
         height(),
     )
 }
@@ -340,7 +339,7 @@ fn block_goldens() {
     );
     // The composite that reaches disk as the `headers` row: an outer V2 tag,
     // then `PersistentBlockContext` V2 (itself two `BlockHash`es, a
-    // big-endian `ChainWork` and a big-endian `Height`), then `BlockData` V1.
+    // big-endian `AbsoluteChainWork` and a big-endian `Height`), then `BlockData` V1.
     // This is also what pins the three module-private `Persistent*` types.
     assert_golden(
         "BlockHeaderData",

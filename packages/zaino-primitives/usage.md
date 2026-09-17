@@ -158,6 +158,36 @@ external-input validation step for a signed value, the same discipline the
 crate applies at every wire and persistence boundary, pushed down to the
 primitive.
 
+## The work quantity family
+
+Two quantities share the proof-of-work unit and are not interchangeable:
+
+| type | is |
+|---|---|
+| `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
+| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
+
+Each fold is a method on the type it returns, and each is checked:
+
+```rust,ignore
+// A chain of one block has that block's work.
+let mut total = AbsoluteChainWork::genesis(block_work);
+
+// Extend by one block; unwind one on reorg. Both checked, with typed errors.
+total = total.accumulate(next_block_work)?;
+total = total.rollback(next_block_work)?;
+```
+
+`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
+sends, and answers `Ok(None)` when the validator does not track the value;
+`to_be_bytes` renders back for the wire. For an integer you already hold, use
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+
+The difficulty-to-work derivation is consensus logic and lives outside this
+crate. The `types::work` module documentation covers why these are separate
+types, and what `AbsoluteChainWork` is *not* — in particular
+`zaino-chain-head`'s anchor-relative work, which is a third quantity.
+
 ## Byte order
 
 Internal order throughout. `BlockHash` and `TransactionHash` hold bytes in the

@@ -30,7 +30,9 @@ use tower::ServiceExt;
 use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height};
+use zaino_primitives::types::{
+    Block, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
+};
 use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
 
 /// Ask the state service one question.
@@ -58,6 +60,19 @@ fn unexpected_response(request: &'static str) -> FetchError {
         FailureMode::Parse,
         format!("state service returned an unexpected response to {request}"),
     )
+}
+
+/// A pool's tree root and its note count as the state service reports it.
+///
+/// The count arrives as a `u64`; one the compact protocol cannot carry is
+/// refused here rather than narrowed.
+fn tree_root_info(root: [u8; 32], count: u64) -> Result<TreeRootInfo, FetchError> {
+    let size = TreeSize::try_from(count)
+        .map_err(|error| FetchError::new(FailureMode::Parse, format!("state service: {error}")))?;
+    Ok(TreeRootInfo {
+        root: TreeRoot::new(root),
+        size,
+    })
 }
 
 /// The state service returned rows out of order.
@@ -203,11 +218,7 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
                 // Cumulative tree sizes are indexed state rather than block
                 // data, so they are zero here and filled in by whatever tracks
                 // them. Zero is a placeholder, not a measurement.
-                let chain_metadata = ChainMetadata {
-                    sapling_tree_size: 0,
-                    orchard_tree_size: 0,
-                    ironwood_tree_size: 0,
-                };
+                let chain_metadata = ChainMetadata::ZERO;
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
             }
@@ -259,11 +270,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
         match read(&self.state, ReadRequest::Block(zebra_hash.into())).await? {
             ReadResponse::Block(Some(arc_block)) => {
                 // Tree sizes are indexed state, not block data — see `GetBlock`.
-                let chain_metadata = ChainMetadata {
-                    sapling_tree_size: 0,
-                    orchard_tree_size: 0,
-                    ironwood_tree_size: 0,
-                };
+                let chain_metadata = ChainMetadata::ZERO;
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
             }
@@ -692,7 +699,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
         zaino_primitives::types::TreeRoots,
         QueryError<zaino_source::GetCommitmentTreeRootsError>,
     > {
-        use zaino_primitives::types::{TreeRootInfo, TreeRoots};
+        use zaino_primitives::types::TreeRoots;
 
         let id = hash_or_height(block);
 
@@ -707,24 +714,24 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
         // Unlike the RPC path, the state service hands back a live tree, so the
         // root and count are read from it directly rather than deserialised.
         let sapling = match sapling? {
-            ReadResponse::SaplingTree(tree) => tree.as_deref().map(|tree| TreeRootInfo {
-                root: zaino_primitives::types::TreeRoot::new(tree.root().into()),
-                size: tree.count(),
-            }),
+            ReadResponse::SaplingTree(tree) => tree
+                .as_deref()
+                .map(|tree| tree_root_info(tree.root().into(), tree.count()))
+                .transpose()?,
             _ => return Err(unexpected_response("SaplingTree").into()),
         };
         let orchard = match orchard? {
-            ReadResponse::OrchardTree(tree) => tree.as_deref().map(|tree| TreeRootInfo {
-                root: zaino_primitives::types::TreeRoot::new(tree.root().into()),
-                size: tree.count(),
-            }),
+            ReadResponse::OrchardTree(tree) => tree
+                .as_deref()
+                .map(|tree| tree_root_info(tree.root().into(), tree.count()))
+                .transpose()?,
             _ => return Err(unexpected_response("OrchardTree").into()),
         };
         let ironwood = match ironwood? {
-            ReadResponse::IronwoodTree(tree) => tree.as_deref().map(|tree| TreeRootInfo {
-                root: zaino_primitives::types::TreeRoot::new(tree.root().into()),
-                size: tree.count(),
-            }),
+            ReadResponse::IronwoodTree(tree) => tree
+                .as_deref()
+                .map(|tree| tree_root_info(tree.root().into(), tree.count()))
+                .transpose()?,
             _ => return Err(unexpected_response("IronwoodTree").into()),
         };
 
@@ -1395,6 +1402,24 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,
         })
+    }
+}
+
+#[cfg(test)]
+mod tree_root_info_tests {
+    use super::tree_root_info;
+    use zaino_primitives::types::TreeSize;
+    use zaino_source::FailureMode;
+
+    /// The largest count the compact protocol carries is accepted, and a full
+    /// depth-32 tree (`2^32`) is refused rather than wrapped to zero (#549).
+    #[test]
+    fn a_count_past_u32_is_refused() {
+        let max = tree_root_info([0; 32], u64::from(u32::MAX)).expect("u32::MAX fits");
+        assert_eq!(max.size, TreeSize::from(u32::MAX));
+
+        let full = tree_root_info([0; 32], 1_u64 << 32).expect_err("2^32 does not fit");
+        assert_eq!(full.mode, FailureMode::Parse);
     }
 }
 
