@@ -84,6 +84,21 @@ impl MockValidator {
         state.blocks.insert(block.header.hash, block);
     }
 
+    /// Replaces the chain from `from` upwards with `len` competing blocks, so
+    /// the next advance has a reorg to resolve.
+    pub(crate) fn reorg(&self, from: u32, len: u32) {
+        let mut state = self.lock();
+        state
+            .best_chain
+            .truncate(usize::try_from(from).expect("bench heights fit usize"));
+        for step in 0..len {
+            let at = from + step;
+            let block = competing_block_at(at);
+            state.best_chain.push(block.header.hash);
+            state.blocks.insert(block.header.hash, block);
+        }
+    }
+
     fn tip(&self) -> (BlockHash, Height) {
         let state = self.lock();
         let at = state.best_chain.len() - 1;
@@ -153,6 +168,26 @@ fn hash(id: u32) -> BlockHash {
 }
 
 /// The canonical block at `at`, carrying [`TRANSACTIONS`] transactions.
+/// Keeps a competing branch's hashes clear of the canonical chain's.
+const BRANCH: u32 = 1_000_000;
+
+/// How deep the reorg scenario rewinds before extending again.
+pub(crate) const REORG_DEPTH: u32 = 10;
+
+/// The competing block at `at`: the same height, a different hash, and a
+/// parent on the competing branch unless it is the branch's first block.
+fn competing_block_at(at: u32) -> Block {
+    let mut block = block_at(at);
+    block.header.hash = hash(at + BRANCH);
+    if at > WINDOW - REORG_DEPTH {
+        block.header.prev_hash = hash(at - 1 + BRANCH);
+    }
+    block.transactions = (0..TRANSACTIONS)
+        .map(|index| transaction(at + BRANCH, index))
+        .collect();
+    block
+}
+
 fn block_at(at: u32) -> Block {
     Block {
         header: BlockHeader {
