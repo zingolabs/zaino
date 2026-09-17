@@ -89,7 +89,7 @@ mod chain_query_interface {
                 .read(SCRAPE)
                 .await
                 .map_err(anyhow::Error::msg)?
-                .height_gauge(family("zaino_db_tip_height")),
+                .height(zaino_testutils::finalised::DB_TIP_HEIGHT),
             None,
             "ephemeral mode must open no finalised database, but the finalised writer \
              reported a committed tip"

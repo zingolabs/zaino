@@ -34,8 +34,8 @@ use zaino_primitives::types::{
     AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
     BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot, NetworkUpgradeInfo,
     NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId, TransactionLocation,
-    TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo, ValuePoolBalance,
-    Zatoshis, ZatoshisFlowSum,
+    TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate,
+    Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -294,6 +294,10 @@ pub(crate) enum ParseError {
     /// Value too large.
     #[error("value {0} overflows target type")]
     Overflow(u64),
+
+    /// A reported commitment tree size does not fit a [`TreeSize`].
+    #[error("tree size: {0}")]
+    TreeSize(#[from] TreeSizeOutOfRange),
 
     /// Height validation failed.
     #[error("invalid height: {0}")]
@@ -780,9 +784,16 @@ pub(crate) fn parse_subtree_roots(
 /// yet, and an empty tree has a well-defined root.
 fn parse_tree_roots_inner(value: &serde_json::Value) -> Result<TreeRoots, ParseError> {
     Ok(TreeRoots {
-        sapling: sapling_pool_root(opt_field(value, "sapling"))?,
-        orchard: orchard_shaped_pool_root(opt_field(value, "orchard"))?,
-        ironwood: orchard_shaped_pool_root(opt_field(value, "ironwood"))?,
+        sapling: pool_root::<sapling_crypto::Node>(opt_field(value, "sapling"), |r| r.to_bytes())?,
+        // Orchard and Ironwood share a node type and a root representation, so
+        // they share this reader — they differ only in which field they read.
+        orchard: pool_root::<zebra_chain::orchard::tree::Node>(opt_field(value, "orchard"), |r| {
+            r.to_repr()
+        })?,
+        ironwood: pool_root::<zebra_chain::orchard::tree::Node>(
+            opt_field(value, "ironwood"),
+            |r| r.to_repr(),
+        )?,
     })
 }
 
@@ -807,29 +818,25 @@ fn pool_final_state(pool: Option<&serde_json::Value>) -> Result<Option<Vec<u8>>,
     }
 }
 
-fn sapling_pool_root(pool: Option<&serde_json::Value>) -> Result<Option<TreeRootInfo>, ParseError> {
-    let Some(bytes) = pool_final_state(pool)? else {
-        return Ok(None);
-    };
-    let tree = read_tree::<sapling_crypto::Node>(&bytes)?;
-    Ok(Some(TreeRootInfo {
-        root: TreeRoot::new(tree.root().to_bytes()),
-        size: tree.size() as u64,
-    }))
-}
-
-/// Orchard and Ironwood share a node type and a root representation, so they
-/// share this reader — the pools differ only in which field they came from.
-fn orchard_shaped_pool_root(
+/// Read one pool's final-state tree and turn its root into a [`TreeRootInfo`].
+///
+/// The pools differ only in the tree node type `N` and in how that node's root
+/// is turned into its 32 bytes, so `root_bytes` supplies that last step per
+/// pool (`Node::to_bytes` for Sapling, `Node::to_repr` for Orchard/Ironwood).
+fn pool_root<N>(
     pool: Option<&serde_json::Value>,
-) -> Result<Option<TreeRootInfo>, ParseError> {
+    root_bytes: impl FnOnce(N) -> [u8; 32],
+) -> Result<Option<TreeRootInfo>, ParseError>
+where
+    N: incrementalmerkletree::Hashable + Clone + zcash_primitives::merkle_tree::HashSer,
+{
     let Some(bytes) = pool_final_state(pool)? else {
         return Ok(None);
     };
-    let tree = read_tree::<zebra_chain::orchard::tree::Node>(&bytes)?;
+    let tree = read_tree::<N>(&bytes)?;
     Ok(Some(TreeRootInfo {
-        root: TreeRoot::new(tree.root().to_repr()),
-        size: tree.size() as u64,
+        root: TreeRoot::new(root_bytes(tree.root())),
+        size: tree_size(tree.size())?,
     }))
 }
 
@@ -987,14 +994,21 @@ pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerb
 ///
 /// Absent means the pool is not active at this block, which is a size of zero
 /// rather than unknown — a pool with no activation has committed no notes.
-fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<u64, ParseError> {
+fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<TreeSize, ParseError> {
     let Some(size) = trees
         .and_then(|t| t.get(pool))
         .and_then(|p| opt_field(p, "size"))
     else {
-        return Ok(0);
+        return Ok(TreeSize::ZERO);
     };
-    as_u64(size)
+    Ok(TreeSize::try_from(as_u64(size)?)?)
+}
+
+/// A deserialised tree's `usize` note count, as a [`TreeSize`].
+fn tree_size(count: usize) -> Result<TreeSize, ParseError> {
+    let count = u64::try_from(count)
+        .map_err(|_| ParseError::Deserialize(format!("tree size {count} does not fit u64")))?;
+    Ok(TreeSize::try_from(count)?)
 }
 
 /// Parse a `getblockdeltas` response.
@@ -1148,6 +1162,26 @@ mod tests {
         assert_eq!(as_nonce(&value).expect("nonce"), asymmetric_bytes());
     }
 
+    /// A reported tree size is accepted up to `u32::MAX` and a full depth-32
+    /// tree (`2^32`) is refused at parse rather than stored as a wrapped value
+    /// (issue #549).
+    #[test]
+    fn tree_size_past_u32_is_refused() {
+        let trees = |size: u64| json!({ "sapling": { "size": size } });
+
+        let max = u64::from(u32::MAX);
+        assert_eq!(
+            pool_tree_size(Some(&trees(max)), "sapling").expect("u32::MAX fits"),
+            TreeSize::from(u32::MAX)
+        );
+
+        let full = 1_u64 << 32;
+        assert!(matches!(
+            pool_tree_size(Some(&trees(full)), "sapling"),
+            Err(ParseError::TreeSize(TreeSizeOutOfRange { got })) if got == full
+        ));
+    }
+
     /// The health sentinels differ per method, and both must read as "healthy"
     /// rather than reaching a consumer as a message it would display.
     #[test]
@@ -1232,9 +1266,13 @@ mod tests {
         let roots = parse_tree_roots(&empty_pools).expect("empty trees are valid");
 
         let sapling = roots.sapling.expect("sapling pool present");
-        assert_eq!(sapling.size, 0, "an empty tree holds no commitments");
+        assert_eq!(
+            sapling.size,
+            TreeSize::ZERO,
+            "an empty tree holds no commitments"
+        );
         let orchard = roots.orchard.expect("orchard pool present");
-        assert_eq!(orchard.size, 0);
+        assert_eq!(orchard.size, TreeSize::ZERO);
         assert!(
             roots.ironwood.is_none(),
             "a pool absent from the response stays absent"
@@ -1253,7 +1291,8 @@ mod tests {
         let sapling = roots.sapling.expect("pool present");
 
         assert_eq!(
-            sapling.size, 0,
+            sapling.size,
+            TreeSize::ZERO,
             "size comes from the tree, and there is no tree here"
         );
     }

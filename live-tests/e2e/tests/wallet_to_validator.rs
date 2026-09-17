@@ -505,7 +505,10 @@ mod wallet {
 
         // The load-bearing advance: push the send below the seam so it crosses
         // the finalised floor (`tip - seam`) into the finalized DB.
-        let tip = validator.generate_blocks(SEAM_ADVANCE).to(FILLER_ADDRESS).await?;
+        let tip = validator
+            .generate_blocks(SEAM_ADVANCE)
+            .to(FILLER_ADDRESS)
+            .await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
         // Without this the test is vacuous: it would compare two reads that
