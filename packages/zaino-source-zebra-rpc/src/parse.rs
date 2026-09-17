@@ -242,10 +242,8 @@ fn parse_pool_final_state(
                     hex::decode(hex_str).map_err(|e| ParseError::Hex(e.to_string()))
                 })
                 .map(|final_state| zaino_primitives::types::PoolTreestate {
-                    // `finalRoot` is not read back from the validator's reply.
-                    // Zebra's own type documents the field as unused, so
-                    // trusting it here would make the answer depend on which
-                    // validator is behind the adapter. Roots come from
+                    // `finalRoot` is not read back: older Zebras send null, and a
+                    // read-state has no reply to read. Roots come from
                     // `get_commitment_tree_roots`, which every adapter answers.
                     final_root: None,
                     final_state,
@@ -766,14 +764,10 @@ pub(crate) fn parse_subtree_roots(
 ///
 /// # Why this deserialises a tree
 ///
-/// `z_gettreestate` does not report roots or sizes directly. Zebra emits
-/// `finalRoot` as `null` — its own type documents the field as unused — and no
-/// `finalSize` field exists in the response at all. The only thing carried is
-/// `finalState`: the serialised note commitment tree.
-///
-/// So the root and the size are *computed* here by deserialising that tree,
-/// rather than read off the response. Reading the nominal fields would report
-/// every pool as inactive against every Zebra node.
+/// `z_gettreestate` carries no size at all, and its `finalRoot` is a display-order
+/// string whose byte order is per-pool. Deserialising `finalState` yields both
+/// facts from one field, in one byte order, for every validator — including the
+/// older Zebras that sent `finalRoot: null`.
 ///
 /// A pool with no `finalState` is treated as an empty tree rather than an
 /// absent one: the pool exists at this height, it simply has no commitments

@@ -212,6 +212,10 @@ and this library adheres to Rust's notion of
   gates code (ADR-0001, ADR-0005).
 
 ### Fixed
+- `z_gettreestate` wrote the Orchard and Ironwood `finalRoot` byte-reversed. The
+  reversal that turns a Sapling root into display order is Sapling's alone — a
+  Pallas root's `to_repr` is already display order — so both pools named a root
+  no chain ever had.
 - `GetBlock` and `GetBlockNullifiers` served every pool unconditionally, while
   `GetBlockRange`/`GetBlockRangeNullifiers` honoured the request's `poolTypes`
   and default to the legacy shielded-only set. The same height therefore came
