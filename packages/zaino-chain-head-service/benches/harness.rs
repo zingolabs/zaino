@@ -4,6 +4,10 @@
 //! carrying transactions, and a chain head stepped by the benchmark rather
 //! than by its writer task.
 
+// Each benchmark target uses a subset of this: the timing one reorgs and
+// reads, the allocation one does not.
+#![allow(dead_code)]
+
 use std::{
     collections::HashMap,
     num::{NonZeroU32, NonZeroU64},
