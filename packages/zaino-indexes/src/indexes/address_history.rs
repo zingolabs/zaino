@@ -22,13 +22,25 @@ use zaino_sync::traits::{
     ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
 };
 
+/// A transparent output with its index already typed: `(index, value, script)`.
+pub type OutputEntry = (OutputIndex, Zatoshis, Script);
+
+/// A transaction's id and its transparent outputs.
+pub type TxOutputs = (TransactionId, Vec<OutputEntry>);
+
 /// Per-index context: the block's height and, per transaction, its id and
-/// transparent outputs `(value, script)`.
+/// transparent outputs.
+///
+/// Each output arrives with its `OutputIndex` already typed — a domain fact of
+/// the parsed transaction, not something this index re-derives. The
+/// `usize → u32` narrowing lives once at the parse boundary (validating the
+/// output-count CompactSize from untrusted bytes); downstream it flows typed, so
+/// extraction is total.
 pub struct AddressCtx {
     /// Block height.
     pub height: BlockHeight,
-    /// Per transaction: `(txid, outputs)`.
-    pub txs: Vec<(TransactionId, Vec<(Zatoshis, Script)>)>,
+    /// Per transaction: its id and outputs.
+    pub txs: Vec<TxOutputs>,
 }
 
 /// A fixed-length transparent address identifier: script type + hash160.
@@ -107,18 +119,13 @@ impl ExtractLocal for AddressHistoryIndex {
     fn extract(ctx: &AddressCtx) -> Result<Self::Delta, ExtractError> {
         let mut receives = Vec::new();
         for (txid, outputs) in &ctx.txs {
-            for (out_index, (value, script)) in outputs.iter().enumerate() {
+            for (output_index, value, script) in outputs {
                 let (hash, script_type) = classify_script(&Vec::<u8>::from(script.clone()));
-                // A transaction's output count is bounded by the block-size
-                // consensus limit, so it always fits u32 — an invariant, not a
-                // runtime error to map lossily.
-                let output_index = OutputIndex::try_from(out_index)
-                    .expect("output index fits u32 (block-size bound)");
                 receives.push(AddressReceive {
                     addr: AddrId { script_type, hash },
                     height: ctx.height,
                     txid: *txid,
-                    output_index,
+                    output_index: *output_index,
                     value: *value,
                 });
             }
@@ -235,8 +242,8 @@ mod tests {
             txs: vec![(
                 txid(1),
                 vec![
-                    (Zatoshis::new(500).expect("valid"), p2pkh([7; 20])),
-                    (Zatoshis::new(300).expect("valid"), p2pkh([9; 20])),
+                    (0, Zatoshis::new(500).expect("valid"), p2pkh([7; 20])),
+                    (1, Zatoshis::new(300).expect("valid"), p2pkh([9; 20])),
                 ],
             )],
         };
