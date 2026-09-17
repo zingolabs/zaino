@@ -1,17 +1,22 @@
-//! A map-backed implementation of the ChainHead view.
+//! The ChainHead view, held in persistent collections.
 //!
 //! The graph's only stored edge is each block's parent hash. Everything else —
 //! which blocks are tips, how far a branch is from the canonical chain, where a
 //! transaction sits — is derived by walking that edge.
 //!
+//! The collections are `imbl`'s, and blocks sit behind [`Arc`], so a clone
+//! shares its structure with the graph it came from rather than copying every
+//! block. The service clones the published graph once per publication and
+//! readers keep earlier ones alive, so that is the cost that decides what a
+//! chain head is worth: see this crate's benchmarks.
+//!
 //! The representation lives here rather than in `zaino-chain-head` on purpose:
 //! `ChainHeadSnapshot` is a capability, and how the graph is stored is this
-//! runtime's business. A future runtime holding the same graph in persistent
-//! structures — sharing unchanged subtrees between snapshots instead of cloning
-//! maps on every publish — implements the same trait, and no consumer notices.
+//! runtime's business.
 
-use std::collections::{HashMap, HashSet};
+use std::{collections::HashSet, sync::Arc};
 
+use imbl::{HashMap, OrdMap};
 use zaino_chain_head::{
     snapshot::{
         ChainHeadBlockIter, ChainHeadTransactionLocations, ChainHeadTransactionService,
@@ -40,7 +45,8 @@ fn tx_index(position: usize) -> TxIndex {
         .expect("a block's transaction count fits TxIndex; consensus bounds it below u32::MAX")
 }
 
-/// The retained graph: its tip, and every other retained block in a hash map.
+/// The retained graph: its tip, and every other retained block in a persistent
+/// hash map.
 ///
 /// `retained = {tip} ⊎ others`
 ///
@@ -53,9 +59,9 @@ fn tx_index(position: usize) -> TxIndex {
 /// hash.
 #[derive(Debug, Clone)]
 pub struct MapBackedSnapshot {
-    tip: ChainHeadBlock,
-    others: HashMap<BlockHash, ChainHeadBlock>,
-    heights_to_hashes: HashMap<Height, BlockHash>,
+    tip: Arc<ChainHeadBlock>,
+    others: HashMap<BlockHash, Arc<ChainHeadBlock>>,
+    heights_to_hashes: OrdMap<Height, BlockHash>,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
     ///
     /// Private even to the rest of this crate, and written only by
@@ -77,18 +83,37 @@ impl MapBackedSnapshot {
 
     /// Every retained block, the tip first.
     fn blocks(&self) -> impl Iterator<Item = &ChainHeadBlock> {
-        std::iter::once(&self.tip).chain(self.others.values())
+        std::iter::once(self.tip.as_ref()).chain(self.others.values().map(Arc::as_ref))
     }
 
     /// Makes `block` the tip; the previous tip becomes an ordinary retained
     /// block. `block` may already be retained, in which case it moves out of
     /// `others`.
-    fn replace_tip(&mut self, block: ChainHeadBlock) {
+    fn replace_tip(&mut self, block: Arc<ChainHeadBlock>) {
         self.others.remove(&block.hash());
         let previous = std::mem::replace(&mut self.tip, block);
         if previous.hash() != self.tip.hash() {
             self.others.insert(previous.hash(), previous);
         }
+    }
+
+    /// The index entries at and above `floor`, plus the tip's.
+    fn index_from(&self, floor: Height) -> OrdMap<Height, BlockHash> {
+        let (_below, at_floor, mut kept) = self.heights_to_hashes.split_lookup(&floor);
+        if let Some(hash) = at_floor {
+            kept.insert(floor, hash);
+        }
+        kept.insert(self.tip.height(), self.tip.hash());
+        kept
+    }
+
+    /// The index entries at and below `top`.
+    fn index_up_to(&self, top: Height) -> OrdMap<Height, BlockHash> {
+        let (mut kept, at_top, _above) = self.heights_to_hashes.split_lookup(&top);
+        if let Some(hash) = at_top {
+            kept.insert(top, hash);
+        }
+        kept
     }
 
     /// How many blocks separate this tip from the canonical chain.
@@ -115,9 +140,9 @@ impl MapBackedSnapshot {
 
 impl ChainGraph for MapBackedSnapshot {
     fn from_initial_block(block: ChainHeadBlock) -> Self {
-        let heights_to_hashes = HashMap::from([(block.height(), block.hash())]);
+        let heights_to_hashes = OrdMap::unit(block.height(), block.hash());
         Self {
-            tip: block,
+            tip: Arc::new(block),
             others: HashMap::new(),
             heights_to_hashes,
             generation: 0,
@@ -131,13 +156,16 @@ impl ChainGraph for MapBackedSnapshot {
     /// Folds over `others` from the tip, so the tip is the answer unless a
     /// block carries strictly more work.
     fn heaviest_block(&self) -> &ChainHeadBlock {
-        self.others.values().fold(&self.tip, |heaviest, block| {
-            if block.work > heaviest.work {
-                block
-            } else {
-                heaviest
-            }
-        })
+        self.others
+            .values()
+            .map(Arc::as_ref)
+            .fold(self.tip.as_ref(), |heaviest, block| {
+                if block.work > heaviest.work {
+                    block
+                } else {
+                    heaviest
+                }
+            })
     }
 
     fn extend(&mut self, block: ChainHeadBlock) -> Result<(), NotChildOfTip> {
@@ -149,7 +177,7 @@ impl ChainGraph for MapBackedSnapshot {
             });
         }
         self.heights_to_hashes.insert(block.height(), block.hash());
-        self.replace_tip(block);
+        self.replace_tip(Arc::new(block));
         Ok(())
     }
 
@@ -163,18 +191,15 @@ impl ChainGraph for MapBackedSnapshot {
         let Some(new_tip) = self.others.remove(&block.hash) else {
             return Err(NotOnBestChain);
         };
-        self.heights_to_hashes
-            .retain(|height, _hash| *height <= block.height);
+        self.heights_to_hashes = self.index_up_to(block.height);
         self.replace_tip(new_tip);
         Ok(())
     }
 
     /// The tip is not in `others`, so trimming `others` cannot remove it.
     fn remove_finalized_blocks(&mut self, floor: Height) {
-        let tip_hash = self.tip.hash();
         self.others.retain(|_hash, block| block.height() >= floor);
-        self.heights_to_hashes
-            .retain(|height, hash| *height >= floor || *hash == tip_hash);
+        self.heights_to_hashes = self.index_from(floor);
     }
 
     fn stamp_generation(&mut self, previous: &Self, highest_published: u64) {
@@ -202,7 +227,7 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
         if *hash == self.tip.hash() {
             Some(&self.tip)
         } else {
-            self.others.get(hash)
+            self.others.get(hash).map(Arc::as_ref)
         }
     }
 
