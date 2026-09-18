@@ -22,3 +22,7 @@ zaino-runtime = { path = "../zaino-runtime" }
 zaino-component = { path = "../zaino-component" }
 zaino-persistence = { workspace = true, features = ["testing"] }
 tokio = { workspace = true }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-sync = { path = "../zaino-sync" }
+zaino-indexes = { path = "../zaino-indexes" }
+zaino-source = { path = "../zaino-source", features = ["testing"] }

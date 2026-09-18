@@ -6335,10 +6335,13 @@ dependencies = [
  "tokio",
  "zaino-component",
  "zaino-core",
+ "zaino-indexer",
  "zaino-indexes",
  "zaino-persistence",
  "zaino-runtime",
  "zaino-service",
+ "zaino-source",
+ "zaino-sync",
 ]
 
 [[package]]
