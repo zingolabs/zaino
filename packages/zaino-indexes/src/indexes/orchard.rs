@@ -1,6 +1,6 @@
 //! OrchardIndex (BlockLocal × Append): height → compact orchard data per block.
 
-use zaino_primitives::types::{EncryptedCiphertext, EphemeralKey, NoteCommitment, Nullifier};
+use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{
@@ -11,7 +11,7 @@ use zaino_sync::traits::{
 #[derive(Debug, Clone)]
 pub struct OrchardTxCompact {
     /// Orchard actions: (nullifier, cmx, epk, enc_ciphertext_52bytes).
-    pub actions: Vec<(Nullifier, NoteCommitment, EphemeralKey, EncryptedCiphertext)>,
+    pub actions: Vec<(Nullifier, NoteCommitment, EphemeralKey, CompactCiphertext)>,
 }
 
 /// Per-index context.
@@ -90,7 +90,7 @@ impl Schema<Vec<OrchardEntry>> for OrchardIndex {
                 buf.extend_from_slice(&<[u8; 32]>::from(*nf));
                 buf.extend_from_slice(&<[u8; 32]>::from(*cmx));
                 buf.extend_from_slice(&<[u8; 32]>::from(*epk));
-                let enc_bytes: Vec<u8> = enc.clone().into();
+                let enc_bytes = <[u8; CompactCiphertext::LENGTH]>::from(*enc).to_vec();
                 buf.extend_from_slice(&(enc_bytes.len() as u32).to_le_bytes());
                 buf.extend_from_slice(&enc_bytes);
             }

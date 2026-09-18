@@ -68,7 +68,14 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
     let txid_locations: Vec<(TransactionId, BlockHeight, u32)> = block
         .transactions
         .iter()
-        .map(|tx| (tx.txid, height, tx.index))
+        .enumerate()
+        .map(|(index, tx)| {
+            (
+                tx.txid,
+                height,
+                u32::try_from(index).expect("transaction index fits in u32"),
+            )
+        })
         .collect();
 
     let transparent_txs: Vec<TransparentTxCompact> = block

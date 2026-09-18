@@ -12,13 +12,12 @@
 # keeps moving and a later RC gets its own deployment run (coalesce-to-latest).
 #
 # `deployment_status` events run the workflow from the DEFAULT branch, so this
-# file must be on the default branch at cutover. `tools/scripts/mark-deployment.sh`
-# posts the same signal to exercise this reaction in seconds instead of days.
+# file must be on the default branch at cutover. `deployment-signoff.yml` posts
+# the same signal by hand.
 #
 # Any account with `deployments: write` can post a `success`, so set the repo
 # variable RELMAN_DEPLOYMENT_REPORTER to the login of the account the cluster
-# posts as; once set, a status from any other login is refused. Leave it unset
-# while the bridge is exercised by hand with mark-deployment.sh.
+# posts as; once set, a status from any other login is refused.
 # See docs/release/implementation.md § "The deployment-gate bridge".
 # ============================================================================
 

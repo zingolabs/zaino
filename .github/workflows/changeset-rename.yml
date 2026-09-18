@@ -97,7 +97,9 @@ jobs:
 
       - name: Set up relman
         if: steps.guard.outputs.same_repo == 'true'
-        uses: ./.github/actions/setup-relman
+        uses: zingolabs/release_manager/.github/actions/setup-relman@7b87e4ab916d72f026ff1d1c80f82dd816bff3c7
+        with:
+          version: 7b87e4ab916d72f026ff1d1c80f82dd816bff3c7
 
       - name: Rename changeset(s) to pr-<N> and push if changed
         if: steps.guard.outputs.same_repo == 'true'

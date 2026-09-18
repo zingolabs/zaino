@@ -97,7 +97,7 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
         buf.extend_from_slice(&<[u8; 32]>::from(value.hash));
         buf.extend_from_slice(&<[u8; 32]>::from(value.prev_hash));
         buf.extend_from_slice(&value.time.to_le_bytes());
-        buf.extend_from_slice(&value.bits.to_le_bytes());
+        buf.extend_from_slice(&value.bits.as_bits().to_le_bytes());
         buf
     }
 
@@ -123,7 +123,10 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
             hash: BlockHash::from(hash),
             prev_hash: BlockHash::from(prev_hash),
             time: u32::from_le_bytes(bytes[64..68].try_into().expect("4 bytes")),
-            bits: u32::from_le_bytes(bytes[68..72].try_into().expect("4 bytes")),
+            bits: CompactDifficulty::try_from_bits(u32::from_le_bytes(
+                bytes[68..72].try_into().expect("4 bytes"),
+            ))
+            .map_err(|_| SchemaDecodeError::Invalid("invalid nBits".to_owned()))?,
         })
     }
 }

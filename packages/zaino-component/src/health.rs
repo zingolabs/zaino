@@ -2,10 +2,9 @@
 
 /// How well a component is currently faring — a *condition*.
 ///
-/// Orthogonal to its [`Lifecycle`](crate::Lifecycle): health can change on its
-/// own at any moment (a dependency drops, a task panics), where lifecycle only
-/// moves under management. The two are read independently; neither overwrites
-/// the other.
+/// One of the two axes of a [`ComponentStatus`](crate::ComponentStatus); see
+/// the crate documentation for how it relates to
+/// [`Lifecycle`](crate::Lifecycle).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::Display)]
 pub enum Health {
     /// Working normally.

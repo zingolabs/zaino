@@ -692,11 +692,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .await
             .map_err(invalid_params_error_object)?;
 
-        // The only method here whose rendering can fail; see
-        // [`DeltaAmountOutOfRange`](crate::rpc::jsonrpc::wire::block_deltas::DeltaAmountOutOfRange)
-        // for why. Mapped like every other failure on this interface, which
-        // currently hides its kind from the client.
-        BlockDeltas::from_domain(deltas).map_err(invalid_params_error_object)
+        Ok(BlockDeltas::from_domain(deltas))
     }
 
     async fn get_peer_info(&self) -> Result<GetPeerInfo, ErrorObjectOwned> {
@@ -768,8 +764,11 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_balance(address_strings)
             .await
-            .map(crate::rpc::jsonrpc::wire::address_queries::address_balance_from_domain)
             .map_err(invalid_params_error_object)
+            .and_then(|balance| {
+                crate::rpc::jsonrpc::wire::address_queries::address_balance_from_domain(balance)
+                    .map_err(invalid_params_error_object)
+            })
     }
 
     async fn send_raw_transaction(

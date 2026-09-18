@@ -154,7 +154,7 @@ impl crate::SubscribeChainTip for MockChain {}
 /// `testing` feature so it is reusable, not just an in-crate test helper.
 #[cfg(any(test, feature = "testing"))]
 pub fn test_block(height: u32, hash_byte: u8) -> Block {
-    use zaino_primitives::types::{BlockHeader, ChainMetadata, EquihashSolution};
+    use zaino_primitives::types::{BlockHeader, ChainMetadata, CompactDifficulty, EquihashSolution};
     Block {
         header: BlockHeader {
             hash: BlockHash::from([hash_byte; 32]),
@@ -164,16 +164,12 @@ pub fn test_block(height: u32, hash_byte: u8) -> Block {
             time: 0,
             merkle_root: [0; 32].into(),
             block_commitments: [0; 32].into(),
-            bits: 0,
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
             nonce: [0; 32],
             solution: EquihashSolution::Regtest([0; 36]),
         },
         transactions: vec![],
-        chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
-        },
+        chain_metadata: ChainMetadata::ZERO,
     }
 }
 

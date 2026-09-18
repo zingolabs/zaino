@@ -74,7 +74,7 @@ craneLib.buildPackage (commonArgs // {
     + lib.optionalString (!withTls) " --features no_tls_use_unencrypted_traffic";
 
   passthru = {
-    inherit cargoArtifacts commonArgs;
+    inherit commonArgs;
   };
 
   meta = {

@@ -1,6 +1,6 @@
 //! SaplingIndex (BlockLocal × Append): height → compact sapling data per block.
 
-use zaino_primitives::types::{EncryptedCiphertext, EphemeralKey, NoteCommitment, Nullifier};
+use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{
@@ -13,7 +13,7 @@ pub struct SaplingTxCompact {
     /// Sapling spend nullifiers.
     pub nullifiers: Vec<Nullifier>,
     /// Sapling outputs: (cmu, epk, enc_ciphertext_52bytes).
-    pub outputs: Vec<(NoteCommitment, EphemeralKey, EncryptedCiphertext)>,
+    pub outputs: Vec<(NoteCommitment, EphemeralKey, CompactCiphertext)>,
 }
 
 /// Per-index context.
@@ -95,7 +95,7 @@ impl Schema<Vec<SaplingEntry>> for SaplingIndex {
             for (cmu, epk, enc) in &tx.outputs {
                 buf.extend_from_slice(&<[u8; 32]>::from(*cmu));
                 buf.extend_from_slice(&<[u8; 32]>::from(*epk));
-                let enc_bytes: Vec<u8> = enc.clone().into();
+                let enc_bytes = <[u8; CompactCiphertext::LENGTH]>::from(*enc).to_vec();
                 buf.extend_from_slice(&(enc_bytes.len() as u32).to_le_bytes());
                 buf.extend_from_slice(&enc_bytes);
             }
