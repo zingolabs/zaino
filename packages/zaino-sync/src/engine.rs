@@ -24,20 +24,13 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::backend::{Backend, BackendReader, BackendWriter, Namespace, WriteOp};
+use crate::backend::{Backend, BackendWriter, WriteOp};
 use crate::block_buffer::BlockBuffer;
 use crate::dag::DagError;
-use crate::encode::{Decode, Encode};
 use crate::index_set::IndexSet;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
-
-/// Namespace for engine metadata (watermark, etc.) — not an index.
-const METADATA_NS: Namespace = Namespace::new("_engine_meta");
-
-/// Key for the committed-height watermark entry.
-const WATERMARK_KEY: &[u8] = b"committed_height";
 
 /// Configuration for the sync engine.
 #[derive(Debug, Clone)]
@@ -144,16 +137,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// on a fresh backend. The caller uses this to decide what
     /// `start_height` to pass and where to begin provisioning.
     pub fn committed_height(backend: &B) -> Result<Option<BlockHeight>, SyncError> {
-        let reader = backend.reader()?;
-        let raw = reader.get(METADATA_NS, WATERMARK_KEY)?;
-        match raw {
-            Some(bytes) => {
-                let height = BlockHeight::decode(&bytes)
-                    .map_err(|e| PipelineError::Persist(e.to_string()))?;
-                Ok(Some(height))
-            }
-            None => Ok(None),
-        }
+        Ok(zaino_persistence_codec::watermark::read(&backend.reader()?)?.map(BlockHeight::new))
     }
 
     /// Sync a pre-loaded range of blocks.
@@ -490,11 +474,9 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 .min(u64::from(self.buffer.total_pushed()));
             let committed_height = BlockHeight::new(self.start_height.value() + max_offset - 1);
 
-            ops.push(WriteOp::Put {
-                namespace: METADATA_NS,
-                key: WATERMARK_KEY.to_vec(),
-                value: committed_height.encode(),
-            });
+            ops.push(zaino_persistence_codec::watermark::stamp(
+                committed_height.value(),
+            ));
 
             #[cfg(feature = "tracing")]
             tracing::info!(

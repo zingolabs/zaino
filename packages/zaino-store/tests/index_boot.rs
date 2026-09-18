@@ -18,6 +18,7 @@ use zaino_indexer::{SourceProvisioner, SourceSyncDriver};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_service::{Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader};
@@ -66,7 +67,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
     // The store reads behind the same backend.
     let store = StoreComponent::new(
         ComponentName("store"),
-        StoreReader::new(Arc::new(backend.clone()), None, Height::GENESIS),
+        StoreReader::new(Arc::new(backend.clone())),
     );
 
     let validator = ValidatorComponent::connect(&Probe(true))
@@ -81,7 +82,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
         .boot(indexer)
         .await
         .expect("indexer boots")
-        .boot(store)
+        .boot(store.clone())
         .await
         .expect("store boots")
         .build();
@@ -103,5 +104,21 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
         committed,
         Some(BlockHeight::new(2)),
         "indexed the finalised range up to the mock tip"
+    );
+
+    // The store *consumes* that watermark and composes the tip on read: a
+    // snapshot reports a real BlockId (height + hash) read from the headers
+    // index, and a serviceable range bounded by the finalised tip.
+    let snapshot = store.reader().snapshot().await.expect("snapshot");
+    let tip = snapshot.pinned_tip().expect("a pinned tip after indexing");
+    assert_eq!(
+        u32::from(tip.height),
+        2,
+        "store's pinned tip is the indexed tip"
+    );
+    assert_eq!(
+        u32::from(snapshot.serviceable_range().finalized_tip),
+        2,
+        "store is serviceable up to the finalised tip"
     );
 }

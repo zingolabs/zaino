@@ -16,6 +16,8 @@ zaino-component = { path = "../zaino-component" }
 zaino-persistence = { workspace = true }
 zaino-indexes = { workspace = true }
 tokio = { workspace = true }
+zaino-sync = { version = "0.1.0", path = "../zaino-sync" }
+zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
 
 [dev-dependencies]
 zaino-runtime = { path = "../zaino-runtime" }

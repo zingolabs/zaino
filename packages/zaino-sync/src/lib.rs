@@ -11,6 +11,10 @@ pub mod block_buffer;
 pub mod bridge;
 pub mod dag;
 pub mod descriptor;
+// The generic primitive byte codec is used only by the toy indexes now that the
+// engine persists its watermark through `zaino-persistence-codec`. Gated so it
+// isn't dead code in a production build.
+#[cfg(any(test, feature = "testing"))]
 pub(crate) mod encode;
 pub mod engine;
 pub mod index_set;

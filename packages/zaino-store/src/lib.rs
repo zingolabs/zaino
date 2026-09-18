@@ -34,28 +34,24 @@ use zaino_core::{
     TransactionId, TransparentAddress, Utxo,
 };
 use zaino_indexes::indexes::address_history::{self, AddrId};
-use zaino_persistence::Backend;
+use zaino_indexes::indexes::headers::{HeaderValue, HeadersIndex, ID as HEADERS_ID};
+use zaino_persistence::{Backend, BackendReader, Namespace};
+use zaino_persistence_codec::{freshness, watermark, EntryCodec, Freshness};
 use zaino_service::error::{AddressReadError, Transient};
 use zaino_service::{AddressRead, Snapshot, TakeSnapshot};
+use zaino_sync::primitives::BlockHeight;
 
-/// EXPLORATORY: a read handle over the KV backend. Holds the backend plus the
-/// coherence coordinates the writer would publish (stubbed as constructor args
-/// until that wiring exists).
+/// EXPLORATORY: a read handle over the KV backend. It consumes the writer's
+/// committed watermark on each snapshot — it holds no stubbed coordinates.
 pub struct StoreReader<B> {
     backend: Arc<B>,
-    tip: Option<BlockId>,
-    finalized_tip: Height,
 }
 
 impl<B> StoreReader<B> {
-    /// EXPLORATORY constructor. `tip` / `finalized_tip` stand in for the
-    /// writer's published watermark until the indexer component reports it.
-    pub fn new(backend: Arc<B>, tip: Option<BlockId>, finalized_tip: Height) -> Self {
-        Self {
-            backend,
-            tip,
-            finalized_tip,
-        }
+    /// A reader over `backend`. The finalised tip is read live from the
+    /// backend's watermark at snapshot time, not passed in.
+    pub fn new(backend: Arc<B>) -> Self {
+        Self { backend }
     }
 }
 
@@ -63,22 +59,43 @@ impl<B: Backend + 'static> TakeSnapshot for StoreReader<B> {
     type Snapshot = StoreSnapshot<B>;
 
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
-        // Infallible in this stub: a KV reader is cheap and always available, so
-        // there is no reorg-swap race to surface as `Transient`.
-        let snapshot = StoreSnapshot {
-            backend: self.backend.clone(),
-            tip: self.tip,
-            finalized_tip: self.finalized_tip,
-        };
-        async move { Ok(snapshot) }
+        let backend = self.backend.clone();
+        async move {
+            // Consume the writer's watermark — the finalised tip this view can
+            // answer up to — and pin it. (Reads through the snapshot still hit
+            // live backend state; true read-coherence needs a backend read
+            // transaction, which the in-memory stub lacks. See the crate banner.)
+            let reader = backend
+                .reader()
+                .map_err(|e| Transient(format!("open reader: {e}")))?;
+            let finalized_tip = watermark::read(&reader)
+                .map_err(|e| Transient(format!("read watermark: {e}")))?
+                .map(BlockHeight::new);
+            // Compose the tip's BlockId on read from the headers index, so the
+            // view reports a real (height, hash) rather than a bare height.
+            let pinned_tip = match finalized_tip {
+                Some(height) => read_header::<B>(&reader, height)?.map(|header| BlockId {
+                    height: to_height(height),
+                    hash: header.hash,
+                }),
+                None => None,
+            };
+            Ok(StoreSnapshot {
+                backend: backend.clone(),
+                finalized_tip,
+                pinned_tip,
+            })
+        }
     }
 }
 
 /// EXPLORATORY: an immutable pinned view. Clones share the backend via `Arc`.
 pub struct StoreSnapshot<B> {
     backend: Arc<B>,
-    tip: Option<BlockId>,
-    finalized_tip: Height,
+    /// The finalised watermark this view was pinned to, read from the backend.
+    finalized_tip: Option<BlockHeight>,
+    /// The finalised tip's `BlockId`, composed from the headers index at pin time.
+    pinned_tip: Option<BlockId>,
 }
 
 // Manual `Clone` so the bound is on `Arc<B>` (always cloneable), not `B`.
@@ -86,25 +103,59 @@ impl<B> Clone for StoreSnapshot<B> {
     fn clone(&self) -> Self {
         Self {
             backend: self.backend.clone(),
-            tip: self.tip,
             finalized_tip: self.finalized_tip,
+            pinned_tip: self.pinned_tip,
         }
     }
 }
 
 impl<B: Backend + 'static> Snapshot for StoreSnapshot<B> {
     fn pinned_tip(&self) -> Option<BlockId> {
-        self.tip
+        self.pinned_tip
     }
 
     fn serviceable_range(&self) -> ServiceableRange {
-        // Stub: with no non-finalised window wired, the view answers up to the
-        // finalised tip only, so `tip == finalized_tip` when a tip is pinned.
+        // No non-finalised window is wired, so the view answers up to the
+        // finalised tip only: `tip == finalized_tip`.
+        let tip = self.finalized_tip.map_or(Height::GENESIS, to_height);
         ServiceableRange {
-            finalized_tip: self.finalized_tip,
-            tip: self.tip.map_or(self.finalized_tip, |block| block.height),
+            finalized_tip: tip,
+            tip,
         }
     }
+}
+
+/// Compose a block header on read from the headers index. EXPLORATORY: applies
+/// the codec version guard — a format skew reads as absent rather than decoding
+/// stale bytes.
+fn read_header<B: Backend>(
+    reader: &B::Reader,
+    height: BlockHeight,
+) -> Result<Option<HeaderValue>, Transient> {
+    let namespace: Namespace = HEADERS_ID.into();
+    if freshness::<HeadersIndex>(reader, namespace)
+        .map_err(|e| Transient(format!("headers freshness: {e}")))?
+        == Freshness::Stale
+    {
+        return Ok(None);
+    }
+    let key = HeadersIndex::encode_key(&height);
+    match reader
+        .get(namespace, &key)
+        .map_err(|e| Transient(format!("read header: {e}")))?
+    {
+        Some(bytes) => HeadersIndex::decode_value(&bytes)
+            .map(Some)
+            .map_err(|e| Transient(format!("decode header: {e}"))),
+        None => Ok(None),
+    }
+}
+
+/// EXPLORATORY: heights fit `u32` on Zcash; a real path would return a typed
+/// error rather than assert.
+fn to_height(height: BlockHeight) -> Height {
+    Height::try_from(u32::try_from(height.value()).expect("height fits u32"))
+        .expect("height within the protocol limit")
 }
 
 impl<B: Backend + 'static> AddressRead for StoreSnapshot<B> {

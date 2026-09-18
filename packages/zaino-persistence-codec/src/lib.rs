@@ -50,6 +50,8 @@
 //! concern, supplied to every helper.
 #![forbid(unsafe_code)]
 
+pub mod watermark;
+
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
 
 /// Metadata namespace recording each index namespace's on-disk format version.

@@ -6338,6 +6338,7 @@ dependencies = [
  "zaino-indexer",
  "zaino-indexes",
  "zaino-persistence",
+ "zaino-persistence-codec",
  "zaino-runtime",
  "zaino-service",
  "zaino-source",
