@@ -119,6 +119,11 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
         let mut prev_hash = [0u8; 32];
         hash.copy_from_slice(&bytes[0..32]);
         prev_hash.copy_from_slice(&bytes[32..64]);
+        // The 72-byte length is checked above, so each fixed-offset window below
+        // is exactly 4 bytes and the `try_into` array conversions cannot fail.
+        // PLAN: replace this manual offset arithmetic with a fixed-layout decode
+        // helper (a cursor / typed field reader) that removes these guarded
+        // `expect`s entirely.
         Ok(HeaderValue {
             hash: BlockHash::from(hash),
             prev_hash: BlockHash::from(prev_hash),

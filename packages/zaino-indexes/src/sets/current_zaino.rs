@@ -65,6 +65,11 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
         })
         .collect();
 
+    // INVARIANT: consensus block-size limits bound a block to far fewer than
+    // u32::MAX transactions, so the enumerate index always fits u32.
+    // PLAN: this projection is currently infallible; when it gains a fallible
+    // boundary (or a checked `TxIndex` newtype lands) replace this expect with a
+    // typed error rather than asserting the invariant at runtime.
     let txid_locations: Vec<(TransactionId, BlockHeight, u32)> = block
         .transactions
         .iter()
