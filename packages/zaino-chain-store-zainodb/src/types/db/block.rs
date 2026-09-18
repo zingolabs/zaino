@@ -35,13 +35,6 @@ use zaino_encoding::{
 /// Coming back to the business layer the value must fit in `u128`, so the
 /// **high-order** 16 bytes (`[..16]`, big-endian most-significant) must be zero
 /// and the **low-order** 16 bytes (`[16..]`) hold the nonzero `u128`.
-///
-/// Both directions go through the primitive's own byte doors — the on-disk
-/// format is the same 32-byte big-endian form the wire reports, so the width
-/// and non-zero checks live on the type, not here. The one boundary-specific
-/// judgement is what absence means: off the wire an all-zero value is "not
-/// reported", but a block row always has a chainwork, so a zero row is a
-/// corrupt row, not an absent value.
 #[derive(Debug)]
 pub(super) struct PersistentChainWork([u8; 32]);
 
@@ -51,9 +44,8 @@ impl PersistentChainWork {
     }
 
     pub(super) fn into_business(self) -> io::Result<AbsoluteChainWork> {
-        AbsoluteChainWork::try_from_reported(self.0)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
+        AbsoluteChainWork::from_be_bytes(self.0)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
     }
 }
 
@@ -160,13 +152,23 @@ pub(super) struct PersistentBlockContext {
 }
 
 impl PersistentBlockContext {
-    pub(super) fn from_business(context: &BlockContext) -> Self {
-        Self {
+    /// Fallible in the encode direction, unusually for a `from_business`: a
+    /// block whose chain work is unknown has no stored form, and this is where
+    /// that is refused. See [`BlockContext::chainwork`].
+    pub(super) fn from_business(context: &BlockContext) -> io::Result<Self> {
+        let chainwork = context.chainwork.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "block has no chain work; refusing to store it",
+            )
+        })?;
+
+        Ok(Self {
             hash: context.index.hash,
             parent_hash: context.parent_hash,
-            chainwork: PersistentChainWork::from_business(&context.chainwork),
+            chainwork: PersistentChainWork::from_business(&chainwork),
             height: context.height(),
-        }
+        })
     }
 
     pub(super) fn into_business(self) -> io::Result<BlockContext> {
@@ -176,7 +178,7 @@ impl PersistentBlockContext {
                 hash: self.hash,
             },
             parent_hash: self.parent_hash,
-            chainwork: self.chainwork.into_business()?,
+            chainwork: Some(self.chainwork.into_business()?),
         })
     }
 }
@@ -257,6 +259,8 @@ mod tests {
     use crate::types::{AbsoluteChainWork, BlockHash, BlockIndex, Height};
     use zaino_encoding::ZainoVersionedSerde as _;
 
+    const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0123_4567).expect("nonzero literal");
+
     /// `BlockContext → PersistentBlockContext → BlockContext` is identity.
     ///
     /// Fails if the `from_business` / `into_business` conversions ever drift
@@ -267,12 +271,30 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            AbsoluteChainWork::new(NonZeroU128::new(0x0123_4567).expect("nonzero")),
+            Some(AbsoluteChainWork::new(CHAINWORK)),
             Height(0x0dec_0de0),
         );
-        let persisted = PersistentBlockContext::from_business(&bctx);
+        let persisted = PersistentBlockContext::from_business(&bctx).expect("chain work present");
         let back = persisted.into_business().expect("valid chainwork");
         assert_eq!(bctx, back);
+    }
+
+    /// A block whose chain work is unknown has no stored form.
+    ///
+    /// The chain head produces such blocks. They are served, and this is what
+    /// stops one reaching the database, where its missing work would be read
+    /// back as a real total.
+    #[test]
+    fn a_block_without_chain_work_is_refused_by_the_encoder() {
+        let bctx = BlockContext::new(
+            BlockHash::from([0x11; 32]),
+            BlockHash::from([0x22; 32]),
+            None,
+            Height(0x0dec_0de0),
+        );
+
+        let error = PersistentBlockContext::from_business(&bctx).expect_err("must be refused");
+        assert_eq!(error.kind(), corez::io::ErrorKind::InvalidData);
     }
 
     /// Regression for the byte-order bug that broke `load_db_backend_from_file`
@@ -390,6 +412,17 @@ mod tests {
         #[test]
         fn new_encoder_matches_recovered_original(value in 1u128..=u128::MAX) {
             assert_encoders_agree(value);
+        }
+
+        /// The row is the primitive's own wire render, and the read side
+        /// inverts it: the two byte layouts cannot drift apart in silence.
+        #[test]
+        fn row_bytes_are_the_wire_render_and_round_trip(value in 1u128..=u128::MAX) {
+            let cw = AbsoluteChainWork::new(NonZeroU128::new(value).expect("nonzero"));
+            let row = PersistentChainWork::from_business(&cw);
+
+            proptest::prop_assert_eq!(row.0, cw.to_be_bytes());
+            proptest::prop_assert_eq!(row.into_business().expect("valid chainwork"), cw);
         }
     }
 

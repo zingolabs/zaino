@@ -1069,8 +1069,8 @@ impl IndexedBlock {
         self.context.height()
     }
 
-    /// Returns the total chain work.
-    pub fn chainwork(&self) -> AbsoluteChainWork {
+    /// Returns the total chain work, when it is known.
+    pub fn chainwork(&self) -> Option<AbsoluteChainWork> {
         self.context.chainwork()
     }
 
@@ -2480,12 +2480,12 @@ impl ZainoVersionedSerde for BlockHeaderData {
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 1)?;
+        PersistentBlockContext::from_business(&self.context)?.serialize_with_version(&mut *w, 1)?;
         self.data.serialize_with_version(w, 1)
     }
 
     fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 2)?;
+        PersistentBlockContext::from_business(&self.context)?.serialize_with_version(&mut *w, 2)?;
         self.data.serialize_with_version(w, 1)
     }
 

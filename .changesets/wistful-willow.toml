@@ -1,0 +1,39 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0ab34-1f36-76f3-ba73-c7152f21cb5f"
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "SingleBlockWork::new takes a NonZeroU128 and is infallible; SingleBlockWork::try_new and ZeroWork are removed."
+migration   = "Prove the value non-zero before the call: SingleBlockWork::new(NonZeroU128::new(work).expect(...)) or, for a literal, a const evaluated at compile time. Handle a zero where the integer is produced; the constructor no longer reports it."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "AbsoluteChainWork::try_from_reported and ChainWorkOverWidth are removed; no validator Zaino reads reports chainwork, so no wire value converts into the type. to_be_bytes and a new from_be_bytes, with ChainWorkBytesError, are the one definition of the 32-byte form."
+migration   = "Build an AbsoluteChainWork from a NonZeroU128 through new, or fold it from SingleBlockWork values. Read 32 stored bytes with from_be_bytes, which refuses an over-width or all-zero value; there is no absence case."
+
+[[changes]]
+crate       = "zaino-source-zebra-rpc"
+kind        = "fix"
+description = "The chainwork fields of getblockheader, getblock, and getblockchaininfo are no longer parsed and read as None; Zebra omits or zeroes them, and a reply without the key no longer fails."
+
+[[changes]]
+crate       = "zaino-chain-store-zainodb"
+kind        = "internal"
+description = "The persistent chainwork row is written from the primitive's wire render and read back through its integer, with the width and non-zero checks at the store boundary. The on-disk format is unchanged."
+
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "internal"
+description = "The extending block's work is proven non-zero on the NonZeroU128 step before SingleBlockWork::new, with the same error message as before."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "internal"
+description = "The block-header render test builds its chainwork from a compile-time constant."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "internal"
+description = "Test-only: the chain-head test builds block work through SingleBlockWork::new, and the orphaned golden module that no mod declaration named is deleted."

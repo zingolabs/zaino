@@ -450,7 +450,7 @@ impl DbWrite for DbV1 {
                                 .map_err(|e| {
                                     StoreError::Custom(format!("tip header decode error: {e}"))
                                 })?;
-                            Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
+                            Ok::<_, StoreError>(entry.inner().context.chainwork)
                         }
                         Err(lmdb::Error::NotFound) => Ok(None),
                         Err(e) => Err(StoreError::LmdbError(e)),
@@ -563,7 +563,7 @@ impl DbWrite for DbV1 {
                     parent_chainwork,
                 )
                 .await?;
-                parent_chainwork = Some(block.context.chainwork);
+                parent_chainwork = block.context.chainwork;
 
                 self.write_block_with_options(block, false).await?;
             }

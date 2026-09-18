@@ -318,7 +318,12 @@ impl<'a> BlockWithMetadata<'a> {
             None => AbsoluteChainWork::genesis(block_work),
         };
 
-        Ok(BlockContext::new(hash, parent_hash, chainwork, height))
+        Ok(BlockContext::new(
+            hash,
+            parent_hash,
+            Some(chainwork),
+            height,
+        ))
     }
 }
 

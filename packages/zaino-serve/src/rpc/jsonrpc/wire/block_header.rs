@@ -147,8 +147,13 @@ impl VerboseBlockHeader {
 
 #[cfg(test)]
 mod from_domain_tests {
+    use core::num::NonZeroU128;
+
     use super::*;
     use zaino_primitives::types::{self as domain, Height};
+
+    const CHAINWORK: NonZeroU128 =
+        NonZeroU128::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff).expect("nonzero literal");
 
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
@@ -171,10 +176,7 @@ mod from_domain_tests {
             difficulty: 1.0,
             block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
             final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),
-            chainwork: Some(domain::AbsoluteChainWork::new(
-                core::num::NonZeroU128::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff)
-                    .expect("nonzero"),
-            )),
+            chainwork: Some(domain::AbsoluteChainWork::new(CHAINWORK)),
             previous_block_hash: Some(domain::BlockHash::from(ASYMMETRIC)),
             next_block_hash: None,
         }

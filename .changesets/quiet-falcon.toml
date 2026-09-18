@@ -1,0 +1,29 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a08949-6a67-74c1-826e-e4304e47a90b"
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = "Add RelativeChainWork, the proof-of-work total a run of blocks holds, measured from where the run begins rather than from genesis."
+
+[[changes]]
+crate       = "zaino-chain-head"
+kind        = "breaking"
+description = "ChainHeadWork is removed; a retained block's work is now a RelativeChainWork from zaino-primitives, measured from the anchor rather than from the anchor's parent."
+migration   = "Replace ChainHeadWork with zaino_primitives::types::RelativeChainWork. ChainHeadWork::as_u128 has no replacement: an anchor-relative total cannot be converted to an absolute chain work, which is what that method allowed. The anchor's own work is now RelativeChainWork::ZERO, so a window's totals are each one block's work lower than before; comparisons between them are unaffected."
+
+[[changes]]
+crate       = "zaino-chain-store-zainodb"
+kind        = "breaking"
+description = "A block's chain work is now optional: BlockContext::chainwork is Option<AbsoluteChainWork>, and encoding a block without it is refused. The on-disk format is unchanged."
+migration   = "BlockContext::new takes Option<AbsoluteChainWork>; pass Some(..) for blocks read from or written to the store. conversion::indexed_block takes the same. Blocks produced from the chain head carry None and cannot be persisted."
+
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "internal"
+description = "Fold a window's work from RelativeChainWork::ZERO at the anchor. The anchor and an extending block are built by separate constructors, so the anchor no longer takes a fallible path it cannot fail on."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "internal"
+description = "Chain-head blocks converted for serving now carry no chain work, instead of reinterpreting the window's anchor-relative total as an absolute one."

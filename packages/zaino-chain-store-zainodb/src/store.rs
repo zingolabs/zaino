@@ -448,7 +448,7 @@ pub(crate) fn indexed_block_from_parts(
     let chainwork =
         crate::conversion::chainwork_from_parent(block.header.bits, hash, parent_chainwork)
             .map_err(|error| inconsistent(error.to_string()))?;
-    crate::conversion::indexed_block(block, tree_roots, chainwork)
+    crate::conversion::indexed_block(block, tree_roots, Some(chainwork))
         .map_err(|error| inconsistent(error.to_string()))
 }
 
@@ -1470,7 +1470,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             )?;
 
             let chain_block = indexed_block_from_parts(&block, &tree_roots, parent_chainwork)?;
-            parent_chainwork = Some(chain_block.context.chainwork);
+            parent_chainwork = chain_block.context.chainwork;
 
             db.write_block_v1_0_0(chain_block).await?;
         }
