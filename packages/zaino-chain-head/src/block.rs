@@ -21,7 +21,7 @@ use zaino_primitives::types::{Block, BlockHash, BlockRef, TreeRoots};
 ///
 /// Accumulation starts at the anchor block's *own* work rather than at zero,
 /// so the value is always non-zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChainHeadWork(u128);
 
 impl ChainHeadWork {
@@ -57,7 +57,7 @@ impl ChainHeadWork {
 /// commits to. Serving a raw transaction or a raw block from ChainHead is
 /// therefore not possible yet, and those queries stay on their existing path.
 /// Storing the authoritative bytes alongside is the follow-up that closes it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChainHeadBlock {
     /// This block's height and hash.
     pub reference: BlockRef,

@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use imbl::Vector;
 use zaino_chain_head::{
     snapshot::{
         ChainHeadBlockIter, ChainHeadTransactionLocations, ChainHeadTransactionService,
@@ -23,6 +24,28 @@ use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
     BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
 };
+
+use crate::snapshot::imbl_nonempty_wrappers::ImblNonEmptyVec;
+
+// TODO: these are likely generally useful, enough that they should be
+// PRed into imbl rather than living here. Want to iterate on them a bit first
+mod imbl_nonempty_wrappers;
+
+struct ImblBackedSnapshot {
+    chains: imbl::HashSet<ImblNonEmptyVec<ChainHeadBlock>>,
+    // Cloning the best chain is effectively free due to imbl
+    // immutable data structure benefits
+    // best_chain: ImblNonEmptyVec<ChainHeadBlock>,
+}
+
+impl ImblBackedSnapshot {
+    fn new_from_block(block: ChainHeadBlock) -> Self {
+        let chain = ImblNonEmptyVec::new(block);
+        Self {
+            chains: imbl::hashset![chain.clone()],
+        }
+    }
+}
 
 /// A transaction's block-order position, as a [`TxIndex`].
 ///
@@ -57,6 +80,74 @@ pub struct MapBackedSnapshot {
     /// snapshot's own, and a field the writer could assign is a field the writer
     /// could assign wrongly.
     generation: u64,
+}
+
+impl ChainHeadSnapshot for ImblBackedSnapshot {
+    fn best_tip(&self) -> BlockRef {
+        // TODO: Move this logic to best_tip initialzation
+        self.best_chain()
+            .last()
+            .expect("cannot create empty snapshot. TODO: make compile-time guarentee")
+            .reference
+    }
+
+    fn epoch(&self) -> ChainStateEpoch {
+        ChainStateEpoch {
+            best_tip: self.best_tip(),
+            generation: todo!(),
+        }
+    }
+
+    fn block_by_hash(&self, hash: &BlockHash) -> Option<&ChainHeadBlock> {
+        self.chains
+            .iter()
+            .map(ImblNonEmptyVec::iter)
+            .flatten()
+            .find(|block| block.reference.hash == *hash)
+    }
+
+    fn best_block_by_height(&self, height: Height) -> Option<&ChainHeadBlock> {
+        // TODO: Store heights as key for faster indexing
+        self.best_chain()
+            .find(|block| block.reference.height == height)
+    }
+
+    fn is_on_best_chain(&self, block: BlockRef) -> bool {
+        self.best_chain().find(|b| b.reference == block).is_some()
+    }
+
+    fn find_fork_point(&self, hash: &BlockHash) -> Option<BlockRef> {
+        todo!()
+    }
+
+    fn chain_tips(&self) -> Vec<ChainTip> {
+        self.chains
+            .iter()
+            .map(|chain| ChainTip {
+                height: todo!(),
+                hash: todo!(),
+                branch_len: todo!(),
+                status: todo!(),
+            })
+            .collect()
+    }
+
+    fn best_chain(&self) -> ChainHeadBlockIter<'_> {
+        let best_chain = self
+            .chains
+            .iter()
+            .max_by_key(|chain| chain.last().work)
+            .expect("TODO: nonemptyify");
+        ChainHeadBlockIter::new(best_chain.iter())
+    }
+
+    fn best_chain_blocks(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<ChainHeadBlockIter<'_>, ChainHeadError> {
+        todo!()
+    }
 }
 
 impl MapBackedSnapshot {
