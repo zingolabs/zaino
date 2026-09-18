@@ -148,7 +148,7 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
         let mut prepared = Vec::with_capacity(fetched.len());
         for (height_int, parts) in heights.into_iter().zip(fetched) {
             let parent_chainwork = cursor.parent_chainwork;
-            let block_work = parts.block_work()?;
+            let block_work = parts.block_work();
             cursor.parent_chainwork = Some(match parent_chainwork {
                 Some(parent) => parent
                     .accumulate(block_work)

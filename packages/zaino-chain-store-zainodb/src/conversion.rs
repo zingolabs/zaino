@@ -61,22 +61,13 @@ use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
     AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactDifficulty, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
-    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, SingleBlockWork, TransactionHash,
+    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, TransactionHash,
     TransparentCompactTx, TxInCompact, TxOutCompact,
 };
 
 /// A domain block could not be expressed as an [`IndexedBlock`].
 #[derive(Debug, thiserror::Error)]
 pub enum BlockConversionError {
-    /// The header's difficulty does not decode to a valid target.
-    #[error("block {hash} has invalid difficulty: {reason}")]
-    InvalidDifficulty {
-        /// The block that could not be converted.
-        hash: BlockHash,
-        /// Why the difficulty was rejected.
-        reason: String,
-    },
-
     /// A transparent output's value exceeds what the compact form can hold.
     #[error("block {hash} has a transparent output that cannot be compacted")]
     OutputNotCompactable {
@@ -111,20 +102,6 @@ pub enum BlockConversionError {
     },
 }
 
-/// This block's own proof-of-work contribution, ignoring its ancestry.
-///
-/// Split from [`chainwork_from_parent`] because a bulk sync folds the
-/// cumulative work over a run of already-fetched blocks *before* assembling any
-/// of them: the fold is the only ordering constraint in block building, and it
-/// is pure integer arithmetic, so it must not be held behind the expensive
-/// conversion.
-pub fn block_work(
-    header_bits: zaino_primitives::types::CompactDifficulty,
-    hash: BlockHash,
-) -> Result<SingleBlockWork, BlockConversionError> {
-    Ok(difficulty(header_bits, hash)?.to_work())
-}
-
 /// This block's chainwork, accumulated onto its parent's.
 ///
 /// Separate from [`indexed_block`] because the two callers arrive with
@@ -134,11 +111,11 @@ pub fn block_work(
 ///
 /// `None` for the parent means genesis, whose chainwork is its own work.
 pub fn chainwork_from_parent(
-    header_bits: zaino_primitives::types::CompactDifficulty,
+    header_bits: CompactDifficulty,
     hash: BlockHash,
     parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<AbsoluteChainWork, BlockConversionError> {
-    let block_work = block_work(header_bits, hash)?;
+    let block_work = header_bits.to_work();
     match parent_chainwork {
         Some(parent) => {
             parent
@@ -169,7 +146,7 @@ pub fn indexed_block(
 ) -> Result<IndexedBlock, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
-    let data = block_data(&block.header)?;
+    let data = block_data(&block.header);
 
     let transactions = block
         .transactions
@@ -199,34 +176,20 @@ pub fn indexed_block(
 /// start from the same [`BlockHeader`] — a block arriving from a validator and
 /// a block read back off disk carry the identical type — so a second copy of
 /// this mapping is not a parallel implementation but the same one, free to
-/// drift. It already had: the read path stringified the difficulty failure this
-/// one keeps typed.
+/// drift. Total: every fallible field, difficulty included, is already
+/// validated by the types the header carries.
 ///
 /// `pub(crate)` for the sibling adapter, which is the only other caller.
-pub(crate) fn block_data(
-    header: &zaino_primitives::types::BlockHeader,
-) -> Result<BlockData, BlockConversionError> {
-    Ok(BlockData {
+pub(crate) fn block_data(header: &zaino_primitives::types::BlockHeader) -> BlockData {
+    BlockData {
         version: header.version,
         time: i64::from(header.time),
         merkle_root: header.merkle_root.into(),
         block_commitments: header.block_commitments.into(),
-        bits: difficulty(header.bits, BlockHash(header.hash.into()))?,
+        bits: header.bits,
         nonce: header.nonce,
         solution: solution(&header.solution),
-    })
-}
-
-fn difficulty(
-    bits: zaino_primitives::types::CompactDifficulty,
-    hash: BlockHash,
-) -> Result<CompactDifficulty, BlockConversionError> {
-    CompactDifficulty::try_from_bits(bits).map_err(|error| {
-        BlockConversionError::InvalidDifficulty {
-            hash,
-            reason: error.to_string(),
-        }
-    })
+    }
 }
 
 fn solution(solution: &zaino_primitives::types::EquihashSolution) -> EquihashSolution {
@@ -367,7 +330,7 @@ fn sapling(transaction: &Transaction) -> SaplingCompactTx {
                 CompactSaplingOutput::new(
                     output.cmu.into(),
                     output.ephemeral_key.into(),
-                    ciphertext_prefix(&output.enc_ciphertext),
+                    output.enc_ciphertext.into(),
                 )
             })
             .collect(),
@@ -387,26 +350,11 @@ fn orchard_shaped(pool: &zaino_primitives::types::OrchardData) -> OrchardCompact
                     action.nullifier.into(),
                     action.cmx.into(),
                     action.ephemeral_key.into(),
-                    ciphertext_prefix(&action.enc_ciphertext),
+                    action.enc_ciphertext.into(),
                 )
             })
             .collect(),
     )
-}
-
-/// The 52-byte scanning prefix.
-///
-/// The domain type already holds exactly this prefix rather than the full
-/// 580-byte ciphertext, so this is a reshape and not a truncation. A shorter
-/// value is zero-padded rather than rejected: the stored form is a fixed-width
-/// field, and a source that supplied less has produced a block no wallet can
-/// scan regardless.
-fn ciphertext_prefix(ciphertext: &zaino_primitives::types::EncryptedCiphertext) -> [u8; 52] {
-    let bytes: Vec<u8> = ciphertext.clone().into();
-    let mut prefix = [0u8; 52];
-    let usable = bytes.len().min(52);
-    prefix[..usable].copy_from_slice(&bytes[..usable]);
-    prefix
 }
 
 #[cfg(test)]

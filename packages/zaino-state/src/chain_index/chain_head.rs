@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
     use crate::chain_index::types::TxInCompact;
-    use zaino_primitives::types::{RelativeChainWork, SingleBlockWork, TreeRoots, TreeSize};
+    use zaino_primitives::types::{RelativeChainWork, TreeRoots, TreeSize};
 
     /// A vector's `u64` tree size, as the domain carries it.
     fn vector_tree_size(size: u64) -> TreeSize {
@@ -169,13 +169,7 @@ mod tests {
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = SingleBlockWork::new(
-                core::num::NonZeroU128::new(
-                    zaino_consensus::work_from_bits(block.header.bits)
-                        .expect("vector block has valid difficulty"),
-                )
-                .expect("a valid difficulty yields work"),
-            );
+            let block_work = block.header.bits.to_work();
             work = work.accumulate(block_work).expect("no overflow");
 
             let chain_head_block = ChainHeadBlock {

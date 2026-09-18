@@ -32,6 +32,14 @@ impl From<SingleBlockWork> for NonZeroU128 {
     }
 }
 
+impl From<NonZeroU128> for SingleBlockWork {
+    /// A non-zero integer carries this type's whole invariant, so the
+    /// conversion is total.
+    fn from(value: NonZeroU128) -> Self {
+        Self(value)
+    }
+}
+
 impl fmt::Debug for SingleBlockWork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("SingleBlockWork")

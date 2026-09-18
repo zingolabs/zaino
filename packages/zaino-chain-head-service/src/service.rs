@@ -32,7 +32,6 @@
 //! reorg or a partially-extended window.
 
 use std::{
-    num::NonZeroU128,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -48,7 +47,7 @@ use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _,
 };
 use zaino_primitives::types::{
-    BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, SingleBlockWork, TreeRoots,
+    BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, TreeRoots,
 };
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
@@ -785,16 +784,7 @@ fn extending_chain_head_block(
 ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
     let hash = block.header.hash;
 
-    let block_work = zaino_consensus::work_from_bits(block.header.bits)
-        .map_err(|error| format!("invalid difficulty: {error}"))
-        .and_then(|work| {
-            NonZeroU128::new(work)
-                .map(SingleBlockWork::new)
-                .ok_or_else(|| "no work: zero is not a work value".to_owned())
-        })
-        .map_err(|reason| {
-            ChainHeadAdvanceError::InconsistentSource(format!("block {hash} has {reason}"))
-        })?;
+    let block_work = block.header.bits.to_work();
 
     let work = parent_work.accumulate(block_work).map_err(|error| {
         ChainHeadAdvanceError::ReorgFailure(format!("work overflowed at block {hash}: {error}"))

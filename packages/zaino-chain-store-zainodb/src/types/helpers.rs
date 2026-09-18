@@ -333,10 +333,9 @@ impl<'a> BlockWithMetadata<'a> {
 /// sum that can be folded over already-fetched blocks in a separate pass from assembling them.
 /// Shared so the fold and [`BlockWithMetadata`]'s own assembly cannot drift apart.
 pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<SingleBlockWork, String> {
-    let bits =
-        CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
-            .map_err(|e| format!("invalid nBits: {e}"))?;
-    Ok(bits.to_work())
+    CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
+        .map(|bits| bits.to_work())
+        .map_err(|e| format!("invalid nBits: {e}"))
 }
 
 impl BlockMetadata {

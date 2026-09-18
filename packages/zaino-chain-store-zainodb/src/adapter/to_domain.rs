@@ -18,7 +18,7 @@ use zaino_chain_store::{
     TransactionIndexCapability, TxOutSetIndexCapability,
 };
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, EncryptedCiphertext,
+    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
     Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
     PreIndexCompactTx, SaplingOutput, Script, ScriptType, SignedZatoshis, TransactionId,
     TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
@@ -151,7 +151,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
         })?,
         merkle_root: data.merkle_root.into(),
         block_commitments: data.block_commitments.into(),
-        bits: data.bits.as_bits(),
+        bits: data.bits,
         nonce: data.nonce,
         solution: match data.solution {
             crate::types::EquihashSolution::Standard(bytes) => {
@@ -244,7 +244,7 @@ fn stored_compact_tx_body(tx: &CompactTxData) -> Result<PreIndexCompactTx, Chain
             .map(|output| SaplingOutput {
                 cmu: (*output.cmu()).into(),
                 ephemeral_key: (*output.ephemeral_key()).into(),
-                enc_ciphertext: EncryptedCiphertext::new(output.ciphertext().to_vec()),
+                enc_ciphertext: CompactCiphertext::from(*output.ciphertext()),
             })
             .collect(),
         orchard_actions: tx.orchard().actions().iter().map(orchard_action).collect(),
@@ -257,7 +257,7 @@ fn orchard_action(action: &crate::types::CompactOrchardAction) -> OrchardAction 
         nullifier: (*action.nullifier()).into(),
         cmx: (*action.cmx()).into(),
         ephemeral_key: (*action.ephemeral_key()).into(),
-        enc_ciphertext: EncryptedCiphertext::new(action.ciphertext().to_vec()),
+        enc_ciphertext: CompactCiphertext::from(*action.ciphertext()),
     }
 }
 
