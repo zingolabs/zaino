@@ -12,5 +12,13 @@ description = "EXPLORATORY STUB — not for production. A throwaway spike provin
 [dependencies]
 zaino-core = { path = "../zaino-core" }
 zaino-service = { path = "../zaino-service" }
+zaino-component = { path = "../zaino-component" }
 zaino-persistence = { workspace = true }
 zaino-indexes = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+zaino-runtime = { path = "../zaino-runtime" }
+zaino-component = { path = "../zaino-component" }
+zaino-persistence = { workspace = true, features = ["testing"] }
+tokio = { workspace = true }

@@ -22,6 +22,10 @@
 //!   that lands — but the reader → index → domain wiring compiles end-to-end.
 #![forbid(unsafe_code)]
 
+mod component;
+
+pub use component::StoreComponent;
+
 use std::future::Future;
 use std::sync::Arc;
 
