@@ -1,6 +1,6 @@
 //! OrchardIndex (BlockLocal × Append): height → compact orchard data per block.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -77,7 +77,20 @@ impl Schema<Vec<OrchardEntry>> for OrchardIndex {
 impl EntryCodec for OrchardIndex {
     type Key = BlockHeight;
     type Value = OrchardBlockValue;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(BlockHeight, OrchardBlockValue)> {
+        vec![(
+            BlockHeight::new(1),
+            OrchardBlockValue(vec![OrchardTxCompact {
+                actions: vec![(
+                    Nullifier::from([2u8; 32]),
+                    NoteCommitment::from([3u8; 32]),
+                    EphemeralKey::from([4u8; 32]),
+                    CompactCiphertext::from([5u8; CompactCiphertext::LENGTH]),
+                )],
+            }]),
+        )]
+    }
 
     fn encode_key(key: &BlockHeight) -> Vec<u8> {
         key.value().to_le_bytes().to_vec()

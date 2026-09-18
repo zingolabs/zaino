@@ -4,7 +4,7 @@ use crate::descriptor::{Append, BlockLocal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context for this index: height and value.
 pub struct Context {
@@ -95,7 +95,10 @@ impl Schema<Vec<Entry>> for ValueIndex {
 impl EntryCodec for ValueIndex {
     type Key = BlockHeight;
     type Value = BlockValue;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(BlockHeight, BlockValue)> {
+        vec![(BlockHeight::new(1), BlockValue(2))]
+    }
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()

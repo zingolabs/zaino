@@ -4,7 +4,7 @@ use crate::descriptor::{BlockLocal, Fold};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -105,7 +105,10 @@ impl Schema<RunningSum> for RunningSumIndex {
 impl EntryCodec for RunningSumIndex {
     type Key = SumKey;
     type Value = RunningSum;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(SumKey, RunningSum)> {
+        vec![(SumKey, RunningSum(1))]
+    }
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()

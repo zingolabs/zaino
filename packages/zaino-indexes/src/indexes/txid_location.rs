@@ -1,6 +1,6 @@
 //! TxidLocationIndex (BlockLocal × Append): txid → (height, tx_index).
 
-use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -81,7 +81,16 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
 impl EntryCodec for TxidLocationIndex {
     type Key = TransactionId;
     type Value = TxLocation;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(TransactionId, TxLocation)> {
+        vec![(
+            TransactionId::from([1u8; 32]),
+            TxLocation {
+                height: BlockHeight::new(2),
+                tx_index: 3,
+            },
+        )]
+    }
 
     fn encode_key(key: &TransactionId) -> Vec<u8> {
         <[u8; 32]>::from(*key).to_vec()

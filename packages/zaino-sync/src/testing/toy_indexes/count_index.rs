@@ -4,7 +4,7 @@ use crate::descriptor::{BlockLocal, Monoidal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeMonoidal, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context for this index: nothing needed.
 ///
@@ -110,7 +110,10 @@ impl Schema<BlockCount> for CountIndex {
 impl EntryCodec for CountIndex {
     type Key = TotalKey;
     type Value = BlockCount;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(TotalKey, BlockCount)> {
+        vec![(TotalKey, BlockCount(1))]
+    }
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()

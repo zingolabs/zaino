@@ -1,6 +1,6 @@
 //! TransparentDataIndex (BlockLocal × Append): height → compact transparent data per block.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{OutputIndex, Script, TransactionId, Zatoshis};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -79,7 +79,19 @@ impl Schema<Vec<TransparentDataEntry>> for TransparentDataIndex {
 impl EntryCodec for TransparentDataIndex {
     type Key = BlockHeight;
     type Value = TransparentBlockValue;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(BlockHeight, TransparentBlockValue)> {
+        vec![(
+            BlockHeight::new(1),
+            TransparentBlockValue(vec![TransparentTxCompact {
+                inputs: vec![(TransactionId::from([2u8; 32]), 3)],
+                outputs: vec![(
+                    Zatoshis::new(4).expect("valid"),
+                    Script::from(vec![5u8, 6, 7]),
+                )],
+            }]),
+        )]
+    }
 
     fn encode_key(key: &BlockHeight) -> Vec<u8> {
         key.value().to_le_bytes().to_vec()

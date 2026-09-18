@@ -1,6 +1,6 @@
 //! HashToHeightIndex (BlockLocal × Append): block hash → height.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::BlockHash;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -63,7 +63,10 @@ impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
 impl EntryCodec for HashToHeightIndex {
     type Key = BlockHash;
     type Value = BlockHeight;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(BlockHash, BlockHeight)> {
+        vec![(BlockHash::from([1u8; 32]), BlockHeight::new(2))]
+    }
 
     fn encode_key(key: &BlockHash) -> Vec<u8> {
         <[u8; 32]>::from(*key).to_vec()

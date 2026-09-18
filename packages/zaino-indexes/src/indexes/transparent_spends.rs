@@ -3,7 +3,7 @@
 //! For each transparent input in each transaction, records which
 //! transaction spent that outpoint.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{OutputIndex, TransactionId};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::IndexId;
@@ -97,7 +97,16 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
 impl EntryCodec for TransparentSpendsIndex {
     type Key = OutpointKey;
     type Value = TransactionId;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(OutpointKey, TransactionId)> {
+        vec![(
+            OutpointKey {
+                prev_txid: TransactionId::from([1u8; 32]),
+                prev_index: 2,
+            },
+            TransactionId::from([3u8; 32]),
+        )]
+    }
 
     fn encode_key(key: &OutpointKey) -> Vec<u8> {
         let mut buf = Vec::with_capacity(36);

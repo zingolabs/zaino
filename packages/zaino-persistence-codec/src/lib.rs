@@ -4,20 +4,27 @@
 //! stores raw bytes and knows nothing of domain types or versions — LMDB and the
 //! in-memory backend implement it, and it stays that dumb on purpose. This crate
 //! is the **domain persistence port** over it: an [`EntryCodec`] maps an index's
-//! typed `Key`/`Value` to on-disk bytes at a declared [`FormatVersion`], and on
-//! open a recorded-version mismatch *rejects* the persisted bytes so the caller
-//! **rebuilds** the index from source rather than migrating it.
+//! typed `Key`/`Value` to on-disk bytes, and on open a version mismatch *rejects*
+//! the persisted bytes so the caller **rebuilds** the index from source rather
+//! than migrating it.
 //!
-//! A codec owns **format**, not **placement**: the namespace an index lives in is
-//! the caller's concern (it already names its indexes), so every helper takes the
-//! namespace explicitly rather than the codec carrying it. That keeps a single
-//! source of truth for the namespace.
+//! # The version is a fingerprint of the format, not a hand-set number
 //!
-//! That is the whole point of the version tag: it is a *guard*, not a migration
-//! engine. Because a mismatch discards and rebuilds, only the current version's
-//! codec ever exists — no per-version type zoo, no transforms. A rebuild is a
-//! reach event (the index climbs from empty again), never a presence one: the
-//! code still has the index; only its persisted data was thrown away.
+//! A hand-maintained version number can silently desync from the format: change
+//! `encode` without bumping the number and old bytes are read under the new
+//! layout. So the version is **derived** — [`format_version`] hashes a codec's
+//! canonical samples, encoded. Any change to the byte layout of a covered value
+//! changes the fingerprint and triggers reject-and-rebuild; there is no number
+//! to forget to bump. This works precisely because we never migrate: any format
+//! change means rebuild, which is exactly what a fingerprint gives.
+//!
+//! Coverage of the fingerprint is the codec author's job: [`EntryCodec::fingerprint_samples`]
+//! must exercise every field and variant of the on-disk format. Constructing the
+//! samples with all fields explicit (no `..Default`) makes the compiler force a
+//! new field into the sample, so the fingerprint moves when the format grows.
+//!
+//! A codec owns **format**, not **placement**: the namespace is the caller's
+//! concern, supplied to every helper.
 #![forbid(unsafe_code)]
 
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
@@ -27,20 +34,21 @@ use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
 /// real key.
 const VERSION_META: Namespace = Namespace::new("_format_versions");
 
-/// A per-namespace on-disk format version.
+/// A namespace's on-disk format fingerprint — a hash of its codec's canonical
+/// samples, encoded (see [`format_version`]).
 ///
-/// Bumping it declares previously persisted bytes for that namespace unreadable:
-/// on open a mismatch is rejected and the index rebuilt from source, never
-/// migrated. Keeping it a `u16` is deliberate — it is a monotonic tag, not a
-/// semver.
+/// Not a semver: it is an opaque tag whose only meaning is equality. A different
+/// fingerprint means the persisted bytes were written by a different format and
+/// must be discarded, never migrated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FormatVersion(pub u16);
+pub struct FormatVersion(pub u64);
 
 /// Failure to decode persisted bytes back into a domain value — the disk→domain
 /// validation step.
 ///
 /// Distinct from a version mismatch: a mismatch is an expected upgrade, whereas
-/// a decode failure within the *claimed-correct* version is corruption or a bug.
+/// a decode failure within the *fingerprint-matched* format is corruption or a
+/// bug.
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     /// The byte slice has the wrong length or format.
@@ -48,8 +56,7 @@ pub enum DecodeError {
     Invalid(String),
 }
 
-/// The codec for one index's entries: its typed `Key`/`Value` ↔ on-disk bytes,
-/// at a fixed [`FormatVersion`].
+/// The codec for one index's entries: its typed `Key`/`Value` ↔ on-disk bytes.
 ///
 /// This is the DTO boundary — `decode_*` *is* the disk→domain validation step.
 /// It replaces the byte codec that used to live on the sync engine's `Schema`
@@ -61,9 +68,6 @@ pub trait EntryCodec {
     /// The typed value.
     type Value;
 
-    /// The on-disk format version. Bump to force reject-and-rebuild.
-    const VERSION: FormatVersion;
-
     /// Encode a key to its on-disk bytes.
     fn encode_key(key: &Self::Key) -> Vec<u8>;
     /// Encode a value to its on-disk bytes.
@@ -72,27 +76,68 @@ pub trait EntryCodec {
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, DecodeError>;
     /// Decode a value from its on-disk bytes — a validation boundary.
     fn decode_value(bytes: &[u8]) -> Result<Self::Value, DecodeError>;
+
+    /// Canonical sample entries that characterise this codec's on-disk format.
+    ///
+    /// The [`format_version`] fingerprint is the hash of these, encoded — so the
+    /// on-disk version tracks the format automatically. Construct each sample
+    /// with **every field explicit** (no `..Default`) and cover every enum
+    /// variant, so a format change cannot escape the fingerprint. The values
+    /// need not be meaningful; they only need to exercise the layout.
+    fn fingerprint_samples() -> Vec<(Self::Key, Self::Value)>;
+}
+
+/// A deterministic 64-bit FNV-1a hash.
+///
+/// Deterministic across runs and platforms — which a persisted fingerprint must
+/// be, unlike Rust's randomized default hasher. Not cryptographic: it only has
+/// to change when the format changes, and a local guard has no adversary.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// The format fingerprint for codec `C`: a hash of its canonical samples,
+/// encoded and length-framed so key/value boundaries cannot alias.
+///
+/// This is the on-disk version. It changes iff the encoded bytes of a covered
+/// value change, so the version can never silently desync from the format.
+pub fn format_version<C: EntryCodec>() -> FormatVersion {
+    let mut framed = Vec::new();
+    for (key, value) in C::fingerprint_samples() {
+        for blob in [C::encode_key(&key), C::encode_value(&value)] {
+            let len = u64::try_from(blob.len()).expect("canonical sample length fits u64");
+            framed.extend_from_slice(&len.to_le_bytes());
+            framed.extend_from_slice(&blob);
+        }
+    }
+    FormatVersion(fnv1a(&framed))
 }
 
 /// Whether a namespace's persisted data is usable by the running code.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Freshness {
-    /// The recorded version matches the codec — the data may be read.
+    /// The recorded fingerprint matches the codec — the data may be read.
     Fresh,
-    /// No version recorded, or it does not match — the data is unusable and the
-    /// index must be rebuilt from source.
+    /// No fingerprint recorded, or it does not match — the data is unusable and
+    /// the index must be rebuilt from source.
     Stale,
 }
 
-/// The [`WriteOp`] that stamps `namespace` with codec `C`'s current version.
+/// The [`WriteOp`] that stamps `namespace` with codec `C`'s current format
+/// fingerprint.
 ///
 /// A writer includes this when it (re)builds the namespace, so a later open can
-/// tell whether the persisted bytes match the running code.
+/// tell whether the persisted bytes match the running code's format.
 pub fn version_stamp<C: EntryCodec>(namespace: Namespace) -> WriteOp {
     WriteOp::Put {
         namespace: VERSION_META,
         key: namespace.as_str().as_bytes().to_vec(),
-        value: C::VERSION.0.to_le_bytes().to_vec(),
+        value: format_version::<C>().0.to_le_bytes().to_vec(),
     }
 }
 
@@ -105,26 +150,27 @@ pub fn put<C: EntryCodec>(namespace: Namespace, key: &C::Key, value: &C::Value) 
     }
 }
 
-/// The version recorded on disk for `namespace`, if any. A malformed stamp reads
-/// as absent — treated as [`Freshness::Stale`], the safe direction.
+/// The fingerprint recorded on disk for `namespace`, if any. A malformed stamp
+/// reads as absent — treated as [`Freshness::Stale`], the safe direction.
 pub fn recorded_version(
     reader: &dyn BackendReader,
     namespace: Namespace,
 ) -> Result<Option<FormatVersion>, ReadError> {
     let raw = reader.get(VERSION_META, namespace.as_str().as_bytes())?;
     Ok(raw.and_then(|bytes| {
-        let tag: [u8; 2] = bytes.as_slice().try_into().ok()?;
-        Some(FormatVersion(u16::from_le_bytes(tag)))
+        let tag: [u8; 8] = bytes.as_slice().try_into().ok()?;
+        Some(FormatVersion(u64::from_le_bytes(tag)))
     }))
 }
 
-/// Whether codec `C`'s persisted data in `namespace` matches the running code.
+/// Whether codec `C`'s persisted data in `namespace` matches the running code's
+/// format.
 pub fn freshness<C: EntryCodec>(
     reader: &dyn BackendReader,
     namespace: Namespace,
 ) -> Result<Freshness, ReadError> {
     Ok(match recorded_version(reader, namespace)? {
-        Some(version) if version == C::VERSION => Freshness::Fresh,
+        Some(recorded) if recorded == format_version::<C>() => Freshness::Fresh,
         _ => Freshness::Stale,
     })
 }
@@ -135,8 +181,8 @@ pub enum LoadError {
     /// The low KV backend read failed.
     #[error("backend read: {0}")]
     Backend(#[from] ReadError),
-    /// Persisted bytes did not decode — corruption within the claimed version,
-    /// not an expected upgrade.
+    /// Persisted bytes did not decode — corruption within the fingerprint-matched
+    /// format, not an expected upgrade.
     #[error("decode: {0}")]
     Decode(#[from] DecodeError),
 }
@@ -148,7 +194,7 @@ pub type Entries<C> = Vec<(<C as EntryCodec>::Key, <C as EntryCodec>::Value)>;
 ///
 /// Call only after [`freshness`] returns [`Freshness::Fresh`]; on `Stale` the
 /// caller rebuilds instead of reading. A [`LoadError::Decode`] here means
-/// corruption within the claimed-correct version.
+/// corruption within the fingerprint-matched format.
 pub fn load<C: EntryCodec>(
     reader: &dyn BackendReader,
     namespace: Namespace,
@@ -172,12 +218,11 @@ mod tests {
 
     const TOY: Namespace = Namespace::new("toy");
 
-    /// A toy codec at version 1.
+    /// A toy codec — little-endian.
     struct Toy;
     impl EntryCodec for Toy {
         type Key = u32;
         type Value = u64;
-        const VERSION: FormatVersion = FormatVersion(1);
 
         fn encode_key(key: &u32) -> Vec<u8> {
             key.to_le_bytes().to_vec()
@@ -196,39 +241,58 @@ mod tests {
                 .try_into()
                 .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
             Ok(u64::from_le_bytes(tag))
+        }
+        fn fingerprint_samples() -> Vec<(u32, u64)> {
+            vec![(1, 1), (u32::MAX, u64::MAX)]
         }
     }
 
-    /// The same entries with a bumped version — a code upgrade.
-    struct ToyV2;
-    impl EntryCodec for ToyV2 {
+    /// The same entries but a **different byte layout** (big-endian) — a format
+    /// change that a hand-set version could forget to bump, but the fingerprint
+    /// cannot.
+    struct ToyBigEndian;
+    impl EntryCodec for ToyBigEndian {
         type Key = u32;
         type Value = u64;
-        const VERSION: FormatVersion = FormatVersion(2);
 
         fn encode_key(key: &u32) -> Vec<u8> {
-            key.to_le_bytes().to_vec()
+            key.to_be_bytes().to_vec()
         }
         fn encode_value(value: &u64) -> Vec<u8> {
-            value.to_le_bytes().to_vec()
+            value.to_be_bytes().to_vec()
         }
         fn decode_key(bytes: &[u8]) -> Result<u32, DecodeError> {
             let tag: [u8; 4] = bytes
                 .try_into()
                 .map_err(|_| DecodeError::Invalid("bad key width".to_owned()))?;
-            Ok(u32::from_le_bytes(tag))
+            Ok(u32::from_be_bytes(tag))
         }
         fn decode_value(bytes: &[u8]) -> Result<u64, DecodeError> {
             let tag: [u8; 8] = bytes
                 .try_into()
                 .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
-            Ok(u64::from_le_bytes(tag))
+            Ok(u64::from_be_bytes(tag))
+        }
+        fn fingerprint_samples() -> Vec<(u32, u64)> {
+            vec![(1, 1), (u32::MAX, u64::MAX)]
         }
     }
 
     fn commit(backend: &InMemoryBackend, ops: Vec<WriteOp>) {
         let mut writer = backend.writer().expect("writer");
         writer.commit(ops).expect("commit");
+    }
+
+    #[test]
+    fn a_codecs_fingerprint_is_stable() {
+        assert_eq!(format_version::<Toy>(), format_version::<Toy>());
+    }
+
+    #[test]
+    fn changing_the_byte_layout_changes_the_fingerprint() {
+        // Same samples, same declared version-intent — only the encoding differs.
+        // A hand-set number could stay equal here; the fingerprint must not.
+        assert_ne!(format_version::<Toy>(), format_version::<ToyBigEndian>());
     }
 
     #[test]
@@ -256,7 +320,7 @@ mod tests {
     #[test]
     fn an_unstamped_namespace_is_stale() {
         let backend = InMemoryBackend::new();
-        commit(&backend, vec![put::<Toy>(TOY, &1, &1)]); // data, no version stamp
+        commit(&backend, vec![put::<Toy>(TOY, &1, &1)]); // data, no stamp
         let reader = backend.reader().expect("reader");
         assert_eq!(
             freshness::<Toy>(&reader, TOY).expect("freshness"),
@@ -265,21 +329,21 @@ mod tests {
     }
 
     #[test]
-    fn a_bumped_version_rejects_old_data_for_rebuild() {
+    fn a_changed_format_rejects_old_data_for_rebuild() {
         let backend = InMemoryBackend::new();
-        // Written by v1 code.
+        // Written by the little-endian codec.
         commit(
             &backend,
             vec![version_stamp::<Toy>(TOY), put::<Toy>(TOY, &1, &1)],
         );
         let reader = backend.reader().expect("reader");
 
-        // v2 code opens it: rejected → the caller rebuilds, never migrates.
+        // The big-endian codec opens it: fingerprint differs → rejected → rebuild.
         assert_eq!(
-            freshness::<ToyV2>(&reader, TOY).expect("freshness"),
+            freshness::<ToyBigEndian>(&reader, TOY).expect("freshness"),
             Freshness::Stale
         );
-        // v1 code still reads it.
+        // The original codec still reads it.
         assert_eq!(
             freshness::<Toy>(&reader, TOY).expect("freshness"),
             Freshness::Fresh

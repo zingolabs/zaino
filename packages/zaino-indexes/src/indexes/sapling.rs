@@ -1,6 +1,6 @@
 //! SaplingIndex (BlockLocal × Append): height → compact sapling data per block.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -79,7 +79,20 @@ impl Schema<Vec<SaplingEntry>> for SaplingIndex {
 impl EntryCodec for SaplingIndex {
     type Key = BlockHeight;
     type Value = SaplingBlockValue;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(BlockHeight, SaplingBlockValue)> {
+        vec![(
+            BlockHeight::new(1),
+            SaplingBlockValue(vec![SaplingTxCompact {
+                nullifiers: vec![Nullifier::from([2u8; 32])],
+                outputs: vec![(
+                    NoteCommitment::from([3u8; 32]),
+                    EphemeralKey::from([4u8; 32]),
+                    CompactCiphertext::from([5u8; CompactCiphertext::LENGTH]),
+                )],
+            }]),
+        )]
+    }
 
     fn encode_key(key: &BlockHeight) -> Vec<u8> {
         key.value().to_le_bytes().to_vec()

@@ -13,7 +13,7 @@
 //! decoding a queried t-address into `(type, hash160)`, so write and read agree
 //! without this index depending on the address-string parser.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{
     classify_script, OutputIndex, Script, ScriptType, TransactionId, Zatoshis,
 };
@@ -172,7 +172,29 @@ impl Schema<Vec<Vec<AddressReceive>>> for AddressHistoryIndex {
 impl EntryCodec for AddressHistoryIndex {
     type Key = AddrKey;
     type Value = Zatoshis;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(AddrKey, Zatoshis)> {
+        // Cover every ScriptType variant, since the type byte is part of the key.
+        let sample = |script_type, seed: u8| {
+            (
+                AddrKey {
+                    addr: AddrId {
+                        script_type,
+                        hash: [seed; 20],
+                    },
+                    height: BlockHeight::new(u64::from(seed)),
+                    txid: TransactionId::from([seed; 32]),
+                    output_index: u32::from(seed),
+                },
+                Zatoshis::new(u64::from(seed) + 1).expect("valid"),
+            )
+        };
+        vec![
+            sample(ScriptType::P2PKH, 1),
+            sample(ScriptType::P2SH, 2),
+            sample(ScriptType::NonStandard, 3),
+        ]
+    }
 
     fn encode_key(key: &AddrKey) -> Vec<u8> {
         let mut buf = Vec::with_capacity(65);

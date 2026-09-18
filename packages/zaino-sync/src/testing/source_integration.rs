@@ -7,7 +7,7 @@
 use crate::descriptor::{Append, BlockLocal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, FormatVersion};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 use crate::traits::{
     ExtractError, ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema,
 };
@@ -129,7 +129,10 @@ impl Schema<Vec<TxCountEntry>> for TxCountIndex {
 impl EntryCodec for TxCountIndex {
     type Key = BlockHeight;
     type Value = u32;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(BlockHeight, u32)> {
+        vec![(BlockHeight::new(1), 2)]
+    }
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()
@@ -271,7 +274,18 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
 impl EntryCodec for HeadersIndex {
     type Key = BlockHeight;
     type Value = HeaderValue;
-    const VERSION: FormatVersion = FormatVersion(1);
+
+    fn fingerprint_samples() -> Vec<(BlockHeight, HeaderValue)> {
+        vec![(
+            BlockHeight::new(1),
+            HeaderValue {
+                hash: BlockHash::from([1u8; 32]),
+                prev_hash: BlockHash::from([2u8; 32]),
+                time: 3,
+                bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+            },
+        )]
+    }
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()
