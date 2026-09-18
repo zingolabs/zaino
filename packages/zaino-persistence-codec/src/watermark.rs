@@ -6,11 +6,11 @@
 //! [`stamp`], a reader says [`read`], and the storage details stay here at the
 //! persistence seam.
 //!
-//! The value is a raw block height (`u64`): this layer stores a number, and each
-//! side interprets it in its own height type. That keeps the persistence port
-//! free of any concrete domain-height dependency.
+//! The value is a domain [`Height`]: this seam speaks the same height primitive
+//! its consumers do, rather than a bare integer.
 
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
+use zaino_primitives::types::Height;
 
 /// Namespace for the watermark — separate from any index's namespace.
 const NAMESPACE: Namespace = Namespace::new("_watermark");
@@ -21,22 +21,22 @@ const KEY: &[u8] = b"finalised_tip";
 ///
 /// The writer includes it in the same atomic batch as the entries it commits, so
 /// the watermark can never lead the data it vouches for.
-pub fn stamp(height: u64) -> WriteOp {
+pub fn stamp(height: Height) -> WriteOp {
     WriteOp::Put {
         namespace: NAMESPACE,
         key: KEY.to_vec(),
-        value: height.to_le_bytes().to_vec(),
+        value: u32::from(height).to_le_bytes().to_vec(),
     }
 }
 
 /// The recorded finalised-tip watermark, if any.
 ///
-/// A malformed value reads as absent — the safe direction: a reader treats it as
-/// "nothing finalised", and the writer resumes from genesis.
-pub fn read(reader: &dyn BackendReader) -> Result<Option<u64>, ReadError> {
+/// A malformed or out-of-range value reads as absent — the safe direction: a
+/// reader treats it as "nothing finalised", and the writer resumes from genesis.
+pub fn read(reader: &dyn BackendReader) -> Result<Option<Height>, ReadError> {
     Ok(reader.get(NAMESPACE, KEY)?.and_then(|bytes| {
-        let value: [u8; 8] = bytes.as_slice().try_into().ok()?;
-        Some(u64::from_le_bytes(value))
+        let value: [u8; 4] = bytes.as_slice().try_into().ok()?;
+        Height::try_from(u32::from_le_bytes(value)).ok()
     }))
 }
 
@@ -46,13 +46,17 @@ mod tests {
     use zaino_persistence::in_memory::InMemoryBackend;
     use zaino_persistence::{Backend, BackendWriter};
 
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid test height")
+    }
+
     #[test]
     fn round_trips_the_watermark() {
         let backend = InMemoryBackend::new();
         let mut writer = backend.writer().expect("writer");
-        writer.commit(vec![stamp(42)]).expect("commit");
+        writer.commit(vec![stamp(height(42))]).expect("commit");
         let reader = backend.reader().expect("reader");
-        assert_eq!(read(&reader).expect("read"), Some(42));
+        assert_eq!(read(&reader).expect("read"), Some(height(42)));
     }
 
     #[test]

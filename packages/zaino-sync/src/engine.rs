@@ -31,6 +31,7 @@ use crate::index_set::IndexSet;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
+use zaino_primitives::types::Height;
 
 /// Configuration for the sync engine.
 #[derive(Debug, Clone)]
@@ -137,7 +138,10 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// on a fresh backend. The caller uses this to decide what
     /// `start_height` to pass and where to begin provisioning.
     pub fn committed_height(backend: &B) -> Result<Option<BlockHeight>, SyncError> {
-        Ok(zaino_persistence_codec::watermark::read(&backend.reader()?)?.map(BlockHeight::new))
+        Ok(
+            zaino_persistence_codec::watermark::read(&backend.reader()?)?
+                .map(|height| BlockHeight::new(u64::from(height))),
+        )
     }
 
     /// Sync a pre-loaded range of blocks.
@@ -474,9 +478,15 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 .min(u64::from(self.buffer.total_pushed()));
             let committed_height = BlockHeight::new(self.start_height.value() + max_offset - 1);
 
-            ops.push(zaino_persistence_codec::watermark::stamp(
-                committed_height.value(),
-            ));
+            // The watermark seam speaks the domain `Height`; the engine's local
+            // BlockHeight is u64, but a block height fits u32 (the protocol
+            // limit) — a value that does not is a bug, so fail loud rather than
+            // silently truncate.
+            let watermark = Height::try_from(
+                u32::try_from(committed_height.value()).expect("block height fits u32"),
+            )
+            .expect("block height within the protocol limit");
+            ops.push(zaino_persistence_codec::watermark::stamp(watermark));
 
             #[cfg(feature = "tracing")]
             tracing::info!(

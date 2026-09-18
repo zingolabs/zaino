@@ -6016,6 +6016,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-component",
+ "zaino-persistence-codec",
  "zaino-primitives",
  "zaino-runtime",
  "zaino-source",
@@ -6103,6 +6104,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
  "zaino-persistence",
+ "zaino-primitives",
 ]
 
 [[package]]

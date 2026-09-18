@@ -7,8 +7,9 @@
 //! driver of `bringup.rs`): after boot, the shared backend holds the finalised
 //! range up to the mock tip.
 //!
-//! The store reader is still a stub (its reads return not-serviceable), so this
-//! asserts the *write* side end to end; serving real reads is the next slice.
+//! It also asserts the store *consumes* the watermark: a snapshot reports the
+//! real indexed tip (composed on read from the headers index) and a serviceable
+//! range bounded by it. Address reads remain stubbed.
 
 use std::sync::Arc;
 

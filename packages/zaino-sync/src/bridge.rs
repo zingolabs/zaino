@@ -394,13 +394,13 @@ where
     fn load_state(&self, reader: &dyn BackendReader) -> Result<(), PipelineError> {
         let namespace: Namespace = I::NAME.into();
 
-        // Reject-and-rebuild: never decode persisted bytes whose recorded format
+        // Reject stale data: never decode persisted bytes whose recorded format
         // version does not match this code's. An unstamped-but-empty namespace is
         // a normal first run; an unstamped/mismatched namespace that *has* data is
-        // a genuine version skew.
-        // TODO (slice 2b): on skew, the engine bootstrap should reset the
-        // watermark so the index rebuilds from source; until then the skew is
-        // surfaced loudly rather than silently served empty.
+        // a genuine format skew — this index's persisted bytes are incompatible
+        // with this build, so refuse to read them. What to *do* about a rejected
+        // index (discard and re-index) is a separate policy the caller owns; this
+        // layer only detects and rejects.
         if zaino_persistence_codec::freshness::<I>(reader, namespace)
             .map_err(|e| PipelineError::Persist(e.to_string()))?
             == zaino_persistence_codec::Freshness::Stale
@@ -411,7 +411,8 @@ where
                 .is_empty();
             if has_data {
                 return Err(PipelineError::Persist(format!(
-                    "stale on-disk format for {}; rebuild required",
+                    "incompatible on-disk format for index {}: persisted bytes do \
+                     not match this build",
                     namespace.as_str()
                 )));
             }

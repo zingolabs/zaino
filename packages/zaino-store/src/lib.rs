@@ -68,14 +68,13 @@ impl<B: Backend + 'static> TakeSnapshot for StoreReader<B> {
             let reader = backend
                 .reader()
                 .map_err(|e| Transient(format!("open reader: {e}")))?;
-            let finalized_tip = watermark::read(&reader)
-                .map_err(|e| Transient(format!("read watermark: {e}")))?
-                .map(BlockHeight::new);
+            let finalized_tip =
+                watermark::read(&reader).map_err(|e| Transient(format!("read watermark: {e}")))?;
             // Compose the tip's BlockId on read from the headers index, so the
             // view reports a real (height, hash) rather than a bare height.
             let pinned_tip = match finalized_tip {
                 Some(height) => read_header::<B>(&reader, height)?.map(|header| BlockId {
-                    height: to_height(height),
+                    height,
                     hash: header.hash,
                 }),
                 None => None,
@@ -93,7 +92,7 @@ impl<B: Backend + 'static> TakeSnapshot for StoreReader<B> {
 pub struct StoreSnapshot<B> {
     backend: Arc<B>,
     /// The finalised watermark this view was pinned to, read from the backend.
-    finalized_tip: Option<BlockHeight>,
+    finalized_tip: Option<Height>,
     /// The finalised tip's `BlockId`, composed from the headers index at pin time.
     pinned_tip: Option<BlockId>,
 }
@@ -117,7 +116,7 @@ impl<B: Backend + 'static> Snapshot for StoreSnapshot<B> {
     fn serviceable_range(&self) -> ServiceableRange {
         // No non-finalised window is wired, so the view answers up to the
         // finalised tip only: `tip == finalized_tip`.
-        let tip = self.finalized_tip.map_or(Height::GENESIS, to_height);
+        let tip = self.finalized_tip.unwrap_or(Height::GENESIS);
         ServiceableRange {
             finalized_tip: tip,
             tip,
@@ -130,7 +129,7 @@ impl<B: Backend + 'static> Snapshot for StoreSnapshot<B> {
 /// stale bytes.
 fn read_header<B: Backend>(
     reader: &B::Reader,
-    height: BlockHeight,
+    height: Height,
 ) -> Result<Option<HeaderValue>, Transient> {
     let namespace: Namespace = HEADERS_ID.into();
     if freshness::<HeadersIndex>(reader, namespace)
@@ -139,7 +138,9 @@ fn read_header<B: Backend>(
     {
         return Ok(None);
     }
-    let key = HeadersIndex::encode_key(&height);
+    // The headers index is keyed by the engine's `BlockHeight`; convert from the
+    // domain `Height` the watermark speaks.
+    let key = HeadersIndex::encode_key(&BlockHeight::new(u64::from(height)));
     match reader
         .get(namespace, &key)
         .map_err(|e| Transient(format!("read header: {e}")))?
@@ -149,13 +150,6 @@ fn read_header<B: Backend>(
             .map_err(|e| Transient(format!("decode header: {e}"))),
         None => Ok(None),
     }
-}
-
-/// EXPLORATORY: heights fit `u32` on Zcash; a real path would return a typed
-/// error rather than assert.
-fn to_height(height: BlockHeight) -> Height {
-    Height::try_from(u32::try_from(height.value()).expect("height fits u32"))
-        .expect("height within the protocol limit")
 }
 
 impl<B: Backend + 'static> AddressRead for StoreSnapshot<B> {

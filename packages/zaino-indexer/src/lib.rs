@@ -17,6 +17,7 @@ pub use source_provisioner::{SourceProvisioner, SourceSyncDriver};
 use std::sync::{Arc, Mutex};
 
 use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
+use zaino_primitives::types::Height;
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::SyncEngine;
 use zaino_sync::primitives::BlockHeight;
@@ -55,6 +56,56 @@ pub enum IndexerError {
     /// `run` was called after the engine had already been consumed.
     #[error("indexer already run")]
     AlreadyRun,
+}
+
+/// Where a sync run begins, derived from the backend's committed watermark.
+///
+/// Formalises **fresh vs mid-sync**: a backend with no watermark is [`Fresh`]
+/// and indexes from genesis; one with a watermark [`Resume`]s just after it.
+/// This is *only* about where to start. Whether the persisted indexes are
+/// themselves compatible with this build is a separate concern — the engine
+/// rejects an incompatible index at construction; that rejection is not mixed in
+/// here.
+///
+/// [`Fresh`]: SyncStart::Fresh
+/// [`Resume`]: SyncStart::Resume
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStart {
+    /// No watermark recorded: a fresh backend. Index from genesis.
+    Fresh,
+    /// The backend is committed up to this [`Height`] (inclusive). Resume after it.
+    Resume(Height),
+}
+
+impl SyncStart {
+    /// The height indexing should begin at: genesis for a fresh backend, or one
+    /// past the committed tip on resume.
+    pub fn next_height(self) -> Height {
+        match self {
+            SyncStart::Fresh => Height::GENESIS,
+            SyncStart::Resume(committed) => committed
+                .checked_add(1)
+                .expect("resume height within the protocol limit"),
+        }
+    }
+}
+
+/// Assess where indexing should begin for `backend`, from its committed
+/// watermark.
+///
+/// Reads only the shared watermark seam — it does **not** validate index
+/// formats. Format compatibility is the engine's concern: it rejects an
+/// incompatible index when it loads state, independently of this.
+pub fn assess_start<B: Backend>(backend: &B) -> Result<SyncStart, IndexerError> {
+    let reader = backend.reader().map_err(|e| IndexerError::Sync(e.into()))?;
+    Ok(
+        match zaino_persistence_codec::watermark::read(&reader)
+            .map_err(|e| IndexerError::Sync(e.into()))?
+        {
+            Some(committed) => SyncStart::Resume(committed),
+            None => SyncStart::Fresh,
+        },
+    )
 }
 
 /// Drives a [`SyncEngine`] over a [`Provisioner`], presented as a
