@@ -17,7 +17,9 @@
 //! `zaino_chain_head::ChainHeadSnapshot`, and the trait is what consumers name.
 //! Storing the graph differently — persistent structures sharing unchanged
 //! subtrees between publishes, rather than maps cloned on each one — is a
-//! change to this crate alone.
+//! change to this crate alone. The writer builds graphs only through the
+//! crate-private `ChainGraph` moves, so another representation implements that
+//! trait as well.
 //!
 //! # Publication is all-or-nothing
 //!
@@ -38,6 +40,7 @@
 pub mod metric_names;
 
 mod error;
+mod graph;
 mod service;
 mod snapshot;
 mod subscriber;
