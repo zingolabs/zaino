@@ -1397,7 +1397,7 @@ fn assemble_compact_block(
                 header.data().time()
             ))
         })?,
-        bits: header.data().bits().as_bits(),
+        bits: header.data().bits(),
         transactions,
         chain_metadata: zaino_primitives::types::ChainMetadata::new(
             commitment_tree_data.sizes().sapling(),
@@ -1471,8 +1471,8 @@ fn compact_tx(
                     .map(|output| zaino_primitives::types::SaplingOutput {
                         cmu: (*output.cmu()).into(),
                         ephemeral_key: (*output.ephemeral_key()).into(),
-                        enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
-                            output.ciphertext().to_vec(),
+                        enc_ciphertext: zaino_primitives::types::CompactCiphertext::from(
+                            *output.ciphertext(),
                         ),
                     })
                     .collect()
@@ -1490,9 +1490,7 @@ fn domain_actions(pool: &OrchardCompactTx) -> Vec<zaino_primitives::types::Orcha
             nullifier: (*action.nullifier()).into(),
             cmx: (*action.cmx()).into(),
             ephemeral_key: (*action.ephemeral_key()).into(),
-            enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
-                action.ciphertext().to_vec(),
-            ),
+            enc_ciphertext: zaino_primitives::types::CompactCiphertext::from(*action.ciphertext()),
         })
         .collect()
 }
@@ -1602,7 +1600,7 @@ fn compact_tx_to_proto(
             .map(|output| proto::CompactSaplingOutput {
                 cmu: <[u8; 32]>::from(output.cmu).to_vec(),
                 ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
-                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+                ciphertext: <[u8; 52]>::from(output.enc_ciphertext).to_vec(),
             })
             .collect(),
         actions: tx.orchard_actions.iter().map(action_to_proto).collect(),
@@ -1633,7 +1631,7 @@ fn action_to_proto(
         nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
         cmx: <[u8; 32]>::from(action.cmx).to_vec(),
         ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+        ciphertext: <[u8; 52]>::from(action.enc_ciphertext).to_vec(),
     }
 }
 
@@ -1679,7 +1677,7 @@ pub(crate) fn compact_block_from_indexed(
                 block.data.time()
             ))
         })?,
-        bits: block.data.bits().as_bits(),
+        bits: block.data.bits(),
         transactions,
         chain_metadata: zaino_primitives::types::ChainMetadata::new(
             sizes.sapling(),
