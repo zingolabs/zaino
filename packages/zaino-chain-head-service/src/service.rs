@@ -57,10 +57,16 @@ const COMPONENT: &str = "ChainHead";
 
 /// Retention margin below the configured depth.
 ///
-/// Trimming stops this far below the tip rather than exactly at the configured
-/// depth, so it never cuts inside the reorg-possible range. It also bounds the
-/// reorg ancestry walk: that walk should never step further back than the
-/// window it maintains.
+/// Trimming stops this far below the seam, so a block stays readable in the
+/// graph for a while after it has been handed off as final. It also bounds the
+/// reorg ancestry walk, which may not step further back than the window the
+/// graph maintains.
+///
+/// It does not guard the handoff. Every block that crosses the seam is handed
+/// off whatever the margin is, because trimming runs after the handoff has read
+/// them. Nor does it widen the reorg-possible range: `MAX_NONFINALISED_DEPTH` is
+/// already the reorg bound plus the fork point, so the window covers the deepest
+/// reorg it is sized for without this.
 const RETENTION_MARGIN: u32 = 10;
 
 /// How many frozen blocks the handoff channel buffers before a slow consumer
