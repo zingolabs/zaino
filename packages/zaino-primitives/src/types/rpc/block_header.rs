@@ -2,8 +2,7 @@
 
 use crate::types::{
     AbsoluteChainWork, BlockCommitments, BlockConfirmations, BlockHash, BlockTime,
-    CompactDifficulty,
-    Difficulty, EquihashNonce, Height, MerkleRoot, TreeRoot,
+    CompactDifficulty, Difficulty, EquihashNonce, Height, MerkleRoot, TreeRoot,
 };
 
 /// A block header as reported by `getblockheader` with `verbose = true`.

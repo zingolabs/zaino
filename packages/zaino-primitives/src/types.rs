@@ -44,9 +44,7 @@ mod zatoshis;
 
 pub use address_balance::AddressBalance;
 pub use address_delta::AddressDelta;
-pub use aliases::{
-    BlockTime, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TxIndex,
-};
+pub use aliases::{BlockTime, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TxIndex};
 pub use block::{Block, BlockError, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
