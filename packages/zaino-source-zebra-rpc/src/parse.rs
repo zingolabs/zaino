@@ -32,10 +32,10 @@ use zaino_primitives::types::{
         ScriptPubKey, SpentInfo, TxOut,
     },
     AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
-    BlockVerbose, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
-    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
-    TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, TreeSize,
-    TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
+    MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot,
+    TransactionId, TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots,
+    TreeSize, TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -299,6 +299,10 @@ pub(crate) enum ParseError {
     #[error("chainwork: {0}")]
     AbsoluteChainWork(zaino_primitives::types::ChainWorkOverWidth),
 
+    /// Reported nBits is not a valid compact difficulty encoding.
+    #[error("nBits: {0}")]
+    CompactDifficulty(zaino_primitives::types::CompactDifficultyError),
+
     /// A reported commitment tree size does not fit a [`TreeSize`].
     #[error("tree size: {0}")]
     TreeSize(#[from] TreeSizeOutOfRange),
@@ -415,10 +419,15 @@ pub(crate) fn parse_block_header_verbose(
 }
 
 /// Parse the compact difficulty (`nBits`), which crosses the wire as hex.
-fn parse_compact_difficulty(value: &serde_json::Value) -> Result<u32, ParseError> {
+///
+/// The hex decode recovers the raw `u32`; the primitives door then applies the
+/// encoding's acceptance set, so a malformed difficulty fails the parse here
+/// rather than riding through the block shapes.
+fn parse_compact_difficulty(value: &serde_json::Value) -> Result<CompactDifficulty, ParseError> {
     let s = as_str(value)?;
-    u32::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)
-        .map_err(|e| ParseError::Hex(format!("nBits `{s}`: {e}")))
+    let bits = u32::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)
+        .map_err(|e| ParseError::Hex(format!("nBits `{s}`: {e}")))?;
+    CompactDifficulty::try_from_bits(bits).map_err(ParseError::CompactDifficulty)
 }
 
 /// Decode a 32-byte value written in its natural order.

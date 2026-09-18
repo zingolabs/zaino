@@ -779,7 +779,6 @@ impl FixedEncodedLen for Outpoint {
 /// - hashLightClientRoot (FlyClient proofs)
 /// - hashAuthDataRoot (ZIP-244 witness commitments)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockData {
     /// Version number of the block format (protocol upgrades).
     pub version: u32,
@@ -836,8 +835,8 @@ impl BlockData {
     }
 
     /// Returns the validated compact difficulty.
-    pub fn bits(&self) -> &CompactDifficulty {
-        &self.bits
+    pub fn bits(&self) -> CompactDifficulty {
+        self.bits
     }
 
     /// Returns Equihash Nonse.
