@@ -14,6 +14,7 @@ zebra-chain = { workspace = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 # Test-only: this crate owns our relationship to zebra's types, so it is where
 # we assert that our reading of the consensus constants and zebra's still agree.
 # A normal dependency would defeat the point — zaino-consensus must not need a

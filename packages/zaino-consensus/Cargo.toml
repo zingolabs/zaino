@@ -13,8 +13,6 @@ version = "0.1.0"
 # protocol constants, not any implementation's values. See the crate docs.
 thiserror = { workspace = true }
 hex = { workspace = true }
-# 256-bit arithmetic for expanding compact difficulty into a target threshold.
-primitive-types = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
