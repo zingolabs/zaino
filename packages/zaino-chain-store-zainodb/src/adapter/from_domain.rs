@@ -9,8 +9,8 @@
 
 use zaino_chain_store::{ChainStoreError, StoredBlock, StoredTx};
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockTxPosition, EncryptedCiphertext, Height as DomainHeight,
-    OrchardAction, Outpoint as DomainOutpoint, ScriptType, SignedZatoshis,
+    BlockHash as DomainBlockHash, BlockTxPosition, Height as DomainHeight, OrchardAction,
+    Outpoint as DomainOutpoint, ScriptType, SignedZatoshis,
 };
 
 use crate::types::{
@@ -153,7 +153,7 @@ fn stored_compact_tx_data(
                     crate::types::CompactSaplingOutput::new(
                         output.cmu.into(),
                         output.ephemeral_key.into(),
-                        ciphertext_prefix(&output.enc_ciphertext),
+                        output.enc_ciphertext.into(),
                     )
                 })
                 .collect(),
@@ -181,20 +181,11 @@ fn stored_orchard(
                     action.nullifier.into(),
                     action.cmx.into(),
                     action.ephemeral_key.into(),
-                    ciphertext_prefix(&action.enc_ciphertext),
+                    action.enc_ciphertext.into(),
                 )
             })
             .collect(),
     )
-}
-
-/// The 52-byte scanning prefix, zero-padded if the source supplied less.
-fn ciphertext_prefix(ciphertext: &EncryptedCiphertext) -> [u8; 52] {
-    let bytes: Vec<u8> = ciphertext.clone().into();
-    let mut prefix = [0u8; 52];
-    let usable = bytes.len().min(52);
-    prefix[..usable].copy_from_slice(&bytes[..usable]);
-    prefix
 }
 
 pub(super) fn stored_script_tag(script_type: ScriptType) -> u8 {
