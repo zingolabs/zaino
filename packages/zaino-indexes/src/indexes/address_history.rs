@@ -13,15 +13,14 @@
 //! decoding a queried t-address into `(type, hash160)`, so write and read agree
 //! without this index depending on the address-string parser.
 
+use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
 use zaino_primitives::types::{
     classify_script, OutputIndex, Script, ScriptType, TransactionId, Zatoshis,
 };
 use zaino_sync::backend::{BackendReader, ReadError};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
-};
+use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// A transparent output with its index already typed: `(index, value, script)`.
 pub type OutputEntry = (OutputIndex, Zatoshis, Script);
@@ -96,12 +95,12 @@ fn script_type_byte(t: ScriptType) -> u8 {
     }
 }
 
-fn script_type_from_byte(b: u8) -> Result<ScriptType, SchemaDecodeError> {
+fn script_type_from_byte(b: u8) -> Result<ScriptType, DecodeError> {
     match b {
         0 => Ok(ScriptType::P2PKH),
         1 => Ok(ScriptType::P2SH),
         2 => Ok(ScriptType::NonStandard),
-        other => Err(SchemaDecodeError::Invalid(format!(
+        other => Err(DecodeError::Invalid(format!(
             "invalid script-type byte {other}"
         ))),
     }
@@ -138,9 +137,6 @@ impl ExtractLocal for AddressHistoryIndex {
 impl MergeAppend for AddressHistoryIndex {}
 
 impl Schema<Vec<Vec<AddressReceive>>> for AddressHistoryIndex {
-    type Key = AddrKey;
-    type Value = Zatoshis;
-
     fn into_entries(batches: Vec<Vec<AddressReceive>>) -> Vec<(Self::Key, Self::Value)> {
         batches
             .into_iter()
@@ -171,6 +167,12 @@ impl Schema<Vec<Vec<AddressReceive>>> for AddressHistoryIndex {
             })
             .collect()]
     }
+}
+
+impl EntryCodec for AddressHistoryIndex {
+    type Key = AddrKey;
+    type Value = Zatoshis;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &AddrKey) -> Vec<u8> {
         let mut buf = Vec::with_capacity(65);
@@ -186,9 +188,9 @@ impl Schema<Vec<Vec<AddressReceive>>> for AddressHistoryIndex {
         u64::from(*value).to_le_bytes().to_vec()
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<AddrKey, SchemaDecodeError> {
+    fn decode_key(bytes: &[u8]) -> Result<AddrKey, DecodeError> {
         if bytes.len() != 65 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 65 bytes, got {}",
                 bytes.len()
             )));
@@ -208,15 +210,15 @@ impl Schema<Vec<Vec<AddressReceive>>> for AddressHistoryIndex {
         })
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<Zatoshis, SchemaDecodeError> {
+    fn decode_value(bytes: &[u8]) -> Result<Zatoshis, DecodeError> {
         if bytes.len() != 8 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 8 bytes, got {}",
                 bytes.len()
             )));
         }
         let raw = u64::from_le_bytes(bytes.try_into().expect("8 bytes"));
-        Zatoshis::new(raw).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+        Zatoshis::new(raw).map_err(|e| DecodeError::Invalid(e.to_string()))
     }
 }
 
@@ -228,7 +230,7 @@ pub enum ReceivesReadError {
     Backend(#[from] ReadError),
     /// A persisted entry could not be decoded.
     #[error(transparent)]
-    Decode(#[from] SchemaDecodeError),
+    Decode(#[from] DecodeError),
 }
 
 /// Read all receives for `addr`, height-ordered — the read side of this index.

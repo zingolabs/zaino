@@ -1,11 +1,10 @@
 //! TxidLocationIndex (BlockLocal × Append): txid → (height, tx_index).
 
+use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
-};
+use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context.
 pub struct TxidLocationCtx {
@@ -63,9 +62,6 @@ impl ExtractLocal for TxidLocationIndex {
 impl MergeAppend for TxidLocationIndex {}
 
 impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
-    type Key = TransactionId;
-    type Value = TxLocation;
-
     fn into_entries(batches: Vec<Vec<TxidLocationEntry>>) -> Vec<(Self::Key, Self::Value)> {
         batches
             .into_iter()
@@ -80,6 +76,12 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
             .map(|(txid, location)| TxidLocationEntry { txid, location })
             .collect()]
     }
+}
+
+impl EntryCodec for TxidLocationIndex {
+    type Key = TransactionId;
+    type Value = TxLocation;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &TransactionId) -> Vec<u8> {
         <[u8; 32]>::from(*key).to_vec()
@@ -92,10 +94,10 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
         buf
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<TransactionId, SchemaDecodeError> {
+    fn decode_key(bytes: &[u8]) -> Result<TransactionId, DecodeError> {
         let mut arr = [0u8; 32];
         if bytes.len() != 32 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 32, got {}",
                 bytes.len()
             )));
@@ -104,9 +106,9 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
         Ok(TransactionId::from(arr))
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<TxLocation, SchemaDecodeError> {
+    fn decode_value(bytes: &[u8]) -> Result<TxLocation, DecodeError> {
         if bytes.len() != 12 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 12, got {}",
                 bytes.len()
             )));

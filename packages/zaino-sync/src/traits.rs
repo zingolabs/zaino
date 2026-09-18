@@ -237,24 +237,22 @@ pub trait MergeFold: IndexDef<Composition = Fold> {
 /// - Monoidal: `Self::Accumulator`
 /// - Fold: `Self::FoldState`
 ///
-/// The index implements `Schema<M>` for its composition's output type.
-/// The bridge calls `into_entries` / `from_entries` for domain mapping,
-/// and `encode_key` / `encode_value` / `decode_key` / `decode_value`
-/// for persistence. The sync engine never touches bytes directly.
+/// The index implements `Schema<M>` for its composition's output type: the
+/// **domain projection** between a merge result and typed key-value entries.
 ///
-/// **Encoding lives in the index**, not on the types. The index author
-/// defines both the domain mapping AND the byte representation in one
-/// place. No orphan-rule issues, versioning is local to the index.
+/// The byte codec is a *separate* concern — it lives on the index's
+/// [`EntryCodec`](zaino_persistence_codec::EntryCodec) impl (the domain
+/// persistence port), not here. That keeps this trait pure domain: the sync
+/// engine builds and merges in typed entries, and the persistence layer turns
+/// them into version-tagged bytes at the backend seam. Versioning is therefore
+/// local to the index's codec, and the engine never touches bytes.
 ///
 /// Using a type parameter instead of an associated type avoids cycle
 /// errors that arise when the merged type references the index's own
 /// associated types (e.g. `Vec<Self::Delta>`).
-pub trait Schema<M>: IndexDef {
-    /// The key type for this index's entries.
-    type Key: Send + Sync;
-    /// The value type for this index's entries.
-    type Value: Send + Sync;
-
+pub trait Schema<M>:
+    IndexDef + zaino_persistence_codec::EntryCodec<Key: Send + Sync, Value: Send + Sync>
+{
     /// Map a merge result to typed key-value entries.
     fn into_entries(merged: M) -> Vec<(Self::Key, Self::Value)>;
 
@@ -262,26 +260,6 @@ pub trait Schema<M>: IndexDef {
     ///
     /// The mechanical inverse of [`into_entries`](Self::into_entries).
     fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> M;
-
-    /// Encode a key to its on-disk byte representation.
-    fn encode_key(key: &Self::Key) -> Vec<u8>;
-
-    /// Encode a value to its on-disk byte representation.
-    fn encode_value(value: &Self::Value) -> Vec<u8>;
-
-    /// Decode a key from its on-disk byte representation.
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError>;
-
-    /// Decode a value from its on-disk byte representation.
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError>;
-}
-
-/// Error from decoding a persisted key or value.
-#[derive(Debug, thiserror::Error)]
-pub enum SchemaDecodeError {
-    /// The byte slice has the wrong length or format.
-    #[error("{0}")]
-    Invalid(String),
 }
 
 // ===========================================================================

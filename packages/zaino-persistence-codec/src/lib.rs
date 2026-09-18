@@ -42,8 +42,11 @@ pub struct FormatVersion(pub u16);
 /// Distinct from a version mismatch: a mismatch is an expected upgrade, whereas
 /// a decode failure within the *claimed-correct* version is corruption or a bug.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct DecodeError(pub String);
+pub enum DecodeError {
+    /// The byte slice has the wrong length or format.
+    #[error("{0}")]
+    Invalid(String),
+}
 
 /// The codec for one index's entries: its typed `Key`/`Value` ↔ on-disk bytes,
 /// at a fixed [`FormatVersion`].
@@ -185,13 +188,13 @@ mod tests {
         fn decode_key(bytes: &[u8]) -> Result<u32, DecodeError> {
             let tag: [u8; 4] = bytes
                 .try_into()
-                .map_err(|_| DecodeError("bad key width".to_owned()))?;
+                .map_err(|_| DecodeError::Invalid("bad key width".to_owned()))?;
             Ok(u32::from_le_bytes(tag))
         }
         fn decode_value(bytes: &[u8]) -> Result<u64, DecodeError> {
             let tag: [u8; 8] = bytes
                 .try_into()
-                .map_err(|_| DecodeError("bad value width".to_owned()))?;
+                .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
             Ok(u64::from_le_bytes(tag))
         }
     }
@@ -212,13 +215,13 @@ mod tests {
         fn decode_key(bytes: &[u8]) -> Result<u32, DecodeError> {
             let tag: [u8; 4] = bytes
                 .try_into()
-                .map_err(|_| DecodeError("bad key width".to_owned()))?;
+                .map_err(|_| DecodeError::Invalid("bad key width".to_owned()))?;
             Ok(u32::from_le_bytes(tag))
         }
         fn decode_value(bytes: &[u8]) -> Result<u64, DecodeError> {
             let tag: [u8; 8] = bytes
                 .try_into()
-                .map_err(|_| DecodeError("bad value width".to_owned()))?;
+                .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
             Ok(u64::from_le_bytes(tag))
         }
     }

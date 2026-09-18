@@ -3,12 +3,11 @@
 //! For each transparent input in each transaction, records which
 //! transaction spent that outpoint.
 
+use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
 use zaino_primitives::types::{OutputIndex, TransactionId};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::IndexId;
-use zaino_sync::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
-};
+use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context: the block's transparent inputs.
 pub struct SpendCtx {
@@ -67,9 +66,6 @@ impl ExtractLocal for TransparentSpendsIndex {
 impl MergeAppend for TransparentSpendsIndex {}
 
 impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
-    type Key = OutpointKey;
-    type Value = TransactionId;
-
     fn into_entries(batches: Vec<Vec<SpendEntry>>) -> Vec<(Self::Key, Self::Value)> {
         batches
             .into_iter()
@@ -96,6 +92,12 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
             })
             .collect()]
     }
+}
+
+impl EntryCodec for TransparentSpendsIndex {
+    type Key = OutpointKey;
+    type Value = TransactionId;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &OutpointKey) -> Vec<u8> {
         let mut buf = Vec::with_capacity(36);
@@ -108,9 +110,9 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
         <[u8; 32]>::from(*value).to_vec()
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<OutpointKey, SchemaDecodeError> {
+    fn decode_key(bytes: &[u8]) -> Result<OutpointKey, DecodeError> {
         if bytes.len() != 36 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 36 bytes, got {}",
                 bytes.len()
             )));
@@ -124,9 +126,9 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
         })
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<TransactionId, SchemaDecodeError> {
+    fn decode_value(bytes: &[u8]) -> Result<TransactionId, DecodeError> {
         if bytes.len() != 32 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 32 bytes, got {}",
                 bytes.len()
             )));

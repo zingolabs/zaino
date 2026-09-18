@@ -20,6 +20,7 @@ strum.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true, optional = true }
+zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

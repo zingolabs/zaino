@@ -7,8 +7,9 @@
 use crate::descriptor::{Append, BlockLocal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, FormatVersion};
 use crate::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema, SchemaDecodeError,
+    ExtractError, ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema,
 };
 
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty, Height};
@@ -109,8 +110,6 @@ impl ExtractLocal for TxCountIndex {
 impl MergeAppend for TxCountIndex {}
 
 impl Schema<Vec<TxCountEntry>> for TxCountIndex {
-    type Key = BlockHeight;
-    type Value = u32;
 
     fn into_entries(entries: Vec<TxCountEntry>) -> Vec<(Self::Key, Self::Value)> {
         entries
@@ -125,6 +124,12 @@ impl Schema<Vec<TxCountEntry>> for TxCountIndex {
             .map(|(height, tx_count)| TxCountEntry { height, tx_count })
             .collect()
     }
+}
+
+impl EntryCodec for TxCountIndex {
+    type Key = BlockHeight;
+    type Value = u32;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()
@@ -132,11 +137,11 @@ impl Schema<Vec<TxCountEntry>> for TxCountIndex {
     fn encode_value(value: &Self::Value) -> Vec<u8> {
         value.encode()
     }
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
-        BlockHeight::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
+        BlockHeight::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
-        u32::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
+        u32::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }
 
@@ -250,8 +255,6 @@ impl ExtractLocal for HeadersIndex {
 impl MergeAppend for HeadersIndex {}
 
 impl Schema<Vec<HeaderEntry>> for HeadersIndex {
-    type Key = BlockHeight;
-    type Value = HeaderValue;
 
     fn into_entries(entries: Vec<HeaderEntry>) -> Vec<(Self::Key, Self::Value)> {
         entries.into_iter().map(|e| (e.height, e.value)).collect()
@@ -263,6 +266,12 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
             .map(|(height, value)| HeaderEntry { height, value })
             .collect()
     }
+}
+
+impl EntryCodec for HeadersIndex {
+    type Key = BlockHeight;
+    type Value = HeaderValue;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()
@@ -270,11 +279,11 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
     fn encode_value(value: &Self::Value) -> Vec<u8> {
         value.encode()
     }
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
-        BlockHeight::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
+        BlockHeight::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
-        HeaderValue::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
+        HeaderValue::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }
 

@@ -41,7 +41,7 @@
 use std::marker::PhantomData;
 use std::sync::Mutex;
 
-use crate::backend::{BackendReader, WriteOp};
+use crate::backend::{BackendReader, Namespace, WriteOp};
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
@@ -252,14 +252,15 @@ where
         .take()
         .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
 
-    let ops = I::into_entries(state)
-        .into_iter()
-        .map(|(key, value)| WriteOp::Put {
-            namespace: I::NAME.into(),
-            key: I::encode_key(&key),
-            value: I::encode_value(&value),
-        })
-        .collect();
+    let namespace: Namespace = I::NAME.into();
+    // Stamp the namespace's format version first, then the entries — a later open
+    // rejects and rebuilds if the recorded version no longer matches the code.
+    let mut ops = vec![zaino_persistence_codec::version_stamp::<I>(namespace)];
+    ops.extend(
+        I::into_entries(state)
+            .into_iter()
+            .map(|(key, value)| zaino_persistence_codec::put::<I>(namespace, &key, &value)),
+    );
 
     Ok(ops)
 }
@@ -391,23 +392,37 @@ where
     }
 
     fn load_state(&self, reader: &dyn BackendReader) -> Result<(), PipelineError> {
-        let raw_entries = reader
-            .scan(I::NAME.into())
-            .map_err(|e| PipelineError::Persist(e.to_string()))?;
+        let namespace: Namespace = I::NAME.into();
 
-        if raw_entries.is_empty() {
+        // Reject-and-rebuild: never decode persisted bytes whose recorded format
+        // version does not match this code's. An unstamped-but-empty namespace is
+        // a normal first run; an unstamped/mismatched namespace that *has* data is
+        // a genuine version skew.
+        // TODO (slice 2b): on skew, the engine bootstrap should reset the
+        // watermark so the index rebuilds from source; until then the skew is
+        // surfaced loudly rather than silently served empty.
+        if zaino_persistence_codec::freshness::<I>(reader, namespace)
+            .map_err(|e| PipelineError::Persist(e.to_string()))?
+            == zaino_persistence_codec::Freshness::Stale
+        {
+            let has_data = !reader
+                .scan(namespace)
+                .map_err(|e| PipelineError::Persist(e.to_string()))?
+                .is_empty();
+            if has_data {
+                return Err(PipelineError::Persist(format!(
+                    "stale on-disk format for {}; rebuild required",
+                    namespace.as_str()
+                )));
+            }
             return Ok(());
         }
 
-        let entries: Vec<_> = raw_entries
-            .into_iter()
-            .map(|(k, v)| {
-                let key = I::decode_key(&k).map_err(|e| PipelineError::Persist(e.to_string()))?;
-                let value =
-                    I::decode_value(&v).map_err(|e| PipelineError::Persist(e.to_string()))?;
-                Ok((key, value))
-            })
-            .collect::<Result<_, PipelineError>>()?;
+        let entries = zaino_persistence_codec::load::<I>(reader, namespace)
+            .map_err(|e| PipelineError::Persist(e.to_string()))?;
+        if entries.is_empty() {
+            return Ok(());
+        }
 
         let state = I::from_entries(entries);
         *self

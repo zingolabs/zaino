@@ -1,11 +1,10 @@
 //! TxidsIndex (BlockLocal × Append): height → list of transaction ids.
 
+use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
-};
+use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context.
 pub struct TxidsCtx {
@@ -53,9 +52,6 @@ impl ExtractLocal for TxidsIndex {
 impl MergeAppend for TxidsIndex {}
 
 impl Schema<Vec<TxidsEntry>> for TxidsIndex {
-    type Key = BlockHeight;
-    type Value = TxidsValue;
-
     fn into_entries(entries: Vec<TxidsEntry>) -> Vec<(Self::Key, Self::Value)> {
         entries
             .into_iter()
@@ -72,6 +68,12 @@ impl Schema<Vec<TxidsEntry>> for TxidsIndex {
             })
             .collect()
     }
+}
+
+impl EntryCodec for TxidsIndex {
+    type Key = BlockHeight;
+    type Value = TxidsValue;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &BlockHeight) -> Vec<u8> {
         key.value().to_le_bytes().to_vec()
@@ -85,16 +87,16 @@ impl Schema<Vec<TxidsEntry>> for TxidsIndex {
         buf
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-            SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
-        })?;
+    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| DecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<TxidsValue, SchemaDecodeError> {
+    fn decode_value(bytes: &[u8]) -> Result<TxidsValue, DecodeError> {
         if !bytes.len().is_multiple_of(32) {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "txids length {} not multiple of 32",
                 bytes.len()
             )));

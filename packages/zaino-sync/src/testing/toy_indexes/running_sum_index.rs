@@ -3,7 +3,8 @@
 use crate::descriptor::{BlockLocal, Fold};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema, SchemaDecodeError};
+use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, FormatVersion};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -88,9 +89,6 @@ impl MergeFold for RunningSumIndex {
 }
 
 impl Schema<RunningSum> for RunningSumIndex {
-    type Key = SumKey;
-    type Value = RunningSum;
-
     fn into_entries(sum: RunningSum) -> Vec<(Self::Key, Self::Value)> {
         vec![(SumKey, sum)]
     }
@@ -102,6 +100,12 @@ impl Schema<RunningSum> for RunningSumIndex {
             .map(|(_, v)| v)
             .unwrap_or(RunningSum::new(0))
     }
+}
+
+impl EntryCodec for RunningSumIndex {
+    type Key = SumKey;
+    type Value = RunningSum;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()
@@ -109,10 +113,10 @@ impl Schema<RunningSum> for RunningSumIndex {
     fn encode_value(value: &Self::Value) -> Vec<u8> {
         value.encode()
     }
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
-        SumKey::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
+        SumKey::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
-        RunningSum::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
+        RunningSum::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }

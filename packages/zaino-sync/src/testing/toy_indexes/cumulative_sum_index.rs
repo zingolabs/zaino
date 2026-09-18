@@ -9,9 +9,8 @@
 use crate::descriptor::{Monoidal, SelfCumulative};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
-use crate::traits::{
-    ExtractCumulative, ExtractError, IndexDef, MergeMonoidal, Schema, SchemaDecodeError,
-};
+use crate::traits::{ExtractCumulative, ExtractError, IndexDef, MergeMonoidal, Schema};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, FormatVersion};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -115,9 +114,6 @@ impl MergeMonoidal for CumulativeSumIndex {
 }
 
 impl Schema<CumulativeSum> for CumulativeSumIndex {
-    type Key = CumSumKey;
-    type Value = CumulativeSum;
-
     fn into_entries(sum: CumulativeSum) -> Vec<(Self::Key, Self::Value)> {
         vec![(CumSumKey, sum)]
     }
@@ -129,6 +125,12 @@ impl Schema<CumulativeSum> for CumulativeSumIndex {
             .map(|(_, v)| v)
             .unwrap_or(CumulativeSum::new(0))
     }
+}
+
+impl EntryCodec for CumulativeSumIndex {
+    type Key = CumSumKey;
+    type Value = CumulativeSum;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &Self::Key) -> Vec<u8> {
         key.encode()
@@ -136,10 +138,10 @@ impl Schema<CumulativeSum> for CumulativeSumIndex {
     fn encode_value(value: &Self::Value) -> Vec<u8> {
         value.encode()
     }
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
-        CumSumKey::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
+        CumSumKey::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
-        CumulativeSum::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
+        CumulativeSum::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }

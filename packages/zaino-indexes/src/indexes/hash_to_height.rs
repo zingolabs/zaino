@@ -1,11 +1,10 @@
 //! HashToHeightIndex (BlockLocal × Append): block hash → height.
 
+use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
 use zaino_primitives::types::BlockHash;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
-};
+use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context.
 pub struct HashToHeightCtx {
@@ -49,9 +48,6 @@ impl ExtractLocal for HashToHeightIndex {
 impl MergeAppend for HashToHeightIndex {}
 
 impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
-    type Key = BlockHash;
-    type Value = BlockHeight;
-
     fn into_entries(entries: Vec<HashToHeightEntry>) -> Vec<(Self::Key, Self::Value)> {
         entries.into_iter().map(|e| (e.hash, e.height)).collect()
     }
@@ -62,6 +58,12 @@ impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
             .map(|(hash, height)| HashToHeightEntry { hash, height })
             .collect()
     }
+}
+
+impl EntryCodec for HashToHeightIndex {
+    type Key = BlockHash;
+    type Value = BlockHeight;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &BlockHash) -> Vec<u8> {
         <[u8; 32]>::from(*key).to_vec()
@@ -71,10 +73,10 @@ impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
         value.value().to_le_bytes().to_vec()
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<BlockHash, SchemaDecodeError> {
+    fn decode_key(bytes: &[u8]) -> Result<BlockHash, DecodeError> {
         let mut arr = [0u8; 32];
         if bytes.len() != 32 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 32 bytes, got {}",
                 bytes.len()
             )));
@@ -83,10 +85,10 @@ impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
         Ok(BlockHash::from(arr))
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-            SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
-        })?;
+    fn decode_value(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| DecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 }

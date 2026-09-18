@@ -1,11 +1,10 @@
 //! HeadersIndex (BlockLocal × Append): height → (hash, prev_hash, time, bits).
 
+use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
-};
+use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context for HeadersIndex.
 pub struct HeaderCtx {
@@ -74,9 +73,6 @@ impl ExtractLocal for HeadersIndex {
 impl MergeAppend for HeadersIndex {}
 
 impl Schema<Vec<HeaderEntry>> for HeadersIndex {
-    type Key = BlockHeight;
-    type Value = HeaderValue;
-
     fn into_entries(entries: Vec<HeaderEntry>) -> Vec<(Self::Key, Self::Value)> {
         entries.into_iter().map(|e| (e.height, e.value)).collect()
     }
@@ -87,6 +83,12 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
             .map(|(height, value)| HeaderEntry { height, value })
             .collect()
     }
+}
+
+impl EntryCodec for HeadersIndex {
+    type Key = BlockHeight;
+    type Value = HeaderValue;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &BlockHeight) -> Vec<u8> {
         key.value().to_le_bytes().to_vec()
@@ -101,16 +103,16 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
         buf
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-            SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
-        })?;
+    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| DecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<HeaderValue, SchemaDecodeError> {
+    fn decode_value(bytes: &[u8]) -> Result<HeaderValue, DecodeError> {
         if bytes.len() != 72 {
-            return Err(SchemaDecodeError::Invalid(format!(
+            return Err(DecodeError::Invalid(format!(
                 "expected 72 bytes, got {}",
                 bytes.len()
             )));
@@ -131,7 +133,7 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
             bits: CompactDifficulty::try_from_bits(u32::from_le_bytes(
                 bytes[68..72].try_into().expect("4 bytes"),
             ))
-            .map_err(|_| SchemaDecodeError::Invalid("invalid nBits".to_owned()))?,
+            .map_err(|_| DecodeError::Invalid("invalid nBits".to_owned()))?,
         })
     }
 }

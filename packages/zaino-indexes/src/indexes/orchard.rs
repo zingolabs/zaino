@@ -1,11 +1,10 @@
 //! OrchardIndex (BlockLocal × Append): height → compact orchard data per block.
 
+use zaino_persistence_codec::{DecodeError, EntryCodec, FormatVersion};
 use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError,
-};
+use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Compact orchard data for one transaction.
 #[derive(Debug, Clone)]
@@ -60,9 +59,6 @@ impl ExtractLocal for OrchardIndex {
 impl MergeAppend for OrchardIndex {}
 
 impl Schema<Vec<OrchardEntry>> for OrchardIndex {
-    type Key = BlockHeight;
-    type Value = OrchardBlockValue;
-
     fn into_entries(entries: Vec<OrchardEntry>) -> Vec<(Self::Key, Self::Value)> {
         entries.into_iter().map(|e| (e.height, e.value)).collect()
     }
@@ -76,6 +72,12 @@ impl Schema<Vec<OrchardEntry>> for OrchardIndex {
             })
             .collect()
     }
+}
+
+impl EntryCodec for OrchardIndex {
+    type Key = BlockHeight;
+    type Value = OrchardBlockValue;
+    const VERSION: FormatVersion = FormatVersion(1);
 
     fn encode_key(key: &BlockHeight) -> Vec<u8> {
         key.value().to_le_bytes().to_vec()
@@ -98,15 +100,15 @@ impl Schema<Vec<OrchardEntry>> for OrchardIndex {
         buf
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
+    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
         let arr: [u8; 8] = bytes
             .try_into()
-            .map_err(|_| SchemaDecodeError::Invalid("bad height".into()))?;
+            .map_err(|_| DecodeError::Invalid("bad height".into()))?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
-    fn decode_value(_bytes: &[u8]) -> Result<OrchardBlockValue, SchemaDecodeError> {
-        Err(SchemaDecodeError::Invalid(
+    fn decode_value(_bytes: &[u8]) -> Result<OrchardBlockValue, DecodeError> {
+        Err(DecodeError::Invalid(
             "orchard decode not yet implemented".into(),
         ))
     }
