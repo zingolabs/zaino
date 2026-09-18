@@ -111,7 +111,7 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
                 .sapling
                 .outputs
                 .iter()
-                .map(|o| (o.cmu, o.ephemeral_key, o.enc_ciphertext.clone()))
+                .map(|o| (o.cmu, o.ephemeral_key, o.enc_ciphertext))
                 .collect(),
         })
         .collect();
@@ -124,14 +124,7 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
                 .orchard
                 .actions
                 .iter()
-                .map(|a| {
-                    (
-                        a.nullifier,
-                        a.cmx,
-                        a.ephemeral_key,
-                        a.enc_ciphertext.clone(),
-                    )
-                })
+                .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext))
                 .collect(),
         })
         .collect();
@@ -193,7 +186,7 @@ pub fn context_from_pre_index_compact_block(
             outputs: ctx
                 .sapling_outputs
                 .iter()
-                .map(|o| (o.cmu, o.ephemeral_key, o.enc_ciphertext.clone()))
+                .map(|o| (o.cmu, o.ephemeral_key, o.enc_ciphertext))
                 .collect(),
         });
 
@@ -201,14 +194,7 @@ pub fn context_from_pre_index_compact_block(
             actions: ctx
                 .orchard_actions
                 .iter()
-                .map(|a| {
-                    (
-                        a.nullifier,
-                        a.cmx,
-                        a.ephemeral_key,
-                        a.enc_ciphertext.clone(),
-                    )
-                })
+                .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext))
                 .collect(),
         });
     }
