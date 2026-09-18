@@ -18,9 +18,6 @@
 //! The block-carrying listener and `add_nonbest_block` are not here: no source
 //! ever implemented `nonfinalized_listener`, so both were unreachable.
 //!
-//! Everything else — extending one block at a time, the recursive reorg walk,
-//! the non-higher reorg check, best-block selection by accumulated work, and
-//! trimming with its keep-the-highest rule — is as it was.
 //!
 //! # Advancing is not an operation
 //!
@@ -62,7 +59,7 @@ const COMPONENT: &str = "ChainHead";
 ///
 /// Trimming stops this far below the tip rather than exactly at the configured
 /// depth, so it never cuts inside the reorg-possible range. It also bounds the
-/// reorg ancestry walk: that walk should never recurse further back than the
+/// reorg ancestry walk: that walk should never step further back than the
 /// window it maintains.
 const RETENTION_MARGIN: u32 = 10;
 
@@ -433,20 +430,19 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 // There's been a reorg. The fresh block is the new chaintip; we
                 // work backwards from it and update heights_to_hashes with it
                 // and all its parents.
-                self.handle_reorg(&mut graph, &block, 0).await?;
+                self.handle_reorg(&mut graph, &block).await?;
             }
         }
 
-        self.check_for_nonhigher_reorgs(&mut graph, None).await?;
+        self.check_for_nonhigher_reorgs(&mut graph).await?;
 
         // Trim to a fixed window below the tip. This was the greater of the
         // finalised database's height and this tip-relative cap; the cap is now
         // the whole rule, and it is what bounded memory before whenever the
         // database under-reported or was pinned at zero in ephemeral mode.
-        graph.remove_finalized_blocks(height_below(
-            graph.best_tip().height,
-            self.max_retained_depth(),
-        ));
+        // Trimming happens in `publish_snapshot`, after the handoff has read
+        // the blocks that crossed the seam this iteration. Trimming first would
+        // remove them before they could be handed off.
 
         // Best chain is the most-work branch retained, which a reorg may have
         // left as something other than the block we just extended to.
@@ -474,44 +470,66 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             .cloned()
             .expect("a graph always retains at least its anchor");
         if heaviest.work > tip_work {
-            self.handle_reorg(&mut graph, &heaviest, 0).await?;
+            self.handle_reorg(&mut graph, &heaviest).await?;
         }
 
         Ok(graph)
     }
 
     /// Handle a blockchain reorg by finding the common ancestor.
+    ///
+    /// Walks down from `block` to the first ancestor on the best chain,
+    /// collecting the branch on the way, then lays that branch back down from
+    /// the fork point up. The descent holds its pending blocks in a `Vec`
+    /// rather than in call frames, so its depth costs heap and not stack.
     async fn handle_reorg(
         &self,
         graph: &mut MapBackedSnapshot,
         block: &impl Block,
-        recursion_count: u8,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-        // We should never recurse back more than the retained window, assuming
-        // a complete reorg of the whole graph.
-        if u32::from(recursion_count) > self.max_retained_depth() {
-            return Err(ChainHeadAdvanceError::ReorgFailure(
-                "reorg handling recursed beyond reason".to_string(),
-            ));
-        }
-        let prev_block = match graph.blocks.get(&block.parent_hash()).cloned() {
-            Some(prev_block) => {
-                if graph.is_on_best_chain(prev_block.reference) {
-                    prev_block
-                } else {
-                    Box::pin(self.handle_reorg(graph, &prev_block, recursion_count + 1)).await?
+        let mut branch: Vec<BranchBlock> = Vec::new();
+        let mut parent_hash = block.parent_hash();
+        let mut descended: u32 = 0;
+
+        // Down to the fork point. A branch longer than the retained window
+        // cannot rejoin the best chain within it, so the walk stops rather than
+        // asking the validator for ancestors all the way to genesis.
+        let fork_point = loop {
+            if descended > self.max_retained_depth() {
+                return Err(ChainHeadAdvanceError::ReorgFailure(
+                    "reorg handling walked beyond the retained window".to_string(),
+                ));
+            }
+            descended = descended.saturating_add(1);
+
+            match graph.blocks.get(&parent_hash).cloned() {
+                Some(prev_block) if graph.is_on_best_chain(prev_block.reference) => {
+                    break prev_block
+                }
+                Some(prev_block) => {
+                    parent_hash = prev_block.parent_hash;
+                    branch.push(BranchBlock::Retained(Box::new(prev_block)));
+                }
+                None => {
+                    let fetched = self.block_at_hash(parent_hash).await?.ok_or(
+                        ChainHeadAdvanceError::InconsistentSource(format!(
+                            "validator is missing block {parent_hash}, the parent of one it served"
+                        )),
+                    )?;
+                    parent_hash = fetched.header.prev_hash;
+                    branch.push(BranchBlock::Fetched(Box::new(fetched)));
                 }
             }
-            None => {
-                let prev_block = self.block_at_hash(block.parent_hash()).await?.ok_or(
-                    ChainHeadAdvanceError::InconsistentSource(format!(
-                        "validator is missing block {}, the parent of one it served",
-                        block.parent_hash()
-                    )),
-                )?;
-                Box::pin(self.handle_reorg(graph, &prev_block, recursion_count + 1)).await?
-            }
         };
+
+        // Back up from the fork point, oldest first, ending on the block that
+        // started the walk. Each block's work accumulates from the one below,
+        // so they go on in order.
+        let mut prev_block = fork_point;
+        for pending in branch.into_iter().rev() {
+            prev_block = pending.to_chain_head_block(&prev_block, self).await?;
+            graph.add_block_new_chaintip(prev_block.clone());
+        }
         let chainblock = block.to_chain_head_block(&prev_block, self).await?;
         graph.add_block_new_chaintip(chainblock.clone());
         Ok(chainblock)
@@ -525,34 +543,29 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     async fn check_for_nonhigher_reorgs(
         &self,
         graph: &mut MapBackedSnapshot,
-        // Callers should provide None. Used for self-recursion case only.
-        height_to_recurse_to: Option<Height>,
     ) -> Result<(), ChainHeadAdvanceError> {
-        if height_to_recurse_to.is_some_and(|height| {
-            u32::from(height) + self.max_retained_depth() < u32::from(graph.best_tip().height)
-        }) {
-            return Err(ChainHeadAdvanceError::ReorgFailure(
-                "reorg detection recursed beyond reason".to_string(),
-            ));
-        }
-        let target_height = height_to_recurse_to.unwrap_or(graph.best_tip().height);
-        match self.block_at_height(target_height).await? {
-            Some(block) => {
-                if block.header.hash != graph.best_tip().hash {
-                    self.handle_reorg(graph, &block, 0).await?;
+        let tip = graph.best_tip();
+        let mut target_height = tip.height;
+
+        loop {
+            if let Some(block) = self.block_at_height(target_height).await? {
+                if block.header.hash != tip.hash {
+                    self.handle_reorg(graph, &block).await?;
                 }
-                Ok(())
+                return Ok(());
             }
-            None => {
-                // The source cannot serve this height. Walk down until it can,
-                // bounded by the retained window above.
-                if u32::from(target_height) == 0 {
-                    return Ok(());
-                }
-                Box::pin(
-                    self.check_for_nonhigher_reorgs(graph, Some(height_below(target_height, 1))),
-                )
-                .await
+
+            // The source cannot serve this height. Step down until it can,
+            // bounded by the retained window: below that there is nothing left
+            // in the graph for a reorg to rejoin.
+            if u32::from(target_height) == 0 {
+                return Ok(());
+            }
+            target_height = height_below(target_height, 1);
+            if u32::from(target_height) + self.max_retained_depth() < u32::from(tip.height) {
+                return Err(ChainHeadAdvanceError::ReorgFailure(
+                    "reorg detection stepped below the retained window".to_string(),
+                ));
             }
         }
     }
@@ -582,6 +595,16 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         } else {
             Vec::new()
         };
+
+        // Trim only now. The handoff above reads the blocks it emits out of the
+        // graph, so a block has to still be there to be handed off: trimming
+        // first bounds one iteration's handoff by the gap between the seam and
+        // the retention floor, and silently settles the rest without emitting
+        // them. The order is the guarantee, not the size of that gap.
+        next.remove_finalized_blocks(height_below(
+            next.best_tip().height,
+            self.max_retained_depth(),
+        ));
 
         // Stamped *before* the store, so a reader that captures the view and
         // asks for its epoch is told the epoch this publication carries rather
@@ -931,6 +954,40 @@ trait Block {
         prev_block: &ChainHeadBlock,
         service: &ChainHeadService<S>,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError>;
+}
+
+/// One block on a branch the reorg walk has yet to lay down.
+///
+/// The walk meets two kinds on its way to the fork point: blocks the graph
+/// still holds on a branch that lost, and blocks it has to ask the validator
+/// for. Both go on the same pending list, so the list has one type.
+/// Both variants are boxed: a whole block runs to well over a kilobyte, and the
+/// list holds one entry per block on the branch.
+enum BranchBlock {
+    /// Retained by the graph, on a branch that is not the best chain.
+    Retained(Box<ChainHeadBlock>),
+    /// Fetched from the validator, because the graph had dropped it.
+    Fetched(Box<zaino_primitives::types::Block>),
+}
+
+impl Block for BranchBlock {
+    fn parent_hash(&self) -> BlockHash {
+        match self {
+            Self::Retained(block) => block.parent_hash(),
+            Self::Fetched(block) => block.parent_hash(),
+        }
+    }
+
+    async fn to_chain_head_block<S: ChainHeadBlockSource>(
+        &self,
+        prev_block: &ChainHeadBlock,
+        service: &ChainHeadService<S>,
+    ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
+        match self {
+            Self::Retained(block) => block.to_chain_head_block(prev_block, service).await,
+            Self::Fetched(block) => block.to_chain_head_block(prev_block, service).await,
+        }
+    }
 }
 
 impl Block for ChainHeadBlock {

@@ -94,14 +94,9 @@ async fn a_fork_at_the_window_floor_is_resolved() {
 ///
 /// The window is sized for a reorg of `max_depth` blocks, so one well short of
 /// that is a reorg the service exists to follow. The walk recurses once per
-/// block between the new branch's tip and its fork point, and each level holds
-/// a frame for as long as the levels beneath it are running.
-///
-/// Ignored because it does not fail — it aborts. A stack overflow takes the
-/// whole test binary with it, and every other result in this file with it, so
-/// running it is opt-in until the walk stops recursing.
+/// block between the new branch's tip and its fork point, and it holds them on
+/// the heap rather than in call frames, so the depth costs no stack.
 #[tokio::test]
-#[ignore = "aborts the test binary: the walk overflows the stack past ~130 blocks"]
 async fn a_deep_fork_inside_the_window_is_resolved() {
     let validator = MockValidator::linear(600);
     let service = synced(&validator, 300).await;
@@ -197,13 +192,10 @@ async fn a_published_tip_never_falls_below_a_frozen_block() {
 /// A rollback at the configured depth terminates.
 ///
 /// The same rollback as above at `MAX_NONFINALISED_DEPTH`, the depth a default
-/// `ChainHeadConfig` runs at. Detection walks down a height at a time looking
-/// for one the source can still serve, recursing once per height, so the depth
-/// that sizes the window also sizes the descent.
-///
-/// Ignored for the same reason as the deep fork: it aborts rather than fails.
+/// `ChainHeadConfig` runs at. Detection steps down a height at a time looking
+/// for one the source can still serve, so the depth that sizes the window also
+/// sizes the descent.
 #[tokio::test]
-#[ignore = "aborts the test binary: detection overflows the stack at the default depth"]
 async fn a_rollback_at_the_configured_depth_terminates() {
     let validator = MockValidator::linear(1200);
     let service = synced(&validator, zaino_consensus::MAX_NONFINALISED_DEPTH).await;
@@ -253,34 +245,19 @@ async fn hand_off_over(blocks: u16) -> Vec<u32> {
     heights
 }
 
-/// One tick hands off every block that crossed the seam, up to the margin.
-///
-/// Trimming cuts `RETENTION_MARGIN` below the seam, and the handoff reads the
-/// blocks it emits out of the graph after that cut. The margin is therefore how
-/// far the tip may move in one tick with every newly-settled block still there
-/// to be read: `RETENTION_MARGIN + 1` blocks, the extra one being the block
-/// sitting on the floor itself.
+/// A small tick hands off every block that crossed the seam.
 #[tokio::test]
-async fn a_tick_hands_off_every_block_up_to_the_margin() {
-    let heights = hand_off_over(11);
-
-    assert_eq!(heights.await, (230..=240).collect::<Vec<_>>());
+async fn a_tick_hands_off_every_block_it_settles() {
+    assert_eq!(hand_off_over(11).await, (230..=240).collect::<Vec<_>>());
 }
 
-/// A tick moving further than the margin hands off less than it settled.
+/// So does a tick that moves further than the retention margin.
 ///
-/// The blocks at the bottom of the band cross the seam and are trimmed in the
-/// same tick, so the handoff never sees them. They are not reported as missed —
-/// the stream's `Lagged` signal covers a slow consumer, not a producer that
-/// dropped them before sending.
+/// The handoff reads the blocks it emits out of the graph, so a block has to
+/// still be retained to be handed off. That makes the handoff's reach a
+/// question of *when* trimming runs, not of how far below the seam it cuts: a
+/// tick settles as many blocks as the tip moved, and hands off all of them.
 #[tokio::test]
-async fn a_tick_past_the_margin_drops_blocks_from_the_handoff() {
-    let heights = hand_off_over(20).await;
-
-    assert_eq!(heights, (239..=249).collect::<Vec<_>>());
-    assert_eq!(
-        heights.len(),
-        11,
-        "a tick hands off at most RETENTION_MARGIN + 1 blocks"
-    );
+async fn a_tick_larger_than_the_margin_hands_off_every_block_too() {
+    assert_eq!(hand_off_over(20).await, (230..=249).collect::<Vec<_>>());
 }
