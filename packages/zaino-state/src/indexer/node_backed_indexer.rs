@@ -1109,21 +1109,43 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
             .get_transaction_status(&snapshot, &txid)
             .await?;
 
+        // The zebra sink still takes the RPC integers, so the typed state is
+        // rendered through its codec at this boundary; the constructor owns
+        // the depth + 1 off-by-one the arithmetic here used to fold in.
+        let out_of_range = |e: zaino_primitives::types::HeightOverflow| {
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(format!(
+                "best-chain height out of range: {e}"
+            )))
+        };
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(types::BestChainLocation::Block(block_hash, height)) => {
-                let confirmations: i64 = u32::from(snapshot.best_tip().height)
-                    .saturating_sub(height.0)
-                    .saturating_add(1)
-                    .into();
+                let confirmations = zaino_primitives::types::TxConfirmations::Mined(
+                    zaino_primitives::types::BlockConfirmations::of_best_chain_block(
+                        zaino_primitives::types::Height::try_from(height.0)
+                            .map_err(out_of_range)?,
+                        zaino_primitives::types::Height::try_from(u32::from(
+                            snapshot.best_tip().height,
+                        ))
+                        .map_err(out_of_range)?,
+                    ),
+                );
 
                 (
                     Some(zebra_chain::block::Height::from(height)),
-                    Some(confirmations),
+                    Some(confirmations.to_rpc_i64()),
                     Some(zebra_chain::block::Hash::from(block_hash)),
-                    Some(true),
+                    Some(confirmations.is_in_best_chain()),
                 )
             }
-            Some(types::BestChainLocation::Mempool(_height)) => (None, Some(0), None, Some(false)),
+            Some(types::BestChainLocation::Mempool(_height)) => {
+                let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
+                (
+                    None,
+                    Some(confirmations.to_rpc_i64()),
+                    None,
+                    Some(confirmations.is_in_best_chain()),
+                )
+            }
             None => (None, None, None, Some(false)),
         };
 
