@@ -6320,6 +6320,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-store"
+version = "0.1.0"
+dependencies = [
+ "zaino-core",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-service",
+]
+
+[[package]]
 name = "zaino-store-service"
 version = "0.1.0"
 dependencies = [

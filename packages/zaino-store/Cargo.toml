@@ -1,0 +1,16 @@
+[package]
+name = "zaino-store"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "EXPLORATORY STUB — not for production. A throwaway spike proving the finalised read component can be a thin compose-on-read reader over the KV backend."
+
+[dependencies]
+zaino-core = { path = "../zaino-core" }
+zaino-service = { path = "../zaino-service" }
+zaino-persistence = { workspace = true }
+zaino-indexes = { workspace = true }
