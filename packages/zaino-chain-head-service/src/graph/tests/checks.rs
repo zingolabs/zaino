@@ -1,7 +1,4 @@
 //! Single moves on a [`ChainGraph`], without a service around them.
-//!
-//! The graph always holds its tip, so every question below has an answer
-//! whatever has been trimmed or rewound.
 
 use zaino_primitives::types::BlockRef;
 

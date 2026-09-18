@@ -475,8 +475,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         ));
 
         // Check the source's tip against retained work; `tip_selection`
-        // decides what a disagreement does. The heaviest block is the tip
-        // unless some block carries strictly more work.
+        // decides what a disagreement does.
         let heaviest = graph.heaviest_block();
         if heaviest.hash() != graph.best_tip().hash {
             match self.tip_selection {
@@ -823,8 +822,7 @@ fn chain_head_block(
 /// Extends `graph` with a block the source served as the tip's child.
 ///
 /// A refusal means the source's answer does not attach where it was asked
-/// for: a block at the wrong height, or one that does not name the tip as its
-/// parent.
+/// for, which makes it inconsistent source data.
 fn extend(
     graph: &mut MapBackedSnapshot,
     block: ChainHeadBlock,

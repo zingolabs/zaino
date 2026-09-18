@@ -1,10 +1,9 @@
 //! [`MapBackedSnapshot`]'s representation invariants, checked against its
 //! private fields.
 //!
-//! The contract invariants are checked generically in `graph::tests`. These
-//! are the ones only this representation has, plus index entries the read
-//! traits cannot see: `best_chain` skips a canonical hash whose block is not
-//! retained, so only the index itself shows it.
+//! These are the invariants only this representation has, plus index entries
+//! the read traits cannot see: `best_chain` skips a canonical hash whose
+//! block is not retained, so only the index itself shows it.
 
 use std::collections::HashSet;
 
