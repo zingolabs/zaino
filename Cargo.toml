@@ -11,6 +11,7 @@ members = [
     "packages/zaino-noderpc",
     "packages/zaino-store-service",
     "packages/zaino-store",
+    "packages/zaino-persistence-codec",
     "packages/zaino-consensus",
     "packages/zaino-encoding",
     "packages/zaino-primitives",

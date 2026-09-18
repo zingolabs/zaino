@@ -6097,6 +6097,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-persistence-codec"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-persistence",
+]
+
+[[package]]
 name = "zaino-primitives"
 version = "0.2.0"
 dependencies = [
