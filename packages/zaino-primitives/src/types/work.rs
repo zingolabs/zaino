@@ -53,10 +53,9 @@
 //! checked so a corrupt input fails loud instead of wrapping into a small value
 //! that would then sort as a light chain. See ADR-0013 for the doctrine.
 //!
-//! Deriving [`SingleBlockWork`] from a difficulty target is not done here. The
-//! nBits → target → work conversion is consensus logic, and belongs to a crate
-//! that holds a consensus implementation. Those crates compute the integer and
-//! pass it to [`SingleBlockWork::try_new`].
+//! [`SingleBlockWork`] is derived from a difficulty target by
+//! [`CompactDifficulty::to_work`](super::CompactDifficulty::to_work).
+//! [`SingleBlockWork::try_new`] takes a work integer computed elsewhere.
 
 mod absolute_chain_work;
 mod single_block_work;

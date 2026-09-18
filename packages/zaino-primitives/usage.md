@@ -81,6 +81,7 @@ Types enforce what they claim:
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
 let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
+let c = CompactCiphertext::try_new(&bytes)?; // rejects anything but exactly 52 bytes
 let a = TransparentAddress::try_new(s)?; // rejects non-transparent / undecodable
 ```
 
@@ -89,11 +90,16 @@ A transaction's position is the block's to know, not the transaction's:
 `Block::coinbase()` (position 0), never from a per-transaction field that could
 disagree with the container.
 
+`CompactCiphertext` is the 52-byte compact head of a note ciphertext — the
+form a compact transaction serves to light clients, not the full 580-byte
+encryption output. Once constructed it converts infallibly to `[u8; 52]`, so
+no consumer re-checks the width.
+
 `TransparentAddress` is network-blind on construction: it accepts a valid
 transparent address for any network and reports which one via `network()` (a
-`zcash_protocol` `NetworkType`) and the script form via `script_type()`. The primitive states
-what the address *is*; whether that network is the one a query should act on is
-the consumer's policy, not the address's invariant.
+`zcash_protocol` `NetworkType`) and the script form via `script_type()`. The
+primitive states what the address *is*; whether that network is the one a query
+should act on is the consumer's policy, not the address's invariant.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the
@@ -183,10 +189,30 @@ sends, and answers `Ok(None)` when the validator does not track the value;
 `to_be_bytes` renders back for the wire. For an integer you already hold, use
 `AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
 
-The difficulty-to-work derivation is consensus logic and lives outside this
-crate. The `types::work` module documentation covers why these are separate
+The `types::work` module documentation covers why these are separate
 types, and what `AbsoluteChainWork` is *not* — in particular
 `zaino-chain-head`'s anchor-relative work, which is a third quantity.
+
+### Where `SingleBlockWork` comes from: `CompactDifficulty`
+
+The nBits encoding from the block header is its own validated type,
+`CompactDifficulty`, and the whole bits → target → work conversion is native
+to this crate — the domain owns its arithmetic, and consensus implementations
+serve as *differential-test oracles* (`zaino-convert-zebra` sweeps the
+pipeline against zebra across the encoding space) rather than as dependencies.
+
+Construction is only through checked doors — `try_from_bits(u32)` for a value
+carried numerically, `try_from_be_bytes([u8; 4])` for one carried as its
+display-order bytes. Both apply the acceptance set a validator enforces before
+comparing a hash (clear sign bit, target within 256 bits, non-zero target),
+plus one domain rule: the target's work must fit the 128 bits work is recorded
+in. Each rejected rule has its own `CompactDifficultyError` variant. `as_bits`
+reads the raw `u32` back out for wire and persistence renders.
+
+The work — `floor(2^256 / (target + 1))` — is computed once at construction,
+so `to_work()` is an infallible getter returning the block's
+`SingleBlockWork`. The expanded 256-bit target itself never leaves the type:
+no consumer reasons about targets, only about validity and work.
 
 ## Byte order
 

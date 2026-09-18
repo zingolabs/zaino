@@ -26,8 +26,7 @@ pub struct ZeroWork;
 impl SingleBlockWork {
     /// Create a block work value, rejecting zero.
     ///
-    /// Takes a work integer that has already been computed, normally by a
-    /// consensus implementation's difficulty-to-work conversion.
+    /// Takes a work integer that has already been computed elsewhere.
     pub fn try_new(value: u128) -> Result<Self, ZeroWork> {
         NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
     }
@@ -41,6 +40,14 @@ impl SingleBlockWork {
 impl From<SingleBlockWork> for NonZeroU128 {
     fn from(work: SingleBlockWork) -> Self {
         work.0
+    }
+}
+
+impl From<NonZeroU128> for SingleBlockWork {
+    /// A non-zero integer carries this type's whole invariant, so the
+    /// conversion is total.
+    fn from(value: NonZeroU128) -> Self {
+        Self(value)
     }
 }
 
