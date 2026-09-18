@@ -15,6 +15,8 @@
 //!   the test is the only thing advancing the graph, so what it observes is
 //!   exactly what it caused.
 
+mod reorg_depth;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
