@@ -18,9 +18,6 @@
 //! The block-carrying listener and `add_nonbest_block` are not here: no source
 //! ever implemented `nonfinalized_listener`, so both were unreachable.
 //!
-//! Everything else — extending one block at a time, the non-higher reorg check,
-//! and trimming with its keep-the-highest rule — is as it was.
-//!
 //! # Who picks the tip
 //!
 //! The source does. Retained work only checks the source's answer; see
@@ -85,10 +82,7 @@ pub(crate) enum TipSelection {
     /// moved its tip elsewhere.
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "kept as a selectable policy; only tests select it today"
-        )
+        expect(dead_code, reason = "a selectable policy; only tests select it")
     )]
     HeaviestRetained,
 }
