@@ -3,10 +3,15 @@
 //! Two persistence seams. The **low KV port** ([`zaino_persistence::Backend`])
 //! stores raw bytes and knows nothing of domain types or versions — LMDB and the
 //! in-memory backend implement it, and it stays that dumb on purpose. This crate
-//! is the **domain persistence port** over it: it maps an index's typed
-//! `Key`/`Value` to on-disk bytes at a declared [`FormatVersion`], and on open it
-//! *rejects* data whose recorded version does not match the running code's — so
-//! the caller **rebuilds** the index from source rather than migrating it.
+//! is the **domain persistence port** over it: an [`EntryCodec`] maps an index's
+//! typed `Key`/`Value` to on-disk bytes at a declared [`FormatVersion`], and on
+//! open a recorded-version mismatch *rejects* the persisted bytes so the caller
+//! **rebuilds** the index from source rather than migrating it.
+//!
+//! A codec owns **format**, not **placement**: the namespace an index lives in is
+//! the caller's concern (it already names its indexes), so every helper takes the
+//! namespace explicitly rather than the codec carrying it. That keeps a single
+//! source of truth for the namespace.
 //!
 //! That is the whole point of the version tag: it is a *guard*, not a migration
 //! engine. Because a mismatch discards and rebuilds, only the current version's
@@ -40,20 +45,19 @@ pub struct FormatVersion(pub u16);
 #[error("{0}")]
 pub struct DecodeError(pub String);
 
-/// The codec for one index namespace: its typed entries ↔ on-disk bytes, at a
-/// fixed [`FormatVersion`].
+/// The codec for one index's entries: its typed `Key`/`Value` ↔ on-disk bytes,
+/// at a fixed [`FormatVersion`].
 ///
 /// This is the DTO boundary — `decode_*` *is* the disk→domain validation step.
 /// It replaces the byte codec that used to live on the sync engine's `Schema`
-/// trait, so `Schema` can shrink to a pure domain projection.
-pub trait NamespaceCodec {
+/// trait, so `Schema` can shrink to a pure domain projection. It owns format
+/// only; the namespace is supplied by the caller.
+pub trait EntryCodec {
     /// The typed key.
     type Key;
     /// The typed value.
     type Value;
 
-    /// Where these entries live in the KV backend.
-    const NAMESPACE: Namespace;
     /// The on-disk format version. Bump to force reject-and-rebuild.
     const VERSION: FormatVersion;
 
@@ -77,22 +81,22 @@ pub enum Freshness {
     Stale,
 }
 
-/// The [`WriteOp`] that stamps a codec's namespace with its current version.
+/// The [`WriteOp`] that stamps `namespace` with codec `C`'s current version.
 ///
 /// A writer includes this when it (re)builds the namespace, so a later open can
 /// tell whether the persisted bytes match the running code.
-pub fn version_stamp<C: NamespaceCodec>() -> WriteOp {
+pub fn version_stamp<C: EntryCodec>(namespace: Namespace) -> WriteOp {
     WriteOp::Put {
         namespace: VERSION_META,
-        key: C::NAMESPACE.as_str().as_bytes().to_vec(),
+        key: namespace.as_str().as_bytes().to_vec(),
         value: C::VERSION.0.to_le_bytes().to_vec(),
     }
 }
 
-/// A typed put for one entry, in the codec's namespace.
-pub fn put<C: NamespaceCodec>(key: &C::Key, value: &C::Value) -> WriteOp {
+/// A typed put for one entry into `namespace`.
+pub fn put<C: EntryCodec>(namespace: Namespace, key: &C::Key, value: &C::Value) -> WriteOp {
     WriteOp::Put {
-        namespace: C::NAMESPACE,
+        namespace,
         key: C::encode_key(key),
         value: C::encode_value(value),
     }
@@ -111,9 +115,12 @@ pub fn recorded_version(
     }))
 }
 
-/// Whether the codec's persisted data matches the running code's version.
-pub fn freshness<C: NamespaceCodec>(reader: &dyn BackendReader) -> Result<Freshness, ReadError> {
-    Ok(match recorded_version(reader, C::NAMESPACE)? {
+/// Whether codec `C`'s persisted data in `namespace` matches the running code.
+pub fn freshness<C: EntryCodec>(
+    reader: &dyn BackendReader,
+    namespace: Namespace,
+) -> Result<Freshness, ReadError> {
+    Ok(match recorded_version(reader, namespace)? {
         Some(version) if version == C::VERSION => Freshness::Fresh,
         _ => Freshness::Stale,
     })
@@ -132,16 +139,19 @@ pub enum LoadError {
 }
 
 /// The decoded entries of one namespace, as produced by [`load`].
-pub type Entries<C> = Vec<(<C as NamespaceCodec>::Key, <C as NamespaceCodec>::Value)>;
+pub type Entries<C> = Vec<(<C as EntryCodec>::Key, <C as EntryCodec>::Value)>;
 
-/// Load and decode every entry in the codec's namespace.
+/// Load and decode every entry in `namespace` with codec `C`.
 ///
 /// Call only after [`freshness`] returns [`Freshness::Fresh`]; on `Stale` the
 /// caller rebuilds instead of reading. A [`LoadError::Decode`] here means
 /// corruption within the claimed-correct version.
-pub fn load<C: NamespaceCodec>(reader: &dyn BackendReader) -> Result<Entries<C>, LoadError> {
+pub fn load<C: EntryCodec>(
+    reader: &dyn BackendReader,
+    namespace: Namespace,
+) -> Result<Entries<C>, LoadError> {
     reader
-        .scan(C::NAMESPACE)?
+        .scan(namespace)?
         .into_iter()
         .map(
             |(raw_key, raw_value)| -> Result<(C::Key, C::Value), LoadError> {
@@ -157,12 +167,13 @@ mod tests {
     use zaino_persistence::in_memory::InMemoryBackend;
     use zaino_persistence::{Backend, BackendWriter};
 
+    const TOY: Namespace = Namespace::new("toy");
+
     /// A toy codec at version 1.
     struct Toy;
-    impl NamespaceCodec for Toy {
+    impl EntryCodec for Toy {
         type Key = u32;
         type Value = u64;
-        const NAMESPACE: Namespace = Namespace::new("toy");
         const VERSION: FormatVersion = FormatVersion(1);
 
         fn encode_key(key: &u32) -> Vec<u8> {
@@ -185,12 +196,11 @@ mod tests {
         }
     }
 
-    /// The same namespace with a bumped version — a code upgrade.
+    /// The same entries with a bumped version — a code upgrade.
     struct ToyV2;
-    impl NamespaceCodec for ToyV2 {
+    impl EntryCodec for ToyV2 {
         type Key = u32;
         type Value = u64;
-        const NAMESPACE: Namespace = Namespace::new("toy");
         const VERSION: FormatVersion = FormatVersion(2);
 
         fn encode_key(key: &u32) -> Vec<u8> {
@@ -224,18 +234,18 @@ mod tests {
         commit(
             &backend,
             vec![
-                version_stamp::<Toy>(),
-                put::<Toy>(&7, &42),
-                put::<Toy>(&8, &99),
+                version_stamp::<Toy>(TOY),
+                put::<Toy>(TOY, &7, &42),
+                put::<Toy>(TOY, &8, &99),
             ],
         );
         let reader = backend.reader().expect("reader");
 
         assert_eq!(
-            freshness::<Toy>(&reader).expect("freshness"),
+            freshness::<Toy>(&reader, TOY).expect("freshness"),
             Freshness::Fresh
         );
-        let mut got = load::<Toy>(&reader).expect("load");
+        let mut got = load::<Toy>(&reader, TOY).expect("load");
         got.sort_unstable();
         assert_eq!(got, vec![(7, 42), (8, 99)]);
     }
@@ -243,10 +253,10 @@ mod tests {
     #[test]
     fn an_unstamped_namespace_is_stale() {
         let backend = InMemoryBackend::new();
-        commit(&backend, vec![put::<Toy>(&1, &1)]); // data, but no version stamp
+        commit(&backend, vec![put::<Toy>(TOY, &1, &1)]); // data, no version stamp
         let reader = backend.reader().expect("reader");
         assert_eq!(
-            freshness::<Toy>(&reader).expect("freshness"),
+            freshness::<Toy>(&reader, TOY).expect("freshness"),
             Freshness::Stale
         );
     }
@@ -255,17 +265,20 @@ mod tests {
     fn a_bumped_version_rejects_old_data_for_rebuild() {
         let backend = InMemoryBackend::new();
         // Written by v1 code.
-        commit(&backend, vec![version_stamp::<Toy>(), put::<Toy>(&1, &1)]);
+        commit(
+            &backend,
+            vec![version_stamp::<Toy>(TOY), put::<Toy>(TOY, &1, &1)],
+        );
         let reader = backend.reader().expect("reader");
 
         // v2 code opens it: rejected → the caller rebuilds, never migrates.
         assert_eq!(
-            freshness::<ToyV2>(&reader).expect("freshness"),
+            freshness::<ToyV2>(&reader, TOY).expect("freshness"),
             Freshness::Stale
         );
         // v1 code still reads it.
         assert_eq!(
-            freshness::<Toy>(&reader).expect("freshness"),
+            freshness::<Toy>(&reader, TOY).expect("freshness"),
             Freshness::Fresh
         );
     }
