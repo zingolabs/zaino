@@ -23,6 +23,29 @@
 //! samples with all fields explicit (no `..Default`) makes the compiler force a
 //! new field into the sample, so the fingerprint moves when the format grows.
 //!
+//! ## Caveat: sample coverage is a convention, not yet enforced (deferred)
+//!
+//! The desync guarantee holds only as far as the samples cover the format, and
+//! that coverage is currently **convention**, not a lint. Two soft spots:
+//!
+//! - **Fields.** The "every field explicit, no `..Default`" rule above is what
+//!   makes the compiler force a new field into a sample. Nothing *enforces* it —
+//!   a `..Default::default()` in a future sample would silently reopen the
+//!   desync gap for any field added afterwards.
+//! - **Variants.** Adding an enum variant does not break an exhaustive struct
+//!   literal, so a new format-affecting variant is covered only if the author
+//!   remembers to add a sample for it (see `address_history`'s `ScriptType`,
+//!   hand-listed today).
+//!
+//! Hardening is **deferred**. When it earns its keep: (1) a grep-based CI lint
+//! (a `makers lint-*` task, like the boundary-conversion lint) that fails on
+//! `..` inside a `fingerprint_samples` body — makes the field rule hard; (2)
+//! give each format-affecting enum an exhaustive-checked `ALL` and iterate it in
+//! `fingerprint_samples`, so variant coverage becomes structural; (3) a
+//! `#[derive]` that generates exhaustive samples, removing the discipline
+//! entirely. Until then, **treat sample coverage as a review checklist** when
+//! adding or changing a codec.
+//!
 //! A codec owns **format**, not **placement**: the namespace is the caller's
 //! concern, supplied to every helper.
 #![forbid(unsafe_code)]
