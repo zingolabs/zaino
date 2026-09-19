@@ -25,6 +25,12 @@ impl ZebraRpcAdapter {
     }
 }
 
+impl zaino_source::ValidatorSource for ZebraRpcAdapter {
+    // The RPC adapter's non-domain faults are already the seam type, via
+    // `From<RpcError> for NonDomainError`; the identity mapping applies.
+    type NonDomain = NonDomainError;
+}
+
 /// Parse errors are always non-retryable.
 fn from_parse(e: parse::ParseError) -> NonDomainError {
     NonDomainError::from_cause(FailureMode::Parse, e)

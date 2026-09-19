@@ -479,6 +479,10 @@ impl MockchainSource {
     }
 }
 
+impl zaino_source::ValidatorSource for MockchainSource {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl zaino_source::OneShotGetRawBlock for MockchainSource {
     async fn get_raw_block(
         &self,

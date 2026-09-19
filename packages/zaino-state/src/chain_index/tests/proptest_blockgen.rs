@@ -1086,6 +1086,10 @@ impl ProptestMockchain {
     }
 }
 
+impl zaino_source::ValidatorSource for ProptestMockchain {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
     async fn get_raw_block(
         &self,

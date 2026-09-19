@@ -34,7 +34,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::error::{FailureMode, QueryError, SourceError, UnavailableError};
+use crate::error::{FailureMode, NonDomainError, QueryError, SourceError, UnavailableError};
 
 /// Seals the canonical (resilient) ports so only [`ValidatorClient`] can implement
 /// them.
@@ -156,11 +156,16 @@ impl<V> ValidatorClient<V> {
     }
 
     /// Core retry loop. Every generated port method delegates here.
-    pub(crate) async fn with_retry<T, E, F, Fut>(&self, mut f: F) -> Result<T, SourceError<E>>
+    ///
+    /// Generic over the adapter's own non-domain error `N`: this is the one place
+    /// it is erased to the seam [`NonDomainError`] (via `N: Into<NonDomainError>`),
+    /// so the consumer-facing [`SourceError`] never carries the adapter type.
+    pub(crate) async fn with_retry<T, E, N, F, Fut>(&self, mut f: F) -> Result<T, SourceError<E>>
     where
         E: core::fmt::Debug + core::fmt::Display,
+        N: std::error::Error + Into<NonDomainError>,
         F: FnMut() -> Fut,
-        Fut: Future<Output = Result<T, QueryError<E>>>,
+        Fut: Future<Output = Result<T, QueryError<E, N>>>,
     {
         let mut attempt = 0u32;
 
@@ -172,7 +177,9 @@ impl<V> ValidatorClient<V> {
 
                 Err(QueryError::Domain(e)) => return Err(SourceError::Domain(e)),
 
-                Err(QueryError::NonDomain(e)) => {
+                Err(QueryError::NonDomain(n)) => {
+                    // Erase the adapter's type to the seam here, once.
+                    let e: NonDomainError = n.into();
                     if !is_retryable(&e.mode) || attempt >= self.policy.max_attempts {
                         if is_retryable(&e.mode) {
                             return Err(SourceError::Unavailable(UnavailableError {

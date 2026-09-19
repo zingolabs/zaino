@@ -165,9 +165,10 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 ///
 /// [`NonDomainError`]: zaino_source::NonDomainError
 /// [`FailureMode::RpcError`]: zaino_source::FailureMode::RpcError
-fn err<E>(error: QueryError<E>) -> BlockchainSourceError
+fn err<E, N>(error: QueryError<E, N>) -> BlockchainSourceError
 where
     E: std::fmt::Debug + std::fmt::Display,
+    N: std::error::Error + Send + Sync + 'static,
 {
     match error {
         QueryError::Domain(e) => BlockchainSourceError::unrecoverable_context(
@@ -202,7 +203,9 @@ where
 /// which is what the client would have seen had it asked the validator
 /// directly — and is deliberately *not* `-5`: "this node cannot answer" must
 /// not be read as "the output is unspent".
-fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> BlockchainSourceError {
+fn spent_info_err<N: std::error::Error + Send + Sync + 'static>(
+    error: QueryError<zaino_source::GetSpentInfoError, N>,
+) -> BlockchainSourceError {
     use zaino_source::GetSpentInfoError;
 
     let (code, message) = match error {
@@ -428,12 +431,18 @@ fn value_pool_array(
 // routes them together, and the mempool's coherence check depends on it.
 // ---------------------------------------------------------------------------
 
+impl<V: ChainIndexSourcePorts> zaino_source::ValidatorSource for ValidatorSource<V> {
+    // Pass the inner validator's non-domain type straight through; this legacy
+    // wrapper only delegates.
+    type NonDomain = <V as zaino_source::ValidatorSource>::NonDomain;
+}
+
 impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolTxids for ValidatorSource<V> {
     async fn get_mempool_txids(
         &self,
     ) -> Result<
         Vec<zaino_primitives::types::TransactionId>,
-        zaino_source::QueryError<zaino_source::GetMempoolTxidsError>,
+        zaino_source::QueryError<zaino_source::GetMempoolTxidsError, Self::NonDomain>,
     > {
         self.validator.get_mempool_txids().await
     }
@@ -444,7 +453,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolMetadata for Valid
         &self,
     ) -> Result<
         Vec<zaino_source::MempoolTxMeta>,
-        zaino_source::QueryError<zaino_source::GetMempoolMetadataError>,
+        zaino_source::QueryError<zaino_source::GetMempoolMetadataError, Self::NonDomain>,
     > {
         self.validator.get_mempool_metadata().await
     }
@@ -456,8 +465,10 @@ impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetRawMempoolTransaction
     async fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
-    ) -> Result<Vec<u8>, zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError>>
-    {
+    ) -> Result<
+        Vec<u8>,
+        zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError, Self::NonDomain>,
+    > {
         self.validator.get_raw_mempool_transaction(txid).await
     }
 }
@@ -470,7 +481,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolSourceTip for Vali
             zaino_primitives::types::BlockHash,
             zaino_primitives::types::Height,
         ),
-        zaino_source::QueryError<std::convert::Infallible>,
+        zaino_source::QueryError<std::convert::Infallible, Self::NonDomain>,
     > {
         self.validator.get_mempool_source_tip().await
     }
@@ -1622,11 +1633,11 @@ mod error_source_chain {
     /// not-found response to a generic internal error.
     #[test]
     fn domain_rejection_carries_a_legacy_code_through_source() {
-        let flattened = err::<zaino_source::GetBlockError>(QueryError::Domain(
-            zaino_source::GetBlockError::HeightNotFound(
+        let flattened = err::<zaino_source::GetBlockError, zaino_source::NonDomainError>(
+            QueryError::Domain(zaino_source::GetBlockError::HeightNotFound(
                 zaino_primitives::types::Height::try_from(42u32).expect("valid height"),
-            ),
-        ));
+            )),
+        );
 
         let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&flattened);
         let mut code = None;
@@ -1665,7 +1676,7 @@ mod error_source_chain {
     /// served a generic internal error. Both lost the only part the client uses.
     #[test]
     fn an_unspent_output_reports_the_legacy_full_nodes_own_code() {
-        let rejected = spent_info_err(QueryError::Domain(
+        let rejected = spent_info_err::<zaino_source::NonDomainError>(QueryError::Domain(
             zaino_source::GetSpentInfoError::NotSpent,
         ));
 
@@ -1685,7 +1696,7 @@ mod error_source_chain {
     /// every output is unspent.
     #[test]
     fn an_unsupported_method_does_not_masquerade_as_unspent() {
-        let rejected = spent_info_err(QueryError::Domain(
+        let rejected = spent_info_err::<zaino_source::NonDomainError>(QueryError::Domain(
             zaino_source::GetSpentInfoError::Unsupported,
         ));
 
