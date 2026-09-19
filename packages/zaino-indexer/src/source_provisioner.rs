@@ -23,7 +23,9 @@ use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
 use zaino_primitives::types::{Block, Height};
 use zaino_source::{GetBlock, GetChainTip, SourceError, SubscribeChainTip, TipObservation};
 use zaino_sync::backend::Backend;
-use zaino_sync::engine::SyncEngine;
+use zaino_sync::engine::{EngineConfig, SyncEngine};
+use zaino_sync::index_set::IndexSet;
+use zaino_sync::primitives::BlockHeight;
 
 use crate::IndexerError;
 
@@ -162,6 +164,49 @@ where
     Ctx: Send + Sync + 'static,
     F: Fn(Block) -> Ctx + Send + Sync + 'static,
 {
+    /// Assemble a **resume-safe** driver over `backend`.
+    ///
+    /// Reads the backend's watermark to decide where to start and sets *both* the
+    /// engine's start height and the driver's start to match, so a restart
+    /// resumes rather than re-indexing from genesis. This is the constructor a
+    /// runtime bringup should use: unlike [`new`](Self::new), which takes an
+    /// explicit start, it cannot forget to resume. `backend` is borrowed to
+    /// assess it and cloned into the engine, so the caller keeps its handle (e.g.
+    /// to hand the same backend to the store).
+    ///
+    /// Whether the persisted indexes are *compatible* is a separate concern: the
+    /// engine rejects an incompatible index while loading state here.
+    pub fn resuming(
+        backend: &B,
+        index_set: IndexSet<Ctx>,
+        source: Arc<S>,
+        build: F,
+        batch_size: u32,
+        finalised_depth: u32,
+        channel_capacity: usize,
+    ) -> Result<Self, IndexerError>
+    where
+        B: Clone,
+    {
+        let start = crate::assess_start(backend)?.next_height();
+        let engine = SyncEngine::from_index_set(
+            index_set,
+            backend.clone(),
+            EngineConfig {
+                batch_size,
+                start_height: BlockHeight::new(u64::from(start)),
+            },
+        )?;
+        let provisioner = Arc::new(SourceProvisioner::new(source, build));
+        Ok(Self::new(
+            engine,
+            provisioner,
+            start,
+            finalised_depth,
+            channel_capacity,
+        ))
+    }
+
     /// Provision `[from, to]` through the engine: the provisioner feeds a bounded
     /// channel which the engine drains, then both are joined typed.
     async fn sync_to(

@@ -14,8 +14,7 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_core::Height;
-use zaino_indexer::{SourceProvisioner, SourceSyncDriver};
+use zaino_indexer::SourceSyncDriver;
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
@@ -23,7 +22,7 @@ use zaino_service::{Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader};
-use zaino_sync::engine::{EngineConfig, SyncEngine};
+use zaino_sync::engine::SyncEngine;
 use zaino_sync::primitives::BlockHeight;
 
 /// A validator that is reachable.
@@ -47,22 +46,18 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
         .with_block(test_block(2, 3));
     let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
 
-    // The real sync engine over the CurrentZaino index set + the shared backend.
-    let engine = SyncEngine::from_index_set(
+    // Resume-safe assembly: reads the backend's watermark (fresh here) to set the
+    // start. finalised_depth = 0: a non-reorging mock, so the boundary is the tip.
+    let driver = SourceSyncDriver::resuming(
+        &backend,
         index_set(),
-        backend.clone(),
-        EngineConfig {
-            batch_size: 8,
-            start_height: BlockHeight::new(0),
-        },
+        source,
+        |block| context_from_block(&block),
+        8,
+        0,
+        16,
     )
-    .expect("engine builds");
-    let provisioner = Arc::new(SourceProvisioner::new(source, |block| {
-        context_from_block(&block)
-    }));
-    // finalised_depth = 0: a non-reorging mock, so the finalised boundary is the
-    // tip and the whole chain is safe to index.
-    let driver = SourceSyncDriver::new(engine, provisioner, Height::GENESIS, 0, 16);
+    .expect("driver builds");
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
 
     // The store reads behind the same backend.
