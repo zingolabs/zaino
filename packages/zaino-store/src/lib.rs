@@ -33,10 +33,11 @@ pub use component::StoreComponent;
 use std::future::Future;
 use std::sync::Arc;
 
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream, StreamExt};
 use zaino_core::{
     AddressBalance, AddressDelta, BlockHash, BlockId, BlockRef, Capability, Height, HeightRange,
-    ServiceabilityManifest, ServiceableRange, TransactionId, TransparentAddress, Utxo,
+    MempoolTx, ServiceabilityManifest, ServiceableRange, ShieldedPool, SubtreeRoot, TipEvent,
+    Transaction, TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
 };
 use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
@@ -52,8 +53,14 @@ use zaino_primitives::types::{
     CompactBlock, OrchardAction, PreIndexCompactTx, SaplingOutput, TransparentInput,
     TransparentOutput,
 };
-use zaino_service::error::{AddressReadError, BlockReadError, ReadError, Transient};
-use zaino_service::{AddressRead, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
+use zaino_service::error::{
+    AddressReadError, BlockReadError, BroadcastRejection, ReadError, Transient, TreestateReadError,
+    TxReadError,
+};
+use zaino_service::{
+    AddressRead, Broadcast, CompactBlockRead, CompactNullifierRead, MempoolSubscribe, Serviceable,
+    Snapshot, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
+};
 use zaino_sync::primitives::BlockHeight;
 
 /// EXPLORATORY: a read handle over the KV backend. It consumes the writer's
@@ -476,6 +483,72 @@ impl<B: Backend + 'static> AddressRead for StoreSnapshot<B> {
     }
 }
 
+// --- Light-serve completion ---------------------------------------------------
+//
+// The reads and controls, beyond `CompactBlockRead`, that `LightServeService`
+// requires. Index-only serving covers compact blocks (real, above); the rest
+// are passthrough / mempool / chain-head concerns this finalised store does not
+// own, so they report `NotServiceable` (reads) or empty/refused (controls)
+// rather than fabricate an answer. These impls are what make `StoreReader` a
+// `LightServeService` — locked by the compile-time assertion in `tests`.
+
+impl<B: Backend + 'static> TransactionRead for StoreSnapshot<B> {
+    async fn transaction(&self, _id: TransactionId) -> Result<Option<Transaction>, TxReadError> {
+        Err(TxReadError::NotServiceable(Capability::RawTransaction))
+    }
+    async fn transaction_status(&self, _id: TransactionId) -> Result<TxStatus, TxReadError> {
+        Err(TxReadError::NotServiceable(Capability::TransactionLocation))
+    }
+}
+
+impl<B: Backend + 'static> TreestateRead for StoreSnapshot<B> {
+    async fn treestate(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
+        Err(TreestateReadError::NotServiceable(Capability::Treestate))
+    }
+    async fn subtree_roots(
+        &self,
+        _pool: ShieldedPool,
+        _range: HeightRange,
+    ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        Err(TreestateReadError::NotServiceable(Capability::SubtreeRoots))
+    }
+}
+
+impl<B: Backend + 'static> CompactNullifierRead for StoreSnapshot<B> {
+    async fn compact_block_nullifiers(
+        &self,
+        _at: BlockRef,
+    ) -> Result<Option<CompactBlock>, BlockReadError> {
+        // The nullifier-populated serving variant needs the spend set joined in;
+        // the plain compact block (above) is the index-only slice.
+        Err(BlockReadError::NotServiceable(Capability::Blocks))
+    }
+}
+
+impl<B: Backend + 'static> Broadcast for StoreReader<B> {
+    async fn broadcast(&self, _raw_tx: Vec<u8>) -> Result<TransactionId, BroadcastRejection> {
+        // A finalised read store does not relay transactions; broadcast is the
+        // validator's, wired at the composed runtime, not here.
+        Err(BroadcastRejection::Invalid(
+            "the finalised store does not broadcast".to_owned(),
+        ))
+    }
+}
+
+impl<B: Backend + 'static> MempoolSubscribe for StoreReader<B> {
+    fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx> {
+        // No mempool at the finalised store; the composed runtime supplies it.
+        stream::empty().boxed()
+    }
+}
+
+impl<B: Backend + 'static> TipSubscribe for StoreReader<B> {
+    fn subscribe_tip(&self) -> BoxStream<'_, TipEvent> {
+        // Tip changes come from the chain head, not the finalised store.
+        stream::empty().boxed()
+    }
+}
+
 /// EXPLORATORY: a read whose index this stub does not build yet reports
 /// not-serviceable rather than panicking.
 fn not_built() -> AddressReadError {
@@ -489,4 +562,21 @@ fn not_built() -> AddressReadError {
 /// compiles and the read path is exercised the moment decoding lands.
 fn decode_address(_addr: &TransparentAddress) -> Result<AddrId, AddressReadError> {
     Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+}
+
+#[cfg(test)]
+mod light_serve_bound {
+    use super::StoreReader;
+    use zaino_persistence::Backend;
+    use zaino_service::LightServeService;
+
+    /// `StoreReader` type-checks as the lightwalletd serving profile over any
+    /// backend: the compact-block reads are real, the remaining reads report
+    /// `NotServiceable`, and the controls are finalised-store stubs. Compile-time
+    /// only — this is the bound that lets `zaino-lightserve` bind to the store.
+    fn _store_reader_is_light_serve<B: Backend + 'static>()
+    where
+        StoreReader<B>: LightServeService,
+    {
+    }
 }
