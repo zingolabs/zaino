@@ -63,8 +63,7 @@ pub struct LmdbBackend {
 impl LmdbBackend {
     /// Open or create an LMDB environment with the given namespaces.
     pub fn open(config: LmdbConfig) -> Result<Self, OpenError> {
-        std::fs::create_dir_all(&config.path)
-            .map_err(|e| OpenError::Unavailable(format!("create dir: {e}")))?;
+        std::fs::create_dir_all(&config.path).map_err(|e| open_error("create directory", e))?;
 
         let env = Environment::new()
             .set_max_dbs(config.namespaces.len() as u32 + 1)
@@ -81,12 +80,12 @@ impl LmdbBackend {
                     | EnvironmentFlags::NO_SYNC,
             )
             .open(&config.path)
-            .map_err(|e| OpenError::Unavailable(format!("lmdb open: {e}")))?;
+            .map_err(|e| open_error("open environment", e))?;
 
         let mut dbs = HashMap::new();
         for ns in &config.namespaces {
             let db = open_or_create_db(&env, ns.as_str())
-                .map_err(|e| OpenError::Unavailable(format!("create db {ns}: {e}")))?;
+                .map_err(|e| open_error("create database", e))?;
             dbs.insert(*ns, db);
         }
 
@@ -114,6 +113,28 @@ fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
             operation,
             source: Box::new(error),
         }
+    }
+}
+
+/// Build an [`OpenError`] that keeps the underlying error as a typed source
+/// (boxed at the port boundary), rather than stringifying it. Generic over the
+/// cause so it serves both the filesystem (`io::Error`) and LMDB open steps.
+fn open_error(
+    operation: &'static str,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> OpenError {
+    OpenError::Unavailable {
+        operation,
+        source: Box::new(source),
+    }
+}
+
+/// Build a [`ReadError`] that keeps the LMDB error as a typed source (boxed at
+/// the port boundary), rather than stringifying it.
+fn read_error(operation: &'static str, source: lmdb::Error) -> ReadError {
+    ReadError::ReadFailed {
+        operation,
+        source: Box::new(source),
     }
 }
 
@@ -146,7 +167,7 @@ impl Backend for LmdbBackend {
     fn flush(&self) -> Result<(), FlushError> {
         self.env
             .sync(true)
-            .map_err(|e| FlushError::IoError(format!("lmdb sync: {e}")))
+            .map_err(|e| FlushError::IoError(Box::new(e)))
     }
 }
 
@@ -171,12 +192,12 @@ impl BackendReader for LmdbReader {
         let txn = self
             .env
             .begin_ro_txn()
-            .map_err(|e| ReadError::ReadFailed(format!("begin ro txn: {e}")))?;
+            .map_err(|e| read_error("begin read transaction", e))?;
 
         match txn.get(db, &key) {
             Ok(bytes) => Ok(Some(bytes.to_vec())),
             Err(lmdb::Error::NotFound) => Ok(None),
-            Err(e) => Err(ReadError::ReadFailed(format!("get: {e}"))),
+            Err(e) => Err(read_error("get", e)),
         }
     }
 
@@ -185,11 +206,11 @@ impl BackendReader for LmdbReader {
         let txn = self
             .env
             .begin_ro_txn()
-            .map_err(|e| ReadError::ReadFailed(format!("begin ro txn: {e}")))?;
+            .map_err(|e| read_error("begin read transaction", e))?;
 
         let mut cursor = txn
             .open_ro_cursor(db)
-            .map_err(|e| ReadError::ReadFailed(format!("open cursor: {e}")))?;
+            .map_err(|e| read_error("open cursor", e))?;
 
         let entries: Vec<(RawKey, RawValue)> = cursor
             .iter()
