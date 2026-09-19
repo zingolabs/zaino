@@ -45,6 +45,19 @@ impl TreeSize {
     pub const fn get(self) -> u32 {
         self.0
     }
+
+    /// The size after appending `count` newly-committed notes.
+    ///
+    /// This is the per-block growth step of a cumulative tree-size index: the
+    /// running size plus this block's added commitments. It fails at the same
+    /// boundary as [`TryFrom<u64>`] — a total that leaves the compact protocol's
+    /// `u32` range (a full depth-32 tree, the #549 boundary) is refused rather
+    /// than wrapped. Encoding the growth here keeps the overflow decision on the
+    /// type that owns the range, not in each caller.
+    pub fn checked_add(self, count: u32) -> Result<Self, TreeSizeOutOfRange> {
+        let total = u64::from(self.0) + u64::from(count);
+        Self::try_from(total)
+    }
 }
 
 impl From<u32> for TreeSize {
@@ -124,5 +137,22 @@ mod tests {
     #[test]
     fn ordering_follows_count() {
         assert!(TreeSize::from(1) < TreeSize::from(2));
+    }
+
+    #[test]
+    fn checked_add_grows() {
+        assert_eq!(TreeSize::from(10).checked_add(5), Ok(TreeSize::from(15)));
+        assert_eq!(TreeSize::ZERO.checked_add(0), Ok(TreeSize::ZERO));
+    }
+
+    #[test]
+    fn checked_add_refuses_leaving_u32_range() {
+        // One note past the last representable size overflows into the #549
+        // boundary (a full depth-32 tree) and is refused, not wrapped.
+        let full = 1_u64 << 32;
+        assert_eq!(
+            TreeSize::from(u32::MAX).checked_add(1),
+            Err(TreeSizeOutOfRange { got: full })
+        );
     }
 }
