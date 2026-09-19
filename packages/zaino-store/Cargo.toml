@@ -30,3 +30,4 @@ zaino-indexer = { path = "../zaino-indexer" }
 zaino-sync = { path = "../zaino-sync" }
 zaino-indexes = { path = "../zaino-indexes" }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
+zaino-primitives = { path = "../zaino-primitives" }
