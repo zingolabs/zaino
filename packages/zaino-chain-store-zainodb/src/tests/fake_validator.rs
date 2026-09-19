@@ -143,6 +143,10 @@ impl FakeValidator {
     }
 }
 
+impl zaino_source::ValidatorSource for FakeValidator {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl OneShotGetBestBlockHeight for FakeValidator {
     async fn get_best_block_height(&self) -> Result<Height, QueryError<GetBestBlockHeightError>> {
         if self.blocks.is_empty() {

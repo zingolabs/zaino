@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::Utxo;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetAddressUtxos`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -18,10 +18,10 @@ pub enum GetAddressUtxosError {
 ///
 /// Maps to `getaddressutxos` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetAddressUtxos: Send + Sync {
+pub trait OneShotGetAddressUtxos: ValidatorSource + Send + Sync {
     /// Fetch UTXOs.
     fn get_address_utxos(
         &self,
         addresses: Vec<String>,
-    ) -> impl Future<Output = Result<Vec<Utxo>, QueryError<GetAddressUtxosError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<Utxo>, QueryError<GetAddressUtxosError, Self::NonDomain>>> + Send;
 }

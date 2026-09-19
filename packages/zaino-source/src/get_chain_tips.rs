@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::rpc::ChainTip;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetChainTips`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -23,9 +23,9 @@ pub enum GetChainTipsError {
 ///
 /// Maps to `getchaintips` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetChainTips: Send + Sync {
+pub trait OneShotGetChainTips: ValidatorSource + Send + Sync {
     /// Fetch all known chain tips.
     fn get_chain_tips(
         &self,
-    ) -> impl Future<Output = Result<Vec<ChainTip>, QueryError<GetChainTipsError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<ChainTip>, QueryError<GetChainTipsError, Self::NonDomain>>> + Send;
 }

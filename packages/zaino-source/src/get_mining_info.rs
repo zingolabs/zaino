@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::rpc::MiningInfo;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetMiningInfo`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -22,9 +22,9 @@ pub enum GetMiningInfoError {
 ///
 /// Maps to `getmininginfo` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetMiningInfo: Send + Sync {
+pub trait OneShotGetMiningInfo: ValidatorSource + Send + Sync {
     /// Fetch network mining statistics.
     fn get_mining_info(
         &self,
-    ) -> impl Future<Output = Result<MiningInfo, QueryError<GetMiningInfoError>>> + Send;
+    ) -> impl Future<Output = Result<MiningInfo, QueryError<GetMiningInfoError, Self::NonDomain>>> + Send;
 }
