@@ -4548,6 +4548,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-bench"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-backend-lmdb",
+ "zaino-consensus",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-service",
+ "zaino-source",
+ "zaino-source-zebra-readstate",
+ "zaino-store",
+ "zaino-sync",
+ "zebra-chain",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

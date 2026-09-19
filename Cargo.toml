@@ -39,6 +39,10 @@ members = [
     "packages/zaino-serve",
     "packages/zaino-state",
     "packages/zaino-proto",
+    # Cluster sync benchmark. A leaf consumer of the indexer/store crates; kept a
+    # workspace member so it shares the production lockfile (reproducible cluster
+    # builds) and is covered by workspace lints. See bench/sync-bench.
+    "bench/sync-bench",
     # NOTE: live-tests/ is its own standalone workspace (see
     # live-tests/Cargo.toml). It has been migrated onto the ztest k8s harness
     # (`ztest` from crates.io), which stands the system up as deployed images and
