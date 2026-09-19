@@ -48,14 +48,20 @@ pub fn strategy(cap: Capability) -> Strategy {
     match cap {
         // Locally indexed, one tier by height.
         Capability::Blocks => Strategy::Route,
-        // Locally indexed, combined across the finalised/recent boundary.
-        Capability::AddressHistory | Capability::SpendStatus => Strategy::Merge,
+        // Locally indexed, combined across the finalised/recent boundary. A
+        // transaction's *location* (which block mined it) is a local lookup that
+        // may land either side of the boundary; its raw bytes are separate
+        // (`RawTransaction`, passthrough).
+        Capability::AddressHistory | Capability::SpendStatus | Capability::TransactionLocation => {
+            Strategy::Merge
+        }
         // Not indexed locally — the validator is the only path. Treestate and
         // subtree roots need the commitment-tree frontier, which zaino-state
-        // does not build; it forwards to `z_gettreestate` / subtree RPCs.
-        Capability::Treestate
+        // does not build; it forwards to `z_gettreestate` / subtree RPCs. Raw
+        // transaction bytes are likewise fetched from the validator.
+        Capability::RawTransaction
+        | Capability::Treestate
         | Capability::SubtreeRoots
-        | Capability::Transactions
         | Capability::Mempool
         | Capability::Broadcast
         | Capability::ReportedUpgrades => Strategy::Passthrough,
@@ -102,7 +108,9 @@ mod tests {
 
     #[test]
     fn node_and_control_capabilities_are_passthrough() {
-        assert_eq!(strategy(Capability::Transactions), Strategy::Passthrough);
+        assert_eq!(strategy(Capability::RawTransaction), Strategy::Passthrough);
+        // A transaction's location, by contrast, is a local lookup.
+        assert_eq!(strategy(Capability::TransactionLocation), Strategy::Merge);
         assert_eq!(strategy(Capability::Broadcast), Strategy::Passthrough);
         assert_eq!(
             strategy(Capability::ReportedUpgrades),

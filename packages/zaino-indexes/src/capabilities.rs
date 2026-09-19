@@ -35,13 +35,14 @@ pub fn capability_indexes(capability: Capability) -> &'static [IndexId] {
             orchard::ID,
             hash_to_height::ID,
         ],
-        // Where a transaction was mined; the raw bytes are passthrough, but the
-        // location is locally indexed.
-        Capability::Transactions => &[txid_location::ID],
+        // Where a transaction was mined — a local lookup. Its raw bytes are a
+        // *separate* capability (`RawTransaction`), served by the validator.
+        Capability::TransactionLocation => &[txid_location::ID],
         Capability::AddressHistory => &[address_history::ID],
         Capability::SpendStatus => &[transparent_spends::ID],
         // No local index — served by the validator.
-        Capability::Treestate
+        Capability::RawTransaction
+        | Capability::Treestate
         | Capability::SubtreeRoots
         | Capability::Mempool
         | Capability::Broadcast

@@ -10,7 +10,10 @@ use zaino_primitives::types::Height;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Capability {
     Blocks,
-    Transactions,
+    /// Where a transaction was mined — a local lookup (the `txid_location` index).
+    TransactionLocation,
+    /// A transaction's raw consensus bytes — served by the validator (no local index).
+    RawTransaction,
     Treestate,
     AddressHistory,
     SpendStatus,

@@ -240,10 +240,10 @@ where
     N: ChainHeadSnapshot,
 {
     async fn transaction(&self, _id: TransactionId) -> Result<Option<Transaction>, TxReadError> {
-        Err(TxReadError::NotServiceable(Capability::Transactions))
+        Err(TxReadError::NotServiceable(Capability::RawTransaction))
     }
     async fn transaction_status(&self, _id: TransactionId) -> Result<TxStatus, TxReadError> {
-        Err(TxReadError::NotServiceable(Capability::Transactions))
+        Err(TxReadError::NotServiceable(Capability::TransactionLocation))
     }
 }
 
