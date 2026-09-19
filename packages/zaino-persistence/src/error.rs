@@ -21,9 +21,21 @@ pub enum CommitError {
     /// retrying without doing so will fail identically.
     #[error("database out of space: the reserved storage is full; reopen the backend with a larger map size (and enough disk to back it)")]
     OutOfSpace,
-    /// The write failed (IO, transaction conflict, etc.).
-    #[error("write failed: {0}")]
-    WriteFailed(String),
+    /// The write failed (IO, transaction conflict, etc.). The backend's own
+    /// error is kept as a typed `source` — inspectable via
+    /// [`Error::source`](std::error::Error::source), not flattened into a
+    /// string — while `operation` names the write step that failed. `source`
+    /// is boxed because this is the backend-agnostic port: it must not name a
+    /// concrete backend's error type (that would recouple the port to one
+    /// adapter), yet the cause chain is preserved for diagnostics.
+    #[error("write failed during {operation}")]
+    WriteFailed {
+        /// The low-level write step that failed (e.g. `"put"`, `"commit"`).
+        operation: &'static str,
+        /// The backend's underlying error, preserved as the cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 /// Error when reading from the backend.

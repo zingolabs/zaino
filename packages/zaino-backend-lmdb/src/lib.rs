@@ -97,17 +97,23 @@ impl LmdbBackend {
     }
 }
 
-/// Translate an LMDB write error into a [`CommitError`], mapping the map-full
-/// case to the precise [`CommitError::OutOfSpace`] rather than folding it into a
-/// generic stringified failure. LMDB signals an exhausted map size with
-/// `MDB_MAP_FULL`; that is a capacity condition the caller acts on (grow the
-/// map), not corruption. `matches!` keeps this to the one variant we
-/// distinguish without a catch-all match over LMDB's error enum.
-fn commit_error(context: &str, error: lmdb::Error) -> CommitError {
+/// Translate an LMDB write error into a [`CommitError`].
+///
+/// The exhausted-map case (`MDB_MAP_FULL`) maps to the precise
+/// [`CommitError::OutOfSpace`] — a capacity condition the caller acts on (grow
+/// the map), not corruption. Every other error is preserved as the *typed
+/// source* of [`CommitError::WriteFailed`] (boxed, since the port must not name
+/// `lmdb::Error`), never stringified — so the cause chain stays inspectable.
+/// `matches!` keeps this to the one variant we distinguish without a catch-all
+/// match over LMDB's error enum.
+fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
     if matches!(error, lmdb::Error::MapFull) {
         CommitError::OutOfSpace
     } else {
-        CommitError::WriteFailed(format!("{context}: {error}"))
+        CommitError::WriteFailed {
+            operation,
+            source: Box::new(error),
+        }
     }
 }
 
@@ -214,7 +220,7 @@ impl BackendWriter for LmdbWriter {
         let mut txn = self
             .env
             .begin_rw_txn()
-            .map_err(|e| CommitError::WriteFailed(format!("begin rw txn: {e}")))?;
+            .map_err(|e| commit_error("begin rw txn", e))?;
 
         for op in ops {
             match op {
@@ -232,7 +238,7 @@ impl BackendWriter for LmdbWriter {
                     match txn.del(db, &key, None) {
                         Ok(()) | Err(lmdb::Error::NotFound) => {}
                         Err(e) => {
-                            return Err(CommitError::WriteFailed(format!("delete: {e}")));
+                            return Err(commit_error("delete", e));
                         }
                     }
                 }
