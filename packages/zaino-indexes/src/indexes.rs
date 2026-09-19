@@ -4,6 +4,7 @@
 //! merge, schema, and encoding.
 
 pub mod address_history;
+pub mod chain_metadata;
 pub mod hash_to_height;
 pub mod headers;
 pub mod orchard;

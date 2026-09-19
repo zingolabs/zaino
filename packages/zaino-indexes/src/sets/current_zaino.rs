@@ -1,15 +1,17 @@
 //! current_zaino index set: all indexes matching zaino-state's V1 schema.
 //!
-//! 8 BlockLocal×Append indexes covering headers, txids, transparent,
-//! sapling, orchard, hash→height, txid→location, and outpoint→spender.
+//! 9 BlockLocal×Append indexes covering headers, txids, transparent,
+//! sapling, orchard, hash→height, txid→location, outpoint→spender, and
+//! chain-metadata (commitment-tree sizes).
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
+    Block, BlockHash, BlockTime, ChainMetadata, CompactDifficulty, OutputIndex, TransactionId,
 };
 use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ProvideContext;
 
+use crate::indexes::chain_metadata::{ChainMetadataCtx, ChainMetadataIndex};
 use crate::indexes::hash_to_height::{HashToHeightCtx, HashToHeightIndex};
 use crate::indexes::headers::{HeaderCtx, HeadersIndex};
 use crate::indexes::orchard::{OrchardCtx, OrchardIndex, OrchardTxCompact};
@@ -46,6 +48,8 @@ pub struct CurrentZainoContext {
     pub sapling_txs: Vec<SaplingTxCompact>,
     /// Per-tx orchard data.
     pub orchard_txs: Vec<OrchardTxCompact>,
+    /// Commitment-tree sizes after this block, as the source reported them.
+    pub chain_metadata: ChainMetadata,
 }
 
 /// Build context from a domain Block.
@@ -141,6 +145,8 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
         transparent_txs,
         sapling_txs,
         orchard_txs,
+        // The source (a full block) reports the commitment-tree sizes; store them.
+        chain_metadata: block.chain_metadata.clone(),
     }
 }
 
@@ -211,6 +217,10 @@ pub fn context_from_pre_index_compact_block(
         transparent_txs,
         sapling_txs,
         orchard_txs,
+        // PreIndexCompactBlock strips the tree sizes. TODO: a compact-sourcing
+        // path must *compute* them cumulatively; until then this path (unused by
+        // the current full-block indexer) emits ZERO.
+        chain_metadata: ChainMetadata::ZERO,
     }
 }
 
@@ -291,6 +301,15 @@ impl ProvideContext<OrchardCtx> for CurrentZainoContext {
     }
 }
 
+impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
+    fn context(&self) -> ChainMetadataCtx {
+        ChainMetadataCtx {
+            height: self.height,
+            chain_metadata: self.chain_metadata.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Index set builder
 // ---------------------------------------------------------------------------
@@ -306,4 +325,5 @@ pub fn index_set() -> IndexSet<CurrentZainoContext> {
         .with::<TransparentDataIndex>()
         .with::<SaplingIndex>()
         .with::<OrchardIndex>()
+        .with::<ChainMetadataIndex>()
 }

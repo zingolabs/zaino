@@ -13,7 +13,7 @@ use zaino_primitives::types::{Height, IndexId};
 use zaino_sync::backend::BackendReader;
 
 use crate::indexes::{
-    address_history, hash_to_height, headers, orchard, sapling, transparent_data,
+    address_history, chain_metadata, hash_to_height, headers, orchard, sapling, transparent_data,
     transparent_spends, txid_location, txids,
 };
 
@@ -34,6 +34,7 @@ pub fn capability_indexes(capability: Capability) -> &'static [IndexId] {
             sapling::ID,
             orchard::ID,
             hash_to_height::ID,
+            chain_metadata::ID,
         ],
         // Where a transaction was mined — a local lookup. Its raw bytes are a
         // *separate* capability (`RawTransaction`), served by the validator.
@@ -96,6 +97,7 @@ mod tests {
     use zaino_persistence_codec::version_stamp;
 
     use crate::indexes::address_history::AddressHistoryIndex;
+    use crate::indexes::chain_metadata::ChainMetadataIndex;
     use crate::indexes::hash_to_height::HashToHeightIndex;
     use crate::indexes::headers::HeadersIndex;
     use crate::indexes::orchard::OrchardIndex;
@@ -151,6 +153,7 @@ mod tests {
                 version_stamp::<SaplingIndex>(sapling::ID.into()),
                 version_stamp::<OrchardIndex>(orchard::ID.into()),
                 version_stamp::<HashToHeightIndex>(hash_to_height::ID.into()),
+                version_stamp::<ChainMetadataIndex>(chain_metadata::ID.into()),
             ],
         );
         let reader = backend.reader().expect("reader");
