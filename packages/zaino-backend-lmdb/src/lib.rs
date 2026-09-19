@@ -97,6 +97,20 @@ impl LmdbBackend {
     }
 }
 
+/// Translate an LMDB write error into a [`CommitError`], mapping the map-full
+/// case to the precise [`CommitError::OutOfSpace`] rather than folding it into a
+/// generic stringified failure. LMDB signals an exhausted map size with
+/// `MDB_MAP_FULL`; that is a capacity condition the caller acts on (grow the
+/// map), not corruption. `matches!` keeps this to the one variant we
+/// distinguish without a catch-all match over LMDB's error enum.
+fn commit_error(context: &str, error: lmdb::Error) -> CommitError {
+    if matches!(error, lmdb::Error::MapFull) {
+        CommitError::OutOfSpace
+    } else {
+        CommitError::WriteFailed(format!("{context}: {error}"))
+    }
+}
+
 fn open_or_create_db(env: &Environment, name: &str) -> Result<Database, lmdb::Error> {
     match env.open_db(Some(name)) {
         Ok(db) => Ok(db),
@@ -211,7 +225,7 @@ impl BackendWriter for LmdbWriter {
                 } => {
                     let db = self.resolve_db(namespace)?;
                     txn.put(db, &key, &value, WriteFlags::empty())
-                        .map_err(|e| CommitError::WriteFailed(format!("put: {e}")))?;
+                        .map_err(|e| commit_error("put", e))?;
                 }
                 WriteOp::Delete { namespace, key } => {
                     let db = self.resolve_db(namespace)?;
@@ -225,8 +239,7 @@ impl BackendWriter for LmdbWriter {
             }
         }
 
-        txn.commit()
-            .map_err(|e| CommitError::WriteFailed(format!("commit: {e}")))?;
+        txn.commit().map_err(|e| commit_error("commit", e))?;
 
         Ok(())
     }
@@ -374,6 +387,36 @@ mod tests {
         let reader = backend.reader().expect("reader");
         assert!(reader.get(ns, b"k1").expect("get").is_some());
         assert!(reader.get(ns, b"k2").expect("get").is_some());
+    }
+
+    #[test]
+    fn exhausting_the_map_reports_out_of_space() {
+        // A tiny map so a modest write overflows it. LMDB signals this with
+        // MDB_MAP_FULL, which must surface as the precise OutOfSpace variant —
+        // not a stringified WriteFailed — so a caller can act on it (grow the
+        // map) rather than mistake it for corruption or a transient fault.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ns = Namespace::new("full_ns");
+        let config = LmdbConfig {
+            path: tmp.path().to_path_buf(),
+            map_size_bytes: 64 << 10, // 64 KiB
+            namespaces: vec![ns],
+        };
+        let backend = LmdbBackend::open(config).expect("open");
+        let mut writer = backend.writer().expect("writer");
+
+        let big = vec![0u8; 256 << 10]; // 256 KiB > the whole map
+        let err = writer
+            .commit(vec![WriteOp::Put {
+                namespace: ns,
+                key: b"big".to_vec(),
+                value: big,
+            }])
+            .expect_err("a value larger than the map cannot be committed");
+        assert!(
+            matches!(err, CommitError::OutOfSpace),
+            "map-full must map to OutOfSpace, got: {err:?}"
+        );
     }
 
     #[test]

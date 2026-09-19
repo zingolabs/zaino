@@ -14,6 +14,13 @@ pub enum CommitError {
     /// A referenced namespace does not exist.
     #[error("namespace not found: {0}")]
     NamespaceNotFound(String),
+    /// The database is out of space: the backend's reserved storage is
+    /// exhausted. Modelled distinctly from a generic write failure because it
+    /// is neither corruption nor transient — the caller must give the database
+    /// more room (a larger configured map size, backed by enough disk) and
+    /// retrying without doing so will fail identically.
+    #[error("database out of space: the reserved storage is full; reopen the backend with a larger map size (and enough disk to back it)")]
+    OutOfSpace,
     /// The write failed (IO, transaction conflict, etc.).
     #[error("write failed: {0}")]
     WriteFailed(String),
