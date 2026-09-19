@@ -6070,8 +6070,15 @@ dependencies = [
  "tonic",
  "zaino-component",
  "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-primitives",
  "zaino-proto",
  "zaino-service",
+ "zaino-source",
+ "zaino-store",
+ "zaino-sync",
 ]
 
 [[package]]
