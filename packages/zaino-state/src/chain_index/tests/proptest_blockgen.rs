@@ -1303,7 +1303,7 @@ impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
                     "proptest mockchain has no chain tip to serve the mempool",
                 )
             }
-            PortError::Fetch(fetch) => PortError::Fetch(fetch),
+            PortError::NonDomain(fetch) => PortError::NonDomain(fetch),
         })
     }
 }

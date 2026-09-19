@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-/// What kind of transport failure occurred.
+/// The kind of non-domain failure.
 ///
 /// Machine-readable — the resilience wrapper matches on this to
 /// decide retryability, not on message strings.
@@ -22,14 +22,20 @@ pub enum FailureMode {
     Auth,
 }
 
-/// Transport-level failure from a single attempt.
+/// A **non-domain** failure from a single attempt: the source did not yield a
+/// domain answer.
+///
+/// This is the complement of a domain rejection ([`QueryError::Domain`]) — the
+/// source was unreachable, timed out, was unauthorized, or returned an
+/// unusable/undecodable response. Its only unifying property is "not a domain
+/// answer", which is exactly the axis the resilience wrapper pivots on.
 ///
 /// [`mode`](Self::mode) is the machine-readable classification the resilience
 /// wrapper matches on — never message strings. The concrete adapter cause (a
 /// `reqwest`/`jsonrpsee` error, a `serde` failure, a state-service error) is kept
 /// as the [`Error::source`](std::error::Error::source) when the failure arose
 /// from an error *value*, so logs and diagnostics keep the full chain. A single
-/// `FetchError` cannot name every adapter's error type, so at this one forced
+/// `NonDomainError` cannot name every adapter's error type, so at this one forced
 /// seam the cause is boxed, never stringified.
 ///
 /// [`message`](Self::message) is a human note for the case ADR-0020 allows a
@@ -37,7 +43,7 @@ pub enum FailureMode {
 /// refusal (`RpcError` mode) or a self-detected condition. It is empty when a
 /// typed cause is present.
 #[derive(Debug)]
-pub struct FetchError {
+pub struct NonDomainError {
     /// What kind of failure.
     pub mode: FailureMode,
     /// Human note for the no-error-value case; empty when [`source`] carries the
@@ -49,7 +55,7 @@ pub struct FetchError {
     source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-impl FetchError {
+impl NonDomainError {
     /// A failure with **no** underlying error value: a coded refusal or a
     /// self-detected condition. `message` is the human note.
     pub fn new(mode: FailureMode, message: impl Into<String>) -> Self {
@@ -75,7 +81,7 @@ impl FetchError {
     }
 }
 
-impl fmt::Display for FetchError {
+impl fmt::Display for NonDomainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.message.is_empty() {
             write!(f, "{}", self.message)
@@ -87,7 +93,7 @@ impl fmt::Display for FetchError {
     }
 }
 
-impl std::error::Error for FetchError {
+impl std::error::Error for NonDomainError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.source
             .as_ref()
@@ -97,23 +103,24 @@ impl std::error::Error for FetchError {
 
 /// Single-attempt error from an adapter.
 ///
-/// Two variants: the server answered with a domain rejection, or the
-/// transport failed. No retry awareness.
+/// Two variants: the source answered with a domain rejection, or it failed to
+/// yield a domain answer at all. No retry awareness.
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError<E: fmt::Debug + fmt::Display> {
-    /// The server answered with a domain-level rejection.
+    /// The source answered with a domain-level rejection.
     #[error("{0}")]
     Domain(E),
 
-    /// Transport-level failure — Display and `source()` delegate to the
-    /// [`FetchError`], so an abort trail reaches the concrete transport cause.
+    /// The source failed to yield a domain answer — Display and `source()`
+    /// delegate to the [`NonDomainError`], so an abort trail reaches the
+    /// concrete cause.
     #[error(transparent)]
-    Fetch(FetchError),
+    NonDomain(NonDomainError),
 }
 
-impl<E: fmt::Debug + fmt::Display> From<FetchError> for QueryError<E> {
-    fn from(e: FetchError) -> Self {
-        Self::Fetch(e)
+impl<E: fmt::Debug + fmt::Display> From<NonDomainError> for QueryError<E> {
+    fn from(e: NonDomainError) -> Self {
+        Self::NonDomain(e)
     }
 }
 
@@ -123,26 +130,26 @@ impl<E: fmt::Debug + fmt::Display> From<FetchError> for QueryError<E> {
 pub struct UnavailableError {
     /// Number of attempts made.
     pub attempts: u32,
-    /// The last transport error before giving up — kept as the source so the
-    /// chain reaches the concrete transport cause.
+    /// The last non-domain error before giving up — kept as the source so the
+    /// chain reaches the concrete cause.
     #[source]
-    pub last_error: FetchError,
+    pub last_error: NonDomainError,
 }
 
 /// Consumer-facing error from the resilience wrapper.
 ///
-/// - `Domain`: the server answered "no" (never retried)
-/// - `Transport`: non-retryable transport failure (passed through)
+/// - `Domain`: the source answered "no" (never retried)
+/// - `NonDomain`: non-retryable non-domain failure (passed through)
 /// - `Unavailable`: retryable failure, retries exhausted
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError<E: fmt::Debug + fmt::Display> {
-    /// The server answered with a domain-level rejection.
+    /// The source answered with a domain-level rejection.
     #[error("{0}")]
     Domain(E),
 
-    /// Non-retryable transport failure.
+    /// Non-retryable non-domain failure, passed through.
     #[error(transparent)]
-    Fetch(FetchError),
+    NonDomain(NonDomainError),
 
     /// Retries exhausted — the validator is unreachable.
     #[error(transparent)]
@@ -173,18 +180,18 @@ mod tests {
     #[test]
     fn from_cause_survives_the_wrappers_as_a_source_chain() {
         // The transport error keeps the concrete cause reachable...
-        let fetch = FetchError::from_cause(FailureMode::Parse, Cause);
+        let fetch = NonDomainError::from_cause(FailureMode::Parse, Cause);
         assert!(chain_reaches_cause(&fetch));
 
         // ...and it still reaches it through the consumer-facing wrappers, both
         // the transparent Fetch variant and the Unavailable summary.
         let via_fetch: SourceError<String> =
-            SourceError::Fetch(FetchError::from_cause(FailureMode::Parse, Cause));
+            SourceError::NonDomain(NonDomainError::from_cause(FailureMode::Parse, Cause));
         assert!(chain_reaches_cause(&via_fetch));
 
         let via_unavailable: SourceError<String> = SourceError::Unavailable(UnavailableError {
             attempts: 3,
-            last_error: FetchError::from_cause(FailureMode::Connection, Cause),
+            last_error: NonDomainError::from_cause(FailureMode::Connection, Cause),
         });
         assert!(chain_reaches_cause(&via_unavailable));
     }
@@ -193,7 +200,7 @@ mod tests {
     fn new_is_the_no_error_value_case() {
         // A coded refusal carries a message and no source — the ADR-permitted
         // "no underlying error value" case the serve layer reads back out.
-        let refusal = FetchError::new(FailureMode::RpcError(-8), "rejected");
+        let refusal = NonDomainError::new(FailureMode::RpcError(-8), "rejected");
         assert!(refusal.source().is_none());
         assert_eq!(refusal.message, "rejected");
         assert_eq!(refusal.to_string(), "rejected");

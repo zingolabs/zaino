@@ -51,7 +51,7 @@ mod subscribe_chain_tip;
 
 pub mod validator_client;
 
-pub use error::{FailureMode, FetchError, QueryError, SourceError, UnavailableError};
+pub use error::{FailureMode, NonDomainError, QueryError, SourceError, UnavailableError};
 pub use get_address_balance::{GetAddressBalanceError, OneShotGetAddressBalance};
 pub use get_address_deltas::{GetAddressDeltasError, OneShotGetAddressDeltas};
 pub use get_address_txids::{GetAddressTxidsError, OneShotGetAddressTxids};

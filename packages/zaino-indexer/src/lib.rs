@@ -39,7 +39,7 @@ pub enum IndexerError {
     SourceUnreachable(#[from] zaino_source::UnavailableError),
     /// A non-retryable transport failure reaching the source.
     #[error(transparent)]
-    Transport(#[from] zaino_source::FetchError),
+    Transport(#[from] zaino_source::NonDomainError),
     /// The source answered with a domain-level rejection. Boxed because the
     /// source's domain error is generic; the cause chain is preserved.
     #[error("source rejected the request")]

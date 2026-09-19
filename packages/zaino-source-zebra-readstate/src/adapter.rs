@@ -33,13 +33,13 @@ use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 use zaino_primitives::types::{
     Block, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
 };
-use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
+use zaino_source::{FailureMode, GetBlockError, GetChainTipError, NonDomainError, QueryError};
 
 /// The readstate adapter's own transport-fault vocabulary.
 ///
 /// Foreign causes (the state service's error, decode failures) are captured here
 /// with the adapter's local context, then mapped to the shared seam by one
-/// deterministic `From<ReadStateError> for FetchError`. Lower deps never appear in
+/// deterministic `From<ReadStateError> for NonDomainError`. Lower deps never appear in
 /// this adapter's public signatures — only as `#[source]` causes inside this type.
 #[derive(Debug)]
 enum ReadStateError {
@@ -86,7 +86,7 @@ impl ReadStateError {
     }
 }
 
-impl From<ReadStateError> for FetchError {
+impl From<ReadStateError> for NonDomainError {
     fn from(e: ReadStateError) -> Self {
         let mode = match &e {
             ReadStateError::Unreachable(_) => FailureMode::Connection,
@@ -95,13 +95,13 @@ impl From<ReadStateError> for FetchError {
             // waits for a consumer that branches on it.
             ReadStateError::InvalidData(_) | ReadStateError::OffContract(_) => FailureMode::Parse,
         };
-        FetchError::from_cause(mode, e)
+        NonDomainError::from_cause(mode, e)
     }
 }
 
 impl<E: std::fmt::Debug + std::fmt::Display> From<ReadStateError> for QueryError<E> {
     fn from(e: ReadStateError) -> Self {
-        QueryError::Fetch(FetchError::from(e))
+        QueryError::NonDomain(NonDomainError::from(e))
     }
 }
 
@@ -463,7 +463,7 @@ where
             address
                 .parse::<zebra_chain::transparent::Address>()
                 .map_err(|e| {
-                    QueryError::Fetch(FetchError::new(
+                    QueryError::NonDomain(NonDomainError::new(
                         FailureMode::Parse,
                         format!("invalid transparent address `{address}`: {e}"),
                     ))
@@ -1440,7 +1440,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
 mod tree_root_info_tests {
     use super::tree_root_info;
     use zaino_primitives::types::TreeSize;
-    use zaino_source::{FailureMode, FetchError};
+    use zaino_source::{FailureMode, NonDomainError};
 
     /// The largest count the compact protocol carries is accepted, and a full
     /// depth-32 tree (`2^32`) is refused rather than wrapped to zero (#549).
@@ -1451,7 +1451,7 @@ mod tree_root_info_tests {
 
         let full = tree_root_info([0; 32], 1_u64 << 32).expect_err("2^32 does not fit");
         // The adapter's `InvalidData` maps to the non-retryable `Parse` mode at the seam.
-        assert_eq!(FetchError::from(full).mode, FailureMode::Parse);
+        assert_eq!(NonDomainError::from(full).mode, FailureMode::Parse);
     }
 }
 
