@@ -30,15 +30,15 @@ use std::future::Future;
 use std::sync::Arc;
 
 use zaino_core::{
-    AddressBalance, AddressDelta, BlockId, Capability, Height, HeightRange, ServiceableRange,
-    TransactionId, TransparentAddress, Utxo,
+    AddressBalance, AddressDelta, BlockId, Capability, Height, HeightRange, ServiceabilityManifest,
+    ServiceableRange, TransactionId, TransparentAddress, Utxo,
 };
 use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::headers::{HeaderValue, HeadersIndex, ID as HEADERS_ID};
 use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{freshness, watermark, EntryCodec, Freshness};
 use zaino_service::error::{AddressReadError, Transient};
-use zaino_service::{AddressRead, Snapshot, TakeSnapshot};
+use zaino_service::{AddressRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_sync::primitives::BlockHeight;
 
 /// EXPLORATORY: a read handle over the KV backend. It consumes the writer's
@@ -52,6 +52,21 @@ impl<B> StoreReader<B> {
     /// backend's watermark at snapshot time, not passed in.
     pub fn new(backend: Arc<B>) -> Self {
         Self { backend }
+    }
+}
+
+impl<B: Backend + 'static> Serviceable for StoreReader<B> {
+    fn serviceability(&self) -> ServiceabilityManifest {
+        // Infallible by contract: a serviceability query must not be the call
+        // that fails, so a backend read failure degrades to "nothing locally
+        // serviceable" rather than propagating. The manifest is derived from the
+        // built index set (the `Capability ⇄ IndexId` relation), bounded by the
+        // committed watermark.
+        let Ok(reader) = self.backend.reader() else {
+            return ServiceabilityManifest::default();
+        };
+        let finalized_tip = watermark::read(&reader).ok().flatten();
+        zaino_indexes::capabilities::serviceability(&reader, finalized_tip)
     }
 }
 

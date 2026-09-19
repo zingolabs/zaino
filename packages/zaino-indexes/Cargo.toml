@@ -9,7 +9,9 @@ license.workspace = true
 description = "Zcash index definitions for the zaino sync engine."
 
 [dependencies]
+strum = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+zaino-core = { version = "0.1.0", path = "../zaino-core" }
 zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
 zaino-primitives.workspace = true
 zaino-sync.workspace = true

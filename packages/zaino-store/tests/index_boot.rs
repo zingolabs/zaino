@@ -14,11 +14,12 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
+use zaino_core::Capability;
 use zaino_indexer::SourceSyncDriver;
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
-use zaino_service::{Snapshot, TakeSnapshot};
+use zaino_service::{Serviceable, Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader};
@@ -116,5 +117,27 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
         u32::from(snapshot.serviceable_range().finalized_tip),
         2,
         "store is serviceable up to the finalised tip"
+    );
+
+    // The serviceability manifest is derived from the built index set (the
+    // Capability ⇄ IndexId relation): after indexing, Blocks is answerable up to
+    // the finalised tip, while a passthrough capability has no local answer.
+    let manifest = store.reader().serviceability();
+    let answerable = |capability| {
+        manifest
+            .answerable
+            .iter()
+            .find(|(cap, _)| *cap == capability)
+            .and_then(|(_, height)| *height)
+    };
+    assert_eq!(
+        answerable(Capability::Blocks).map(u32::from),
+        Some(2),
+        "Blocks serviceable to the tip once its indexes are built"
+    );
+    assert_eq!(
+        answerable(Capability::Treestate),
+        None,
+        "a passthrough capability has no local serviceability"
     );
 }

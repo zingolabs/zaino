@@ -35,5 +35,6 @@
 //! would carry transaction data too — but the HeadersIndex definition
 //! is the same in both; only the `ProvideContext` projection differs.
 
+pub mod capabilities;
 pub mod indexes;
 pub mod sets;

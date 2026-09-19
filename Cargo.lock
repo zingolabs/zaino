@@ -6027,7 +6027,9 @@ dependencies = [
 name = "zaino-indexes"
 version = "0.1.0"
 dependencies = [
+ "strum",
  "thiserror 2.0.18",
+ "zaino-core",
  "zaino-persistence",
  "zaino-persistence-codec",
  "zaino-primitives",
