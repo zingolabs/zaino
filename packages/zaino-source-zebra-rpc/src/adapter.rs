@@ -27,7 +27,7 @@ impl ZebraRpcAdapter {
 
 /// Parse errors are always non-retryable.
 fn from_parse(e: parse::ParseError) -> FetchError {
-    FetchError::new(FailureMode::Parse, e.to_string())
+    FetchError::from_cause(FailureMode::Parse, e)
 }
 
 /// The RPC error codes a validator uses to say "the thing you asked about does
@@ -220,7 +220,7 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
         let chain_metadata = ChainMetadata::ZERO;
 
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
+            .map_err(|e| FetchError::from_cause(FailureMode::Parse, e).into())
     }
 }
 
@@ -445,7 +445,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
         // Tree sizes are indexed state, not block data — see `GetBlock`.
         let chain_metadata = ChainMetadata::ZERO;
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
+            .map_err(|e| FetchError::from_cause(FailureMode::Parse, e).into())
     }
 }
 
