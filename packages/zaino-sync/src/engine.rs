@@ -114,8 +114,12 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             .collect();
 
         let reader = backend.reader()?;
+        // The committed watermark is where append-cumulative carries resume from
+        // (an O(1) tip point-read); `None` is a fresh backend.
+        let resume_from = zaino_persistence_codec::watermark::read(&reader)?
+            .map(|height| BlockHeight::new(u64::from(height)));
         for pipeline in pipelines.values() {
-            pipeline.load_state(&reader)?;
+            pipeline.load_state(&reader, resume_from)?;
         }
 
         let batch_size = config.batch_size;

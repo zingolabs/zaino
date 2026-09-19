@@ -7,11 +7,14 @@
 //! BlockLocal indexes: [`ValueIndex`](value_index), [`CountIndex`](count_index),
 //! [`RunningSumIndex`](running_sum_index).
 //!
-//! SelfCumulative indexes: [`CumulativeSumIndex`](cumulative_sum_index).
+//! SelfCumulative indexes: [`CumulativeSumIndex`](cumulative_sum_index) (×Monoidal,
+//! collapsed to a tip total) and [`CumulativeSeriesIndex`](cumulative_series_index)
+//! (×Append, a retained per-height series).
 //!
 //! [`ProvideContext`]: crate::traits::ProvideContext
 
 pub mod count_index;
+pub mod cumulative_series_index;
 pub mod cumulative_sum_index;
 pub mod running_sum_index;
 pub mod value_index;
@@ -50,6 +53,15 @@ impl ProvideContext<cumulative_sum_index::Context> for TestBlockContext {
     }
 }
 
+impl ProvideContext<cumulative_series_index::Context> for TestBlockContext {
+    fn context(&self) -> cumulative_series_index::Context {
+        cumulative_series_index::Context {
+            height: BlockHeight::new(self.height),
+            value: self.value,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // End-to-end tests
 // ---------------------------------------------------------------------------
@@ -66,6 +78,7 @@ mod tests {
     use crate::primitives::BatchIndex;
 
     use count_index::CountIndex;
+    use cumulative_series_index::CumulativeSeriesIndex;
     use cumulative_sum_index::CumulativeSumIndex;
     use running_sum_index::RunningSumIndex;
     use value_index::ValueIndex;
@@ -139,6 +152,38 @@ mod tests {
             .get_value(cumulative_sum_index::ID.into(), b"sum")
             .expect("cumulative sum exists");
         u64::from_le_bytes(bytes.as_slice().try_into().expect("8 bytes"))
+    }
+
+    /// Helper: build an engine with the per-height (S, A) series index,
+    /// starting at a given height.
+    fn build_engine_with_series_at(
+        backend: InMemoryBackend,
+        batch_size: u32,
+        start_height: BlockHeight,
+    ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
+        let set = IndexSet::new().with::<CumulativeSeriesIndex>();
+        SyncEngine::from_index_set(
+            set,
+            backend,
+            EngineConfig {
+                batch_size,
+                start_height,
+            },
+        )
+        .expect("valid index set")
+    }
+
+    /// Read the whole (S, A) series as `height → running total`.
+    fn read_series(backend: &InMemoryBackend) -> std::collections::BTreeMap<u64, u64> {
+        backend
+            .entries(cumulative_series_index::ID.into())
+            .into_iter()
+            .map(|(k, v)| {
+                let height = u64::from_le_bytes(k.as_slice().try_into().expect("8-byte key"));
+                let total = u64::from_le_bytes(v.as_slice().try_into().expect("8-byte value"));
+                (height, total)
+            })
+            .collect()
     }
 
     #[test]
@@ -458,5 +503,82 @@ mod tests {
         let watermark = SyncEngine::<TestBlockContext, InMemoryBackend>::committed_height(&backend)
             .expect("read succeeds");
         assert!(watermark.is_none());
+    }
+
+    /// The (S, A) bridge keeps the *whole* per-height series (not a collapsed
+    /// total), and the result is identical whichever batch size the run uses —
+    /// proof the carry threads across batch boundaries without the series being
+    /// rewritten or lost.
+    #[test]
+    fn series_retains_per_height_and_is_batch_invariant() {
+        // value(h) = h, so running(h) = 0+1+...+h.
+        let blocks = || -> Vec<_> {
+            (0u64..=5)
+                .map(|h| TestBlockContext {
+                    height: h,
+                    value: u32::try_from(h).expect("height fits u32"),
+                })
+                .collect()
+        };
+        let expected: std::collections::BTreeMap<u64, u64> =
+            [(0, 0), (1, 1), (2, 3), (3, 6), (4, 10), (5, 15)].into();
+
+        for batch_size in [2, 10] {
+            let backend = InMemoryBackend::new();
+            let mut engine =
+                build_engine_with_series_at(backend.clone(), batch_size, BlockHeight::new(0));
+            engine.sync_range(blocks()).expect("sync succeeds");
+            assert_eq!(
+                read_series(&backend),
+                expected,
+                "per-height series must survive batch_size={batch_size}"
+            );
+        }
+    }
+
+    /// A restart resumes the carry by point-reading the value at the watermark
+    /// height — phase 2 continues the running total from where phase 1 stopped,
+    /// and phase 1's entries are untouched.
+    #[test]
+    fn series_resumes_carry_from_watermark() {
+        let backend = InMemoryBackend::new();
+
+        // Phase 1: heights 0..=2, values 0,1,2 → totals 0,1,3.
+        {
+            let blocks: Vec<_> = (0u64..=2)
+                .map(|h| TestBlockContext {
+                    height: h,
+                    value: u32::try_from(h).expect("height fits u32"),
+                })
+                .collect();
+            let mut engine = build_engine_with_series_at(backend.clone(), 10, BlockHeight::new(0));
+            engine.sync_range(blocks).expect("phase 1 sync succeeds");
+        }
+        let watermark = SyncEngine::<TestBlockContext, _>::committed_height(&backend)
+            .expect("read succeeds")
+            .expect("watermark exists");
+        assert_eq!(watermark, BlockHeight::new(2));
+
+        // Phase 2: new engine on the same backend resumes the carry (=3, the
+        // value at height 2) and continues: h3 = 3+3 = 6, h4 = 6+4 = 10.
+        {
+            let start = BlockHeight::new(watermark.value() + 1);
+            let blocks: Vec<_> = (3u64..=4)
+                .map(|h| TestBlockContext {
+                    height: h,
+                    value: u32::try_from(h).expect("height fits u32"),
+                })
+                .collect();
+            let mut engine = build_engine_with_series_at(backend.clone(), 10, start);
+            engine.sync_range(blocks).expect("phase 2 sync succeeds");
+        }
+
+        let expected: std::collections::BTreeMap<u64, u64> =
+            [(0, 0), (1, 1), (2, 3), (3, 6), (4, 10)].into();
+        assert_eq!(
+            read_series(&backend),
+            expected,
+            "resumed series must continue the running total, not restart from zero"
+        );
     }
 }

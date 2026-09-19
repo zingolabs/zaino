@@ -44,9 +44,10 @@ use std::sync::Mutex;
 use crate::backend::{BackendReader, Namespace, WriteOp};
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
 use crate::pipeline::{IndexPipeline, PipelineError};
+use crate::primitives::BlockHeight;
 use crate::traits::{
-    ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal,
-    ProvideContext, Schema,
+    CumulativeAppend, ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold,
+    MergeMonoidal, ProvideContext, Schema,
 };
 
 // ===========================================================================
@@ -74,6 +75,7 @@ impl sealed::Sealed for (BlockLocal, Append) {}
 impl sealed::Sealed for (BlockLocal, Monoidal) {}
 impl sealed::Sealed for (BlockLocal, Fold) {}
 
+impl sealed::Sealed for (SelfCumulative, Append) {}
 impl sealed::Sealed for (SelfCumulative, Monoidal) {}
 impl sealed::Sealed for (SelfCumulative, Fold) {}
 
@@ -113,6 +115,20 @@ where
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
         Box::new(LocalBridge::<I, FoldStrategy>::new())
+    }
+}
+
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative, Append)
+where
+    I: CumulativeAppend
+        + Schema<Vec<<I as IndexDef>::Delta>>
+        + IndexDef<Scope = SelfCumulative, Composition = Append>
+        + zaino_persistence_codec::EntryCodec<Key = BlockHeight>,
+    I::PriorState: Clone,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        Box::new(CumulativeAppendBridge::<I>::new())
     }
 }
 
@@ -231,6 +247,45 @@ where
     fn accumulate_one(state: &mut Self::MergedState, delta: I::Delta) {
         I::fold(state, delta);
     }
+}
+
+// ===========================================================================
+// Shared resume guard
+// ===========================================================================
+
+/// Stale-format guard shared by the cumulative bridges.
+///
+/// Returns `Ok(true)` when the namespace holds usable (fresh) data to resume
+/// from, `Ok(false)` when it is empty/absent (a fresh run — nothing to resume),
+/// and an error when it holds data stamped with an incompatible format: a
+/// genuine skew this build must not decode. What to *do* about a rejected index
+/// (discard and re-index) is a separate policy the caller owns; this layer only
+/// detects and rejects.
+fn resume_readable<I>(
+    reader: &dyn BackendReader,
+    namespace: Namespace,
+) -> Result<bool, PipelineError>
+where
+    I: zaino_persistence_codec::EntryCodec,
+{
+    if zaino_persistence_codec::freshness::<I>(reader, namespace)
+        .map_err(|e| PipelineError::Persist(e.to_string()))?
+        == zaino_persistence_codec::Freshness::Stale
+    {
+        let has_data = !reader
+            .scan(namespace)
+            .map_err(|e| PipelineError::Persist(e.to_string()))?
+            .is_empty();
+        if has_data {
+            return Err(PipelineError::Persist(format!(
+                "incompatible on-disk format for index {}: persisted bytes do \
+                 not match this build",
+                namespace.as_str()
+            )));
+        }
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 // ===========================================================================
@@ -391,31 +446,16 @@ where
         &self.descriptor
     }
 
-    fn load_state(&self, reader: &dyn BackendReader) -> Result<(), PipelineError> {
+    fn load_state(
+        &self,
+        reader: &dyn BackendReader,
+        // Ignored: a collapsed accumulator is rebuilt from all its entries, not
+        // point-read at the tip. Only the append-cumulative bridge uses the height.
+        _resume_from: Option<BlockHeight>,
+    ) -> Result<(), PipelineError> {
         let namespace: Namespace = I::NAME.into();
 
-        // Reject stale data: never decode persisted bytes whose recorded format
-        // version does not match this code's. An unstamped-but-empty namespace is
-        // a normal first run; an unstamped/mismatched namespace that *has* data is
-        // a genuine format skew — this index's persisted bytes are incompatible
-        // with this build, so refuse to read them. What to *do* about a rejected
-        // index (discard and re-index) is a separate policy the caller owns; this
-        // layer only detects and rejects.
-        if zaino_persistence_codec::freshness::<I>(reader, namespace)
-            .map_err(|e| PipelineError::Persist(e.to_string()))?
-            == zaino_persistence_codec::Freshness::Stale
-        {
-            let has_data = !reader
-                .scan(namespace)
-                .map_err(|e| PipelineError::Persist(e.to_string()))?
-                .is_empty();
-            if has_data {
-                return Err(PipelineError::Persist(format!(
-                    "incompatible on-disk format for index {}: persisted bytes do \
-                     not match this build",
-                    namespace.as_str()
-                )));
-            }
+        if !resume_readable::<I>(reader, namespace)? {
             return Ok(());
         }
 
@@ -455,5 +495,114 @@ where
 
     fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
         persist_merged::<I, S::MergedState>(&self.merged)
+    }
+}
+
+// ===========================================================================
+// CumulativeAppendBridge — the (SelfCumulative, Append) bridge
+// ===========================================================================
+
+/// Bridge for **append-cumulative** `(SelfCumulative, Append)` indexes:
+/// per-height series (commitment-tree sizes, cumulative chainwork) whose value
+/// at each height is computed from the previous height's.
+///
+/// Unlike [`CumulativeBridge`], the two roles the model keeps separate are kept
+/// separate here (see the sync model, §3.2):
+///
+/// - **Carry** — a running [`PriorState`](ExtractCumulative::PriorState)
+///   threaded across blocks during extraction. Reloaded on resume by point-
+///   reading the value at the watermark height (`O(1)`), not by replaying the
+///   series. For this class `PriorState = Value` ([`CumulativeAppend`]), so the
+///   looked-up value *is* the carry.
+/// - **Output** — an append buffer of per-height deltas, persisted as disjoint
+///   `key = height` entries. Each batch writes only its own heights; it never
+///   rewrites or rescans the whole series (the defect of collapsing the carry
+///   and the output into one blob).
+pub(crate) struct CumulativeAppendBridge<I: CumulativeAppend> {
+    descriptor: Descriptor,
+    carry: Mutex<I::PriorState>,
+    deltas: Mutex<Vec<I::Delta>>,
+    merged: Mutex<Option<Vec<I::Delta>>>,
+    _phantom: PhantomData<I>,
+}
+
+impl<I: CumulativeAppend> CumulativeAppendBridge<I> {
+    fn new() -> Self {
+        Self {
+            descriptor: I::descriptor(),
+            carry: Mutex::new(I::initial_carry()),
+            deltas: Mutex::new(Vec::new()),
+            merged: Mutex::new(None),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<Ctx, I> IndexPipeline<Ctx> for CumulativeAppendBridge<I>
+where
+    I: CumulativeAppend
+        + Schema<Vec<<I as IndexDef>::Delta>>
+        + zaino_persistence_codec::EntryCodec<Key = BlockHeight>,
+    I::PriorState: Clone,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+
+    fn load_state(
+        &self,
+        reader: &dyn BackendReader,
+        resume_from: Option<BlockHeight>,
+    ) -> Result<(), PipelineError> {
+        let namespace: Namespace = I::NAME.into();
+
+        if !resume_readable::<I>(reader, namespace)? {
+            return Ok(());
+        }
+
+        // Resume the carry by point-reading the value at the watermark height: an
+        // O(1) tip lookup, not a replay. The value at the last committed height
+        // *is* the running state (PriorState = Value for this class). A fresh
+        // start (`None`) keeps the genesis carry from `new`.
+        let Some(height) = resume_from else {
+            return Ok(());
+        };
+        let raw = reader
+            .get(namespace, &I::encode_key(&height))
+            .map_err(|e| PipelineError::Persist(e.to_string()))?;
+        if let Some(bytes) = raw {
+            let value =
+                I::decode_value(&bytes).map_err(|e| PipelineError::Persist(e.to_string()))?;
+            *self.carry.lock().expect("carry mutex poisoned") = value;
+        }
+        Ok(())
+    }
+
+    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+        let mut carry = self.carry.lock().expect("carry mutex poisoned");
+        let delta = I::extract(&ctx.context(), &carry)?;
+        *carry = I::carry(&delta);
+        drop(carry);
+        self.deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .push(delta);
+        Ok(())
+    }
+
+    fn merge(&self) -> Result<(), PipelineError> {
+        let deltas: Vec<I::Delta> = self
+            .deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .drain(..)
+            .collect();
+        *self.merged.lock().expect("merged mutex poisoned") = Some(deltas);
+        Ok(())
+    }
+
+    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
+        persist_merged::<I, Vec<I::Delta>>(&self.merged)
     }
 }

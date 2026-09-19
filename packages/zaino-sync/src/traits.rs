@@ -263,6 +263,45 @@ pub trait Schema<M>:
 }
 
 // ===========================================================================
+// CumulativeAppend — the (SelfCumulative, Append) overlay.
+// ===========================================================================
+
+/// Carry threading for **append-cumulative** `(SelfCumulative, Append)` indexes.
+///
+/// A per-height cumulative — commitment-tree sizes, cumulative chainwork — emits
+/// a disjoint entry per height, so its *output composition* is [`Append`]; yet
+/// each height's value is computed from the previous height's, so its *scope* is
+/// [`SelfCumulative`]. The two axes are orthogonal (see the sync model, §3.2):
+/// the append output is the per-height series; the **carry** is the running
+/// state the next height needs.
+///
+/// For this class the emitted value *is* the running state, so
+/// [`PriorState`](ExtractCumulative::PriorState) is pinned to the codec's
+/// `Value`. That lets the bridge reload the carry on resume by point-reading the
+/// value at the watermark height — an `O(1)` tip lookup, never a full replay.
+///
+/// This is distinct from `(SelfCumulative, Monoidal)`, which *collapses* the
+/// series onto one colliding key (a tip total); there the carry and the sole
+/// emitted value coincide trivially. Here they coincide *per height*.
+///
+/// [`Append`]: crate::descriptor::Append
+/// [`SelfCumulative`]: crate::descriptor::SelfCumulative
+pub trait CumulativeAppend:
+    ExtractCumulative<PriorState = <Self as zaino_persistence_codec::EntryCodec>::Value>
+    + MergeAppend
+    + zaino_persistence_codec::EntryCodec
+{
+    /// The carry before genesis — the running state with no blocks applied.
+    fn initial_carry() -> Self::PriorState;
+
+    /// The running state after `delta`, threaded to the next height.
+    ///
+    /// For a per-height cumulative this projects the running value out of the
+    /// just-emitted delta (the value *is* the running state).
+    fn carry(delta: &Self::Delta) -> Self::PriorState;
+}
+
+// ===========================================================================
 // Source-access overlay — orthogonal to both axes.
 // ===========================================================================
 

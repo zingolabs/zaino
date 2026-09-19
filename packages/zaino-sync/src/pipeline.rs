@@ -35,6 +35,7 @@
 use crate::backend::{BackendReader, WriteOp};
 use crate::bridge::BridgeDispatch;
 use crate::descriptor::Descriptor;
+use crate::primitives::BlockHeight;
 use crate::traits::{ExtractError, IndexDef, ProvideContext};
 
 /// Errors during pipeline operations.
@@ -92,11 +93,18 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
 
     /// Load persisted state from the backend on startup.
     ///
-    /// Called once per pipeline before the first batch. The default
-    /// implementation is a no-op — BlockLocal indexes have no state
-    /// to resume. SelfCumulative bridges override this to reload the
-    /// running accumulator from the backend.
-    fn load_state(&self, _reader: &dyn BackendReader) -> Result<(), PipelineError> {
+    /// Called once per pipeline before the first batch. `resume_from` is the
+    /// committed watermark height (`None` on a fresh backend). The default
+    /// implementation is a no-op — BlockLocal indexes have no state to resume.
+    /// SelfCumulative bridges override this to reload their carry: the monoidal
+    /// bridge rebuilds the collapsed accumulator from its entries, while the
+    /// append-cumulative bridge point-reads the value at `resume_from` (an
+    /// `O(1)` tip lookup).
+    fn load_state(
+        &self,
+        _reader: &dyn BackendReader,
+        _resume_from: Option<BlockHeight>,
+    ) -> Result<(), PipelineError> {
         Ok(())
     }
 
