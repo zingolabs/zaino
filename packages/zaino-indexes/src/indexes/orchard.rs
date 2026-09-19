@@ -6,8 +6,10 @@ use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
+use crate::indexes::decode::Cursor;
+
 /// Compact orchard data for one transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchardTxCompact {
     /// Orchard actions: (nullifier, cmx, epk, enc_ciphertext_52bytes).
     pub actions: Vec<(Nullifier, NoteCommitment, EphemeralKey, CompactCiphertext)>,
@@ -30,7 +32,7 @@ pub struct OrchardEntry {
 }
 
 /// Persisted value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrchardBlockValue(pub Vec<OrchardTxCompact>);
 
 /// Index definition.
@@ -120,9 +122,64 @@ impl EntryCodec for OrchardIndex {
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
-    fn decode_value(_bytes: &[u8]) -> Result<OrchardBlockValue, DecodeError> {
-        Err(DecodeError::Invalid(
-            "orchard decode not yet implemented".into(),
-        ))
+    fn decode_value(bytes: &[u8]) -> Result<OrchardBlockValue, DecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let tx_count = cursor.count()?;
+        let mut txs = Vec::new();
+        for _ in 0..tx_count {
+            let action_count = cursor.count()?;
+            let mut actions = Vec::new();
+            for _ in 0..action_count {
+                let nullifier = Nullifier::from(cursor.array::<32>()?);
+                let cmx = NoteCommitment::from(cursor.array::<32>()?);
+                let ephemeral_key = EphemeralKey::from(cursor.array::<32>()?);
+                let enc_ciphertext = CompactCiphertext::try_new(&cursor.len_prefixed()?)
+                    .map_err(|e| DecodeError::Invalid(format!("enc_ciphertext: {e}")))?;
+                actions.push((nullifier, cmx, ephemeral_key, enc_ciphertext));
+            }
+            txs.push(OrchardTxCompact { actions });
+        }
+        cursor.finish()?;
+        Ok(OrchardBlockValue(txs))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> OrchardBlockValue {
+        OrchardBlockValue(vec![
+            OrchardTxCompact {
+                actions: vec![
+                    (
+                        Nullifier::from([1u8; 32]),
+                        NoteCommitment::from([2u8; 32]),
+                        EphemeralKey::from([3u8; 32]),
+                        CompactCiphertext::from([4u8; CompactCiphertext::LENGTH]),
+                    ),
+                    (
+                        Nullifier::from([5u8; 32]),
+                        NoteCommitment::from([6u8; 32]),
+                        EphemeralKey::from([7u8; 32]),
+                        CompactCiphertext::from([8u8; CompactCiphertext::LENGTH]),
+                    ),
+                ],
+            },
+            OrchardTxCompact { actions: vec![] },
+        ])
+    }
+
+    #[test]
+    fn round_trips() {
+        let value = sample();
+        let bytes = OrchardIndex::encode_value(&value);
+        assert_eq!(OrchardIndex::decode_value(&bytes).expect("decode"), value);
+    }
+
+    #[test]
+    fn a_truncated_buffer_is_rejected() {
+        let bytes = OrchardIndex::encode_value(&sample());
+        assert!(OrchardIndex::decode_value(&bytes[..bytes.len() - 1]).is_err());
     }
 }

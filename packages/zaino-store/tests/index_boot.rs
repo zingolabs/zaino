@@ -14,12 +14,12 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_core::Capability;
+use zaino_core::{BlockRef, Capability, Height};
 use zaino_indexer::SourceSyncDriver;
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
-use zaino_service::{Serviceable, Snapshot, TakeSnapshot};
+use zaino_service::{CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader};
@@ -140,4 +140,27 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
         None,
         "a passthrough capability has no local serviceability"
     );
+
+    // Compose a true compact block on read from the Blocks index set: header +
+    // chain_metadata + (here empty) per-tx pools, assembled by height.
+    let block = snapshot
+        .compact_block(BlockRef::Height(Height::try_from(2).expect("height")))
+        .await
+        .expect("compact_block read")
+        .expect("a block indexed at the tip");
+    assert_eq!(block.height, 2);
+    assert_eq!(
+        block.hash, tip.hash,
+        "composed block matches the indexed tip"
+    );
+    assert!(
+        block.transactions.is_empty(),
+        "mock blocks carry no transactions"
+    );
+    // Above the tip there is no block.
+    let none = snapshot
+        .compact_block(BlockRef::Height(Height::try_from(99).expect("height")))
+        .await
+        .expect("compact_block read");
+    assert!(none.is_none(), "no block above the finalised tip");
 }

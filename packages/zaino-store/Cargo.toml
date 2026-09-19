@@ -18,6 +18,8 @@ zaino-indexes = { workspace = true }
 tokio = { workspace = true }
 zaino-sync = { version = "0.1.0", path = "../zaino-sync" }
 zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
+futures.workspace = true
+zaino-primitives = { version = "0.2.0", path = "../zaino-primitives" }
 
 [dev-dependencies]
 zaino-runtime = { path = "../zaino-runtime" }

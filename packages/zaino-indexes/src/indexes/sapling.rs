@@ -6,8 +6,10 @@ use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
+use crate::indexes::decode::Cursor;
+
 /// Compact sapling data for one transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaplingTxCompact {
     /// Sapling spend nullifiers.
     pub nullifiers: Vec<Nullifier>,
@@ -32,7 +34,7 @@ pub struct SaplingEntry {
 }
 
 /// Persisted value: all sapling data for the block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaplingBlockValue(pub Vec<SaplingTxCompact>);
 
 /// Index definition.
@@ -125,10 +127,70 @@ impl EntryCodec for SaplingIndex {
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
-    fn decode_value(_bytes: &[u8]) -> Result<SaplingBlockValue, DecodeError> {
-        // Full decode deferred — not needed for sync, only for serving.
-        Err(DecodeError::Invalid(
-            "sapling decode not yet implemented".into(),
-        ))
+    fn decode_value(bytes: &[u8]) -> Result<SaplingBlockValue, DecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let tx_count = cursor.count()?;
+        let mut txs = Vec::new();
+        for _ in 0..tx_count {
+            let nullifier_count = cursor.count()?;
+            let mut nullifiers = Vec::new();
+            for _ in 0..nullifier_count {
+                nullifiers.push(Nullifier::from(cursor.array::<32>()?));
+            }
+            let output_count = cursor.count()?;
+            let mut outputs = Vec::new();
+            for _ in 0..output_count {
+                let cmu = NoteCommitment::from(cursor.array::<32>()?);
+                let ephemeral_key = EphemeralKey::from(cursor.array::<32>()?);
+                let enc_ciphertext = CompactCiphertext::try_new(&cursor.len_prefixed()?)
+                    .map_err(|e| DecodeError::Invalid(format!("enc_ciphertext: {e}")))?;
+                outputs.push((cmu, ephemeral_key, enc_ciphertext));
+            }
+            txs.push(SaplingTxCompact {
+                nullifiers,
+                outputs,
+            });
+        }
+        cursor.finish()?;
+        Ok(SaplingBlockValue(txs))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> SaplingBlockValue {
+        SaplingBlockValue(vec![
+            SaplingTxCompact {
+                nullifiers: vec![Nullifier::from([1u8; 32]), Nullifier::from([2u8; 32])],
+                outputs: vec![(
+                    NoteCommitment::from([3u8; 32]),
+                    EphemeralKey::from([4u8; 32]),
+                    CompactCiphertext::from([5u8; CompactCiphertext::LENGTH]),
+                )],
+            },
+            SaplingTxCompact {
+                nullifiers: vec![],
+                outputs: vec![(
+                    NoteCommitment::from([6u8; 32]),
+                    EphemeralKey::from([7u8; 32]),
+                    CompactCiphertext::from([8u8; CompactCiphertext::LENGTH]),
+                )],
+            },
+        ])
+    }
+
+    #[test]
+    fn round_trips() {
+        let value = sample();
+        let bytes = SaplingIndex::encode_value(&value);
+        assert_eq!(SaplingIndex::decode_value(&bytes).expect("decode"), value);
+    }
+
+    #[test]
+    fn a_truncated_buffer_is_rejected() {
+        let bytes = SaplingIndex::encode_value(&sample());
+        assert!(SaplingIndex::decode_value(&bytes[..bytes.len() - 1]).is_err());
     }
 }

@@ -6,8 +6,10 @@ use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
+use crate::indexes::decode::Cursor;
+
 /// Compact transparent data for one transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransparentTxCompact {
     /// Transparent inputs: (prev_txid, prev_index).
     pub inputs: Vec<(TransactionId, OutputIndex)>,
@@ -32,7 +34,7 @@ pub struct TransparentDataEntry {
 }
 
 /// Persisted value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransparentBlockValue(pub Vec<TransparentTxCompact>);
 
 /// Index definition.
@@ -124,9 +126,72 @@ impl EntryCodec for TransparentDataIndex {
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
-    fn decode_value(_bytes: &[u8]) -> Result<TransparentBlockValue, DecodeError> {
-        Err(DecodeError::Invalid(
-            "transparent_data decode not yet implemented".into(),
-        ))
+    fn decode_value(bytes: &[u8]) -> Result<TransparentBlockValue, DecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let tx_count = cursor.count()?;
+        let mut txs = Vec::new();
+        for _ in 0..tx_count {
+            let input_count = cursor.count()?;
+            let mut inputs = Vec::new();
+            for _ in 0..input_count {
+                let prev_txid = TransactionId::from(cursor.array::<32>()?);
+                let prev_index: OutputIndex = cursor.u32()?;
+                inputs.push((prev_txid, prev_index));
+            }
+            let output_count = cursor.count()?;
+            let mut outputs = Vec::new();
+            for _ in 0..output_count {
+                let value = Zatoshis::new(cursor.u64()?)
+                    .map_err(|e| DecodeError::Invalid(format!("output value: {e}")))?;
+                let script = Script::from(cursor.len_prefixed()?);
+                outputs.push((value, script));
+            }
+            txs.push(TransparentTxCompact { inputs, outputs });
+        }
+        cursor.finish()?;
+        Ok(TransparentBlockValue(txs))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> TransparentBlockValue {
+        TransparentBlockValue(vec![
+            TransparentTxCompact {
+                inputs: vec![
+                    (TransactionId::from([1u8; 32]), 0),
+                    (TransactionId::from([2u8; 32]), 7),
+                ],
+                outputs: vec![(
+                    Zatoshis::new(100).expect("valid"),
+                    Script::from(vec![1, 2, 3]),
+                )],
+            },
+            TransparentTxCompact {
+                inputs: vec![(TransactionId::from([9u8; 32]), 42)],
+                outputs: vec![
+                    (Zatoshis::new(0).expect("valid"), Script::from(vec![])),
+                    (Zatoshis::new(555).expect("valid"), Script::from(vec![9, 8])),
+                ],
+            },
+        ])
+    }
+
+    #[test]
+    fn round_trips() {
+        let value = sample();
+        let bytes = TransparentDataIndex::encode_value(&value);
+        assert_eq!(
+            TransparentDataIndex::decode_value(&bytes).expect("decode"),
+            value
+        );
+    }
+
+    #[test]
+    fn a_truncated_buffer_is_rejected() {
+        let bytes = TransparentDataIndex::encode_value(&sample());
+        assert!(TransparentDataIndex::decode_value(&bytes[..bytes.len() - 1]).is_err());
     }
 }
