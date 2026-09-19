@@ -44,6 +44,7 @@ metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "test-util"] }
+zaino-consensus = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
