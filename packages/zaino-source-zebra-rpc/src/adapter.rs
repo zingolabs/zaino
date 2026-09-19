@@ -3,7 +3,7 @@
 use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
-    FailureMode, FetchError, GetBlockError, GetChainTipError, GetTreestateError, QueryError,
+    FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
 };
 use zebra_chain::serialization::ZcashDeserializeInto;
 
@@ -26,8 +26,8 @@ impl ZebraRpcAdapter {
 }
 
 /// Parse errors are always non-retryable.
-fn from_parse(e: parse::ParseError) -> FetchError {
-    FetchError::from_cause(FailureMode::Parse, e)
+fn from_parse(e: parse::ParseError) -> NonDomainError {
+    NonDomainError::from_cause(FailureMode::Parse, e)
 }
 
 /// The RPC error codes a validator uses to say "the thing you asked about does
@@ -80,12 +80,12 @@ const NO_SPEND_ON_RECORD: i64 = -5;
 const METHOD_NOT_FOUND: i64 = -32601;
 
 /// Whether an error is the validator rejecting one of the addresses asked about.
-fn is_invalid_address(error: &FetchError) -> bool {
+fn is_invalid_address(error: &NonDomainError) -> bool {
     matches!(error.mode, FailureMode::RpcError(INVALID_ADDRESS_CODE))
 }
 
 /// Whether an error is the validator answering "that does not exist".
-fn is_not_found(error: &FetchError) -> bool {
+fn is_not_found(error: &NonDomainError) -> bool {
     matches!(error.mode, FailureMode::RpcError(code) if NOT_FOUND_CODES.contains(&code))
 }
 
@@ -93,7 +93,7 @@ fn is_not_found(error: &FetchError) -> bool {
 /// or a genuine fetch failure.
 ///
 /// The distinction is load-bearing, not cosmetic: [`QueryError::Domain`] is an
-/// answer and is returned immediately, while [`QueryError::Fetch`] is a failure
+/// answer and is returned immediately, while [`QueryError::NonDomain`] is a failure
 /// and is retried by [`ValidatorClient`](zaino_source::ValidatorClient) and escalated by
 /// consumers. A missing block reported as a fetch failure stalls the sync loop
 /// against a healthy validator, which is exactly what it did before this
@@ -102,11 +102,11 @@ fn absent_or_fetch<E>(error: zaino_rpc::RpcError, absent: impl FnOnce() -> E) ->
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
-    let error: FetchError = error.into();
+    let error: NonDomainError = error.into();
     if is_not_found(&error) {
         QueryError::Domain(absent())
     } else {
-        QueryError::Fetch(error)
+        QueryError::NonDomain(error)
     }
 }
 
@@ -117,7 +117,7 @@ where
 /// the validator considering it and declining. All four are answers about the
 /// transaction, not failures to reach the node, so a client should see the
 /// reason rather than a generic transport error.
-fn submission_rejection(error: &FetchError) -> Option<zaino_source::SendRawTransactionError> {
+fn submission_rejection(error: &NonDomainError) -> Option<zaino_source::SendRawTransactionError> {
     use zaino_source::SendRawTransactionError as Rejection;
 
     match error.mode {
@@ -135,7 +135,7 @@ fn submission_rejection(error: &FetchError) -> Option<zaino_source::SendRawTrans
 /// client should see the reason rather than a generic transport error — and
 /// they must stay distinct, because reading "I cannot answer" as "the output is
 /// unspent" would report a spent output as unspent.
-fn spent_info_rejection(error: &FetchError) -> Option<zaino_source::GetSpentInfoError> {
+fn spent_info_rejection(error: &NonDomainError) -> Option<zaino_source::GetSpentInfoError> {
     use zaino_source::GetSpentInfoError as Rejection;
 
     match error.mode {
@@ -163,11 +163,11 @@ fn mempool_unavailable_or_fetch<E>(
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
-    let error: FetchError = error.into();
+    let error: NonDomainError = error.into();
     if matches!(error.mode, FailureMode::RpcError(METHOD_NOT_FOUND)) {
         QueryError::Domain(unavailable())
     } else {
-        QueryError::Fetch(error)
+        QueryError::NonDomain(error)
     }
 }
 
@@ -183,11 +183,11 @@ fn invalid_address_or_fetch<E>(
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
-    let error: FetchError = error.into();
+    let error: NonDomainError = error.into();
     if is_invalid_address(&error) {
         QueryError::Domain(invalid(error.message))
     } else {
-        QueryError::Fetch(error)
+        QueryError::NonDomain(error)
     }
 }
 
@@ -220,7 +220,7 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
         let chain_metadata = ChainMetadata::ZERO;
 
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| FetchError::from_cause(FailureMode::Parse, e).into())
+            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
 
@@ -231,14 +231,14 @@ impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
             .rpc
             .call("getbestblockhash", vec![])
             .await
-            .map_err(|e| QueryError::Fetch(e.into()))?;
+            .map_err(|e| QueryError::NonDomain(e.into()))?;
         let hash = parse::parse_block_hash(&hash_value).map_err(from_parse)?;
 
         let height_value = self
             .rpc
             .call("getblockcount", vec![])
             .await
-            .map_err(|e| QueryError::Fetch(e.into()))?;
+            .map_err(|e| QueryError::NonDomain(e.into()))?;
         let height = parse::parse_height(&height_value).map_err(from_parse)?;
 
         Ok((hash, height))
@@ -307,7 +307,7 @@ fn addresses_param(addresses: Vec<String>) -> serde_json::Value {
 
 impl ZebraRpcAdapter {
     /// Issue a call and parse its result, classifying transport failures with
-    /// `classify` and parse failures as [`QueryError::Fetch`].
+    /// `classify` and parse failures as [`QueryError::NonDomain`].
     ///
     /// The classifier is what separates the wrappers below: it decides whether a
     /// given transport failure is the port's domain answer or a real fetch
@@ -329,7 +329,7 @@ impl ZebraRpcAdapter {
             .call_with_timeout(method, params, timeout)
             .await
             .map_err(classify)?;
-        parse(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
+        parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
     }
 
     /// Issue a call and parse its result, mapping transport and parse failures
@@ -344,7 +344,7 @@ impl ZebraRpcAdapter {
         E: std::fmt::Debug + std::fmt::Display,
     {
         self.call_parsed_classified(method, params, None, parse, |error| {
-            QueryError::Fetch(error.into())
+            QueryError::NonDomain(error.into())
         })
         .await
     }
@@ -410,13 +410,13 @@ impl ZebraRpcAdapter {
         E: std::fmt::Debug + std::fmt::Display,
     {
         match self.rpc.call(method, params).await {
-            Ok(value) => parse(&value).map_err(|e| QueryError::Fetch(from_parse(e))),
+            Ok(value) => parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e))),
             Err(error) => {
-                let error: FetchError = error.into();
+                let error: NonDomainError = error.into();
                 if is_not_found(&error) {
                     Ok(None)
                 } else {
-                    Err(QueryError::Fetch(error))
+                    Err(QueryError::NonDomain(error))
                 }
             }
         }
@@ -445,7 +445,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
         // Tree sizes are indexed state, not block data — see `GetBlock`.
         let chain_metadata = ChainMetadata::ZERO;
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| FetchError::from_cause(FailureMode::Parse, e).into())
+            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
 
@@ -823,10 +823,10 @@ impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
             .call("getspentinfo", params)
             .await
             .map_err(|error| {
-                let error: FetchError = error.into();
+                let error: NonDomainError = error.into();
                 match spent_info_rejection(&error) {
                     Some(rejection) => QueryError::Domain(rejection),
-                    None => QueryError::Fetch(error),
+                    None => QueryError::NonDomain(error),
                 }
             })?;
 
@@ -834,7 +834,7 @@ impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
         // does not send one, but reading it as "no spend on record" keeps the
         // two spellings from producing different answers.
         parse::parse_spent_info(&value)
-            .map_err(|e| QueryError::Fetch(from_parse(e)))?
+            .map_err(|e| QueryError::NonDomain(from_parse(e)))?
             .ok_or(QueryError::Domain(GetSpentInfoError::NotSpent))
     }
 }
@@ -868,14 +868,14 @@ impl zaino_source::OneShotSendRawTransaction for ZebraRpcAdapter {
         let value = match self.rpc.call("sendrawtransaction", params).await {
             Ok(value) => value,
             Err(error) => {
-                let error: FetchError = error.into();
+                let error: NonDomainError = error.into();
                 return Err(match submission_rejection(&error) {
                     Some(rejection) => QueryError::Domain(rejection),
-                    None => QueryError::Fetch(error),
+                    None => QueryError::NonDomain(error),
                 });
             }
         };
-        parse::as_txid(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
+        parse::as_txid(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
     }
 }
 
@@ -1078,7 +1078,7 @@ mod classification_tests {
                     GetBlockError::HeightNotFound(height())
                 });
             assert!(
-                matches!(classified, QueryError::Fetch(_)),
+                matches!(classified, QueryError::NonDomain(_)),
                 "code {code} must stay a fetch failure"
             );
         }
@@ -1092,7 +1092,7 @@ mod classification_tests {
                 GetBlockError::HeightNotFound(height())
             });
 
-        assert!(matches!(classified, QueryError::Fetch(_)));
+        assert!(matches!(classified, QueryError::NonDomain(_)));
     }
 
     /// On the address-keyed methods `-5` is the caller's address being
@@ -1116,7 +1116,7 @@ mod classification_tests {
             GetAddressBalanceError::InvalidAddress,
         );
         assert!(
-            matches!(malformed, QueryError::Fetch(_)),
+            matches!(malformed, QueryError::NonDomain(_)),
             "a malformed request is Zaino's bug and must not read as a bad address"
         );
     }
@@ -1176,7 +1176,7 @@ mod classification_tests {
             );
         }
 
-        assert!(spent_info_rejection(&FetchError::new(
+        assert!(spent_info_rejection(&NonDomainError::new(
             zaino_source::FailureMode::Timeout,
             "timed out"
         ))
@@ -1213,7 +1213,7 @@ mod classification_tests {
                 GetMempoolTxidsError::Unavailable
             });
             assert!(
-                matches!(classified, QueryError::Fetch(_)),
+                matches!(classified, QueryError::NonDomain(_)),
                 "code {code} does not say this validator lacks a mempool"
             );
         }

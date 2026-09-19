@@ -152,7 +152,7 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// formatted into the message. `zaino-serve` recovers legacy-compatible RPC
 /// error codes by downcast-walking [`std::error::Error::source`] (see
 /// `getblock_error_object_from_indexer_error` in
-/// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`FetchError`] to
+/// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`NonDomainError`] to
 /// a string would strip the [`FailureMode::RpcError`] code those clients key
 /// on.
 ///
@@ -163,7 +163,7 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// object from an unreachable node — the reclassification must not cost the
 /// served interface its error code.
 ///
-/// [`FetchError`]: zaino_source::FetchError
+/// [`NonDomainError`]: zaino_source::NonDomainError
 /// [`FailureMode::RpcError`]: zaino_source::FailureMode::RpcError
 fn err<E>(error: QueryError<E>) -> BlockchainSourceError
 where
@@ -177,7 +177,7 @@ where
                 e.to_string(),
             ),
         ),
-        QueryError::Fetch(e) => {
+        QueryError::NonDomain(e) => {
             BlockchainSourceError::unrecoverable_context("validator unreachable", e)
         }
     }
@@ -215,7 +215,7 @@ fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> Blockch
         }
         // A transport fault is not an answer; `err` already carries it with the
         // typed cause the serving layer needs.
-        fetch @ QueryError::Fetch(_) => return err(fetch),
+        fetch @ QueryError::NonDomain(_) => return err(fetch),
     };
 
     BlockchainSourceError::unrecoverable_context(
@@ -1325,8 +1325,8 @@ mod tests {
     fn error_flattening_keeps_the_failure_kind() {
         let domain: QueryError<zaino_source::GetChainTipError> =
             QueryError::Domain(zaino_source::GetChainTipError::NotReady);
-        let transport: QueryError<zaino_source::GetChainTipError> = QueryError::Fetch(
-            zaino_source::FetchError::new(zaino_source::FailureMode::Connection, "refused"),
+        let transport: QueryError<zaino_source::GetChainTipError> = QueryError::NonDomain(
+            zaino_source::NonDomainError::new(zaino_source::FailureMode::Connection, "refused"),
         );
 
         assert!(err(domain).to_string().contains("rejected"));
@@ -1697,11 +1697,11 @@ mod error_source_chain {
     }
 
     /// A transport fault is not an answer about the outpoint, so it must keep
-    /// the typed `FetchError` rather than acquiring a legacy code that would
+    /// the typed `NonDomainError` rather than acquiring a legacy code that would
     /// tell the client something about the output.
     #[test]
     fn a_transport_fault_on_spent_info_stays_a_fetch_failure() {
-        let rejected = spent_info_err(QueryError::Fetch(zaino_source::FetchError::new(
+        let rejected = spent_info_err(QueryError::NonDomain(zaino_source::NonDomainError::new(
             zaino_source::FailureMode::Connection,
             "refused",
         )));
@@ -1729,11 +1729,15 @@ mod error_source_chain {
             Some(&error as &(dyn std::error::Error + 'static)),
             |error| error.source(),
         )
-        .any(|error| error.downcast_ref::<zaino_source::FetchError>().is_some());
+        .any(|error| {
+            error
+                .downcast_ref::<zaino_source::NonDomainError>()
+                .is_some()
+        });
 
         assert!(
             reached,
-            "the typed FetchError must stay reachable via the source() chain; \
+            "the typed NonDomainError must stay reachable via the source() chain; \
              stringifying it strips the FailureMode the serve layer recovers"
         );
     }

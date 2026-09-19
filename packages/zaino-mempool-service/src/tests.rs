@@ -16,8 +16,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::types::{BlockHash, Height, TransactionId};
 use zaino_source::{
-    FailureMode, FetchError, GetMempoolMetadataError, GetMempoolTxidsError,
-    GetRawMempoolTransactionError, MempoolTxMeta, QueryError,
+    FailureMode, GetMempoolMetadataError, GetMempoolTxidsError, GetRawMempoolTransactionError,
+    MempoolTxMeta, NonDomainError, QueryError,
 };
 
 use zaino_mempool::config::MempoolConfig;
@@ -127,7 +127,7 @@ impl MockSource {
 /// means the validator answered, and the mempool must degrade the same way for
 /// either — so a `Fetch` failure is the honest shape for "the source is down".
 fn outage<E: std::fmt::Debug + std::fmt::Display>(message: String) -> QueryError<E> {
-    QueryError::Fetch(FetchError::new(FailureMode::Connection, message))
+    QueryError::NonDomain(NonDomainError::new(FailureMode::Connection, message))
 }
 
 impl zaino_source::OneShotGetMempoolTxids for MockSource {

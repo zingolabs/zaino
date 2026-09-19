@@ -525,7 +525,7 @@ fn invalid_params_error_object(error: impl std::fmt::Display) -> ErrorObjectOwne
 /// - [`LegacyRpcError`] — Zaino's *own* rejection, e.g. a malformed block
 ///   identifier or an oversized raw transaction, which never reached a
 ///   validator.
-/// - [`FetchError`] with [`FailureMode::RpcError`] — a code the *validator*
+/// - [`NonDomainError`] with [`FailureMode::RpcError`] — a code the *validator*
 ///   returned, classified by the source layer.
 ///
 /// Before this PR only `zaino-fetch`'s connector type was matched. The new
@@ -539,7 +539,7 @@ fn legacy_code_from_error_source(
         return Some((rejection.code as i32, rejection.message.clone()));
     }
 
-    match error_source.downcast_ref::<zaino_source::FetchError>() {
+    match error_source.downcast_ref::<zaino_source::NonDomainError>() {
         Some(fetch_error) => match fetch_error.mode {
             zaino_source::FailureMode::RpcError(code) => {
                 Some((code as i32, fetch_error.message.clone()))
@@ -587,10 +587,10 @@ where
         //
         // Reported with the legacy full node's `InvalidParameter`, which is what clients key
         // on for a missing block — not the 500 itself.
-        if let Some(zaino_source::FetchError {
+        if let Some(zaino_source::NonDomainError {
             mode: zaino_source::FailureMode::HttpStatus(500),
             ..
-        }) = error_source.downcast_ref::<zaino_source::FetchError>()
+        }) = error_source.downcast_ref::<zaino_source::NonDomainError>()
         {
             return Some(ErrorObjectOwned::owned(
                 zebra_rpc::server::error::LegacyCode::InvalidParameter as i32,
@@ -967,7 +967,7 @@ mod legacy_code_recovery {
     /// `validator_source::error_source_chain` covers from the other side).
     #[test]
     fn a_validator_error_code_is_recovered_from_a_fetch_error() {
-        let error = zaino_source::FetchError::new(
+        let error = zaino_source::NonDomainError::new(
             zaino_source::FailureMode::RpcError(-8),
             "Block not found",
         );
@@ -1000,7 +1000,7 @@ mod legacy_code_recovery {
     /// fall through to the generic internal error rather than inventing one.
     #[test]
     fn a_transport_fault_yields_no_code() {
-        let error = zaino_source::FetchError::new(
+        let error = zaino_source::NonDomainError::new(
             zaino_source::FailureMode::Connection,
             "connection refused",
         );
@@ -1017,10 +1017,10 @@ mod legacy_code_recovery {
         #[error("wrapped: {source}")]
         struct Wrapper {
             #[from]
-            source: zaino_source::FetchError,
+            source: zaino_source::NonDomainError,
         }
 
-        let wrapper = Wrapper::from(zaino_source::FetchError::new(
+        let wrapper = Wrapper::from(zaino_source::NonDomainError::new(
             zaino_source::FailureMode::RpcError(-25),
             "rejected",
         ));

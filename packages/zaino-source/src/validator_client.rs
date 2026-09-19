@@ -172,7 +172,7 @@ impl<V> ValidatorClient<V> {
 
                 Err(QueryError::Domain(e)) => return Err(SourceError::Domain(e)),
 
-                Err(QueryError::Fetch(e)) => {
+                Err(QueryError::NonDomain(e)) => {
                     if !is_retryable(&e.mode) || attempt >= self.policy.max_attempts {
                         if is_retryable(&e.mode) {
                             return Err(SourceError::Unavailable(UnavailableError {
@@ -180,7 +180,7 @@ impl<V> ValidatorClient<V> {
                                 last_error: e,
                             }));
                         }
-                        return Err(SourceError::Fetch(e));
+                        return Err(SourceError::NonDomain(e));
                     }
 
                     tokio::time::sleep(self.policy.delay_for(attempt)).await;
@@ -403,7 +403,7 @@ mod tests {
 
             let err = source.get_block(height(0)).await.unwrap_err();
             assert!(
-                matches!(err, SourceError::Fetch(ref e) if e.mode == FailureMode::Auth),
+                matches!(err, SourceError::NonDomain(ref e) if e.mode == FailureMode::Auth),
                 "expected Fetch(Auth), got: {err:?}"
             );
         }

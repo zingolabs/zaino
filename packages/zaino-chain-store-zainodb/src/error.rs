@@ -111,7 +111,7 @@ pub(crate) fn source_error<E: core::fmt::Debug + core::fmt::Display>(
         zaino_source::QueryError::Domain(error) => {
             ChainStoreSourceError::not_ready(error.to_string())
         }
-        zaino_source::QueryError::Fetch(error) => {
+        zaino_source::QueryError::NonDomain(error) => {
             ChainStoreSourceError::unavailable(error.to_string())
         }
     }

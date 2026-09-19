@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use zaino_primitives::types::{Block, BlockHash, Height, Treestate};
 
-use crate::error::{FailureMode, FetchError};
+use crate::error::{FailureMode, NonDomainError};
 use crate::{GetBlockByHashError, GetBlockError, GetChainTipError, GetTreestateError, QueryError};
 
 /// A pre-populated in-memory chain for testing.
@@ -71,7 +71,7 @@ impl MockChain {
                 }
             });
         match prev {
-            Ok(_) => Some(QueryError::Fetch(FetchError::new(
+            Ok(_) => Some(QueryError::NonDomain(NonDomainError::new(
                 self.failure_mode.clone(),
                 format!("mock injected {:?}", self.failure_mode),
             ))),
@@ -267,7 +267,7 @@ mod tests {
         let err = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
             .unwrap_err();
-        assert!(matches!(err, QueryError::Fetch(ref e) if e.mode == FailureMode::Timeout));
+        assert!(matches!(err, QueryError::NonDomain(ref e) if e.mode == FailureMode::Timeout));
 
         let block = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
@@ -285,7 +285,7 @@ mod tests {
             let err = crate::OneShotGetBlock::get_block(&mock, height(0))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, QueryError::Fetch(_)));
+            assert!(matches!(err, QueryError::NonDomain(_)));
         }
 
         let block = crate::OneShotGetBlock::get_block(&mock, height(0))

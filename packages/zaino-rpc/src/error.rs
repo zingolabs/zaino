@@ -47,7 +47,7 @@ pub enum RpcError {
     },
 }
 
-impl From<RpcError> for zaino_source::FetchError {
+impl From<RpcError> for zaino_source::NonDomainError {
     fn from(e: RpcError) -> Self {
         use zaino_source::FailureMode;
 
@@ -75,10 +75,10 @@ impl From<RpcError> for zaino_source::FetchError {
             // A coded refusal is the "no underlying error value" case: the
             // server's message *is* the content (and adapters read it to build
             // domain rejections), so it rides as the message, not a boxed cause.
-            RpcError::Rpc { message, .. } => zaino_source::FetchError::new(kind, message),
+            RpcError::Rpc { message, .. } => zaino_source::NonDomainError::new(kind, message),
             // Every other variant is a real error value; keep its type and
             // source() chain instead of flattening it to a string.
-            other => zaino_source::FetchError::from_cause(kind, other),
+            other => zaino_source::NonDomainError::from_cause(kind, other),
         }
     }
 }
@@ -92,7 +92,7 @@ mod tests {
     /// again, turning the cap into an amplifier rather than a bound.
     #[test]
     fn an_oversized_body_is_not_retryable() {
-        let fetch_error = zaino_source::FetchError::from(RpcError::ResponseBodyTooLarge {
+        let fetch_error = zaino_source::NonDomainError::from(RpcError::ResponseBodyTooLarge {
             max: MAX_RESPONSE_BYTES,
         });
 
