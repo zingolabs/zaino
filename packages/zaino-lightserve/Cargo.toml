@@ -17,4 +17,12 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 zaino-service = { path = "../zaino-service", features = ["testing"] }
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+# The gRPC proof test builds a real index in-process and serves it over the wire.
+zaino-store = { path = "../zaino-store" }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-indexes = { path = "../zaino-indexes" }
+zaino-sync = { path = "../zaino-sync" }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-primitives = { path = "../zaino-primitives" }

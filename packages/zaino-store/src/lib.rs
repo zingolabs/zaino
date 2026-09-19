@@ -77,6 +77,17 @@ impl<B> StoreReader<B> {
     }
 }
 
+// Manual `Clone` so the bound is on `Arc<B>` (always cloneable), not `B` — a
+// serving adapter clones the reader per connection, and all clones share one
+// backend.
+impl<B> Clone for StoreReader<B> {
+    fn clone(&self) -> Self {
+        Self {
+            backend: Arc::clone(&self.backend),
+        }
+    }
+}
+
 impl<B: Backend + 'static> Serviceable for StoreReader<B> {
     fn serviceability(&self) -> ServiceabilityManifest {
         // Infallible by contract: a serviceability query must not be the call
