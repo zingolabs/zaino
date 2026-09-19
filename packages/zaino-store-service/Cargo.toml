@@ -1,0 +1,13 @@
+[package]
+name = "zaino-store-service"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The concrete inner engine: composes the finalised chain store and the non-finalised chain head into one zaino-service IndexerService. Slice 1: the seam + coherence are wired; conversion-heavy per-block reads are NotServiceable pending the primitives re-seam."
+
+[dependencies]
+zaino-service = { path = "../zaino-service" }
+zaino-core = { path = "../zaino-core" }
+zaino-chain-store = { path = "../zaino-chain-store" }
+zaino-chain-head = { path = "../zaino-chain-head" }
+futures = "0.3"

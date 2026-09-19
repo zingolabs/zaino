@@ -1,0 +1,22 @@
+[package]
+name = "zaino-runtime"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The orchestrator: composes the finalised (zaino-fs) and non-finalised (zaino-nfs) components into one running indexer, and implements zaino-service::IndexerService."
+
+[dependencies]
+zaino-component = { path = "../zaino-component" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures.workspace = true
+zaino-core = { path = "../zaino-core" }
+
+[dev-dependencies]
+tokio = { workspace = true }
+zaino-status = { path = "../zaino-status" }
+# Serving-composition POC: one engine driving both public ports at once.
+zaino-core = { path = "../zaino-core" }
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+zaino-lightserve = { path = "../zaino-lightserve" }
+zaino-noderpc = { path = "../zaino-noderpc" }

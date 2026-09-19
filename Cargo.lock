@@ -4548,6 +4548,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-bench"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-backend-lmdb",
+ "zaino-consensus",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-service",
+ "zaino-source",
+ "zaino-source-zebra-readstate",
+ "zaino-store",
+ "zaino-sync",
+ "zebra-chain",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5857,6 +5881,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-backend-lmdb"
+version = "0.1.0"
+dependencies = [
+ "lmdb",
+ "tempfile",
+ "zaino-persistence",
+]
+
+[[package]]
 name = "zaino-chain-head"
 version = "0.1.0"
 dependencies = [
@@ -5987,10 +6020,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-core"
+version = "0.1.0"
+dependencies = [
+ "strum",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-encoding"
 version = "0.1.0"
 dependencies = [
  "corez",
+]
+
+[[package]]
+name = "zaino-indexer"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-component",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-runtime",
+ "zaino-source",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-indexes"
+version = "0.1.0"
+dependencies = [
+ "strum",
+ "thiserror 2.0.18",
+ "zaino-core",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-lightserve"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic",
+ "zaino-component",
+ "zaino-core",
+ "zaino-proto",
+ "zaino-service",
 ]
 
 [[package]]
@@ -6021,6 +6103,35 @@ dependencies = [
  "zaino-primitives",
  "zaino-source",
  "zaino-status",
+]
+
+[[package]]
+name = "zaino-noderpc"
+version = "0.1.0"
+dependencies = [
+ "jsonrpsee",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-component",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
+name = "zaino-persistence"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-persistence-codec"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-persistence",
+ "zaino-primitives",
 ]
 
 [[package]]
@@ -6058,6 +6169,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-runtime"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-component",
+ "zaino-core",
+ "zaino-lightserve",
+ "zaino-noderpc",
+ "zaino-service",
+ "zaino-status",
+]
+
+[[package]]
 name = "zaino-serve"
 version = "0.7.0"
 dependencies = [
@@ -6083,6 +6209,16 @@ dependencies = [
  "zaino-status",
  "zebra-chain",
  "zebra-rpc",
+]
+
+[[package]]
+name = "zaino-service"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-core",
 ]
 
 [[package]]
@@ -6121,6 +6257,7 @@ version = "0.2.0"
 dependencies = [
  "chrono",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tower 0.4.13",
  "tracing",
@@ -6219,6 +6356,62 @@ name = "zaino-status"
 version = "0.1.1"
 dependencies = [
  "tracing",
+]
+
+[[package]]
+name = "zaino-store"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+ "zaino-component",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-runtime",
+ "zaino-service",
+ "zaino-source",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-store-service"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-chain-head",
+ "zaino-chain-store",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
+name = "zaino-sync"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-source",
+]
+
+[[package]]
+name = "zaino-wallet"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-core",
+ "zaino-service",
 ]
 
 [[package]]

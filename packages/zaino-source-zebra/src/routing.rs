@@ -14,6 +14,22 @@ use zaino_source_zebra_rpc::ZebraRpcAdapter;
 
 use crate::fallback::retry_on_slow_path;
 
+/// Normalise a sub-adapter's own non-domain error to the seam type, so the
+/// composite presents one `QueryError<E>` regardless of which transport answered.
+/// The fast path (read-state) owns `ReadStateError`; the slow path (RPC) already
+/// speaks the seam.
+fn to_seam<
+    E: core::fmt::Debug + core::fmt::Display,
+    N: std::error::Error + Into<NonDomainError>,
+>(
+    e: QueryError<E, N>,
+) -> QueryError<E> {
+    match e {
+        QueryError::Domain(d) => QueryError::Domain(d),
+        QueryError::NonDomain(n) => QueryError::NonDomain(n.into()),
+    }
+}
+
 /// A Zebra validator reached over one or both of its transports.
 pub struct ZebraValidator {
     /// Always present: the mempool and the passthrough RPCs are reachable no
@@ -73,7 +89,11 @@ impl ZebraValidator {
     where
         S: OneShotGetChainTip + Send + 'static,
     {
-        self.tip = Some(PolledChainTip::spawn(source, interval).await?);
+        self.tip = Some(
+            PolledChainTip::spawn(source, interval)
+                .await
+                .map_err(to_seam)?,
+        );
         Ok(self)
     }
 
@@ -103,7 +123,7 @@ impl ZebraValidator {
 macro_rules! fast_then_slow {
     ($self:ident, $method:ident $(, $arg:expr)*) => {{
         if let Some(fast) = $self.fast() {
-            let result = fast.$method($($arg),*).await;
+            let result = fast.$method($($arg),*).await.map_err(to_seam);
             if !retry_on_slow_path(&result) {
                 return result;
             }
@@ -116,7 +136,7 @@ macro_rules! fast_then_slow {
 macro_rules! fast_or_slow {
     ($self:ident, $method:ident $(, $arg:expr)*) => {{
         match $self.fast() {
-            Some(fast) => fast.$method($($arg),*).await,
+            Some(fast) => fast.$method($($arg),*).await.map_err(to_seam),
             None => $self.rpc.$method($($arg),*).await,
         }
     }};
@@ -125,6 +145,11 @@ macro_rules! fast_or_slow {
 // ---------------------------------------------------------------------------
 // Blocks and chain
 // ---------------------------------------------------------------------------
+
+impl zaino_source::ValidatorSource for ZebraValidator {
+    // The composite normalises its sub-adapters' faults to the seam type.
+    type NonDomain = zaino_source::NonDomainError;
+}
 
 impl OneShotGetBlock for ZebraValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
@@ -257,7 +282,7 @@ impl OneShotGetAddressBalance for ZebraValidator {
         addresses: Vec<String>,
     ) -> Result<AddressBalance, QueryError<GetAddressBalanceError>> {
         match self.fast() {
-            Some(fast) => fast.get_address_balance(addresses).await,
+            Some(fast) => fast.get_address_balance(addresses).await.map_err(to_seam),
             None => self.rpc.get_address_balance(addresses).await,
         }
     }
@@ -271,7 +296,10 @@ impl OneShotGetAddressTxids for ZebraValidator {
         end: Height,
     ) -> Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>> {
         match self.fast() {
-            Some(fast) => fast.get_address_txids(addresses, start, end).await,
+            Some(fast) => fast
+                .get_address_txids(addresses, start, end)
+                .await
+                .map_err(to_seam),
             None => self.rpc.get_address_txids(addresses, start, end).await,
         }
     }
@@ -283,7 +311,7 @@ impl OneShotGetAddressUtxos for ZebraValidator {
         addresses: Vec<String>,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
         match self.fast() {
-            Some(fast) => fast.get_address_utxos(addresses).await,
+            Some(fast) => fast.get_address_utxos(addresses).await.map_err(to_seam),
             None => self.rpc.get_address_utxos(addresses).await,
         }
     }
@@ -308,7 +336,10 @@ impl OneShotGetAddressDeltas for ZebraValidator {
         // additionally reports spends, which the state service cannot resolve
         // (see the readstate implementation).
         match self.fast() {
-            Some(fast) => fast.get_address_deltas(addresses, start, end).await,
+            Some(fast) => fast
+                .get_address_deltas(addresses, start, end)
+                .await
+                .map_err(to_seam),
             None => self.rpc.get_address_deltas(addresses, start, end).await,
         }
     }

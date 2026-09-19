@@ -434,7 +434,7 @@ fn confirmations_from_depth(depth: Option<u32>) -> i64 {
 // is the record of what the vectors would have to carry.
 
 use zaino_primitives::types as domain;
-use zaino_source::{FailureMode, FetchError, QueryError as PortError};
+use zaino_source::{FailureMode, NonDomainError, QueryError as PortError};
 
 /// A fixture failure, in the shape a port reports faults.
 ///
@@ -444,7 +444,7 @@ use zaino_source::{FailureMode, FetchError, QueryError as PortError};
 pub(crate) fn port_fault<E: std::fmt::Debug + std::fmt::Display>(
     message: impl Into<String>,
 ) -> PortError<E> {
-    PortError::Fetch(FetchError::new(FailureMode::Parse, message.into()))
+    PortError::NonDomain(NonDomainError::new(FailureMode::Parse, message.into()))
 }
 
 /// A vector's `u64` tree size, as the domain carries it.
@@ -477,6 +477,10 @@ impl MockchainSource {
             .zcash_serialize_to_vec()
             .map_err(|error| format!("mock block did not serialize: {error}"))
     }
+}
+
+impl zaino_source::ValidatorSource for MockchainSource {
+    type NonDomain = zaino_source::NonDomainError;
 }
 
 impl zaino_source::OneShotGetRawBlock for MockchainSource {
@@ -710,7 +714,7 @@ impl zaino_source::OneShotGetMempoolSourceTip for MockchainSource {
             PortError::Domain(zaino_source::GetChainTipError::NotReady) => {
                 port_fault("mockchain has no chain tip to serve the mempool")
             }
-            PortError::Fetch(fetch) => PortError::Fetch(fetch),
+            PortError::NonDomain(fetch) => PortError::NonDomain(fetch),
         })
     }
 }

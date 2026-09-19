@@ -1,0 +1,21 @@
+[package]
+name = "zaino-indexer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The indexer writer wired as a runtime component: a SyncDriver over the #1402 SyncEngine, so the Orchestra can boot and supervise index-building. The concrete source-backed provisioner (over zaino-source) lands here too."
+
+[dependencies]
+zaino-component = { path = "../zaino-component" }
+zaino-sync = { path = "../zaino-sync" }
+zaino-source = { path = "../zaino-source" }
+zaino-primitives = { path = "../zaino-primitives" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
+
+[dev-dependencies]
+zaino-sync = { path = "../zaino-sync", features = ["testing"] }
+zaino-runtime = { path = "../zaino-runtime" }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
+tokio = { workspace = true }

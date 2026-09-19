@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::BlockHash;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 pub use super::GetBlockHeaderError;
 
@@ -16,10 +16,10 @@ pub use super::GetBlockHeaderError;
 ///
 /// Maps to `getblockheader(hash, verbose = false)` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetRawBlockHeader: Send + Sync {
+pub trait OneShotGetRawBlockHeader: ValidatorSource + Send + Sync {
     /// Fetch a serialised block header.
     fn get_raw_block_header(
         &self,
         hash: BlockHash,
-    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockHeaderError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockHeaderError, Self::NonDomain>>> + Send;
 }

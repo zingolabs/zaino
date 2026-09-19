@@ -1,0 +1,20 @@
+[package]
+name = "zaino-backend-lmdb"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "LMDB backend adapter implementing zaino-persistence traits."
+
+[dependencies]
+zaino-persistence = { path = "../zaino-persistence" }
+lmdb.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

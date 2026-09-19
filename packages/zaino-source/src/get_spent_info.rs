@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::rpc::{SpentInfo, SpentOutpoint};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetSpentInfo`].
 ///
@@ -68,10 +68,10 @@ pub enum GetSpentInfoError {
 /// would be new indexer capability rather than the rewire this work is doing.
 /// Recorded so the gap is a decision rather than an oversight.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetSpentInfo: Send + Sync {
+pub trait OneShotGetSpentInfo: ValidatorSource + Send + Sync {
     /// Locate an output's spender.
     fn get_spent_info(
         &self,
         outpoint: SpentOutpoint,
-    ) -> impl Future<Output = Result<SpentInfo, QueryError<GetSpentInfoError>>> + Send;
+    ) -> impl Future<Output = Result<SpentInfo, QueryError<GetSpentInfoError, Self::NonDomain>>> + Send;
 }

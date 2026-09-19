@@ -33,8 +33,8 @@ use zaino_primitives::types::{
     MerkleRoot, TreeRoots,
 };
 use zaino_source::{
-    FailureMode, FetchError, GetBlockByHashError, GetBlockError, GetChainTipError,
-    GetChainTipsError, GetCommitmentTreeRootsError, OneShotGetBlock, OneShotGetBlockByHash,
+    FailureMode, GetBlockByHashError, GetBlockError, GetChainTipError, GetChainTipsError,
+    GetCommitmentTreeRootsError, NonDomainError, OneShotGetBlock, OneShotGetBlockByHash,
     OneShotGetChainTip, OneShotGetChainTips, OneShotGetCommitmentTreeRoots, QueryError,
     SubscribeBlocks,
 };
@@ -148,7 +148,11 @@ impl MockValidator {
 }
 
 fn transport_failure<E: std::fmt::Debug + std::fmt::Display>() -> QueryError<E> {
-    QueryError::Fetch(FetchError::new(FailureMode::Connection, "mock is down"))
+    QueryError::NonDomain(NonDomainError::new(FailureMode::Connection, "mock is down"))
+}
+
+impl zaino_source::ValidatorSource for MockValidator {
+    type NonDomain = zaino_source::NonDomainError;
 }
 
 impl OneShotGetChainTip for MockValidator {

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use zaino_primitives::types::{Block, BlockHash, Height, Treestate};
 
-use crate::error::{FailureMode, FetchError};
+use crate::error::{FailureMode, NonDomainError};
 use crate::{GetBlockByHashError, GetBlockError, GetChainTipError, GetTreestateError, QueryError};
 
 /// A pre-populated in-memory chain for testing.
@@ -71,7 +71,7 @@ impl MockChain {
                 }
             });
         match prev {
-            Ok(_) => Some(QueryError::Fetch(FetchError::new(
+            Ok(_) => Some(QueryError::NonDomain(NonDomainError::new(
                 self.failure_mode.clone(),
                 format!("mock injected {:?}", self.failure_mode),
             ))),
@@ -84,6 +84,10 @@ impl Default for MockChain {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl crate::ValidatorSource for MockChain {
+    type NonDomain = crate::NonDomainError;
 }
 
 impl crate::OneShotGetBlock for MockChain {
@@ -144,10 +148,40 @@ impl crate::OneShotGetTreestate for MockChain {
     }
 }
 
+// A static mock does not push tip updates; the default `None` says "no
+// subscription", so a consumer bound on `SubscribeChainTip` still accepts it
+// (and simply does not tip-follow).
+impl crate::SubscribeChainTip for MockChain {}
+
+/// A minimal test [`Block`] at `height` with hash `[hash_byte; 32]`, for seeding
+/// a [`MockChain`] (or other source fixtures) from downstream crates. Behind the
+/// `testing` feature so it is reusable, not just an in-crate test helper.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_block(height: u32, hash_byte: u8) -> Block {
+    use zaino_primitives::types::{
+        BlockHeader, ChainMetadata, CompactDifficulty, EquihashSolution,
+    };
+    Block {
+        header: BlockHeader {
+            hash: BlockHash::from([hash_byte; 32]),
+            version: 4,
+            prev_hash: BlockHash::ZERO,
+            height: Height::try_from(height).expect("valid test height"),
+            time: 0,
+            merkle_root: [0; 32].into(),
+            block_commitments: [0; 32].into(),
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+            nonce: [0; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        },
+        transactions: vec![],
+        chain_metadata: ChainMetadata::ZERO,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{BlockHeader, ChainMetadata, EquihashSolution};
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid test height")
@@ -155,27 +189,6 @@ mod tests {
 
     fn hash(byte: u8) -> BlockHash {
         BlockHash::from([byte; 32])
-    }
-
-    /// Build a minimal test block at a given height with a given hash.
-    fn test_block(h: u32, hash_byte: u8) -> Block {
-        Block {
-            header: BlockHeader {
-                hash: hash(hash_byte),
-                version: 4,
-                prev_hash: BlockHash::ZERO,
-                height: height(h),
-                time: 0,
-                merkle_root: [0; 32].into(),
-                block_commitments: [0; 32].into(),
-                bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
-                    .expect("valid nBits"),
-                nonce: [0; 32],
-                solution: EquihashSolution::Regtest([0; 36]),
-            },
-            transactions: vec![],
-            chain_metadata: ChainMetadata::ZERO,
-        }
     }
 
     #[tokio::test]
@@ -267,7 +280,7 @@ mod tests {
         let err = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
             .unwrap_err();
-        assert!(matches!(err, QueryError::Fetch(ref e) if e.mode == FailureMode::Timeout));
+        assert!(matches!(err, QueryError::NonDomain(ref e) if e.mode == FailureMode::Timeout));
 
         let block = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
@@ -285,7 +298,7 @@ mod tests {
             let err = crate::OneShotGetBlock::get_block(&mock, height(0))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, QueryError::Fetch(_)));
+            assert!(matches!(err, QueryError::NonDomain(_)));
         }
 
         let block = crate::OneShotGetBlock::get_block(&mock, height(0))

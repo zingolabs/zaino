@@ -104,14 +104,14 @@ pub struct StatusError {
 /// answering "no such block" — becomes [`ChainStoreSourceError::NotReady`]
 /// rather than a transport failure: the store only asks for heights it believes
 /// exist, so a rejection means the validator has not caught up.
-pub(crate) fn source_error<E: core::fmt::Debug + core::fmt::Display>(
-    error: zaino_source::QueryError<E>,
+pub(crate) fn source_error<E: core::fmt::Debug + core::fmt::Display, N: std::error::Error>(
+    error: zaino_source::QueryError<E, N>,
 ) -> ChainStoreSourceError {
     match error {
         zaino_source::QueryError::Domain(error) => {
             ChainStoreSourceError::not_ready(error.to_string())
         }
-        zaino_source::QueryError::Fetch(error) => {
+        zaino_source::QueryError::NonDomain(error) => {
             ChainStoreSourceError::unavailable(error.to_string())
         }
     }

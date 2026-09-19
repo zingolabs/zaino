@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{BlockHash, BlockVerbose, Height};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetBlockVerbose`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -27,12 +27,13 @@ pub enum GetBlockVerboseError {
 ///
 /// Maps to `getblock(height, 1)` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBlockVerbose: Send + Sync {
+pub trait OneShotGetBlockVerbose: ValidatorSource + Send + Sync {
     /// Fetch verbose metadata.
     fn get_block_verbose(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError>>> + Send;
+    ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError, Self::NonDomain>>>
+           + Send;
 }
 
 /// Fetch a block's chain-state facts, addressed by hash.
@@ -42,10 +43,11 @@ pub trait OneShotGetBlockVerbose: Send + Sync {
 /// block, whereas a hash can name one on a side chain — where `confirmations`
 /// is negative and there is no next block.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBlockVerboseByHash: Send + Sync {
+pub trait OneShotGetBlockVerboseByHash: ValidatorSource + Send + Sync {
     /// Fetch verbose metadata by block hash.
     fn get_block_verbose_by_hash(
         &self,
         hash: zaino_primitives::types::BlockHash,
-    ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError>>> + Send;
+    ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError, Self::NonDomain>>>
+           + Send;
 }
