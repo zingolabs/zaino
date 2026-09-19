@@ -49,6 +49,10 @@ pub struct CurrentZainoContext {
     pub sapling_txs: Vec<SaplingTxCompact>,
     /// Per-tx orchard data.
     pub orchard_txs: Vec<OrchardTxCompact>,
+    /// Per-tx ironwood data (NU6.3). Structurally identical to orchard, so it
+    /// reuses [`OrchardTxCompact`]; a separate pool. Feeds the chain-metadata
+    /// index's ironwood tree size (there is no ironwood serving index yet).
+    pub ironwood_txs: Vec<OrchardTxCompact>,
 }
 
 /// Build context from a domain Block.
@@ -132,6 +136,21 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
         })
         .collect();
 
+    // Ironwood shares Orchard's shape (`Transaction::ironwood` is `OrchardData`),
+    // so it projects identically — a separate pool feeding its own tree size.
+    let ironwood_txs: Vec<OrchardTxCompact> = block
+        .transactions
+        .iter()
+        .map(|tx| OrchardTxCompact {
+            actions: tx
+                .ironwood
+                .actions
+                .iter()
+                .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext))
+                .collect(),
+        })
+        .collect();
+
     CurrentZainoContext {
         height,
         hash: block.header.hash,
@@ -144,6 +163,7 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
         transparent_txs,
         sapling_txs,
         orchard_txs,
+        ironwood_txs,
     }
 }
 
@@ -162,6 +182,7 @@ pub fn context_from_pre_index_compact_block(
     let mut transparent_txs = Vec::with_capacity(cb.transactions.len());
     let mut sapling_txs = Vec::with_capacity(cb.transactions.len());
     let mut orchard_txs = Vec::with_capacity(cb.transactions.len());
+    let mut ironwood_txs = Vec::with_capacity(cb.transactions.len());
 
     for (tx_index, ctx) in cb.transactions.iter().enumerate() {
         txids.push(ctx.txid);
@@ -200,6 +221,14 @@ pub fn context_from_pre_index_compact_block(
                 .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext))
                 .collect(),
         });
+
+        ironwood_txs.push(OrchardTxCompact {
+            actions: ctx
+                .ironwood_actions
+                .iter()
+                .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext))
+                .collect(),
+        });
     }
 
     CurrentZainoContext {
@@ -214,6 +243,7 @@ pub fn context_from_pre_index_compact_block(
         transparent_txs,
         sapling_txs,
         orchard_txs,
+        ironwood_txs,
     }
 }
 
@@ -297,9 +327,9 @@ impl ProvideContext<OrchardCtx> for CurrentZainoContext {
 impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
     fn context(&self) -> ChainMetadataCtx {
         // The note commitments this block adds to each pool: one per sapling
-        // output, one per orchard action. The index accumulates these into
-        // cumulative tree sizes. usize→u64 is lossless on every supported
-        // platform; a block can hold at most usize commitments.
+        // output, one per orchard action, one per ironwood action. The index
+        // accumulates these into cumulative tree sizes. usize→u64 is lossless on
+        // every supported platform; a block can hold at most usize commitments.
         let count = |n: usize| u64::try_from(n).expect("commitment count fits u64");
         let sapling_added: u64 = self
             .sapling_txs
@@ -311,12 +341,16 @@ impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
             .iter()
             .map(|t| count(t.actions.len()))
             .sum();
+        let ironwood_added: u64 = self
+            .ironwood_txs
+            .iter()
+            .map(|t| count(t.actions.len()))
+            .sum();
         ChainMetadataCtx {
             height: self.height,
             sapling_added,
             orchard_added,
-            // Ironwood commitments are not represented at the block level yet.
-            ironwood_added: 0,
+            ironwood_added,
         }
     }
 }

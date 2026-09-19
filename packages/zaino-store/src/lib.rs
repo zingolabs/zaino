@@ -394,7 +394,9 @@ fn read_compact_block<B: Backend>(
                         },
                     )
                     .collect(),
-                // No ironwood index yet — the context does not capture that pool.
+                // The ironwood *tree size* is served (via chain-metadata), but
+                // there is no ironwood pool index yet, so the per-tx ironwood
+                // actions are not composed back into the served block.
                 ironwood_actions: Vec::new(),
             },
         )

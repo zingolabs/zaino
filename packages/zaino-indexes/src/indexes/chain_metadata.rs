@@ -10,8 +10,9 @@
 //! source strips them, and a full-block source's are redundant with what we
 //! compute). The carry seeds at [`ChainMetadata::ZERO`] (genesis: empty trees).
 //!
-//! Ironwood carries no block-level commitments in the current model, so its
-//! per-block count is `0` and its size stays `0` until that pool is wired.
+//! All three pools are treated uniformly: the per-block context reports the
+//! sapling, orchard, and ironwood commitments the block adds (ironwood shares
+//! orchard's action shape), and each accumulates into its own cumulative size.
 
 use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{ChainMetadata, TreeSize, TreeSizeOutOfRange};
