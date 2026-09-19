@@ -14,6 +14,14 @@ use zaino_primitives::types::Height;
 
 /// Namespace for the watermark — separate from any index's namespace.
 const NAMESPACE: Namespace = Namespace::new("_watermark");
+
+/// The namespace the watermark is stored under.
+///
+/// Exposed so a backend that must declare its namespaces up front (e.g. LMDB)
+/// can reserve it; see [`reserved_namespaces`](crate::reserved_namespaces).
+pub const fn namespace() -> Namespace {
+    NAMESPACE
+}
 /// The single key under [`NAMESPACE`].
 const KEY: &[u8] = b"finalised_tip";
 

@@ -59,6 +59,17 @@ use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
 /// real key.
 const VERSION_META: Namespace = Namespace::new("_format_versions");
 
+/// The namespaces the engine reserves for its own bookkeeping — the finalised
+/// [`watermark`] and the per-namespace format-version stamps — as distinct from
+/// the index namespaces.
+///
+/// A persistent backend that declares its namespaces up front (e.g. LMDB) must
+/// open these *in addition to* the index set's own (`IndexSet::index_ids` in
+/// `zaino-sync`). A backend that creates namespaces lazily can ignore them.
+pub fn reserved_namespaces() -> [Namespace; 2] {
+    [watermark::namespace(), VERSION_META]
+}
+
 /// A namespace's on-disk format fingerprint — a hash of its codec's canonical
 /// samples, encoded (see [`format_version`]).
 ///
@@ -242,6 +253,19 @@ mod tests {
     use zaino_persistence::{Backend, BackendWriter};
 
     const TOY: Namespace = Namespace::new("toy");
+
+    #[test]
+    fn reserved_namespaces_are_the_watermark_and_version_meta() {
+        // These strings are on-disk placement: renaming one silently orphans
+        // every existing store's bookkeeping, so pin them here.
+        assert_eq!(
+            reserved_namespaces(),
+            [
+                Namespace::new("_watermark"),
+                Namespace::new("_format_versions")
+            ],
+        );
+    }
 
     /// A toy codec — little-endian.
     struct Toy;

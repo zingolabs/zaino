@@ -6,6 +6,7 @@
 
 use crate::dag::{DagError, DependencyDag};
 use crate::pipeline::{IndexPipeline, IntoIndexPipeline};
+use crate::primitives::IndexId;
 
 /// The dependency DAG and the boxed pipelines a built index set hands to the engine.
 type BuiltIndexSet<Ctx> = (DependencyDag, Vec<Box<dyn IndexPipeline<Ctx>>>);
@@ -43,6 +44,20 @@ impl<Ctx: Send + Sync + 'static> IndexSet<Ctx> {
     pub fn with<I: IntoIndexPipeline<Ctx>>(mut self) -> Self {
         self.pipelines.push(I::into_pipeline());
         self
+    }
+
+    /// The [`IndexId`] of every registered index, in registration order.
+    ///
+    /// These map one-to-one onto the persistence namespaces the engine writes
+    /// each index under. A backend that must declare its namespaces before use
+    /// (e.g. LMDB) opens exactly these, plus the engine's reserved bookkeeping
+    /// namespaces ([`zaino_persistence_codec::reserved_namespaces`]). A backend
+    /// that creates namespaces lazily (e.g. the in-memory one) can ignore this.
+    pub fn index_ids(&self) -> Vec<IndexId> {
+        self.pipelines
+            .iter()
+            .map(|pipeline| pipeline.descriptor().name)
+            .collect()
     }
 
     /// Return a description line for each registered index.
