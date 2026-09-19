@@ -3,7 +3,7 @@
 use crate::descriptor::{Append, BlockLocal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use crate::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context for this index: height and value.
@@ -66,7 +66,9 @@ impl IndexDef for ValueIndex {
 }
 
 impl ExtractLocal for ValueIndex {
-    fn extract(ctx: &Context) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &Context) -> Result<Self::Delta, Self::Error> {
         Ok(Entry {
             height: ctx.height,
             value: ctx.value,

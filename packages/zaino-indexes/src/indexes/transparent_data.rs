@@ -4,7 +4,7 @@ use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{OutputIndex, Script, TransactionId, Zatoshis};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use zaino_sync::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 
 use crate::indexes::decode::Cursor;
 
@@ -52,7 +52,9 @@ impl IndexDef for TransparentDataIndex {
 }
 
 impl ExtractLocal for TransparentDataIndex {
-    fn extract(ctx: &TransparentDataCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &TransparentDataCtx) -> Result<Self::Delta, Self::Error> {
         Ok(TransparentDataEntry {
             height: ctx.height,
             value: TransparentBlockValue(ctx.txs.clone()),

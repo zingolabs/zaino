@@ -123,8 +123,18 @@ pub trait IndexDef: Send + Sync + 'static {
 /// no prior state, no source handle. This is the only scope that permits
 /// full parallelism across blocks.
 pub trait ExtractLocal: IndexDef<Scope = BlockLocal> {
+    /// The typed reason extraction can fail for this index.
+    ///
+    /// Each index names its own error so failures stay typed and exhaustive at
+    /// the definition site — no shared stringly error. An index whose extraction
+    /// cannot fail uses [`std::convert::Infallible`], making that a compile-time
+    /// fact. The engine erases this to a boxed source only at the pipeline
+    /// boundary (see [`PipelineError`](crate::pipeline::PipelineError)), where it
+    /// preserves the `Error::source()` chain for a coherent abort trail.
+    type Error: std::error::Error + Send + Sync + 'static;
+
     /// Produce this block's delta from the block context alone.
-    fn extract(ctx: &Self::BlockContext) -> Result<Self::Delta, ExtractError>;
+    fn extract(ctx: &Self::BlockContext) -> Result<Self::Delta, Self::Error>;
 }
 
 /// Extraction for self-cumulative indexes.
@@ -148,12 +158,16 @@ pub trait ExtractCumulative: IndexDef<Scope = SelfCumulative> {
     /// The bridge enforces this via a type equality bound.
     type PriorState: Send + Sync;
 
+    /// The typed reason extraction can fail for this index (see
+    /// [`ExtractLocal::Error`]).
+    type Error: std::error::Error + Send + Sync + 'static;
+
     /// Produce this block's delta given the block context and this index's
     /// own accumulated state up to (but not including) this block.
     fn extract(
         ctx: &Self::BlockContext,
         prior: &Self::PriorState,
-    ) -> Result<Self::Delta, ExtractError>;
+    ) -> Result<Self::Delta, Self::Error>;
 }
 
 /// Extraction for cross-index indexes.
@@ -162,9 +176,13 @@ pub trait ExtractCumulative: IndexDef<Scope = SelfCumulative> {
 /// restricted to committed state from indexes declared in the dependency
 /// set. This index runs in a later phase than its dependencies.
 pub trait ExtractCross: IndexDef<Scope = CrossIndex> {
+    /// The typed reason extraction can fail for this index (see
+    /// [`ExtractLocal::Error`]).
+    type Error: std::error::Error + Send + Sync + 'static;
+
     /// Produce this block's delta given the block context and committed
     /// state from dependency indexes.
-    fn extract(ctx: &Self::BlockContext, deps: &DepsReader) -> Result<Self::Delta, ExtractError>;
+    fn extract(ctx: &Self::BlockContext, deps: &DepsReader) -> Result<Self::Delta, Self::Error>;
 }
 
 // ===========================================================================
@@ -326,30 +344,4 @@ pub trait NonLocalSource: IndexDef {
 /// one extraction call.
 pub struct SourceGuard<'a> {
     _handle: &'a SourceHandle,
-}
-
-// ===========================================================================
-// Error types (stub)
-// ===========================================================================
-
-/// Errors during index extraction.
-#[derive(Debug, thiserror::Error)]
-pub enum ExtractError {
-    /// Extraction failed for an index-specific reason, carrying the domain cause.
-    ///
-    /// The engine is generic and cannot name domain error types, so the cause is
-    /// boxed rather than stringified: the source chain is preserved and code that
-    /// knows the index can downcast to the concrete error.
-    #[error("index extraction failed")]
-    Index(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
-}
-
-impl ExtractError {
-    /// Wrap an index-specific error as the cause of an extraction failure.
-    ///
-    /// Use at the extraction site to lift a typed domain error (e.g. a
-    /// tree-size overflow) into [`ExtractError`] without losing its type.
-    pub fn index<E: std::error::Error + Send + Sync + 'static>(source: E) -> Self {
-        Self::Index(Box::new(source))
-    }
 }

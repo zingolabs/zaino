@@ -357,7 +357,7 @@ where
     }
 
     fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
-        let delta = I::extract(&ctx.context())?;
+        let delta = I::extract(&ctx.context()).map_err(PipelineError::extract)?;
         self.deltas
             .lock()
             .expect("delta mutex poisoned")
@@ -471,7 +471,7 @@ where
             .running_state
             .lock()
             .expect("running state mutex poisoned");
-        let delta = I::extract(&ctx.context(), &running)?;
+        let delta = I::extract(&ctx.context(), &running).map_err(PipelineError::extract)?;
         S::accumulate_one(&mut running, delta);
         Ok(())
     }
@@ -571,7 +571,7 @@ where
 
     fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
         let mut carry = self.carry.lock().expect("carry mutex poisoned");
-        let delta = I::extract(&ctx.context(), &carry)?;
+        let delta = I::extract(&ctx.context(), &carry).map_err(PipelineError::extract)?;
         *carry = I::carry(&delta);
         drop(carry);
         self.deltas

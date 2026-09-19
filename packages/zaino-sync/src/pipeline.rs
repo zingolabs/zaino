@@ -36,14 +36,16 @@ use crate::backend::{BackendReader, WriteOp};
 use crate::bridge::BridgeDispatch;
 use crate::descriptor::Descriptor;
 use crate::primitives::BlockHeight;
-use crate::traits::{ExtractError, IndexDef, ProvideContext};
+use crate::traits::{IndexDef, ProvideContext};
 
 /// Errors during pipeline operations.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
-    /// Extraction failed.
-    #[error(transparent)]
-    Extract(#[from] ExtractError),
+    /// Extraction failed. The boxed source is the index's own typed error
+    /// (`ExtractLocal::Error` etc.) — the one place the engine erases it, kept as
+    /// the `source()` so an abort trail leads down to the concrete domain cause.
+    #[error("index extraction failed")]
+    Extract(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// Merge failed.
     #[error("merge failed: {0}")]
     Merge(String),
@@ -74,6 +76,14 @@ pub enum PipelineError {
         /// The index that had no merged state staged.
         index: &'static str,
     },
+}
+
+impl PipelineError {
+    /// Erase an index's typed extraction error to the pipeline boundary,
+    /// preserving it as the [`Extract`](PipelineError::Extract) source.
+    pub(crate) fn extract<E: std::error::Error + Send + Sync + 'static>(source: E) -> Self {
+        Self::Extract(Box::new(source))
+    }
 }
 
 /// The trait-object-safe interface the engine dispatches through.
@@ -174,5 +184,27 @@ where
 {
     fn into_pipeline() -> Box<dyn IndexPipeline<Ctx>> {
         <(I::Scope, I::Composition) as BridgeDispatch<I, Ctx>>::dispatch()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("boom: {0}")]
+    struct Boom(u32);
+
+    #[test]
+    fn extract_error_preserves_the_source_chain() {
+        // The pipeline boundary erases the index's error type, but the cause stays
+        // reachable via source() — so an engine abort trail leads down to the
+        // concrete domain error rather than a flattened string. (Downcast here
+        // verifies the plumbing; production never recovers the type.)
+        let err = PipelineError::extract(Boom(42));
+        let source = err.source().expect("the boxed cause is the source");
+        assert_eq!(source.to_string(), "boom: 42");
+        assert!(source.downcast_ref::<Boom>().is_some());
     }
 }

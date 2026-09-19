@@ -20,7 +20,7 @@ use zaino_primitives::types::{
 use zaino_sync::backend::{BackendReader, ReadError};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use zaino_sync::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// A transparent output with its index already typed: `(index, value, script)`.
 pub type OutputEntry = (OutputIndex, Zatoshis, Script);
@@ -116,7 +116,9 @@ impl IndexDef for AddressHistoryIndex {
 }
 
 impl ExtractLocal for AddressHistoryIndex {
-    fn extract(ctx: &AddressCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &AddressCtx) -> Result<Self::Delta, Self::Error> {
         let mut receives = Vec::new();
         for (txid, outputs) in &ctx.txs {
             for (output_index, value, script) in outputs {

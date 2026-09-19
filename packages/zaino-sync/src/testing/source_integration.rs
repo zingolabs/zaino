@@ -9,7 +9,7 @@ use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 use crate::traits::{
-    ExtractError, ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema,
+    ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema,
 };
 
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty, Height};
@@ -99,7 +99,9 @@ impl IndexDef for TxCountIndex {
 }
 
 impl ExtractLocal for TxCountIndex {
-    fn extract(ctx: &TxCountCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &TxCountCtx) -> Result<Self::Delta, Self::Error> {
         Ok(TxCountEntry {
             height: ctx.height,
             tx_count: ctx.tx_count,
@@ -242,7 +244,9 @@ impl IndexDef for HeadersIndex {
 }
 
 impl ExtractLocal for HeadersIndex {
-    fn extract(ctx: &HeaderCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &HeaderCtx) -> Result<Self::Delta, Self::Error> {
         Ok(HeaderEntry {
             height: ctx.height,
             value: HeaderValue {

@@ -3,7 +3,7 @@
 use crate::descriptor::{BlockLocal, Fold};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema};
+use crate::traits::{ExtractLocal, IndexDef, MergeFold, Schema};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context for this index: just the block's value.
@@ -71,7 +71,9 @@ impl IndexDef for RunningSumIndex {
 }
 
 impl ExtractLocal for RunningSumIndex {
-    fn extract(ctx: &Context) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &Context) -> Result<Self::Delta, Self::Error> {
         Ok(u64::from(ctx.value))
     }
 }

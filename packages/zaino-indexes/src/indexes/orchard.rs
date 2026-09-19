@@ -4,7 +4,7 @@ use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use zaino_sync::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 
 use crate::indexes::decode::Cursor;
 
@@ -50,7 +50,9 @@ impl IndexDef for OrchardIndex {
 }
 
 impl ExtractLocal for OrchardIndex {
-    fn extract(ctx: &OrchardCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &OrchardCtx) -> Result<Self::Delta, Self::Error> {
         Ok(OrchardEntry {
             height: ctx.height,
             value: OrchardBlockValue(ctx.txs.clone()),

@@ -7,7 +7,7 @@ use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::{OutputIndex, TransactionId};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::IndexId;
-use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use zaino_sync::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context: the block's transparent inputs.
 pub struct SpendCtx {
@@ -50,7 +50,9 @@ impl IndexDef for TransparentSpendsIndex {
 }
 
 impl ExtractLocal for TransparentSpendsIndex {
-    fn extract(ctx: &SpendCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &SpendCtx) -> Result<Self::Delta, Self::Error> {
         Ok(ctx
             .spends
             .iter()

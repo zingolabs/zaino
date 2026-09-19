@@ -9,9 +9,7 @@
 
 use crate::descriptor::{Append, SelfCumulative};
 use crate::primitives::{BlockHeight, IndexId};
-use crate::traits::{
-    CumulativeAppend, ExtractCumulative, ExtractError, IndexDef, MergeAppend, Schema,
-};
+use crate::traits::{CumulativeAppend, ExtractCumulative, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context: the block's height and its value.
@@ -51,8 +49,9 @@ impl IndexDef for CumulativeSeriesIndex {
 
 impl ExtractCumulative for CumulativeSeriesIndex {
     type PriorState = RunningTotal;
+    type Error = std::convert::Infallible;
 
-    fn extract(ctx: &Context, prior: &RunningTotal) -> Result<SeriesEntry, ExtractError> {
+    fn extract(ctx: &Context, prior: &RunningTotal) -> Result<SeriesEntry, Self::Error> {
         Ok(SeriesEntry {
             height: ctx.height,
             running: RunningTotal(prior.0 + u64::from(ctx.value)),

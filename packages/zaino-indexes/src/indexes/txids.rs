@@ -4,7 +4,7 @@ use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use zaino_sync::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context.
 pub struct TxidsCtx {
@@ -41,7 +41,9 @@ impl IndexDef for TxidsIndex {
 }
 
 impl ExtractLocal for TxidsIndex {
-    fn extract(ctx: &TxidsCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &TxidsCtx) -> Result<Self::Delta, Self::Error> {
         Ok(TxidsEntry {
             height: ctx.height,
             txids: ctx.txids.clone(),

@@ -3,7 +3,7 @@
 use crate::descriptor::{BlockLocal, Monoidal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeMonoidal, Schema};
+use crate::traits::{ExtractLocal, IndexDef, MergeMonoidal, Schema};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context for this index: nothing needed.
@@ -72,7 +72,9 @@ impl IndexDef for CountIndex {
 }
 
 impl ExtractLocal for CountIndex {
-    fn extract(_ctx: &Context) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(_ctx: &Context) -> Result<Self::Delta, Self::Error> {
         Ok(BlockCount::new(1))
     }
 }

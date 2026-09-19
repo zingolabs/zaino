@@ -9,7 +9,7 @@
 use crate::descriptor::{Monoidal, SelfCumulative};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
-use crate::traits::{ExtractCumulative, ExtractError, IndexDef, MergeMonoidal, Schema};
+use crate::traits::{ExtractCumulative, IndexDef, MergeMonoidal, Schema};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 
 /// Block context for this index: just the block's value.
@@ -86,8 +86,9 @@ impl IndexDef for CumulativeSumIndex {
 
 impl ExtractCumulative for CumulativeSumIndex {
     type PriorState = CumulativeSum;
+    type Error = std::convert::Infallible;
 
-    fn extract(ctx: &Context, prior: &CumulativeSum) -> Result<u64, ExtractError> {
+    fn extract(ctx: &Context, prior: &CumulativeSum) -> Result<u64, Self::Error> {
         let base = u64::from(ctx.value);
         if prior.value() > DOUBLING_THRESHOLD {
             Ok(base * 2)

@@ -14,12 +14,10 @@
 //! per-block count is `0` and its size stays `0` until that pool is wired.
 
 use zaino_persistence_codec::{DecodeError, EntryCodec};
-use zaino_primitives::types::{ChainMetadata, TreeSize};
+use zaino_primitives::types::{ChainMetadata, TreeSize, TreeSizeOutOfRange};
 use zaino_sync::descriptor::{Append, SelfCumulative};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{
-    CumulativeAppend, ExtractCumulative, ExtractError, IndexDef, MergeAppend, Schema,
-};
+use zaino_sync::traits::{CumulativeAppend, ExtractCumulative, IndexDef, MergeAppend, Schema};
 
 /// Per-index context: the block's height and the note commitments it adds to
 /// each pool (not the cumulative sizes — those are computed here).
@@ -60,25 +58,18 @@ impl IndexDef for ChainMetadataIndex {
 
 impl ExtractCumulative for ChainMetadataIndex {
     type PriorState = ChainMetadata;
+    // Extraction can fail one way: a pool's size leaving the compact protocol's
+    // u32 range (#549). The type carries that exactly — no boxing at this layer.
+    type Error = TreeSizeOutOfRange;
 
-    fn extract(ctx: &ChainMetadataCtx, prior: &ChainMetadata) -> Result<Self::Delta, ExtractError> {
+    fn extract(ctx: &ChainMetadataCtx, prior: &ChainMetadata) -> Result<Self::Delta, Self::Error> {
         // Each pool grows by this block's added commitments. TreeSize owns the
-        // growth and its #549 u32 boundary; a total that leaves the range surfaces
-        // as the typed TreeSizeOutOfRange, carried (not stringified) into
-        // ExtractError.
+        // growth and its #549 boundary; a total that leaves the range is the one
+        // typed failure, propagated directly.
         let value = ChainMetadata {
-            sapling_tree_size: prior
-                .sapling_tree_size
-                .checked_add(ctx.sapling_added)
-                .map_err(ExtractError::index)?,
-            orchard_tree_size: prior
-                .orchard_tree_size
-                .checked_add(ctx.orchard_added)
-                .map_err(ExtractError::index)?,
-            ironwood_tree_size: prior
-                .ironwood_tree_size
-                .checked_add(ctx.ironwood_added)
-                .map_err(ExtractError::index)?,
+            sapling_tree_size: prior.sapling_tree_size.checked_add(ctx.sapling_added)?,
+            orchard_tree_size: prior.orchard_tree_size.checked_add(ctx.orchard_added)?,
+            ironwood_tree_size: prior.ironwood_tree_size.checked_add(ctx.ironwood_added)?,
         };
         Ok(ChainMetadataEntry {
             height: ctx.height,
@@ -202,17 +193,12 @@ mod tests {
 
     #[test]
     fn extract_propagates_the_typed_tree_size_overflow() {
-        use zaino_primitives::types::TreeSizeOutOfRange;
-
         // The overflow boundary is TreeSize's (asserted in its own tests); here we
-        // check only that extract *propagates* it as a typed cause, not a string.
+        // check only that extract *propagates* it as its own typed error — matched
+        // exhaustively, no downcast.
         let prior = ChainMetadata::new(u32::MAX, 0u32, 0u32);
-        match ChainMetadataIndex::extract(&ctx(1, 1, 0), &prior) {
-            Err(ExtractError::Index(source)) => assert!(
-                source.downcast_ref::<TreeSizeOutOfRange>().is_some(),
-                "the cause is the typed tree-size overflow, not a stringified message"
-            ),
-            other => panic!("expected a typed overflow, got {other:?}"),
-        }
+        let err = ChainMetadataIndex::extract(&ctx(1, 1, 0), &prior)
+            .expect_err("one more sapling commitment leaves the u32 range");
+        assert_eq!(err, TreeSizeOutOfRange { got: 1u64 << 32 });
     }
 }

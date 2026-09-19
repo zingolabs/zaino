@@ -4,7 +4,7 @@ use zaino_persistence_codec::{DecodeError, EntryCodec};
 use zaino_primitives::types::BlockHash;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use zaino_sync::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Per-index context.
 pub struct HashToHeightCtx {
@@ -37,7 +37,9 @@ impl IndexDef for HashToHeightIndex {
 }
 
 impl ExtractLocal for HashToHeightIndex {
-    fn extract(ctx: &HashToHeightCtx) -> Result<Self::Delta, ExtractError> {
+    type Error = std::convert::Infallible;
+
+    fn extract(ctx: &HashToHeightCtx) -> Result<Self::Delta, Self::Error> {
         Ok(HashToHeightEntry {
             hash: ctx.hash,
             height: ctx.height,
