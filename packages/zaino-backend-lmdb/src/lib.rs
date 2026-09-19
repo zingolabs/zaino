@@ -49,6 +49,12 @@ impl Default for LmdbConfig {
 /// Holds the environment and a map of namespace → LMDB database handle.
 /// Thread-safe: LMDB allows concurrent read transactions and serializes
 /// writes internally.
+///
+/// `Clone` is cheap and shares one environment: the `env` is `Arc`-shared and
+/// the `dbs` map holds `Copy` LMDB handles into it. Cloning yields another
+/// handle onto the *same* database — as the engine and the store reader both
+/// need when they operate over one backend.
+#[derive(Clone)]
 pub struct LmdbBackend {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
