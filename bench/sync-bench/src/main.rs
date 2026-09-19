@@ -58,13 +58,14 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Parser)]
 #[command(name = "sync-bench", about, long_about = None)]
 struct Args {
-    /// Zebra cache directory (the state DB lives under it, per network).
-    #[arg(long)]
+    /// Zebra cache directory (the state DB lives under it, per network). Env
+    /// fallback matches the value the cluster Job mounts the state at.
+    #[arg(long, env = "ZEBRA_STATE_DIR")]
     zebra_cache: PathBuf,
 
     /// LMDB directory to build the indexes into (created if absent). Reuse it
     /// across runs to resume; delete it for a cold build.
-    #[arg(long)]
+    #[arg(long, env = "ZAINO_DB_PATH")]
     db: PathBuf,
 
     /// Network the validator serves.
@@ -81,11 +82,11 @@ struct Args {
 
     /// Number of blocks to index this run. Omitted: index to the finalised
     /// boundary (`tip − finalised-depth`).
-    #[arg(long)]
+    #[arg(long, env = "SYNC_BLOCKS")]
     blocks: Option<u32>,
 
     /// Engine batch size (blocks committed per atomic batch).
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, env = "SYNC_BATCH", default_value_t = 1000)]
     batch: u32,
 
     /// Bound on contexts buffered between the provisioner and the engine.

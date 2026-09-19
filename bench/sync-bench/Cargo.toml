@@ -38,7 +38,7 @@ zaino-primitives = { workspace = true }
 zaino-consensus = { workspace = true }
 # Third-party.
 tokio = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zebra-chain = { workspace = true }
