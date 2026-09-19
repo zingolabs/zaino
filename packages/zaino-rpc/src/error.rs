@@ -71,7 +71,15 @@ impl From<RpcError> for zaino_source::FetchError {
             }
         };
 
-        zaino_source::FetchError::new(kind, e.to_string())
+        match e {
+            // A coded refusal is the "no underlying error value" case: the
+            // server's message *is* the content (and adapters read it to build
+            // domain rejections), so it rides as the message, not a boxed cause.
+            RpcError::Rpc { message, .. } => zaino_source::FetchError::new(kind, message),
+            // Every other variant is a real error value; keep its type and
+            // source() chain instead of flattening it to a string.
+            other => zaino_source::FetchError::from_cause(kind, other),
+        }
     }
 }
 
