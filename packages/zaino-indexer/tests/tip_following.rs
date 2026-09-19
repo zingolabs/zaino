@@ -67,6 +67,10 @@ fn tip_observation(height: u32) -> TipObservation {
     )
 }
 
+impl zaino_source::ValidatorSource for GrowingSource {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl OneShotGetBlock for GrowingSource {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         self.blocks

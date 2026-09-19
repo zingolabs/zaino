@@ -105,17 +105,23 @@ impl std::error::Error for NonDomainError {
 ///
 /// Two variants: the source answered with a domain rejection, or it failed to
 /// yield a domain answer at all. No retry awareness.
+///
+/// The non-domain payload is the type parameter `N`, an adapter's *own*
+/// non-domain error ([`ValidatorSource::NonDomain`](crate::ValidatorSource::NonDomain)),
+/// which defaults to the seam [`NonDomainError`] for adapters and code that hold
+/// the seam type directly. The resilience wrapper erases `N` to the seam (via its
+/// `Into<NonDomainError>` bound) when it produces the consumer-facing
+/// [`SourceError`], so `N` never reaches consumers.
 #[derive(Debug, thiserror::Error)]
-pub enum QueryError<E: fmt::Debug + fmt::Display> {
+pub enum QueryError<E: fmt::Debug + fmt::Display, N: std::error::Error = NonDomainError> {
     /// The source answered with a domain-level rejection.
     #[error("{0}")]
     Domain(E),
 
     /// The source failed to yield a domain answer — Display and `source()`
-    /// delegate to the [`NonDomainError`], so an abort trail reaches the
-    /// concrete cause.
+    /// delegate to `N`, so an abort trail reaches the concrete cause.
     #[error(transparent)]
-    NonDomain(NonDomainError),
+    NonDomain(N),
 }
 
 impl<E: fmt::Debug + fmt::Display> From<NonDomainError> for QueryError<E> {

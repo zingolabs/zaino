@@ -86,6 +86,10 @@ impl Default for MockChain {
     }
 }
 
+impl crate::ValidatorSource for MockChain {
+    type NonDomain = crate::NonDomainError;
+}
+
 impl crate::OneShotGetBlock for MockChain {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         if let Some(err) = self.maybe_fail() {

@@ -149,6 +149,10 @@ fn transport_failure<E: std::fmt::Debug + std::fmt::Display>() -> QueryError<E> 
     QueryError::NonDomain(NonDomainError::new(FailureMode::Connection, "mock is down"))
 }
 
+impl zaino_source::ValidatorSource for MockValidator {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl OneShotGetChainTip for MockValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         {

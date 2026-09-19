@@ -130,6 +130,10 @@ fn outage<E: std::fmt::Debug + std::fmt::Display>(message: String) -> QueryError
     QueryError::NonDomain(NonDomainError::new(FailureMode::Connection, message))
 }
 
+impl zaino_source::ValidatorSource for MockSource {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl zaino_source::OneShotGetMempoolTxids for MockSource {
     async fn get_mempool_txids(
         &self,
