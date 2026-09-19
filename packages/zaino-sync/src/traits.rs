@@ -335,7 +335,21 @@ pub struct SourceGuard<'a> {
 /// Errors during index extraction.
 #[derive(Debug, thiserror::Error)]
 pub enum ExtractError {
-    /// A generic extraction failure.
-    #[error("extraction failed: {0}")]
-    Failed(String),
+    /// Extraction failed for an index-specific reason, carrying the domain cause.
+    ///
+    /// The engine is generic and cannot name domain error types, so the cause is
+    /// boxed rather than stringified: the source chain is preserved and code that
+    /// knows the index can downcast to the concrete error.
+    #[error("index extraction failed")]
+    Index(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+impl ExtractError {
+    /// Wrap an index-specific error as the cause of an extraction failure.
+    ///
+    /// Use at the extraction site to lift a typed domain error (e.g. a
+    /// tree-size overflow) into [`ExtractError`] without losing its type.
+    pub fn index<E: std::error::Error + Send + Sync + 'static>(source: E) -> Self {
+        Self::Index(Box::new(source))
+    }
 }

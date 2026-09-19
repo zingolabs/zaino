@@ -49,13 +49,17 @@ impl TreeSize {
     /// The size after appending `count` newly-committed notes.
     ///
     /// This is the per-block growth step of a cumulative tree-size index: the
-    /// running size plus this block's added commitments. It fails at the same
-    /// boundary as [`TryFrom<u64>`] — a total that leaves the compact protocol's
+    /// running size plus this block's added commitments. The count is taken as a
+    /// `u64` (a block's commitment count is not otherwise bounded) and the *whole*
+    /// range check happens here, once: a total that leaves the compact protocol's
     /// `u32` range (a full depth-32 tree, the #549 boundary) is refused rather
-    /// than wrapped. Encoding the growth here keeps the overflow decision on the
-    /// type that owns the range, not in each caller.
-    pub fn checked_add(self, count: u32) -> Result<Self, TreeSizeOutOfRange> {
-        let total = u64::from(self.0) + u64::from(count);
+    /// than wrapped, reported as the offending total. Encoding the growth here
+    /// keeps the overflow decision on the type that owns the range — callers add
+    /// and propagate the one typed [`TreeSizeOutOfRange`], they do not re-check.
+    pub fn checked_add(self, count: u64) -> Result<Self, TreeSizeOutOfRange> {
+        let total = u64::from(self.0)
+            .checked_add(count)
+            .ok_or(TreeSizeOutOfRange { got: count })?;
         Self::try_from(total)
     }
 }

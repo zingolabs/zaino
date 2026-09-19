@@ -268,20 +268,14 @@ fn resume_readable<I>(
 where
     I: zaino_persistence_codec::EntryCodec,
 {
-    if zaino_persistence_codec::freshness::<I>(reader, namespace)
-        .map_err(|e| PipelineError::Persist(e.to_string()))?
+    if zaino_persistence_codec::freshness::<I>(reader, namespace)?
         == zaino_persistence_codec::Freshness::Stale
     {
-        let has_data = !reader
-            .scan(namespace)
-            .map_err(|e| PipelineError::Persist(e.to_string()))?
-            .is_empty();
+        let has_data = !reader.scan(namespace)?.is_empty();
         if has_data {
-            return Err(PipelineError::Persist(format!(
-                "incompatible on-disk format for index {}: persisted bytes do \
-                 not match this build",
-                namespace.as_str()
-            )));
+            return Err(PipelineError::IncompatibleFormat {
+                index: namespace.as_str(),
+            });
         }
         return Ok(false);
     }
@@ -301,13 +295,13 @@ fn persist_merged<I, M>(merged: &Mutex<Option<M>>) -> Result<Vec<WriteOp>, Pipel
 where
     I: Schema<M>,
 {
-    let state = merged
-        .lock()
-        .expect("merged mutex poisoned")
-        .take()
-        .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
-
     let namespace: Namespace = I::NAME.into();
+    let state = merged.lock().expect("merged mutex poisoned").take().ok_or(
+        PipelineError::MissingMergedState {
+            index: namespace.as_str(),
+        },
+    )?;
+
     // Stamp the namespace's format version first, then the entries — a later open
     // rejects and rebuilds if the recorded version no longer matches the code.
     let mut ops = vec![zaino_persistence_codec::version_stamp::<I>(namespace)];
@@ -459,8 +453,7 @@ where
             return Ok(());
         }
 
-        let entries = zaino_persistence_codec::load::<I>(reader, namespace)
-            .map_err(|e| PipelineError::Persist(e.to_string()))?;
+        let entries = zaino_persistence_codec::load::<I>(reader, namespace)?;
         if entries.is_empty() {
             return Ok(());
         }
@@ -568,12 +561,9 @@ where
         let Some(height) = resume_from else {
             return Ok(());
         };
-        let raw = reader
-            .get(namespace, &I::encode_key(&height))
-            .map_err(|e| PipelineError::Persist(e.to_string()))?;
+        let raw = reader.get(namespace, &I::encode_key(&height))?;
         if let Some(bytes) = raw {
-            let value =
-                I::decode_value(&bytes).map_err(|e| PipelineError::Persist(e.to_string()))?;
+            let value = I::decode_value(&bytes)?;
             *self.carry.lock().expect("carry mutex poisoned") = value;
         }
         Ok(())

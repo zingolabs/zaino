@@ -47,9 +47,33 @@ pub enum PipelineError {
     /// Merge failed.
     #[error("merge failed: {0}")]
     Merge(String),
-    /// Persist failed.
-    #[error("persist failed: {0}")]
-    Persist(String),
+    /// Reading committed state from the backend failed.
+    #[error("backend read")]
+    Read(#[from] crate::backend::ReadError),
+    /// Loading and decoding persisted entries failed.
+    #[error("loading persisted state")]
+    Load(#[from] zaino_persistence_codec::LoadError),
+    /// Decoding a persisted value failed.
+    #[error("decoding persisted value")]
+    Decode(#[from] zaino_persistence_codec::DecodeError),
+    /// The namespace holds data stamped with a format this build cannot read.
+    ///
+    /// The persisted bytes must be discarded and the index rebuilt — a policy the
+    /// caller owns; this layer only surfaces the skew.
+    #[error(
+        "incompatible on-disk format for index {index}: persisted bytes do not \
+         match this build"
+    )]
+    IncompatibleFormat {
+        /// The index whose stored format no longer matches the running code.
+        index: &'static str,
+    },
+    /// `persist` was called before a batch was merged.
+    #[error("persist called with no merged state for index {index}")]
+    MissingMergedState {
+        /// The index that had no merged state staged.
+        index: &'static str,
+    },
 }
 
 /// The trait-object-safe interface the engine dispatches through.

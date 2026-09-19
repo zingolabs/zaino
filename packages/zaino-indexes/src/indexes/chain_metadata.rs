@@ -35,6 +35,7 @@ pub struct ChainMetadataCtx {
 }
 
 /// One height's entry: the cumulative tree sizes after this block.
+#[derive(Debug)]
 pub struct ChainMetadataEntry {
     /// Block height (key).
     pub height: BlockHeight,
@@ -47,22 +48,6 @@ pub struct ChainMetadataIndex;
 
 /// Index identity.
 pub const ID: IndexId = IndexId::new("chain_metadata");
-
-/// The running size after appending `added` newly-committed notes.
-///
-/// The count is the number of note commitments in one block, which the type
-/// system does not bound, so an over-`u32` block count (impossible under
-/// consensus, but not encoded) fails loud here rather than truncating. Growth
-/// past the compact protocol's `u32` range is refused by [`TreeSize::checked_add`]
-/// (the #549 boundary).
-fn grow(prior: TreeSize, added: u64) -> Result<TreeSize, ExtractError> {
-    let added = u32::try_from(added).map_err(|_| {
-        ExtractError::Failed(format!("block adds {added} commitments, exceeding u32"))
-    })?;
-    prior
-        .checked_add(added)
-        .map_err(|e| ExtractError::Failed(e.to_string()))
-}
 
 impl IndexDef for ChainMetadataIndex {
     type Scope = SelfCumulative;
@@ -77,10 +62,23 @@ impl ExtractCumulative for ChainMetadataIndex {
     type PriorState = ChainMetadata;
 
     fn extract(ctx: &ChainMetadataCtx, prior: &ChainMetadata) -> Result<Self::Delta, ExtractError> {
+        // Each pool grows by this block's added commitments. TreeSize owns the
+        // growth and its #549 u32 boundary; a total that leaves the range surfaces
+        // as the typed TreeSizeOutOfRange, carried (not stringified) into
+        // ExtractError.
         let value = ChainMetadata {
-            sapling_tree_size: grow(prior.sapling_tree_size, ctx.sapling_added)?,
-            orchard_tree_size: grow(prior.orchard_tree_size, ctx.orchard_added)?,
-            ironwood_tree_size: grow(prior.ironwood_tree_size, ctx.ironwood_added)?,
+            sapling_tree_size: prior
+                .sapling_tree_size
+                .checked_add(ctx.sapling_added)
+                .map_err(ExtractError::index)?,
+            orchard_tree_size: prior
+                .orchard_tree_size
+                .checked_add(ctx.orchard_added)
+                .map_err(ExtractError::index)?,
+            ironwood_tree_size: prior
+                .ironwood_tree_size
+                .checked_add(ctx.ironwood_added)
+                .map_err(ExtractError::index)?,
         };
         Ok(ChainMetadataEntry {
             height: ctx.height,
@@ -150,17 +148,15 @@ impl EntryCodec for ChainMetadataIndex {
     }
 
     fn decode_value(bytes: &[u8]) -> Result<ChainMetadata, DecodeError> {
-        if bytes.len() != 12 {
-            return Err(DecodeError::Invalid(format!(
-                "expected 12 bytes, got {}",
-                bytes.len()
-            )));
-        }
-        // The 12-byte length is checked above, so each 4-byte window is exact.
+        // Fix the width up front: a `[u8; 12]` makes each 4-byte window exact by
+        // construction, so the per-field reads are panic-free without asserting.
+        let arr: [u8; 12] = bytes
+            .try_into()
+            .map_err(|_| DecodeError::Invalid(format!("expected 12 bytes, got {}", bytes.len())))?;
         let field = |offset: usize| {
-            TreeSize::from(u32::from_le_bytes(
-                bytes[offset..offset + 4].try_into().expect("4 bytes"),
-            ))
+            let mut word = [0u8; 4];
+            word.copy_from_slice(&arr[offset..offset + 4]);
+            TreeSize::from(u32::from_le_bytes(word))
         };
         Ok(ChainMetadata {
             sapling_tree_size: field(0),
@@ -205,11 +201,18 @@ mod tests {
     }
 
     #[test]
-    fn extract_fails_loud_when_a_tree_would_leave_u32_range() {
+    fn extract_propagates_the_typed_tree_size_overflow() {
+        use zaino_primitives::types::TreeSizeOutOfRange;
+
+        // The overflow boundary is TreeSize's (asserted in its own tests); here we
+        // check only that extract *propagates* it as a typed cause, not a string.
         let prior = ChainMetadata::new(u32::MAX, 0u32, 0u32);
-        // One more sapling commitment overflows the compact protocol's u32 range
-        // (#549) — refused, not wrapped.
-        let err = ChainMetadataIndex::extract(&ctx(1, 1, 0), &prior);
-        assert!(matches!(err, Err(ExtractError::Failed(_))));
+        match ChainMetadataIndex::extract(&ctx(1, 1, 0), &prior) {
+            Err(ExtractError::Index(source)) => assert!(
+                source.downcast_ref::<TreeSizeOutOfRange>().is_some(),
+                "the cause is the typed tree-size overflow, not a stringified message"
+            ),
+            other => panic!("expected a typed overflow, got {other:?}"),
+        }
     }
 }
