@@ -31,6 +31,16 @@ impl zaino_source::ValidatorSource for ZebraRpcAdapter {
     type NonDomain = NonDomainError;
 }
 
+/// JSON-RPC exposes no tip push: the node offers no long-poll for a new chain
+/// tip, so this adapter cannot synthesise a subscription and returns `None`
+/// (the trait default). A consumer that binds this source therefore runs
+/// catch-up only — the source-sync driver stays at the height it caught up to
+/// rather than following the tip. Live tip-following requires the
+/// push-capable ReadState adapter (or a polled composite). The impl is spelled
+/// out rather than left absent so `ValidatorClient<ZebraRpcAdapter>` satisfies
+/// the `SubscribeChainTip` bound the provisioner requires.
+impl zaino_source::SubscribeChainTip for ZebraRpcAdapter {}
+
 /// Parse errors are always non-retryable.
 fn from_parse(e: parse::ParseError) -> NonDomainError {
     NonDomainError::from_cause(FailureMode::Parse, e)
