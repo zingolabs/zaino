@@ -20,8 +20,10 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
-use zaino_primitives::types::{Block, Height};
-use zaino_source::{GetBlock, GetChainTip, SourceError, SubscribeChainTip, TipObservation};
+use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
+use zaino_source::{
+    GetBlock, GetChainTip, GetPreIndexCompactBlock, SourceError, SubscribeChainTip, TipObservation,
+};
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::index_set::IndexSet;
@@ -42,29 +44,79 @@ fn map_source<E: std::error::Error + Send + Sync + 'static>(err: SourceError<E>)
     }
 }
 
-/// Fetches blocks from a validator source and projects them into the engine's
-/// set-wide context `Ctx` via `build`.
+/// How the provisioner obtains one per-height unit from the source.
 ///
-/// Generic over the source `S` (capability-bound) and the projection `build`,
-/// so the same provisioner serves any adapter and any index set.
-pub struct SourceProvisioner<S, Ctx, F> {
+/// The strategy selects the fetch capability at the type level: [`FullBlocks`]
+/// pulls whole [`Block`]s ([`GetBlock`]); [`CompactBlocks`] pulls the cheaper
+/// [`PreIndexCompactBlock`] ([`GetPreIndexCompactBlock`]) that skips proof and
+/// signature deserialization. The engine and index set are identical either way —
+/// only the fetched item and its projection differ.
+pub trait SourceFetch<S>: Send + Sync + 'static {
+    /// The per-height item this strategy fetches.
+    type Item: Send + 'static;
+
+    /// Fetch the item at `height`.
+    fn fetch(
+        source: &S,
+        height: Height,
+    ) -> impl std::future::Future<Output = Result<Self::Item, IndexerError>> + Send;
+}
+
+/// Source whole blocks via [`GetBlock`].
+pub struct FullBlocks;
+
+impl<S: GetBlock + Send + Sync + 'static> SourceFetch<S> for FullBlocks {
+    type Item = Block;
+
+    async fn fetch(source: &S, height: Height) -> Result<Block, IndexerError> {
+        source.get_block(height).await.map_err(map_source)
+    }
+}
+
+/// Source pre-index compact blocks via [`GetPreIndexCompactBlock`] — the fast
+/// path that skips proof/signature deserialization. The trees index still gets
+/// what it needs: the compact block carries per-tx sapling outputs and orchard
+/// actions, which the chain-metadata index counts.
+pub struct CompactBlocks;
+
+impl<S: GetPreIndexCompactBlock + Send + Sync + 'static> SourceFetch<S> for CompactBlocks {
+    type Item = PreIndexCompactBlock;
+
+    async fn fetch(source: &S, height: Height) -> Result<PreIndexCompactBlock, IndexerError> {
+        source
+            .get_pre_index_compact_block(height)
+            .await
+            .map_err(map_source)
+    }
+}
+
+/// Fetches per-height units from a validator source and projects them into the
+/// engine's set-wide context `Ctx` via `build`.
+///
+/// Generic over the source `S` (capability-bound), the fetch strategy `Fetch`
+/// (full or compact blocks), and the projection `build`, so the same provisioner
+/// serves any adapter, any source shape, and any index set.
+pub struct SourceProvisioner<S, Ctx, F, Fetch> {
     source: Arc<S>,
     build: F,
     _ctx: std::marker::PhantomData<fn() -> Ctx>,
+    _fetch: std::marker::PhantomData<fn() -> Fetch>,
 }
 
-impl<S, Ctx, F> SourceProvisioner<S, Ctx, F>
+impl<S, Ctx, F, Fetch> SourceProvisioner<S, Ctx, F, Fetch>
 where
-    S: GetBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
-    F: Fn(Block) -> Ctx + Send + Sync + 'static,
+    S: GetChainTip + SubscribeChainTip + Send + Sync + 'static,
+    Fetch: SourceFetch<S>,
+    F: Fn(Fetch::Item) -> Ctx + Send + Sync + 'static,
     Ctx: Send + 'static,
 {
-    /// A provisioner over `source`, projecting each fetched block with `build`.
+    /// A provisioner over `source`, projecting each fetched item with `build`.
     pub fn new(source: Arc<S>, build: F) -> Self {
         Self {
             source,
             build,
             _ctx: std::marker::PhantomData,
+            _fetch: std::marker::PhantomData,
         }
     }
 
@@ -95,8 +147,8 @@ where
             // `h` lies within `[from, to]`, both valid `Height`s, so it cannot
             // exceed the max height — the conversion is infallible by construction.
             let height = Height::try_from(h).expect("height within a valid range is valid");
-            let block = self.source.get_block(height).await.map_err(map_source)?;
-            let ctx = (self.build)(block);
+            let item = Fetch::fetch(&self.source, height).await?;
+            let ctx = (self.build)(item);
             if tx.send(ctx).await.is_err() {
                 // Receiver dropped: the engine stopped consuming; nothing to do.
                 return Ok(());
@@ -109,15 +161,15 @@ where
 /// Drives a [`SyncEngine`] from a [`SourceProvisioner`], presented as a
 /// [`SyncDriver`]. The provisioner streams into the engine's `sync_channel`; the
 /// component reaches `Ready` once the engine has consumed up to the source tip.
-pub struct SourceSyncDriver<S, B: Backend, Ctx, F> {
+pub struct SourceSyncDriver<S, B: Backend, Ctx, F, Fetch> {
     engine: Mutex<Option<SyncEngine<Ctx, B>>>,
-    provisioner: Arc<SourceProvisioner<S, Ctx, F>>,
+    provisioner: Arc<SourceProvisioner<S, Ctx, F, Fetch>>,
     start: Height,
     finalised_depth: u32,
     channel_capacity: usize,
 }
 
-impl<S, B: Backend, Ctx, F> SourceSyncDriver<S, B, Ctx, F> {
+impl<S, B: Backend, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
     /// A driver syncing from `start` to the **finalised boundary**, buffering up
     /// to `channel_capacity` contexts between the provisioner and the engine.
     ///
@@ -136,7 +188,7 @@ impl<S, B: Backend, Ctx, F> SourceSyncDriver<S, B, Ctx, F> {
     /// over a non-reorging source.
     pub fn new(
         engine: SyncEngine<Ctx, B>,
-        provisioner: Arc<SourceProvisioner<S, Ctx, F>>,
+        provisioner: Arc<SourceProvisioner<S, Ctx, F, Fetch>>,
         start: Height,
         finalised_depth: u32,
         channel_capacity: usize,
@@ -157,26 +209,26 @@ impl<S, B: Backend, Ctx, F> SourceSyncDriver<S, B, Ctx, F> {
     }
 }
 
-impl<S, B, Ctx, F> SourceSyncDriver<S, B, Ctx, F>
+impl<S, B, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch>
 where
-    S: GetBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
+    S: GetChainTip + SubscribeChainTip + Send + Sync + 'static,
     B: Backend + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
-    F: Fn(Block) -> Ctx + Send + Sync + 'static,
+    Fetch: SourceFetch<S>,
+    F: Fn(Fetch::Item) -> Ctx + Send + Sync + 'static,
 {
-    /// Assemble a **resume-safe** driver over `backend`.
+    /// Shared resume-safe assembly for the [`resuming`](Self::resuming) (full
+    /// blocks) and [`resuming_compact`](Self::resuming_compact) (pre-index compact
+    /// blocks) constructors, which differ only in the fetch strategy.
     ///
     /// Reads the backend's watermark to decide where to start and sets *both* the
     /// engine's start height and the driver's start to match, so a restart
-    /// resumes rather than re-indexing from genesis. This is the constructor a
-    /// runtime bringup should use: unlike [`new`](Self::new), which takes an
-    /// explicit start, it cannot forget to resume. `backend` is borrowed to
+    /// resumes rather than re-indexing from genesis. `backend` is borrowed to
     /// assess it and cloned into the engine, so the caller keeps its handle (e.g.
-    /// to hand the same backend to the store).
-    ///
-    /// Whether the persisted indexes are *compatible* is a separate concern: the
-    /// engine rejects an incompatible index while loading state here.
-    pub fn resuming(
+    /// to hand the same backend to the store). Whether the persisted indexes are
+    /// *compatible* is a separate concern: the engine rejects an incompatible
+    /// index while loading state here.
+    fn assemble_resuming(
         backend: &B,
         index_set: IndexSet<Ctx>,
         source: Arc<S>,
@@ -197,7 +249,7 @@ where
                 start_height: BlockHeight::new(u64::from(start)),
             },
         )?;
-        let provisioner = Arc::new(SourceProvisioner::new(source, build));
+        let provisioner = Arc::new(SourceProvisioner::<S, Ctx, F, Fetch>::new(source, build));
         Ok(Self::new(
             engine,
             provisioner,
@@ -226,12 +278,79 @@ where
     }
 }
 
-impl<S, B, Ctx, F> SyncDriver for SourceSyncDriver<S, B, Ctx, F>
+impl<S, B, Ctx, F> SourceSyncDriver<S, B, Ctx, F, FullBlocks>
 where
     S: GetBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
-    B: Backend + Send + Sync + 'static,
+    B: Backend + Clone + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
     F: Fn(Block) -> Ctx + Send + Sync + 'static,
+{
+    /// A resume-safe driver that sources **whole blocks** ([`GetBlock`]).
+    ///
+    /// The constructor a runtime bringup should use: unlike [`new`](Self::new),
+    /// which takes an explicit start, it cannot forget to resume. Pass
+    /// `zaino_consensus::MAX_BLOCK_REORG_HEIGHT` as `finalised_depth` standalone;
+    /// `0` in tests over a non-reorging source.
+    pub fn resuming(
+        backend: &B,
+        index_set: IndexSet<Ctx>,
+        source: Arc<S>,
+        build: F,
+        batch_size: u32,
+        finalised_depth: u32,
+        channel_capacity: usize,
+    ) -> Result<Self, IndexerError> {
+        Self::assemble_resuming(
+            backend,
+            index_set,
+            source,
+            build,
+            batch_size,
+            finalised_depth,
+            channel_capacity,
+        )
+    }
+}
+
+impl<S, B, Ctx, F> SourceSyncDriver<S, B, Ctx, F, CompactBlocks>
+where
+    S: GetPreIndexCompactBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
+    B: Backend + Clone + Send + Sync + 'static,
+    Ctx: Send + Sync + 'static,
+    F: Fn(PreIndexCompactBlock) -> Ctx + Send + Sync + 'static,
+{
+    /// A resume-safe driver that sources the cheaper **pre-index compact blocks**
+    /// ([`GetPreIndexCompactBlock`]) — the fast path that skips proof/signature
+    /// deserialization. Same resume semantics as [`resuming`](Self::resuming); the
+    /// trees index still gets its commitment counts from the compact block.
+    pub fn resuming_compact(
+        backend: &B,
+        index_set: IndexSet<Ctx>,
+        source: Arc<S>,
+        build: F,
+        batch_size: u32,
+        finalised_depth: u32,
+        channel_capacity: usize,
+    ) -> Result<Self, IndexerError> {
+        Self::assemble_resuming(
+            backend,
+            index_set,
+            source,
+            build,
+            batch_size,
+            finalised_depth,
+            channel_capacity,
+        )
+    }
+}
+
+impl<S, B, Ctx, F, Fetch> SyncDriver for SourceSyncDriver<S, B, Ctx, F, Fetch>
+where
+    S: GetChainTip + SubscribeChainTip + Send + Sync + 'static,
+    B: Backend + Send + Sync + 'static,
+    Ctx: Send + Sync + 'static,
+    Fetch: SourceFetch<S>,
+    F: Fn(Fetch::Item) -> Ctx + Send + Sync + 'static,
 {
     type Error = IndexerError;
 

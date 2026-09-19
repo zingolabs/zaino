@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, Managed, StatusSource, StatusWatch};
-use zaino_indexer::{SourceProvisioner, SourceSyncDriver};
+use zaino_indexer::{FullBlocks, SourceProvisioner, SourceSyncDriver};
 use zaino_primitives::types::{Block, Height};
 use zaino_runtime::IndexerComponent;
 use zaino_source::mock::{test_block, MockChain};
@@ -49,7 +49,10 @@ async fn the_runtime_indexes_from_a_source() {
     // binds the resilient ports (GetBlock/GetChainTip), so retry/backoff and
     // SourceError::Unavailable come from ValidatorClient, not from the consumer.
     let source = ValidatorClient::new(chain, RetryPolicy::default());
-    let provisioner = Arc::new(SourceProvisioner::new(Arc::new(source), to_context));
+    let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
+        Arc::new(source),
+        to_context,
+    ));
     let driver = SourceSyncDriver::new(
         engine,
         provisioner,

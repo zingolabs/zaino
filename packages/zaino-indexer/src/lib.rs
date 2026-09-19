@@ -12,7 +12,9 @@
 #![forbid(unsafe_code)]
 
 mod source_provisioner;
-pub use source_provisioner::{SourceProvisioner, SourceSyncDriver};
+pub use source_provisioner::{
+    CompactBlocks, FullBlocks, SourceFetch, SourceProvisioner, SourceSyncDriver,
+};
 
 use std::sync::{Arc, Mutex};
 
