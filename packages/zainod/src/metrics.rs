@@ -10,11 +10,11 @@ use tracing::info;
 
 // Metric names are owned by the crates that emit them, so the `describe_*`
 // registrations below share one source of truth with the emit sites and can
-// never drift.
-use zaino_chain_head_service::metric_names::*;
+// never drift. On the runtime stack the only emitter wired so far is the
+// outbound JSON-RPC client (`zaino-rpc`); the sync/DB/gRPC/mempool metric sets
+// that the legacy serving stack described are re-added here as the new stack's
+// components start emitting them.
 use zaino_rpc::metric_names::*;
-use zaino_serve::metric_names::*;
-use zaino_state::metric_names::*;
 
 use crate::error::IndexerError;
 
@@ -45,136 +45,13 @@ pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
 /// These appear as `# HELP` lines in the scrape output.
 fn describe_metrics() {
     metrics::describe_gauge!(
-        SYNC_FINALIZED_HEIGHT,
-        "Current finalized block height being synced"
-    );
-    metrics::describe_gauge!(
-        SYNC_TARGET_HEIGHT,
-        "Target finalized block height for current sync iteration"
-    );
-    metrics::describe_gauge!(
-        CHAIN_TIP_HEIGHT,
-        "Latest chain tip height reported by the validator"
-    );
-
-    metrics::describe_counter!(
-        SYNC_TRANSACTIONS_TOTAL,
-        "Total transactions indexed during sync"
-    );
-    metrics::describe_counter!(
-        SYNC_SAPLING_OUTPUTS_TOTAL,
-        "Total Sapling outputs indexed during sync"
-    );
-    metrics::describe_counter!(
-        SYNC_ORCHARD_ACTIONS_TOTAL,
-        "Total Orchard actions indexed during sync"
-    );
-
-    metrics::describe_histogram!(
-        SYNC_BLOCK_BUILD_SECONDS,
-        "Seconds to fetch and build one indexed block (fetch + treestate + parse)"
-    );
-    metrics::describe_histogram!(
-        SYNC_BLOCK_WRITE_SECONDS,
-        "Seconds to durably write one batch of blocks to the database"
-    );
-
-    metrics::describe_gauge!(
         BUILD_INFO,
         "Static build metadata; always 1. Version exposed as a label."
     );
 
-    // Sync lifecycle
-    metrics::describe_gauge!(
-        SYNC_HAS_REACHED_TIP,
-        "Whether the indexer has ever reached the chain tip (0 or 1, never resets)"
-    );
-    metrics::describe_gauge!(
-        SYNC_REACHED_TIP_AT,
-        "Unix timestamp of the first time the indexer reached the chain tip"
-    );
-    metrics::describe_gauge!(
-        SYNC_LAG_BLOCKS,
-        "Number of blocks between chain tip and finalized height"
-    );
-    metrics::describe_counter!(
-        SYNC_ITERATIONS_TOTAL,
-        "Total sync loop iterations completed"
-    );
-    metrics::describe_histogram!(
-        SYNC_ITERATION_DURATION_SECONDS,
-        "Wall-clock duration of each sync loop iteration"
-    );
-    metrics::describe_counter!(
-        SYNC_ERRORS_TOTAL,
-        "Total sync loop errors by severity (recoverable or critical)"
-    );
-    metrics::describe_counter!(
-        CHAIN_HEAD_REORG_TOTAL,
-        "Total chain reorganization events observed by the chain head"
-    );
-    metrics::describe_histogram!(
-        CHAIN_HEAD_REORG_DEPTH,
-        "Depth of chain reorganizations in blocks (0 for same-height reorgs)"
-    );
-
-    // DB reads. The write path has been described since before the finalised
-    // state moved into its own crate; these are its reads, which a wallet
-    // syncing against this node spends almost all of its time in. One histogram
-    // covers the whole read surface, split by an `op` label naming the read
-    // (`compact_chunk`, `block_hash`, `txout_set`, ...); the wallet-sync hot
-    // path is `op="compact_chunk"`, which a client's sync rate is bounded by.
-    metrics::describe_histogram!(
-        DB_READ_SECONDS,
-        "Time to serve one finalized-database read, labelled by `op` (the read operation). The \
-         wallet-sync read path is `op=\"compact_chunk\"`: a client's sync rate is bounded by it"
-    );
-    metrics::describe_counter!(
-        DB_CORRUPT_ROWS_TOTAL,
-        "Rows read from the finalized database that could not be decoded. Non-zero means the \
-         database is damaged rather than merely behind; reads fall through to the validator, so \
-         queries continue to be answered and nothing else surfaces it"
-    );
-
-    // DB
-    metrics::describe_gauge!(
-        DB_TIP_HEIGHT,
-        "Height of the last block committed to the finalized database"
-    );
-    metrics::describe_gauge!(
-        SYNC_LAST_BLOCK_WRITTEN_AT,
-        "Unix timestamp of the last block written to the finalized database"
-    );
-    metrics::describe_gauge!(
-        FINALISED_EPHEMERAL,
-        "1 while finalised-state reads are served by the ephemeral passthrough rather than the \
-         persistent database (initial sync, or a migration in progress); 0 once the on-disk index \
-         is serving. Note this reads 1 for the whole life of a process configured with \
-         ephemeral_finalised_state = true"
-    );
-    metrics::describe_gauge!(
-        ACCUMULATOR_BUILT_HEIGHT,
-        "Height the persisted txout-set accumulator currently reflects. Lagging far behind the DB \
-         tip means the next sync will trigger a full from-genesis rebuild"
-    );
-    metrics::describe_gauge!(
-        ACCUMULATOR_REBUILD_ACTIVE,
-        "1 while a from-genesis txout-set accumulator rebuild is running. This is a multi-pass \
-         full-chain scan; expect elevated read I/O for its duration"
-    );
-
-    // Inbound gRPC
-    metrics::describe_counter!(GRPC_REQUESTS_TOTAL, "Total inbound gRPC requests by method");
-    metrics::describe_histogram!(
-        GRPC_REQUEST_DURATION_SECONDS,
-        "Duration of inbound gRPC requests by method"
-    );
-    metrics::describe_counter!(
-        GRPC_ERRORS_TOTAL,
-        "Total inbound gRPC errors by method and status code"
-    );
-
-    // Outbound JSON-RPC
+    // Outbound JSON-RPC (the validator connection) — the only metrics the
+    // runtime stack emits so far. Sync / DB / inbound-gRPC / mempool sets are
+    // re-added as the runtime components gain their own metric names.
     metrics::describe_counter!(
         RPC_OUTBOUND_REQUESTS_TOTAL,
         "Total outbound JSON-RPC requests by method"
@@ -190,14 +67,6 @@ fn describe_metrics() {
     metrics::describe_counter!(
         RPC_OUTBOUND_RETRIES_TOTAL,
         "Total outbound JSON-RPC retries due to work queue depth exceeded"
-    );
-
-    // Mempool
-    metrics::describe_gauge!(
-        MEMPOOL_COHERENCE_FROZEN_SECONDS,
-        "How long tip-coherent mempool reads have been frozen; 0 when live. \
-         Brief spikes are normal tip transitions — a sustained non-zero value \
-         means the validator tip and Zaino's have stopped agreeing"
     );
 }
 

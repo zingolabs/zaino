@@ -1,44 +1,46 @@
-//! Hold error types for the Indexer and related functionality.
+//! Error types for the zainod daemon.
 
-use zaino_serve::server::error::ServerError;
-
-use zaino_state::NodeBackedIndexerServiceError;
-
-/// Zingo-Indexer errors.
+/// Errors from configuring, booting, or running the Zaino daemon.
+///
+/// Each variant keeps its cause typed (`#[from]`/`#[source]`); only the
+/// component-boot boundary is boxed, since `OrchestraBuilder::boot` is generic
+/// over each component's error type and one enum cannot name them all.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
-    /// Server based errors.
-    #[error("Server error: {0}")]
-    ServerError(#[from] ServerError),
-    /// Configuration errors.
-    #[error("Configuration error: {0}")]
+    /// Configuration is missing, malformed, or invalid.
+    #[error("configuration error: {0}")]
     ConfigError(String),
-    /// Could not reach the backing validator's JSON-RPC endpoint at startup.
-    #[error("validator probe error: {0}")]
-    ProbeError(#[from] zaino_rpc::ProbeError),
-    /// NodeBackedIndexerService errors.
-    #[error("NodeBackedIndexerService error: {0}")]
-    NodeBackedIndexerServiceError(Box<NodeBackedIndexerServiceError>),
-    /// HTTP related errors due to invalid URI.
-    #[error("HTTP error: Invalid URI {0}")]
-    HttpError(#[from] http::Error),
-    /// Returned from tokio joinhandles..
-    #[error("Join handle error: Invalid URI {0}")]
+    /// RPC source mode is configured but not yet wired in runtime serving.
+    ///
+    /// The `SourceMode::Rpc` selector is preserved so the config shape is
+    /// stable, but only Direct/ReadState sourcing is implemented for now.
+    #[error(
+        "RPC source mode is not yet supported in runtime serving; use source.mode = \"direct\""
+    )]
+    RpcSourceUnsupported,
+    /// Opening the Zebra ReadState database failed (Direct source mode).
+    #[error("opening the validator ReadState database failed: {0}")]
+    OpenReadState(String),
+    /// Opening the LMDB index store failed.
+    #[error(transparent)]
+    OpenStore(#[from] zaino_persistence::OpenError),
+    /// Building or running the sync stack (backend, provisioner, engine) failed.
+    #[error(transparent)]
+    Sync(#[from] zaino_indexer::IndexerError),
+    /// The validator was unreachable when the runtime gated on it at boot.
+    #[error(transparent)]
+    ValidatorUnreachable(#[from] zaino_runtime::ValidatorUnreachable),
+    /// A runtime component failed to boot.
+    #[error("component failed to boot")]
+    Boot(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// A background task panicked or was cancelled.
+    #[error(transparent)]
     TokioJoinError(#[from] tokio::task::JoinError),
-    /// Custom indexor errors.
-    #[error("Misc indexer error: {0}")]
-    MiscIndexerError(String),
-    /// Metrics endpoint errors.
+    /// Metrics endpoint error.
     #[cfg(feature = "prometheus")]
-    #[error("Metrics error: {0}")]
+    #[error("metrics error: {0}")]
     MetricsError(String),
-    /// Zaino restart signal.
-    #[error("Restart Zaino")]
+    /// A fatal runtime escalation — the caller's run loop restarts the daemon.
+    #[error("restart zaino")]
     Restart,
-}
-
-impl From<NodeBackedIndexerServiceError> for IndexerError {
-    fn from(value: NodeBackedIndexerServiceError) -> Self {
-        IndexerError::NodeBackedIndexerServiceError(Box::new(value))
-    }
 }
