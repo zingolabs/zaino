@@ -6336,6 +6336,7 @@ dependencies = [
 name = "zaino-store"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "tokio",
  "zaino-component",
  "zaino-core",
@@ -6343,6 +6344,7 @@ dependencies = [
  "zaino-indexes",
  "zaino-persistence",
  "zaino-persistence-codec",
+ "zaino-primitives",
  "zaino-runtime",
  "zaino-service",
  "zaino-source",
