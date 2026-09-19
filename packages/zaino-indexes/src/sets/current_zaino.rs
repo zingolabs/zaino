@@ -1,11 +1,12 @@
 //! current_zaino index set: all indexes matching zaino-state's V1 schema.
 //!
-//! 9 BlockLocal×Append indexes covering headers, txids, transparent,
-//! sapling, orchard, hash→height, txid→location, outpoint→spender, and
-//! chain-metadata (commitment-tree sizes).
+//! 8 BlockLocal×Append indexes covering headers, txids, transparent, sapling,
+//! orchard, hash→height, txid→location, and outpoint→spender; plus one
+//! SelfCumulative×Append index, chain-metadata (per-height commitment-tree
+//! sizes, accumulated from each block's added commitments).
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockTime, ChainMetadata, CompactDifficulty, OutputIndex, TransactionId,
+    Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
 };
 use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::BlockHeight;
@@ -48,8 +49,6 @@ pub struct CurrentZainoContext {
     pub sapling_txs: Vec<SaplingTxCompact>,
     /// Per-tx orchard data.
     pub orchard_txs: Vec<OrchardTxCompact>,
-    /// Commitment-tree sizes after this block, as the source reported them.
-    pub chain_metadata: ChainMetadata,
 }
 
 /// Build context from a domain Block.
@@ -145,8 +144,6 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
         transparent_txs,
         sapling_txs,
         orchard_txs,
-        // The source (a full block) reports the commitment-tree sizes; store them.
-        chain_metadata: block.chain_metadata.clone(),
     }
 }
 
@@ -217,10 +214,6 @@ pub fn context_from_pre_index_compact_block(
         transparent_txs,
         sapling_txs,
         orchard_txs,
-        // PreIndexCompactBlock strips the tree sizes. TODO: a compact-sourcing
-        // path must *compute* them cumulatively; until then this path (unused by
-        // the current full-block indexer) emits ZERO.
-        chain_metadata: ChainMetadata::ZERO,
     }
 }
 
@@ -303,9 +296,27 @@ impl ProvideContext<OrchardCtx> for CurrentZainoContext {
 
 impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
     fn context(&self) -> ChainMetadataCtx {
+        // The note commitments this block adds to each pool: one per sapling
+        // output, one per orchard action. The index accumulates these into
+        // cumulative tree sizes. usize→u64 is lossless on every supported
+        // platform; a block can hold at most usize commitments.
+        let count = |n: usize| u64::try_from(n).expect("commitment count fits u64");
+        let sapling_added: u64 = self
+            .sapling_txs
+            .iter()
+            .map(|t| count(t.outputs.len()))
+            .sum();
+        let orchard_added: u64 = self
+            .orchard_txs
+            .iter()
+            .map(|t| count(t.actions.len()))
+            .sum();
         ChainMetadataCtx {
             height: self.height,
-            chain_metadata: self.chain_metadata.clone(),
+            sapling_added,
+            orchard_added,
+            // Ironwood commitments are not represented at the block level yet.
+            ironwood_added: 0,
         }
     }
 }
@@ -314,7 +325,7 @@ impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
 // Index set builder
 // ---------------------------------------------------------------------------
 
-/// Build the full current-zaino index set (8 indexes).
+/// Build the full current-zaino index set (9 indexes).
 pub fn index_set() -> IndexSet<CurrentZainoContext> {
     IndexSet::new()
         .with::<HeadersIndex>()
