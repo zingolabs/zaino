@@ -7,8 +7,10 @@
 //! wrapper (not `LightServe` itself) so the handler stays a pure profile handler
 //! and there is no inherent/trait method-name clash.
 
-use futures::stream::BoxStream;
+use futures::stream::{BoxStream, StreamExt};
 use tonic::{Request, Response, Status};
+
+use zaino_core::{BlockHash, BlockRef, Height, HeightRange};
 
 use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamer;
@@ -40,17 +42,60 @@ impl<S: LightServeService + Clone> GrpcService<S> {
     }
 }
 
-/// Map a light-serve error onto a gRPC status.
+/// Map a light-serve error onto a gRPC status, preserving its kind: a
+/// serviceability fact (`unavailable` / `failed_precondition`), a transient
+/// snapshot failure (`unavailable`), and an unrecoverable backend failure
+/// (`internal`) are distinct wire outcomes.
 fn to_status(err: ServeError) -> Status {
     match err {
         ServeError::NoBlocks => Status::unavailable("no blocks available yet"),
+        ServeError::NotServiceable(cap) => {
+            Status::failed_precondition(format!("not serviceable yet: {cap:?}"))
+        }
         ServeError::Unavailable(t) => Status::unavailable(t.to_string()),
+        ServeError::Internal(msg) => Status::internal(msg),
     }
 }
 
 /// The single message for a method whose handler is not built yet.
 fn unimplemented(method: &str) -> Status {
     Status::unimplemented(format!("{method} not served yet"))
+}
+
+/// Wire -> domain for a block reference: a 32-byte hash if present, else the
+/// height. This is the external-input validation step (`invalid_argument` on a
+/// malformed hash or an out-of-range height), owned by the adapter.
+fn block_ref_from_wire(id: BlockId) -> Result<BlockRef, Status> {
+    if id.hash.is_empty() {
+        return Ok(BlockRef::Height(height_from_wire(id.height)?));
+    }
+    let bytes: [u8; 32] = id
+        .hash
+        .try_into()
+        .map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
+    Ok(BlockRef::Hash(BlockHash::from(bytes)))
+}
+
+/// Wire -> domain for an inclusive height range. Both bounds must be present and
+/// in range (`invalid_argument` otherwise).
+fn height_range_from_wire(range: BlockRange) -> Result<HeightRange, Status> {
+    let start = range
+        .start
+        .ok_or_else(|| Status::invalid_argument("block range requires a start"))?;
+    let end = range
+        .end
+        .ok_or_else(|| Status::invalid_argument("block range requires an end"))?;
+    Ok(HeightRange {
+        start: height_from_wire(start.height)?,
+        end: height_from_wire(end.height)?,
+    })
+}
+
+/// Wire `u64` height -> domain `Height`, rejecting out-of-range values.
+fn height_from_wire(height: u64) -> Result<Height, Status> {
+    let narrowed =
+        u32::try_from(height).map_err(|_| Status::invalid_argument("height out of range"))?;
+    Height::try_from(narrowed).map_err(|_| Status::invalid_argument("height out of range"))
 }
 
 #[tonic::async_trait]
@@ -77,11 +122,18 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         ))
     }
 
+    // --- wired: index-only compact-block serving ---
+
+    async fn get_block(&self, r: Request<BlockId>) -> Result<Response<CompactBlock>, Status> {
+        let at = block_ref_from_wire(r.into_inner())?;
+        match self.handler.get_block(at).await.map_err(to_status)? {
+            Some(block) => Ok(Response::new(block)),
+            None => Err(Status::not_found("no block at the requested reference")),
+        }
+    }
+
     // --- not yet served (unary) ---
 
-    async fn get_block(&self, _r: Request<BlockId>) -> Result<Response<CompactBlock>, Status> {
-        Err(unimplemented("get_block"))
-    }
     async fn get_block_nullifiers(
         &self,
         _r: Request<BlockId>,
@@ -128,15 +180,25 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         Err(unimplemented("ping"))
     }
 
-    // --- not yet served (server-streaming) ---
+    // --- wired: index-only compact-block streaming ---
 
     type GetBlockRangeStream = ServerStream<CompactBlock>;
     async fn get_block_range(
         &self,
-        _r: Request<BlockRange>,
+        r: Request<BlockRange>,
     ) -> Result<Response<Self::GetBlockRangeStream>, Status> {
-        Err(unimplemented("get_block_range"))
+        let range = height_range_from_wire(r.into_inner())?;
+        let blocks = self
+            .handler
+            .get_block_range(range)
+            .await
+            .map_err(to_status)?;
+        Ok(Response::new(
+            blocks.map(|block| block.map_err(to_status)).boxed(),
+        ))
     }
+
+    // --- not yet served (server-streaming) ---
 
     type GetBlockRangeNullifiersStream = ServerStream<CompactBlock>;
     async fn get_block_range_nullifiers(

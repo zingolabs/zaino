@@ -22,8 +22,11 @@ pub use error::ServeError;
 pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};
 
+use futures::stream::{BoxStream, StreamExt};
+use zaino_core::{BlockRef, HeightRange};
+use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
-use zaino_service::{LightServeService, Snapshot};
+use zaino_service::{CompactBlockRead, LightServeService, Snapshot};
 
 use crate::wire::{to_hex, ToWire};
 
@@ -43,6 +46,37 @@ impl<S: LightServeService> LightServe<S> {
         let snapshot = self.engine.snapshot().await?;
         let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
         Ok(tip.to_wire())
+    }
+
+    /// `GetBlock`: the composed compact block at `at`, or `None` when no block
+    /// is indexed there (the caller maps that to a not-found status). The
+    /// snapshot pins the view; the compact block is composed on read and
+    /// converted domain -> wire in the adapter.
+    pub async fn get_block(
+        &self,
+        at: BlockRef,
+    ) -> Result<Option<compact::CompactBlock>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        Ok(snapshot.compact_block(at).await?.map(ToWire::to_wire))
+    }
+
+    /// `GetBlockRange`: the composed compact blocks over `range`, as a stream.
+    ///
+    /// The store composes the range eagerly, so the items are collected owned
+    /// and returned as a `'static` stream; a per-block read failure rides the
+    /// stream, classified by kind, rather than aborting the pin. Acquiring the
+    /// snapshot itself can still fail up front (transient).
+    pub async fn get_block_range(
+        &self,
+        range: HeightRange,
+    ) -> Result<BoxStream<'static, Result<compact::CompactBlock, ServeError>>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let blocks: Vec<Result<compact::CompactBlock, ServeError>> = snapshot
+            .stream_compact(range)
+            .map(|read| read.map(ToWire::to_wire).map_err(ServeError::from))
+            .collect()
+            .await;
+        Ok(Box::pin(futures::stream::iter(blocks)))
     }
 
     /// `SendTransaction`: relay raw bytes. A rejection is a domain answer, so it
