@@ -108,9 +108,9 @@ impl ComponentStatus {
 /// components is a *collection* concern, not this per-value form.
 impl fmt::Display for ComponentStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {:?}/{:?}", self.name, self.lifecycle, self.health)?;
+        write!(f, "{}: {:?} | {:?}", self.name, self.lifecycle, self.health)?;
         if let Some(progress) = &self.progress {
-            write!(f, " ({progress})")?;
+            write!(f, " · sync progress: ({progress})")?;
         }
         if let Some(reason) = &self.reason {
             write!(f, " — {reason}")?;
@@ -147,7 +147,7 @@ mod tests {
     fn display_is_a_one_liner_with_the_cause_only_when_unhealthy() {
         let healthy =
             ComponentStatus::new(ComponentName("indexer"), Lifecycle::Ready, Health::Healthy);
-        assert_eq!(healthy.to_string(), "indexer: Ready/Healthy");
+        assert_eq!(healthy.to_string(), "indexer: Ready | Healthy");
 
         let mut failed = ComponentStatus::new(
             ComponentName("indexer"),
@@ -157,7 +157,7 @@ mod tests {
         failed.reason = Some("run loop panicked: boom".to_owned());
         assert_eq!(
             failed.to_string(),
-            "indexer: Syncing/Critical — run loop panicked: boom"
+            "indexer: Syncing | Critical — run loop panicked: boom"
         );
     }
 
@@ -174,7 +174,7 @@ mod tests {
         });
         assert_eq!(
             syncing.to_string(),
-            "indexer: Syncing/Healthy (1,700,000/3,428,000)"
+            "indexer: Syncing | Healthy · sync progress: (1,700,000/3,428,000)"
         );
 
         // Target unknown renders as `?`.
@@ -184,7 +184,7 @@ mod tests {
         });
         assert_eq!(
             syncing.to_string(),
-            "indexer: Syncing/Healthy (1,700,000/?)"
+            "indexer: Syncing | Healthy · sync progress: (1,700,000/?)"
         );
     }
 
