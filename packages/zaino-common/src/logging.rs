@@ -24,6 +24,7 @@
 
 use std::env;
 use std::io::IsTerminal;
+use std::sync::Once;
 
 use time::macros::format_description;
 use tracing::Level;
@@ -114,6 +115,7 @@ impl Default for LogConfig {
 /// Panics if a global tracing subscriber has already been set.
 pub fn init() {
     try_install(LogConfig::default()).expect("global tracing subscriber already set");
+    install_panic_logger();
 }
 
 /// Try to initialize logging (won't fail if already initialized).
@@ -121,6 +123,43 @@ pub fn init() {
 /// Useful for tests where multiple test functions may try to initialize logging.
 pub fn try_init() {
     let _ = try_install(LogConfig::default());
+    install_panic_logger();
+}
+
+/// Installed at most once, regardless of how many times logging is initialized.
+static PANIC_LOGGER: Once = Once::new();
+
+/// Route every panic through `tracing` as a structured `error` event, so a
+/// panic anywhere — including one on a worker thread that would otherwise only
+/// surface as a `JoinError::Panic` at some distant `await` — is logged
+/// coherently at its origin, with the same sink as every other error. The
+/// previous hook is preserved and still runs, so the default stderr backtrace
+/// behaviour is unchanged; this only *adds* the structured log.
+///
+/// Structural, not per-site: any binary that initialises logging gets it, so
+/// panic visibility is not a matter of remembering to handle them.
+fn install_panic_logger() {
+    PANIC_LOGGER.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let message = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".to_owned());
+            let location = info
+                .location()
+                .map(std::string::ToString::to_string)
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("<unnamed>")
+                .to_owned();
+            tracing::error!(target: "panic", %thread, %location, %message, "panic");
+            previous(info);
+        }));
+    });
 }
 
 /// Build the subscriber described by `config` and install it as the global
@@ -175,6 +214,16 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_logger_installs_idempotently_and_still_unwinds() {
+        // Idempotent (Once), and it only *adds* structured logging — a panic
+        // still unwinds and is catchable, the hook does not swallow it.
+        install_panic_logger();
+        install_panic_logger();
+        let caught = std::panic::catch_unwind(|| panic!("boom"));
+        assert!(caught.is_err(), "panic still propagates through the hook");
+    }
 
     #[test]
     fn test_log_format_from_str() {
