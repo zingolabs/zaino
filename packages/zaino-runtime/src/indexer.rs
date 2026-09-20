@@ -12,12 +12,10 @@
 //! the observed validator. The concrete sync engine (e.g. ChainView's sync)
 //! implements [`SyncDriver`]; this component is the runtime slot it plugs into.
 
-use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
-use futures::FutureExt;
 use tokio::sync::watch;
-use zaino_async::{panic_message, Task, TaskName};
+use zaino_async::{catch_panic, Task, TaskName};
 use zaino_component::{
     error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal,
     StatusSource, StatusWatch, SyncDriver,
@@ -102,17 +100,13 @@ impl<D: SyncDriver> Managed for IndexerComponent<D> {
                 s.health = Health::Healthy;
                 s.reason = None;
             });
-            // `catch_unwind` so a panic in the run loop *itself* — outside any
+            // `catch_panic` so a panic in the run loop *itself* — outside any
             // joined sub-task — becomes a `Critical` status + escalation rather
             // than a silent death: the task would otherwise unwind past this
             // match, abort its handle, and leave the status frozen at `Syncing`
-            // while the supervisor waits on a transition that never comes.
-            // `AssertUnwindSafe` is sound here: on a panic we escalate and the
-            // component is torn down, never resumed over the driver's state.
-            match AssertUnwindSafe(driver.run(cancel, caught_up))
-                .catch_unwind()
-                .await
-            {
+            // while the supervisor waits on a transition that never comes. The
+            // unwind-safety reasoning lives in `zaino_async::catch_panic`.
+            match catch_panic(driver.run(cancel, caught_up)).await {
                 Ok(Ok(())) => done_status.send_modify(|s| {
                     s.lifecycle = Lifecycle::Offline;
                     s.health = Health::Offline;
@@ -131,8 +125,7 @@ impl<D: SyncDriver> Managed for IndexerComponent<D> {
                 }
                 // A panic in the run loop: the panic hook already logged its
                 // origin; reconcile status so it escalates like any other failure.
-                Err(panic) => {
-                    let message = panic_message(&*panic);
+                Err(message) => {
                     tracing::error!(component = %name, %message, "indexer run loop panicked");
                     done_status.send_modify(|s| {
                         s.health = Health::Critical;

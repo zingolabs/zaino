@@ -9,10 +9,11 @@
 
 use core::fmt;
 use core::future::Future;
-use std::any::Any;
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+use crate::panic::panic_message;
 
 /// A task's name, carried on the task and its errors for status and logs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,19 +109,6 @@ impl<T: Send + 'static> Task<T> {
             Err(_) => Err(TaskError::Cancelled { name: self.name }),
         }
     }
-}
-
-/// Extract a panic's message from its payload — the `Box<dyn Any>` a join
-/// (`JoinError::into_panic`) or a [`catch_unwind`](futures::future::FutureExt::catch_unwind)
-/// hands back. Mirrors the panic hook's downcast (`zaino_logging`), so a panic's
-/// origin log and wherever it is later reconciled render the same text. Shared so
-/// every supervision boundary that turns a panic into a value says the same thing.
-pub fn panic_message(payload: &(dyn Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<non-string panic payload>".to_owned())
 }
 
 #[cfg(test)]

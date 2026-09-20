@@ -8,9 +8,11 @@
 //! the intended set). Today it provides [`Task`], the named, panic-rendering
 //! task the component layer and its consumers spawn through.
 
+mod panic;
 mod task;
 
-pub use task::{Task, TaskError, TaskName, panic_message};
+pub use panic::{catch_panic, panic_message};
+pub use task::{Task, TaskError, TaskName};
 
 // The cooperative-cancellation token a [`Task`] body receives, re-exported so a
 // consumer naming it (e.g. a server's run signature) need not depend on

@@ -6,6 +6,7 @@ publish = false
 description = "Low-level async/tokio building blocks shared across Zaino: named, panic-rendering tasks and the concurrency primitives components are built on. Below the component/supervision layer, domain-free."
 
 [dependencies]
+futures.workspace = true
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

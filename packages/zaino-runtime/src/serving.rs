@@ -13,12 +13,10 @@
 //! bind failure, a serve loop that died) flips it `Critical`, which the
 //! Orchestra escalates.
 
-use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
-use futures::FutureExt;
 use tokio::sync::watch;
-use zaino_async::{panic_message, Task, TaskName};
+use zaino_async::{catch_panic, Task, TaskName};
 use zaino_component::{
     error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve,
     StatusSource, StatusWatch,
@@ -98,14 +96,11 @@ impl<A: Serve> Managed for ServeComponent<A> {
         let status = self.status.clone();
         let name = self.name;
         let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
-            // `catch_unwind` so a panic in the serve loop itself becomes a
+            // `catch_panic` so a panic in the serve loop itself becomes a
             // `Critical` status + escalation rather than a silent death (see the
-            // indexer component for the rationale). `AssertUnwindSafe` is sound
-            // here: on a panic we escalate and the component is torn down.
-            match AssertUnwindSafe(server.serve(cancel, ready))
-                .catch_unwind()
-                .await
-            {
+            // indexer component for the rationale; the unwind-safety reasoning
+            // lives in `zaino_async::catch_panic`).
+            match catch_panic(server.serve(cancel, ready)).await {
                 // Clean shutdown after the token fired.
                 Ok(Ok(())) => status.send_modify(|s| {
                     s.lifecycle = Lifecycle::Offline;
@@ -124,8 +119,7 @@ impl<A: Serve> Managed for ServeComponent<A> {
                 }
                 // A panic in the serve loop: the panic hook logged its origin;
                 // reconcile status so it escalates like any other failure.
-                Err(panic) => {
-                    let message = panic_message(&*panic);
+                Err(message) => {
                     tracing::error!(component = %name, %message, "serve loop panicked");
                     status.send_modify(|s| {
                         s.health = Health::Critical;
