@@ -53,6 +53,21 @@ impl ComponentStatus {
     }
 }
 
+/// The canonical one-line human rendering: `name: lifecycle/health`, plus the
+/// cause when the component is unhealthy. The single form logs, a health
+/// endpoint, and a CLI should reuse instead of each re-formatting the fields;
+/// [`Debug`] stays the structural, developer view. An aligned table across many
+/// components is a *collection* concern, not this per-value form.
+impl fmt::Display for ComponentStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {:?}/{:?}", self.name, self.lifecycle, self.health)?;
+        if let Some(reason) = &self.reason {
+            write!(f, " — {reason}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Anything that reports a [`ComponentStatus`].
 ///
 /// Cheap and synchronous by contract: reading a status must never await, so a
@@ -70,4 +85,28 @@ pub trait StatusSource {
 pub trait StatusWatch {
     /// Subscribe to this component's status stream.
     fn subscribe(&self) -> watch::Receiver<ComponentStatus>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ComponentName, ComponentStatus};
+    use crate::{Health, Lifecycle};
+
+    #[test]
+    fn display_is_a_one_liner_with_the_cause_only_when_unhealthy() {
+        let healthy =
+            ComponentStatus::new(ComponentName("indexer"), Lifecycle::Ready, Health::Healthy);
+        assert_eq!(healthy.to_string(), "indexer: Ready/Healthy");
+
+        let mut failed = ComponentStatus::new(
+            ComponentName("indexer"),
+            Lifecycle::Syncing,
+            Health::Critical,
+        );
+        failed.reason = Some("run loop panicked: boom".to_owned());
+        assert_eq!(
+            failed.to_string(),
+            "indexer: Syncing/Critical — run loop panicked: boom"
+        );
+    }
 }
