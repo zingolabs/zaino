@@ -1,8 +1,9 @@
 //! The `CompactTxStreamer` gRPC service, backed by the [`LightServe`] handler.
 //!
 //! `CompactTxStreamer` is generated from the lightwalletd proto and is a fixed,
-//! monolithic contract: every method must be implemented. The two the handler
-//! covers (`GetLatestBlock`, `SendTransaction`) are wired; the rest return
+//! monolithic contract: every method must be implemented. The compact-block
+//! serving path (`GetLatestBlock`, `GetBlock`, `GetBlockRange`,
+//! `GetLightdInfo`, `SendTransaction`) is wired; the rest return
 //! `Status::unimplemented` until their handler methods exist. Implemented on a
 //! wrapper (not `LightServe` itself) so the handler stays a pure profile handler
 //! and there is no inherent/trait method-name clash.
@@ -174,7 +175,11 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         Err(unimplemented("get_address_utxos"))
     }
     async fn get_lightd_info(&self, _r: Request<Empty>) -> Result<Response<LightdInfo>, Status> {
-        Err(unimplemented("get_lightd_info"))
+        self.handler
+            .get_lightd_info()
+            .await
+            .map(Response::new)
+            .map_err(to_status)
     }
     async fn ping(&self, _r: Request<Duration>) -> Result<Response<PingResponse>, Status> {
         Err(unimplemented("ping"))

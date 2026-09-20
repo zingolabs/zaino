@@ -7,10 +7,12 @@
 //! not-yet-serviceable chain, and a domain broadcast rejection are three
 //! different wire outcomes, not one fused transport error.
 //!
-//! The handler covers two RPCs; [`GrpcServer`] stands up a real tonic
-//! `CompactTxStreamer` server over it ([`Serve`](zaino_component::Serve)),
-//! serving those two and returning `Status::unimplemented` for the rest of the
-//! generated (fixed lightwalletd) contract until their handler methods exist.
+//! The handler covers the compact-block serving path (`GetLatestBlock`,
+//! `GetBlock`, `GetBlockRange`, `GetLightdInfo`, `SendTransaction`);
+//! [`GrpcServer`] stands up a real tonic `CompactTxStreamer` server over it
+//! ([`Serve`](zaino_component::Serve)), serving those and returning
+//! `Status::unimplemented` for the rest of the generated (fixed lightwalletd)
+//! contract until their handler methods exist.
 #![forbid(unsafe_code)]
 
 mod error;
@@ -46,6 +48,31 @@ impl<S: LightServeService> LightServe<S> {
         let snapshot = self.engine.snapshot().await?;
         let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
         Ok(tip.to_wire())
+    }
+
+    /// `GetLightdInfo`: serving metadata + the current tip height.
+    ///
+    /// Minimal but valid: `version`/`vendor`/`taddr_support` are static, and
+    /// `block_height`/`estimated_height` are read from the pinned tip (0 before
+    /// any block is served). The network-derived fields (`chain_name`,
+    /// `sapling_activation_height`, `consensus_branch_id`) are left best-effort
+    /// empty here — the handler is not parameterised by the network, and the
+    /// clients that gate readiness on this call read only the height. Threading
+    /// the network through to fill them is a later refinement.
+    pub async fn get_lightd_info(&self) -> Result<proto::LightdInfo, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let block_height = snapshot
+            .pinned_tip()
+            .map(|tip| u64::from(tip.height))
+            .unwrap_or(0);
+        Ok(proto::LightdInfo {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            vendor: "zaino".to_string(),
+            taddr_support: true,
+            block_height,
+            estimated_height: block_height,
+            ..Default::default()
+        })
     }
 
     /// `GetBlock`: the composed compact block at `at`, or `None` when no block
@@ -132,6 +159,31 @@ mod tests {
             serve.get_latest_block().await,
             Err(ServeError::NoBlocks)
         ));
+    }
+
+    /// `GetLightdInfo` reports the tip height and succeeds once the chain has a
+    /// tip — the readiness signal clients gate on.
+    #[tokio::test]
+    async fn lightd_info_reports_the_tip_height() {
+        let tip = BlockId {
+            height: Height::try_from(42).expect("valid height"),
+            hash: BlockHash::from([0x11u8; 32]),
+        };
+        let serve = LightServe::new(engine_with_tip(Some(tip)));
+        let info = serve.get_lightd_info().await.expect("lightd info");
+        assert_eq!(info.block_height, 42u64);
+        assert_eq!(info.estimated_height, 42u64);
+        assert!(info.taddr_support);
+        assert!(!info.version.is_empty());
+    }
+
+    /// Before any block is served, `GetLightdInfo` still succeeds with height 0
+    /// (a valid answer, not `NoBlocks`) — the call itself is the liveness gate.
+    #[tokio::test]
+    async fn lightd_info_before_any_block_is_height_zero() {
+        let serve = LightServe::new(engine_with_tip(None));
+        let info = serve.get_lightd_info().await.expect("lightd info");
+        assert_eq!(info.block_height, 0u64);
     }
 
     /// A successful broadcast returns `error_code == 0` with the txid in hex.
