@@ -13,8 +13,10 @@
 //! source tip. Steady-state tip-following (via `SubscribeChainTip`) is the next
 //! increment; this drives the initial sync to the current tip.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
+use futures::stream::{FuturesOrdered, StreamExt};
 use tokio::sync::mpsc;
 
 use tokio::sync::watch;
@@ -30,6 +32,70 @@ use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::BlockHeight;
 
 use crate::IndexerError;
+
+/// How many block fetches the provisioner keeps in flight at once.
+///
+/// A `NonZeroUsize` newtype, so zero is unrepresentable — there is always at
+/// least one fetch, and [`provision`](SourceProvisioner::provision) needs no
+/// runtime guard. It is a distinct type (not a bare `NonZeroUsize`) so the
+/// compiler tells this knob apart from every other count. [`SERIAL`] (one in
+/// flight) is deterministic — the choice for tests and mocks; a larger value
+/// feeds the rayon-parallel engine rather than pacing it one block at a time.
+///
+/// [`SERIAL`]: FetchConcurrency::SERIAL
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct FetchConcurrency(NonZeroUsize);
+
+impl FetchConcurrency {
+    /// One fetch in flight — serial and deterministic (tests/mocks).
+    pub const SERIAL: Self = Self(NonZeroUsize::MIN);
+
+    /// Wrap a non-zero fetch count.
+    pub const fn new(count: NonZeroUsize) -> Self {
+        Self(count)
+    }
+
+    /// The count as a `usize` (always ≥ 1).
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl std::fmt::Display for FetchConcurrency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for FetchConcurrency {
+    type Err = <NonZeroUsize as std::str::FromStr>::Err;
+
+    /// Parses a positive integer; rejects `0` (and non-numbers) at the parse
+    /// boundary — a CLI/config `concurrency = 0` fails loud, never silently
+    /// coerced.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse::<NonZeroUsize>().map(Self)
+    }
+}
+
+/// The run-tuning knobs for a [`SourceSyncDriver`]: how it batches, where the
+/// finalised boundary sits, how much it buffers between provisioner and engine,
+/// and how many fetches run concurrently. Grouped into one struct so the four
+/// are *named* at every call site rather than passed as a transposition-prone
+/// tail of positional numbers.
+pub struct SyncTuning {
+    /// Blocks committed per atomic engine batch.
+    pub batch_size: u32,
+    /// Depth below the tip treated as still volatile; only `tip - depth` and
+    /// below is indexed. `zaino_consensus::MAX_BLOCK_REORG_HEIGHT` standalone;
+    /// `0` over a non-reorging test source.
+    pub finalised_depth: u32,
+    /// Bound on contexts buffered between the provisioner and the engine.
+    pub channel_capacity: usize,
+    /// How many fetches the provisioner keeps in flight (see [`FetchConcurrency`]).
+    pub concurrency: FetchConcurrency,
+}
 
 /// Map a resilient-port [`SourceError`] onto an indexer error, preserving each
 /// cause typed (no stringification). `Unavailable` and `Fetch` are concrete;
@@ -99,6 +165,8 @@ impl<S: GetPreIndexCompactBlock + Send + Sync + 'static> SourceFetch<S> for Comp
 pub struct SourceProvisioner<S, Ctx, F, Fetch> {
     source: Arc<S>,
     build: F,
+    /// How many fetches are kept in flight at once (see [`FetchConcurrency`]).
+    concurrency: FetchConcurrency,
     _ctx: std::marker::PhantomData<fn() -> Ctx>,
     _fetch: std::marker::PhantomData<fn() -> Fetch>,
 }
@@ -110,11 +178,14 @@ where
     F: Fn(Fetch::Item) -> Ctx + Send + Sync + 'static,
     Ctx: Send + 'static,
 {
-    /// A provisioner over `source`, projecting each fetched item with `build`.
-    pub fn new(source: Arc<S>, build: F) -> Self {
+    /// A provisioner over `source`, projecting each fetched item with `build`,
+    /// keeping up to `concurrency` fetches in flight ([`FetchConcurrency::SERIAL`]
+    /// for a deterministic serial path; a concurrent value in production).
+    pub fn new(source: Arc<S>, build: F, concurrency: FetchConcurrency) -> Self {
         Self {
             source,
             build,
+            concurrency,
             _ctx: std::marker::PhantomData,
             _fetch: std::marker::PhantomData,
         }
@@ -135,26 +206,61 @@ where
         self.source.subscribe_to_chain_tip()
     }
 
-    /// Fetch `[from, to]` and send each projected context into `tx`, in order.
-    /// Stops early (Ok) if the receiver is dropped — the engine has gone away.
+    /// Fetch `[from, to]` and send each projected context into `tx`, **in
+    /// ascending height order**, keeping up to `self.concurrency` fetches in
+    /// flight.
+    ///
+    /// Ordering is load-bearing: the engine's `(SelfCumulative, Append)` indexes
+    /// thread a carry in height order, so out-of-order delivery would corrupt
+    /// cumulative values. [`FuturesOrdered`] yields results in submission
+    /// (height) order regardless of which fetch finishes first, which is what
+    /// makes concurrent fetch safe here.
+    ///
+    /// The in-flight window is bounded by `concurrency` (fetched items buffer
+    /// only up to that), and `tx.send` applies channel backpressure. Stops early
+    /// with `Ok` if the receiver is dropped (the engine went away); returns the
+    /// **first** fetch error and abandons the rest.
     pub async fn provision(
         &self,
         from: Height,
         to: Height,
         tx: mpsc::Sender<Ctx>,
     ) -> Result<(), IndexerError> {
-        for h in u32::from(from)..=u32::from(to) {
-            // `h` lies within `[from, to]`, both valid `Height`s, so it cannot
-            // exceed the max height — the conversion is infallible by construction.
-            let height = Height::try_from(h).expect("height within a valid range is valid");
-            let item = Fetch::fetch(&self.source, height).await?;
-            let ctx = (self.build)(item);
-            if tx.send(ctx).await.is_err() {
-                // Receiver dropped: the engine stopped consuming; nothing to do.
-                return Ok(());
+        let from = u32::from(from);
+        let to = u32::from(to);
+        // `FetchConcurrency` is non-zero by construction — no runtime guard.
+        let concurrency = self.concurrency.get();
+
+        let mut in_flight = FuturesOrdered::new();
+        let mut next = from;
+
+        loop {
+            // Refill the in-flight window with the next heights, in order.
+            while in_flight.len() < concurrency && next <= to {
+                // `next` lies within `[from, to]`, both valid `Height`s, so the
+                // conversion is infallible by construction.
+                let height = Height::try_from(next).expect("height within a valid range is valid");
+                let source = Arc::clone(&self.source);
+                in_flight.push_back(async move { Fetch::fetch(&source, height).await });
+                next += 1;
+            }
+
+            // Drain the oldest fetch — `FuturesOrdered` guarantees this is the
+            // lowest outstanding height.
+            match in_flight.next().await {
+                Some(Ok(item)) => {
+                    let ctx = (self.build)(item);
+                    if tx.send(ctx).await.is_err() {
+                        // Receiver dropped: the engine stopped consuming.
+                        return Ok(());
+                    }
+                }
+                // First fetch error: stop submitting, drop the in-flight rest.
+                Some(Err(e)) => return Err(e),
+                // Window empty and nothing left to submit: the range is done.
+                None => return Ok(()),
             }
         }
-        Ok(())
     }
 }
 
@@ -233,9 +339,7 @@ where
         index_set: IndexSet<Ctx>,
         source: Arc<S>,
         build: F,
-        batch_size: u32,
-        finalised_depth: u32,
-        channel_capacity: usize,
+        tuning: SyncTuning,
     ) -> Result<Self, IndexerError>
     where
         B: Clone,
@@ -245,17 +349,21 @@ where
             index_set,
             backend.clone(),
             EngineConfig {
-                batch_size,
+                batch_size: tuning.batch_size,
                 start_height: BlockHeight::new(u64::from(start)),
             },
         )?;
-        let provisioner = Arc::new(SourceProvisioner::<S, Ctx, F, Fetch>::new(source, build));
+        let provisioner = Arc::new(SourceProvisioner::<S, Ctx, F, Fetch>::new(
+            source,
+            build,
+            tuning.concurrency,
+        ));
         Ok(Self::new(
             engine,
             provisioner,
             start,
-            finalised_depth,
-            channel_capacity,
+            tuning.finalised_depth,
+            tuning.channel_capacity,
         ))
     }
 
@@ -296,19 +404,9 @@ where
         index_set: IndexSet<Ctx>,
         source: Arc<S>,
         build: F,
-        batch_size: u32,
-        finalised_depth: u32,
-        channel_capacity: usize,
+        tuning: SyncTuning,
     ) -> Result<Self, IndexerError> {
-        Self::assemble_resuming(
-            backend,
-            index_set,
-            source,
-            build,
-            batch_size,
-            finalised_depth,
-            channel_capacity,
-        )
+        Self::assemble_resuming(backend, index_set, source, build, tuning)
     }
 }
 
@@ -328,19 +426,9 @@ where
         index_set: IndexSet<Ctx>,
         source: Arc<S>,
         build: F,
-        batch_size: u32,
-        finalised_depth: u32,
-        channel_capacity: usize,
+        tuning: SyncTuning,
     ) -> Result<Self, IndexerError> {
-        Self::assemble_resuming(
-            backend,
-            index_set,
-            source,
-            build,
-            batch_size,
-            finalised_depth,
-            channel_capacity,
-        )
+        Self::assemble_resuming(backend, index_set, source, build, tuning)
     }
 }
 

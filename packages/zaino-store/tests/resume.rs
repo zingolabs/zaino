@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use zaino_component::ComponentName;
 use zaino_core::Height;
-use zaino_indexer::{assess_start, SourceSyncDriver, SyncStart};
+use zaino_indexer::{assess_start, FetchConcurrency, SourceSyncDriver, SyncStart, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, Orchestra, OrchestraBuilder};
@@ -37,9 +37,12 @@ async fn run_indexer(
         index_set(),
         source,
         |block| context_from_block(&block),
-        8,
-        finalised_depth,
-        16,
+        SyncTuning {
+            batch_size: 8,
+            finalised_depth,
+            channel_capacity: 16,
+            concurrency: FetchConcurrency::SERIAL,
+        },
     )
     .expect("driver builds");
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);

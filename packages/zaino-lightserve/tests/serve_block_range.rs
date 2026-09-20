@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use zaino_component::{CancellationToken, ReadySignal, Serve};
-use zaino_indexer::{FullBlocks, SourceProvisioner};
+use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -93,6 +93,7 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
     let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
         source,
         |block| context_from_block(&block),
+        FetchConcurrency::SERIAL,
     ));
     let (tx, rx) = mpsc::channel(16);
     let feed = Arc::clone(&provisioner);

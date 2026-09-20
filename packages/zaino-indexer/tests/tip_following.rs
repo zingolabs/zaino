@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 use zaino_component::{ComponentName, Lifecycle, Managed, StatusWatch};
-use zaino_indexer::{FullBlocks, SourceProvisioner, SourceSyncDriver};
+use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner, SourceSyncDriver};
 use zaino_primitives::types::{Block, BlockHash, Height};
 use zaino_runtime::IndexerComponent;
 use zaino_source::mock::test_block;
@@ -126,6 +126,7 @@ async fn the_indexer_follows_the_tip() {
     let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
         Arc::new(validator),
         to_context,
+        FetchConcurrency::SERIAL,
     ));
     let driver = SourceSyncDriver::new(
         engine,
@@ -189,6 +190,7 @@ async fn the_indexer_stops_at_the_finalised_boundary() {
     let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
         Arc::new(validator),
         to_context,
+        FetchConcurrency::SERIAL,
     ));
     let driver = SourceSyncDriver::new(
         engine,

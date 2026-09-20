@@ -12,6 +12,8 @@ zaino-source = { path = "../zaino-source" }
 zaino-primitives = { path = "../zaino-primitives" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
 
 [dev-dependencies]

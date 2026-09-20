@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_core::{BlockRef, Height};
-use zaino_indexer::SourceSyncDriver;
+use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
@@ -98,9 +98,12 @@ async fn indexer_computes_and_serves_cumulative_tree_sizes() {
         index_set(),
         source,
         |block| context_from_block(&block),
-        8,
-        0,
-        16,
+        SyncTuning {
+            batch_size: 8,
+            finalised_depth: 0,
+            channel_capacity: 16,
+            concurrency: FetchConcurrency::SERIAL,
+        },
     )
     .expect("driver builds");
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);

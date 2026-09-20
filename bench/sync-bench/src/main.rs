@@ -23,6 +23,7 @@
 //! [`sync_to`]: zaino_indexer::SourceSyncDriver
 #![forbid(unsafe_code)]
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,7 +34,7 @@ use tokio::sync::mpsc;
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_core::BlockRef;
-use zaino_indexer::{CompactBlocks, SourceProvisioner};
+use zaino_indexer::{CompactBlocks, FetchConcurrency, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{
     context_from_pre_index_compact_block, index_set, CurrentZainoContext,
 };
@@ -92,6 +93,11 @@ struct Args {
     /// Bound on contexts buffered between the provisioner and the engine.
     #[arg(long, default_value_t = 256)]
     channel_cap: usize,
+
+    /// Fetches kept in flight by the provisioner (1 = serial). The knob for the
+    /// concurrency-vs-throughput sweep; `0` is rejected at parse time.
+    #[arg(long, env = "SYNC_CONCURRENCY", default_value_t = FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero")))]
+    concurrency: FetchConcurrency,
 
     /// LMDB map size in GiB (the maximum on-disk size; reserved up front).
     #[arg(long, default_value_t = 16)]
@@ -174,6 +180,7 @@ async fn main() -> Result<(), BoxError> {
     let provisioner = Arc::new(SourceProvisioner::<_, _, _, CompactBlocks>::new(
         Arc::clone(&source),
         |cb| context_from_pre_index_compact_block(&cb),
+        args.concurrency,
     ));
 
     // The window: from the resume point to either the requested count or the
@@ -231,7 +238,7 @@ async fn main() -> Result<(), BoxError> {
     provision.await??;
     let elapsed = started.elapsed();
 
-    report(count, elapsed);
+    report(count, elapsed, args.concurrency);
 
     if args.verify {
         verify(&backend, resume, to).await?;
@@ -242,12 +249,12 @@ async fn main() -> Result<(), BoxError> {
 
 /// Report throughput both as a human line and as a structured event (→ stdout →
 /// Loki/Grafana on the cluster).
-fn report(blocks: u32, elapsed: std::time::Duration) {
+fn report(blocks: u32, elapsed: std::time::Duration, concurrency: FetchConcurrency) {
     let seconds = elapsed.as_secs_f64();
     let per_second = f64::from(blocks) / seconds;
     println!(
         "indexed {blocks} blocks in {seconds:.3}s = {per_second:.1} blocks/s \
-         ({:.3} ms/block)",
+         ({:.3} ms/block, concurrency {concurrency})",
         elapsed.as_secs_f64() * 1000.0 / f64::from(blocks),
     );
     tracing::info!(
@@ -255,6 +262,7 @@ fn report(blocks: u32, elapsed: std::time::Duration) {
         blocks,
         elapsed_ms = elapsed.as_millis(),
         blocks_per_second = per_second,
+        concurrency = concurrency.get(),
         "sync window complete"
     );
 }

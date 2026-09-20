@@ -13,7 +13,8 @@
 
 mod source_provisioner;
 pub use source_provisioner::{
-    CompactBlocks, FullBlocks, SourceFetch, SourceProvisioner, SourceSyncDriver,
+    CompactBlocks, FetchConcurrency, FullBlocks, SourceFetch, SourceProvisioner, SourceSyncDriver,
+    SyncTuning,
 };
 
 use std::sync::{Arc, Mutex};

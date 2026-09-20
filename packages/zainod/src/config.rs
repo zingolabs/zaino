@@ -14,7 +14,10 @@
 //! then built-in defaults.
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
+
+use zaino_indexer::FetchConcurrency;
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -125,6 +128,10 @@ pub struct IndexerConfig {
     /// Depth below the tip treated as still volatile; only `tip − depth` and
     /// below is indexed.
     pub finalised_depth: u32,
+    /// Fetches kept in flight by the provisioner. Concurrent fetch keeps the
+    /// parallel engine fed rather than paced by a one-at-a-time loop. A
+    /// `concurrency = 0` in the config is rejected at parse time (non-zero type).
+    pub concurrency: FetchConcurrency,
 }
 
 impl Default for IndexerConfig {
@@ -133,6 +140,7 @@ impl Default for IndexerConfig {
             batch_size: 1000,
             channel_capacity: 256,
             finalised_depth: MAX_BLOCK_REORG_HEIGHT,
+            concurrency: FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero")),
         }
     }
 }

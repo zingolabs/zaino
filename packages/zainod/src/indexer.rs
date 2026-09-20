@@ -16,7 +16,7 @@ use tracing::{error, info};
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_component::{ComponentName, ReachabilityProbe};
-use zaino_indexer::SourceSyncDriver;
+use zaino_indexer::{SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_pre_index_compact_block, index_set};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::Namespace;
@@ -109,9 +109,12 @@ where
         index_set(),
         Arc::clone(&source),
         |compact_block| context_from_pre_index_compact_block(&compact_block),
-        config.indexer.batch_size,
-        config.indexer.finalised_depth,
-        config.indexer.channel_capacity,
+        SyncTuning {
+            batch_size: config.indexer.batch_size,
+            finalised_depth: config.indexer.finalised_depth,
+            channel_capacity: config.indexer.channel_capacity,
+            concurrency: config.indexer.concurrency,
+        },
     )?;
 
     // Reachability was already confirmed (Direct opened its state DB), so the

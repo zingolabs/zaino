@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, Managed, StatusSource, StatusWatch};
-use zaino_indexer::{FullBlocks, SourceProvisioner, SourceSyncDriver};
+use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner, SourceSyncDriver};
 use zaino_primitives::types::{Block, Height};
 use zaino_runtime::IndexerComponent;
 use zaino_source::mock::{test_block, MockChain};
@@ -52,6 +52,7 @@ async fn the_runtime_indexes_from_a_source() {
     let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
         Arc::new(source),
         to_context,
+        FetchConcurrency::SERIAL,
     ));
     let driver = SourceSyncDriver::new(
         engine,
