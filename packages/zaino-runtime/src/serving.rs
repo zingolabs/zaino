@@ -16,10 +16,10 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
-use zaino_async::{catch_panic, Task, TaskName};
+use zaino_async::{Task, TaskName};
 use zaino_component::{
-    error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve,
-    StatusSource, StatusWatch,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve, StatusSource,
+    StatusWatch,
 };
 
 /// A [`Serve`] server `A`, presented to the runtime as a component.
@@ -96,37 +96,12 @@ impl<A: Serve> Managed for ServeComponent<A> {
         let status = self.status.clone();
         let name = self.name;
         let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
-            // `catch_panic` so a panic in the serve loop itself becomes a
-            // `Critical` status + escalation rather than a silent death (see the
-            // indexer component for the rationale; the unwind-safety reasoning
-            // lives in `zaino_async::catch_panic`).
-            match catch_panic(server.serve(cancel, ready)).await {
-                // Clean shutdown after the token fired.
-                Ok(Ok(())) => status.send_modify(|s| {
-                    s.lifecycle = Lifecycle::Offline;
-                    s.health = Health::Offline;
-                    s.reason = None;
-                }),
-                // Bind failure (never became Ready) or a dead serve loop: log the
-                // whole cause chain and record it on the status — never silent.
-                Ok(Err(e)) => {
-                    let chain = error_chain(&e);
-                    tracing::error!(component = %name, error = %e, cause = %chain, "serve loop failed");
-                    status.send_modify(|s| {
-                        s.health = Health::Critical;
-                        s.reason = Some(chain);
-                    });
-                }
-                // A panic in the serve loop: the panic hook logged its origin;
-                // reconcile status so it escalates like any other failure.
-                Err(message) => {
-                    tracing::error!(component = %name, %message, "serve loop panicked");
-                    status.send_modify(|s| {
-                        s.health = Health::Critical;
-                        s.reason = Some(format!("serve loop panicked: {message}"));
-                    });
-                }
-            }
+            // The run/serve boundary — catch a panic, log any failure, reconcile
+            // the terminal status — is one shared seam (see `crate::run`). A clean
+            // stop goes `Offline`; a bind failure (never became Ready) or a dead
+            // serve loop or a panic goes `Critical` with the cause, never silent.
+            crate::run::run_and_reconcile(name, &status, "serve loop", server.serve(cancel, ready))
+                .await;
         });
         *self.task.lock().expect("serve task mutex poisoned") = Some(task);
         Ok(())

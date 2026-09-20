@@ -15,10 +15,10 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
-use zaino_async::{catch_panic, Task, TaskName};
+use zaino_async::{Task, TaskName};
 use zaino_component::{
-    error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal,
-    StatusSource, StatusWatch, SyncDriver,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, StatusSource,
+    StatusWatch, SyncDriver,
 };
 
 /// A [`SyncDriver`] presented to the runtime as an owned component.
@@ -90,49 +90,25 @@ impl<D: SyncDriver> Managed for IndexerComponent<D> {
         });
 
         let driver = Arc::clone(&self.driver);
-        let syncing_status = self.status.clone();
-        let done_status = self.status.clone();
+        let run_status = self.status.clone();
         let name = self.name;
         let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
             // Now actively building the index.
-            syncing_status.send_modify(|s| {
+            run_status.send_modify(|s| {
                 s.lifecycle = Lifecycle::Syncing;
                 s.health = Health::Healthy;
                 s.reason = None;
             });
-            // `catch_panic` so a panic in the run loop *itself* — outside any
-            // joined sub-task — becomes a `Critical` status + escalation rather
-            // than a silent death: the task would otherwise unwind past this
-            // match, abort its handle, and leave the status frozen at `Syncing`
-            // while the supervisor waits on a transition that never comes. The
-            // unwind-safety reasoning lives in `zaino_async::catch_panic`.
-            match catch_panic(driver.run(cancel, caught_up)).await {
-                Ok(Ok(())) => done_status.send_modify(|s| {
-                    s.lifecycle = Lifecycle::Offline;
-                    s.health = Health::Offline;
-                    s.reason = None;
-                }),
-                // A driver failure funnels here: log the whole cause chain and
-                // record it on the status, so the failure is never silent and a
-                // health reader sees *why*, not just `Critical`.
-                Ok(Err(e)) => {
-                    let chain = error_chain(&e);
-                    tracing::error!(component = %name, error = %e, cause = %chain, "indexer run loop failed");
-                    done_status.send_modify(|s| {
-                        s.health = Health::Critical;
-                        s.reason = Some(chain);
-                    });
-                }
-                // A panic in the run loop: the panic hook already logged its
-                // origin; reconcile status so it escalates like any other failure.
-                Err(message) => {
-                    tracing::error!(component = %name, %message, "indexer run loop panicked");
-                    done_status.send_modify(|s| {
-                        s.health = Health::Critical;
-                        s.reason = Some(format!("run loop panicked: {message}"));
-                    });
-                }
-            }
+            // The run/serve boundary — catch a panic, log any failure, reconcile
+            // the terminal status — is one shared seam (see `crate::run`), so this
+            // component neither re-implements the match nor forgets to log.
+            crate::run::run_and_reconcile(
+                name,
+                &run_status,
+                "run loop",
+                driver.run(cancel, caught_up),
+            )
+            .await;
         });
         *self.task.lock().expect("indexer task mutex poisoned") = Some(task);
         Ok(())

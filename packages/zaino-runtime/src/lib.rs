@@ -23,6 +23,7 @@ mod health;
 mod indexer;
 mod orchestra;
 mod resolve;
+mod run;
 mod serving;
 mod signals;
 mod supervisor;
