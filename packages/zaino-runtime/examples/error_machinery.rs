@@ -13,17 +13,24 @@
 //!
 //! Three failure classes are shown:
 //!
-//!   1. **Typed transport failure** — the source returns a non-retryable
-//!      `Parse` failure. Bubbles as `IndexerError::Transport`. This is the
-//!      "the source handed back something undecodable" path, handled as data.
-//!   2. **Panic in a joined sub-task (the block-fetch pump)** — the *class* of
-//!      the Ironwood `.expect` blowup. The panic hook logs it at **origin**
-//!      (`target: "panic"`), and it resurfaces at the boundary as a named
-//!      `IndexerError::UnexpectedWorkerFailure` (task "block-provisioner").
+//!   1. **Typed transport failure** — the source hands back something the
+//!      indexer cannot use. Triggered here by a mock whose `get_block` returns a
+//!      non-retryable `NonDomain(Parse)` error; it bubbles as
+//!      `IndexerError::Transport` — a failure handled as *data*, not a crash.
+//!   2. **Panic in a joined sub-task (the block-fetch pump)** — a bug deep in a
+//!      block fetch (e.g. a failed assertion or `.expect`). Triggered here by a
+//!      mock source whose `get_block` panics; the provisioner runs that fetch on
+//!      a spawned `Task`, so the panic hook logs it at **origin**
+//!      (`target: "panic"`) and it resurfaces at the boundary — via
+//!      `Task::join` — as a named `IndexerError::UnexpectedWorkerFailure` (task
+//!      "block-provisioner").
 //!   3. **Panic in the run loop body itself (the tip fetch)** — a panic *outside*
-//!      any joined sub-task. This was a **silent death** before the supervised-run
-//!      fix (status frozen at `Syncing`, no escalation); now `catch_unwind` at the
-//!      run boundary turns it into `Critical` + escalation like any other failure.
+//!      any joined sub-task. Triggered here by a mock whose `get_chain_tip`
+//!      panics (the tip fetch is awaited directly in `run`, not on the pump).
+//!      This was a **silent death** before the supervised-run fix (status frozen
+//!      at `Syncing`, no escalation); now the run boundary wraps the loop in
+//!      `zaino_async::catch_panic`, turning it into `Critical` + escalation like
+//!      any other failure.
 //!
 //! Run it and watch stderr:
 //!
@@ -90,7 +97,7 @@ impl OneShotGetBlock for TransportFailSource {
         tokio::task::yield_now().await;
         Err(QueryError::NonDomain(NonDomainError::new(
             FailureMode::Parse,
-            "simulated block deserialize failure (Ironwood-class, as a typed error)",
+            "source returned an undecodable block (a parse failure)",
         )))
     }
 }
@@ -98,9 +105,10 @@ impl OneShotGetBlock for TransportFailSource {
 // No push subscription — the default `subscribe_to_chain_tip` returns `None`.
 impl SubscribeChainTip for TransportFailSource {}
 
-/// A source that serves a tip but **panics** deep in a block fetch — the exact
-/// shape of the Ironwood `.expect` blowup. tokio catches the panic; the panic
-/// hook logs it at origin and `Task::join` surfaces it named as a `TaskError`.
+/// A source that serves a tip but **panics** in a block fetch — a bug deep in
+/// the fetch path (a failed assertion / `.expect`). The provisioner runs the
+/// fetch on a spawned `Task`, so tokio catches the panic; the panic hook logs it
+/// at origin and `Task::join` surfaces it, named, as a `TaskError`.
 struct PanicFetchSource;
 
 impl ValidatorSource for PanicFetchSource {
@@ -117,7 +125,7 @@ impl OneShotGetBlock for PanicFetchSource {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         tokio::task::yield_now().await;
         panic!(
-            "simulated deserialize panic at height {} — the Ironwood-class `.expect`",
+            "simulated panic decoding the block at height {} (a failed `.expect` in the fetch path)",
             u32::from(height)
         );
     }
@@ -129,7 +137,8 @@ impl SubscribeChainTip for PanicFetchSource {}
 /// (the tip fetch is awaited directly in `run`, not in the spawned pump). This is
 /// the path that was a *silent death* before the supervised-run fix: the run task
 /// would unwind, its handle abort, and the status stay frozen at `Syncing` with
-/// no escalation. Now `catch_unwind` at the run boundary turns it into `Critical`.
+/// no escalation. Now `zaino_async::catch_panic` at the run boundary turns it
+/// into `Critical`.
 struct PanicTipSource;
 
 impl ValidatorSource for PanicTipSource {
@@ -245,7 +254,7 @@ async fn main() {
 
     banner(
         "SCENARIO 2",
-        "panic deep in a block fetch (the Ironwood `.expect` class)",
+        "panic inside a spawned fetch task (a bug in the block-fetch path)",
     );
     println!("\n  Expect: the panic hook logging at origin (target=\"panic\", on the");
     println!("  worker thread), THEN the same failure resurfacing at the boundary");
