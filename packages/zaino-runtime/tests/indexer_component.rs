@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use zaino_component::{
-    CancellationToken, ComponentName, Health, Lifecycle, Managed, ReadySignal, StatusWatch,
+    CancellationToken, ComponentName, Health, Lifecycle, Managed, RunReporter, StatusWatch,
 };
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, RunLoop};
 
@@ -26,10 +26,10 @@ impl RunLoop for StubSync {
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
-        caught_up: ReadySignal,
+        reporter: RunReporter,
     ) -> Result<(), SyncError> {
         if self.catch_up {
-            caught_up.notify();
+            reporter.ready();
         }
         cancel.cancelled().await;
         Ok(())
@@ -90,7 +90,7 @@ impl RunLoop for PanicSync {
     async fn run(
         self: Arc<Self>,
         _cancel: CancellationToken,
-        _caught_up: ReadySignal,
+        _reporter: RunReporter,
     ) -> Result<(), SyncError> {
         tokio::task::yield_now().await;
         panic!("boom in the run loop");
@@ -126,4 +126,49 @@ async fn a_panicking_run_loop_goes_critical_and_escalates() {
     );
 
     orchestra.shutdown();
+}
+
+/// A stub that reports a progress reading (then Ready), to prove a component
+/// records the progress its loop reports onto its own status.
+struct ProgressStub;
+
+impl RunLoop for ProgressStub {
+    type Error = SyncError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
+
+    async fn run(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        reporter: RunReporter,
+    ) -> Result<(), SyncError> {
+        reporter.progress(5, Some(10));
+        reporter.ready();
+        cancel.cancelled().await;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_component_records_reported_progress_on_its_status() {
+    let indexer = IndexerComponent::new(ComponentName("indexer"), ProgressStub);
+    indexer.spawn().await.expect("spawn");
+
+    // Deterministic: the stub reports progress immediately; wait on the status
+    // stream (not a timer) for it to arrive. The timeout is only a safety bound.
+    let mut status = indexer.subscribe();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(progress) = status.borrow_and_update().progress {
+                assert_eq!(progress.current, 5);
+                assert_eq!(progress.target, Some(10));
+                return;
+            }
+            status.changed().await.expect("status stream open");
+        }
+    })
+    .await
+    .expect("progress reached the status");
+
+    indexer.stop().await.expect("stop");
 }

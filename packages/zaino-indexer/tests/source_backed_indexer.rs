@@ -35,9 +35,10 @@ async fn the_runtime_indexes_from_a_source() {
         chain = chain.with_block(test_block(h, u8::try_from(h).expect("small height")));
     }
 
+    let backend = InMemoryBackend::new();
     let engine = SyncEngine::from_index_set(
         toy_index_set(),
-        InMemoryBackend::new(),
+        backend.clone(),
         EngineConfig {
             batch_size: 4,
             start_height: BlockHeight::new(0),
@@ -60,6 +61,7 @@ async fn the_runtime_indexes_from_a_source() {
         Height::try_from(0).expect("valid height"),
         0, // finalised_depth: non-reorging mock, index right to the tip
         16,
+        backend,
     );
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
 

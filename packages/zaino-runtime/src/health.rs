@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
-use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
+use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 
 use crate::signals::RuntimeSignals;
 
@@ -46,12 +46,12 @@ impl RunLoop for HealthServer {
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
-        ready: ReadySignal,
+        reporter: RunReporter,
     ) -> Result<(), HealthServeError> {
         let listener = TcpListener::bind(self.bind)
             .await
             .map_err(|e| HealthServeError::Bind(e.to_string()))?;
-        ready.notify();
+        reporter.ready();
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => return Ok(()),

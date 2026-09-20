@@ -19,7 +19,7 @@ pub use source_provisioner::{
 
 use std::sync::{Arc, Mutex};
 
-use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
+use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 use zaino_primitives::types::Height;
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::SyncEngine;
@@ -167,7 +167,7 @@ where
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
-        caught_up: ReadySignal,
+        reporter: RunReporter,
     ) -> Result<(), IndexerError> {
         let mut engine = self
             .engine
@@ -184,7 +184,7 @@ where
 
         // Caught up to the target — the component goes Ready. Then follow until
         // cancelled (a no-op until tip-following lands).
-        caught_up.notify();
+        reporter.ready();
         cancel.cancelled().await;
         Ok(())
     }

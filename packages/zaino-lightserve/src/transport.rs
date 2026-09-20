@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
-use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
+use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 use zaino_service::LightServeService;
 
@@ -46,13 +46,13 @@ impl<S: LightServeService + Clone + 'static> RunLoop for GrpcServer<S> {
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
-        ready: ReadySignal,
+        reporter: RunReporter,
     ) -> Result<(), GrpcServeError> {
         // Bind synchronously so a bind failure (EADDRINUSE) surfaces before we
         // report Ready, rather than being swallowed inside the serve future (#1081).
         let incoming = TcpIncoming::bind(self.bind)
             .map_err(|e| GrpcServeError::Serve(format!("bind failed: {e}")))?;
-        ready.notify();
+        reporter.ready();
         let service = CompactTxStreamerServer::new(GrpcService::new(self.handler.clone()));
         Server::builder()
             .add_service(service)
@@ -79,7 +79,7 @@ mod tests {
 
         let task = tokio::spawn({
             let cancel = cancel.clone();
-            async move { server.run(cancel, ReadySignal::new(|| {})).await }
+            async move { server.run(cancel, RunReporter::new(|_| {})).await }
         });
         tokio::task::yield_now().await;
         cancel.cancel();

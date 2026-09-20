@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use zaino_component::{
-    CancellationToken, ComponentName, Health, Lifecycle, ReadySignal, StatusSource,
+    CancellationToken, ComponentName, Health, Lifecycle, RunReporter, StatusSource,
 };
 use zaino_runtime::{BootError, OrchestraBuilder, RunLoop, RuntimeOutcome, ServeComponent};
 
@@ -38,17 +38,17 @@ impl RunLoop for StubServer {
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
-        ready: ReadySignal,
+        reporter: RunReporter,
     ) -> Result<(), StubError> {
         match self.behavior {
             Behavior::FailToBind => Err(StubError),
             Behavior::ServeUntilCancel => {
-                ready.notify();
+                reporter.ready();
                 cancel.cancelled().await;
                 Ok(())
             }
             Behavior::FailAfterReady => {
-                ready.notify();
+                reporter.ready();
                 Err(StubError)
             }
         }

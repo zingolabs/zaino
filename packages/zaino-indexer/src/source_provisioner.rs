@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use zaino_async::{Task, TaskName};
-use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
+use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
 use zaino_source::{
     GetBlock, GetChainTip, GetPreIndexCompactBlock, SourceError, SubscribeChainTip, TipObservation,
@@ -279,6 +279,10 @@ pub struct SourceSyncDriver<S, B: Backend, Ctx, F, Fetch> {
     start: Height,
     finalised_depth: u32,
     channel_capacity: usize,
+    /// A read handle onto the same backend the engine writes, for the progress
+    /// poller to read the committed watermark (concurrent with the engine's
+    /// writer — the persisted watermark is the on-disk truth it reports).
+    backend: B,
 }
 
 impl<S, B: Backend, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
@@ -304,6 +308,7 @@ impl<S, B: Backend, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
         start: Height,
         finalised_depth: u32,
         channel_capacity: usize,
+        backend: B,
     ) -> Self {
         Self {
             engine: Mutex::new(Some(engine)),
@@ -311,6 +316,7 @@ impl<S, B: Backend, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
             start,
             finalised_depth,
             channel_capacity,
+            backend,
         }
     }
 
@@ -370,6 +376,7 @@ where
             start,
             tuning.finalised_depth,
             tuning.channel_capacity,
+            backend.clone(),
         ))
     }
 
@@ -449,7 +456,7 @@ where
 impl<S, B, Ctx, F, Fetch> RunLoop for SourceSyncDriver<S, B, Ctx, F, Fetch>
 where
     S: GetChainTip + SubscribeChainTip + Send + Sync + 'static,
-    B: Backend + Send + Sync + 'static,
+    B: Backend + Clone + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
     Fetch: SourceFetch<S>,
     F: Fn(Fetch::Item) -> Ctx + Send + Sync + 'static,
@@ -461,7 +468,7 @@ where
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
-        caught_up: ReadySignal,
+        reporter: RunReporter,
     ) -> Result<(), IndexerError> {
         let mut engine = self
             .engine
@@ -470,6 +477,44 @@ where
             .take()
             .ok_or(IndexerError::AlreadyRun)?;
 
+        // Self-report committed-watermark progress on a ~1s tick, for the run's
+        // lifetime — the drop guard cancels the poller when `run` returns. The
+        // poller reads the *persisted* watermark (the on-disk truth) concurrently
+        // with the engine's writer, and the source tip as the target.
+        let poll_cancel = cancel.child_token();
+        let _poll_guard = poll_cancel.clone().drop_guard();
+        {
+            let backend = self.backend.clone();
+            let tip_source = Arc::clone(&self.provisioner);
+            let reporter = reporter.clone();
+            let _poller = Task::spawn(TaskName("indexer-progress"), move |_unused| async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    tokio::select! {
+                        _ = poll_cancel.cancelled() => break,
+                        _ = ticker.tick() => {
+                            let committed = backend
+                                .reader()
+                                .ok()
+                                .and_then(|reader| {
+                                    zaino_persistence_codec::watermark::read(&reader)
+                                        .ok()
+                                        .flatten()
+                                })
+                                .map(|height| u64::from(u32::from(height)))
+                                .unwrap_or(0);
+                            let target = tip_source
+                                .current_tip()
+                                .await
+                                .ok()
+                                .map(|height| u64::from(u32::from(height)));
+                            reporter.progress(committed, target);
+                        }
+                    }
+                }
+            });
+        }
+
         // Initial catch-up: sync [start, finalised-boundary], then Ready. Only
         // the append-only finalised range is built; the volatile window above it
         // is the chain-head's concern.
@@ -477,7 +522,7 @@ where
         if u32::from(synced) >= u32::from(self.start) {
             self.sync_to(&mut engine, self.start, synced).await?;
         }
-        caught_up.notify();
+        reporter.ready();
 
         // Steady-state follow: index each new range as the tip advances. If the
         // source does not push a tip (`None`), stay at the caught-up height.

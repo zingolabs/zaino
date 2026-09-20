@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use zaino_component::{CancellationToken, ReadySignal, RunLoop};
+use zaino_component::{CancellationToken, RunLoop, RunReport, RunReporter};
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
 use zaino_lightserve::{GrpcServer, LightServe};
@@ -121,11 +121,18 @@ async fn serve(store: StoreReader<InMemoryBackend>) -> (SocketAddr, Cancellation
     let server = Arc::new(GrpcServer::new(LightServe::new(store), addr));
     let cancel = CancellationToken::new();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-    let ready = ReadySignal::new(move || {
-        let _ = ready_tx.send(());
+    // `RunReporter` calls its closure for every report, so the one-shot sender is
+    // taken out on the first `Ready` (a `Fn` closure cannot move it on each call).
+    let ready_tx = std::sync::Mutex::new(Some(ready_tx));
+    let reporter = RunReporter::new(move |report| {
+        if matches!(report, RunReport::Ready) {
+            if let Some(tx) = ready_tx.lock().expect("ready_tx mutex").take() {
+                let _ = tx.send(());
+            }
+        }
     });
     let serve_cancel = cancel.clone();
-    tokio::spawn(async move { server.run(serve_cancel, ready).await });
+    tokio::spawn(async move { server.run(serve_cancel, reporter).await });
     ready_rx.await.expect("server reports ready after binding");
     (addr, cancel)
 }

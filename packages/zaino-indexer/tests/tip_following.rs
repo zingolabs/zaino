@@ -134,6 +134,7 @@ async fn the_indexer_follows_the_tip() {
         Height::try_from(0).expect("valid height"),
         0, // finalised_depth: non-reorging mock, index right to the tip
         16,
+        backend.clone(),
     );
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
 
@@ -198,6 +199,7 @@ async fn the_indexer_stops_at_the_finalised_boundary() {
         Height::try_from(0).expect("valid height"),
         2, // finalised_depth
         16,
+        backend.clone(),
     );
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
 

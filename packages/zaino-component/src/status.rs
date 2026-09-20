@@ -17,8 +17,23 @@ impl fmt::Display for ComponentName {
     }
 }
 
+/// A component's position toward a target — e.g. an indexer's committed height
+/// toward the chain tip.
+///
+/// Domain-free by design: a plain count, not a domain `Height`, so this crate
+/// stays free of chain vocabulary. A reporter maps its domain position onto these
+/// counts (see [`crate::RunReporter::progress`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Progress {
+    /// How far the component has got.
+    pub current: u64,
+    /// The target it is working toward, if known.
+    pub target: Option<u64>,
+}
+
 /// A named snapshot of a component's [`Lifecycle`] phase and [`Health`]
-/// condition, plus the cause of its current condition when it is not healthy.
+/// condition, the cause of its current condition when it is not healthy, and its
+/// progress toward a target when it has one.
 ///
 /// A report only: transitions are owned by [`Lifecycle`], not by this bundle.
 /// Not `Copy` — it carries an owned [`reason`](Self::reason) string so a
@@ -37,18 +52,24 @@ pub struct ComponentStatus {
     /// Set at the supervision boundary; cleared on any clean transition so a
     /// stale cause never lingers past recovery.
     pub reason: Option<String>,
+    /// The component's position toward a target, when it reports one (e.g. an
+    /// indexer's committed height toward the tip). `None` for components with no
+    /// meaningful progress (e.g. a bound server).
+    pub progress: Option<Progress>,
 }
 
 impl ComponentStatus {
     /// A healthy status snapshot for `name` at `lifecycle` / `health`, with no
-    /// failure cause. A failing supervisor sets [`reason`](Self::reason)
-    /// directly at the boundary.
+    /// failure cause and no progress. A failing supervisor sets
+    /// [`reason`](Self::reason) directly at the boundary; a running component
+    /// reports [`progress`](Self::progress) through its [`crate::RunReporter`].
     pub fn new(name: ComponentName, lifecycle: Lifecycle, health: Health) -> Self {
         Self {
             name,
             lifecycle,
             health,
             reason: None,
+            progress: None,
         }
     }
 }
@@ -61,6 +82,12 @@ impl ComponentStatus {
 impl fmt::Display for ComponentStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {:?}/{:?}", self.name, self.lifecycle, self.health)?;
+        if let Some(progress) = &self.progress {
+            match progress.target {
+                Some(target) => write!(f, " ({}/{})", progress.current, target)?,
+                None => write!(f, " ({}/?)", progress.current)?,
+            }
+        }
         if let Some(reason) = &self.reason {
             write!(f, " — {reason}")?;
         }
@@ -89,7 +116,7 @@ pub trait StatusWatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComponentName, ComponentStatus};
+    use super::{ComponentName, ComponentStatus, Progress};
     use crate::{Health, Lifecycle};
 
     #[test]
@@ -108,5 +135,29 @@ mod tests {
             failed.to_string(),
             "indexer: Syncing/Critical — run loop panicked: boom"
         );
+    }
+
+    #[test]
+    fn display_shows_progress_when_present() {
+        let mut syncing = ComponentStatus::new(
+            ComponentName("indexer"),
+            Lifecycle::Syncing,
+            Health::Healthy,
+        );
+        syncing.progress = Some(Progress {
+            current: 1_700_000,
+            target: Some(3_428_000),
+        });
+        assert_eq!(
+            syncing.to_string(),
+            "indexer: Syncing/Healthy (1700000/3428000)"
+        );
+
+        // Target unknown renders as `?`.
+        syncing.progress = Some(Progress {
+            current: 1_700_000,
+            target: None,
+        });
+        assert_eq!(syncing.to_string(), "indexer: Syncing/Healthy (1700000/?)");
     }
 }

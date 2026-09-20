@@ -50,7 +50,7 @@
 use std::sync::Arc;
 
 use zaino_component::{
-    CancellationToken, ComponentName, ComponentStatus, Lifecycle, ReachabilityProbe, ReadySignal,
+    CancellationToken, ComponentName, ComponentStatus, Lifecycle, ReachabilityProbe, RunReporter,
 };
 use zaino_indexer::{FetchConcurrency, IndexerError, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
@@ -254,7 +254,7 @@ impl RunLoop for NestedFailureDriver {
     async fn run(
         self: Arc<Self>,
         _cancel: CancellationToken,
-        _caught_up: ReadySignal,
+        _reporter: RunReporter,
     ) -> Result<(), IndexerError> {
         // Yield so the indexer is observed `Syncing` before it fails.
         tokio::task::yield_now().await;

@@ -12,8 +12,8 @@
 //! while the loop is running-but-not-yet-`Ready`: a writer goes `Syncing` (it
 //! already serves dependents while catching up, so the Orchestra boots them once
 //! it is running), a server stays `Spawning` (it must bind before it is `Ready`).
-//! Readiness is reported by the loop firing its [`ReadySignal`], never
-//! optimistically at spawn. Health is driven by the loop's outcome: a clean stop
+//! Readiness and progress are reported by the loop through its [`RunReporter`],
+//! never optimistically at spawn. Health is driven by the loop's outcome: a clean stop
 //! settles `Offline`, a failure (bind failure, dead loop, panic) flips `Critical`
 //! with the cause, which the Orchestra escalates.
 
@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use zaino_async::{Task, TaskName};
 use zaino_component::{
-    ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, RunLoop, StatusSource,
-    StatusWatch,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, Progress, RunLoop, RunReport,
+    RunReporter, StatusSource, StatusWatch,
 };
 
 /// A [`RunLoop`] `R`, presented to the runtime as a supervised component.
@@ -101,14 +101,20 @@ impl<R: RunLoop> Managed for RunComponent<R> {
             .lock()
             .expect("run component log task mutex poisoned") = Some(logger);
 
-        // Report `Ready` only when the loop fires its readiness signal (bound /
-        // caught up), not optimistically here.
-        let ready_status = self.status.clone();
-        let ready = ReadySignal::new(move || {
-            ready_status.send_modify(|s| {
-                s.lifecycle = Lifecycle::Ready;
-                s.health = Health::Healthy;
-                s.reason = None;
+        // Map the loop's reports onto our status: `Ready` (bound / caught up),
+        // reported only when the loop actually reaches it (not optimistically
+        // here); `Progress` records the loop's position toward its target.
+        let report_status = self.status.clone();
+        let reporter = RunReporter::new(move |report| {
+            report_status.send_modify(|s| match report {
+                RunReport::Ready => {
+                    s.lifecycle = Lifecycle::Ready;
+                    s.health = Health::Healthy;
+                    s.reason = None;
+                }
+                RunReport::Progress { current, target } => {
+                    s.progress = Some(Progress { current, target });
+                }
             });
         });
 
@@ -126,8 +132,13 @@ impl<R: RunLoop> Managed for RunComponent<R> {
             // The run boundary — catch a panic, log any failure, reconcile the
             // terminal status — is one shared seam (see `crate::run`), so no
             // component re-implements the match nor forgets to log.
-            crate::run::run_and_reconcile(name, &run_status, R::LABEL, runnable.run(cancel, ready))
-                .await;
+            crate::run::run_and_reconcile(
+                name,
+                &run_status,
+                R::LABEL,
+                runnable.run(cancel, reporter),
+            )
+            .await;
         });
         *self.task.lock().expect("run component task mutex poisoned") = Some(task);
         Ok(())

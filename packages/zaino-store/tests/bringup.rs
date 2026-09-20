@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use zaino_component::{
-    CancellationToken, ComponentName, Lifecycle, ReachabilityProbe, ReadySignal, RunLoop,
+    CancellationToken, ComponentName, Lifecycle, ReachabilityProbe, RunLoop, RunReporter,
 };
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
@@ -34,9 +34,9 @@ impl RunLoop for NoOpDriver {
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
-        caught_up: ReadySignal,
+        reporter: RunReporter,
     ) -> Result<(), Self::Error> {
-        caught_up.notify();
+        reporter.ready();
         cancel.cancelled().await;
         Ok(())
     }
