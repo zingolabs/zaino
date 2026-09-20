@@ -91,9 +91,13 @@ where
 {
     let mut status = component.subscribe();
     loop {
-        // Copy the health out so the watch borrow is dropped before any await.
-        let health = status.borrow_and_update().health;
-        match policy.action(health) {
+        // Clone the whole status (dropping the watch borrow before any await) and
+        // log it — the per-component state trail, one INFO line per transition,
+        // rendered by `ComponentStatus`'s `Display`. Complements the runtime-phase
+        // log in the signals aggregator; failures still log their cause at ERROR.
+        let current = status.borrow_and_update().clone();
+        tracing::info!(status = %current, "component status");
+        match policy.action(current.health) {
             Action::Ignore => {}
             Action::Restart => component.restart().await?,
             Action::Escalate => return Ok(SupervisionOutcome::Escalated),
@@ -119,8 +123,9 @@ where
 {
     let mut status = component.subscribe();
     loop {
-        let health = status.borrow_and_update().health;
-        if matches!(health, Health::Critical) {
+        let current = status.borrow_and_update().clone();
+        tracing::info!(status = %current, "component status");
+        if matches!(current.health, Health::Critical) {
             return SupervisionOutcome::Escalated;
         }
         if status.changed().await.is_err() {

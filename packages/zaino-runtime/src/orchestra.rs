@@ -254,8 +254,17 @@ fn spawn_signals(
     Task::spawn(TaskName("runtime-signals"), move |cancel| async move {
         // The startup latch: has the runtime ever reached `Serving`.
         let mut started = false;
+        // The last phase logged, so a transition is logged once, not on every
+        // status change that leaves the phase unchanged.
+        let mut logged_phase: Option<RuntimePhase> = None;
         loop {
             let phase = classify(&criteria, &snapshot(&receivers), started);
+            if logged_phase != Some(phase) {
+                // The overall app-state trail (Booting → Serving → …), the
+                // runtime-level companion to the per-component status logs.
+                tracing::info!(?phase, "runtime phase");
+                logged_phase = Some(phase);
+            }
             started = started || matches!(phase, RuntimePhase::Serving);
             let _ = tx.send(RuntimeSignals::from_phase(phase));
 
