@@ -44,7 +44,8 @@ use zaino_primitives::types::{Block, BlockHash, Height};
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, NonDomainError, OneShotGetBlock,
-    OneShotGetChainTip, QueryError, RetryPolicy, SubscribeChainTip, ValidatorClient, ValidatorSource,
+    OneShotGetChainTip, QueryError, RetryPolicy, SubscribeChainTip, ValidatorClient,
+    ValidatorSource,
 };
 
 /// A validator reachability probe that always answers `reachable`.
@@ -203,7 +204,7 @@ fn banner(title: &str, subtitle: &str) {
 async fn main() {
     // The real logging machinery: structured tracing subscriber + the panic
     // hook that routes every panic through `tracing` at its origin.
-    zaino_common::logging::try_init();
+    zaino_logging::try_init();
 
     banner(
         "SCENARIO 1",

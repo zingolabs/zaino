@@ -61,7 +61,7 @@ pub enum IndexerError {
     /// The [`TaskError`] names the worker (our name, not tokio's runtime id) and
     /// keeps a panic's message, so a health `reason` still says *what* failed;
     /// the panic's origin is separately logged by the panic hook the moment it
-    /// happens (see `zaino_common::logging`).
+    /// happens (see `zaino_logging`).
     #[error(transparent)]
     UnexpectedWorkerFailure(#[from] zaino_async::TaskError),
     /// `run` was called after the engine had already been consumed.

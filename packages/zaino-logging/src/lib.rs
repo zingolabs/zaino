@@ -1,6 +1,14 @@
+#![forbid(unsafe_code)]
+
 //! Logging infrastructure for Zaino.
 //!
-//! This module provides centralized logging configuration with support for:
+//! Centralised tracing setup plus the panic hook that routes every panic through
+//! `tracing` at its origin. Its own crate — one layer of cross-cutting infra,
+//! depending only on the tracing stack — so a consumer that just wants
+//! structured logs need not pull a heavier "common" grab-bag (and its
+//! transitive `zebra-chain`) to initialise them.
+//!
+//! This crate provides centralized logging configuration with support for:
 //! - Stream view (flat chronological output) - DEFAULT
 //! - Tree view (hierarchical span-based output)
 //! - JSON output (machine-parseable)
@@ -16,10 +24,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use zaino_common::logging;
-//!
 //! // Initialize logging, configured via the environment variables above.
-//! logging::init();
+//! zaino_logging::init();
 //! ```
 
 use std::env;
@@ -29,10 +35,10 @@ use std::sync::Once;
 use time::macros::format_description;
 use tracing::Level;
 use tracing_subscriber::{
+    EnvFilter,
     fmt::time::UtcTime,
     layer::SubscriberExt,
     util::{SubscriberInitExt, TryInitError},
-    EnvFilter,
 };
 use tracing_tree::HierarchicalLayer;
 

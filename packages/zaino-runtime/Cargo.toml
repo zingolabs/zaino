@@ -27,4 +27,4 @@ zaino-indexes = { path = "../zaino-indexes" }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
-zaino-common = { path = "../zaino-common" }
+zaino-logging = { path = "../zaino-logging" }

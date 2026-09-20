@@ -111,7 +111,7 @@ impl<T: Send + 'static> Task<T> {
 
 /// Extract a panic's message from a `JoinError` known to be a panic, never
 /// surfacing tokio's runtime task id. Mirrors the panic hook's payload
-/// downcast (`zaino_common::logging`), so origin and join render the same text.
+/// downcast (`zaino_logging`), so origin and join render the same text.
 fn panic_message(err: JoinError) -> String {
     let payload = err.into_panic();
     payload

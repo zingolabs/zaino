@@ -5989,10 +5989,6 @@ version = "0.5.1"
 dependencies = [
  "rustls",
  "serde",
- "time",
- "tracing",
- "tracing-subscriber",
- "tracing-tree",
  "zebra-chain",
 ]
 
@@ -6089,6 +6085,16 @@ dependencies = [
  "zaino-source",
  "zaino-store",
  "zaino-sync",
+]
+
+[[package]]
+name = "zaino-logging"
+version = "0.1.0"
+dependencies = [
+ "time",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tree",
 ]
 
 [[package]]
@@ -6193,12 +6199,12 @@ dependencies = [
  "tokio",
  "tracing",
  "zaino-async",
- "zaino-common",
  "zaino-component",
  "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-lightserve",
+ "zaino-logging",
  "zaino-noderpc",
  "zaino-persistence",
  "zaino-primitives",
@@ -6459,6 +6465,7 @@ dependencies = [
  "zaino-indexer",
  "zaino-indexes",
  "zaino-lightserve",
+ "zaino-logging",
  "zaino-persistence",
  "zaino-persistence-codec",
  "zaino-rpc",

@@ -25,7 +25,7 @@ pub mod metrics;
 /// Logging should be initialized by the caller before calling this function.
 /// Returns an error if config loading or indexer startup fails.
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
-    zaino_common::logging::try_init();
+    zaino_logging::try_init();
 
     info!(version = env!("CARGO_PKG_VERSION"), "zainod started");
 
