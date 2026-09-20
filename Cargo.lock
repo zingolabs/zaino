@@ -4953,8 +4953,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58bb785abb0207bee98b1d7d874467bb1043d4e434f9a8c8a4714603563c762b"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "futures",
  "futures-core",
@@ -4970,8 +4969,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c700b6ca0cca8b86ef35046dfc7bab9196b8271ab72e9d410f8f63d94857d14f"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -6650,8 +6648,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "12.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b270bc7ec8f48cf58d14368c3521201947df137fc0e52633e81297250b2e3e0e"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -6719,8 +6716,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "15.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3fdf6ead7848d73d835a37a24f5b39bb0ab607d293e9fa7662a9a769f924a59"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6762,8 +6758,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "12.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f288a50e47d4afecd95836350949ab911cc2091713b1c18cfb897e1d3f81cb9b"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -6800,8 +6795,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "10.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b616439bef32a2d9d581d3807e032c4da543d725586248d9dfe5c2cbd43b00b9"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6816,8 +6810,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "16.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23a3761cee7e8e1daa910bd53afa482270ad7f1dd2ce1c1332d1b99c982704d9"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "base64",
  "chrono",
@@ -6877,8 +6870,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "11.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "762fe1a82f312422c7df60560729669b3a938ed639fe624f2ff6da9ec7403eea"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "libzcash_script",
  "rand 0.8.6",
@@ -6891,8 +6883,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "13.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf1fd860f0eb79d9af0f677007ddd7559d378782a02a06fdd5a5e5cb98413ae"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bincode",
  "chrono",
@@ -6930,8 +6921,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93c3fbb37b81e2727172ae184582297ffa91016be660ddd594b4830b16d168c9"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "color-eyre",
  "futures",

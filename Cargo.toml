@@ -224,3 +224,17 @@ rayon = "1.10"
 [profile.test]
 opt-level = 3
 debug = true
+
+# TEMPORARY: point zebra at nachog00/zebra `feat/compact-block-read-v6.3.0`,
+# which adds `ReadRequest::CompactBlock` — a zaino-shaped compact block
+# (transparent + shielded, proofs/signatures skipped) that the ReadState
+# adapter's compact source path needs. The branch tracks zebra 6.3.0
+# (zebra-state 13.0.0), matching our version requirements, so this is a drop-in
+# patch and the on-disk state format (v28) is unchanged. Only the three crates
+# we depend on directly are listed; their transitive zebra crates come from the
+# fork through its internal path deps. Revert to crates.io once the endpoint is
+# upstreamed to ZcashFoundation/zebra.
+[patch.crates-io]
+zebra-chain = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
+zebra-rpc = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
+zebra-state = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
