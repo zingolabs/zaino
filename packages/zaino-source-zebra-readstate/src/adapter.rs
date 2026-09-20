@@ -225,16 +225,48 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraReadStateAdapter {
         zaino_primitives::types::PreIndexCompactBlock,
         QueryError<GetBlockError, ReadStateError>,
     > {
-        // Zebra's read-state service serves whole blocks only; there is no
-        // compact-block read request. Read the full block and strip it down
-        // through the domain `Block`, exactly as the RPC adapter does.
-        use zaino_source::OneShotGetBlock;
-        let block = self.get_block(height).await?;
-        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
+        // The fork's `ReadRequest::CompactBlock` serves a zaino-shaped compact
+        // block (transparent + shielded, proofs/signatures skipped), so the
+        // indexer never pays to deserialize proofs it does not read — the point
+        // of the compact path, and where the sandblast-era win lives.
+        let compact = self.get_compact_block(height).await?;
+        zaino_convert_zebra::pre_index_compact_block_from_zebra(&compact)
+            .map_err(|e| ReadStateError::invalid_data(e).into())
     }
 }
 
 impl ZebraReadStateAdapter {
+    /// Fetch a compact block via the fork's `ReadRequest::CompactBlock` — the
+    /// zaino-shaped compact block (transparent outpoints + outputs and shielded
+    /// spends/outputs/actions) with proofs, signatures, and input scripts never
+    /// deserialized. Returns zebra's compact type; the domain conversion lives in
+    /// [`zaino_convert_zebra::pre_index_compact_block_from_zebra`].
+    pub async fn get_compact_block(
+        &self,
+        height: Height,
+    ) -> Result<
+        zebra_chain::transaction::compact::CompactBlock,
+        QueryError<GetBlockError, ReadStateError>,
+    > {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let request = ReadRequest::CompactBlock(zebra_height.into());
+
+        let response = self
+            .state
+            .clone()
+            .oneshot(request)
+            .await
+            .map_err(ReadStateError::unreachable)?;
+
+        match response {
+            ReadResponse::CompactBlock(Some(compact)) => Ok(compact),
+            ReadResponse::CompactBlock(None) => {
+                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+            }
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+        }
+    }
+
     /// Fetch just the block header — no transaction deserialization at all.
     pub async fn get_block_header(
         &self,
