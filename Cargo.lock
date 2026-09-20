@@ -6179,6 +6179,7 @@ dependencies = [
  "futures",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "zaino-component",
  "zaino-core",
  "zaino-lightserve",

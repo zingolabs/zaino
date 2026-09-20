@@ -62,7 +62,7 @@ impl<B> StoreComponent<B> {
 
 impl<B: Send + Sync + 'static> StatusSource for StoreComponent<B> {
     fn status(&self) -> ComponentStatus {
-        *self.status.borrow()
+        self.status.borrow().clone()
     }
 }
 

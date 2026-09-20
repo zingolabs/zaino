@@ -172,7 +172,7 @@ mod tests {
 
     impl StatusSource for Mock {
         fn status(&self) -> ComponentStatus {
-            *self.status.borrow()
+            self.status.borrow().clone()
         }
     }
 

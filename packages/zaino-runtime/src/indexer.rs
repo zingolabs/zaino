@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 use zaino_component::{
-    ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, StatusSource,
-    StatusWatch, SyncDriver, Task, TaskName,
+    error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal,
+    StatusSource, StatusWatch, SyncDriver, Task, TaskName,
 };
 
 /// A [`SyncDriver`] presented to the runtime as an owned component.
@@ -58,7 +58,7 @@ impl<D> IndexerComponent<D> {
 
 impl<D: Send + Sync + 'static> StatusSource for IndexerComponent<D> {
     fn status(&self) -> ComponentStatus {
-        *self.status.borrow()
+        self.status.borrow().clone()
     }
 }
 
@@ -84,24 +84,38 @@ impl<D: SyncDriver> Managed for IndexerComponent<D> {
             caught_up_status.send_modify(|s| {
                 s.lifecycle = Lifecycle::Ready;
                 s.health = Health::Healthy;
+                s.reason = None;
             });
         });
 
         let driver = Arc::clone(&self.driver);
         let syncing_status = self.status.clone();
         let done_status = self.status.clone();
+        let name = self.name;
         let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
             // Now actively building the index.
             syncing_status.send_modify(|s| {
                 s.lifecycle = Lifecycle::Syncing;
                 s.health = Health::Healthy;
+                s.reason = None;
             });
             match driver.run(cancel, caught_up).await {
                 Ok(()) => done_status.send_modify(|s| {
                     s.lifecycle = Lifecycle::Offline;
                     s.health = Health::Offline;
+                    s.reason = None;
                 }),
-                Err(_) => done_status.send_modify(|s| s.health = Health::Critical),
+                // The one place a driver failure funnels: log the whole cause
+                // chain and record it on the status, so the failure is never
+                // silent and a health reader sees *why*, not just `Critical`.
+                Err(e) => {
+                    let chain = error_chain(&e);
+                    tracing::error!(component = %name, error = %e, cause = %chain, "indexer run loop failed");
+                    done_status.send_modify(|s| {
+                        s.health = Health::Critical;
+                        s.reason = Some(chain);
+                    });
+                }
             }
         });
         *self.task.lock().expect("indexer task mutex poisoned") = Some(task);
@@ -128,6 +142,7 @@ impl<D: SyncDriver> Managed for IndexerComponent<D> {
         self.status.send_modify(|s| {
             s.lifecycle = Lifecycle::Offline;
             s.health = Health::Offline;
+            s.reason = None;
         });
         Ok(())
     }

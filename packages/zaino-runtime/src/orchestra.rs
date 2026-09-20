@@ -199,6 +199,7 @@ impl Orchestra {
     pub async fn run(mut self) -> RuntimeOutcome {
         match self.next_escalation().await {
             Some(component) => {
+                tracing::error!(%component, "component escalated; tearing down the runtime");
                 self.shutdown();
                 RuntimeOutcome::Fatal { component }
             }
@@ -234,7 +235,7 @@ impl Orchestra {
 
 /// Snapshot every component's current status.
 fn snapshot(receivers: &[watch::Receiver<ComponentStatus>]) -> Vec<ComponentStatus> {
-    receivers.iter().map(|r| *r.borrow()).collect()
+    receivers.iter().map(|r| r.borrow().clone()).collect()
 }
 
 /// Spawn the signals aggregator: recompute the runtime signals whenever any
@@ -289,7 +290,7 @@ fn spawn_signals(
 async fn await_running<C: StatusWatch>(component: &C) -> bool {
     let mut status = component.subscribe();
     loop {
-        let current = *status.borrow_and_update();
+        let current = status.borrow_and_update().clone();
         if matches!(current.lifecycle, Lifecycle::Ready | Lifecycle::Syncing) {
             return true;
         }
@@ -344,7 +345,7 @@ mod tests {
 
     impl StatusSource for Mock {
         fn status(&self) -> ComponentStatus {
-            *self.status.borrow()
+            self.status.borrow().clone()
         }
     }
 

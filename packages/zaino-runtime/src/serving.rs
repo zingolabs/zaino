@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
 use zaino_component::{
-    ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve, StatusSource,
-    StatusWatch, Task, TaskName,
+    error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve,
+    StatusSource, StatusWatch, Task, TaskName,
 };
 
 /// A [`Serve`] server `A`, presented to the runtime as a component.
@@ -59,7 +59,7 @@ impl<A> ServeComponent<A> {
 
 impl<A: Send + Sync + 'static> StatusSource for ServeComponent<A> {
     fn status(&self) -> ComponentStatus {
-        *self.status.borrow()
+        self.status.borrow().clone()
     }
 }
 
@@ -87,20 +87,31 @@ impl<A: Serve> Managed for ServeComponent<A> {
             ready_status.send_modify(|s| {
                 s.lifecycle = Lifecycle::Ready;
                 s.health = Health::Healthy;
+                s.reason = None;
             });
         });
 
         let server = Arc::clone(&self.server);
         let status = self.status.clone();
+        let name = self.name;
         let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
             match server.serve(cancel, ready).await {
                 // Clean shutdown after the token fired.
                 Ok(()) => status.send_modify(|s| {
                     s.lifecycle = Lifecycle::Offline;
                     s.health = Health::Offline;
+                    s.reason = None;
                 }),
-                // Bind failure (never became Ready) or a dead serve loop.
-                Err(_) => status.send_modify(|s| s.health = Health::Critical),
+                // Bind failure (never became Ready) or a dead serve loop: log the
+                // whole cause chain and record it on the status — never silent.
+                Err(e) => {
+                    let chain = error_chain(&e);
+                    tracing::error!(component = %name, error = %e, cause = %chain, "serve loop failed");
+                    status.send_modify(|s| {
+                        s.health = Health::Critical;
+                        s.reason = Some(chain);
+                    });
+                }
             }
         });
         *self.task.lock().expect("serve task mutex poisoned") = Some(task);
@@ -123,6 +134,7 @@ impl<A: Serve> Managed for ServeComponent<A> {
         self.status.send_modify(|s| {
             s.lifecycle = Lifecycle::Offline;
             s.health = Health::Offline;
+            s.reason = None;
         });
         Ok(())
     }

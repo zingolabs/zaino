@@ -60,7 +60,7 @@ impl ValidatorComponent {
 
 impl StatusSource for ValidatorComponent {
     fn status(&self) -> ComponentStatus {
-        *self.status.borrow()
+        self.status.borrow().clone()
     }
 }
 

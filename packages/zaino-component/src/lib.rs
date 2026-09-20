@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
 
+mod error;
 mod health;
 mod lifecycle;
 mod managed;
@@ -14,6 +15,7 @@ mod task;
 #[cfg(test)]
 mod tests;
 
+pub use error::error_chain;
 pub use health::Health;
 pub use lifecycle::{IllegalTransition, Lifecycle};
 pub use managed::Managed;

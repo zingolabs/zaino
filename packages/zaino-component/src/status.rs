@@ -18,11 +18,13 @@ impl fmt::Display for ComponentName {
 }
 
 /// A named snapshot of a component's [`Lifecycle`] phase and [`Health`]
-/// condition.
+/// condition, plus the cause of its current condition when it is not healthy.
 ///
 /// A report only: transitions are owned by [`Lifecycle`], not by this bundle.
-/// A `Copy` value, not a live handle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Not `Copy` — it carries an owned [`reason`](Self::reason) string so a
+/// supervisor (and any health endpoint) can report *why* a component is
+/// `Critical`, not merely *that* it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComponentStatus {
     /// Which component this is — for attribution and logs.
     pub name: ComponentName,
@@ -30,15 +32,23 @@ pub struct ComponentStatus {
     pub lifecycle: Lifecycle,
     /// The health condition.
     pub health: Health,
+    /// The human-readable cause of the current condition — the failing error's
+    /// full source chain when the component is unhealthy, `None` when healthy.
+    /// Set at the supervision boundary; cleared on any clean transition so a
+    /// stale cause never lingers past recovery.
+    pub reason: Option<String>,
 }
 
 impl ComponentStatus {
-    /// A status snapshot for `name` at `lifecycle` / `health`.
+    /// A healthy status snapshot for `name` at `lifecycle` / `health`, with no
+    /// failure cause. A failing supervisor sets [`reason`](Self::reason)
+    /// directly at the boundary.
     pub fn new(name: ComponentName, lifecycle: Lifecycle, health: Health) -> Self {
         Self {
             name,
             lifecycle,
             health,
+            reason: None,
         }
     }
 }

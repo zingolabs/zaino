@@ -7,7 +7,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use zaino_component::{CancellationToken, ComponentName, Lifecycle, ReadySignal};
+use zaino_component::{
+    CancellationToken, ComponentName, Health, Lifecycle, ReadySignal, StatusSource,
+};
 use zaino_runtime::{BootError, OrchestraBuilder, RuntimeOutcome, Serve, ServeComponent};
 
 /// A stub transport server with a scriptable behavior.
@@ -87,6 +89,13 @@ async fn a_serve_loop_failure_after_ready_escalates_and_is_fatal() {
             component: ComponentName("node-rpc")
         }
     );
+
+    // The failure is not just a flag: the component's status carries *why* it is
+    // Critical — the serve error's cause — so a health reader learns the reason,
+    // not merely that it failed.
+    let failed = node.status();
+    assert_eq!(failed.health, Health::Critical);
+    assert_eq!(failed.reason.as_deref(), Some("stub server failed"));
 }
 
 #[tokio::test]
