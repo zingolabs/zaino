@@ -35,7 +35,7 @@ use zaino_sync::primitives::BlockHeight;
 use crate::IndexerError;
 
 /// Name of the provisioner's block-fetch pump task. Spawned as a [`Task`], so a
-/// panic/cancel surfaces attributed to *this* name (via [`crate::IndexerError::WorkerCrashed`]),
+/// panic/cancel surfaces attributed to *this* name (via [`crate::IndexerError::UnexpectedWorkerFailure`]),
 /// never tokio's opaque runtime task id.
 const PROVISION_WORKER: TaskName = TaskName("block-provisioner");
 
@@ -393,7 +393,7 @@ where
         // `sync_channel` returns once the range is drained.
         engine.sync_channel(rx).await?;
         // Join the pump: the outer `?` turns a panic/cancel into a named
-        // `WorkerCrashed` (via `From<TaskError>`) — never a raw tokio id; the
+        // `UnexpectedWorkerFailure` (via `From<TaskError>`) — never a raw tokio id; the
         // inner `?` propagates a provisioning error the pump returned normally.
         pump.join().await??;
         Ok(())

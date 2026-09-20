@@ -20,7 +20,7 @@
 //!      `.expect` blowup, without needing Ironwood. Shows the panic hook logging
 //!      the panic at its **origin** (on the worker thread, `target: "panic"`),
 //!      AND the panic resurfacing at the boundary as a named
-//!      `IndexerError::WorkerCrashed` (task "block-provisioner") — a crashed
+//!      `IndexerError::UnexpectedWorkerFailure` (task "block-provisioner") — a crashed
 //!      fetch task becomes a logged, escalated component failure rather than a
 //!      silent death.
 //!
@@ -220,7 +220,7 @@ async fn main() {
     );
     println!("\n  Expect: the panic hook logging at origin (target=\"panic\", on the");
     println!("  worker thread), THEN the same failure resurfacing at the boundary");
-    println!("  as a named `IndexerError::WorkerCrashed` — a crashed fetch became a");
+    println!("  as a named `IndexerError::UnexpectedWorkerFailure` — a crashed fetch became a");
     println!("  logged, escalated component failure, not a silent death.");
     run_scenario(PanicFetchSource).await;
 

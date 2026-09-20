@@ -56,13 +56,14 @@ pub enum IndexerError {
     /// A worker task the indexer spawned terminated **unexpectedly** — it
     /// panicked or was aborted, rather than returning a value. This is the
     /// internal-fault channel (distinct from the actionable source/sync errors
-    /// above): a bug or a forced abort, not a defined indexing failure. The
-    /// [`TaskError`] names the worker (our name, not tokio's runtime id) and
-    /// keeps a panic's message, so a health `reason` still says *what* crashed;
+    /// above): a bug or a forced abort, not a defined indexing failure — which is
+    /// why the name states the epistemic outright rather than only the mechanism.
+    /// The [`TaskError`] names the worker (our name, not tokio's runtime id) and
+    /// keeps a panic's message, so a health `reason` still says *what* failed;
     /// the panic's origin is separately logged by the panic hook the moment it
     /// happens (see `zaino_common::logging`).
     #[error(transparent)]
-    WorkerCrashed(#[from] zaino_async::TaskError),
+    UnexpectedWorkerFailure(#[from] zaino_async::TaskError),
     /// `run` was called after the engine had already been consumed.
     #[error("indexer already run")]
     AlreadyRun,
