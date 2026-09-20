@@ -16,9 +16,10 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
+use zaino_async::{Task, TaskName};
 use zaino_component::{
     error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve,
-    StatusSource, StatusWatch, Task, TaskName,
+    StatusSource, StatusWatch,
 };
 
 /// A [`Serve`] server `A`, presented to the runtime as a component.

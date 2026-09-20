@@ -5879,6 +5879,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-async"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "zaino-backend-lmdb"
 version = "0.1.0"
 dependencies = [
@@ -5994,7 +6003,7 @@ dependencies = [
  "strum",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
+ "zaino-async",
 ]
 
 [[package]]
@@ -6039,6 +6048,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tokio",
+ "zaino-async",
  "zaino-component",
  "zaino-persistence-codec",
  "zaino-primitives",
@@ -6182,6 +6192,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "zaino-async",
  "zaino-component",
  "zaino-core",
  "zaino-lightserve",

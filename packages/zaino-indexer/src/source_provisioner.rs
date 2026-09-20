@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 
 use tokio::sync::watch;
 
+use zaino_async::{Task, TaskName};
 use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
 use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
 use zaino_source::{
@@ -32,6 +33,11 @@ use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::BlockHeight;
 
 use crate::IndexerError;
+
+/// Name of the provisioner's block-fetch pump task. Spawned as a [`Task`], so a
+/// panic/cancel surfaces attributed to *this* name (via [`crate::IndexerError::WorkerCrashed`]),
+/// never tokio's opaque runtime task id.
+const PROVISION_WORKER: TaskName = TaskName("block-provisioner");
 
 /// How many block fetches the provisioner keeps in flight at once.
 ///
@@ -377,11 +383,19 @@ where
     ) -> Result<(), IndexerError> {
         let (tx, rx) = mpsc::channel(self.channel_capacity);
         let provisioner = Arc::clone(&self.provisioner);
-        let provision = tokio::spawn(async move { provisioner.provision(from, to, tx).await });
-        // Dropping `tx` (moved into the task) at its end closes the channel, so
+        // The pump is bounded (fetch `[from, to]` then end), so it ignores the
+        // cooperative-cancel token; it stops on completion or on the receiver
+        // dropping (channel close).
+        let pump = Task::spawn(PROVISION_WORKER, move |_cancel| async move {
+            provisioner.provision(from, to, tx).await
+        });
+        // Dropping `tx` (moved into the pump) at its end closes the channel, so
         // `sync_channel` returns once the range is drained.
         engine.sync_channel(rx).await?;
-        provision.await??;
+        // Join the pump: the outer `?` turns a panic/cancel into a named
+        // `WorkerCrashed` (via `From<TaskError>`) — never a raw tokio id; the
+        // inner `?` propagates a provisioning error the pump returned normally.
+        pump.join().await??;
         Ok(())
     }
 }

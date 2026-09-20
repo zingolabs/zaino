@@ -17,9 +17,9 @@
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
+use zaino_async::{Task, TaskName};
 use zaino_component::{
-    ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource, StatusWatch, Task,
-    TaskName,
+    ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource, StatusWatch,
 };
 
 use crate::signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};

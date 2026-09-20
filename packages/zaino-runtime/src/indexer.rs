@@ -15,9 +15,10 @@
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
+use zaino_async::{Task, TaskName};
 use zaino_component::{
     error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal,
-    StatusSource, StatusWatch, SyncDriver, Task, TaskName,
+    StatusSource, StatusWatch, SyncDriver,
 };
 
 /// A [`SyncDriver`] presented to the runtime as an owned component.

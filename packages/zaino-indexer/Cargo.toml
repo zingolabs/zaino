@@ -15,6 +15,7 @@ tokio = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
+zaino-async = { version = "0.1.0", path = "../zaino-async" }
 
 [dev-dependencies]
 zaino-sync = { path = "../zaino-sync", features = ["testing"] }

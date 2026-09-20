@@ -10,7 +10,6 @@ mod probe;
 mod serve;
 mod status;
 mod sync;
-mod task;
 
 #[cfg(test)]
 mod tests;
@@ -23,9 +22,10 @@ pub use probe::ReachabilityProbe;
 pub use serve::{ReadySignal, Serve};
 pub use status::{ComponentName, ComponentStatus, StatusSource, StatusWatch};
 pub use sync::SyncDriver;
-pub use task::{Task, TaskError, TaskName};
 
-// The cooperative-cancellation token a [`Task`] body receives, re-exported so a
-// consumer naming it (e.g. a server's run signature) need not depend on
-// `tokio-util` directly.
-pub use tokio_util::sync::CancellationToken;
+// Tasks are the async layer below components: a supervised component *runs* on
+// `zaino_async::Task`, it does not define it. The [`CancellationToken`] a
+// component's trait signatures (`Serve`, `SyncDriver`) take is re-exported from
+// there so an implementor need name only `zaino-component`; `Task`/`TaskName`/
+// `TaskError` are imported from `zaino-async` directly by whoever spawns.
+pub use zaino_async::CancellationToken;

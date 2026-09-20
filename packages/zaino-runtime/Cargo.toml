@@ -12,6 +12,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 futures.workspace = true
 zaino-core = { path = "../zaino-core" }
+zaino-async = { version = "0.1.0", path = "../zaino-async" }
 
 [dev-dependencies]
 tokio = { workspace = true }
