@@ -173,6 +173,18 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
             level = config.level.as_str()
         ))
     });
+    // Panics are routed through `tracing` under the `panic` target by
+    // `install_panic_logger`. That target is outside the `zaino*` namespace, so
+    // neither the default filter nor a typical `RUST_LOG=zaino=…` enables it — the
+    // structured panic-at-origin event would be silently dropped (visible only as
+    // the default hook's raw stderr backtrace, and absent from the JSON sink).
+    // Ensure the `panic` target is enabled at ERROR so panic visibility is
+    // structural, not contingent on the operator's filter.
+    let env_filter = env_filter.add_directive(
+        "panic=error"
+            .parse()
+            .expect("static `panic=error` directive is valid"),
+    );
     let registry = tracing_subscriber::registry().with(env_filter);
 
     match config.format {
