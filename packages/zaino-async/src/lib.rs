@@ -10,7 +10,7 @@
 
 mod task;
 
-pub use task::{Task, TaskError, TaskName};
+pub use task::{Task, TaskError, TaskName, panic_message};
 
 // The cooperative-cancellation token a [`Task`] body receives, re-exported so a
 // consumer naming it (e.g. a server's run signature) need not depend on

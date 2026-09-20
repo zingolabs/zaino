@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use zaino_component::{
-    CancellationToken, ComponentName, Lifecycle, Managed, ReadySignal, StatusWatch,
+    CancellationToken, ComponentName, Health, Lifecycle, Managed, ReadySignal, StatusWatch,
 };
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, SyncDriver};
 
@@ -71,6 +71,55 @@ async fn a_syncing_indexer_boots_but_gates_readiness() {
     let signals = *orchestra.signals().borrow();
     assert!(!signals.ready, "a syncing indexer gates readiness");
     assert!(!signals.started, "still booting while syncing");
+
+    orchestra.shutdown();
+}
+
+/// A sync driver whose run loop *panics* (after yielding so the component is
+/// observed `Syncing` first) — a panic outside any joined sub-task, the silent-
+/// death path.
+struct PanicSync;
+
+impl SyncDriver for PanicSync {
+    type Error = SyncError;
+
+    async fn run(
+        self: Arc<Self>,
+        _cancel: CancellationToken,
+        _caught_up: ReadySignal,
+    ) -> Result<(), SyncError> {
+        tokio::task::yield_now().await;
+        panic!("boom in the run loop");
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_run_loop_goes_critical_and_escalates() {
+    let indexer = IndexerComponent::new(ComponentName("indexer"), PanicSync);
+    let mut orchestra = OrchestraBuilder::new()
+        .boot(indexer)
+        .await
+        .expect("boot indexer (reaches Syncing before it panics)")
+        .build();
+
+    // The run-loop panic must escalate through the runtime, not silently freeze
+    // the status at Syncing/Healthy while the supervisor waits forever.
+    let escalated = tokio::time::timeout(Duration::from_secs(1), orchestra.next_escalation())
+        .await
+        .expect("escalation arrived — the panic was not a silent death");
+    assert_eq!(escalated, Some(ComponentName("indexer")));
+
+    let status = &orchestra.statuses()[0];
+    assert_eq!(status.health, Health::Critical);
+    assert!(
+        status
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("panicked"),
+        "the reason names the panic: {:?}",
+        status.reason
+    );
 
     orchestra.shutdown();
 }

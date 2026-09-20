@@ -9,8 +9,9 @@
 
 use core::fmt;
 use core::future::Future;
+use std::any::Any;
 
-use tokio::task::{JoinError, JoinHandle};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 /// A task's name, carried on the task and its errors for status and logs.
@@ -102,18 +103,19 @@ impl<T: Send + 'static> Task<T> {
             Ok(value) => Ok(value),
             Err(err) if err.is_panic() => Err(TaskError::Panicked {
                 name: self.name,
-                message: panic_message(err),
+                message: panic_message(&*err.into_panic()),
             }),
             Err(_) => Err(TaskError::Cancelled { name: self.name }),
         }
     }
 }
 
-/// Extract a panic's message from a `JoinError` known to be a panic, never
-/// surfacing tokio's runtime task id. Mirrors the panic hook's payload
-/// downcast (`zaino_logging`), so origin and join render the same text.
-fn panic_message(err: JoinError) -> String {
-    let payload = err.into_panic();
+/// Extract a panic's message from its payload — the `Box<dyn Any>` a join
+/// (`JoinError::into_panic`) or a [`catch_unwind`](futures::future::FutureExt::catch_unwind)
+/// hands back. Mirrors the panic hook's downcast (`zaino_logging`), so a panic's
+/// origin log and wherever it is later reconciled render the same text. Shared so
+/// every supervision boundary that turns a panic into a value says the same thing.
+pub fn panic_message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())

@@ -12,10 +12,12 @@
 //! the observed validator. The concrete sync engine (e.g. ChainView's sync)
 //! implements [`SyncDriver`]; this component is the runtime slot it plugs into.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
+use futures::FutureExt;
 use tokio::sync::watch;
-use zaino_async::{Task, TaskName};
+use zaino_async::{panic_message, Task, TaskName};
 use zaino_component::{
     error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal,
     StatusSource, StatusWatch, SyncDriver,
@@ -100,21 +102,41 @@ impl<D: SyncDriver> Managed for IndexerComponent<D> {
                 s.health = Health::Healthy;
                 s.reason = None;
             });
-            match driver.run(cancel, caught_up).await {
-                Ok(()) => done_status.send_modify(|s| {
+            // `catch_unwind` so a panic in the run loop *itself* — outside any
+            // joined sub-task — becomes a `Critical` status + escalation rather
+            // than a silent death: the task would otherwise unwind past this
+            // match, abort its handle, and leave the status frozen at `Syncing`
+            // while the supervisor waits on a transition that never comes.
+            // `AssertUnwindSafe` is sound here: on a panic we escalate and the
+            // component is torn down, never resumed over the driver's state.
+            match AssertUnwindSafe(driver.run(cancel, caught_up))
+                .catch_unwind()
+                .await
+            {
+                Ok(Ok(())) => done_status.send_modify(|s| {
                     s.lifecycle = Lifecycle::Offline;
                     s.health = Health::Offline;
                     s.reason = None;
                 }),
-                // The one place a driver failure funnels: log the whole cause
-                // chain and record it on the status, so the failure is never
-                // silent and a health reader sees *why*, not just `Critical`.
-                Err(e) => {
+                // A driver failure funnels here: log the whole cause chain and
+                // record it on the status, so the failure is never silent and a
+                // health reader sees *why*, not just `Critical`.
+                Ok(Err(e)) => {
                     let chain = error_chain(&e);
                     tracing::error!(component = %name, error = %e, cause = %chain, "indexer run loop failed");
                     done_status.send_modify(|s| {
                         s.health = Health::Critical;
                         s.reason = Some(chain);
+                    });
+                }
+                // A panic in the run loop: the panic hook already logged its
+                // origin; reconcile status so it escalates like any other failure.
+                Err(panic) => {
+                    let message = panic_message(&*panic);
+                    tracing::error!(component = %name, %message, "indexer run loop panicked");
+                    done_status.send_modify(|s| {
+                        s.health = Health::Critical;
+                        s.reason = Some(format!("run loop panicked: {message}"));
                     });
                 }
             }

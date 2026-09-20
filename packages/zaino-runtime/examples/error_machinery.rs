@@ -11,18 +11,19 @@
 //!   * **escalated** by name up the runtime's shared channel — while the
 //!     observed validator stays `Healthy`.
 //!
-//! Two failure classes are shown:
+//! Three failure classes are shown:
 //!
 //!   1. **Typed transport failure** — the source returns a non-retryable
 //!      `Parse` failure. Bubbles as `IndexerError::Transport`. This is the
 //!      "the source handed back something undecodable" path, handled as data.
-//!   2. **Panic deep in a block fetch** — the exact *class* of the Ironwood
-//!      `.expect` blowup, without needing Ironwood. Shows the panic hook logging
-//!      the panic at its **origin** (on the worker thread, `target: "panic"`),
-//!      AND the panic resurfacing at the boundary as a named
-//!      `IndexerError::UnexpectedWorkerFailure` (task "block-provisioner") — a crashed
-//!      fetch task becomes a logged, escalated component failure rather than a
-//!      silent death.
+//!   2. **Panic in a joined sub-task (the block-fetch pump)** — the *class* of
+//!      the Ironwood `.expect` blowup. The panic hook logs it at **origin**
+//!      (`target: "panic"`), and it resurfaces at the boundary as a named
+//!      `IndexerError::UnexpectedWorkerFailure` (task "block-provisioner").
+//!   3. **Panic in the run loop body itself (the tip fetch)** — a panic *outside*
+//!      any joined sub-task. This was a **silent death** before the supervised-run
+//!      fix (status frozen at `Syncing`, no escalation); now `catch_unwind` at the
+//!      run boundary turns it into `Critical` + escalation like any other failure.
 //!
 //! Run it and watch stderr:
 //!
@@ -123,6 +124,33 @@ impl OneShotGetBlock for PanicFetchSource {
 }
 
 impl SubscribeChainTip for PanicFetchSource {}
+
+/// A source that **panics in `get_chain_tip`** — a panic in the run loop *body*
+/// (the tip fetch is awaited directly in `run`, not in the spawned pump). This is
+/// the path that was a *silent death* before the supervised-run fix: the run task
+/// would unwind, its handle abort, and the status stay frozen at `Syncing` with
+/// no escalation. Now `catch_unwind` at the run boundary turns it into `Critical`.
+struct PanicTipSource;
+
+impl ValidatorSource for PanicTipSource {
+    type NonDomain = NonDomainError;
+}
+
+impl OneShotGetChainTip for PanicTipSource {
+    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+        // Yield first, so the indexer is observed `Syncing` before it panics.
+        tokio::task::yield_now().await;
+        panic!("simulated panic in the tip fetch — a run-loop-body panic");
+    }
+}
+
+impl OneShotGetBlock for PanicTipSource {
+    async fn get_block(&self, _height: Height) -> Result<Block, QueryError<GetBlockError>> {
+        unreachable!("get_chain_tip panics before any block is fetched")
+    }
+}
+
+impl SubscribeChainTip for PanicTipSource {}
 
 /// Boot a validator + indexer (over `source`), wait for the indexer's failure to
 /// escalate through the runtime, and report what each layer saw.
@@ -225,7 +253,17 @@ async fn main() {
     println!("  logged, escalated component failure, not a silent death.");
     run_scenario(PanicFetchSource).await;
 
+    banner(
+        "SCENARIO 3",
+        "panic in the run loop body itself (tip fetch) — the former silent death",
+    );
+    println!("\n  Expect: BEFORE the supervised-run fix this froze the indexer at");
+    println!("  Syncing/Healthy with no escalation (a panic outside any joined");
+    println!("  sub-task). Now the run-loop panic is caught, logged, and escalated");
+    println!("  like any other failure.");
+    run_scenario(PanicTipSource).await;
+
     println!("\n{}", "═".repeat(78));
-    println!("  done — both hard failures were logged, reasoned, and escalated.");
+    println!("  done — every hard failure was logged, reasoned, and escalated.");
     println!("{}\n", "═".repeat(78));
 }

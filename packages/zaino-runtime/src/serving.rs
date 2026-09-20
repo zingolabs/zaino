@@ -13,10 +13,12 @@
 //! bind failure, a serve loop that died) flips it `Critical`, which the
 //! Orchestra escalates.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 
+use futures::FutureExt;
 use tokio::sync::watch;
-use zaino_async::{Task, TaskName};
+use zaino_async::{panic_message, Task, TaskName};
 use zaino_component::{
     error_chain, ComponentName, ComponentStatus, Health, Lifecycle, Managed, ReadySignal, Serve,
     StatusSource, StatusWatch,
@@ -96,21 +98,38 @@ impl<A: Serve> Managed for ServeComponent<A> {
         let status = self.status.clone();
         let name = self.name;
         let task = Task::spawn(TaskName(self.name.0), move |cancel| async move {
-            match server.serve(cancel, ready).await {
+            // `catch_unwind` so a panic in the serve loop itself becomes a
+            // `Critical` status + escalation rather than a silent death (see the
+            // indexer component for the rationale). `AssertUnwindSafe` is sound
+            // here: on a panic we escalate and the component is torn down.
+            match AssertUnwindSafe(server.serve(cancel, ready))
+                .catch_unwind()
+                .await
+            {
                 // Clean shutdown after the token fired.
-                Ok(()) => status.send_modify(|s| {
+                Ok(Ok(())) => status.send_modify(|s| {
                     s.lifecycle = Lifecycle::Offline;
                     s.health = Health::Offline;
                     s.reason = None;
                 }),
                 // Bind failure (never became Ready) or a dead serve loop: log the
                 // whole cause chain and record it on the status — never silent.
-                Err(e) => {
+                Ok(Err(e)) => {
                     let chain = error_chain(&e);
                     tracing::error!(component = %name, error = %e, cause = %chain, "serve loop failed");
                     status.send_modify(|s| {
                         s.health = Health::Critical;
                         s.reason = Some(chain);
+                    });
+                }
+                // A panic in the serve loop: the panic hook logged its origin;
+                // reconcile status so it escalates like any other failure.
+                Err(panic) => {
+                    let message = panic_message(&*panic);
+                    tracing::error!(component = %name, %message, "serve loop panicked");
+                    status.send_modify(|s| {
+                        s.health = Health::Critical;
+                        s.reason = Some(format!("serve loop panicked: {message}"));
                     });
                 }
             }
