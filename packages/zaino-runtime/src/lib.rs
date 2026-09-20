@@ -25,6 +25,7 @@ mod resolve;
 mod run;
 mod run_component;
 mod signals;
+mod status_log;
 mod supervisor;
 mod validator;
 

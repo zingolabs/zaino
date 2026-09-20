@@ -32,6 +32,9 @@ pub struct RunComponent<R> {
     runnable: Arc<R>,
     status: watch::Sender<ComponentStatus>,
     task: Arc<Mutex<Option<Task>>>,
+    /// Logs this component's own status transitions, so its state is observable
+    /// standalone — without an orchestrator. See [`crate::status_log`].
+    log_task: Arc<Mutex<Option<Task>>>,
 }
 
 impl<R> Clone for RunComponent<R> {
@@ -41,6 +44,7 @@ impl<R> Clone for RunComponent<R> {
             runnable: Arc::clone(&self.runnable),
             status: self.status.clone(),
             task: Arc::clone(&self.task),
+            log_task: Arc::clone(&self.log_task),
         }
     }
 }
@@ -58,6 +62,7 @@ impl<R> RunComponent<R> {
             runnable: Arc::new(runnable),
             status,
             task: Arc::new(Mutex::new(None)),
+            log_task: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -83,6 +88,18 @@ impl<R: RunLoop> Managed for RunComponent<R> {
     async fn spawn(&self) -> Result<(), Self::Error> {
         self.status
             .send_modify(|s| s.lifecycle = Lifecycle::Spawning);
+
+        // Report our *own* status transitions, so this component is observable on
+        // its own — without an orchestrator watching it. The supervisor no longer
+        // logs owned components; it only escalates.
+        let logger = Task::spawn(TaskName(self.name.0), {
+            let status = self.status.subscribe();
+            move |cancel| crate::status_log::log_status_transitions(status, cancel)
+        });
+        *self
+            .log_task
+            .lock()
+            .expect("run component log task mutex poisoned") = Some(logger);
 
         // Report `Ready` only when the loop fires its readiness signal (bound /
         // caught up), not optimistically here.
@@ -138,6 +155,16 @@ impl<R: RunLoop> Managed for RunComponent<R> {
             s.health = Health::Offline;
             s.reason = None;
         });
+        // Stop self-reporting last, so the `Offline` transition above is logged.
+        let logger = self
+            .log_task
+            .lock()
+            .expect("run component log task mutex poisoned")
+            .take();
+        if let Some(logger) = logger {
+            logger.cancel();
+            let _ = logger.join().await;
+        }
         Ok(())
     }
 }

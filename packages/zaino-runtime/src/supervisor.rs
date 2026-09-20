@@ -91,13 +91,11 @@ where
 {
     let mut status = component.subscribe();
     loop {
-        // Clone the whole status (dropping the watch borrow before any await) and
-        // log it — the per-component state trail, one INFO line per transition,
-        // rendered by `ComponentStatus`'s `Display`. Complements the runtime-phase
-        // log in the signals aggregator; failures still log their cause at ERROR.
-        let current = status.borrow_and_update().clone();
-        tracing::info!(status = %current, "component status");
-        match policy.action(current.health) {
+        // An owned component reports its *own* status transitions (see
+        // `RunComponent` / `crate::status_log`), so supervision only reacts to
+        // health here — it does not log the state trail.
+        let health = status.borrow_and_update().health;
+        match policy.action(health) {
             Action::Ignore => {}
             Action::Restart => component.restart().await?,
             Action::Escalate => return Ok(SupervisionOutcome::Escalated),
@@ -123,6 +121,9 @@ where
 {
     let mut status = component.subscribe();
     loop {
+        // An *observed* component (the external validator) does not run itself, so
+        // it cannot self-report: the observer logs its state trail — the
+        // counterpart to an owned component logging its own (see `crate::status_log`).
         let current = status.borrow_and_update().clone();
         tracing::info!(status = %current, "component status");
         if matches!(current.health, Health::Critical) {
