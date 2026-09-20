@@ -20,21 +20,26 @@
 #![forbid(unsafe_code)]
 
 mod health;
-mod indexer;
 mod orchestra;
 mod resolve;
 mod run;
-mod serving;
+mod run_component;
 mod signals;
 mod supervisor;
 mod validator;
 
 pub use health::{HealthServeError, HealthServer};
-pub use indexer::IndexerComponent;
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
 pub use resolve::{strategy, tier_of, Strategy, Tier};
-pub use serving::ServeComponent;
+pub use run_component::RunComponent;
 pub use signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
 pub use supervisor::{observe, supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
 pub use validator::{ValidatorComponent, ValidatorUnreachable};
-pub use zaino_component::{ReachabilityProbe, Serve, SyncDriver};
+pub use zaino_component::{ReachabilityProbe, RunLoop};
+
+/// Back-compat alias: an indexer is a [`RunComponent`] over a [`RunLoop`] writer
+/// (its `RUNNING` phase is `Syncing`).
+pub type IndexerComponent<D> = RunComponent<D>;
+/// Back-compat alias: a server is a [`RunComponent`] over a [`RunLoop`] server
+/// (its `RUNNING` phase is `Spawning`).
+pub type ServeComponent<A> = RunComponent<A>;

@@ -10,7 +10,7 @@
 //! The handler covers the compact-block serving path (`GetLatestBlock`,
 //! `GetBlock`, `GetBlockRange`, `GetLightdInfo`, `SendTransaction`);
 //! [`GrpcServer`] stands up a real tonic `CompactTxStreamer` server over it
-//! ([`Serve`](zaino_component::Serve)), serving those and returning
+//! ([`RunLoop`](zaino_component::RunLoop)), serving those and returning
 //! `Status::unimplemented` for the rest of the generated (fixed lightwalletd)
 //! contract until their handler methods exist.
 #![forbid(unsafe_code)]

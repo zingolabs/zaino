@@ -7,7 +7,7 @@ use std::time::Duration;
 use zaino_component::{
     CancellationToken, ComponentName, Health, Lifecycle, Managed, ReadySignal, StatusWatch,
 };
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, SyncDriver};
+use zaino_runtime::{IndexerComponent, OrchestraBuilder, RunLoop};
 
 /// A stub sync driver. `catch_up` decides whether it reaches the tip.
 struct StubSync {
@@ -18,8 +18,10 @@ struct StubSync {
 #[error("sync failed")]
 struct SyncError;
 
-impl SyncDriver for StubSync {
+impl RunLoop for StubSync {
     type Error = SyncError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
 
     async fn run(
         self: Arc<Self>,
@@ -80,8 +82,10 @@ async fn a_syncing_indexer_boots_but_gates_readiness() {
 /// death path.
 struct PanicSync;
 
-impl SyncDriver for PanicSync {
+impl RunLoop for PanicSync {
     type Error = SyncError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
 
     async fn run(
         self: Arc<Self>,

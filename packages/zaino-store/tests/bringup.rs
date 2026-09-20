@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use zaino_component::{
-    CancellationToken, ComponentName, Lifecycle, ReachabilityProbe, ReadySignal, SyncDriver,
+    CancellationToken, ComponentName, Lifecycle, ReachabilityProbe, ReadySignal, RunLoop,
 };
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
@@ -26,8 +26,10 @@ impl ReachabilityProbe for Probe {
 
 /// A sync driver that reaches the tip at once, then idles until cancelled.
 struct NoOpDriver;
-impl SyncDriver for NoOpDriver {
+impl RunLoop for NoOpDriver {
     type Error = std::convert::Infallible;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
 
     async fn run(
         self: Arc<Self>,

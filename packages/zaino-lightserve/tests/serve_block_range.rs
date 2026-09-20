@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use zaino_component::{CancellationToken, ReadySignal, Serve};
+use zaino_component::{CancellationToken, ReadySignal, RunLoop};
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
 use zaino_lightserve::{GrpcServer, LightServe};
@@ -125,7 +125,7 @@ async fn serve(store: StoreReader<InMemoryBackend>) -> (SocketAddr, Cancellation
         let _ = ready_tx.send(());
     });
     let serve_cancel = cancel.clone();
-    tokio::spawn(async move { server.serve(serve_cancel, ready).await });
+    tokio::spawn(async move { server.run(serve_cancel, ready).await });
     ready_rx.await.expect("server reports ready after binding");
     (addr, cancel)
 }

@@ -1,7 +1,7 @@
 //! `zaino-indexer` — the index writer, wired as a runtime component.
 //!
 //! [`SyncEngineDriver`] adapts the #1402 [`SyncEngine`] to the runtime's
-//! [`SyncDriver`] seam, so the Orchestra can boot and supervise index-building
+//! [`RunLoop`] seam, so the Orchestra can boot and supervise index-building
 //! as an `IndexerComponent` (Syncing → Ready, escalate on failure) — the same
 //! lifecycle every other component gets, instead of a bespoke run loop.
 //!
@@ -19,7 +19,7 @@ pub use source_provisioner::{
 
 use std::sync::{Arc, Mutex};
 
-use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
+use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
 use zaino_primitives::types::Height;
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::SyncEngine;
@@ -120,7 +120,7 @@ pub fn assess_start<B: Backend>(backend: &B) -> Result<SyncStart, IndexerError> 
 }
 
 /// Drives a [`SyncEngine`] over a [`Provisioner`], presented as a
-/// [`SyncDriver`].
+/// [`RunLoop`].
 ///
 /// This slice syncs once to a fixed `target` height then idles until cancelled;
 /// steady-state tip-following (via dev's source subscriptions) lands with the
@@ -154,13 +154,15 @@ where
     }
 }
 
-impl<Ctx, B, P> SyncDriver for SyncEngineDriver<Ctx, B, P>
+impl<Ctx, B, P> RunLoop for SyncEngineDriver<Ctx, B, P>
 where
     Ctx: Send + Sync + 'static,
     B: Backend + Send + Sync + 'static,
     P: Provisioner<BlockContext = Ctx> + Send + Sync + 'static,
 {
     type Error = IndexerError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
 
     async fn run(
         self: Arc<Self>,

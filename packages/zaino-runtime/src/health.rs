@@ -1,7 +1,7 @@
 //! The health edge — a small HTTP server exposing the runtime signals as the
 //! standard k8s probes (`/livez`, `/readyz`, `/startupz`).
 //!
-//! It is itself a [`Serve`] (so it can be a supervised component like any other
+//! It is itself a [`RunLoop`] (so it can be a supervised component like any other
 //! server) and reads the runtime's [`RuntimeSignals`] `watch` per request, so
 //! every probe answer reflects the orchestration. Deliberately tiny and
 //! dependency-free: it hand-parses the request line and writes a status — enough
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
-use zaino_component::{CancellationToken, ReadySignal, Serve};
+use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
 
 use crate::signals::RuntimeSignals;
 
@@ -38,10 +38,12 @@ impl HealthServer {
     }
 }
 
-impl Serve for HealthServer {
+impl RunLoop for HealthServer {
     type Error = HealthServeError;
+    const LABEL: &'static str = "serve loop";
+    const RUNNING: Lifecycle = Lifecycle::Spawning;
 
-    async fn serve(
+    async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
         ready: ReadySignal,

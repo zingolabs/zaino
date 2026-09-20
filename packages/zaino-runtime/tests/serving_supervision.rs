@@ -1,4 +1,4 @@
-//! Supervising servers through the `Serve` seam.
+//! Supervising servers through the `RunLoop` seam.
 //!
 //! Health is driven by the serve task's real outcome: a bind failure means the
 //! component never becomes `Ready` (a boot failure); a serve loop that dies
@@ -10,7 +10,7 @@ use std::time::Duration;
 use zaino_component::{
     CancellationToken, ComponentName, Health, Lifecycle, ReadySignal, StatusSource,
 };
-use zaino_runtime::{BootError, OrchestraBuilder, RuntimeOutcome, Serve, ServeComponent};
+use zaino_runtime::{BootError, OrchestraBuilder, RunLoop, RuntimeOutcome, ServeComponent};
 
 /// A stub transport server with a scriptable behavior.
 enum Behavior {
@@ -30,10 +30,12 @@ struct StubServer {
 #[error("stub server failed")]
 struct StubError;
 
-impl Serve for StubServer {
+impl RunLoop for StubServer {
     type Error = StubError;
+    const LABEL: &'static str = "serve loop";
+    const RUNNING: Lifecycle = Lifecycle::Spawning;
 
-    async fn serve(
+    async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
         ready: ReadySignal,

@@ -1,16 +1,16 @@
-//! JSON-RPC transport: a real jsonrpsee server exposed as a [`Serve`].
+//! JSON-RPC transport: a real jsonrpsee server exposed as a [`RunLoop`].
 //!
 //! Holds a [`NodeRpc`] handler and binds a jsonrpsee server over its
 //! [`NodeRpcApiServer`](crate::NodeRpcApiServer) surface. Implements
-//! [`Serve`] so the runtime supervises it as a component: `build` binds the
-//! socket (a bind failure is the `Serve::Error`, not swallowed), then it serves
+//! [`RunLoop`] so the runtime supervises it as a component: `build` binds the
+//! socket (a bind failure is the `RunLoop::Error`, not swallowed), then it serves
 //! until the cancellation token fires.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use jsonrpsee::server::ServerBuilder;
-use zaino_component::{CancellationToken, ReadySignal, Serve};
+use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
 use zaino_service::NodeRpcService;
 
 use crate::rpc::NodeRpcApiServer;
@@ -37,10 +37,12 @@ impl<S: NodeRpcService + Clone + 'static> JsonRpcServer<S> {
     }
 }
 
-impl<S: NodeRpcService + Clone + 'static> Serve for JsonRpcServer<S> {
+impl<S: NodeRpcService + Clone + 'static> RunLoop for JsonRpcServer<S> {
     type Error = JsonRpcServeError;
+    const LABEL: &'static str = "serve loop";
+    const RUNNING: Lifecycle = Lifecycle::Spawning;
 
-    async fn serve(
+    async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
         ready: ReadySignal,
@@ -81,7 +83,7 @@ mod tests {
 
         let task = tokio::spawn({
             let cancel = cancel.clone();
-            async move { server.serve(cancel, ReadySignal::new(|| {})).await }
+            async move { server.run(cancel, ReadySignal::new(|| {})).await }
         });
         // Let the server bind, then ask it to stop.
         tokio::task::yield_now().await;

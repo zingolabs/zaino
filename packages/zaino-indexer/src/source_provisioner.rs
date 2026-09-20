@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use zaino_async::{Task, TaskName};
-use zaino_component::{CancellationToken, ReadySignal, SyncDriver};
+use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
 use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
 use zaino_source::{
     GetBlock, GetChainTip, GetPreIndexCompactBlock, SourceError, SubscribeChainTip, TipObservation,
@@ -271,7 +271,7 @@ where
 }
 
 /// Drives a [`SyncEngine`] from a [`SourceProvisioner`], presented as a
-/// [`SyncDriver`]. The provisioner streams into the engine's `sync_channel`; the
+/// [`RunLoop`]. The provisioner streams into the engine's `sync_channel`; the
 /// component reaches `Ready` once the engine has consumed up to the source tip.
 pub struct SourceSyncDriver<S, B: Backend, Ctx, F, Fetch> {
     engine: Mutex<Option<SyncEngine<Ctx, B>>>,
@@ -446,7 +446,7 @@ where
     }
 }
 
-impl<S, B, Ctx, F, Fetch> SyncDriver for SourceSyncDriver<S, B, Ctx, F, Fetch>
+impl<S, B, Ctx, F, Fetch> RunLoop for SourceSyncDriver<S, B, Ctx, F, Fetch>
 where
     S: GetChainTip + SubscribeChainTip + Send + Sync + 'static,
     B: Backend + Send + Sync + 'static,
@@ -455,6 +455,8 @@ where
     F: Fn(Fetch::Item) -> Ctx + Send + Sync + 'static,
 {
     type Error = IndexerError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
 
     async fn run(
         self: Arc<Self>,

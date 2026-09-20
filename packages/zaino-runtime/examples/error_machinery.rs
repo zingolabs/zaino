@@ -50,13 +50,13 @@
 use std::sync::Arc;
 
 use zaino_component::{
-    CancellationToken, ComponentName, ComponentStatus, ReachabilityProbe, ReadySignal,
+    CancellationToken, ComponentName, ComponentStatus, Lifecycle, ReachabilityProbe, ReadySignal,
 };
 use zaino_indexer::{FetchConcurrency, IndexerError, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{Block, BlockHash, Height};
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, SyncDriver, ValidatorComponent};
+use zaino_runtime::{IndexerComponent, OrchestraBuilder, RunLoop, ValidatorComponent};
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, NonDomainError, OneShotGetBlock,
     OneShotGetChainTip, QueryError, RetryPolicy, SubscribeChainTip, ValidatorClient,
@@ -199,7 +199,7 @@ where
 
 /// Boot a validator + an indexer driven by `driver`, wait for the indexer's
 /// failure to escalate through the runtime, and report what each layer saw.
-async fn boot_and_await_failure<D: SyncDriver>(driver: D) {
+async fn boot_and_await_failure<D: RunLoop>(driver: D) {
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
     let validator = ValidatorComponent::connect(&Probe(true))
         .await
@@ -246,8 +246,10 @@ struct FieldDecodeError;
 /// outermost variant.
 struct NestedFailureDriver;
 
-impl SyncDriver for NestedFailureDriver {
+impl RunLoop for NestedFailureDriver {
     type Error = IndexerError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
 
     async fn run(
         self: Arc<Self>,

@@ -1,7 +1,7 @@
-//! gRPC transport: a real tonic server exposed as a [`Serve`].
+//! gRPC transport: a real tonic server exposed as a [`RunLoop`].
 //!
 //! Binds a `CompactTxStreamer` server over the [`GrpcService`] and serves until
-//! the cancellation token fires. Implements [`Serve`] so the runtime supervises
+//! the cancellation token fires. Implements [`RunLoop`] so the runtime supervises
 //! it as a component. TLS and the synchronous-bind refinement (#1081) drop in
 //! here later; this slice serves plaintext with tonic's graceful shutdown.
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
-use zaino_component::{CancellationToken, ReadySignal, Serve};
+use zaino_component::{CancellationToken, Lifecycle, ReadySignal, RunLoop};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 use zaino_service::LightServeService;
 
@@ -38,10 +38,12 @@ impl<S: LightServeService + Clone> GrpcServer<S> {
     }
 }
 
-impl<S: LightServeService + Clone + 'static> Serve for GrpcServer<S> {
+impl<S: LightServeService + Clone + 'static> RunLoop for GrpcServer<S> {
     type Error = GrpcServeError;
+    const LABEL: &'static str = "serve loop";
+    const RUNNING: Lifecycle = Lifecycle::Spawning;
 
-    async fn serve(
+    async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
         ready: ReadySignal,
@@ -77,7 +79,7 @@ mod tests {
 
         let task = tokio::spawn({
             let cancel = cancel.clone();
-            async move { server.serve(cancel, ReadySignal::new(|| {})).await }
+            async move { server.run(cancel, ReadySignal::new(|| {})).await }
         });
         tokio::task::yield_now().await;
         cancel.cancel();
