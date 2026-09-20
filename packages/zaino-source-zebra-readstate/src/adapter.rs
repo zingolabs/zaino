@@ -237,9 +237,15 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraReadStateAdapter {
 
 impl ZebraReadStateAdapter {
     /// Fetch a compact block via the fork's `ReadRequest::CompactBlock` — the
-    /// zaino-shaped compact block (transparent outpoints + outputs and shielded
+    /// zaino-shaped block (transparent outpoints + outputs and shielded
     /// spends/outputs/actions) with proofs, signatures, and input scripts never
-    /// deserialized. Returns zebra's compact type; the domain conversion lives in
+    /// deserialized.
+    ///
+    /// Despite the fork type's name, this is semantically a **pre-index** compact
+    /// block: it carries no [`ChainMetadata`] (commitment-tree sizes), which is
+    /// indexed state the source cannot know. That is why the domain type it
+    /// converts into is `PreIndexCompactBlock`, not the serving `CompactBlock` —
+    /// the conversion lives in
     /// [`zaino_convert_zebra::pre_index_compact_block_from_zebra`].
     pub async fn get_compact_block(
         &self,
