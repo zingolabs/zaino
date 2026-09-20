@@ -22,6 +22,12 @@ default = []
 # Prometheus /metrics scrape endpoint.
 prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
 
+# TEST-ONLY: enables an in-process, hardcoded regtest Direct config fixture for
+# the ztest e2e harness (which mounts a legacy-schema config this greenfield
+# config cannot parse). Never enable in a production build; the fixture also
+# requires a runtime env var and logs a loud warning when it activates.
+ztest-fixture = []
+
 [dependencies]
 # Runtime stack (config-agnostic; zainod translates its config into their typed
 # params at boot). Path deps for the ones not yet in [workspace.dependencies].

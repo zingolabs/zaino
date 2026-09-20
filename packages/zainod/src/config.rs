@@ -189,6 +189,55 @@ impl DaemonConfig {
     }
 }
 
+/// The env var that activates the ztest regtest Direct fixture (only with the
+/// `ztest-fixture` feature). Its presence — any value — triggers it.
+#[cfg(feature = "ztest-fixture")]
+pub const TEST_FIXTURE_ENV: &str = "ZAINO_TEST_REGTEST_DIRECT_FIXTURE";
+
+/// TEST-ONLY: an in-process config for the ztest regtest Direct-mode e2e.
+///
+/// ztest 0.1.21 mounts a *legacy*-schema `zainod.toml` this greenfield config
+/// cannot parse (and injects no `ZAINO_` env). Rather than couple the config to
+/// that legacy schema, the e2e sets [`TEST_FIXTURE_ENV`] and zainod boots this
+/// hardcoded config instead — ignoring the mounted `--config` — matching
+/// ztest's container paths/ports (writable root `/var/lib/zaino`, zebra cache
+/// shared at `/var/lib/zaino/zebra-db`, gRPC on `0.0.0.0:8137`, regtest).
+///
+/// NEVER for production: gated behind BOTH the `ztest-fixture` build feature and
+/// the runtime env var, and its activation logs a loud warning.
+#[cfg(feature = "ztest-fixture")]
+pub fn regtest_direct_fixture() -> DaemonConfig {
+    // ztest's shared zebra volume mounts at a harness-chosen path (`/shared/…`),
+    // not a fixed one, so the e2e passes it via `TEST_FIXTURE_ZEBRA_ENV`; fall
+    // back to the default container path when unset.
+    let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/zaino/zebra-db"));
+    DaemonConfig {
+        network: Network::Regtest,
+        metrics_endpoint: None,
+        source: SourceMode::Direct { zebra_cache_dir },
+        store: StoreConfig {
+            path: PathBuf::from("/var/lib/zaino/db"),
+            map_size_gb: 4,
+        },
+        serve: ServeConfig {
+            grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
+        },
+        indexer: IndexerConfig {
+            // A regtest chain is a handful of blocks; index right to the tip
+            // (no reorg margin) so the mined blocks are actually served.
+            finalised_depth: 0,
+            ..IndexerConfig::default()
+        },
+    }
+}
+
+/// Env var the e2e uses to hand the fixture the shared zebra volume's mount
+/// path (see [`regtest_direct_fixture`]).
+#[cfg(feature = "ztest-fixture")]
+pub const TEST_FIXTURE_ZEBRA_ENV: &str = "ZAINO_TEST_ZEBRA_CACHE_DIR";
+
 /// Serialize the built-in defaults into a commented example config file.
 pub fn generate_default_config() -> Result<String, IndexerError> {
     let toml = toml::to_string_pretty(&DaemonConfig::default())
