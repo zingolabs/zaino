@@ -20,6 +20,8 @@
 //!   filters like `RUST_LOG=zaino=debug,zebra_state=info`.
 //! - `ZAINOLOG_FORMAT`: Output format ("stream", "tree", or "json")
 //! - `ZAINOLOG_COLOR`: Color mode ("true"/"false"/"auto"). Defaults to color enabled.
+//! - `ZAINOLOG_LOCATION`: Show each event's source `file:line` ("1"/"true"/…).
+//!   Off by default — opt in when debugging.
 //!
 //! # Example
 //!
@@ -85,6 +87,9 @@ struct LogConfig {
     format: LogFormat,
     /// Enable ANSI colors.
     color: bool,
+    /// Show each event's source `file:line`. Off by default — noise for general
+    /// log watching; opt in with `ZAINOLOG_LOCATION` when debugging.
+    location: bool,
     /// Default log level.
     level: Level,
 }
@@ -106,9 +111,16 @@ impl Default for LogConfig {
             })
             .unwrap_or(true); // Default to color enabled
 
+        // Source `file:line` on every line is debugging detail, not something to
+        // read during normal log watching. Off unless `ZAINOLOG_LOCATION` opts in.
+        let location = env::var("ZAINOLOG_LOCATION")
+            .ok()
+            .is_some_and(|s| matches!(s.to_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+
         Self {
             format: LogFormat::from_env(),
             color,
+            location,
             level: Level::INFO,
         }
     }
@@ -214,7 +226,11 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
                     .with_timer(UtcTime::new(TIME_FORMAT))
                     .with_target(true)
                     .with_ansi(config.color)
-                    .pretty(),
+                    .pretty()
+                    // Source location is opt-in (`ZAINOLOG_LOCATION`) — off for
+                    // general watching, on for debugging.
+                    .with_file(config.location)
+                    .with_line_number(config.location),
             )
             .try_init(),
         LogFormat::Json => registry
@@ -223,7 +239,9 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
                 tracing_subscriber::fmt::layer()
                     .json()
                     .with_timer(UtcTime::rfc_3339())
-                    .with_target(true),
+                    .with_target(true)
+                    .with_file(config.location)
+                    .with_line_number(config.location),
             )
             .try_init(),
     }
