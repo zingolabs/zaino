@@ -11,7 +11,7 @@
 //!   * **escalated** by name up the runtime's shared channel — while the
 //!     observed validator stays `Healthy`.
 //!
-//! Three failure classes are shown:
+//! Four failure classes are shown:
 //!
 //!   1. **Typed transport failure** — the source hands back something the
 //!      indexer cannot use. Triggered here by a mock whose `get_block` returns a
@@ -31,6 +31,11 @@
 //!      at `Syncing`, no escalation); now the run boundary wraps the loop in
 //!      `zaino_async::catch_panic`, turning it into `Critical` + escalation like
 //!      any other failure.
+//!   4. **A bubbled multi-layer error** — a driver returning `IndexerError::Domain`
+//!      wrapping a three-level decode chain, so the boundary renders the *full*
+//!      source chain via `error_chain` (`outer: middle: root`) on the log's
+//!      `cause` field and the component's `reason` — versus the terminal leaves of
+//!      (1)–(3), whose `error` and `cause` coincide.
 //!
 //! Run it and watch stderr:
 //!
