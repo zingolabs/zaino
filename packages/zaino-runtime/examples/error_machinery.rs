@@ -44,12 +44,14 @@
 
 use std::sync::Arc;
 
-use zaino_component::{ComponentName, ComponentStatus, ReachabilityProbe};
-use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
+use zaino_component::{
+    CancellationToken, ComponentName, ComponentStatus, ReachabilityProbe, ReadySignal,
+};
+use zaino_indexer::{FetchConcurrency, IndexerError, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{Block, BlockHash, Height};
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_runtime::{IndexerComponent, OrchestraBuilder, SyncDriver, ValidatorComponent};
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, NonDomainError, OneShotGetBlock,
     OneShotGetChainTip, QueryError, RetryPolicy, SubscribeChainTip, ValidatorClient,
@@ -187,6 +189,12 @@ where
     )
     .expect("driver builds");
 
+    boot_and_await_failure(driver).await;
+}
+
+/// Boot a validator + an indexer driven by `driver`, wait for the indexer's
+/// failure to escalate through the runtime, and report what each layer saw.
+async fn boot_and_await_failure<D: SyncDriver>(driver: D) {
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
     let validator = ValidatorComponent::connect(&Probe(true))
         .await
@@ -213,6 +221,40 @@ where
     dump(&orchestra.statuses());
 
     orchestra.shutdown();
+}
+
+/// A worker error with a genuine three-layer `#[source]` chain, so the boundary
+/// has something real to render with `error_chain` — unlike the terminal leaves
+/// of the other scenarios. Each level's `Display` is self-contained (the
+/// thiserror norm), so the chain reads cleanly as `outer: middle: root`.
+#[derive(Debug, thiserror::Error)]
+#[error("decoding the compact block failed")]
+struct BlockDecodeError(#[source] FieldDecodeError);
+
+#[derive(Debug, thiserror::Error)]
+#[error("field 'outputs' has an invalid CompactSize length prefix")]
+struct FieldDecodeError;
+
+/// A driver whose run loop returns a genuinely *bubbled* error — an
+/// `IndexerError::Domain` wrapping the nested decode chain above — to show the
+/// boundary logging and recording the **full source chain**, not just the
+/// outermost variant.
+struct NestedFailureDriver;
+
+impl SyncDriver for NestedFailureDriver {
+    type Error = IndexerError;
+
+    async fn run(
+        self: Arc<Self>,
+        _cancel: CancellationToken,
+        _caught_up: ReadySignal,
+    ) -> Result<(), IndexerError> {
+        // Yield so the indexer is observed `Syncing` before it fails.
+        tokio::task::yield_now().await;
+        Err(IndexerError::Domain(Box::new(BlockDecodeError(
+            FieldDecodeError,
+        ))))
+    }
 }
 
 /// Print each component's status the way a health endpoint would read it —
@@ -271,6 +313,17 @@ async fn main() {
     println!("  sub-task). Now the run-loop panic is caught, logged, and escalated");
     println!("  like any other failure.");
     run_scenario(PanicTipSource).await;
+
+    banner(
+        "SCENARIO 4",
+        "a bubbled error — the full source chain, not just the outer variant",
+    );
+    println!("\n  Expect: a genuinely multi-layer error (`IndexerError::Domain`");
+    println!("  wrapping a decode chain). The boundary renders the whole chain via");
+    println!("  `error_chain` — `outer: middle: root` — on both the log's `cause`");
+    println!("  field and the component's `reason`. (The other scenarios' errors are");
+    println!("  terminal leaves, so their `error` and `cause` coincide.)");
+    boot_and_await_failure(NestedFailureDriver).await;
 
     println!("\n{}", "═".repeat(78));
     println!("  done — every hard failure was logged, reasoned, and escalated.");
