@@ -19,53 +19,38 @@ path = "src/lib.rs"
 [features]
 default = []
 
-# Test-only seam: `Indexer::launch_inner_with_listeners`, which threads
-# pre-bound listeners through to the gRPC/JSON-RPC servers. Forwards to
-# zaino-serve.
-test_dependencies = ["zaino-serve/test_dependencies"]
-
-# TEST-ONLY seam: non-finalised depth 1001 -> 100 (NFS tests mine no 1k-block chain)
-# - forwards to zaino-state (owns the depth constant)
-fast-test-seam = ["zaino-state/fast-test-seam"]
-
-# Removes network restrictions.
-no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
-
-# Operator build: no TLS + Prometheus metrics endpoint.
-no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
-
 # Prometheus /metrics scrape endpoint.
-prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus", "zaino-serve/prometheus", "zaino-rpc/prometheus", "zaino-chain-head-service/prometheus"]
+prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
 
-# DANGER: allows the JSON-RPC server to bind to a public (non-private,
-# non-loopback) address. The JSON-RPC interface has NO transport encryption and
-# is intended for loopback or trusted private networks only. Enabling this
-# exposes unencrypted RPC to whatever network the bind address reaches. Only use
-# for deployments on trusted private networks (e.g. containers behind a
-# mesh/proxy that terminates encryption).
-allow_unencrypted_public_json_rpc_bind = []
-
-# **Experimental and alpha features**
-# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
-
-# Activates transparent address history capability in zaino
-#
-# NOTE: currently this is only implemented in the finalised state.
-transparent_address_history_experimental = [
-  "zaino-state/transparent_address_history_experimental",
-  "zaino-serve/transparent_address_history_experimental"
-]
+# TEST-ONLY: enables an in-process, hardcoded regtest Direct config fixture for
+# the ztest e2e harness (which mounts a legacy-schema config this greenfield
+# config cannot parse). Never enable in a production build; the fixture also
+# requires a runtime env var and logs a loud warning when it activates.
+ztest-fixture = []
 
 [dependencies]
+# Runtime stack (config-agnostic; zainod translates its config into their typed
+# params at boot). Path deps for the ones not yet in [workspace.dependencies].
+zaino-runtime = { path = "../zaino-runtime" }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-store = { path = "../zaino-store" }
+zaino-lightserve = { path = "../zaino-lightserve" }
+zaino-persistence-codec = { path = "../zaino-persistence-codec" }
+zaino-component = { path = "../zaino-component" }
+zaino-indexes = { workspace = true }
+zaino-backend-lmdb = { workspace = true }
+zaino-persistence = { workspace = true }
+zaino-source = { workspace = true }
+zaino-source-zebra-readstate = { workspace = true }
+zaino-consensus = { workspace = true }
+
+# Validator connection + probe.
 zaino-common = { workspace = true }
 zaino-rpc = { workspace = true }
-zaino-state = { workspace = true }
-zaino-chain-head-service = { workspace = true }
-zaino-serve = { workspace = true }
+zaino-status = { workspace = true }
 
-# Zebra
-zebra-state = { workspace = true }
+# Zebra network parameters (config network -> zebra network).
+zebra-chain = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }
@@ -76,9 +61,10 @@ clap = { workspace = true, features = ["derive"] }
 # Tracing
 tracing = { workspace = true }
 
-# Network / RPC
-http = { workspace = true }
+# Config
 serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+config = { workspace = true }
 
 # Metrics (behind "prometheus" feature)
 metrics = { workspace = true, optional = true }
@@ -86,14 +72,7 @@ metrics-exporter-prometheus = { workspace = true, optional = true }
 
 # Utility
 thiserror = { workspace = true }
-
-# Formats
-toml = { workspace = true }
-config = { workspace = true }
-zaino-status.workspace = true
-zaino-mempool.workspace = true
+zaino-logging = { version = "0.1.0", path = "../zaino-logging" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-zcash_address = { workspace = true }
-zcash_protocol = { workspace = true }

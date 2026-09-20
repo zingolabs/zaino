@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{BlockHash, Height};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 pub use super::{GetBlockByHashError, GetBlockError};
 
@@ -22,12 +22,12 @@ pub use super::{GetBlockByHashError, GetBlockError};
 /// which form it wants, so the choice belongs in the request rather than in a
 /// response the caller must match on.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetRawBlock: Send + Sync {
+pub trait OneShotGetRawBlock: ValidatorSource + Send + Sync {
     /// Fetch a serialized block by height.
     fn get_raw_block(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockError, Self::NonDomain>>> + Send;
 }
 
 /// Fetch the raw serialized bytes of a block by hash.
@@ -36,10 +36,10 @@ pub trait OneShotGetRawBlock: Send + Sync {
 /// whereas a hash can name one on a side chain — different questions, which
 /// adapters may answer from different places.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetRawBlockByHash: Send + Sync {
+pub trait OneShotGetRawBlockByHash: ValidatorSource + Send + Sync {
     /// Fetch a serialized block by hash.
     fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
-    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockByHashError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockByHashError, Self::NonDomain>>> + Send;
 }

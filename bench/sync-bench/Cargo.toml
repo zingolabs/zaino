@@ -1,0 +1,47 @@
+# Cluster sync benchmark.
+#
+# Sources pre-index compact blocks from a Zebra ReadState validator, builds the
+# current-zaino index set into an LMDB backend, and (optionally) serves composed
+# compact blocks back through the store reader — measuring the end-to-end
+# indexing throughput of the real provisioner → engine pipeline over a bounded
+# height window. Meant to run on the validator's own node (ReadState needs the
+# on-disk state DB), so the numbers isolate indexing cost from network variance.
+[package]
+name = "sync-bench"
+version = "0.0.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Cluster sync benchmark: index pre-index compact blocks from a Zebra ReadState validator into LMDB and measure throughput."
+
+[dependencies]
+# The provisioner → engine pipeline under test, and the index set it builds.
+zaino-indexer = { path = "../../packages/zaino-indexer" }
+zaino-indexes = { workspace = true }
+zaino-sync = { workspace = true }
+# Backend + the namespaces it must declare up front.
+zaino-backend-lmdb = { workspace = true }
+zaino-persistence = { workspace = true }
+zaino-persistence-codec = { path = "../../packages/zaino-persistence-codec" }
+# The source seam and the ReadState adapter it wraps.
+zaino-source = { workspace = true }
+zaino-source-zebra-readstate = { workspace = true }
+# Compose-on-read verification of the served compact blocks.
+zaino-store = { path = "../../packages/zaino-store" }
+zaino-service = { path = "../../packages/zaino-service" }
+zaino-core = { path = "../../packages/zaino-core" }
+# Domain + consensus constants.
+zaino-primitives = { workspace = true }
+zaino-consensus = { workspace = true }
+# Third-party.
+tokio = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+zebra-chain = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"

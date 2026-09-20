@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{Height, TransactionId};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetAddressTxids`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -32,12 +32,14 @@ pub enum GetAddressTxidsError {
 ///
 /// Maps to `getaddresstxids` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetAddressTxids: Send + Sync {
+pub trait OneShotGetAddressTxids: ValidatorSource + Send + Sync {
     /// Fetch address txids.
     fn get_address_txids(
         &self,
         addresses: Vec<String>,
         start: Height,
         end: Height,
-    ) -> impl Future<Output = Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>>> + Send;
+    ) -> impl Future<
+        Output = Result<Vec<TransactionId>, QueryError<GetAddressTxidsError, Self::NonDomain>>,
+    > + Send;
 }

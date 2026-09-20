@@ -2,10 +2,26 @@
 [workspace]
 members = [
     "packages/zaino-status",
+    "packages/zaino-async",
+    "packages/zaino-logging",
     "packages/zaino-component",
+    "packages/zaino-core",
+    "packages/zaino-service",
+    "packages/zaino-runtime",
+    "packages/zaino-wallet",
+    "packages/zaino-lightserve",
+    "packages/zaino-noderpc",
+    "packages/zaino-store-service",
+    "packages/zaino-store",
+    "packages/zaino-persistence-codec",
     "packages/zaino-consensus",
     "packages/zaino-encoding",
     "packages/zaino-primitives",
+    "packages/zaino-persistence",
+    "packages/zaino-backend-lmdb",
+    "packages/zaino-sync",
+    "packages/zaino-indexes",
+    "packages/zaino-indexer",
     "packages/zaino-address",
     "packages/zaino-source-macros",
     "packages/zaino-source",
@@ -25,6 +41,10 @@ members = [
     "packages/zaino-serve",
     "packages/zaino-state",
     "packages/zaino-proto",
+    # Cluster sync benchmark. A leaf consumer of the indexer/store crates; kept a
+    # workspace member so it shares the production lockfile (reproducible cluster
+    # builds) and is covered by workspace lints. See bench/sync-bench.
+    "bench/sync-bench",
     # NOTE: live-tests/ is its own standalone workspace (see
     # live-tests/Cargo.toml). It has been migrated onto the ztest k8s harness
     # (`ztest` from crates.io), which stands the system up as deployed images and
@@ -77,9 +97,6 @@ tracing-subscriber = { version = "0.3.20", features = [
 ] }
 tracing-tree = "0.4"
 time = { version = "0.3", features = ["macros", "formatting"] }
-
-# Network / RPC
-http = "1.1"
 reqwest = { version = "0.13", default-features = false, features = [
     "cookies",
     "rustls-no-provider",
@@ -107,7 +124,6 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false, feat
 bytes = "1.12"
 strum = { version = "0.27", features = ["derive"] }
 thiserror = "2.0"
-once_cell = "1.20"
 chrono = "0.4"
 which = "8"
 whoami = "2.1"
@@ -121,7 +137,6 @@ bitflags = "2.9"
 
 # Test
 tempfile = "3.2"
-zainod = { path = "packages/zainod" }
 # Service status and health-probe vocabulary. A leaf with one dependency
 # (`tracing`), so any subsystem can report its status without inheriting a
 # dependency graph to do it.
@@ -143,6 +158,10 @@ zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.2.0" }
+zaino-persistence = { path = "packages/zaino-persistence", version = "0.1.0" }
+zaino-backend-lmdb = { path = "packages/zaino-backend-lmdb", version = "0.1.0" }
+zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
+zaino-indexes = { path = "packages/zaino-indexes", version = "0.1.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
 zaino-address = { path = "packages/zaino-address", version = "0.1.0" }
@@ -191,13 +210,27 @@ zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
 zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.5.0" }
 zaino-state = { path = "packages/zaino-state", version = "0.8.0", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.7.0", default-features = false }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }
 proptest = "~1.11"
 arc-swap = "1.7.1"
+rayon = "1.10"
 
 [profile.test]
 opt-level = 3
 debug = true
+
+# TEMPORARY: point zebra at nachog00/zebra `feat/compact-block-read-v6.3.0`,
+# which adds `ReadRequest::CompactBlock` — a zaino-shaped compact block
+# (transparent + shielded, proofs/signatures skipped) that the ReadState
+# adapter's compact source path needs. The branch tracks zebra 6.3.0
+# (zebra-state 13.0.0), matching our version requirements, so this is a drop-in
+# patch and the on-disk state format (v28) is unchanged. Only the three crates
+# we depend on directly are listed; their transitive zebra crates come from the
+# fork through its internal path deps. Revert to crates.io once the endpoint is
+# upstreamed to ZcashFoundation/zebra.
+[patch.crates-io]
+zebra-chain = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
+zebra-rpc = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
+zebra-state = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }

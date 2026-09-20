@@ -33,7 +33,67 @@ use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 use zaino_primitives::types::{
     Block, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
 };
-use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
+use zaino_source::{FailureMode, GetBlockError, GetChainTipError, NonDomainError, QueryError};
+
+/// The readstate adapter's own transport-fault vocabulary.
+///
+/// Foreign causes (the state service's error, decode failures) are captured here
+/// with the adapter's local context, then mapped to the shared seam by one
+/// deterministic `From<ReadStateError> for NonDomainError`. Lower deps never appear in
+/// this adapter's public signatures — only as `#[source]` causes inside this type.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadStateError {
+    /// The state service could not be reached or failed to answer.
+    #[error("state service unavailable")]
+    Unreachable(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// The state service's bytes could not be decoded into the domain type.
+    #[error("invalid data from the state service")]
+    InvalidData(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// The state service answered off-contract (wrong variant, or rows out of order).
+    #[error("state service answered off-contract: {0}")]
+    OffContract(String),
+}
+
+impl ReadStateError {
+    fn unreachable(cause: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>) -> Self {
+        Self::Unreachable(cause.into())
+    }
+    fn invalid_data(cause: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>) -> Self {
+        Self::InvalidData(cause.into())
+    }
+    fn off_contract(what: impl Into<String>) -> Self {
+        Self::OffContract(what.into())
+    }
+}
+
+impl From<ReadStateError> for NonDomainError {
+    fn from(e: ReadStateError) -> Self {
+        let mode = match &e {
+            ReadStateError::Unreachable(_) => FailureMode::Connection,
+            // Corrupt in-process data is not a wire parse; classified `Parse`
+            // (non-retryable) for now — a dedicated `FailureMode::InvalidSourceData`
+            // waits for a consumer that branches on it.
+            ReadStateError::InvalidData(_) | ReadStateError::OffContract(_) => FailureMode::Parse,
+        };
+        NonDomainError::from_cause(mode, e)
+    }
+}
+
+impl zaino_source::ValidatorSource for ZebraReadStateAdapter {
+    // This adapter owns a distinct non-domain vocabulary; `ReadStateError` maps to
+    // the seam via the deterministic `From<ReadStateError> for NonDomainError`.
+    type NonDomain = ReadStateError;
+}
+
+impl<E: std::fmt::Debug + std::fmt::Display> From<ReadStateError>
+    for QueryError<E, ReadStateError>
+{
+    fn from(e: ReadStateError) -> Self {
+        // The adapter's own type rides in the non-domain slot; the seam
+        // conversion happens later, once, in the resilience wrapper.
+        QueryError::NonDomain(e)
+    }
+}
 
 /// Ask the state service one question.
 ///
@@ -41,12 +101,15 @@ use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, Que
 /// response, and turn a service failure into a transport error — so they live
 /// here once. The response variant is matched by the caller, which is the only
 /// part that genuinely differs.
-async fn read(state: &ReadStateService, request: ReadRequest) -> Result<ReadResponse, FetchError> {
+async fn read(
+    state: &ReadStateService,
+    request: ReadRequest,
+) -> Result<ReadResponse, ReadStateError> {
     state
         .clone()
         .oneshot(request)
         .await
-        .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))
+        .map_err(ReadStateError::unreachable)
 }
 
 /// The state service answered with a variant that does not correspond to the
@@ -55,20 +118,16 @@ async fn read(state: &ReadStateService, request: ReadRequest) -> Result<ReadResp
 /// An error rather than a panic. This is a library: a state service that
 /// answers off-contract is a reason to fail the query, not to take the process
 /// down, and the previous implementation's `unreachable!` did the latter.
-fn unexpected_response(request: &'static str) -> FetchError {
-    FetchError::new(
-        FailureMode::Parse,
-        format!("state service returned an unexpected response to {request}"),
-    )
+fn unexpected_response(request: &'static str) -> ReadStateError {
+    ReadStateError::off_contract(format!("unexpected response to {request}"))
 }
 
 /// A pool's tree root and its note count as the state service reports it.
 ///
 /// The count arrives as a `u64`; one the compact protocol cannot carry is
 /// refused here rather than narrowed.
-fn tree_root_info(root: [u8; 32], count: u64) -> Result<TreeRootInfo, FetchError> {
-    let size = TreeSize::try_from(count)
-        .map_err(|error| FetchError::new(FailureMode::Parse, format!("state service: {error}")))?;
+fn tree_root_info(root: [u8; 32], count: u64) -> Result<TreeRootInfo, ReadStateError> {
+    let size = TreeSize::try_from(count).map_err(ReadStateError::invalid_data)?;
     Ok(TreeRootInfo {
         root: TreeRoot::new(root),
         size,
@@ -81,11 +140,8 @@ fn tree_root_info(root: [u8; 32], count: u64) -> Result<TreeRootInfo, FetchError
 /// to stream results without sorting. The previous implementation asserted it,
 /// which turns a misbehaving or corrupted index into a process abort; a caller
 /// can do something useful with an error.
-fn out_of_order(index: &'static str) -> FetchError {
-    FetchError::new(
-        FailureMode::Parse,
-        format!("state service returned {index} rows out of chain order"),
-    )
+fn out_of_order(index: &'static str) -> ReadStateError {
+    ReadStateError::off_contract(format!("{index} rows out of chain order"))
 }
 
 /// Zebra ReadState adapter.
@@ -165,51 +221,95 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraReadStateAdapter {
     async fn get_pre_index_compact_block(
         &self,
         height: Height,
-    ) -> Result<zaino_primitives::types::PreIndexCompactBlock, QueryError<GetBlockError>> {
-        // Zebra's read-state service serves whole blocks only; there is no
-        // compact-block read request. Read the full block and strip it down
-        // through the domain `Block`, exactly as the RPC adapter does.
-        use zaino_source::OneShotGetBlock;
-        let block = self.get_block(height).await?;
-        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
+    ) -> Result<
+        zaino_primitives::types::PreIndexCompactBlock,
+        QueryError<GetBlockError, ReadStateError>,
+    > {
+        // The fork's `ReadRequest::CompactBlock` serves a zaino-shaped compact
+        // block (transparent + shielded, proofs/signatures skipped), so the
+        // indexer never pays to deserialize proofs it does not read — the point
+        // of the compact path, and where the sandblast-era win lives.
+        let compact = self.get_compact_block(height).await?;
+        zaino_convert_zebra::pre_index_compact_block_from_zebra(&compact)
+            .map_err(|e| ReadStateError::invalid_data(e).into())
     }
 }
 
 impl ZebraReadStateAdapter {
+    /// Fetch a compact block via the fork's `ReadRequest::CompactBlock` — the
+    /// zaino-shaped block (transparent outpoints + outputs and shielded
+    /// spends/outputs/actions) with proofs, signatures, and input scripts never
+    /// deserialized.
+    ///
+    /// Despite the fork type's name, this is semantically a **pre-index** compact
+    /// block: it carries no [`ChainMetadata`] (commitment-tree sizes), which is
+    /// indexed state the source cannot know. That is why the domain type it
+    /// converts into is `PreIndexCompactBlock`, not the serving `CompactBlock` —
+    /// the conversion lives in
+    /// [`zaino_convert_zebra::pre_index_compact_block_from_zebra`].
+    pub async fn get_compact_block(
+        &self,
+        height: Height,
+    ) -> Result<
+        zebra_chain::transaction::compact::CompactBlock,
+        QueryError<GetBlockError, ReadStateError>,
+    > {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let request = ReadRequest::CompactBlock(zebra_height.into());
+
+        let response = self
+            .state
+            .clone()
+            .oneshot(request)
+            .await
+            .map_err(ReadStateError::unreachable)?;
+
+        match response {
+            ReadResponse::CompactBlock(Some(compact)) => Ok(compact),
+            ReadResponse::CompactBlock(None) => {
+                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+            }
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+        }
+    }
+
     /// Fetch just the block header — no transaction deserialization at all.
     pub async fn get_block_header(
         &self,
         height: Height,
-    ) -> Result<zebra_chain::block::Header, QueryError<GetBlockError>> {
+    ) -> Result<zebra_chain::block::Header, QueryError<GetBlockError, ReadStateError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::BlockHeader(zebra_height.into());
 
-        let response =
-            self.state.clone().oneshot(request).await.map_err(|e| {
-                FetchError::new(FailureMode::Connection, format!("state service: {e}"))
-            })?;
+        let response = self
+            .state
+            .clone()
+            .oneshot(request)
+            .await
+            .map_err(ReadStateError::unreachable)?;
 
         match response {
             ReadResponse::BlockHeader { header, .. } => Ok(*header),
-            _ => Err(FetchError::new(
-                FailureMode::Parse,
-                "unexpected response variant".to_string(),
-            )
-            .into()),
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
         }
     }
 }
 
 impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
-    async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
+    async fn get_block(
+        &self,
+        height: Height,
+    ) -> Result<Block, QueryError<GetBlockError, ReadStateError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::Block(zebra_height.into());
 
-        let response =
-            self.state.clone().oneshot(request).await.map_err(|e| {
-                FetchError::new(FailureMode::Connection, format!("state service: {e}"))
-            })?;
+        let response = self
+            .state
+            .clone()
+            .oneshot(request)
+            .await
+            .map_err(ReadStateError::unreachable)?;
 
         match response {
             ReadResponse::Block(Some(arc_block)) => {
@@ -220,42 +320,35 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
                 // them. Zero is a placeholder, not a measurement.
                 let chain_metadata = ChainMetadata::ZERO;
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
+                    .map_err(|e| ReadStateError::invalid_data(e).into())
             }
             ReadResponse::Block(None) => {
                 Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
             }
-            _ => Err(FetchError::new(
-                FailureMode::Parse,
-                "unexpected response variant".to_string(),
-            )
-            .into()),
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
         }
     }
 }
 
 impl zaino_source::OneShotGetChainTip for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
-    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+    async fn get_chain_tip(
+        &self,
+    ) -> Result<(BlockHash, Height), QueryError<GetChainTipError, ReadStateError>> {
         let response = self
             .state
             .clone()
             .oneshot(ReadRequest::Tip)
             .await
-            .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
+            .map_err(ReadStateError::unreachable)?;
 
         match response {
             ReadResponse::Tip(Some((height, hash))) => {
-                let h = Height::try_from(height.0)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+                let h = Height::try_from(height.0).map_err(ReadStateError::invalid_data)?;
                 Ok((BlockHash::from(hash.0), h))
             }
             ReadResponse::Tip(None) => Err(QueryError::Domain(GetChainTipError::NotReady)),
-            _ => Err(FetchError::new(
-                FailureMode::Parse,
-                "unexpected response variant".to_string(),
-            )
-            .into()),
+            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
         }
     }
 }
@@ -264,7 +357,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
-    ) -> Result<Block, QueryError<zaino_source::GetBlockByHashError>> {
+    ) -> Result<Block, QueryError<zaino_source::GetBlockByHashError, ReadStateError>> {
         let zebra_hash = zebra_chain::block::Hash(hash.into());
 
         match read(&self.state, ReadRequest::Block(zebra_hash.into())).await? {
@@ -272,7 +365,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
                 // Tree sizes are indexed state, not block data — see `GetBlock`.
                 let chain_metadata = ChainMetadata::ZERO;
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
+                    .map_err(|e| ReadStateError::invalid_data(e).into())
             }
             // Zebra's read-state does not serve side-chain blocks, so an absent
             // block here means "not in the finalized state" rather than "no such
@@ -289,10 +382,11 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
 impl zaino_source::OneShotGetBestBlockHeight for ZebraReadStateAdapter {
     async fn get_best_block_height(
         &self,
-    ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError>> {
+    ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError, ReadStateError>> {
         match read(&self.state, ReadRequest::Tip).await? {
-            ReadResponse::Tip(Some((height, _hash))) => Height::try_from(height.0)
-                .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into()),
+            ReadResponse::Tip(Some((height, _hash))) => {
+                Height::try_from(height.0).map_err(|e| ReadStateError::invalid_data(e).into())
+            }
             // The previous implementation fell back to a JSON-RPC block count
             // here. This adapter cannot reach RPC, and should not: a composite
             // holding both adapters routes the fallback, which keeps "what this
@@ -313,7 +407,7 @@ impl zaino_source::OneShotGetSubtreeRoots for ZebraReadStateAdapter {
         limit: Option<u16>,
     ) -> Result<
         Vec<zaino_primitives::types::SubtreeRoot>,
-        QueryError<zaino_source::GetSubtreeRootsError>,
+        QueryError<zaino_source::GetSubtreeRootsError, ReadStateError>,
     > {
         use zaino_primitives::types::{ShieldedPool, SubtreeRoot, TreeRoot};
         use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
@@ -335,7 +429,7 @@ impl zaino_source::OneShotGetSubtreeRoots for ZebraReadStateAdapter {
         // An out-of-range end height is propagated rather than defaulted:
         // substituting a placeholder would put a subtree at the wrong point in
         // the chain, which is worse than failing the query.
-        let roots: Result<Vec<_>, FetchError> = match (pool, response) {
+        let roots: Result<Vec<_>, ReadStateError> = match (pool, response) {
             (ShieldedPool::Sapling, ReadResponse::SaplingSubtrees(subtrees)) => subtrees
                 .values()
                 .map(|subtree| {
@@ -368,7 +462,7 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
         addresses: Vec<String>,
     ) -> Result<
         zaino_primitives::types::AddressBalance,
-        QueryError<zaino_source::GetAddressBalanceError>,
+        QueryError<zaino_source::GetAddressBalanceError, ReadStateError>,
     > {
         let valid = parse_addresses(addresses)?;
 
@@ -376,7 +470,7 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
             ReadResponse::AddressBalance { balance, received } => {
                 Ok(zaino_primitives::types::AddressBalance {
                     balance: zaino_primitives::types::Zatoshis::new(balance.into())
-                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                        .map_err(ReadStateError::invalid_data)?,
                     // A lifetime receipts flow, delivered pre-summed by the
                     // state service; not supply-bounded, so it lands in the
                     // flow-sum type through its boundary door rather than
@@ -395,7 +489,10 @@ impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
 /// about something that is not an address, and retrying will not change that.
 fn parse_addresses<E>(
     addresses: Vec<String>,
-) -> Result<std::collections::HashSet<zebra_chain::transparent::Address>, QueryError<E>>
+) -> Result<
+    std::collections::HashSet<zebra_chain::transparent::Address>,
+    QueryError<E, ReadStateError>,
+>
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
@@ -405,31 +502,27 @@ where
             address
                 .parse::<zebra_chain::transparent::Address>()
                 .map_err(|e| {
-                    QueryError::Fetch(FetchError::new(
-                        FailureMode::Parse,
-                        format!("invalid transparent address `{address}`: {e}"),
-                    ))
+                    QueryError::NonDomain(ReadStateError::off_contract(format!(
+                        "invalid transparent address `{address}`: {e}"
+                    )))
                 })
         })
         .collect()
 }
 
 /// Convert a zebra height, failing rather than substituting a placeholder.
-fn subtree_end_height(height: zebra_chain::block::Height) -> Result<Height, FetchError> {
-    Height::try_from(height.0).map_err(|e| {
-        FetchError::new(
-            FailureMode::Parse,
-            format!("subtree end height {}: {e}", height.0),
-        )
-    })
+fn subtree_end_height(height: zebra_chain::block::Height) -> Result<Height, ReadStateError> {
+    Height::try_from(height.0).map_err(ReadStateError::invalid_data)
 }
 
 impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
-    ) -> Result<Vec<zaino_primitives::types::Utxo>, QueryError<zaino_source::GetAddressUtxosError>>
-    {
+    ) -> Result<
+        Vec<zaino_primitives::types::Utxo>,
+        QueryError<zaino_source::GetAddressUtxosError, ReadStateError>,
+    > {
         use zaino_primitives::types::{Script, TransparentAddress, Utxo, Zatoshis};
 
         let valid = parse_addresses(addresses)?;
@@ -466,9 +559,9 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
                 output_index: location.output_index().index(),
                 script: Script::new(output.lock_script.as_raw_bytes().to_vec()),
                 satoshis: Zatoshis::new(u64::from(output.value()))
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                    .map_err(ReadStateError::invalid_data)?,
                 height: Height::try_from(location.height().0)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                    .map_err(ReadStateError::invalid_data)?,
             });
         }
 
@@ -484,7 +577,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
         end: Height,
     ) -> Result<
         Vec<zaino_primitives::types::TransactionId>,
-        QueryError<zaino_source::GetAddressTxidsError>,
+        QueryError<zaino_source::GetAddressTxidsError, ReadStateError>,
     > {
         use zaino_primitives::types::TransactionId;
 
@@ -494,9 +587,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
         let tip = match read(&self.state, ReadRequest::Tip).await? {
             ReadResponse::Tip(Some((height, _))) => height,
             ReadResponse::Tip(None) => {
-                return Err(
-                    FetchError::new(FailureMode::Parse, "no blocks in chain".to_string()).into(),
-                )
+                return Err(ReadStateError::off_contract("no blocks in chain").into())
             }
             _ => return Err(unexpected_response("Tip").into()),
         };
@@ -566,7 +657,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         end: Height,
     ) -> Result<
         Vec<zaino_primitives::types::AddressDelta>,
-        QueryError<zaino_source::GetAddressDeltasError>,
+        QueryError<zaino_source::GetAddressDeltasError, ReadStateError>,
     > {
         use zaino_primitives::types::{
             AddressDelta, SignedZatoshis, TransactionId, TransparentAddress,
@@ -606,17 +697,16 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                 // transaction it named must be mined there. Anything else means
                 // the index and the chain disagree.
                 ReadResponse::AnyChainTransaction(_) => {
-                    return Err(FetchError::new(
-                        FailureMode::Parse,
-                        format!("address index names a transaction the chain lacks: {txid:?}"),
-                    )
+                    return Err(ReadStateError::off_contract(format!(
+                        "address index names a transaction the chain lacks: {txid:?}"
+                    ))
                     .into())
                 }
                 _ => return Err(unexpected_response("AnyChainTransaction").into()),
             };
 
-            let height = Height::try_from(location.height.0)
-                .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+            let height =
+                Height::try_from(location.height.0).map_err(ReadStateError::invalid_data)?;
             let delta_txid = TransactionId::from(txid.0);
 
             for (index, output) in transaction.outputs().iter().enumerate() {
@@ -630,7 +720,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
 
                 deltas.push(AddressDelta {
                     satoshis: SignedZatoshis::try_new(output.value.zatoshis())
-                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                        .map_err(ReadStateError::invalid_data)?,
                     txid: delta_txid,
                     index: index as u32,
                     height,
@@ -695,7 +785,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
         block: BlockHash,
     ) -> Result<
         zaino_primitives::types::TreeRoots,
-        QueryError<zaino_source::GetCommitmentTreeRootsError>,
+        QueryError<zaino_source::GetCommitmentTreeRootsError, ReadStateError>,
     > {
         use zaino_primitives::types::TreeRoots;
 
@@ -745,11 +835,13 @@ impl zaino_source::OneShotGetTreestateByHash for ZebraReadStateAdapter {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
-    ) -> Result<zaino_primitives::types::Treestate, QueryError<zaino_source::GetTreestateByHashError>>
-    {
+    ) -> Result<
+        zaino_primitives::types::Treestate,
+        QueryError<zaino_source::GetTreestateByHashError, ReadStateError>,
+    > {
         self.treestate(hash_or_height(hash))
             .await
-            .map_err(QueryError::Fetch)
+            .map_err(QueryError::from)
     }
 }
 
@@ -757,10 +849,12 @@ impl zaino_source::OneShotGetTreestate for ZebraReadStateAdapter {
     async fn get_treestate(
         &self,
         height: Height,
-    ) -> Result<zaino_primitives::types::Treestate, QueryError<zaino_source::GetTreestateError>>
-    {
+    ) -> Result<
+        zaino_primitives::types::Treestate,
+        QueryError<zaino_source::GetTreestateError, ReadStateError>,
+    > {
         let id = zebra_chain::block::Height(u32::from(height)).into();
-        self.treestate(id).await.map_err(QueryError::Fetch)
+        self.treestate(id).await.map_err(QueryError::from)
     }
 }
 
@@ -782,7 +876,7 @@ impl ZebraReadStateAdapter {
     async fn treestate(
         &self,
         id: zebra_state::HashOrHeight,
-    ) -> Result<zaino_primitives::types::Treestate, FetchError> {
+    ) -> Result<zaino_primitives::types::Treestate, ReadStateError> {
         // The header read identifies the block the trees belong to. A treestate
         // is only meaningful against one block, so it is fetched alongside
         // rather than left for the caller to pair up.
@@ -801,8 +895,7 @@ impl ZebraReadStateAdapter {
                 ..
             } => (
                 BlockHash::from(hash.0),
-                Height::try_from(height.0)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                Height::try_from(height.0).map_err(ReadStateError::invalid_data)?,
                 header.time.timestamp() as u32,
             ),
             _ => return Err(unexpected_response("BlockHeader")),
@@ -877,8 +970,10 @@ impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
     async fn get_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
-    ) -> Result<zaino_source::TransactionResponse, QueryError<zaino_source::GetTransactionError>>
-    {
+    ) -> Result<
+        zaino_source::TransactionResponse,
+        QueryError<zaino_source::GetTransactionError, ReadStateError>,
+    > {
         use zaino_primitives::types::TransactionLocation;
         use zebra_chain::serialization::ZcashSerialize;
 
@@ -898,8 +993,8 @@ impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
         // concluding the transaction is unknown.
         let (transaction, location) = match any_tx {
             Some(zebra_state::AnyTx::Mined(mined)) => {
-                let height = Height::try_from(mined.height.0)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+                let height =
+                    Height::try_from(mined.height.0).map_err(ReadStateError::invalid_data)?;
                 (mined.tx.clone(), TransactionLocation::BestChain(height))
             }
             Some(zebra_state::AnyTx::Side((transaction, _block_hash))) => {
@@ -914,7 +1009,7 @@ impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
 
         let bytes = transaction
             .zcash_serialize_to_vec()
-            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+            .map_err(ReadStateError::invalid_data)?;
 
         Ok(zaino_source::TransactionResponse { bytes, location })
     }
@@ -923,21 +1018,17 @@ impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
 impl zaino_source::OneShotGetDifficulty for ZebraReadStateAdapter {
     async fn get_difficulty(
         &self,
-    ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>
-    {
+    ) -> Result<
+        zaino_primitives::types::Difficulty,
+        QueryError<zaino_source::GetDifficultyError, ReadStateError>,
+    > {
         // Reuses zebra's own calculation rather than reimplementing the
         // expansion from the compact threshold: difficulty is defined relative
         // to each network's minimum, and a second implementation of that would
         // be a second thing to keep correct.
         zebra_rpc::methods::chain_tip_difficulty(self.network.clone(), self.state.clone(), false)
             .await
-            .map_err(|e| {
-                FetchError::new(
-                    FailureMode::Connection,
-                    format!("chain tip difficulty: {e}"),
-                )
-                .into()
-            })
+            .map_err(|e| ReadStateError::unreachable(e).into())
     }
 }
 
@@ -946,7 +1037,7 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
         &self,
     ) -> Result<
         zaino_primitives::types::BlockchainInfo,
-        QueryError<zaino_source::GetBlockchainInfoError>,
+        QueryError<zaino_source::GetBlockchainInfoError, ReadStateError>,
     > {
         use zaino_primitives::types::{
             BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo,
@@ -1014,17 +1105,13 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
                             activation_height,
                             status,
                         })
-                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string())),
+                        .map_err(ReadStateError::invalid_data),
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let next_height = (height + 1).ok_or_else(|| {
-            FetchError::new(
-                FailureMode::Parse,
-                "chain tip is at the maximum height".to_string(),
-            )
-        })?;
+        let next_height = (height + 1)
+            .ok_or_else(|| ReadStateError::off_contract("chain tip is at the maximum height"))?;
         let branch_at = |h| {
             NetworkUpgrade::current(&self.network, h)
                 .branch_id()
@@ -1038,12 +1125,11 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
             false,
         )
         .await
-        .map_err(|e| FetchError::new(FailureMode::Connection, format!("difficulty: {e}")))?;
+        .map_err(ReadStateError::unreachable)?;
 
         let to_zatoshis =
             |amount: zebra_chain::amount::Amount<zebra_chain::amount::NonNegative>| {
-                Zatoshis::new(amount.into())
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))
+                Zatoshis::new(amount.into()).map_err(ReadStateError::invalid_data)
             };
 
         // Every pool the interface has a slot for, in its order. Omitting one
@@ -1087,14 +1173,12 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
 
         Ok(BlockchainInfo {
             chain: self.network.bip70_network_name(),
-            blocks: Height::try_from(height.0)
-                .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+            blocks: Height::try_from(height.0).map_err(ReadStateError::invalid_data)?,
             // The read-state serves the finalized chain, so validated headers
             // and processed blocks are the same height here.
-            headers: Height::try_from(height.0)
-                .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+            headers: Height::try_from(height.0).map_err(ReadStateError::invalid_data)?,
             estimated_height: Height::try_from(estimated_height.0)
-                .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                .map_err(ReadStateError::invalid_data)?,
             best_block_hash: BlockHash::from(hash.0),
             difficulty,
             verification_progress: f64::from(height.0) / f64::from(estimated_height.0),
@@ -1124,18 +1208,18 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
 /// rather than passed through. Zebra's serialization is the inverse of the
 /// deserialization that produced the block, so the result is byte-identical to
 /// what the hash commits to.
-fn serialize_block(block: &zebra_chain::block::Block) -> Result<Vec<u8>, FetchError> {
+fn serialize_block(block: &zebra_chain::block::Block) -> Result<Vec<u8>, ReadStateError> {
     use zebra_chain::serialization::ZcashSerialize;
     block
         .zcash_serialize_to_vec()
-        .map_err(|e| FetchError::new(FailureMode::Parse, format!("serialize block: {e}")))
+        .map_err(ReadStateError::invalid_data)
 }
 
 impl zaino_source::OneShotGetRawBlock for ZebraReadStateAdapter {
     async fn get_raw_block(
         &self,
         height: Height,
-    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockError>> {
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockError, ReadStateError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
 
         match read(&self.state, ReadRequest::Block(zebra_height.into())).await? {
@@ -1152,7 +1236,7 @@ impl zaino_source::OneShotGetRawBlockByHash for ZebraReadStateAdapter {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
-    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockByHashError>> {
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockByHashError, ReadStateError>> {
         match read(&self.state, ReadRequest::Block(hash_or_height(hash))).await? {
             ReadResponse::Block(Some(block)) => Ok(serialize_block(&block)?),
             // As with `GetBlockByHash`: absent here means "not in the finalized
@@ -1212,7 +1296,10 @@ impl ZebraReadStateAdapter {
     /// chain the block is actually on. A short walk is not an error — near
     /// genesis there simply are fewer than eleven blocks, and the median of
     /// what exists is the answer.
-    async fn median_time_past(&self, block: &zebra_chain::block::Block) -> Result<u32, FetchError> {
+    async fn median_time_past(
+        &self,
+        block: &zebra_chain::block::Block,
+    ) -> Result<u32, ReadStateError> {
         let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
         times.push(block.header.time.timestamp());
 
@@ -1232,12 +1319,7 @@ impl ZebraReadStateAdapter {
 
         times.sort_unstable();
         let median = times[times.len() / 2];
-        u32::try_from(median).map_err(|e| {
-            FetchError::new(
-                FailureMode::Parse,
-                format!("median time past out of range: {e}"),
-            )
-        })
+        u32::try_from(median).map_err(ReadStateError::invalid_data)
     }
 
     /// The transaction a spend refers to, for resolving the spent output's
@@ -1245,7 +1327,7 @@ impl ZebraReadStateAdapter {
     async fn prevout_transaction(
         &self,
         txid: zebra_chain::transaction::Hash,
-    ) -> Result<Option<std::sync::Arc<zebra_chain::transaction::Transaction>>, FetchError> {
+    ) -> Result<Option<std::sync::Arc<zebra_chain::transaction::Transaction>>, ReadStateError> {
         match read(&self.state, ReadRequest::AnyChainTransaction(txid)).await? {
             ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => {
                 Ok(Some(mined.tx))
@@ -1278,7 +1360,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
         hash: BlockHash,
     ) -> Result<
         zaino_primitives::types::rpc::BlockDeltas,
-        QueryError<zaino_source::GetBlockDeltasError>,
+        QueryError<zaino_source::GetBlockDeltasError, ReadStateError>,
     > {
         use zaino_primitives::types::{
             rpc::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
@@ -1300,17 +1382,15 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             _ => return Err(unexpected_response("Block").into()),
         };
 
-        let parse = |e: String| FetchError::new(FailureMode::Parse, e);
-
         let height = block
             .coinbase_height()
-            .ok_or_else(|| parse("block has no coinbase height".to_string()))?;
-        let domain_height = Height::try_from(height.0).map_err(|e| parse(e.to_string()))?;
+            .ok_or_else(|| ReadStateError::off_contract("block has no coinbase height"))?;
+        let domain_height = Height::try_from(height.0).map_err(ReadStateError::invalid_data)?;
 
         let tip = match read(&self.state, ReadRequest::Tip).await? {
             ReadResponse::Tip(Some((tip_height, _))) => tip_height,
             ReadResponse::Tip(None) => {
-                return Err(parse("state service has no tip".to_string()).into())
+                return Err(ReadStateError::off_contract("state service has no tip").into())
             }
             _ => return Err(unexpected_response("Tip").into()),
         };
@@ -1339,7 +1419,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     .prevout_transaction(outpoint.hash)
                     .await?
                     .ok_or_else(|| {
-                        parse(format!(
+                        ReadStateError::off_contract(format!(
                             "getblockdeltas: prevout tx {} not in the chain",
                             outpoint.hash
                         ))
@@ -1348,7 +1428,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     .outputs()
                     .get(outpoint.index as usize)
                     .ok_or_else(|| {
-                        parse(format!(
+                        ReadStateError::off_contract(format!(
                             "getblockdeltas: prevout index {} out of range for {}",
                             outpoint.index, outpoint.hash
                         ))
@@ -1362,7 +1442,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     address: TransparentAddress::new(address.to_string()),
                     // A spend debits the address, so the value leaves it.
                     satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
-                        .map_err(|e| parse(e.to_string()))?,
+                        .map_err(ReadStateError::invalid_data)?,
                     index: index as u32,
                     prev_txid: TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,
@@ -1377,7 +1457,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 outputs.push(OutputDelta {
                     address: TransparentAddress::new(address.to_string()),
                     satoshis: Zatoshis::new(u64::from(output.value))
-                        .map_err(|e| parse(e.to_string()))?,
+                        .map_err(ReadStateError::invalid_data)?,
                     index: index as u32,
                 });
             }
@@ -1396,13 +1476,13 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             size: block
                 .zcash_serialized_size()
                 .try_into()
-                .map_err(|e: std::num::TryFromIntError| parse(e.to_string()))?,
+                .map_err(ReadStateError::invalid_data)?,
             height: domain_height,
             version: block.header.version,
             merkle_root: MerkleRoot::from(block.header.merkle_root.0),
             deltas,
             time: u32::try_from(block.header.time.timestamp())
-                .map_err(|e| parse(format!("block time out of range: {e}")))?,
+                .map_err(ReadStateError::invalid_data)?,
             median_time: self.median_time_past(&block).await?,
             nonce: *block.header.nonce,
             // Same conversion `zaino-convert-zebra` uses for a block header:
@@ -1411,7 +1491,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             bits: zaino_primitives::types::CompactDifficulty::try_from_be_bytes(
                 block.header.difficulty_threshold.bytes_in_display_order(),
             )
-            .map_err(|e| parse(e.to_string()))?,
+            .map_err(ReadStateError::invalid_data)?,
             difficulty: block_difficulty(block.header.difficulty_threshold, &self.network),
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,
@@ -1423,7 +1503,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
 mod tree_root_info_tests {
     use super::tree_root_info;
     use zaino_primitives::types::TreeSize;
-    use zaino_source::FailureMode;
+    use zaino_source::{FailureMode, NonDomainError};
 
     /// The largest count the compact protocol carries is accepted, and a full
     /// depth-32 tree (`2^32`) is refused rather than wrapped to zero (#549).
@@ -1433,7 +1513,8 @@ mod tree_root_info_tests {
         assert_eq!(max.size, TreeSize::from(u32::MAX));
 
         let full = tree_root_info([0; 32], 1_u64 << 32).expect_err("2^32 does not fit");
-        assert_eq!(full.mode, FailureMode::Parse);
+        // The adapter's `InvalidData` maps to the non-retryable `Parse` mode at the seam.
+        assert_eq!(NonDomainError::from(full).mode, FailureMode::Parse);
     }
 }
 

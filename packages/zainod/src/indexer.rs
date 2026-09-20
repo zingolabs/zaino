@@ -1,347 +1,226 @@
-//! Zaino : Zingo-Indexer implementation.
+//! Boots the Zaino daemon on the runtime stack.
+//!
+//! Translates the daemon [`DaemonConfig`] into the runtime stack's typed params
+//! and supervises validator → indexer → store → wallet-gRPC under one
+//! [`Orchestra`](zaino_runtime::Orchestra). The stack crates stay config-agnostic;
+//! this module is the only place daemon config crosses into them.
+//!
+//! Scope: serves the index-only compact-block slice
+//! (`GetLatestBlock`/`GetBlock`/`GetBlockRange`). Transactions, treestate,
+//! address queries, `SendTransaction`, and node JSON-RPC are not served yet.
 
-use tokio::time::Instant;
-use tracing::info;
+use std::sync::Arc;
 
-use zaino_rpc::probe_node;
-use zaino_serve::{
-    rpc::grpc_routes,
-    server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
+use tokio::task::JoinHandle;
+use tracing::{error, info};
+
+use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
+use zaino_component::{ComponentName, ReachabilityProbe};
+use zaino_indexer::{SourceSyncDriver, SyncTuning};
+use zaino_indexes::sets::current_zaino::{context_from_pre_index_compact_block, index_set};
+use zaino_lightserve::{GrpcServer, LightServe};
+use zaino_persistence::Namespace;
+use zaino_persistence_codec::reserved_namespaces;
+use zaino_runtime::{IndexerComponent, OrchestraBuilder, ServeComponent, ValidatorComponent};
+use zaino_source::{
+    GetChainTip, GetPreIndexCompactBlock, RetryPolicy, SubscribeChainTip, ValidatorClient,
+    ValidatorSource,
 };
-use zaino_state::{
-    IndexerService, LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig,
-    ZcashIndexer, ZcashService,
-};
-use zaino_status::StatusType;
+use zaino_source_zebra_readstate::ZebraReadStateAdapter;
+use zaino_store::{StoreComponent, StoreReader};
 
-use crate::{config::ZainodConfig, error::IndexerError};
+use crate::config::{DaemonConfig, Network, SourceMode};
+use crate::error::IndexerError;
 
-/// Zaino, the Zingo-Indexer.
-pub struct Indexer<Service: ZcashService + LightWalletService> {
-    /// JsonRPC server.
-    ///
-    /// Disabled by default.
-    json_server: Option<JsonRpcServer>,
-    /// GRPC server.
-    server: Option<TonicServer>,
-    /// Chain fetch service state process handler..
-    service: Option<IndexerService<Service>>,
-}
-
-/// Starts Indexer service.
+/// Start the Zaino daemon.
 ///
-/// Currently only takes an IndexerConfig.
+/// Returns a handle that resolves when the runtime exits: `Ok(())` on a clean
+/// shutdown signal or settle, or [`IndexerError::Restart`] on a fatal component
+/// escalation (the caller's run loop restarts).
 pub async fn start_indexer(
-    config: ZainodConfig,
-) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    config: DaemonConfig,
+) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     startup_message();
     info!("Starting Zaino");
     spawn_indexer(config).await
 }
 
-/// Spawns a new Indexer server.
+/// Build the validator source per configured mode, then boot the runtime.
 pub async fn spawn_indexer(
-    config: ZainodConfig,
-) -> Result<tokio::task::JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    config.check_config()?;
-    info!(
-        address = %config.validator_settings.validator_jsonrpc_listen_address,
-        "Checking connection with node"
-    );
-    if let Some(donation_address) = &config.donation_address {
-        info!(%donation_address, "instance donation address");
+    config: DaemonConfig,
+) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    config.validate()?;
+    let network = to_zebra_network(config.network);
+
+    match &config.source {
+        SourceMode::Direct { zebra_cache_dir } => {
+            info!(cache = %zebra_cache_dir.display(), "opening validator ReadState (Direct)");
+            let adapter = ZebraReadStateAdapter::open(zebra_cache_dir, &network)
+                .map_err(IndexerError::OpenReadState)?;
+            boot(adapter, config).await
+        }
+        // The Rpc selector is preserved in config, but only Direct/ReadState
+        // sourcing is wired so far. Fail loud and typed rather than panic.
+        SourceMode::Rpc { .. } => Err(IndexerError::RpcSourceUnsupported),
     }
-    let zebrad_uri = probe_node(
-        &config.validator_settings.validator_jsonrpc_listen_address,
-        config.validator_settings.validator_cookie_path.as_deref(),
-        config.validator_settings.validator_user.clone(),
-        config.validator_settings.validator_password.clone(),
-    )
-    .await?;
-
-    info!(uri = %zebrad_uri, "Connected to node via JsonRPSee");
-
-    // Both the JSON-RPC (`Rpc`) and direct-`ReadStateService` (`Direct`) connections are
-    // now served by the single `NodeBackedIndexerService`; the connection is selected
-    // inside the config conversion from `config.backend`.
-    let service_config = NodeBackedIndexerServiceConfig::try_from(config.clone())?;
-    Indexer::<NodeBackedIndexerService>::launch_inner(service_config, config)
-        .await
-        .map(|res| res.0)
 }
 
-impl<Service: ZcashService + LightWalletService + Send + Sync + 'static> Indexer<Service>
+/// Boot the runtime over `adapter`: an LMDB-backed compact-block index, the
+/// store that composes blocks on read, and the wallet gRPC server, supervised
+/// under one Orchestra (validator gated first).
+///
+/// Generic over the adapter so any source plugs into one boot path (only the
+/// ReadState adapter is wired today; the seam is ready for others); the bound is
+/// stated on the resilient [`ValidatorClient`] wrapper, which is what the
+/// provisioner actually consumes.
+async fn boot<A>(
+    adapter: A,
+    config: DaemonConfig,
+) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
 where
-    IndexerError: From<<Service::Subscriber as ZcashIndexer>::Error>,
+    A: ValidatorSource + Send + Sync + 'static,
+    ValidatorClient<A>:
+        GetPreIndexCompactBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
 {
-    /// Spawns a new Indexer server.
-    // TODO: revise whether returning the subscriber here is the best way to access the service after the indexer is spawned.
-    pub async fn launch_inner(
-        service_config: Service::Config,
-        indexer_config: ZainodConfig,
-    ) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), IndexerError>>,
-            Service::Subscriber,
-        ),
-        IndexerError,
-    > {
-        Self::launch_inner_impl(service_config, indexer_config, None, None).await
-    }
+    let source = Arc::new(ValidatorClient::new(adapter, RetryPolicy::default()));
 
-    /// Launches the indexer on pre-bound listeners (test-only).
-    ///
-    /// The harness binds `127.0.0.1:0` for the gRPC server (and the JSON-RPC
-    /// server when enabled), reads the OS-assigned ports, and hands the open
-    /// sockets here — eliminating the pick-a-port / bind-later race that
-    /// otherwise flakes under parallel test execution. `json_listener` must be
-    /// `Some` exactly when `indexer_config.json_server_settings` is `Some`.
-    #[cfg(feature = "test_dependencies")]
-    pub async fn launch_inner_with_listeners(
-        service_config: Service::Config,
-        indexer_config: ZainodConfig,
-        grpc_listener: std::net::TcpListener,
-        json_listener: Option<std::net::TcpListener>,
-    ) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), IndexerError>>,
-            Service::Subscriber,
+    // LMDB must declare every namespace up front: one per index in the set, plus
+    // the engine's reserved watermark / format-version namespaces.
+    let namespaces: Vec<Namespace> = index_set()
+        .index_ids()
+        .into_iter()
+        .map(Namespace::from)
+        .chain(reserved_namespaces())
+        .collect();
+    let backend = LmdbBackend::open(LmdbConfig {
+        path: config.store.path.clone(),
+        map_size_bytes: config.store.map_size_gb << 30,
+        namespaces,
+    })?;
+
+    // The finalised store: the indexer writes it, the gRPC server composes
+    // blocks on read from it. One reader, shared (Arc-backed clone).
+    let store_reader = StoreReader::new(Arc::new(backend.clone()));
+
+    // The indexer sources the cheap pre-index compact block and builds the
+    // current-zaino index set, resuming from the backend watermark.
+    let driver = SourceSyncDriver::resuming_compact(
+        &backend,
+        index_set(),
+        Arc::clone(&source),
+        |compact_block| context_from_pre_index_compact_block(&compact_block),
+        SyncTuning {
+            batch_size: config.indexer.batch_size,
+            finalised_depth: config.indexer.finalised_depth,
+            channel_capacity: config.indexer.channel_capacity,
+            concurrency: config.indexer.concurrency,
+        },
+    )?;
+
+    // Reachability was already confirmed (Direct opened its state DB), so the
+    // runtime's validator gate is a formality here.
+    let validator = ValidatorComponent::connect(&AlreadyReachable).await?;
+    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let store = StoreComponent::new(ComponentName("store"), store_reader.clone());
+    let light_serve = ServeComponent::new(
+        ComponentName("light-serve"),
+        GrpcServer::new(
+            LightServe::new(store_reader),
+            config.serve.grpc_listen_address,
         ),
-        IndexerError,
-    > {
-        Self::launch_inner_impl(
-            service_config,
-            indexer_config,
-            Some(grpc_listener),
-            json_listener,
-        )
+    );
+
+    let mut orchestra = OrchestraBuilder::new()
+        .boot_observed(validator)
         .await
-    }
+        .boot(indexer)
+        .await
+        .map_err(|e| IndexerError::Boot(Box::new(e)))?
+        .boot(store)
+        .await
+        .map_err(|e| IndexerError::Boot(Box::new(e)))?
+        .boot(light_serve)
+        .await
+        .map_err(|e| IndexerError::Boot(Box::new(e)))?
+        .build();
 
-    async fn launch_inner_impl(
-        service_config: Service::Config,
-        indexer_config: ZainodConfig,
-        grpc_listener: Option<std::net::TcpListener>,
-        json_listener: Option<std::net::TcpListener>,
-    ) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), IndexerError>>,
-            Service::Subscriber,
-        ),
-        IndexerError,
-    > {
-        let service = IndexerService::<Service>::spawn(service_config).await?;
-        let service_subscriber = service.inner_ref().get_subscriber();
+    info!(
+        grpc = %config.serve.grpc_listen_address,
+        "Zaino runtime booted; serving compact blocks"
+    );
 
-        let json_server = match indexer_config.json_server_settings {
-            Some(json_server_config) => Some(match json_listener {
-                #[cfg(feature = "test_dependencies")]
-                Some(listener) => JsonRpcServer::spawn_from_listener(
-                    service.inner_ref().get_subscriber(),
-                    json_server_config,
-                    listener,
-                )
-                .await
-                .unwrap(),
-                _ => JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
-                    .await
-                    .unwrap(),
-            }),
-            None => None,
-        };
-
-        let routes = grpc_routes(service.inner_ref().get_subscriber());
-        let grpc_config = GrpcServerConfig {
-            listen_address: indexer_config.grpc_settings.listen_address,
-            tls: indexer_config.grpc_settings.tls,
-        };
-        let grpc_server = match grpc_listener {
-            #[cfg(feature = "test_dependencies")]
-            Some(listener) => TonicServer::spawn_from_listener(routes, grpc_config, listener)
-                .await
-                .unwrap(),
-            _ => TonicServer::spawn(routes, grpc_config).await.unwrap(),
-        };
-
-        let mut indexer = Self {
-            json_server,
-            server: Some(grpc_server),
-            service: Some(service),
-        };
-
-        let mut server_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
-        let mut last_log_time = Instant::now();
-        let log_interval = tokio::time::Duration::from_secs(10);
-
-        let serve_task = tokio::task::spawn(async move {
-            loop {
-                // Log the servers status.
-                if last_log_time.elapsed() >= log_interval {
-                    indexer.log_status();
-                    last_log_time = Instant::now();
-                }
-
-                // Check for restart signals.
-                if indexer.check_for_critical_errors() {
-                    indexer.close().await;
-                    return Err(IndexerError::Restart);
-                }
-
-                // Check for shutdown signals.
-                if indexer.check_for_shutdown() {
-                    indexer.close().await;
-                    return Ok(());
-                }
-
-                server_interval.tick().await;
+    Ok(tokio::spawn(async move {
+        // Run until a shutdown signal (clean exit) or a component escalation
+        // (fatal → restart). Either way, stop supervising the rest.
+        let escalation = tokio::select! {
+            signal = shutdown_signal() => {
+                info!(signal, "shutdown signal received");
+                orchestra.shutdown();
+                return Ok(());
             }
-        });
-
-        Ok((serve_task, service_subscriber.inner()))
-    }
-
-    /// Checks indexers status and servers internal statuses for either offline of critical error signals.
-    fn check_for_critical_errors(&self) -> bool {
-        let status = self.status_int();
-        if status == 5 || status >= 7 {
-            let service_status = self
-                .service
-                .as_ref()
-                .map(|s| s.inner_ref().status())
-                .unwrap_or(StatusType::Offline);
-            let server_status = self
-                .server
-                .as_ref()
-                .map(|s| s.status())
-                .unwrap_or(StatusType::Offline);
-            tracing::error!(
-                combined_status = status,
-                ?service_status,
-                ?server_status,
-                "check_for_critical_errors triggered"
-            );
-            return true;
-        }
-        false
-    }
-
-    /// Checks indexers status and servers internal status for closure signal.
-    fn check_for_shutdown(&self) -> bool {
-        if self.status_int() == 4 {
-            return true;
-        }
-        false
-    }
-
-    /// Sets the servers to close gracefully.
-    async fn close(&mut self) {
-        if let Some(mut json_server) = self.json_server.take() {
-            json_server.close().await;
-            json_server.status.store(StatusType::Offline);
-        }
-
-        if let Some(mut server) = self.server.take() {
-            server.close().await;
-            server.status.store(StatusType::Offline);
-        }
-
-        if let Some(service) = self.service.take() {
-            let mut service = service.inner();
-            service.close();
-        }
-    }
-
-    /// Returns the indexers current status usize, calculates from internal statuses.
-    fn status_int(&self) -> usize {
-        let service_status = match &self.service {
-            Some(service) => service.inner_ref().status(),
-            None => return 7,
+            escalation = orchestra.next_escalation() => escalation,
         };
-
-        let json_server_status = self
-            .json_server
-            .as_ref()
-            .map(|json_server| json_server.status());
-
-        let mut server_status = match &self.server {
-            Some(server) => server.status(),
-            None => return 7,
-        };
-
-        if let Some(json_status) = json_server_status {
-            server_status = StatusType::combine(server_status, json_status);
+        orchestra.shutdown();
+        match escalation {
+            Some(component) => {
+                error!(%component, "runtime component escalated; restarting");
+                Err(IndexerError::Restart)
+            }
+            None => {
+                info!("runtime settled");
+                Ok(())
+            }
         }
+    }))
+}
 
-        usize::from(StatusType::combine(service_status, server_status))
+/// Wait for a process shutdown signal, returning which one arrived.
+async fn shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        // Registering a signal handler only fails on a broken runtime/OS, which
+        // is an unrecoverable process-level invariant, not a runtime condition.
+        let mut terminate = signal(SignalKind::terminate()).expect("register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => "SIGINT",
+            _ = terminate.recv() => "SIGTERM",
+        }
     }
-
-    /// Returns the current StatusType of the indexer.
-    pub fn status(&self) -> StatusType {
-        StatusType::from(self.status_int())
-    }
-
-    /// Logs the indexers status.
-    pub fn log_status(&self) {
-        let service_status = match &self.service {
-            Some(service) => service.inner_ref().status(),
-            None => StatusType::Offline,
-        };
-
-        // `chain_state: Ready` on its own is ambiguous: while initial sync or a migration runs, an
-        // ephemeral passthrough serves finalised-state reads and reports `Ready` exactly like the
-        // real on-disk index. Reporting the mode next to the status is what lets an operator — or a
-        // containerised test polling this line — tell the two apart.
-        let finalised_state_mode = self
-            .service
-            .as_ref()
-            .map(|service| service.inner_ref().finalised_state_mode().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let json_server_status = match &self.json_server {
-            Some(json_server) => json_server.status(),
-            None => StatusType::Offline,
-        };
-
-        let grpc_server_status = match &self.server {
-            Some(server) => server.status(),
-            None => StatusType::Offline,
-        };
-
-        info!(
-            chain_state = %service_status,
-            fs_mode = %finalised_state_mode,
-            json_rpc = %json_server_status,
-            grpc = %grpc_server_status,
-            "Zaino status check"
-        );
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "ctrl-c"
     }
 }
 
-/// Prints Zaino's startup message.
+/// Map the daemon's network to zebra's network parameters.
+fn to_zebra_network(network: Network) -> zebra_chain::parameters::Network {
+    use zebra_chain::parameters::Network as Zebra;
+    match network {
+        Network::Mainnet => Zebra::Mainnet,
+        Network::PubTestnet => Zebra::new_default_testnet(),
+        Network::Regtest => Zebra::new_regtest(Default::default()),
+    }
+}
+
+/// A [`ReachabilityProbe`] that always reports reachable.
+///
+/// The daemon confirms the validator is reachable before boot (Direct opens its
+/// state DB), so the runtime's readiness gate has nothing left to check.
+struct AlreadyReachable;
+
+impl ReachabilityProbe for AlreadyReachable {
+    async fn reachable(&self) -> bool {
+        true
+    }
+}
+
+/// Prints Zaino's startup banner.
 fn startup_message() {
     let welcome_message = r#"
        ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████▓░▒▒▒
-       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████▓▒▒▒▒
-       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░▒▒▒▒▒▒
-       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▓▓▒▒▒▒▒▒
-       ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒██▓▒▒▒▒▒
-       ▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒██▓▒▒▒▒▒
-       ▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓███▓██▓▒▒▒▒▒
-       ▒▒▒▒▒▒▒▓▓▓▓▒███▓░▒▓▓████████████████▓▓▒▒▒▒▒▒▒
-       ▒▒▒▒▒▒▓▓▓▓▒▓████▓▓███████████████████▓▒▓▓▒▒▒▒
-       ▒▒▒▒▒▓▓▓▓▓▒▒▓▓▓▓████████████████████▓▒▓▓▓▒▒▒▒
-       ▒▒▒▒▒▓▓▓▓▓█████████████████████████▓▒▓▓▓▓▓▒▒▒
-       ▒▒▒▒▓▓▓▒▓█████████████████████████▓▓▓▓▓▓▓▓▒▒▒
-       ▒▒▒▒▒▓▓▓████████████████████████▓▓▓▓▓▓▓▓▓▒▒▒▒
-       ▒▒▒▒▒▓▒███████████████████████▒▓▓▓▓▓▓▓▓▓▓▒▒▒▒
-       ▒▒▒▒▒▒▓███████████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒
-       ▒▒▒▒▒▒▓███████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒
-       ▒▒▒▒▒▒▓██████████▓▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒
-       ▒▒▒▒███▓▒▓▓▓▓▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒
-       ▒▒▒▓████▒▒▒▒▒▒▒▒▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
-       ▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
-       ▒▒▒▒░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
-             Thank you for using ZingoLabs Zaino!
+              Thank you for using ZingoLabs Zaino!
 
        - Donate to us at https://free2z.cash/zingolabs.
 

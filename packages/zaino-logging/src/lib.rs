@@ -1,6 +1,14 @@
+#![forbid(unsafe_code)]
+
 //! Logging infrastructure for Zaino.
 //!
-//! This module provides centralized logging configuration with support for:
+//! Centralised tracing setup plus the panic hook that routes every panic through
+//! `tracing` at its origin. Its own crate — one layer of cross-cutting infra,
+//! depending only on the tracing stack — so a consumer that just wants
+//! structured logs need not pull a heavier "common" grab-bag (and its
+//! transitive `zebra-chain`) to initialise them.
+//!
+//! This crate provides centralized logging configuration with support for:
 //! - Stream view (flat chronological output) - DEFAULT
 //! - Tree view (hierarchical span-based output)
 //! - JSON output (machine-parseable)
@@ -16,22 +24,21 @@
 //! # Example
 //!
 //! ```no_run
-//! use zaino_common::logging;
-//!
 //! // Initialize logging, configured via the environment variables above.
-//! logging::init();
+//! zaino_logging::init();
 //! ```
 
 use std::env;
 use std::io::IsTerminal;
+use std::sync::Once;
 
 use time::macros::format_description;
 use tracing::Level;
 use tracing_subscriber::{
+    EnvFilter,
     fmt::time::UtcTime,
     layer::SubscriberExt,
     util::{SubscriberInitExt, TryInitError},
-    EnvFilter,
 };
 use tracing_tree::HierarchicalLayer;
 
@@ -114,6 +121,7 @@ impl Default for LogConfig {
 /// Panics if a global tracing subscriber has already been set.
 pub fn init() {
     try_install(LogConfig::default()).expect("global tracing subscriber already set");
+    install_panic_logger();
 }
 
 /// Try to initialize logging (won't fail if already initialized).
@@ -121,6 +129,43 @@ pub fn init() {
 /// Useful for tests where multiple test functions may try to initialize logging.
 pub fn try_init() {
     let _ = try_install(LogConfig::default());
+    install_panic_logger();
+}
+
+/// Installed at most once, regardless of how many times logging is initialized.
+static PANIC_LOGGER: Once = Once::new();
+
+/// Route every panic through `tracing` as a structured `error` event, so a
+/// panic anywhere — including one on a worker thread that would otherwise only
+/// surface as a `JoinError::Panic` at some distant `await` — is logged
+/// coherently at its origin, with the same sink as every other error. The
+/// previous hook is preserved and still runs, so the default stderr backtrace
+/// behaviour is unchanged; this only *adds* the structured log.
+///
+/// Structural, not per-site: any binary that initialises logging gets it, so
+/// panic visibility is not a matter of remembering to handle them.
+fn install_panic_logger() {
+    PANIC_LOGGER.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let message = info
+                .payload()
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".to_owned());
+            let location = info
+                .location()
+                .map(std::string::ToString::to_string)
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("<unnamed>")
+                .to_owned();
+            tracing::error!(target: "panic", %thread, %location, %message, "panic");
+            previous(info);
+        }));
+    });
 }
 
 /// Build the subscriber described by `config` and install it as the global
@@ -134,6 +179,18 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
             level = config.level.as_str()
         ))
     });
+    // Panics are routed through `tracing` under the `panic` target by
+    // `install_panic_logger`. That target is outside the `zaino*` namespace, so
+    // neither the default filter nor a typical `RUST_LOG=zaino=…` enables it — the
+    // structured panic-at-origin event would be silently dropped (visible only as
+    // the default hook's raw stderr backtrace, and absent from the JSON sink).
+    // Ensure the `panic` target is enabled at ERROR so panic visibility is
+    // structural, not contingent on the operator's filter.
+    let env_filter = env_filter.add_directive(
+        "panic=error"
+            .parse()
+            .expect("static `panic=error` directive is valid"),
+    );
     let registry = tracing_subscriber::registry().with(env_filter);
 
     match config.format {
@@ -175,6 +232,16 @@ fn try_install(config: LogConfig) -> Result<(), TryInitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_logger_installs_idempotently_and_still_unwinds() {
+        // Idempotent (Once), and it only *adds* structured logging — a panic
+        // still unwinds and is catchable, the hook does not swallow it.
+        install_panic_logger();
+        install_panic_logger();
+        let caught = std::panic::catch_unwind(|| panic!("boom"));
+        assert!(caught.is_err(), "panic still propagates through the hook");
+    }
 
     #[test]
     fn test_log_format_from_str() {

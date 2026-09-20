@@ -113,6 +113,28 @@ can't add inherent methods to them):
 when adding wire conversions for other business types (BlockHash,
 TransactionHash, etc.).
 
+**Ports-architecture exception — conversion lives in the adapter**:
+The inherent-`to_wire`-on-the-business-type rule assumes the business
+type and the wire schema legitimately co-locate in one crate (the
+legacy `zaino-state` world). In the ports architecture they do **not**:
+domain types live in `zaino-core` / `zaino-primitives`, which must never
+depend on a wire schema (`zaino-proto`, jsonrpsee), because that would
+recouple the domain to a transport and defeat the seam. There, the
+serve **adapter** owns conversion:
+
+- Put `to_wire` / `try_from_wire` in the adapter crate, on a
+  **local extension trait** (`trait ToWire { fn to_wire(&self) -> ...; }`,
+  impl'd for the foreign domain type) or as free functions. The orphan
+  rule forbids inherent methods on a foreign type anyway.
+- The domain crate gains no wire dependency; each adapter owns its own
+  wire schema and its own conversions. Two adapters over one port render
+  the same domain answer into two different wire shapes.
+
+Rule of thumb: **inherent method** when the type already legitimately
+depends on the wire schema; **adapter-local extension trait / free fn**
+when the conversion crosses a port seam. The direction-named,
+grep-friendly, per-conversion-error properties are the same either way.
+
 **Enforcement (covers both boundaries)**:
 
 - CI lint: `makers lint-boundary-conversions` (run as part of

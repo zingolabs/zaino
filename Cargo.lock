@@ -4548,6 +4548,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-bench"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-backend-lmdb",
+ "zaino-consensus",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-service",
+ "zaino-source",
+ "zaino-source-zebra-readstate",
+ "zaino-store",
+ "zaino-sync",
+ "zebra-chain",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4929,8 +4953,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58bb785abb0207bee98b1d7d874467bb1043d4e434f9a8c8a4714603563c762b"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "futures",
  "futures-core",
@@ -4946,8 +4969,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c700b6ca0cca8b86ef35046dfc7bab9196b8271ab72e9d410f8f63d94857d14f"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -5857,6 +5879,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-async"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "zaino-backend-lmdb"
+version = "0.1.0"
+dependencies = [
+ "lmdb",
+ "tempfile",
+ "zaino-persistence",
+]
+
+[[package]]
 name = "zaino-chain-head"
 version = "0.1.0"
 dependencies = [
@@ -5950,10 +5991,6 @@ version = "0.5.1"
 dependencies = [
  "rustls",
  "serde",
- "time",
- "tracing",
- "tracing-subscriber",
- "tracing-tree",
  "zebra-chain",
 ]
 
@@ -5964,7 +6001,7 @@ dependencies = [
  "strum",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
+ "zaino-async",
 ]
 
 [[package]]
@@ -5987,10 +6024,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-core"
+version = "0.1.0"
+dependencies = [
+ "strum",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-encoding"
 version = "0.1.0"
 dependencies = [
  "corez",
+]
+
+[[package]]
+name = "zaino-indexer"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-async",
+ "zaino-component",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-runtime",
+ "zaino-source",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-indexes"
+version = "0.1.0"
+dependencies = [
+ "strum",
+ "thiserror 2.0.18",
+ "zaino-core",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-lightserve"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic",
+ "zaino-component",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-proto",
+ "zaino-service",
+ "zaino-source",
+ "zaino-store",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-logging"
+version = "0.1.0"
+dependencies = [
+ "time",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tree",
 ]
 
 [[package]]
@@ -6021,6 +6127,35 @@ dependencies = [
  "zaino-primitives",
  "zaino-source",
  "zaino-status",
+]
+
+[[package]]
+name = "zaino-noderpc"
+version = "0.1.0"
+dependencies = [
+ "jsonrpsee",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-component",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
+name = "zaino-persistence"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-persistence-codec"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-persistence",
+ "zaino-primitives",
 ]
 
 [[package]]
@@ -6058,6 +6193,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-runtime"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zaino-async",
+ "zaino-component",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-lightserve",
+ "zaino-logging",
+ "zaino-noderpc",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-service",
+ "zaino-source",
+ "zaino-status",
+]
+
+[[package]]
 name = "zaino-serve"
 version = "0.7.0"
 dependencies = [
@@ -6083,6 +6241,16 @@ dependencies = [
  "zaino-status",
  "zebra-chain",
  "zebra-rpc",
+]
+
+[[package]]
+name = "zaino-service"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-core",
 ]
 
 [[package]]
@@ -6121,6 +6289,7 @@ version = "0.2.0"
 dependencies = [
  "chrono",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tower 0.4.13",
  "tracing",
@@ -6222,12 +6391,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-store"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+ "zaino-component",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-runtime",
+ "zaino-service",
+ "zaino-source",
+ "zaino-sync",
+]
+
+[[package]]
+name = "zaino-store-service"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-chain-head",
+ "zaino-chain-store",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
+name = "zaino-sync"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-primitives",
+ "zaino-source",
+]
+
+[[package]]
+name = "zaino-wallet"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-core",
+ "zaino-service",
+]
+
+[[package]]
 name = "zainod"
 version = "0.9.0"
 dependencies = [
  "clap",
  "config",
- "http",
  "metrics",
  "metrics-exporter-prometheus",
  "serde",
@@ -6236,16 +6460,23 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "zaino-chain-head-service",
+ "zaino-backend-lmdb",
  "zaino-common",
- "zaino-mempool",
+ "zaino-component",
+ "zaino-consensus",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-lightserve",
+ "zaino-logging",
+ "zaino-persistence",
+ "zaino-persistence-codec",
  "zaino-rpc",
- "zaino-serve",
- "zaino-state",
+ "zaino-runtime",
+ "zaino-source",
+ "zaino-source-zebra-readstate",
  "zaino-status",
- "zcash_address",
- "zcash_protocol",
- "zebra-state",
+ "zaino-store",
+ "zebra-chain",
 ]
 
 [[package]]
@@ -6446,8 +6677,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "12.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b270bc7ec8f48cf58d14368c3521201947df137fc0e52633e81297250b2e3e0e"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -6515,8 +6745,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "15.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3fdf6ead7848d73d835a37a24f5b39bb0ab607d293e9fa7662a9a769f924a59"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6558,8 +6787,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "12.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f288a50e47d4afecd95836350949ab911cc2091713b1c18cfb897e1d3f81cb9b"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -6596,8 +6824,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "10.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b616439bef32a2d9d581d3807e032c4da543d725586248d9dfe5c2cbd43b00b9"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6612,8 +6839,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "16.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23a3761cee7e8e1daa910bd53afa482270ad7f1dd2ce1c1332d1b99c982704d9"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "base64",
  "chrono",
@@ -6673,8 +6899,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "11.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "762fe1a82f312422c7df60560729669b3a938ed639fe624f2ff6da9ec7403eea"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "libzcash_script",
  "rand 0.8.6",
@@ -6687,8 +6912,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "13.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf1fd860f0eb79d9af0f677007ddd7559d378782a02a06fdd5a5e5cb98413ae"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "bincode",
  "chrono",
@@ -6726,8 +6950,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93c3fbb37b81e2727172ae184582297ffa91016be660ddd594b4830b16d168c9"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
 dependencies = [
  "color-eyre",
  "futures",

@@ -1,0 +1,39 @@
+# Container image for the sync-bench cluster harness.
+#
+# Built by the devops `bench-zaino` Argo WorkflowTemplate via BuildKit, with the
+# whole zaino repo as the build context (so the workspace lockfile resolves). The
+# BuildKit cache mounts are backed by the `buildkit-cache` PVC, so the registry
+# and target dir persist across runs.
+#
+# Local build (from the repo root):
+#   podman build -f bench/sync-bench/Containerfile -t sync-bench .
+
+# Stage 1: build. Rustup honours the workspace `rust-toolchain.toml` pin (1.96.0),
+# so the cluster build uses the same compiler as local — reproducibility is the
+# whole point of the bench. clang/libclang are for the rocksdb bindgen step
+# (zebra-state), protobuf-compiler for zaino-proto's build script, cmake for the
+# native rocksdb/lmdb builds.
+FROM docker.io/library/rust:1.96-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        libclang-dev \
+        cmake \
+        protobuf-compiler \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build -p sync-bench --release \
+    && cp target/release/sync-bench /sync-bench
+
+# Stage 2: runtime. Just the binary over glibc + libstdc++ (rocksdb links the C++
+# runtime dynamically even when the archive is static).
+FROM docker.io/library/debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libstdc++6 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /sync-bench /usr/local/bin/sync-bench
+ENTRYPOINT ["sync-bench"]

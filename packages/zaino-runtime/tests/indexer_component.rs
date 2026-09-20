@@ -1,0 +1,174 @@
+//! The indexer as an owned component: boots `Syncing`, reaches `Ready` when
+//! caught up, and gates readiness while it syncs.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use zaino_component::{
+    CancellationToken, ComponentName, Health, Lifecycle, Managed, RunReporter, StatusWatch,
+};
+use zaino_runtime::{IndexerComponent, OrchestraBuilder, RunLoop};
+
+/// A stub sync driver. `catch_up` decides whether it reaches the tip.
+struct StubSync {
+    catch_up: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("sync failed")]
+struct SyncError;
+
+impl RunLoop for StubSync {
+    type Error = SyncError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
+
+    async fn run(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        reporter: RunReporter,
+    ) -> Result<(), SyncError> {
+        if self.catch_up {
+            reporter.ready();
+        }
+        cancel.cancelled().await;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn an_indexer_reaches_ready_when_caught_up() {
+    let indexer = IndexerComponent::new(ComponentName("indexer"), StubSync { catch_up: true });
+    indexer.spawn().await.expect("spawn");
+
+    let mut status = indexer.subscribe();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if status.borrow_and_update().lifecycle == Lifecycle::Ready {
+                return;
+            }
+            status.changed().await.expect("status stream open");
+        }
+    })
+    .await
+    .expect("caught up to Ready");
+
+    indexer.stop().await.expect("stop");
+}
+
+#[tokio::test]
+async fn a_syncing_indexer_boots_but_gates_readiness() {
+    // Never catches up: stays Syncing.
+    let indexer = IndexerComponent::new(ComponentName("indexer"), StubSync { catch_up: false });
+    let orchestra = OrchestraBuilder::new()
+        .boot(indexer)
+        .await
+        .expect("boot indexer")
+        .build();
+
+    // Boot proceeded once it was *running* (Syncing) — not blocked on caught-up.
+    assert_eq!(orchestra.statuses()[0].lifecycle, Lifecycle::Syncing);
+
+    // Under full mode a syncing indexer keeps the runtime not ready / not started.
+    let signals = *orchestra.signals().borrow();
+    assert!(!signals.ready, "a syncing indexer gates readiness");
+    assert!(!signals.started, "still booting while syncing");
+
+    orchestra.shutdown();
+}
+
+/// A sync driver whose run loop *panics* (after yielding so the component is
+/// observed `Syncing` first) — a panic outside any joined sub-task, the silent-
+/// death path.
+struct PanicSync;
+
+impl RunLoop for PanicSync {
+    type Error = SyncError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
+
+    async fn run(
+        self: Arc<Self>,
+        _cancel: CancellationToken,
+        _reporter: RunReporter,
+    ) -> Result<(), SyncError> {
+        tokio::task::yield_now().await;
+        panic!("boom in the run loop");
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_run_loop_goes_critical_and_escalates() {
+    let indexer = IndexerComponent::new(ComponentName("indexer"), PanicSync);
+    let mut orchestra = OrchestraBuilder::new()
+        .boot(indexer)
+        .await
+        .expect("boot indexer (reaches Syncing before it panics)")
+        .build();
+
+    // The run-loop panic must escalate through the runtime, not silently freeze
+    // the status at Syncing/Healthy while the supervisor waits forever.
+    let escalated = tokio::time::timeout(Duration::from_secs(1), orchestra.next_escalation())
+        .await
+        .expect("escalation arrived — the panic was not a silent death");
+    assert_eq!(escalated, Some(ComponentName("indexer")));
+
+    let status = &orchestra.statuses()[0];
+    assert_eq!(status.health, Health::Critical);
+    assert!(
+        status
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("panicked"),
+        "the reason names the panic: {:?}",
+        status.reason
+    );
+
+    orchestra.shutdown();
+}
+
+/// A stub that reports a progress reading (then Ready), to prove a component
+/// records the progress its loop reports onto its own status.
+struct ProgressStub;
+
+impl RunLoop for ProgressStub {
+    type Error = SyncError;
+    const LABEL: &'static str = "run loop";
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
+
+    async fn run(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        reporter: RunReporter,
+    ) -> Result<(), SyncError> {
+        reporter.progress(5, Some(10));
+        reporter.ready();
+        cancel.cancelled().await;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_component_records_reported_progress_on_its_status() {
+    let indexer = IndexerComponent::new(ComponentName("indexer"), ProgressStub);
+    indexer.spawn().await.expect("spawn");
+
+    // Deterministic: the stub reports progress immediately; wait on the status
+    // stream (not a timer) for it to arrive. The timeout is only a safety bound.
+    let mut status = indexer.subscribe();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(progress) = status.borrow_and_update().progress {
+                assert_eq!(progress.current, 5);
+                assert_eq!(progress.target, Some(10));
+                return;
+            }
+            status.changed().await.expect("status stream open");
+        }
+    })
+    .await
+    .expect("progress reached the status");
+
+    indexer.stop().await.expect("stop");
+}

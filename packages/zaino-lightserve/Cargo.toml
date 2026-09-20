@@ -1,0 +1,28 @@
+[package]
+name = "zaino-lightserve"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "POC: lightwalletd-compatible gRPC serve adapter over the LightServeService inner port. Proves the new trait algebra + domain->wire conversion in the adapter; not the production zaino-serve."
+
+[dependencies]
+zaino-service = { path = "../zaino-service" }
+zaino-core = { path = "../zaino-core" }
+zaino-proto = { path = "../zaino-proto" }
+thiserror = { workspace = true }
+zaino-component = { path = "../zaino-component" }
+tonic.workspace = true
+futures.workspace = true
+tokio = { workspace = true }
+
+[dev-dependencies]
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+# The gRPC proof test builds a real index in-process and serves it over the wire.
+zaino-store = { path = "../zaino-store" }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-indexes = { path = "../zaino-indexes" }
+zaino-sync = { path = "../zaino-sync" }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-primitives = { path = "../zaino-primitives" }
