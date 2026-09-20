@@ -6193,11 +6193,17 @@ dependencies = [
  "tokio",
  "tracing",
  "zaino-async",
+ "zaino-common",
  "zaino-component",
  "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
  "zaino-lightserve",
  "zaino-noderpc",
+ "zaino-persistence",
+ "zaino-primitives",
  "zaino-service",
+ "zaino-source",
  "zaino-status",
 ]
 

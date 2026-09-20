@@ -22,3 +22,9 @@ zaino-core = { path = "../zaino-core" }
 zaino-service = { path = "../zaino-service", features = ["testing"] }
 zaino-lightserve = { path = "../zaino-lightserve" }
 zaino-noderpc = { path = "../zaino-noderpc" }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-indexes = { path = "../zaino-indexes" }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
+zaino-primitives = { path = "../zaino-primitives" }
+zaino-common = { path = "../zaino-common" }
