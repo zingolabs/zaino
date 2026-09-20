@@ -31,6 +31,33 @@ pub struct Progress {
     pub target: Option<u64>,
 }
 
+impl fmt::Display for Progress {
+    /// `current/target`, thousands-separated for legibility
+    /// (`1,700,000/3,428,000`); the target is `?` when unknown.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/", group_thousands(self.current))?;
+        match self.target {
+            Some(target) => f.write_str(&group_thousands(target)),
+            None => f.write_str("?"),
+        }
+    }
+}
+
+/// Render `n` with `,` thousands separators (`1700000` → `1,700,000`) — raw
+/// block heights are hard to read at a glance.
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let len = digits.len();
+    let mut out = String::with_capacity(len + len / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// A named snapshot of a component's [`Lifecycle`] phase and [`Health`]
 /// condition, the cause of its current condition when it is not healthy, and its
 /// progress toward a target when it has one.
@@ -83,10 +110,7 @@ impl fmt::Display for ComponentStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {:?}/{:?}", self.name, self.lifecycle, self.health)?;
         if let Some(progress) = &self.progress {
-            match progress.target {
-                Some(target) => write!(f, " ({}/{})", progress.current, target)?,
-                None => write!(f, " ({}/?)", progress.current)?,
-            }
+            write!(f, " ({progress})")?;
         }
         if let Some(reason) = &self.reason {
             write!(f, " — {reason}")?;
@@ -150,7 +174,7 @@ mod tests {
         });
         assert_eq!(
             syncing.to_string(),
-            "indexer: Syncing/Healthy (1700000/3428000)"
+            "indexer: Syncing/Healthy (1,700,000/3,428,000)"
         );
 
         // Target unknown renders as `?`.
@@ -158,6 +182,25 @@ mod tests {
             current: 1_700_000,
             target: None,
         });
-        assert_eq!(syncing.to_string(), "indexer: Syncing/Healthy (1700000/?)");
+        assert_eq!(
+            syncing.to_string(),
+            "indexer: Syncing/Healthy (1,700,000/?)"
+        );
+    }
+
+    #[test]
+    fn thousands_separators_group_by_three() {
+        for (n, expect) in [
+            (0u64, "0"),
+            (7, "7"),
+            (42, "42"),
+            (999, "999"),
+            (1_000, "1,000"),
+            (12_345, "12,345"),
+            (100_000, "100,000"),
+            (3_428_143, "3,428,143"),
+        ] {
+            assert_eq!(super::group_thousands(n), expect, "grouping {n}");
+        }
     }
 }
