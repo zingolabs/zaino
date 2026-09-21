@@ -19,8 +19,8 @@ pub enum IndexerError {
     )]
     RpcSourceUnsupported,
     /// Opening the Zebra ReadState database failed (Direct source mode).
-    #[error("opening the validator ReadState database failed: {0}")]
-    OpenReadState(String),
+    #[error("opening the validator ReadState database failed")]
+    OpenReadState(#[source] zaino_source_zebra_readstate::OpenReadStateError),
     /// Building the validator JSON-RPC client failed (from the configured
     /// coordinates in Direct/Rpc source mode).
     #[error("building the validator JSON-RPC client failed")]

@@ -98,6 +98,14 @@ impl<E: std::fmt::Debug + std::fmt::Display> From<ReadStateError>
     }
 }
 
+/// Opening the read-only state database failed.
+///
+/// The underlying zebra cause rides as a `#[source]`, never in the public
+/// signature — the same discipline [`ReadStateError`] applies to query faults.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to open the zebra state database")]
+pub struct OpenReadStateError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>);
+
 /// How stale the read-only secondary may get before the next read refreshes it.
 ///
 /// The secondary observes newly-finalized blocks only after a catch-up, so reads
@@ -258,14 +266,14 @@ impl ZebraReadStateAdapter {
     /// non-finalized top of the chain is served elsewhere (JSON-RPC), so the
     /// read-only construction's caller-fed non-finalized channel is not needed
     /// here and is dropped.
-    pub fn open(cache_dir: &Path, network: &Network) -> Result<Self, String> {
+    pub fn open(cache_dir: &Path, network: &Network) -> Result<Self, OpenReadStateError> {
         let config = zebra_state::Config {
             cache_dir: cache_dir.to_path_buf(),
             ..Default::default()
         };
 
         let (state, db, _sender) = zebra_state::init_read_only(config, network)
-            .map_err(|e| format!("failed to open zebra state: {e}"))?;
+            .map_err(|e| OpenReadStateError(Box::new(e)))?;
 
         Ok(Self {
             state,
@@ -352,14 +360,12 @@ impl ZebraReadStateAdapter {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::CompactBlock(zebra_height.into());
 
-        let response = self.read(request).await?;
-
-        match response {
-            ReadResponse::CompactBlock(Some(compact)) => Ok(compact),
-            ReadResponse::CompactBlock(None) => {
-                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
-            }
-            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+        let ReadResponse::CompactBlock(compact) = self.read(request).await? else {
+            return Err(unexpected_response("CompactBlock").into());
+        };
+        match compact {
+            Some(compact) => Ok(compact),
+            None => Err(QueryError::Domain(GetBlockError::HeightNotFound(height))),
         }
     }
 
@@ -371,12 +377,10 @@ impl ZebraReadStateAdapter {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::BlockHeader(zebra_height.into());
 
-        let response = self.read(request).await?;
-
-        match response {
-            ReadResponse::BlockHeader { header, .. } => Ok(*header),
-            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
-        }
+        let ReadResponse::BlockHeader { header, .. } = self.read(request).await? else {
+            return Err(unexpected_response("BlockHeader").into());
+        };
+        Ok(*header)
     }
 }
 
@@ -389,10 +393,11 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::Block(zebra_height.into());
 
-        let response = self.read(request).await?;
-
-        match response {
-            ReadResponse::Block(Some(arc_block)) => {
+        let ReadResponse::Block(block) = self.read(request).await? else {
+            return Err(unexpected_response("Block").into());
+        };
+        match block {
+            Some(arc_block) => {
                 // Convert from &Block — no clone of the Arc'd block.
                 //
                 // Cumulative tree sizes are indexed state rather than block
@@ -402,10 +407,7 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| ReadStateError::invalid_data(e).into())
             }
-            ReadResponse::Block(None) => {
-                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
-            }
-            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+            None => Err(QueryError::Domain(GetBlockError::HeightNotFound(height))),
         }
     }
 }
@@ -415,15 +417,15 @@ impl zaino_source::OneShotGetChainTip for ZebraReadStateAdapter {
     async fn get_chain_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<GetChainTipError, ReadStateError>> {
-        let response = self.read(ReadRequest::Tip).await?;
-
-        match response {
-            ReadResponse::Tip(Some((height, hash))) => {
+        let ReadResponse::Tip(tip) = self.read(ReadRequest::Tip).await? else {
+            return Err(unexpected_response("Tip").into());
+        };
+        match tip {
+            Some((height, hash)) => {
                 let h = Height::try_from(height.0).map_err(ReadStateError::invalid_data)?;
                 Ok((BlockHash::from(hash.0), h))
             }
-            ReadResponse::Tip(None) => Err(QueryError::Domain(GetChainTipError::NotReady)),
-            _ => Err(ReadStateError::off_contract("unexpected response variant").into()),
+            None => Err(QueryError::Domain(GetChainTipError::NotReady)),
         }
     }
 }
@@ -435,8 +437,12 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
     ) -> Result<Block, QueryError<zaino_source::GetBlockByHashError, ReadStateError>> {
         let zebra_hash = zebra_chain::block::Hash(hash.into());
 
-        match self.read(ReadRequest::Block(zebra_hash.into())).await? {
-            ReadResponse::Block(Some(arc_block)) => {
+        let ReadResponse::Block(block) = self.read(ReadRequest::Block(zebra_hash.into())).await?
+        else {
+            return Err(unexpected_response("Block").into());
+        };
+        match block {
+            Some(arc_block) => {
                 // Tree sizes are indexed state, not block data — see `GetBlock`.
                 let chain_metadata = ChainMetadata::ZERO;
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
@@ -446,10 +452,9 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
             // block here means "not in the finalized state" rather than "no such
             // block anywhere". A composite that also has an RPC adapter should
             // fall back to it before concluding the block does not exist.
-            ReadResponse::Block(None) => Err(QueryError::Domain(
+            None => Err(QueryError::Domain(
                 zaino_source::GetBlockByHashError::NotFound(hash),
             )),
-            _ => Err(unexpected_response("Block").into()),
         }
     }
 }
@@ -458,18 +463,20 @@ impl zaino_source::OneShotGetBestBlockHeight for ZebraReadStateAdapter {
     async fn get_best_block_height(
         &self,
     ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError, ReadStateError>> {
-        match self.read(ReadRequest::Tip).await? {
-            ReadResponse::Tip(Some((height, _hash))) => {
+        let ReadResponse::Tip(tip) = self.read(ReadRequest::Tip).await? else {
+            return Err(unexpected_response("Tip").into());
+        };
+        match tip {
+            Some((height, _hash)) => {
                 Height::try_from(height.0).map_err(|e| ReadStateError::invalid_data(e).into())
             }
-            // The previous implementation fell back to a JSON-RPC block count
-            // here. This adapter cannot reach RPC, and should not: a composite
-            // holding both adapters routes the fallback, which keeps "what this
-            // transport can answer" separate from "what to do when it cannot".
-            ReadResponse::Tip(None) => Err(QueryError::Domain(
+            // A composite holding both adapters routes the fallback when the
+            // finalized state has no tip; this adapter answers only for its own
+            // transport, keeping "what this transport can answer" separate from
+            // "what to do when it cannot".
+            None => Err(QueryError::Domain(
                 zaino_source::GetBestBlockHeightError::NotReady,
             )),
-            _ => Err(unexpected_response("Tip").into()),
         }
     }
 }

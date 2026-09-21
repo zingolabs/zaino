@@ -14,4 +14,4 @@
 
 mod adapter;
 
-pub use adapter::ZebraReadStateAdapter;
+pub use adapter::{OpenReadStateError, ZebraReadStateAdapter};
