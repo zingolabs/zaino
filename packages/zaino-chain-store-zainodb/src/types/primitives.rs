@@ -6,9 +6,11 @@
 //! in-memory / business-logic vocabulary.
 
 mod block_index;
-mod chain_work;
-mod compact_difficulty;
 
 pub use block_index::BlockIndex;
-pub use chain_work::{ChainWork, ChainWorkError};
-pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
+// These are the vocabulary primitives: this store validates, folds and
+// persists the same quantities every other layer reads, so there is nothing
+// store-specific to add to them.
+pub use zaino_primitives::types::{
+    AbsoluteChainWork, CompactDifficulty, CompactDifficultyError, SingleBlockWork,
+};
