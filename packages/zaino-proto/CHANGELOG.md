@@ -8,10 +8,66 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+- The vendored `lightwallet-protocol` subtree is pulled to upstream **v0.5.0**
+  (`ac7cee05`) — it had been stuck at v0.4.0 with later releases hand-copied in.
+  The subtree is also re-recorded at its real prefix
+  (`packages/zaino-proto/lightwallet-protocol`), which the crate's move under
+  `packages/` had broken, so `git subtree pull` works again.
+### Removed
+- **Breaking** — `CompactBlock::proto_version`. Upstream v0.5.0 removed the
+  field and reserved its tag; Zaino only ever wrote `0` to it.
+### Deprecated
+### Fixed
+
+## [0.5.0] - 2026-08-28
+
+### Added
+- `ShieldedProtocol::Ironwood` (`ironwood = 2` in `service.proto`), so
+  `GetSubtreeRoots` can name the Ironwood note commitment tree. Breaking for
+  Rust consumers that match exhaustively on `ShieldedProtocol`.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.4.0] - 2026-08-14
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.3.0] - 2026-08-04
+
+### Added
+- `PoolTypeError::DuplicatePoolType` variant.
+### Changed
+- **Breaking** — `ValidatedBlockRangeRequest` now stores its parsed `u32`
+  block-height endpoints. Consumers read the heights directly and drop their
+  own `as u32` casts at the call site.
+- **Breaking** — pool-type validation now rejects a request that names the
+  same pool more than once (returning `PoolTypeError::DuplicatePoolType`)
+  instead of silently collapsing the duplicate into a single pool.
+- Internal — the hand-written proto utility helpers were DRY'd and made
+  expression-oriented (parse-don't-validate), and the build script was
+  deduplicated. No effect on the generated wire types beyond the changes above.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-07-13
+
+### Added
 - Pool-type filter serves Ironwood by default (`include_ironwood: true`), so
   clients that predate the field still receive `ironwoodActions` (unknown
   protobuf fields are carried harmlessly).
 ### Changed
+- `RawTransaction.data` is generated as `bytes::Bytes` rather than `Vec<u8>`
+  (prost `bytes` config, scoped to this one field). The wire format is unchanged;
+  it lets the serving path hand the same transaction to many streaming clients as
+  refcount bumps instead of a copy each.
 - Lightwallet protocol vendored subtree updated to v0.5.0:
   `CompactTx.ironwoodActions` (field 9, `CompactOrchardAction`-shaped) and
   `CompactBlock.ironwoodCommitmentTreeSize`.

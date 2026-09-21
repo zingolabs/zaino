@@ -151,7 +151,7 @@ fn provided_height(
 /// The set of pools a request asks to be served.
 ///
 /// Internally a set keyed by [`PoolType`], so "which pools exist" is
-/// recorded once, in the enum (plus [`KNOWN_POOLS`]) — not once per method.
+/// recorded once, in the enum (plus `KNOWN_POOLS`) — not once per method.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PoolTypeFilter {
     included: BTreeSet<PoolType>,

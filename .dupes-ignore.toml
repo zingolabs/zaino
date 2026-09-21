@@ -1,0 +1,21 @@
+# Duplicate groups the check-code-duplication lint has been told to allow.
+#
+# An entry here is a claim that a group is irreducible, not that it is
+# unimportant. Each one names why sharing the code would make things worse, so
+# a later reader can re-litigate it rather than inherit it.
+
+[[ignore]]
+fingerprint = "a56301cbdb5a82de"
+members = [
+    "<StoreCapability as fmt::Display>::fmt",
+    "<ChainTipStatus as core::fmt::Display>::fmt",
+]
+reason = """
+Two unrelated enums whose Display impls are each a match over their own \
+variants mapping to their own strings. The shape is shared; nothing else is. \
+Factoring it would mean a generic variant-to-string helper that both enums \
+route through, which adds indirection to two eight-line functions and couples \
+a chain-store capability to an RPC chain-tip status for no reason beyond their \
+both being enums. They also live in crates that do not and should not depend \
+on each other.
+"""

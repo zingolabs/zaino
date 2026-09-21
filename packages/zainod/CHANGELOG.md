@@ -9,11 +9,98 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.9.0] - 2026-08-28
+
+### Added
+- An `fs_mode` field on the periodic `Zaino status check` log line, reporting
+  whether finalised-state reads are served by the persistent database
+  (`persistent`), by the ephemeral passthrough during sync or migration
+  (`ephemeral(syncing)`), or by a process configured with
+  `ephemeral_finalised_state = true` (`ephemeral(configured)`). `chain_state:
+  Ready` alone is ambiguous — the passthrough reports `Ready` identically to a
+  synced on-disk index — so containerised tests should gate startup on
+  `fs_mode: persistent`, or on the `finalised state online` log line, rather
+  than on `Ready`.
+- Metric descriptions for `zaino.db.finalised_ephemeral`,
+  `zaino.db.accumulator_built_height` and
+  `zaino.db.accumulator_rebuild_active`. Note the `prometheus` feature is off
+  by default, so these are inert unless explicitly enabled.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.8.0] - 2026-08-14
+
+### Added
+- `zaino.mempool.coherence_frozen_seconds` metric description: how long
+  tip-coherent mempool reads have been frozen. Brief spikes are normal tip
+  transitions; a sustained non-zero value means the validator tip and Zaino's
+  have stopped agreeing and those reads are unavailable.
+- `[mempool]` config section — `max_cost_bytes` (default 128 MiB, the mempool
+  memory backstop), `poll_interval_ms` (default 500), `metadata_min_interval_ms`
+  (defaults to the poll interval; raising it trades mempool latency for validator
+  load) and `max_exclude_count` (default 1024). Every field is optional and an
+  absent section keeps the built-in bounds, so existing config files are
+  unaffected. This makes the mempool capacity bound operator-configurable.
+
+  `poll_interval_ms = 0` is rejected by `check_config` with a named error. It is
+  not a slow mempool but a crash: the poll and coherence loops both build a
+  `tokio::time::interval` from it, and a zero period aborts at startup. The
+  operator sees a configuration error instead. `metadata_min_interval_ms = 0` is
+  deliberately still accepted — it is a `>=` floor, so zero means "no coalescing
+  beyond the poll cadence".
+### Changed
+- The daemon builds on the new source stack (`zaino-source-zebra`) via
+  `zaino-state`. No configuration change: the `[validator] connection` selector
+  (`rpc` / `direct`) means the same thing, and now chooses whether the composite
+  is constructed with a read-state adapter alongside its RPC one.
+### Deprecated
+### Removed
+- The outbound RPC metric *names* moved to `zaino-rpc`, which is the crate that
+  emits them. Registration and the metric descriptions stay here, so the
+  exported metrics are unchanged.
+- `zcashd_support` no longer forwards to `zaino-state`, which gates nothing
+  under it; it forwards to `zaino-serve` alone.
+### Fixed
+- The startup validator probe returns an error instead of calling
+  `std::process::exit(1)` from inside a library, so the daemon controls its own
+  shutdown path on an unreachable validator.
+
+## [0.7.0] - 2026-08-04
+
+### Added
+### Changed
+- Bumped the bundled crate dependencies: `zaino-proto` 0.3.0, `zaino-state`
+  0.6.0, `zaino-fetch` 0.4.1, and `zaino-serve` 0.5.1.
+- CI now gates on duplicate Rust logic (the workbench `check-code-duplication`
+  check).
+- ADR 0007 records the block-persistence row-set boundary.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.6.0] - 2026-07-13
+
+### Added
 - Ironwood (NU6.3) / V6 transaction support, end to end through the
   workspace crates: V6 parsing and ironwood extraction (`zaino-fetch`),
   `ironwoodActions` in served compact blocks (`zaino-proto`, on by
   default), and ironwood treestate roots in the chain index
   (`zaino-state`).
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.0] - 2026-07-02
+
+### Added
 - `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
   120) — the bulk-sync write-batch flush interval, which also bounds the window of
   unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.
@@ -21,9 +108,6 @@ and this crate adheres to Rust's notion of
   default 8) — a dedicated heap budget for the txout-set accumulator rebuild,
   separate from `sync_write_batch_size`.
 ### Changed
-- Version marked `0.4.3-ironwood.1` so Ironwood feature builds identify
-  themselves at `zainod --version`; stock `0.4.2` binaries are otherwise
-  indistinguishable from this branch's builds.
 - **Breaking** — `[storage.database] sync_write_batch_bytes` (bytes) is renamed
   to `sync_write_batch_size` and is now given in **GiB** (default 8). It now
   budgets only the bulk-sync block buffer; the accumulator rebuild uses the new

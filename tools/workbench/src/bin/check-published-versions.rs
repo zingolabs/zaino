@@ -14,11 +14,6 @@
 //! source is identical. Yanked versions count as published: crates.io never
 //! frees a version number.
 //!
-//! `--mode advisory` reports violations as warnings and exits 0 (feature
-//! branches, where unbumped-but-changed crates are the normal
-//! bump-at-release state). `--mode blocking` reports them as errors and
-//! exits 1 (`rc/**` and `stable` release gates).
-//!
 //! Std-only by crate design: network, extraction, and diffing go through
 //! `curl`, `tar`, and `diff` subprocesses.
 
@@ -28,14 +23,6 @@ use workbench::{repo_root, run};
 
 const PROG: &str = "check-published-versions";
 const DIFF_LINE_CAP: usize = 120;
-
-/// Failure disposition for version-reuse violations. Infrastructure errors
-/// (network, subprocess) fail loudly in either mode — a check that could not
-/// run must not read as a pass.
-enum Mode {
-    Advisory,
-    Blocking,
-}
 
 struct PackagedCrate {
     name: String,
@@ -53,7 +40,6 @@ fn main() {
 }
 
 fn check() -> Result<String, Vec<String>> {
-    let mode = mode_from_args(std::env::args().skip(1))?;
     let root = repo_root()?;
     let scratch = create_scratch_dir()?;
 
@@ -65,7 +51,6 @@ fn check() -> Result<String, Vec<String>> {
         }
     }
     let _ = std::fs::remove_dir_all(&scratch);
-    write_github_output(!violations.is_empty())?;
 
     if violations.is_empty() {
         return Ok(format!(
@@ -80,49 +65,15 @@ fn check() -> Result<String, Vec<String>> {
          bump these versions before the next release",
         offenders.join(", ")
     );
-    match mode {
-        Mode::Advisory => {
-            for (krate, diff) in &violations {
-                println!(
-                    "{PROG}: {} is published with different content:",
-                    krate.id()
-                );
-                println!("{diff}");
-            }
-            println!("::warning::{summary}");
-            Ok(summary)
-        }
-        Mode::Blocking => {
-            let mut lines = vec![format!("::error::{summary}")];
-            for (krate, diff) in violations {
-                lines.push(format!(
-                    "{} is published with different content:",
-                    krate.id()
-                ));
-                lines.push(diff);
-            }
-            Err(lines)
-        }
+    let mut lines = vec![format!("::error::{summary}")];
+    for (krate, diff) in violations {
+        lines.push(format!(
+            "{} is published with different content:",
+            krate.id()
+        ));
+        lines.push(diff);
     }
-}
-
-/// Publish a `violations=<bool>` step output when running under GitHub
-/// Actions (the `GITHUB_OUTPUT` file is set). Downstream steps use it to
-/// degrade the publish dry-run to `--no-verify`: a crate that reuses a
-/// published version is *shadowed* by the registry during verify builds
-/// (cargo resolves the already-published artifact over the workspace
-/// overlay), so packaged-form verification of its dependents is meaningless
-/// until versions are bumped. Outside GitHub Actions this is a no-op.
-fn write_github_output(violations: bool) -> Result<(), Vec<String>> {
-    let Ok(path) = std::env::var("GITHUB_OUTPUT") else {
-        return Ok(());
-    };
-    let line = format!("violations={violations}\n");
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()))
-        .map_err(|e| vec![format!("cannot append to GITHUB_OUTPUT ({path}): {e}")])
+    Err(lines)
 }
 
 /// A per-process scratch directory for downloads and extractions, removed
@@ -132,14 +83,6 @@ fn create_scratch_dir() -> Result<PathBuf, Vec<String>> {
     std::fs::create_dir_all(&dir)
         .map_err(|e| vec![format!("cannot create scratch dir {}: {e}", dir.display())])?;
     Ok(dir)
-}
-
-fn mode_from_args(mut args: impl Iterator<Item = String>) -> Result<Mode, Vec<String>> {
-    match (args.next().as_deref(), args.next().as_deref(), args.next()) {
-        (Some("--mode"), Some("advisory"), None) => Ok(Mode::Advisory),
-        (Some("--mode"), Some("blocking"), None) => Ok(Mode::Blocking),
-        _ => Err(vec![format!("usage: {PROG} --mode <advisory|blocking>")]),
-    }
 }
 
 /// Package every publishable workspace member (their `.crate` files land in
@@ -381,7 +324,7 @@ fn truncate_lines(text: &str, cap: usize) -> String {
     let kept: Vec<&str> = text.lines().take(cap).collect();
     format!(
         "{}\n… (diff truncated: {} more lines; run `cargo run --manifest-path \
-         tools/workbench/Cargo.toml --bin {PROG} -- --mode advisory` locally for the full diff)",
+         tools/workbench/Cargo.toml --bin {PROG}` locally for the full diff)",
         kept.join("\n"),
         total - cap
     )

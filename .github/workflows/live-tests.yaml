@@ -1,0 +1,129 @@
+name: Live tests
+
+on:
+  # Fork PRs cannot mint the OIDC token (`pull_request` from a fork is capped read-only), so a
+  # maintainer runs them from here: base-repo context, full permissions, behind the environment gate.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to run the suite against (blank = this branch)
+        required: false
+        type: string
+  pull_request:
+
+# Per-PR — a push supersedes its own run, never another PR's
+# - ztest queues on contention (`qos/scheduler.rs::decide`), so the cluster arbitrates, not this
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Cluster-free: compiles the live suite without standing up a cluster.
+  compile:
+    name: Compile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            live-tests/target
+          key: live-tests-compile-${{ hashFiles('live-tests/Cargo.lock') }}
+          restore-keys: live-tests-compile-
+
+      - name: Format
+        run: cargo fmt --manifest-path live-tests/Cargo.toml --all --check
+
+      - name: Clippy (all features)
+        run: >
+          cargo clippy --manifest-path live-tests/Cargo.toml
+          --all-targets --all-features --locked -- -D warnings
+
+  run:
+    name: Run on cluster
+    needs: compile
+    # Fork PRs skip rather than fail: read-only token = no OIDC = no tailnet. Run them by hand
+    # via workflow_dispatch, which GitHub already restricts to write access.
+    if: >
+      github.event_name == 'workflow_dispatch'
+      || github.event.pull_request.head.repo.full_name == github.repository
+    # Unconditional, and load-bearing beyond any protection rules: the tailnet trust credential
+    # matches subject `repo:zingolabs/zaino:environment:ztest-cluster`, and a job without an
+    # `environment:` mints `…:pull_request` instead → 403 at the join.
+    environment: ztest-cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write # mints the GitHub OIDC token Tailscale federates on
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+
+      # CLI and library must be the same version: ztest verifies a hash of the
+      # ClusterRole it renders against the applied one at run start. So the version is derived,
+      # never floated to latest.
+      - name: Resolve ztest version from the lockfile
+        id: ztest
+        run: |
+          v=$(awk '/^name = "ztest"$/ { getline; print $3 }' live-tests/Cargo.lock | tr -d '"')
+          [ -n "$v" ] || { echo "no ztest version in live-tests/Cargo.lock"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # Caches the built binary itself. `cargo install` keys off `~/.cargo/.crates.toml`, which a
+      # `~/.cargo/bin` cache does not carry — so a plain cache restores the binary and rebuilds anyway.
+      - name: Install ztest CLI
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: ztest_cli
+          version: ${{ steps.ztest.outputs.version }}
+          locked: true
+
+      - uses: azure/setup-kubectl@v4
+
+      # Workload identity federation (GitHub OIDC) — no stored secret. Client ID and
+      # audience are non-secret repo *variables*. tag:ztest-runner reaches
+      # tag:k8s-operator:443 only — no node, no SSH.
+      - name: Join tailnet (ephemeral tag:ztest-runner, OIDC — no secret)
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
+          audience: ${{ vars.TS_OIDC_AUDIENCE }}
+          tags: tag:ztest-runner
+
+      # Authenticates as the tailnet identity; no kube token exists to leak.
+      # The tailnet grant impersonates tag:ztest-runner into the k8s group `ztest-ci`.
+      - name: Configure kubeconfig via the operator proxy
+        run: tailscale configure kubeconfig tailscale-operator
+
+      - name: Register the cluster
+        run: |
+          ztest cluster add zingo-infra \
+            --kube-context "$(kubectl config current-context)" \
+            --extra-config '${{ vars.ZTEST_CLUSTER_CONFIG_URL }}' \
+            --set-default --yes
+
+      # Probes every (resource, verb) pair the run role grants, so a permission gap
+      # is named here rather than 403-ing twenty minutes into a run.
+      - name: Check the cluster
+        run: ztest cluster check
+
+      - name: Run the live suite
+        working-directory: live-tests
+        run: ztest run
+
+      # - no janitor on zingo-infra (`janitor/ttl` is advisory) → a cancelled run leaks without this
+      # - targeted by run id: every CI run shares `ztest.io/user=runner`, untargeted reaps peers
+      - name: Reclaim this run's cluster resources
+        if: always()
+        continue-on-error: true
+        run: ztest cleanup --force '${{ github.run_id }}'
