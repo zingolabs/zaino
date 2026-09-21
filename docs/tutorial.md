@@ -1,24 +1,32 @@
-This is a tutorial to launch zaino, connected to a local validator.
+# Tutorial: run zainod against a local Zebra node
 
-Step 0: Git check out zaino.
+Step 0: Check out zaino.
 
-Step 1: Set up zebra v3.1.0.
+Step 1: Install zebra v3.1.0.
+
 ```
 git clone git@github.com:ZcashFoundation/zebra.git
+cd zebra
 git checkout v3.1.0
 cargo install --path zebrad --locked
 ```
 
-EASY PATH:
-Use included Testnet Configuration
+Step 2: Edit the example configs. From the zaino repo root, replace
+`<PATH_TO_ZEBRA>` in `docs/example_configs/zebrad_config_3.1.0.toml` and
+`<ZAINO_STORE>` in `docs/example_configs/zainod.toml` with writable directories.
+The pair is set up for Testnet: zebrad serves JSON-RPC on `127.0.0.1:18231`,
+which is zainod's `source.jsonrpc_address`.
 
-In the zaino git root, run
+Step 3: Start zebrad:
+
 ```
-zebrad -c example_configs/zebrad_config_3.1.0.toml
-```
-in another shell,
-```
-cargo run --release -- start -c example_configs/zainod.toml
+zebrad -c docs/example_configs/zebrad_config_3.1.0.toml start
 ```
 
+Step 4: In another shell, start zainod:
 
+```
+cargo run --release -p zainod -- start -c docs/example_configs/zainod.toml
+```
+
+zainod serves lightwalletd-compatible gRPC on `127.0.0.1:8137`.

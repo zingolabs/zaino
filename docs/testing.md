@@ -3,19 +3,19 @@
 Zaino has two kinds of tests, run by two different commands:
 
 - **Unit tests** — the unit and crate-level integration tests of the
-  `packages/*` crates (the root workspace `default-members`). They need no live
-  validator and run on your host with a plain `cargo nextest run`.
-- **Integration/Live tests** — tests that stand up a real validator, wallet against
-  regtest or testnet and exercise the assembled, running system.
-  They live in the standalone `live-tests/` workspace and run on the **ztest**
-  Kubernetes harness
+  `packages/*` crates. They need no live validator and run on your host with
+  `cargo nextest run --workspace`.
+- **Live tests** — tests that stand up a real validator (and, for `e2e`, a wallet) against
+  regtest or testnet and exercise the assembled, running system. They live in
+  the standalone `live-tests/` workspace and run on the **ztest** Kubernetes
+  harness.
 
 ## Quick start
 
 ```sh
 
 # Production crates, from the repo root.
-cargo nextest run
+cargo nextest run --workspace
 
 cd live-tests
 ztest run
@@ -32,9 +32,9 @@ ztest run -p clientless --rerun latest
 
 | Set          | Where it runs          | What it covers                                                                                                                                                                                            |
 | ------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*` | host (`cargo nextest`) | The production crates. No live validator — but *not* network-free: e.g. `zaino-serve`'s gRPC regression test binds a loopback socket and stands up a tonic server.                                        |
+| `packages/*` | host (`cargo nextest`) | The production crates. No live validator — but *not* network-free: e.g. `zaino-lightserve`'s transport test binds a loopback socket and stands up a tonic server.                                |
 | `e2e`        | ztest / k8s            | The partition driven end-to-end by a real wallet client through Zaino's gRPC surface to a live validator — a wallet's full-stack view of the indexer.                                                     |
-| `clientless` | ztest / k8s            | The partition that drives a deployed Zaino over its served gRPC and JSON-RPC surfaces against a live validator, with no wallet client — fetch-vs-state backend parity, and validator-vs-Zaino oracle checks. |
+| `clientless` | ztest / k8s            | The partition that drives a deployed Zaino over its served gRPC surface against a live validator, with no wallet client — validator-vs-Zaino oracle checks.                                                    |
 
 ## Local Ztest Cluster Setup
 

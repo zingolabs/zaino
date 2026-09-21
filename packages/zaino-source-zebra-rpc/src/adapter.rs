@@ -287,7 +287,7 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
         // them off this block.
         let chain_metadata = ChainMetadata::ZERO;
 
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
+        crate::convert::block_from_zebra(&zebra_block, chain_metadata)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
@@ -498,7 +498,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
 
         // Tree sizes are indexed state, not block data — see `GetBlock`.
         let chain_metadata = ChainMetadata::ZERO;
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
+        crate::convert::block_from_zebra(&zebra_block, chain_metadata)
             .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }

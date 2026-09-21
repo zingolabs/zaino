@@ -3,7 +3,7 @@ name = "zaino-noderpc"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "POC: Zcash node JSON-RPC serve adapter over the NodeRpcService inner port. Proves the node-rpc profile binding + both-direction wire conversion; not the production zaino-serve."
+description = "POC: Zcash node JSON-RPC serve adapter over the NodeRpcService inner port. Proves the node-rpc profile binding + both-direction wire conversion; not yet served by zainod."
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }

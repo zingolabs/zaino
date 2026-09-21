@@ -13,7 +13,7 @@ use zaino_primitives::types::{
 
 /// Errors during conversion from zebra types.
 #[derive(Debug, thiserror::Error)]
-pub enum ConvertError {
+pub(crate) enum ConvertError {
     /// Block height couldn't be extracted or validated.
     #[error("height: {0}")]
     Height(String),
@@ -55,7 +55,7 @@ fn compact_prefix(enc: &[u8]) -> Result<CompactCiphertext, ConvertError> {
 /// same-typed counts whose order carries no clue, so positional arguments could
 /// be transposed silently. The caller supplies it because cumulative tree sizes
 /// are indexed state, not present in the block itself.
-pub fn block_from_zebra(
+pub(crate) fn block_from_zebra(
     zb: &zebra_chain::block::Block,
     chain_metadata: ChainMetadata,
 ) -> Result<Block, ConvertError> {
@@ -71,7 +71,7 @@ pub fn block_from_zebra(
 
 /// Convert just the header — skips all transaction parsing.
 /// Much faster for header-only indexes on large blocks.
-pub fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, ConvertError> {
+fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, ConvertError> {
     let h = &zb.header;
     let height = zb
         .coinbase_height()
@@ -109,11 +109,7 @@ fn solution_from_zebra(solution: zebra_chain::work::equihash::Solution) -> Equih
 /// the coinbase, is the block's to know (see [`block_from_zebra`], which reads
 /// it from order). A mempool transaction is in no block and has no position to
 /// invent.
-///
-/// Public because the mempool stream converts a single transaction rather than
-/// a whole block; every other caller reaches this through
-/// [`block_from_zebra`].
-pub fn transaction_from_zebra(
+fn transaction_from_zebra(
     tx: &zebra_chain::transaction::Transaction,
 ) -> Result<Transaction, ConvertError> {
     Ok(Transaction {

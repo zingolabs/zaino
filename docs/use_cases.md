@@ -1,55 +1,29 @@
 # Indexer Live Service
+
+`zainod` indexes the chain from a Zebra node and serves it to light clients over
+lightwalletd-compatible gRPC. See [rpc_api.md](./rpc_api.md) for the methods it
+serves today.
+
 ### Dependencies
-1) [Zebrad](https://github.com/ZcashFoundation/zebra.git)
-2) [Zingolib](https://github.com/zingolabs/zingolib.git) [if running Zingo-Cli]
+1) [Zebrad](https://github.com/ZcashFoundation/zebra.git), with JSON-RPC enabled
+   (`[rpc] listen_addr` in `zebrad.toml`)
 
 ### Running ZainoD
-- To run a Zaino server, backed locally by Zebrad first build Zaino.
+1) Build: `$ cargo build --release -p zainod`
+2) Add the binary at `#PATH_TO/zaino/target/release/zainod` to PATH.
 
-Recently the newest GCC version on Arch has broken a build script in the `rocksdb` dependency. A workaround is:
-`export CXXFLAGS="$CXXFLAGS -include cstdint"`
+Then, in separate terminals:
 
-1) Run `$ cargo build --release`
-2) Add compiled binary held at `#PATH_TO/zaino/target/release/zainod` to PATH.
-
-- Then to launch Zaino: [in separate terminals]:
 3) Run `$ zebrad --config #PATH_TO_CONF/zebrad.toml start`
-4) Run `$ zainod start` (uses default config at `~/.config/zaino/zainod.toml`)
-   Or with explicit config: `$ zainod start -c #PATH_TO_CONF/zainod.toml`
+4) Run `$ zainod start` (uses the default config at `~/.config/zaino/zainod.toml`),
+   or with an explicit config: `$ zainod start -c #PATH_TO_CONF/zainod.toml`
 
    To generate a default config file: `$ zainod generate-config`
 
-NOTE: Unless the `no_db` option is set to true in the config file zaino will sync its internal `CompactBlock` cache with the validator it is connected to on launch. This can be a very slow process the first time Zaino's DB is synced with a new chain and zaino will not be operable until the database is fully synced. If Zaino exits during this process the database is saved in its current state, enabling the chain to be synced in several stages.
+Example configs for running against a Testnet Zebra node are in
+[`example_configs/`](./example_configs/); see the [tutorial](./tutorial.md).
 
-- To launch Zingo-Cli running through Zaino [from #PATH_TO/zingolib]:
-5) Run `$ cargo run --release --package zingo-cli -- --chain "CHAIN_TYPE" --server "ZAINO_LISTEN_ADDR" --data-dir #PATH_TO_WALLET_DATA_DIR`
-
-- Example Config files for running Zebra on testnet are given in `packages/zainod/`
-
-A system architecture diagram for this service can be seen at [Live Service System Architecture](./zaino_live_system_architecture.pdf).
-
-
-# Local Library
-Zaino-State serves as Zaino's chain fetch and transaction submission library. The intended endpoint for this lib is the `IndexerService<Service>` (and `IndexerServiceSubscriber<ServiceSubscriber>`) held in `Zaino_state::indexer`. This generic endpoint enables zaino to add new backend options (Tonic, Darkside, Nym) to the IndexerService without changing the interface clients will see.
-
-The use of a `Service` and `ServiceSubscriber` separates the core chainstate maintainer processes from fetch fuctionality, enabling zaino to serve a large number of concurrent clients efficiently. In the future we will also be adding a lightweight tonic backend option for clients that do not want to run any chainstate processes locally.
-
-Currently 2 `Service's` are being implemented, with plans for several more:
-- FetchService: Zcash JsonRPC powered backend service enabling compatibility with JsonRPC validator options (zebrad).
-- StateService: Highly efficient chain fetch service tailored to run with ZebraD.
-
-Future Planned backend Services:
-- TonicService: gRPC powered backend enabling lightclients and lightwieght users to use Zaino's unified chain fetch and transaction submission services.
-- DarksideService: Local test backend replacing functionality in lightwalletd.
-- NymService: Nym powered backend enabling clients to obfuscate their identities from zcash servers.
-
-An example of how to spawn an `IndexerService<FetchService>` and create a `Subscriber` can be seen in `zainod::indexer::Indexer::spawn()`.
-
-A system architecture diagram for this service can be seen at [Library System Architecture](./zaino_lib_system_architecture.pdf).
-
-NOTE: Currently for the mempool to function the `IndexerService` can not be dropped. An option to only keep the `Subscriber` in scope will be added with the addition of the gRPC backend (`TonicService`).
-
-# Remote Library
-**Currently Unimplemented, documentation will be added here as this functionality becomes available.**
-
-A system architecture diagram for this service can be seen at [Library System Architecture](./zaino_lib_system_architecture.pdf).
+On first launch zainod syncs its index from the validator, starting at genesis;
+this takes a long time on Mainnet and Testnet. The index is persisted in the
+store directory (`[store] path`), so a restarted zainod resumes from where it
+stopped.

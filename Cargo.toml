@@ -26,11 +26,9 @@ members = [
     "packages/zaino-source-macros",
     "packages/zaino-source",
     "packages/zaino-rpc",
-    "packages/zaino-convert-zebra",
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
-    "packages/zaino-common",
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
     "packages/zaino-chainview",
@@ -74,7 +72,6 @@ zebra-chain = "12.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
-tokio-stream = "0.1"
 tokio-util = "0.7"
 
 # CLI
@@ -90,12 +87,8 @@ tracing-subscriber = { version = "0.3.20", features = [
 ] }
 tracing-tree = "0.4"
 time = { version = "0.3", features = ["macros", "formatting"] }
-reqwest = { version = "0.13", default-features = false, features = [
-    "cookies",
-    "rustls-no-provider",
-    "webpki-roots",
-] }
-tower = { version = "0.4", features = ["buffer", "util"] }
+# Plain HTTP only (validator JSON-RPC)
+reqwest = { version = "0.13", default-features = false }
 tonic = { version = "0.14" }
 prost = "0.14"
 serde = "1.0"
@@ -103,10 +96,7 @@ serde_json = "1.0"
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
 
 # Hashmaps, channels, DBs
-indexmap = "2.2.6"
-dashmap = "6.1"
 lmdb = "0.8"
-lmdb-sys = "0.8"
 futures = "0.3.30"
 
 # Metrics
@@ -117,16 +107,10 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false, feat
 bytes = "1.12"
 strum = { version = "0.27", features = ["derive"] }
 thiserror = "2.0"
-chrono = "0.4"
 which = "8"
-whoami = "2.1"
-corez = "0.1"
-sha2 = "0.10"
-blake2 = "0.10"
 hex = "0.4"
 toml = "1.1"
-primitive-types = "0.14"
-bitflags = "2.9"
+dirs = "6"
 
 # Test
 tempfile = "3.2"
@@ -147,9 +131,6 @@ zaino-persistence = { path = "packages/zaino-persistence", version = "0.1.0" }
 zaino-backend-lmdb = { path = "packages/zaino-backend-lmdb", version = "0.1.0" }
 zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
 zaino-indexes = { path = "packages/zaino-indexes", version = "0.1.0" }
-# Zcash address parsing and classification, for the two address-validation RPCs.
-# A leaf: it isolates the librustzcash address stack from everything else.
-zaino-address = { path = "packages/zaino-address", version = "0.1.0" }
 # Driven port traits for validator access: one trait per question a consumer can
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
@@ -157,14 +138,10 @@ zaino-source = { path = "packages/zaino-source", version = "0.2.0" }
 zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.0" }
 zaino-persistence-macros = { path = "packages/zaino-persistence-macros", version = "0.1.0" }
 zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.0" }
-zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.0" }
 # JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
 zaino-rpc = { path = "packages/zaino-rpc", version = "0.2.0" }
-# The single place `zebra_chain` types are translated into domain types.
-zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.2.0" }
 # The validator source adapter: answers every source port over the Zcash JSON-RPC interface.
 zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.2.0" }
-zaino-common = { path = "packages/zaino-common", version = "0.5.1" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead

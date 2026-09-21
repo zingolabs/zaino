@@ -18,6 +18,7 @@ pub mod error;
 pub mod indexer;
 #[cfg(feature = "prometheus")]
 pub mod metrics;
+pub mod paths;
 
 /// Run the Zaino indexer.
 ///

@@ -8,8 +8,8 @@
 //! boot. The wallet API will get its own, separate config; keeping this one
 //! self-contained keeps that boundary clean.
 //!
-//! Greenfield, not the legacy `zaino-state` config: it carries only what the
-//! runtime serving stack consumes. Config is layered highest-priority-first:
+//! It carries only what the runtime serving stack consumes. Config is layered
+//! highest-priority-first:
 //! environment variables (`ZAINO_` prefix, `__` nesting), then the TOML file,
 //! then built-in defaults.
 
@@ -23,8 +23,6 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
-
-pub use zaino_common::Network;
 
 use crate::error::IndexerError;
 
@@ -76,7 +74,7 @@ pub struct StoreConfig {
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            path: zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zaino/store"),
+            path: crate::paths::default_store(),
             map_size_gb: 16,
         }
     }
@@ -127,11 +125,9 @@ impl Default for IndexerConfig {
 }
 
 /// The zainod daemon configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DaemonConfig {
-    /// Network the validator serves.
-    pub network: Network,
     /// Prometheus `/metrics` endpoint. Disabled when absent; requires the
     /// `prometheus` feature.
     pub metrics_endpoint: Option<SocketAddr>,
@@ -143,19 +139,6 @@ pub struct DaemonConfig {
     pub serve: ServeConfig,
     /// Index-build tuning.
     pub indexer: IndexerConfig,
-}
-
-impl Default for DaemonConfig {
-    fn default() -> Self {
-        Self {
-            network: Network::Mainnet,
-            metrics_endpoint: None,
-            source: SourceConfig::default(),
-            store: StoreConfig::default(),
-            serve: ServeConfig::default(),
-            indexer: IndexerConfig::default(),
-        }
-    }
 }
 
 /// The env var that activates the ztest regtest fixture (only with the
@@ -177,7 +160,6 @@ pub fn regtest_fixture() -> DaemonConfig {
     let jsonrpc_address =
         std::env::var(TEST_FIXTURE_JSONRPC_ENV).unwrap_or_else(|_| "127.0.0.1:18232".to_string());
     DaemonConfig {
-        network: Network::Regtest,
         metrics_endpoint: None,
         source: SourceConfig {
             jsonrpc_address,
@@ -278,8 +260,6 @@ mod tests {
     fn source_parses_with_auth_absent_and_direct_era_fields_are_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
-network = "Regtest"
-
 [source]
 jsonrpc_address = "127.0.0.1:18232"
 
@@ -315,8 +295,6 @@ path = "/tmp/zaino-store"
     fn env_overrides_a_scalar_field() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
-network = "Mainnet"
-
 [source]
 jsonrpc_address = "127.0.0.1:8232"
 
@@ -336,7 +314,6 @@ path = "/tmp/zaino-store"
     fn unknown_top_level_field_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
-network = "Mainnet"
 bogus_field = true
 
 [store]

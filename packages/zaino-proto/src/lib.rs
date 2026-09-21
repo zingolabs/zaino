@@ -6,8 +6,3 @@
 #![forbid(unsafe_code)]
 
 pub mod proto;
-
-#[cfg(feature = "grpc_proxy_server")]
-pub use prost;
-#[cfg(feature = "grpc_proxy_server")]
-pub use tonic;

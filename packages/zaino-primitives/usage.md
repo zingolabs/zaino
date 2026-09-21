@@ -167,7 +167,7 @@ types, and what `AbsoluteChainWork` is *not* — in particular
 The nBits encoding from the block header is its own validated type,
 `CompactDifficulty`, and the whole bits → target → work conversion is native
 to this crate — the domain owns its arithmetic, and consensus implementations
-serve as *differential-test oracles* (`zaino-convert-zebra` sweeps the
+serve as *differential-test oracles* (`zaino-source-zebra-rpc`'s `convert` tests sweep the
 pipeline against zebra across the encoding space) rather than as dependencies.
 
 Construction is only through checked doors — `try_from_bits(u32)` for a value

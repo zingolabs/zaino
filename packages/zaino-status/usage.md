@@ -6,10 +6,8 @@ dependency is `tracing`.
 ## Why it is its own crate
 
 Status is the one thing *every* subsystem has, including the ones whose whole
-purpose is to depend on as little as possible. While this vocabulary lived in
-`zaino-common`, saying "I am syncing" cost a dependency on the validator config,
-the logging stack, TLS and `zebra-chain` — the entire graph of a general-purpose
-crate, to publish an enum.
+purpose is to depend on as little as possible. Saying "I am syncing" must not
+cost a subsystem any dependency beyond the enum itself.
 
 So the dependency list here is `tracing` and nothing else, and **the crate stays
 that way**. This is vocabulary, not machinery: if a change wants a new
@@ -68,5 +66,5 @@ untraceable status transition is not worth the type.
 
 ## Related
 
-- `zaino-consensus` — the other leaf extracted from `zaino-common` for the same
+- `zaino-consensus` — the other near-dependency-free leaf, for the same
   reason, and with the same standing constraint on its dependency list.

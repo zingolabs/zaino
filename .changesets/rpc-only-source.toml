@@ -39,3 +39,46 @@ description = """
 The `heavy` feature and `blockid_to_hashorheight` are removed; the crate no \
 longer depends on `zebra-state` or `zebra-chain`.
 """
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+The unused `network` config key is removed (the validator defines the network), \
+so a config still carrying it fails to parse. zainod links no TLS stack: the \
+JSON-RPC port, the NO_TLS/withTls build switches and the no-tls release image \
+are gone. Default config/store paths come from the platform's user dirs.
+"""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "breaking"
+description = """
+`probe_node` no longer resolves the validator hostname at startup: the client \
+dials `http://host:port` and reqwest resolves per connection, so a validator \
+whose IP changes (a restarted pod) stays reachable. `ProbeError::Address` now \
+reports a malformed `host:port` (`reason: String`). The client builds without \
+TLS and installs no crypto provider.
+"""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+section = "Removed"
+description = "The unused `grpc_proxy_server` feature (a prost/tonic re-export) is removed."
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "breaking"
+section = "Removed"
+description = """
+The declaration-only `transparent_address_history_experimental` feature and its \
+`transparent` module are removed: nothing implemented or consumed them.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+section = "Removed"
+description = "The forwarding `transparent_address_history_experimental` feature is removed."

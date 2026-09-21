@@ -2,7 +2,7 @@
 
 use clap::Parser;
 
-use zainodlib::cli::{default_config_path, Cli, Command};
+use zainodlib::cli::{Cli, Command};
 
 #[tokio::main]
 async fn main() {
@@ -12,7 +12,7 @@ async fn main() {
 
     match cli.command {
         Command::Start { config } => {
-            let config_path = config.unwrap_or_else(default_config_path);
+            let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
             if let Err(e) = zainodlib::run(config_path).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

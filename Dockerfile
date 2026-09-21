@@ -15,11 +15,7 @@ FROM docker.io/library/rust:1.96.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
-# Toggle to build without TLS feature if needed
-ARG NO_TLS=false
-
-# Extra cargo features to enable (comma-separated, e.g. "prometheus,no_tls_with_prometheus").
-# Takes precedence over NO_TLS when set.
+# Extra cargo features to enable (comma-separated, e.g. "prometheus").
 ARG CARGO_FEATURES=""
 
 # Build deps incl. protoc for prost-build
@@ -46,13 +42,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    if [ -n "${CARGO_FEATURES}" ]; then \
-      cargo install --locked --path packages/zainod --bin zainod --root /out --features "${CARGO_FEATURES}"; \
-    elif [ "${NO_TLS}" = "true" ]; then \
-      cargo install --locked --path packages/zainod --bin zainod --root /out --features no_tls_use_unencrypted_traffic; \
-    else \
-      cargo install --locked --path packages/zainod --bin zainod --root /out; \
-    fi
+    cargo install --locked --path packages/zainod --bin zainod --root /out \
+      ${CARGO_FEATURES:+--features "${CARGO_FEATURES}"}
 
 ############################
 # Runtime
@@ -96,10 +87,9 @@ COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Default ports
+# Default port
 ARG ZAINO_GRPC_PORT=8137
-ARG ZAINO_JSON_RPC_PORT=8237
-EXPOSE ${ZAINO_GRPC_PORT} ${ZAINO_JSON_RPC_PORT}
+EXPOSE ${ZAINO_GRPC_PORT}
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
@@ -107,4 +97,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 USER ${USER}
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["start"]

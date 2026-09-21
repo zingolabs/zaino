@@ -57,109 +57,78 @@ timers? If not, downgrade. Leave a brief comment only if the choice is
 non-obvious (e.g. "multi_thread required: test exercises a race between
 writer and reader on the db").
 
-## Persistence-boundary conversions: named methods, not `From`/`TryFrom`
+## Persistence-boundary conversions: `PersistentRecord`, not `From`/`TryFrom`
 
-Every DB-boundary helper that mirrors a business-layer type — named
-`Persistent<X>` by convention — crosses its boundary through inherent
-methods, not `impl From` / `impl TryFrom`. The canonical pair:
+Every on-disk record is an explicit DTO — named `Persistent<X>` by
+convention — that implements `zaino_persistence_codec::PersistentRecord`:
 
-- `impl PersistentX { pub(super) fn from_business(src: &X) -> Self }`
-  (replaces `impl From<&X> for PersistentX`)
-- `impl PersistentX { pub(super) fn into_business(self) -> X }`
-  (replaces `impl From<PersistentX> for X`; return `Result<X, ..>` if
-  the on-disk → business step can fail validation)
+- `fn from_domain(domain: &X) -> Self` — infallible; the domain value is
+  already valid.
+- `fn into_domain(self) -> Result<X, DecodeError>` — the disk → domain
+  validation step.
+- The byte layout is the `RecordLayout` supertrait: `#[derive(PersistentRecord)]`
+  for positional layouts, hand-written only for irregular framing (unframed
+  repetition, count-prefixed nested collections).
 
-Both methods live on the persistent type. Visibility is `pub(super)` —
-`PersistentX` is module-private-by-design; only its sibling consumers
-in the same directory need access.
+Never `impl From` / `impl TryFrom` across this boundary.
 
 **Why this rule exists**:
 
 1. The `PersistentX → X` direction *is* the validation step for bytes
    coming off disk. A named method puts that contract in the API; a
    `TryFrom` leaves it implicit.
-1. `TryFrom` forces one `Error` type per impl; separate methods give
-   per-conversion error granularity.
 1. Named methods are grep-friendly and disambiguate direction at every
-   call site (`pbc.into_business()` reads direction and boundary; `.into()`
+   call site (`record.into_domain()` reads direction and boundary; `.into()`
    hides both).
+1. Splitting mapping (`from_domain`/`into_domain`) from layout
+   (`RecordLayout`) keeps the error-prone byte half mechanical.
 
-**Reference**: `PersistentBlockContext` in
-`packages/zaino-state/src/chain_index/types/db/block.rs`. Copy its shape
-when adding new `Persistent*` types.
+**Reference**: `PersistentHeaderValue` in
+`packages/zaino-indexes/src/indexes/headers.rs`. Copy its shape, including
+the pinned golden-bytes test beside it.
 
 **Scope**: this rule covers DB-boundary conversions. It does not govern
 conversions between two business-layer types, error `From` impls used
 with `?`, or conversions involving foreign types that don't cross the
 persistence or wire boundaries.
 
-## Wire-boundary conversions: named methods, not `From`/`TryFrom`
+## Wire-boundary conversions: adapter-owned, not `From`/`TryFrom`
 
-The same rule applies at the gRPC/wire boundary for the same reasons —
-the wire → business direction is the *external-input* validation step
-and the named method encodes that contract in the API surface. Canonical
-methods live on the business-layer type (proto types are foreign; we
-can't add inherent methods to them):
+The same reasoning applies at the gRPC/JSON-RPC boundary — the wire →
+domain direction is the *external-input* validation step. Domain types live
+in `zaino-core` / `zaino-primitives`, which must never depend on a wire
+schema (`zaino-proto`, jsonrpsee): that would recouple the domain to a
+transport. So the serve **adapter** owns conversion:
 
-- `impl X { pub fn to_wire(&self) -> proto::X }` — infallible forward.
-  Replaces `impl From<X> for proto::X`.
-- `impl X { pub fn try_from_wire(w: proto::X) -> Result<Self, WireXError> }`
-  — fallible reverse. The conversion *is* the wire-input validation
-  step; the `WireXError` enum documents each rejection reason.
-  Replaces `impl TryFrom<proto::X> for X`.
+- `to_wire` / `try_from_wire` live in the adapter crate, on a **local
+  extension trait** (`trait ToWire { fn to_wire(self) -> ...; }`, impl'd
+  for the foreign domain type) or as free functions. The orphan rule forbids
+  inherent methods on a foreign type anyway.
+- `try_from_wire` returns a per-conversion error enum documenting each
+  rejection reason.
+- Two adapters over one port render the same domain answer into two
+  different wire shapes; neither leaks into the domain crate.
 
-**Reference**: `BlockIndex` wire methods in
-`packages/zaino-state/src/chain_index/types/wire.rs`. Copy its shape
-when adding wire conversions for other business types (BlockHash,
-TransactionHash, etc.).
-
-**Ports-architecture exception — conversion lives in the adapter**:
-The inherent-`to_wire`-on-the-business-type rule assumes the business
-type and the wire schema legitimately co-locate in one crate (the
-legacy `zaino-state` world). In the ports architecture they do **not**:
-domain types live in `zaino-core` / `zaino-primitives`, which must never
-depend on a wire schema (`zaino-proto`, jsonrpsee), because that would
-recouple the domain to a transport and defeat the seam. There, the
-serve **adapter** owns conversion:
-
-- Put `to_wire` / `try_from_wire` in the adapter crate, on a
-  **local extension trait** (`trait ToWire { fn to_wire(&self) -> ...; }`,
-  impl'd for the foreign domain type) or as free functions. The orphan
-  rule forbids inherent methods on a foreign type anyway.
-- The domain crate gains no wire dependency; each adapter owns its own
-  wire schema and its own conversions. Two adapters over one port render
-  the same domain answer into two different wire shapes.
-
-Rule of thumb: **inherent method** when the type already legitimately
-depends on the wire schema; **adapter-local extension trait / free fn**
-when the conversion crosses a port seam. The direction-named,
-grep-friendly, per-conversion-error properties are the same either way.
+**Reference**: `ToWire` in `packages/zaino-lightserve/src/wire.rs`.
 
 **Enforcement (covers both boundaries)**:
 
 - CI lint: `makers lint-boundary-conversions` (run as part of
   `makers lint`) greps the tree for any `impl From` / `impl TryFrom`
   where either side is a `Persistent*` type or a `proto::` type and
-  fails the build. Mechanically prevents the common drift at both
-  boundaries.
-- Review checklist — apply on every PR that touches `types/db/`,
-  `types/wire.rs`, or introduces a new `Persistent*` type or wire
-  conversion:
-  1. No `impl From<&X> for PersistentY` / `impl From<PersistentX> for Y`;
-     no `impl From<X> for proto::Y` / `impl TryFrom<proto::X> for Y`.
-     (The lint catches these, but read for them anyway.)
-  1. Persistence methods are named `from_business` / `into_business`
-     (fallible variants `into_business*`). Wire methods are named
-     `to_wire` / `try_from_wire`. Any deviation has an in-file comment
-     explaining why.
-  1. `Persistent*` types are `pub(super)`. Wire methods are `pub`
-     (they're part of the business type's public API). Don't widen
-     `Persistent*` speculatively.
+  fails the build.
+- Review checklist — apply on every PR that adds or changes a
+  `Persistent*` record or a wire conversion:
+  1. No `From`/`TryFrom` across either boundary. (The lint catches these,
+     but read for them anyway.)
+  1. Persistence goes through `PersistentRecord` (`from_domain` /
+     `into_domain`); wire through the adapter's `to_wire` / `try_from_wire`.
+  1. Visibility is the minimum that compiles (`EntryCodec`'s associated
+     record types force `pub` on index DTOs; adapter wire traits stay
+     `pub(crate)`).
   1. `Persistent*` types do *nothing else* — no business logic, no
-     accessors — they only cross the serde boundary. Round-trip tests
-     for the pair live in the same file under `#[cfg(test)] mod tests`.
-     Wire conversions get the same treatment: a golden / round-trip
-     test next to the method, not in a distant test module.
+     accessors. A golden-bytes / round-trip test sits next to each record
+     and each wire conversion, not in a distant test module.
 
 ## No `.unwrap()`: propagate or handle every error
 

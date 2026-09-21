@@ -3,12 +3,12 @@ name = "zaino-lightserve"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "POC: lightwalletd-compatible gRPC serve adapter over the LightServeService inner port. Proves the new trait algebra + domain->wire conversion in the adapter; not the production zaino-serve."
+description = "Lightwalletd-compatible gRPC (CompactTxStreamer) serve adapter over the LightServeService inner port; owns the domain->wire conversion."
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
 zaino-core = { path = "../zaino-core" }
-zaino-proto = { path = "../zaino-proto" }
+zaino-proto = { workspace = true }
 thiserror = { workspace = true }
 zaino-component = { path = "../zaino-component" }
 tonic.workspace = true

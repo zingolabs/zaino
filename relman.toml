@@ -6,7 +6,7 @@
 # and the publish plan covers exactly this set. No `cargo metadata` heuristic
 # decides governance — this file does.
 #
-# Target set: the 16 crates.io-published packages (docs/release/
+# Target set: the 14 crates.io-published packages (docs/release/
 # pipeline.md § Context). The internal-only crates
 # (live-tests/{e2e,clientless,zaino-testutils}) are deliberately absent.
 # Every workspace crate a target depends on through a path + version
@@ -33,9 +33,6 @@ path = "packages/zainod"
 name = "zaino-proto"
 path = "packages/zaino-proto"
 
-[[target]]
-name = "zaino-common"
-path = "packages/zaino-common"
 
 [[target]]
 name = "zaino-primitives"
@@ -53,9 +50,6 @@ path = "packages/zaino-source"
 name = "zaino-rpc"
 path = "packages/zaino-rpc"
 
-[[target]]
-name = "zaino-convert-zebra"
-path = "packages/zaino-convert-zebra"
 
 [[target]]
 name = "zaino-source-zebra-rpc"

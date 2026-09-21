@@ -1,52 +1,40 @@
-# Zaino Configuration
+# Zaino daemon configuration (example)
 #
-# Generated with `zainod generate-config`
-#
-# Configuration sources are layered (highest priority first):
-#   1. Environment variables (prefix: ZAINO_)
-#   2. TOML configuration file
-#   3. Built-in defaults
-#
-# For detailed documentation, see:
-#   https://github.com/zingolabs/zaino
+# Pairs with docs/example_configs/zebrad_config_3.1.0.toml (Testnet).
+# Layered highest-priority-first: ZAINO_ env vars (`__` for nesting, e.g.
+# ZAINO_INDEXER__BATCH_SIZE=500), then this file, then built-in defaults.
+# Omitted keys take their defaults; `zainod generate-config` prints them all.
 
-backend = 'fetch'
-zebra_db_path = '<PATH_TO_ZEBRA>'
-network = 'Testnet'
+# Prometheus /metrics endpoint (requires the `prometheus` build feature).
+# Omit to disable.
+# metrics_endpoint = "127.0.0.1:9999"
 
-# Run the finalised state in ephemeral/stateless mode. When true, Zaino opens no
-# persistent finalised-state database and serves finalised reads directly from
-# the backing validator via a stateless passthrough. Default: false.
-ephemeral_finalised_state = false
+# Zebra JSON-RPC endpoint: the only block source.
+[source]
+jsonrpc_address = "127.0.0.1:18231"
+# Zebra auth cookie (when zebrad runs with enable_cookie_auth = true).
+# cookie_path = "<PATH_TO_ZEBRA>/.cookie"
+# Or basic auth:
+# user = "xxxxxx"
+# password = "xxxxxx"
 
-[grpc_settings]
-listen_address = '127.0.0.1:8137'
+# Finalised index store (LMDB).
+[store]
+path = "<ZAINO_STORE>"
+# Maximum on-disk size in GiB, reserved at open.
+map_size_gb = 16
 
-[validator_settings]
-validator_grpc_listen_address = '127.0.0.1:18232'
-validator_jsonrpc_listen_address = '127.0.0.1:18231'
-validator_user = 'xxxxxx'
-validator_password = 'xxxxxx'
+# Wallet-facing lightwalletd-compatible gRPC (CompactTxStreamer, plaintext).
+[serve]
+grpc_listen_address = "127.0.0.1:8137"
 
-[service]
-timeout = 30
-channel_size = 32
-[storage.cache]
-capacity = 10000
-shard_power = 4
-
-[storage.database]
-path = '<ZAINO_CACHE>'
-size = 128
-# Heap budget (in GiB) for the bulk-sync write batch (buffered blocks only). Lower this on
-# memory-constrained hosts; a larger value does not speed up a small host, it just risks the
-# OOM-killer. Defaults to 8.
-sync_write_batch_size = 8
-# Heap budget (in GiB) for the from-genesis txout-set accumulator rebuild's spent set. Separate from
-# sync_write_batch_size: the rebuild auto-shards to keep peak RAM within this budget. Lower it on
-# memory-constrained hosts (more, smaller passes). Defaults to 8.
-accumulator_rebuild_memory_size = 8
-# Max wall-clock time (seconds) spent buffering a bulk-sync batch before flushing. Because the DB
-# runs with NO_SYNC, this also bounds the window of unflushed writes at risk on a hard kill /
-# eviction. Lower it to shrink that window. Defaults to 120 (2 minutes).
-sync_checkpoint_interval = 120
+# Index-build tuning (defaults shown).
+[indexer]
+# Blocks committed per atomic batch.
+batch_size = 1000
+# Blocks buffered between the fetcher and the sync engine.
+channel_capacity = 256
+# Depth below the tip left to the non-finalised window.
+finalised_depth = 1000
+# Block fetches kept in flight (must be >= 1).
+concurrency = 16

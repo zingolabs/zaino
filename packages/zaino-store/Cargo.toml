@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish = false
-description = "EXPLORATORY STUB — not for production. A throwaway spike proving the finalised read component can be a thin compose-on-read reader over the KV backend."
+description = "The finalised read component: a thin compose-on-read reader over the KV backend."
 
 [dependencies]
 zaino-core = { path = "../zaino-core" }

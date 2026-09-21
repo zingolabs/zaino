@@ -37,7 +37,7 @@ body:
       label: Location
       description: Where is this code? (file paths, module names, function names)
       placeholder: |
-        `chain_index/src/finalized_state/entry.rs:42`
+        `packages/zaino-sync/src/engine.rs:42`
     validations:
       required: true
 

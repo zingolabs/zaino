@@ -12,13 +12,13 @@ use crate::{RpcClient, RpcClientConfig, RpcError};
 /// Why a validator endpoint could not be reached.
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
-    /// The configured address did not resolve.
-    #[error("cannot resolve validator address {address}: {source}")]
+    /// The configured address is not a `host:port`.
+    #[error("validator address {address} is not host:port: {reason}")]
     Address {
         /// The address as configured.
         address: String,
-        /// The underlying resolution failure.
-        source: std::io::Error,
+        /// What is wrong with it.
+        reason: String,
     },
 
     /// The cookie file could not be read.
@@ -74,6 +74,27 @@ pub fn auth_from_parts(
     }
 }
 
+/// `http://{address}`; hostname kept, not pre-resolved (reqwest resolves per connection → follows a
+/// validator whose IP changes, e.g. a restarted pod)
+fn validator_url(address: &str) -> Result<String, ProbeError> {
+    let invalid = |reason: &str| ProbeError::Address {
+        address: address.to_string(),
+        reason: reason.to_string(),
+    };
+    let port_given = address
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok());
+    if !port_given {
+        return Err(invalid("missing or non-numeric port"));
+    }
+    let url =
+        reqwest::Url::parse(&format!("http://{address}")).map_err(|e| invalid(&e.to_string()))?;
+    if url.path() != "/" || url.query().is_some() {
+        return Err(invalid("unexpected path or query"));
+    }
+    Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
 /// How many times [`probe_node`] asks before giving up.
 const PROBE_ATTEMPTS: u32 = 6;
 
@@ -100,18 +121,7 @@ pub async fn probe_node(
     user: Option<String>,
     password: Option<String>,
 ) -> Result<String, ProbeError> {
-    let socket_addr =
-        zaino_common::net::resolve_socket_addr(address).map_err(|source| ProbeError::Address {
-            address: address.to_string(),
-            source,
-        })?;
-
-    // An IPv6 literal needs bracketing before it can go in a URL.
-    let host = match socket_addr {
-        std::net::SocketAddr::V4(_) => socket_addr.ip().to_string(),
-        std::net::SocketAddr::V6(_) => format!("[{}]", socket_addr.ip()),
-    };
-    let url = format!("http://{}:{}", host, socket_addr.port());
+    let url = validator_url(address)?;
 
     let client = RpcClient::new(RpcClientConfig {
         url: url.clone(),
@@ -206,11 +216,26 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn an_unresolvable_address_is_reported() {
-        assert!(matches!(
-            probe_node("not a socket address", None, None, None).await,
-            Err(ProbeError::Address { .. })
-        ));
+    #[test]
+    fn validator_url_keeps_the_host_and_rejects_non_host_port() {
+        for (address, url) in [
+            ("127.0.0.1:8232", "http://127.0.0.1:8232"),
+            ("zebrad:18232", "http://zebrad:18232"),
+            ("[::1]:8232", "http://[::1]:8232"),
+        ] {
+            assert_eq!(validator_url(address).expect(address), url);
+        }
+        for address in [
+            "zebrad",
+            "zebrad:",
+            "zebrad:port",
+            "not a host:8232",
+            "zebrad:8232/path",
+        ] {
+            assert!(
+                matches!(validator_url(address), Err(ProbeError::Address { .. })),
+                "{address} accepted"
+            );
+        }
     }
 }

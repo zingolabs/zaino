@@ -19,7 +19,7 @@
 //!
 //! The whole bits → target → work pipeline is native to this crate: the domain
 //! owns its arithmetic, and consensus implementations serve as differential
-//! test oracles (the `zaino-convert-zebra` crate sweeps this module against
+//! test oracles (`zaino-source-zebra-rpc`'s `convert` tests sweep this module against
 //! zebra's implementation across the encoding space) rather than as
 //! dependencies. The expanded 256-bit target is deliberately internal — no
 //! consumer reasons about targets, only about validity and work — so the

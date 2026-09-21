@@ -58,11 +58,30 @@ body:
       multiple: true
       options:
         - zainod
-        - zaino-state
-        - zaino-serve
-        - zaino-fetch
+        - zaino-runtime
+        - zaino-indexer
+        - zaino-sync
+        - zaino-indexes
+        - zaino-store
+        - zaino-store-service
+        - zaino-chainview
+        - zaino-chain-head
+        - zaino-chain-head-service
+        - zaino-backend-lmdb
+        - zaino-persistence
+        - zaino-lightserve
+        - zaino-source
+        - zaino-source-zebra-rpc
+        - zaino-mempool
+        - zaino-mempool-service
+        - zaino-wallet
+        - zaino-rpc
+        - zaino-noderpc
         - zaino-proto
-        - chain_index
+        - zaino-core
+        - zaino-primitives
+        - zaino-consensus
+        - zaino-address
         - Testing / CI
         - Documentation
         - Other

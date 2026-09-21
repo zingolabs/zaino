@@ -33,13 +33,16 @@ when it was taken, so a subscriber can tell a quiet chain from a validator that
 stopped answering. Seeding takes one live read, which is why it is not part of
 construction.
 
-## The two halves
+## The three parts
 
 - `parse.rs` — `serde_json::Value` → domain types. This is Zaino's
   **external-input validation**: every field is checked, and a reply that does
   not say what it should is an error rather than a default.
 - `adapter.rs` — the port impls, and the error classification below, which is
   the part most likely to be got wrong.
+- `convert.rs` — `zebra-chain` → domain types, for the raw blocks `getblock h 0`
+  returns. One direction only: nothing needs a domain → zebra conversion, and
+  `zebra-chain` stays confined to this crate.
 
 ## Error classification: the part that matters
 

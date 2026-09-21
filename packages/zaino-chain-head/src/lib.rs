@@ -45,8 +45,6 @@ pub mod config;
 pub mod error;
 pub mod ports;
 pub mod snapshot;
-#[cfg(feature = "transparent_address_history_experimental")]
-pub mod transparent;
 
 pub use block::{ChainHeadBlock, ChainHeadWork};
 pub use config::ChainHeadConfig;
@@ -55,12 +53,4 @@ pub use ports::{ChainHeadBlockService, ChainHeadBlockSource};
 pub use snapshot::{
     ChainHeadBlockIter, ChainHeadSnapshot, ChainHeadTransactionLocations,
     ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
-};
-
-#[cfg(feature = "transparent_address_history_experimental")]
-pub use snapshot::ChainHeadTransparentHistoryService;
-#[cfg(feature = "transparent_address_history_experimental")]
-pub use transparent::{
-    ChainHeadAddressEffects, LocatedTransparentOutput, LocatedTransparentSpend,
-    TransparentHistoryQuery,
 };

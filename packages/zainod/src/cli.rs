@@ -3,16 +3,6 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use zaino_common::xdg::resolve_path_with_xdg_config_defaults;
-
-/// Returns the default config path following XDG Base Directory spec.
-///
-/// Uses `$XDG_CONFIG_HOME/zaino/zainod.toml` if set,
-/// otherwise falls back to `$HOME/.config/zaino/zainod.toml`,
-/// or `/tmp/zaino/.config/zaino/zainod.toml` if HOME is unset.
-pub fn default_config_path() -> PathBuf {
-    resolve_path_with_xdg_config_defaults("zaino/zainod.toml")
-}
 
 /// The Zcash Indexing Service.
 #[derive(Parser, Debug)]
@@ -48,7 +38,7 @@ pub enum Command {
 impl Command {
     /// Generate a configuration file with default values.
     pub fn generate_config(output: Option<PathBuf>) {
-        let path = output.unwrap_or_else(default_config_path);
+        let path = output.unwrap_or_else(crate::paths::default_config);
 
         let content = match crate::config::generate_default_config() {
             Ok(content) => content,

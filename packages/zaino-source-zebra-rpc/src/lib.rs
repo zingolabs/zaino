@@ -5,6 +5,7 @@
 //! format for deserialization.
 
 mod adapter;
+mod convert;
 mod parse;
 
 pub use adapter::ZebraRpcAdapter;

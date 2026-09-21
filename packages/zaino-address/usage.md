@@ -12,9 +12,6 @@ dependency set is substantial and nothing else in Zaino wants it.
 - Not `zaino-primitives`: that crate depends only on `thiserror`, and the whole
   point of it is that everything can depend on it. Adding the address stack
   there would put it in every crate in the workspace.
-- Not `zaino-common`: that is config, logging, net, status, xdg — shared
-  infrastructure. Address classification is domain logic, and it would force the
-  zcash address stack on every crate that merely wants a `ServiceConfig`.
 
 As a leaf below `zaino-state` it isolates the dependency, and it is the natural
 home for validating address *parameters* on `getaddressbalance`,

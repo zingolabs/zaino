@@ -22,7 +22,6 @@ fi
 
 # Container env contract (simple, stable — distinct from zainod's internal
 # ZAINO_-prefixed config-rs keys, which shift with the config schema):
-: "${ZAINO_NET:=Mainnet}"                         # Mainnet | PubTestnet | Regtest
 : "${ZAINO_VALIDATOR_JSONRPC:=127.0.0.1:8232}"   # validator JSON-RPC host:port
 : "${ZAINO_VALIDATOR_COOKIE:=}"                   # validator auth cookie path (optional)
 : "${ZAINO_STORE_PATH:=/app/data}"                # LMDB index directory
@@ -50,8 +49,6 @@ else
   echo "Synthesizing config at ${CONFIG_PATH}" >&2
   {
     cat <<EOF
-network = "${ZAINO_NET}"
-
 [source]
 jsonrpc_address = "${ZAINO_VALIDATOR_JSONRPC}"
 EOF
@@ -70,7 +67,7 @@ fi
 
 # Contract vars share zainod's ZAINO_ env-override prefix: left exported, each
 # would parse as an unknown config key and abort startup (deny_unknown_fields).
-unset ZAINO_NET ZAINO_VALIDATOR_JSONRPC ZAINO_VALIDATOR_COOKIE ZAINO_STORE_PATH \
+unset ZAINO_VALIDATOR_JSONRPC ZAINO_VALIDATOR_COOKIE ZAINO_STORE_PATH \
   ZAINO_STORE_MAP_SIZE_GB ZAINO_GRPC_LISTEN ZAINO_CONFIG_FILE
 
 # `start` still layers zainod's own ZAINO_-prefixed keys (e.g. ZAINO_INDEXER__BATCH_SIZE)

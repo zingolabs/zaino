@@ -51,14 +51,14 @@ zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
 
 # Validator connection + probe.
-zaino-common = { workspace = true }
 zaino-rpc = { workspace = true }
 zaino-status = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }
 
-# CLI
+# CLI + default config/store paths
+dirs = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 
 # Tracing

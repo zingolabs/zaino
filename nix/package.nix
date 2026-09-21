@@ -2,7 +2,6 @@
 , craneLib
 , protobuf
 , pkg-config
-, withTls ? true
 }:
 
 let
@@ -45,9 +44,7 @@ in
 craneLib.buildPackage (commonArgs // {
   inherit cargoArtifacts;
 
-  cargoExtraArgs =
-    "--locked --package zainod --bin zainod"
-    + lib.optionalString (!withTls) " --features no_tls_use_unencrypted_traffic";
+  cargoExtraArgs = "--locked --package zainod --bin zainod";
 
   passthru = {
     inherit commonArgs;

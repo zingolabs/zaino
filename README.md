@@ -48,23 +48,48 @@ In addition to the RPC API, Zaino will offer a client library allowing developer
 ## Project Structure
 
 ```
-packages/                          Cargo workspace member crates, in dependency order
-  zaino-status/                      How a component reports whether it is working
+packages/                          Cargo workspace member crates
+  zainod/                            Daemon binary: config → runtime boot
+  # runtime and supervision
+  zaino-runtime/                     Orchestra: boots and supervises the components
   zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
-  zaino-consensus/                   Zcash consensus constants and protocol limits
-  zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
-  zaino-address/                     Zcash address classification
-  zaino-source/                      Driven ports: one trait per chain question
-  zaino-rpc/                         JSON-RPC transport (no parsing)
-  zaino-convert-zebra/               zebra-chain -> domain conversions
-  zaino-source-zebra-rpc/            Zebra JSON-RPC adapter: the validator source
-  zaino-mempool/                     Mempool domain types and ports (no node library)
-  zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
-  zaino-common/                      Shared utilities and configuration
-  zaino-proto/                       Protocol buffer definitions
+  zaino-async/                       Named, panic-rendering tasks
+  zaino-logging/                     Tracing setup and panic hook
+  zaino-status/                      How a component reports whether it is working
+  # serving
+  zaino-service/                     Inner driving surface: the capability traits clients consume
+  zaino-core/                        Vocabulary of that surface
+  zaino-lightserve/                  Lightwalletd-compatible gRPC server
+  zaino-noderpc/                     Node JSON-RPC adapter (not yet served by zainod)
+  zaino-wallet/                      Embedded-wallet facade (not yet wired)
+  zaino-store-service/               Engine: finalised store ⊕ chain head behind one service
+  zaino-chainview/                   The composed FS ⊕ NFS snapshot over a watermark seam
+  zaino-store/                       Finalised reads: compose-on-read over the KV backend
+  # indexing
+  zaino-indexer/                     Sync driver + concurrent source-backed block provisioner
+  zaino-sync/                        DAG-driven parallel index sync engine
+  zaino-indexes/                     Index definitions and the index sets zainod builds
+  zaino-persistence/                 Storage backend port
+  zaino-persistence-codec/           Typed, versioned entries over the backend
+  zaino-persistence-macros/          Derive for on-disk record layouts
+  zaino-backend-lmdb/                LMDB backend
   zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
   zaino-chain-head-service/          Non-finalised chain head: the runtime
-  zainod/                            Daemon binary
+  # validator source
+  zaino-source/                      Driven ports: one trait per chain question
+  zaino-source-macros/               Derives the resilient ports from their one-shot twins
+  zaino-source-zebra-rpc/            Zebra JSON-RPC adapter: the only validator source
+  zaino-rpc/                         JSON-RPC client transport (no parsing)
+  # vocabulary
+  zaino-primitives/                  Chain-level domain types
+  zaino-consensus/                   Consensus constants and protocol limits
+  zaino-proto/                       Lightwallet protocol buffers
+  # not yet wired into zainod
+  zaino-mempool/                     Mempool domain types and ports
+  zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
+  zaino-address/                     Zcash address classification
+
+bench/sync-bench/                  Sync throughput bench over the production pipeline
 
 live-tests/                        Live-test suite — standalone workspace, run on the ztest k8s harness
   e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
@@ -74,7 +99,6 @@ live-tests/                        Live-test suite — standalone workspace, run
 docs/                              Architecture diagrams, specs, and usage guides
 tools/                             Development tools
   workbench/                         Repo guards run by `makers lint`
-  relman/                            Release manager
 .github/                           CI workflows and issue templates
 .githooks/                         Git hooks (pre-push)
 
@@ -96,29 +120,12 @@ LICENSE                            Apache-2.0 license text
 .gitignore                         Git ignore patterns
 ```
 
-## Server network exposure
+## Network exposure
 
-Zaino exposes two servers, with different defaults reflecting their transport
-security:
-
-- **gRPC** (`[grpc_settings]`): may bind to a public address only when TLS is
-  configured (`[grpc_settings.tls]` with `cert_path` / `key_path`). Binding to a
-  non-private address without TLS is rejected at startup. The
-  `no_tls_use_unencrypted_traffic` build feature disables this enforcement (and
-  logs a startup warning) — for testing or trusted networks only.
-- **JSON-RPC** (`[json_server_settings]`): has **no transport encryption** and
-  is intended for loopback or trusted private networks only. By default it may
-  bind only to private/loopback addresses (RFC1918, IPv6 ULA, or loopback);
-  public or unspecified (`0.0.0.0` / `::`) bind addresses are rejected at
-  startup. The `allow_unencrypted_public_json_rpc_bind` build feature lifts this
-  restriction (and logs a startup warning) for deployments on trusted private
-  networks where encryption is handled externally (e.g. containers behind a
-  service mesh or proxy that terminates TLS).
-
-**Security implication:** the JSON-RPC interface transmits unencrypted traffic.
-Do not expose it to untrusted networks, and only enable
-`allow_unencrypted_public_json_rpc_bind` when an external layer secures the
-connection.
+zainod serves one interface: the lightwalletd-compatible gRPC server
+(`[serve] grpc_listen_address`), in plaintext. zainod links no TLS stack. Expose
+it beyond a trusted network only behind a proxy that terminates TLS. The
+validator connection is plain HTTP JSON-RPC to `[source] jsonrpc_address`.
 
 ## Running tests
 
@@ -142,12 +149,8 @@ parallelism — re-run, or lower `--test-threads`.
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
 - [Testing](./docs/testing.md): Holds instructions for running tests.
 - [Live-test guidelines](./live-tests/CLAUDE.md): The rules for writing live tests — the live oracle, QoS tiers, parameterization.
-- [Live Service System Architecture](./docs/zaino_live_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino live service.
-- [Library System Architecture](./docs/zaino_lib_system_architecture.pdf): Holds the Zcash system architecture diagram for the Zaino client library.
-- [ZainoD (Live Service) Internal Architecture](./docs/zaino_serve_architecture_v020.pdf): Holds an internal Zaino system architecture diagram.
-- [Zaino-State (Library) Internal Architecture](./docs/zaino_state_architecture_v020.pdf): Holds an internal Zaino system architecture diagram.
-- [Internal Specification](./docs/internal_spec.md): Holds a specification for Zaino and its crates, detailing their functionality, interfaces and dependencies.
-- [RPC API Spec](./docs/rpc_api.md): Holds a full specification of all of the RPC services served by Zaino.
+- [Docker](./docs/docker.md): Running zainod in a container.
+- [RPC API](./docs/rpc_api.md): The gRPC methods zainod serves today.
 - [Cargo Docs](https://zingolabs.github.io/zaino/): Holds a full code specification for Zaino.
 
 ### Architecture Decision Records
@@ -167,13 +170,10 @@ git submodule update --remote docs/adr
 ```
 
 Records a newcomer needs first:
-- [ADR-0006](./docs/adr/zaino/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
 - [ADR-0007](./docs/adr/zaino/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
 - [ADR-0008](./docs/adr/zaino/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
-- [ADR-0009](./docs/adr/zaino/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
 - [ADR-0010](./docs/adr/zaino/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
 - [ADR-0011](./docs/adr/zaino/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
-- [ADR-0012](./docs/adr/zaino/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
 
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
@@ -187,7 +187,6 @@ mistakes its design is trying to prevent.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the storage backend port, and why index code never names a concrete store.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
-- [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
 - [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the validator source — connecting, tip polling, and error classification.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
 - [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.

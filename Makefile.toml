@@ -10,7 +10,7 @@ command = "cargo"
 args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
 [tasks.lint-boundary-conversions]
-description = "Forbid From/TryFrom impls across the persistence and wire boundaries. Both must use named inherent methods (from_business/into_business for persistence; to_wire/try_from_wire for wire)."
+description = "Forbid From/TryFrom impls across the persistence and wire boundaries. Persistence goes through PersistentRecord (from_domain/into_domain); wire through the adapter's to_wire/try_from_wire."
 # See CLAUDE.md §'Persistence-boundary conversions' and §'Wire-boundary
 # conversions'. Reference implementations:
 #   - packages/zaino-indexes/src/indexes/headers.rs     (DB)
@@ -47,10 +47,9 @@ script = [
     if [ -n "$hits" ]; then
       echo ""
       echo "Boundary-conversion lint: forbidden From/TryFrom impls found."
-      echo "Persistence boundary conversions must be named inherent methods on the"
-      echo "Persistent* type (canonical: from_business / into_business)."
-      echo "Wire boundary conversions must be named inherent methods on the"
-      echo "business-layer type (canonical: to_wire / try_from_wire)."
+      echo "Persistence boundary conversions go through PersistentRecord"
+      echo "(from_domain / into_domain)."
+      echo "Wire boundary conversions live in the serve adapter (to_wire / try_from_wire)."
       echo "See CLAUDE.md for the rules."
       echo ""
       echo "$hits"
@@ -71,13 +70,8 @@ for manifest in tools/workbench/Cargo.toml; do
 done
 '''
 
-[tasks.lint-crypto-provider]
-description = "Assert rustls resolves with aws-lc-rs + prefer-post-quantum and that the only ring-selecting feature edges are the tolerated zebra path (ADR-0006). Fails loud in both directions: new edges and vanished edges."
-command = "cargo"
-args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-crypto-provider"]
-
 [tasks.lint-no-openssl-apt]
-description = "Fail if any Dockerfile installs a libssl*/openssl* apt package. TLS is rustls; the system-package companion to deny.toml's openssl crate ban."
+description = "Fail if any Dockerfile installs a libssl*/openssl* apt package; the system-package companion to deny.toml's openssl crate ban."
 command = "cargo"
 args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-no-openssl-apt"]
 
@@ -103,7 +97,6 @@ dependencies = [
     "lint-boundary-conversions",
     "lint-shell",
     "deny",
-    "lint-crypto-provider",
     "lint-no-openssl-apt",
     "lint-code-duplication",
     "lint-tools",

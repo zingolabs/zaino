@@ -11,12 +11,6 @@ version = "0.1.0"
 [features]
 default = []
 
-# Forwards the domain crate's declaration-only transparent capability, so a
-# consumer enabling it here gets the same types and port.
-transparent_address_history_experimental = [
-    "zaino-chain-head/transparent_address_history_experimental",
-]
-
 # Prometheus metric emission from the advance path.
 prometheus = ["metrics"]
 

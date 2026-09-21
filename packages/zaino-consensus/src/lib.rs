@@ -17,8 +17,8 @@
 //! ourselves, and dragging that peer's entire type system along for a `u32`.
 //!
 //! So each value is stated here with its provenance, and
-//! `zaino-convert-zebra` — which owns our relationship to zebra's types —
-//! carries tests asserting our reading and zebra's still agree. Divergence
+//! `zaino-source-zebra-rpc`'s `convert` module — which owns our relationship to
+//! zebra's types — carries tests asserting our reading and zebra's still agree. Divergence
 //! becomes a test failure rather than a silent behaviour change, without
 //! anything having to depend on zebra to obtain a number.
 

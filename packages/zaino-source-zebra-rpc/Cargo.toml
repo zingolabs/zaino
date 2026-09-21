@@ -12,7 +12,6 @@ description = "Zebra JSON-RPC adapter implementing zaino-source query traits."
 zaino-primitives = { workspace = true }
 zaino-rpc = { workspace = true }
 zaino-source = { workspace = true }
-zaino-convert-zebra.workspace = true
 hex.workspace = true
 zebra-chain = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -28,7 +27,9 @@ tokio = { workspace = true, features = ["sync"] }
 tracing = ["dep:tracing"]
 
 [dev-dependencies]
+proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
+zaino-consensus.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

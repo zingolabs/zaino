@@ -236,17 +236,3 @@ pub trait ChainHeadTransactionService: ChainHeadSnapshot {
     /// the rest of the chain.
     fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>>;
 }
-
-/// Transparent-address effects derivable from a snapshot's blocks.
-///
-/// **Declared, not implemented.** Nothing implements this trait and no consumer
-/// is wired to it. See [`crate::transparent`] for why the boundary is drawn
-/// where it is.
-#[cfg(feature = "transparent_address_history_experimental")]
-pub trait ChainHeadTransparentHistoryService: ChainHeadSnapshot {
-    /// The address effects this snapshot can account for.
-    fn address_effects(
-        &self,
-        query: &crate::transparent::TransparentHistoryQuery,
-    ) -> Result<crate::transparent::ChainHeadAddressEffects, ChainHeadError>;
-}
