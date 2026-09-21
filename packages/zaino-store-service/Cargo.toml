@@ -8,6 +8,5 @@ description = "The concrete inner engine: composes the finalised chain store and
 [dependencies]
 zaino-service = { path = "../zaino-service" }
 zaino-core = { path = "../zaino-core" }
-zaino-chain-store = { path = "../zaino-chain-store" }
-zaino-chain-head = { path = "../zaino-chain-head" }
+zaino-chainview = { path = "../zaino-chainview" }
 futures = "0.3"
