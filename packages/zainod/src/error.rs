@@ -10,21 +10,12 @@ pub enum IndexerError {
     /// Configuration is missing, malformed, or invalid.
     #[error("configuration error: {0}")]
     ConfigError(String),
-    /// RPC source mode is configured but not yet wired in runtime serving.
-    ///
-    /// The `SourceMode::Rpc` selector is preserved so the config shape is
-    /// stable, but only Direct/ReadState sourcing is implemented for now.
-    #[error(
-        "RPC source mode is not yet supported in runtime serving; use source.mode = \"direct\""
-    )]
-    RpcSourceUnsupported,
-    /// Opening the Zebra ReadState database failed (Direct source mode).
-    #[error("opening the validator ReadState database failed: {0}")]
-    OpenReadState(String),
-    /// Building the validator JSON-RPC client failed (from the configured
-    /// coordinates in Direct/Rpc source mode).
-    #[error("building the validator JSON-RPC client failed")]
-    RpcClient(#[source] zaino_rpc::RpcError),
+    /// The validator's JSON-RPC endpoint could not be resolved, authenticated, or reached.
+    #[error(transparent)]
+    ValidatorProbe(#[from] zaino_rpc::ProbeError),
+    /// Seeding the validator tip subscription failed (first tip read).
+    #[error("reading the validator tip to seed the tip subscription failed")]
+    TipPolling(#[source] zaino_source::QueryError<zaino_source::GetChainTipError>),
     /// The non-finalised chain-head could not anchor against the validator.
     #[error("the chain-head could not anchor against the validator")]
     ChainHeadInit(#[source] zaino_chain_head_service::ChainHeadInitError),

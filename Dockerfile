@@ -28,8 +28,6 @@ ARG CARGO_FEATURES=""
 # them together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config=1.8.1-1 \
-      clang=1:14.0-55.7~deb12u1 \
-      cmake=3.25.1-1 \
       make=4.3-4.1 \
       ca-certificates=20230311+deb12u1 \
       protobuf-compiler=3.21.12-3+deb12u1 \

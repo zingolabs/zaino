@@ -1,9 +1,15 @@
 //! Trait implementations: zaino-source query traits on [`ZebraRpcAdapter`].
 
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::watch;
 use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
-use zaino_rpc::RpcClient;
+use zaino_rpc::{auth_from_parts, probe_node, ProbeError, RpcClient, RpcClientConfig};
 use zaino_source::{
-    FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
+    FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError,
+    PolledChainTip, QueryError, TipObservation,
 };
 use zebra_chain::serialization::ZcashDeserializeInto;
 
@@ -15,13 +21,47 @@ use crate::parse;
 /// deserializing via `zebra-chain`, and converting to domain types.
 /// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
 pub struct ZebraRpcAdapter {
-    rpc: RpcClient,
+    rpc: Arc<RpcClient>,
+    tip: Option<PolledChainTip>,
 }
 
 impl ZebraRpcAdapter {
     /// Wrap an existing [`RpcClient`].
     pub fn new(rpc: RpcClient) -> Self {
-        Self { rpc }
+        Self {
+            rpc: Arc::new(rpc),
+            tip: None,
+        }
+    }
+
+    /// Wait for the validator at `address` to answer (`probe_node` retry budget), then connect.
+    pub async fn connect(
+        address: &str,
+        cookie_path: Option<&Path>,
+        user: Option<String>,
+        password: Option<String>,
+    ) -> Result<Self, ProbeError> {
+        let url = probe_node(address, cookie_path, user.clone(), password.clone()).await?;
+        let rpc = RpcClient::new(RpcClientConfig {
+            url,
+            auth: auth_from_parts(cookie_path, user, password)?,
+            ..RpcClientConfig::default()
+        })
+        .map_err(ProbeError::Client)?;
+        Ok(Self::new(rpc))
+    }
+
+    /// Add a [`SubscribeChainTip`](zaino_source::SubscribeChainTip) stream, polling the tip
+    /// every `interval`.
+    ///
+    /// Opt-in, not part of [`new`](Self::new): seeding takes one live read, and a handle must
+    /// be constructible while the validator is still down.
+    pub async fn with_tip_polling(
+        mut self,
+        interval: Duration,
+    ) -> Result<Self, QueryError<GetChainTipError>> {
+        self.tip = Some(PolledChainTip::spawn(TipReader(Arc::clone(&self.rpc)), interval).await?);
+        Ok(self)
     }
 }
 
@@ -29,6 +69,28 @@ impl zaino_source::ValidatorSource for ZebraRpcAdapter {
     // The RPC adapter's non-domain faults are already the seam type, via
     // `From<RpcError> for NonDomainError`; the identity mapping applies.
     type NonDomain = NonDomainError;
+}
+
+/// Poll task's handle onto the adapter's client (task must own its source)
+struct TipReader(Arc<RpcClient>);
+
+impl zaino_source::ValidatorSource for TipReader {
+    type NonDomain = NonDomainError;
+}
+
+impl zaino_source::OneShotGetChainTip for TipReader {
+    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+        best_tip(&self.0).await
+    }
+}
+
+/// `getbestblockheightandhash`: one tip read (two calls could straddle a new block)
+async fn best_tip(rpc: &RpcClient) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+    let value = rpc
+        .call("getbestblockheightandhash", vec![])
+        .await
+        .map_err(|e| QueryError::NonDomain(e.into()))?;
+    parse::parse_best_tip(&value).map_err(|e| from_parse(e).into())
 }
 
 /// Parse errors are always non-retryable.
@@ -233,21 +295,7 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
 impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
-        let hash_value = self
-            .rpc
-            .call("getbestblockhash", vec![])
-            .await
-            .map_err(|e| QueryError::NonDomain(e.into()))?;
-        let hash = parse::parse_block_hash(&hash_value).map_err(from_parse)?;
-
-        let height_value = self
-            .rpc
-            .call("getblockcount", vec![])
-            .await
-            .map_err(|e| QueryError::NonDomain(e.into()))?;
-        let height = parse::parse_height(&height_value).map_err(from_parse)?;
-
-        Ok((hash, height))
+        best_tip(&self.rpc).await
     }
 }
 
@@ -966,6 +1014,15 @@ impl zaino_source::SourceLifecycle for ZebraRpcAdapter {}
 /// adapter has no block-arrival signal to offer and inherits `None`. Consumers
 /// pace themselves on their own timer.
 impl zaino_source::SubscribeBlocks for ZebraRpcAdapter {}
+
+/// `None` until [`ZebraRpcAdapter::with_tip_polling`] (no push path over request/response)
+impl zaino_source::SubscribeChainTip for ZebraRpcAdapter {
+    fn subscribe_to_chain_tip(&self) -> Option<watch::Receiver<TipObservation>> {
+        self.tip
+            .as_ref()
+            .and_then(|tip| tip.subscribe_to_chain_tip())
+    }
+}
 
 impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
     async fn get_transaction(

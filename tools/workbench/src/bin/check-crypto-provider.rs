@@ -1,22 +1,13 @@
-//! Guard: one rustls CryptoProvider — aws-lc-rs — plus the single tolerated
-//! ring path through zebra (ADR-0006).
+//! Guard: one rustls CryptoProvider — aws-lc-rs — and no ring (ADR-0006).
 //!
 //! Two checks against the production workspace's resolved dependency graph:
 //!
 //! 1. rustls must resolve with `aws_lc_rs` and `prefer-post-quantum`.
-//! 2. The set of feature edges that select ring anywhere in the graph must
-//!    equal [`RING_EDGE_ALLOWLIST`] — today, the single chain rooted in
-//!    zebra-node-services' `rpc-client` feature (its reqwest `rustls-tls`;
-//!    reqwest 0.12 offers no aws-lc alternative). That ring is compiled but
-//!    dormant: reqwest consults the process-default provider first and zaino
-//!    installs aws-lc-rs at both TLS boundaries.
-//!
-//! Loud in both directions. A NEW edge means a second provider path is
-//! creeping back in via feature unification — the regression this guard
-//! exists to catch (zingolabs/zaino#1360). A MISSING edge — in particular
-//! ring vanishing from the graph entirely — means zebra dropped its ring
-//! dependence: delete [`RING_EDGE_ALLOWLIST`], make this check assert ring's
-//! absence, and close the classical-deprecation tracking issue's zebra item.
+//! 2. No feature edge anywhere in the graph selects ring. The last tolerated
+//!    ring path came in through zebra-rpc's `rpc-client` (reqwest 0.12
+//!    `rustls-tls`) and left with the ReadState source; any ring-selecting edge
+//!    now is a second provider path creeping back in via feature unification —
+//!    the regression this guard exists to catch (zingolabs/zaino#1360).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -27,21 +18,11 @@ use workbench::{repo_root, run};
 /// Feature names that select the ring provider when enabled on any crate.
 const RING_SELECTING_FEATURES: [&str; 3] = ["ring", "__rustls-ring", "tls-ring"];
 
-/// Every feature edge expected to select ring, all downstream of
-/// zebra-node-services' reqwest `rustls-tls` (see module docs).
-const RING_EDGE_ALLOWLIST: [&str; 5] = [
-    "hyper-rustls feature \"ring\"",
-    "reqwest feature \"__rustls-ring\"",
-    "rustls feature \"ring\"",
-    "rustls-webpki feature \"ring\"",
-    "tokio-rustls feature \"ring\"",
-];
-
 fn main() {
     run("check-crypto-provider", check, |()| {
         println!(
             "check-crypto-provider: ok — rustls resolves aws-lc-rs + prefer-post-quantum; \
-             ring edges match the tolerated zebra path"
+             nothing selects ring"
         );
     })
 }
@@ -59,12 +40,7 @@ fn check() -> Result<(), Vec<String>> {
                 .iter()
                 .any(|l| l.contains("did not match any packages")) =>
         {
-            return Err(vec![
-                "ring is GONE from the dependency graph — zebra dropped it!".to_string(),
-                "Tighten this guard: delete RING_EDGE_ALLOWLIST and assert ring's absence,"
-                    .to_string(),
-                "and close the zebra item on the classical-deprecation tracking issue.".to_string(),
-            ]);
+            return Ok(());
         }
         Err(diag) => return Err(diag),
     };
@@ -91,31 +67,22 @@ fn check_preferred_provider(features_line: &str) -> Result<(), Vec<String>> {
     }
 }
 
-/// Assert the ring-selecting feature edges equal the tolerated allowlist.
+/// Assert no feature edge selects ring.
 fn check_ring_edges(ring_tree: &str) -> Result<(), Vec<String>> {
     let found = ring_selecting_edges(ring_tree);
-    let expected: BTreeSet<String> = RING_EDGE_ALLOWLIST
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-
-    if found == expected {
+    if found.is_empty() {
         return Ok(());
     }
 
-    let mut msg = Vec::new();
-    for new in found.difference(&expected) {
-        msg.push(format!(
-            "NEW ring-selecting feature edge: {new} — a second CryptoProvider path is \
-             creeping back in (zingolabs/zaino#1360); remove the enabling feature",
-        ));
-    }
-    for gone in expected.difference(&found) {
-        msg.push(format!(
-            "tolerated ring edge disappeared: {gone} — if zebra dropped ring, tighten \
-             this guard (see the module docs in check-crypto-provider.rs)",
-        ));
-    }
+    let mut msg: Vec<String> = found
+        .iter()
+        .map(|edge| {
+            format!(
+                "ring-selecting feature edge: {edge} — a second CryptoProvider path is \
+                 creeping back in (zingolabs/zaino#1360); remove the enabling feature",
+            )
+        })
+        .collect();
     msg.push("see docs/adr/zaino/0006-aws-lc-rs-preferred-crypto-provider.md".to_string());
     Err(msg)
 }

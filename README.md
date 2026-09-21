@@ -30,7 +30,7 @@ With the ongoing legacy-full-node deprecation project, there is a push to transi
 
 Due to current potential data leaks / security weaknesses highlighted in [revised-nym-for-zcash-network-level-privacy](https://forum.zcashcommunity.com/t/revised-nym-for-zcash-network-level-privacy/46688) and [wallet-threat-model](https://zcash.readthedocs.io/en/master/rtd_pages/wallet_threat_model.html), there is a need to use anonymous transport protocols (such as Nym or Tor) to obfuscate clients' identities from Zcash's indexing servers ([Lightwalletd](https://github.com/zcash/lightwalletd), [the legacy Zcash full node](https://github.com/zcash/zcash), Zaino). As Nym has chosen Rust as their primary SDK ([Nym-SDK](https://github.com/nymtech/nym)), and Tor is currently implementing Rust support ([Arti](https://gitlab.torproject.org/tpo/core/arti)), Rust is a straightforward and well-suited choice for this software.
 
-Zebra has been designed to allow direct read access to the finalized state and RPC access to the non-finalized state through its ReadStateService. Integrating directly with this service enables efficient access to chain data and allows new indices to be offered with minimal development.
+Zaino sources chain data from Zebra over its JSON-RPC interface and builds its own indexes from the blocks it fetches, so Zaino and Zebra can run on separate hardware and new indices can be offered without changes to the validator.
 
 Separation of validation and indexing functionality serves several purposes. First, by removing indexing functionality from the Validator (Zebra) will lead to a smaller and more maintainable codebase. Second, by moving all indexing functionality away from Zebra into Zaino will unify this paradigm and simplify Zcash's security model. Separating these concerns (consensus node and blockchain indexing) serves to create a clear trust boundary between the Indexer and Validator allowing the Indexer to take on this responsibility. Historically, this had been the case for "light" clients/wallets using [Lightwalletd](https://github.com/zcash/lightwalletd) as opposed to "full-node" client/wallets and block explorers that were directly served by the [the legacy Zcash full node](https://github.com/zcash/zcash).
 
@@ -43,9 +43,7 @@ To facilitate a smooth transition for existing users and developers, Zaino is de
 ### Scope
 Zaino will implement a comprehensive RPC API to serve all non-miner client requests effectively. This API will encompass all functionality currently in the LightWallet gRPC service ([CompactTxStreamer](https://github.com/zcash/librustzcash/blob/main/zcash_client_backend/proto/service.proto)), currently served by Lightwalletd, and a subset of the [Zcash RPCs](https://zcash.github.io/rpc/) required by wallets and block explorers, currently served by the legacy Zcash full node. Zaino will unify these two RPC services and provide a single, straightforward interface for Zcash clients and service providers to access the data and services they require.
 
-In addition to the RPC API, Zaino will offer a client library allowing developers to integrate Zaino's functionality directly into their Rust applications. Along with the RemoteReadStateService mentioned below, this will allow both local and remote access to the data and services provided by Zaino without the overhead of using an RPC protocol, and also allows Zebra to stay insulated from directly interfacing with client software.
-
-Currently Zebra's `ReadStateService` only enables direct access to chain data (both Zebra and any process interfacing with the `ReadStateService` must be running on the same hardware). Zaino will extend this functionality, using a Hyper wrapper, to allow Zebra and Zaino (or software built using Zaino's `IndexerStateService` as its backend) to run on different hardware and should enable a much greater range of deployment strategies (eg. running validator, indexer or wallet processes on separate hardware). It should be noted that this will primarily be designed as a remote link between Zebra and Zaino and it is not intended for developers to directly interface with this service, but instead to use functionality exposed by the client library in Zaino (`IndexerStateService`).
+In addition to the RPC API, Zaino will offer a client library allowing developers to integrate Zaino's functionality directly into their Rust applications, without the overhead of using an RPC protocol, while Zebra stays insulated from directly interfacing with client software.
 
 ## Project Structure
 
@@ -54,25 +52,18 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-status/                      How a component reports whether it is working
   zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
-  zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
   zaino-address/                     Zcash address classification
   zaino-source/                      Driven ports: one trait per chain question
   zaino-rpc/                         JSON-RPC transport (no parsing)
   zaino-convert-zebra/               zebra-chain -> domain conversions
-  zaino-source-zebra-rpc/            JSON-RPC adapter + response parsing
-  zaino-source-zebra-readstate/      Zebra ReadStateService adapter
-  zaino-source-zebra/                ZebraValidator composite + routing
+  zaino-source-zebra-rpc/            Zebra JSON-RPC adapter: the validator source
   zaino-mempool/                     Mempool domain types and ports (no node library)
   zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
   zaino-common/                      Shared utilities and configuration
   zaino-proto/                       Protocol buffer definitions
   zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
   zaino-chain-head-service/          Non-finalised chain head: the runtime
-  zaino-chain-store/                 Finalised state: vocabulary and ports
-  zaino-chain-store-zainodb/         Finalised state: the LMDB implementation
-  zaino-state/                       Chain state and indexer service library
-  zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
 
 live-tests/                        Live-test suite — standalone workspace, run on the ztest k8s harness
@@ -197,17 +188,12 @@ mistakes its design is trying to prevent.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
 - [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
-- [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the JSON-RPC adapter and its error classification.
-- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
-- [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
+- [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the validator source — connecting, tip polling, and error classification.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
 - [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
-- [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
-- [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
-- [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): composes the finalised store and the non-finalised view into one served compact-block snapshot over a watermark-governed seam, and why the initial-build gap is an explicit policy knob.
 
 

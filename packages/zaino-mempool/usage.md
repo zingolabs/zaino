@@ -42,7 +42,7 @@ implements `MempoolSource` by name. **The four validator reads must be answered
 by the same transport.** The core tags each published set with
 `get_mempool_source_tip` so the coherence layer can judge that set without
 re-fetching it, and the comparison is only sound for a single-source pair.
-`ZebraValidator` upholds this by routing all four to JSON-RPC.
+`ZebraRpcAdapter` upholds this by answering all four over JSON-RPC.
 
 `SubscribeBlocks` is the exception, and is why this is a *capability* bound
 rather than a plain source: it is answered by whoever knows a block landed,

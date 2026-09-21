@@ -2,8 +2,8 @@
 //!
 //! Drives the real provisioner → engine pipeline over a **bounded** height
 //! window and times it: it sources pre-index compact blocks from a Zebra
-//! ReadState validator (the fast path — no RPC, no proof/signature decode),
-//! projects them into the current-zaino index set, and builds that set into an
+//! validator over JSON-RPC (the production source), projects them into the
+//! current-zaino index set, and builds that set into an
 //! LMDB backend. With `--verify` it then reads a sample back through the store's
 //! compose-on-read path, confirming the store serves composed compact blocks
 //! whose cumulative tree sizes are internally consistent.
@@ -14,10 +14,6 @@
 //! throughput bench needs. The provision → `sync_channel` body it runs here is
 //! exactly the driver's [`sync_to`], so the numbers reflect the production path
 //! minus only the tip-follow select loop.
-//!
-//! Run it on the validator's own node: ReadState opens the on-disk state DB, so
-//! the source cost is a local read and the measurement isolates indexing from
-//! network variance.
 //!
 //! [`SourceSyncDriver`]: zaino_indexer::SourceSyncDriver
 //! [`sync_to`]: zaino_indexer::SourceSyncDriver
@@ -43,35 +39,41 @@ use zaino_persistence_codec::reserved_namespaces;
 use zaino_primitives::types::Height;
 use zaino_service::{CompactBlockRead, TakeSnapshot};
 use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
+use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zaino_store::StoreReader;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
-use zebra_chain::parameters::Network;
 
 /// A boxed error is enough for a benchmark binary — every step already carries a
 /// typed cause, and the harness only reports the failure, it does not react to
 /// its variant.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Index a bounded window of pre-index compact blocks from a Zebra ReadState
-/// validator into LMDB and report throughput.
+/// Index a bounded window of pre-index compact blocks from a Zebra validator over
+/// JSON-RPC into LMDB and report throughput.
 #[derive(Debug, Parser)]
 #[command(name = "sync-bench", about, long_about = None)]
 struct Args {
-    /// Zebra cache directory (the state DB lives under it, per network). Env
-    /// fallback matches the value the cluster Job mounts the state at.
-    #[arg(long, env = "ZEBRA_STATE_DIR")]
-    zebra_cache: PathBuf,
+    /// The validator's JSON-RPC address (`host:port`).
+    #[arg(long, env = "ZEBRA_JSONRPC")]
+    validator: String,
+
+    /// Path to the validator's auth cookie, if it uses cookie auth.
+    #[arg(long, env = "ZEBRA_COOKIE")]
+    cookie: Option<PathBuf>,
+
+    /// JSON-RPC basic-auth user, if configured.
+    #[arg(long, env = "ZEBRA_RPC_USER")]
+    user: Option<String>,
+
+    /// JSON-RPC basic-auth password, if configured.
+    #[arg(long, env = "ZEBRA_RPC_PASSWORD")]
+    password: Option<String>,
 
     /// LMDB directory to build the indexes into (created if absent). Reuse it
     /// across runs to resume; delete it for a cold build.
     #[arg(long, env = "ZAINO_DB_PATH")]
     db: PathBuf,
-
-    /// Network the validator serves.
-    #[arg(long, value_enum, default_value_t = NetworkArg::Mainnet)]
-    network: NetworkArg,
 
     /// First height to index this run. Omitted: resume just past the backend's
     /// committed watermark, or genesis on a fresh backend. Set it to bench a
@@ -114,22 +116,6 @@ struct Args {
     verify: bool,
 }
 
-/// The networks the bench supports, mapped to zebra's [`Network`].
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum NetworkArg {
-    Mainnet,
-    Testnet,
-}
-
-impl NetworkArg {
-    fn to_zebra(self) -> Network {
-        match self {
-            NetworkArg::Mainnet => Network::Mainnet,
-            NetworkArg::Testnet => Network::new_default_testnet(),
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     tracing_subscriber::fmt()
@@ -142,12 +128,15 @@ async fn main() -> Result<(), BoxError> {
         .init();
 
     let args = Args::parse();
-    let network = args.network.to_zebra();
 
-    // Source: the ReadState adapter opens the on-disk state DB read-only, wrapped
-    // in the resilient decorator so the provisioner binds the resilient ports.
-    // Retry stays at the policy default; on a local read it should never fire.
-    let adapter = ZebraReadStateAdapter::open(&args.zebra_cache, &network)?;
+    // Resilient decorator (as in zainod) so the provisioner binds the resilient ports
+    let adapter = ZebraRpcAdapter::connect(
+        &args.validator,
+        args.cookie.as_deref(),
+        args.user.clone(),
+        args.password.clone(),
+    )
+    .await?;
     let source = Arc::new(ValidatorClient::new(adapter, RetryPolicy::default()));
 
     // Backend: LMDB must declare every namespace up front — one per index in the
@@ -211,7 +200,7 @@ async fn main() -> Result<(), BoxError> {
 
     let count = u32::from(to) - u32::from(resume) + 1;
     println!(
-        "indexing [{}, {}] ({count} blocks) from ReadState tip {} into {}",
+        "indexing [{}, {}] ({count} blocks) from validator tip {} into {}",
         u32::from(resume),
         u32::from(to),
         u32::from(tip),

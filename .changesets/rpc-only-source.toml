@@ -1,0 +1,41 @@
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+The Direct (ReadState) source is removed; zainod sources blocks from the \
+validator's JSON-RPC only. `[source]` is now a plain table (`jsonrpc_address`, \
+`cookie_path`, `user`, `password`) and rejects unknown fields, so a config \
+still carrying `mode` or `zebra_cache_dir` fails to parse. Boot waits for the \
+validator to answer, gates the runtime on a real tip read, and gives the \
+finalised indexer a polled tip subscription so it follows the chain after \
+catch-up. The `ztest-fixture` env var is now `ZAINO_TEST_REGTEST_FIXTURE`.
+"""
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "feature"
+description = """
+`ZebraRpcAdapter::connect` waits for a validator to answer and builds the \
+adapter; `with_tip_polling` adds a `SubscribeChainTip` stream. `get_chain_tip` \
+reads `getbestblockheightandhash` — one call, so hash and height come from the \
+same tip.
+"""
+
+[[changes]]
+crate = "zaino-convert-zebra"
+kind = "breaking"
+section = "Removed"
+description = """
+`header_from_parts` and `pre_index_compact_block_from_zebra` are removed: their \
+only caller was the ReadState adapter.
+"""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+section = "Removed"
+description = """
+The `heavy` feature and `blockid_to_hashorheight` are removed; the crate no \
+longer depends on `zebra-state` or `zebra-chain`.
+"""

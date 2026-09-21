@@ -12,15 +12,14 @@ use super::{QueryError, ValidatorSource};
 /// # Why this is not `GetChainTip`
 ///
 /// [`GetChainTip`](super::GetChainTip) asks "what is the best tip?", and an
-/// implementation is free to answer it from whichever transport is fastest —
-/// `ZebraValidator` prefers the state database.
+/// implementation is free to answer it from whichever source is fastest.
 ///
 /// A mempool consumer needs something narrower: the tip *the mempool listing
 /// was read against*. It tags each published mempool set with this tip so a
 /// later reader can decide whether that set is still coherent with the chain,
 /// without re-reading the mempool. That comparison is only sound if the tag and
-/// the set come from one source — a tip read from the state database while the
-/// listing came from JSON-RPC can differ by a block for reasons that have
+/// the set come from one source — a tip read from one source while the
+/// listing came from another can differ by a block for reasons that have
 /// nothing to do with the mempool, and the consumer would read the difference as
 /// a real tip change.
 ///
@@ -36,10 +35,6 @@ use super::{QueryError, ValidatorSource};
 /// that could observe a *mempool-specific* reason for having no tip — and the
 /// JSON-RPC answer (`getblockchaininfo`) either returns a tip or fails at the
 /// transport level. Nothing is left to name.
-///
-/// Contrast [`GetChainTip`](super::GetChainTip), which *does* carry a `NotReady`:
-/// it is free to be answered from the state database, and the ReadState adapter
-/// genuinely observes "no tip yet" as an answer rather than a failure.
 ///
 /// So this is typed `QueryError<Infallible, Self::NonDomain>` rather than given an unproducible
 /// variant. A domain error no implementation can return is worse than none: it

@@ -30,7 +30,7 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     info!(version = env!("CARGO_PKG_VERSION"), "zainod started");
 
     // TEST-ONLY: under the `ztest-fixture` feature AND the runtime env var, boot
-    // an in-process regtest Direct config, ignoring `--config`. The ztest e2e
+    // an in-process regtest config, ignoring `--config`. The ztest e2e
     // mounts a legacy-schema config this greenfield loader can't parse; this is
     // the bridge. Inert in any build without both the feature and the env var.
     #[cfg(feature = "ztest-fixture")]
@@ -40,7 +40,7 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
             crate::config::TEST_FIXTURE_ENV,
             config_path.display(),
         );
-        crate::config::regtest_direct_fixture()
+        crate::config::regtest_fixture()
     } else {
         load_config(&config_path)?
     };

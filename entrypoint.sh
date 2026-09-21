@@ -7,15 +7,11 @@
 #
 # Zaino (runtime stack) is configured by a greenfield TOML (see
 # `zainod generate-config`). This entrypoint bridges a small, stable set of
-# container env vars into that TOML for the common Direct/ReadState deployment,
-# then starts the daemon against it. Two ways to configure, highest priority
-# first:
+# container env vars into that TOML, then starts the daemon against it. Two ways
+# to configure, highest priority first:
 #
 #   1. Mount a complete config and point ZAINO_CONFIG_FILE at it — used verbatim.
 #   2. Otherwise this script synthesizes a config from the ZAINO_* vars below.
-#
-# The synthesized config targets Direct/ReadState (co-located with the
-# validator); RPC-source deployments should mount their own config (option 1).
 
 set -eo pipefail
 
@@ -27,7 +23,8 @@ fi
 # Container env contract (simple, stable — distinct from zainod's internal
 # ZAINO_-prefixed config-rs keys, which shift with the config schema):
 : "${ZAINO_NET:=Mainnet}"                         # Mainnet | PubTestnet | Regtest
-: "${ZAINO_ZEBRA_CACHE_DIR:=/app/zebra}"          # Direct: root of the shared Zebra cache
+: "${ZAINO_VALIDATOR_JSONRPC:=127.0.0.1:8232}"   # validator JSON-RPC host:port
+: "${ZAINO_VALIDATOR_COOKIE:=}"                   # validator auth cookie path (optional)
 : "${ZAINO_STORE_PATH:=/app/data}"                # LMDB index directory
 : "${ZAINO_STORE_MAP_SIZE_GB:=16}"                # LMDB map size (GiB)
 : "${ZAINO_GRPC_LISTEN:=0.0.0.0:8137}"            # CompactTxStreamer bind (0.0.0.0 to be reachable)
@@ -45,22 +42,21 @@ for dir in "${ZAINO_STORE_PATH}" "${ZAINO_CONFIG_DIR}"; do
   fi
 done
 
-# Synthesize a Direct-mode config only when one was not supplied. The [source]
-# block is written as TOML rather than via ZAINO_SOURCE__MODE env because the
-# source is an internally-tagged enum whose env-override through config-rs is
-# unreliable; the TOML form is authoritative.
 if [[ -n "${ZAINO_CONFIG_FILE:-}" ]]; then
   echo "Using mounted config: ${CONFIG_PATH}" >&2
 elif [[ -f "${CONFIG_PATH}" ]]; then
   echo "Using existing config: ${CONFIG_PATH}" >&2
 else
-  echo "Synthesizing Direct/ReadState config at ${CONFIG_PATH}" >&2
-  cat > "${CONFIG_PATH}" <<EOF
+  echo "Synthesizing config at ${CONFIG_PATH}" >&2
+  {
+    cat <<EOF
 network = "${ZAINO_NET}"
 
 [source]
-mode = "direct"
-zebra_cache_dir = "${ZAINO_ZEBRA_CACHE_DIR}"
+jsonrpc_address = "${ZAINO_VALIDATOR_JSONRPC}"
+EOF
+    [[ -n "${ZAINO_VALIDATOR_COOKIE}" ]] && echo "cookie_path = \"${ZAINO_VALIDATOR_COOKIE}\""
+    cat <<EOF
 
 [store]
 path = "${ZAINO_STORE_PATH}"
@@ -69,8 +65,14 @@ map_size_gb = ${ZAINO_STORE_MAP_SIZE_GB}
 [serve]
 grpc_listen_address = "${ZAINO_GRPC_LISTEN}"
 EOF
+  } > "${CONFIG_PATH}"
 fi
 
-# `start` still layers ZAINO_-prefixed env over the file for scalar fields, so an
-# operator can override e.g. the network or store path without a remount.
+# Contract vars share zainod's ZAINO_ env-override prefix: left exported, each
+# would parse as an unknown config key and abort startup (deny_unknown_fields).
+unset ZAINO_NET ZAINO_VALIDATOR_JSONRPC ZAINO_VALIDATOR_COOKIE ZAINO_STORE_PATH \
+  ZAINO_STORE_MAP_SIZE_GB ZAINO_GRPC_LISTEN ZAINO_CONFIG_FILE
+
+# `start` still layers zainod's own ZAINO_-prefixed keys (e.g. ZAINO_INDEXER__BATCH_SIZE)
+# over the file for scalar fields.
 exec zainod start --config "${CONFIG_PATH}"

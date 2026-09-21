@@ -11,11 +11,8 @@ version = "0.1.0"
 [features]
 default = []
 
-# Declares the transparent-address-history capability: the domain types and the
-# `ChainHeadTransparentHistoryService` port. Declaration only — nothing
-# implements it, and no consumer is wired to it. Named to match
-# `zaino-state/transparent_address_history_experimental`, which gates the
-# finalised-state half of the same capability.
+# Transparent-address-history domain types + `ChainHeadTransparentHistoryService` port
+# - Declaration only: no implementor, no consumer
 transparent_address_history_experimental = []
 
 [dependencies]
@@ -27,7 +24,7 @@ tokio = { workspace = true, features = ["sync"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-zaino-source-zebra = { workspace = true }
+zaino-source-zebra-rpc = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

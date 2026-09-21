@@ -48,9 +48,6 @@ jobs:
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
 
-      # Only crate the experimental umbrella reaches; clippy --all-features covers its compile
-      - run: cargo nextest run --locked -p zaino-state --features experimental_features --no-fail-fast
-
   features:
     name: Each feature compiles
     # dev only (~77 checks); --feature-powerset = 412, over the 6h hosted-runner cap

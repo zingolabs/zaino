@@ -9,14 +9,7 @@ const PROPOSAL_PROTO: &str = "proto/proposal.proto";
 const SERVICE_PROTO: &str = "proto/service.proto";
 
 fn protoc_available() -> bool {
-    if env::var_os("PROTOC").is_some() {
-        return true;
-    }
-    #[cfg(feature = "heavy")]
-    if which::which("protoc").is_ok() {
-        return true;
-    }
-    false
+    env::var_os("PROTOC").is_some() || which::which("protoc").is_ok()
 }
 
 /// Copy a generated file into the source tree and force non-executable

@@ -219,6 +219,14 @@ pub(crate) fn parse_height(value: &serde_json::Value) -> Result<Height, ParseErr
     as_height(value)
 }
 
+/// Parse a `getbestblockheightandhash` response (one tip read → hash + height agree)
+pub(crate) fn parse_best_tip(value: &serde_json::Value) -> Result<(BlockHash, Height), ParseError> {
+    Ok((
+        parse_block_hash(field(value, "hash")?)?,
+        as_height(field(value, "height")?)?,
+    ))
+}
+
 /// Parse one pool's serialised commitment tree out of a `z_gettreestate`
 /// response.
 ///
@@ -1198,6 +1206,24 @@ mod tests {
             as_merkle_root(&value).expect("merkle root"),
             MerkleRoot::from(reversed_bytes())
         );
+    }
+
+    #[test]
+    fn best_tip_reads_reversed_hash_and_height_and_names_a_missing_field() {
+        let tip = parse_best_tip(&json!({ "height": 3_100_000, "hash": ASYMMETRIC_HEX }))
+            .expect("well-formed tip");
+        assert_eq!(
+            tip,
+            (
+                BlockHash::from(reversed_bytes()),
+                Height::try_from(3_100_000).expect("valid height"),
+            )
+        );
+
+        assert!(matches!(
+            parse_best_tip(&json!({ "hash": ASYMMETRIC_HEX })),
+            Err(ParseError::MissingField("height"))
+        ));
     }
 
     #[test]

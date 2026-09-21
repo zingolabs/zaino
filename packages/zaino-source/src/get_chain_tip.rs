@@ -20,8 +20,7 @@ pub enum GetChainTipError {
 
 /// Fetch the current best chain tip (hash + height).
 ///
-/// Maps to `getbestblockhash()` + `getblock(hash, 0)` over JSON-RPC,
-/// or the equivalent ReadState query.
+/// Maps to `getbestblockheightandhash` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetChainTip: ValidatorSource + Send + Sync {
     /// Fetch current tip.

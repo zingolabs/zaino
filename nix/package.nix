@@ -1,15 +1,8 @@
 { lib
-, stdenv
 , craneLib
-, rustPlatform
-, autoPatchelfHook
 , protobuf
 , pkg-config
-, cmake
 , withTls ? true
-, gitCommit ? "unknown"
-, gitBranch ? "unknown"
-, rocksdb
 }:
 
 let
@@ -19,10 +12,9 @@ let
       (craneLib.fileset.commonCargoSources ../.)
       # commonCargoSources only includes .rs & cargo files
       #   .proto — read by tonic-build (zaino-proto/build.rs)
-      #   .txt   — embedded via include_str! (db schema)
-      #   .mmd   — embedded via simple_mermaid::mermaid! (doc diagrams)
+      #   usage.md — crate docs via #![doc = include_str!("../usage.md")]
       (lib.fileset.fileFilter (f: f.hasExt "proto") ../packages/zaino-proto)
-      (lib.fileset.fileFilter (f: f.hasExt "txt" || f.hasExt "mmd") ../packages/zaino-state/src)
+      (lib.fileset.fileFilter (f: f.name == "usage.md") ../packages)
     ];
   };
 
@@ -40,27 +32,11 @@ let
     nativeBuildInputs = [
       protobuf
       pkg-config
-      cmake
-      # Sets LIBCLANG_PATH so librocksdb-sys's bindgen finds libclang
-      # without dragging LLVM into the build.
-      rustPlatform.bindgenHook
-      autoPatchelfHook
     ];
-
-    # stdenv.cc.cc.lib provides libstdc++.so.6 / libgcc_s.so.1 that
-    # rocksdb's C++ code transitively needs at runtime.
-    buildInputs = [ rocksdb stdenv.cc.cc.lib ];
 
     env = {
       PROTOC = "${protobuf}/bin/protoc";
       PROTOC_INCLUDE = "${protobuf}/include";
-
-      # Use nixpkgs' librocksdb instead of librocksdb-sys's bundled C++ compile.
-      ROCKSDB_LIB_DIR = "${rocksdb}/lib";
-      ROCKSDB_INCLUDE_DIR = "${rocksdb}/include";
-
-      ZAINO_GIT_COMMIT_ID = gitCommit;
-      ZAINO_GIT_BRANCH = gitBranch;
     };
   };
 

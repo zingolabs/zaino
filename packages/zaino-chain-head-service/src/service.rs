@@ -328,7 +328,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         };
 
         // currently this only gets main-chain blocks
-        // once readstateservice supports serving sidechain data, this
+        // once the validator source supports serving sidechain data, this
         // must be rewritten to match
         //
         // see https://github.com/ZcashFoundation/zebra/issues/9541

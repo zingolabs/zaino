@@ -5673,6 +5673,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "which",
 ]
 
 [[package]]

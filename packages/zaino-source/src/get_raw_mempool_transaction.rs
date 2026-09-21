@@ -25,7 +25,7 @@ pub enum GetRawMempoolTransactionError {
 /// # Why this is separate from `GetTransaction`
 ///
 /// [`GetTransaction`](super::GetTransaction) answers "where is this
-/// transaction?" and may be routed to a state database that has no mempool at
+/// transaction?" and a composite may route it to a store that has no mempool at
 /// all. This port answers "give me these mempool bytes", and an implementation
 /// must route it to the same source that serves
 /// [`GetMempoolTxids`](super::GetMempoolTxids) — otherwise a consumer

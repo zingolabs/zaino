@@ -25,8 +25,7 @@ pub enum GetTransactionError {
 
 /// Fetch a transaction by its txid.
 ///
-/// Maps to `getrawtransaction(txid, 1)` over JSON-RPC, or the
-/// equivalent ReadState query.
+/// Maps to `getrawtransaction(txid, 1)` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetTransaction: ValidatorSource + Send + Sync {
     /// Fetch transaction.

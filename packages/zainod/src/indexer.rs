@@ -10,8 +10,8 @@
 //! address queries, `SendTransaction`, and node JSON-RPC are not served yet.
 
 use std::num::NonZeroU32;
-use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::task::JoinHandle;
 use tracing::{error, info};
@@ -26,19 +26,19 @@ use zaino_indexes::sets::current_zaino::{context_from_pre_index_compact_block, i
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
-use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_runtime::{
     IndexerComponent, OrchestraBuilder, RunComponent, ServeComponent, ValidatorComponent,
 };
-use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_source_zebra::ZebraValidator;
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
+use zaino_source::{OneShotGetChainTip, RetryPolicy, ValidatorClient};
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zaino_store::{StoreComponent, StoreReader};
 use zaino_store_service::Engine;
 
-use crate::config::{DaemonConfig, Network, SourceMode};
+use crate::config::{DaemonConfig, SourceConfig};
 use crate::error::IndexerError;
+
+/// Tip poll cadence for the FS indexer's follow loop (= chain-head default poll)
+const TIP_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Start the Zaino daemon.
 ///
@@ -53,85 +53,28 @@ pub async fn start_indexer(
     spawn_indexer(config).await
 }
 
-/// Build the validator per configured mode, then boot the runtime.
-///
-/// Direct mode assembles a [`ZebraValidator`] over both transports: the state
-/// database (the finalised-block fast path the indexer and chain-head source
-/// through) and JSON-RPC (required for the mempool/passthrough seam, even though
-/// the compact-serving slice stubs those). The two are shared behind one `Arc`.
+/// Wait for the validator's JSON-RPC to answer, build the source over it, then boot the runtime.
 pub async fn spawn_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    config.validate()?;
-    let network = to_zebra_network(config.network);
-
-    match &config.source {
-        SourceMode::Direct {
-            zebra_cache_dir,
-            jsonrpc_address,
-            cookie_path,
-            user,
-            password,
-        } => {
-            info!(cache = %zebra_cache_dir.display(), "opening validator ReadState (Direct)");
-            let readstate = ZebraReadStateAdapter::open(zebra_cache_dir, &network)
-                .map_err(IndexerError::OpenReadState)?;
-            let rpc = ZebraRpcAdapter::new(rpc_client_from_config(
-                jsonrpc_address,
-                cookie_path.as_deref(),
-                user.as_deref(),
-                password.as_deref(),
-            )?);
-            let validator = Arc::new(ZebraValidator::with_read_state(rpc, readstate));
-            boot(validator, config).await
-        }
-        // The Rpc selector is preserved in config, but only Direct/ReadState
-        // sourcing is wired so far. Fail loud and typed rather than panic.
-        SourceMode::Rpc { .. } => Err(IndexerError::RpcSourceUnsupported),
-    }
+    let validator = Arc::new(connect_validator(&config.source).await?);
+    boot(validator, config).await
 }
 
-/// Build the validator JSON-RPC client from the configured coordinates.
-fn rpc_client_from_config(
-    jsonrpc_address: &str,
-    cookie_path: Option<&Path>,
-    user: Option<&str>,
-    password: Option<&str>,
-) -> Result<RpcClient, IndexerError> {
-    RpcClient::new(RpcClientConfig {
-        url: format!("http://{jsonrpc_address}"),
-        auth: rpc_auth(cookie_path, user, password)?,
-        ..RpcClientConfig::default()
-    })
-    .map_err(IndexerError::RpcClient)
-}
-
-/// The basic-auth credentials the validator expects, from the configured parts.
-///
-/// A cookie path wins over an explicit user/password pair (a cookie-auth
-/// validator rejects the pair); the `__cookie__:` prefix is stripped when
-/// present. With neither configured — the regtest default — the client sends no
-/// auth.
-fn rpc_auth(
-    cookie_path: Option<&Path>,
-    user: Option<&str>,
-    password: Option<&str>,
-) -> Result<Option<(String, String)>, IndexerError> {
-    match (cookie_path, user, password) {
-        (Some(path), _, _) => {
-            let contents = std::fs::read_to_string(path).map_err(|source| {
-                IndexerError::ConfigError(format!(
-                    "reading validator cookie {}: {source}",
-                    path.display(),
-                ))
-            })?;
-            let token = contents.trim();
-            let token = token.strip_prefix("__cookie__:").unwrap_or(token);
-            Ok(Some(("__cookie__".to_string(), token.to_string())))
-        }
-        (None, Some(user), Some(password)) => Ok(Some((user.to_string(), password.to_string()))),
-        (None, _, _) => Ok(None),
-    }
+/// JSON-RPC source with a live tip subscription
+async fn connect_validator(source: &SourceConfig) -> Result<ZebraRpcAdapter, IndexerError> {
+    let adapter = ZebraRpcAdapter::connect(
+        &source.jsonrpc_address,
+        source.cookie_path.as_deref(),
+        source.user.clone(),
+        source.password.clone(),
+    )
+    .await?;
+    info!(validator = %source.jsonrpc_address, "validator JSON-RPC answering");
+    adapter
+        .with_tip_polling(TIP_POLL_INTERVAL)
+        .await
+        .map_err(IndexerError::TipPolling)
 }
 
 /// Boot the runtime over the shared `validator`: an LMDB-backed compact-block
@@ -139,12 +82,12 @@ fn rpc_auth(
 /// engine that composes the two into one served chain, and the wallet gRPC
 /// server — all supervised under one Orchestra (validator gated first).
 ///
-/// The one `Arc<ZebraValidator>` backs both source consumers: the FS indexer
+/// The one `Arc<ZebraRpcAdapter>` backs both source consumers: the FS indexer
 /// wraps it in the resilient [`ValidatorClient`]; the chain-head reaches the raw
 /// one-shot ports through the `Arc` directly. The chain-head's confirmed-watermark
 /// gate is the seam owner — it trims only what the FS has committed.
 async fn boot(
-    validator: Arc<ZebraValidator>,
+    validator: Arc<ZebraRpcAdapter>,
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     // The FS indexer sources through the resilient wrapper over the shared
@@ -210,9 +153,7 @@ async fn boot(
     // Compose FS ⊕ NFS into the served engine, behind the light-wallet profile.
     let engine = Engine::new(store_reader.clone(), chain_head_subscriber);
 
-    // Reachability was already confirmed (Direct opened its state DB), so the
-    // runtime's validator gate is a formality here.
-    let validator_component = ValidatorComponent::connect(&AlreadyReachable).await?;
+    let validator_component = ValidatorComponent::connect(&TipReachable(&validator)).await?;
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
     let store = StoreComponent::new(ComponentName("store"), store_reader);
     // The chain-head writer is escalated and supervised exactly like the indexer.
@@ -294,25 +235,12 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
-/// Map the daemon's network to zebra's network parameters.
-fn to_zebra_network(network: Network) -> zebra_chain::parameters::Network {
-    use zebra_chain::parameters::Network as Zebra;
-    match network {
-        Network::Mainnet => Zebra::Mainnet,
-        Network::PubTestnet => Zebra::new_default_testnet(),
-        Network::Regtest => Zebra::new_regtest(Default::default()),
-    }
-}
+/// Validator gate: reachable = answers a tip read
+struct TipReachable<'a>(&'a ZebraRpcAdapter);
 
-/// A [`ReachabilityProbe`] that always reports reachable.
-///
-/// The daemon confirms the validator is reachable before boot (Direct opens its
-/// state DB), so the runtime's readiness gate has nothing left to check.
-struct AlreadyReachable;
-
-impl ReachabilityProbe for AlreadyReachable {
+impl ReachabilityProbe for TipReachable<'_> {
     async fn reachable(&self) -> bool {
-        true
+        self.0.get_chain_tip().await.is_ok()
     }
 }
 

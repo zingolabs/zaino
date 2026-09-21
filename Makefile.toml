@@ -13,8 +13,8 @@ args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", 
 description = "Forbid From/TryFrom impls across the persistence and wire boundaries. Both must use named inherent methods (from_business/into_business for persistence; to_wire/try_from_wire for wire)."
 # See CLAUDE.md §'Persistence-boundary conversions' and §'Wire-boundary
 # conversions'. Reference implementations:
-#   - packages/zaino-state/src/chain_index/types/db/block.rs     (DB)
-#   - packages/zaino-state/src/chain_index/types/wire.rs         (wire)
+#   - packages/zaino-indexes/src/indexes/headers.rs     (DB)
+#   - packages/zaino-lightserve/src/wire.rs              (wire)
 script_runner = "bash"
 script = [
     '''

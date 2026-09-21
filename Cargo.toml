@@ -16,7 +16,6 @@ members = [
     "packages/zaino-persistence-macros",
     "packages/zaino-persistence-codec",
     "packages/zaino-consensus",
-    "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-persistence",
     "packages/zaino-backend-lmdb",
@@ -29,19 +28,13 @@ members = [
     "packages/zaino-rpc",
     "packages/zaino-convert-zebra",
     "packages/zaino-source-zebra-rpc",
-    "packages/zaino-source-zebra-readstate",
-    "packages/zaino-source-zebra",
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
     "packages/zaino-common",
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
-    "packages/zaino-chain-store",
-    "packages/zaino-chain-store-zainodb",
     "packages/zaino-chainview",
     "packages/zainod",
-    "packages/zaino-serve",
-    "packages/zaino-state",
     "packages/zaino-proto",
     # Cluster sync benchmark. A leaf consumer of the indexer/store crates; kept a
     # workspace member so it shares the production lockfile (reproducible cluster
@@ -78,8 +71,6 @@ zcash_transparent = "0.10"
 
 # Zebra
 zebra-chain = "12.0"
-zebra-state = "13.0"
-zebra-rpc = "16.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -148,14 +139,6 @@ zaino-status = { path = "packages/zaino-status", version = "0.1.1" }
 # node implementation, so referencing a consensus fact costs neither a
 # general-purpose dependency nor a peer's reading of the specification.
 zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
-# Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
-# traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
-# formats are written in. A leaf over `corez` alone, so a storage backend and a
-# wire codec can share one encoding vocabulary without either depending on the
-# other. Holds no impl for any domain type: those live with the type whose
-# bytes they describe, which is what keeps a schema out of the vocabulary
-# crates. See docs/adr/zaino/0012.
-zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
@@ -179,14 +162,8 @@ zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.
 zaino-rpc = { path = "packages/zaino-rpc", version = "0.2.0" }
 # The single place `zebra_chain` types are translated into domain types.
 zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.2.0" }
-# Source adapters. The RPC adapter answers every question over the Zcash
-# JSON-RPC interface; the ReadState adapter answers the subset zebra's
-# in-process state can serve, and simply does not implement the rest.
+# The validator source adapter: answers every source port over the Zcash JSON-RPC interface.
 zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.2.0" }
-zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.2.0" }
-# Composite over the two adapters: capability decides what each can answer,
-# this decides which to ask.
-zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.0" }
 zaino-common = { path = "packages/zaino-common", version = "0.5.1" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
@@ -198,21 +175,7 @@ zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
 # crate so a consumer can name what ChainHead answers without depending on the
 # machinery that answers it.
 zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.1.0" }
-# ChainStore: the finalised half of the chain — everything below the reorg
-# seam, and the indexes built over it. This crate is the domain half: types and
-# ports only, no storage, so a consumer can name what a store answers without
-# depending on the implementation that answers it, and a second implementation
-# is a matter of satisfying the traits. It also owns Zaino's UTXO-set
-# commitment, which is a contract between implementations rather than any one
-# implementation's business. See docs/adr/zaino/0012.
-zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
-# The LMDB implementation of those ports, and the on-disk vocabulary it is
-# built from. Named for the backend rather than for the role: a second
-# implementation is expected, and neither should be able to claim to be *the*
-# chain store. Consumers depend on the ports; this is what a deployment picks.
-zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.5.0" }
-zaino-state = { path = "packages/zaino-state", version = "0.8.0", default-features = false }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }
@@ -223,17 +186,3 @@ rayon = "1.10"
 [profile.test]
 opt-level = 3
 debug = true
-
-# TEMPORARY: point zebra at nachog00/zebra `feat/compact-block-read-v6.3.0`,
-# which adds `ReadRequest::CompactBlock` — a zaino-shaped compact block
-# (transparent + shielded, proofs/signatures skipped) that the ReadState
-# adapter's compact source path needs. The branch tracks zebra 6.3.0
-# (zebra-state 13.0.0), matching our version requirements, so this is a drop-in
-# patch and the on-disk state format (v28) is unchanged. Only the three crates
-# we depend on directly are listed; their transitive zebra crates come from the
-# fork through its internal path deps. Revert to crates.io once the endpoint is
-# upstreamed to ZcashFoundation/zebra.
-[patch.crates-io]
-zebra-chain = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
-zebra-rpc = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
-zebra-state = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }

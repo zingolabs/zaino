@@ -6,13 +6,32 @@ validator over JSON-RPC and parsing the replies into domain types.
 ```rust
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 
-let adapter = ZebraRpcAdapter::new(rpc_client);
-let block = zaino_source::GetBlock::get_block(&adapter, height).await?;
+// Waits for the validator to answer (a validator started alongside Zaino is not
+// answering yet), resolves auth, and builds the client.
+let adapter = ZebraRpcAdapter::connect("127.0.0.1:8232", cookie_path, None, None)
+    .await?
+    // Opt-in: a consumer that follows the chain needs `SubscribeChainTip`.
+    .with_tip_polling(Duration::from_secs(1))
+    .await?;
+let block = zaino_source::OneShotGetBlock::get_block(&adapter, height).await?;
 ```
 
-This adapter implements **every** port that JSON-RPC can answer, so it is the
-one transport that is always present. `zaino-source-zebra-readstate` is an
-optional accelerator, not an alternative.
+This adapter is Zaino's only validator source: it implements **every** port
+that JSON-RPC can answer. Zaino builds its own indexes from the blocks it
+fetches here rather than reading the validator's database.
+
+## The chain tip
+
+`get_chain_tip` reads `getbestblockheightandhash`: one call, so the hash and the
+height describe the same tip. Two calls (`getbestblockhash` + `getblockcount`)
+can straddle a new block and pair one tip's hash with the next tip's height.
+
+JSON-RPC has no push path, so `SubscribeChainTip` is `None` until
+`with_tip_polling` is called. The subscription is a `PolledChainTip` over the
+adapter's own client: readings arrive at the poll interval, each stamped with
+when it was taken, so a subscriber can tell a quiet chain from a validator that
+stopped answering. Seeding takes one live read, which is why it is not part of
+construction.
 
 ## The two halves
 

@@ -37,58 +37,23 @@ pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 # For documentation see https://github.com/zingolabs/zaino
 "#;
 
-/// Where the daemon sources blocks from the validator.
-///
-/// `Direct` reads the validator's on-disk state database in-process (fastest;
-/// must be co-located with the validator, and follows the live tip). `Rpc`
-/// talks JSON-RPC (works off-node; catch-up only — the RPC source cannot push a
-/// tip, so it does not follow the chain past the height it caught up to).
+/// The validator's Zebra JSON-RPC endpoint, the daemon's only block source.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(tag = "mode", rename_all = "lowercase")]
-pub enum SourceMode {
-    /// Direct Zebra `ReadState`: reads the on-disk state DB under `zebra_cache_dir`.
-    ///
-    /// The JSON-RPC coordinates are still required: the state database serves
-    /// finalised blocks (the compact-serving fast path) but cannot answer the
-    /// mempool or passthrough RPCs, which reach the validator no other way. The
-    /// auth fields mirror [`SourceMode::Rpc`].
-    Direct {
-        /// Root of the validator's Zebra cache directory (the state DB lives
-        /// under it, keyed by network).
-        zebra_cache_dir: PathBuf,
-        /// The validator's JSON-RPC listen address (`host:port`).
-        jsonrpc_address: String,
-        /// Path to the validator's auth cookie, if it uses cookie auth.
-        #[serde(default)]
-        cookie_path: Option<PathBuf>,
-        /// JSON-RPC basic-auth user, if configured.
-        #[serde(default)]
-        user: Option<String>,
-        /// JSON-RPC basic-auth password, if configured.
-        #[serde(default)]
-        password: Option<String>,
-    },
-    /// Zebra JSON-RPC.
-    Rpc {
-        /// The validator's JSON-RPC listen address (`host:port`).
-        jsonrpc_address: String,
-        /// Path to the validator's auth cookie, if it uses cookie auth.
-        #[serde(default)]
-        cookie_path: Option<PathBuf>,
-        /// JSON-RPC basic-auth user, if configured.
-        #[serde(default)]
-        user: Option<String>,
-        /// JSON-RPC basic-auth password, if configured.
-        #[serde(default)]
-        password: Option<String>,
-    },
+#[serde(deny_unknown_fields, default)]
+pub struct SourceConfig {
+    /// The validator's JSON-RPC listen address (`host:port`).
+    pub jsonrpc_address: String,
+    /// Path to the validator's auth cookie, if it uses cookie auth.
+    pub cookie_path: Option<PathBuf>,
+    /// JSON-RPC basic-auth user, if configured.
+    pub user: Option<String>,
+    /// JSON-RPC basic-auth password, if configured.
+    pub password: Option<String>,
 }
 
-impl Default for SourceMode {
+impl Default for SourceConfig {
     fn default() -> Self {
-        // Off-node RPC to a local validator is the least-assuming default; a
-        // co-located deployment opts into `Direct`.
-        SourceMode::Rpc {
+        Self {
             jsonrpc_address: "127.0.0.1:8232".to_string(),
             cookie_path: None,
             user: None,
@@ -170,8 +135,8 @@ pub struct DaemonConfig {
     /// Prometheus `/metrics` endpoint. Disabled when absent; requires the
     /// `prometheus` feature.
     pub metrics_endpoint: Option<SocketAddr>,
-    /// Where blocks are sourced from.
-    pub source: SourceMode,
+    /// The validator blocks are sourced from.
+    pub source: SourceConfig,
     /// The finalised index store.
     pub store: StoreConfig,
     /// The wallet-facing gRPC server.
@@ -185,7 +150,7 @@ impl Default for DaemonConfig {
         Self {
             network: Network::Mainnet,
             metrics_endpoint: None,
-            source: SourceMode::default(),
+            source: SourceConfig::default(),
             store: StoreConfig::default(),
             serve: ServeConfig::default(),
             indexer: IndexerConfig::default(),
@@ -193,68 +158,30 @@ impl Default for DaemonConfig {
     }
 }
 
-impl DaemonConfig {
-    /// Validate cross-field invariants that parsing alone cannot.
-    ///
-    /// Kept minimal: `Direct` needs an existing cache directory (a missing one
-    /// is a misconfiguration worth naming at startup rather than a cryptic
-    /// database-open failure later). Socket addresses are already typed, so
-    /// they need no re-parsing here.
-    pub fn validate(&self) -> Result<(), IndexerError> {
-        if let SourceMode::Direct {
-            zebra_cache_dir, ..
-        } = &self.source
-        {
-            if !zebra_cache_dir.is_dir() {
-                return Err(IndexerError::ConfigError(format!(
-                    "source.mode = \"direct\" but zebra_cache_dir {} is not an existing directory",
-                    zebra_cache_dir.display(),
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
-/// The env var that activates the ztest regtest Direct fixture (only with the
+/// The env var that activates the ztest regtest fixture (only with the
 /// `ztest-fixture` feature). Its presence — any value — triggers it.
 #[cfg(feature = "ztest-fixture")]
-pub const TEST_FIXTURE_ENV: &str = "ZAINO_TEST_REGTEST_DIRECT_FIXTURE";
+pub const TEST_FIXTURE_ENV: &str = "ZAINO_TEST_REGTEST_FIXTURE";
 
-/// TEST-ONLY: an in-process config for the ztest regtest Direct-mode e2e.
+/// TEST-ONLY: an in-process config for the ztest regtest e2e.
 ///
-/// ztest 0.1.21 mounts a *legacy*-schema `zainod.toml` this greenfield config
-/// cannot parse (and injects no `ZAINO_` env). Rather than couple the config to
-/// that legacy schema, the e2e sets [`TEST_FIXTURE_ENV`] and zainod boots this
-/// hardcoded config instead — ignoring the mounted `--config` — matching
-/// ztest's container paths/ports (writable root `/var/lib/zaino`, zebra cache
-/// shared at `/var/lib/zaino/zebra-db`, gRPC on `0.0.0.0:8137`, regtest).
+/// ztest mounts a *legacy*-schema `zainod.toml` this config cannot parse (and injects no
+/// `ZAINO_` env), so the e2e sets [`TEST_FIXTURE_ENV`] and zainod boots this hardcoded config
+/// instead — ignoring the mounted `--config` — matching ztest's container paths/ports.
 ///
 /// NEVER for production: gated behind BOTH the `ztest-fixture` build feature and
 /// the runtime env var, and its activation logs a loud warning.
 #[cfg(feature = "ztest-fixture")]
-pub fn regtest_direct_fixture() -> DaemonConfig {
-    // ztest's shared zebra volume mounts at a harness-chosen path (`/shared/…`),
-    // not a fixed one, so the e2e passes it via `TEST_FIXTURE_ZEBRA_ENV`; fall
-    // back to the default container path when unset.
-    let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/zaino/zebra-db"));
-    // In the ztest cluster the regtest validator's JSON-RPC lives on the
-    // validator pod, not localhost, so the e2e passes its in-cluster address via
-    // `TEST_FIXTURE_JSONRPC_ENV`; fall back to the local regtest default when
-    // unset (a plain local run still works). The NFS (chain-head) anchors here.
+pub fn regtest_fixture() -> DaemonConfig {
+    // Validator = separate pod in the ztest cluster; local regtest default when unset
     let jsonrpc_address =
         std::env::var(TEST_FIXTURE_JSONRPC_ENV).unwrap_or_else(|_| "127.0.0.1:18232".to_string());
     DaemonConfig {
         network: Network::Regtest,
         metrics_endpoint: None,
-        source: SourceMode::Direct {
-            zebra_cache_dir,
+        source: SourceConfig {
             jsonrpc_address,
-            cookie_path: None,
-            user: None,
-            password: None,
+            ..SourceConfig::default()
         },
         store: StoreConfig {
             path: PathBuf::from("/var/lib/zaino/db"),
@@ -272,14 +199,8 @@ pub fn regtest_direct_fixture() -> DaemonConfig {
     }
 }
 
-/// Env var the e2e uses to hand the fixture the shared zebra volume's mount
-/// path (see [`regtest_direct_fixture`]).
-#[cfg(feature = "ztest-fixture")]
-pub const TEST_FIXTURE_ZEBRA_ENV: &str = "ZAINO_TEST_ZEBRA_CACHE_DIR";
-
 /// Env var the e2e uses to hand the fixture the validator's in-cluster JSON-RPC
-/// address (`host:port`), which the NFS (chain-head) dials for non-final blocks
-/// (see [`regtest_direct_fixture`]).
+/// address (`host:port`) (see [`regtest_fixture`]).
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_JSONRPC_ENV: &str = "ZAINO_TEST_ZEBRA_JSONRPC";
 
@@ -321,8 +242,7 @@ pub fn load_config_with_env(
         .try_deserialize()
         .map_err(|e| IndexerError::ConfigError(format!("parsing configuration: {e}")))?;
 
-    parsed.validate()?;
-    info!(path = %file_path.display(), "config loaded and validated");
+    info!(path = %file_path.display(), "config loaded");
     Ok(parsed)
 }
 
@@ -355,70 +275,40 @@ mod tests {
     }
 
     #[test]
-    fn direct_source_parses() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // Direct requires an existing cache dir; point it at the tempdir itself.
-        let toml = format!(
-            r#"
-network = "Mainnet"
-
-[source]
-mode = "direct"
-zebra_cache_dir = "{}"
-jsonrpc_address = "127.0.0.1:18232"
-
-[store]
-path = "/tmp/zaino-store"
-
-[serve]
-grpc_listen_address = "127.0.0.1:8137"
-"#,
-            dir.path().display(),
-        );
-        let path = write(&dir, "direct.toml", &toml);
-        let config = load_config(&path).expect("load");
-        match config.source {
-            SourceMode::Direct {
-                jsonrpc_address,
-                cookie_path,
-                ..
-            } => {
-                assert_eq!(jsonrpc_address, "127.0.0.1:18232");
-                assert!(cookie_path.is_none());
-            }
-            other => panic!("expected Direct source, got {other:?}"),
-        }
-        assert_eq!(config.network, Network::Mainnet);
-    }
-
-    #[test]
-    fn rpc_source_parses_with_optional_auth_absent() {
+    fn source_parses_with_auth_absent_and_direct_era_fields_are_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
 network = "Regtest"
 
 [source]
-mode = "rpc"
 jsonrpc_address = "127.0.0.1:18232"
 
 [store]
 path = "/tmp/zaino-store"
 "#;
-        let path = write(&dir, "rpc.toml", toml);
-        let config = load_config(&path).expect("load");
-        match config.source {
-            SourceMode::Rpc {
-                jsonrpc_address,
-                cookie_path,
-                ..
-            } => {
-                assert_eq!(jsonrpc_address, "127.0.0.1:18232");
-                assert!(cookie_path.is_none());
+        let config = load_config(&write(&dir, "rpc.toml", toml)).expect("load");
+        assert_eq!(
+            config.source,
+            SourceConfig {
+                jsonrpc_address: "127.0.0.1:18232".to_string(),
+                cookie_path: None,
+                user: None,
+                password: None,
             }
-            other => panic!("expected Rpc source, got {other:?}"),
+        );
+        assert_eq!(config.indexer, IndexerConfig::default());
+
+        for (name, stale_line) in [
+            ("mode.toml", r#"mode = "direct""#),
+            ("cache.toml", r#"zebra_cache_dir = "/var/lib/zebra""#),
+        ] {
+            let stale = toml.replace("[source]\n", &format!("[source]\n{stale_line}\n"));
+            let err = load_config(&write(&dir, name, &stale)).expect_err(stale_line);
+            assert!(
+                err.to_string().contains("unknown field"),
+                "{stale_line}: {err}"
+            );
         }
-        // Untouched sections keep their defaults.
-        assert_eq!(config.indexer.finalised_depth, MAX_BLOCK_REORG_HEIGHT);
     }
 
     #[test]
@@ -428,7 +318,6 @@ path = "/tmp/zaino-store"
 network = "Mainnet"
 
 [source]
-mode = "rpc"
 jsonrpc_address = "127.0.0.1:8232"
 
 [store]

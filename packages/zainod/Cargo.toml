@@ -22,7 +22,7 @@ default = []
 # Prometheus /metrics scrape endpoint.
 prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
 
-# TEST-ONLY: enables an in-process, hardcoded regtest Direct config fixture for
+# TEST-ONLY: enables an in-process, hardcoded regtest config fixture for
 # the ztest e2e harness (which mounts a legacy-schema config this greenfield
 # config cannot parse). Never enable in a production build; the fixture also
 # requires a runtime env var and logs a loud warning when it activates.
@@ -41,9 +41,7 @@ zaino-indexes = { workspace = true }
 zaino-backend-lmdb = { workspace = true }
 zaino-persistence = { workspace = true }
 zaino-source = { workspace = true }
-zaino-source-zebra = { workspace = true }
 zaino-source-zebra-rpc = { workspace = true }
-zaino-source-zebra-readstate = { workspace = true }
 zaino-consensus = { workspace = true }
 
 # The composed serving stack: the finalised store, the non-finalised chain head,
@@ -56,9 +54,6 @@ zaino-chain-head-service = { workspace = true }
 zaino-common = { workspace = true }
 zaino-rpc = { workspace = true }
 zaino-status = { workspace = true }
-
-# Zebra network parameters (config network -> zebra network).
-zebra-chain = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }

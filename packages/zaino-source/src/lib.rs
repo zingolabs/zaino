@@ -2,7 +2,7 @@
 //!
 //! One trait per question a consumer can ask about the chain.
 //! Implementations (adapters) bridge to a specific transport
-//! (JSON-RPC, Zebra ReadState, mock).
+//! (JSON-RPC, mock).
 //!
 //! Consumers compose traits via bounds:
 //! ```ignore
@@ -144,8 +144,7 @@ pub use get_tx_out::GetTxOut;
 /// `QueryError<E, Self::NonDomain>`: the domain rejection stays per-operation, the
 /// non-domain side is the adapter's own type. An adapter whose faults already
 /// *are* the seam sets `type NonDomain = NonDomainError` (the identity mapping);
-/// an adapter with its own vocabulary (e.g. the read-state adapter's
-/// `ReadStateError`) names it and provides the single `Into` impl — so the
+/// an adapter with its own fault vocabulary names it and provides the single `Into` impl — so the
 /// classification lives in one place, not inline at every call site.
 pub trait ValidatorSource: Send + Sync {
     /// This adapter's non-domain failure type (see the trait docs).
