@@ -179,6 +179,25 @@ pub fn test_block(height: u32, hash_byte: u8) -> Block {
     }
 }
 
+/// A hash-linked [`MockChain`] of `len` blocks at heights `0..len`: each block's
+/// `prev_hash` points at its predecessor's hash, and genesis links to
+/// [`BlockHash::ZERO`]. Unlike seeding isolated [`test_block`]s, this yields a
+/// well-formed chain — the shape the conformance battery checks. Distinct hashes
+/// hold for `len <= 200`; longer chains repeat and are not intended.
+#[cfg(any(test, feature = "testing"))]
+pub fn linked_test_chain(len: u32) -> MockChain {
+    let mut chain = MockChain::new();
+    let mut prev = BlockHash::ZERO;
+    for h in 0..len {
+        let hash_byte = u8::try_from(h % 200 + 1).expect("fits in u8 for len <= 200");
+        let mut block = test_block(h, hash_byte);
+        block.header.prev_hash = prev;
+        prev = block.header.hash;
+        chain = chain.with_block(block);
+    }
+    chain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -160,3 +160,9 @@ pub trait ValidatorSource: Send + Sync {
 // makes the mock's own coverage unconditional.
 #[cfg(any(test, feature = "testing"))]
 pub mod mock;
+
+// The reusable source contract. Same gating as the mock: available to any crate
+// that enables `testing`, and unconditional for this crate's own test run so its
+// coverage always compiles.
+#[cfg(any(test, feature = "testing"))]
+pub mod conformance;
