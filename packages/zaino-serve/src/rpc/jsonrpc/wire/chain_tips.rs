@@ -30,7 +30,7 @@ impl ChainTip {
     }
 }
 
-/// Status values returned by zcashd's `getchaintips`.
+/// Status values returned by the legacy full node's `getchaintips`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChainTipStatus {

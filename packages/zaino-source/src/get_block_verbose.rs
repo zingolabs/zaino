@@ -26,7 +26,8 @@ pub enum GetBlockVerboseError {
 /// Fetch verbose block metadata at a given height.
 ///
 /// Maps to `getblock(height, 1)` over JSON-RPC.
-pub trait GetBlockVerbose: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetBlockVerbose: Send + Sync {
     /// Fetch verbose metadata.
     fn get_block_verbose(
         &self,
@@ -40,7 +41,8 @@ pub trait GetBlockVerbose: Send + Sync {
 /// [`GetBlockByHash`](super::GetBlockByHash): a height names a best-chain
 /// block, whereas a hash can name one on a side chain — where `confirmations`
 /// is negative and there is no next block.
-pub trait GetBlockVerboseByHash: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetBlockVerboseByHash: Send + Sync {
     /// Fetch verbose metadata by block hash.
     fn get_block_verbose_by_hash(
         &self,

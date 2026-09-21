@@ -11,7 +11,7 @@ use super::QueryError;
 ///
 /// [`entry_height`](Self::entry_height) is the validator's authoritative chain
 /// tip height at the moment the transaction entered its mempool — Zebra's
-/// `VerifiedUnminedTx.height`, zcashd's `nHeight`. It is a protocol field the
+/// `VerifiedUnminedTx.height`, the legacy full node's `nHeight`. It is a protocol field the
 /// validator owns, so a consumer must source it here rather than substituting a
 /// locally derived value: the two disagree exactly when the chain moves under a
 /// transaction, which is the case that matters.
@@ -52,7 +52,8 @@ pub enum GetMempoolMetadataError {
 /// diff with the cheap txid listing and reach for this only when that diff
 /// shows additions, and should coalesce repeated calls rather than issuing one
 /// per poll.
-pub trait GetMempoolMetadata: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetMempoolMetadata: Send + Sync {
     /// Fetch mempool metadata.
     fn get_mempool_metadata(
         &self,

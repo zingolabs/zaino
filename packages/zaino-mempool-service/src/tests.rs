@@ -130,7 +130,7 @@ fn outage<E: std::fmt::Debug + std::fmt::Display>(message: String) -> QueryError
     QueryError::Fetch(FetchError::new(FailureMode::Connection, message))
 }
 
-impl zaino_source::GetMempoolTxids for MockSource {
+impl zaino_source::OneShotGetMempoolTxids for MockSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {
@@ -143,7 +143,7 @@ impl zaino_source::GetMempoolTxids for MockSource {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for MockSource {
+impl zaino_source::OneShotGetMempoolMetadata for MockSource {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {
@@ -164,7 +164,7 @@ impl zaino_source::GetMempoolMetadata for MockSource {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for MockSource {
+impl zaino_source::OneShotGetRawMempoolTransaction for MockSource {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -192,7 +192,7 @@ impl zaino_source::GetRawMempoolTransaction for MockSource {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for MockSource {
+impl zaino_source::OneShotGetMempoolSourceTip for MockSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {

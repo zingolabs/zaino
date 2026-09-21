@@ -6,20 +6,34 @@
 use zaino_primitives::types::{PoolTreestate, Treestate};
 use zebra_rpc::client::{Commitments, GetTreestateResponse, Treestate as WireTreestate};
 
+/// Display order for a pool's `finalRoot`, relative to the domain's internal order.
+///
+/// - Sapling root = jubjub `to_bytes` (little-endian) → display reverses it
+/// - Orchard/Ironwood root = pallas `to_repr` → already display order
+///
+/// Not a tidy-up target. Consensus encodes both roots little-endian
+/// (LEBS2OSP_256, spec §7.1 and §5.4.9) — the split is `zcashd`'s display
+/// convention, which prints the Sapling root as a reversed `uint256` and the
+/// Pallas roots as-is. Pinned by zebra's `Root::bytes_in_display_order`.
+#[derive(Clone, Copy)]
+enum RootOrder {
+    Reversed,
+    AsIs,
+}
+
 /// Renders one pool's treestate as the served shape.
 ///
-/// `finalRoot` is written in **display order** — byte-reversed from the
-/// domain's internal order. Note the contrast with `z_getsubtreesbyindex`,
-/// whose subtree roots are *not* reversed: this asymmetry is the interface's,
-/// preserved rather than tidied, because either choice produces valid-looking
-/// hex and a client comparing roots across the two methods would silently see
-/// them disagree.
-fn pool(pool: Option<PoolTreestate>) -> WireTreestate {
+/// Note the further contrast with `z_getsubtreesbyindex`, whose subtree roots
+/// are never reversed: a client comparing roots across the two methods would
+/// otherwise silently see them disagree.
+fn pool(pool: Option<PoolTreestate>, order: RootOrder) -> WireTreestate {
     let (final_root, final_state) = match pool {
         Some(pool) => (
             pool.final_root.map(|root| {
                 let mut bytes = <[u8; 32]>::from(root);
-                bytes.reverse();
+                if matches!(order, RootOrder::Reversed) {
+                    bytes.reverse();
+                }
                 bytes.to_vec()
             }),
             Some(pool.final_state),
@@ -40,11 +54,13 @@ pub fn from_domain(trees: Treestate) -> GetTreestateResponse {
         zebra_chain::block::Height(trees.height.into()),
         trees.time,
         None,
-        pool(trees.sapling),
-        pool(trees.orchard),
+        pool(trees.sapling, RootOrder::Reversed),
+        pool(trees.orchard, RootOrder::AsIs),
         // The ironwood field is `Some` only from NU6.3, so pre-NU6.3 responses
         // omit it exactly as zebrad does.
-        trees.ironwood.map(|tree| self::pool(Some(tree))),
+        trees
+            .ironwood
+            .map(|tree| self::pool(Some(tree), RootOrder::AsIs)),
     )
 }
 
@@ -91,6 +107,29 @@ mod tests {
 
         assert_eq!(json["sapling"]["commitments"]["finalRoot"], display_order());
         assert_eq!(json["hash"], display_order());
+    }
+
+    /// Orchard and Ironwood roots reach the wire in display order already, so
+    /// reversing them alongside Sapling's emitted valid-looking hex naming a
+    /// root no chain ever had.
+    #[test]
+    fn only_the_sapling_root_is_reversed() {
+        let mut trees = sample();
+        trees.orchard = Some(PoolTreestate {
+            final_root: Some(TreeRoot::from(ASYMMETRIC)),
+            final_state: vec![0xbe, 0xef],
+        });
+        trees.ironwood = Some(PoolTreestate {
+            final_root: Some(TreeRoot::from(ASYMMETRIC)),
+            final_state: vec![0xfe, 0xed],
+        });
+
+        let json = serde_json::to_value(from_domain(trees)).unwrap();
+        let internal = hex::encode(ASYMMETRIC);
+
+        assert_eq!(json["sapling"]["commitments"]["finalRoot"], display_order());
+        assert_eq!(json["orchard"]["commitments"]["finalRoot"], internal);
+        assert_eq!(json["ironwood"]["commitments"]["finalRoot"], internal);
     }
 
     /// A source that does not report a root leaves the field absent rather than

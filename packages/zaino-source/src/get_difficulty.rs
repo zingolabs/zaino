@@ -17,7 +17,8 @@ pub enum GetDifficultyError {
 /// Fetch the current difficulty, as a multiple of the network minimum.
 ///
 /// Maps to `getdifficulty` over JSON-RPC.
-pub trait GetDifficulty: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetDifficulty: Send + Sync {
     /// Fetch current difficulty.
     fn get_difficulty(
         &self,

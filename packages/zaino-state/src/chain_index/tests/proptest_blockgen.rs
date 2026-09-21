@@ -1075,15 +1075,8 @@ impl ProptestMockchain {
         let block = zebra_chain::block::Block::zcash_deserialize(bytes)
             .map_err(|error| format!("proptest block did not deserialize: {error}"))?;
         // The proptest chains carry no commitment trees, so every pool is empty.
-        zaino_convert_zebra::block_from_zebra(
-            &block,
-            zaino_primitives::types::ChainMetadata {
-                sapling_tree_size: 0,
-                orchard_tree_size: 0,
-                ironwood_tree_size: 0,
-            },
-        )
-        .map_err(|error| format!("proptest block did not convert: {error}"))
+        zaino_convert_zebra::block_from_zebra(&block, zaino_primitives::types::ChainMetadata::ZERO)
+            .map_err(|error| format!("proptest block did not convert: {error}"))
     }
 
     fn serialize(block: &zebra_chain::block::Block) -> Result<Vec<u8>, String> {
@@ -1093,7 +1086,7 @@ impl ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawBlock for ProptestMockchain {
+impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
     async fn get_raw_block(
         &self,
         height: zaino_primitives::types::Height,
@@ -1124,7 +1117,7 @@ impl zaino_source::GetRawBlock for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for ProptestMockchain {
+impl zaino_source::OneShotGetRawBlockByHash for ProptestMockchain {
     async fn get_raw_block_by_hash(
         &self,
         hash: zaino_primitives::types::BlockHash,
@@ -1150,27 +1143,28 @@ impl zaino_source::GetRawBlockByHash for ProptestMockchain {
 ///
 /// Shares `get_raw_block`'s deliberate arbitrary-branch choice, so a reader
 /// walking by height sees the same instability whichever form it asks for.
-impl zaino_source::GetBlock for ProptestMockchain {
+impl zaino_source::OneShotGetBlock for ProptestMockchain {
     async fn get_block(
         &self,
         height: zaino_primitives::types::Height,
     ) -> Result<zaino_primitives::types::Block, PortError<zaino_source::GetBlockError>> {
-        let bytes = zaino_source::GetRawBlock::get_raw_block(self, height).await?;
+        let bytes = zaino_source::OneShotGetRawBlock::get_raw_block(self, height).await?;
         Self::parse_domain_block(&bytes).map_err(port_fault)
     }
 }
 
-impl zaino_source::GetBlockByHash for ProptestMockchain {
+impl zaino_source::OneShotGetBlockByHash for ProptestMockchain {
     async fn get_block_by_hash(
         &self,
         hash: zaino_primitives::types::BlockHash,
     ) -> Result<zaino_primitives::types::Block, PortError<zaino_source::GetBlockByHashError>> {
-        let bytes = zaino_source::GetRawBlockByHash::get_raw_block_by_hash(self, hash).await?;
+        let bytes =
+            zaino_source::OneShotGetRawBlockByHash::get_raw_block_by_hash(self, hash).await?;
         Self::parse_domain_block(&bytes).map_err(port_fault)
     }
 }
 
-impl zaino_source::GetChainTip for ProptestMockchain {
+impl zaino_source::OneShotGetChainTip for ProptestMockchain {
     async fn get_chain_tip(
         &self,
     ) -> Result<
@@ -1196,7 +1190,7 @@ impl zaino_source::GetChainTip for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for ProptestMockchain {
+impl zaino_source::OneShotGetBestBlockHeight for ProptestMockchain {
     async fn get_best_block_height(
         &self,
     ) -> Result<zaino_primitives::types::Height, PortError<zaino_source::GetBestBlockHeightError>>
@@ -1214,7 +1208,7 @@ impl zaino_source::GetBestBlockHeight for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTransaction for ProptestMockchain {
+impl zaino_source::OneShotGetTransaction for ProptestMockchain {
     async fn get_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -1252,7 +1246,7 @@ impl zaino_source::GetTransaction for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetMempoolTxids for ProptestMockchain {
+impl zaino_source::OneShotGetMempoolTxids for ProptestMockchain {
     async fn get_mempool_txids(
         &self,
     ) -> Result<
@@ -1268,7 +1262,7 @@ impl zaino_source::GetMempoolTxids for ProptestMockchain {
 /// Generated chains carry no mempool, so all three answer empty or absent. The
 /// impls exist because `ChainIndexSourcePorts` requires them, not because the
 /// proptest suite exercises mempool behaviour — `mockchain_tests` does that.
-impl zaino_source::GetMempoolMetadata for ProptestMockchain {
+impl zaino_source::OneShotGetMempoolMetadata for ProptestMockchain {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>
@@ -1278,7 +1272,7 @@ impl zaino_source::GetMempoolMetadata for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for ProptestMockchain {
+impl zaino_source::OneShotGetRawMempoolTransaction for ProptestMockchain {
     async fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -1290,7 +1284,7 @@ impl zaino_source::GetRawMempoolTransaction for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
+impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<
@@ -1300,7 +1294,7 @@ impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
         ),
         PortError<std::convert::Infallible>,
     > {
-        use zaino_source::GetChainTip as _;
+        use zaino_source::OneShotGetChainTip as _;
 
         // No domain answer on this port by design — see `GetMempoolSourceTip`.
         self.get_chain_tip().await.map_err(|e| match e {
@@ -1314,7 +1308,7 @@ impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRootsByHeight for ProptestMockchain {
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ProptestMockchain {
     async fn get_commitment_tree_roots_by_height(
         &self,
         height: zaino_primitives::types::Height,
@@ -1325,7 +1319,7 @@ impl zaino_source::GetCommitmentTreeRootsByHeight for ProptestMockchain {
         ),
         PortError<zaino_source::GetCommitmentTreeRootsByHeightError>,
     > {
-        let block = zaino_source::GetBlock::get_block(self, height)
+        let block = zaino_source::OneShotGetBlock::get_block(self, height)
             .await
             .map_err(|error| match error {
                 PortError::Domain(zaino_source::GetBlockError::HeightNotFound(height)) => {
@@ -1336,22 +1330,23 @@ impl zaino_source::GetCommitmentTreeRootsByHeight for ProptestMockchain {
                 PortError::Fetch(fetch) => PortError::Fetch(fetch),
             })?;
         let hash = block.header.hash;
-        let roots = zaino_source::GetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
-            .await
-            .map_err(|error| match error {
-                // The hash-addressed mock answers every hash, known or not.
-                PortError::Domain(zaino_source::GetCommitmentTreeRootsError::BlockNotFound(
-                    hash,
-                )) => super::super::source::mockchain_source::port_fault(format!(
-                    "proptest mockchain lost block {hash} it just served"
-                )),
-                PortError::Fetch(fetch) => PortError::Fetch(fetch),
-            })?;
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    // The hash-addressed mock answers every hash, known or not.
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(hash),
+                    ) => super::super::source::mockchain_source::port_fault(format!(
+                        "proptest mockchain lost block {hash} it just served"
+                    )),
+                    PortError::Fetch(fetch) => PortError::Fetch(fetch),
+                })?;
         Ok((hash, roots))
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for ProptestMockchain {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
     async fn get_commitment_tree_roots(
         &self,
         block: zaino_primitives::types::BlockHash,
@@ -1439,7 +1434,8 @@ impl zaino_source::GetCommitmentTreeRoots for ProptestMockchain {
 
         let info = |root: [u8; 32], size: u64| zaino_primitives::types::TreeRootInfo {
             root: zaino_primitives::types::TreeRoot::from(root),
-            size,
+            size: zaino_primitives::types::TreeSize::try_from(size)
+                .expect("generated trees hold fewer than 2^32 notes"),
         };
 
         // An empty pool reports the empty-tree root, not an absent one. A
@@ -1588,7 +1584,7 @@ mod proptest_helpers {
 // reaching one means a test started depending on something the generator does
 // not model, which is worth a panic rather than a plausible-looking zero.
 
-impl zaino_source::GetBlockVerboseByHash for ProptestMockchain {
+impl zaino_source::OneShotGetBlockVerboseByHash for ProptestMockchain {
     async fn get_block_verbose_by_hash(
         &self,
         _hash: zaino_primitives::types::BlockHash,
@@ -1598,7 +1594,7 @@ impl zaino_source::GetBlockVerboseByHash for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBlockHeader for ProptestMockchain {
+impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
     async fn get_block_header(
         &self,
         _hash: zaino_primitives::types::BlockHash,
@@ -1610,7 +1606,7 @@ impl zaino_source::GetBlockHeader for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for ProptestMockchain {
+impl zaino_source::OneShotGetRawBlockHeader for ProptestMockchain {
     async fn get_raw_block_header(
         &self,
         _hash: zaino_primitives::types::BlockHash,
@@ -1619,7 +1615,7 @@ impl zaino_source::GetRawBlockHeader for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBlockDeltas for ProptestMockchain {
+impl zaino_source::OneShotGetBlockDeltas for ProptestMockchain {
     async fn get_block_deltas(
         &self,
         _hash: zaino_primitives::types::BlockHash,
@@ -1631,7 +1627,7 @@ impl zaino_source::GetBlockDeltas for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetDifficulty for ProptestMockchain {
+impl zaino_source::OneShotGetDifficulty for ProptestMockchain {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, PortError<zaino_source::GetDifficultyError>>
@@ -1640,7 +1636,7 @@ impl zaino_source::GetDifficulty for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for ProptestMockchain {
+impl zaino_source::OneShotGetBlockchainInfo for ProptestMockchain {
     async fn get_blockchain_info(
         &self,
     ) -> Result<
@@ -1651,7 +1647,7 @@ impl zaino_source::GetBlockchainInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetNodeInfo for ProptestMockchain {
+impl zaino_source::OneShotGetNodeInfo for ProptestMockchain {
     async fn get_node_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::NodeInfo, PortError<zaino_source::GetNodeInfoError>>
@@ -1660,7 +1656,7 @@ impl zaino_source::GetNodeInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetPeerInfo for ProptestMockchain {
+impl zaino_source::OneShotGetPeerInfo for ProptestMockchain {
     async fn get_peer_info(
         &self,
     ) -> Result<
@@ -1677,7 +1673,7 @@ impl zaino_source::GetPeerInfo for ProptestMockchain {
 /// state never learned about competing branches at all. The chain head does
 /// ask, and answering with the real branches is what puts its competing-branch
 /// retention under these property tests rather than leaving it untested here.
-impl zaino_source::GetChainTips for ProptestMockchain {
+impl zaino_source::OneShotGetChainTips for ProptestMockchain {
     async fn get_chain_tips(
         &self,
     ) -> Result<
@@ -1722,7 +1718,7 @@ impl zaino_source::GetChainTips for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBlockSubsidy for ProptestMockchain {
+impl zaino_source::OneShotGetBlockSubsidy for ProptestMockchain {
     async fn get_block_subsidy(
         &self,
         _height: zaino_primitives::types::Height,
@@ -1734,7 +1730,7 @@ impl zaino_source::GetBlockSubsidy for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetMiningInfo for ProptestMockchain {
+impl zaino_source::OneShotGetMiningInfo for ProptestMockchain {
     async fn get_mining_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::MiningInfo, PortError<zaino_source::GetMiningInfoError>>
@@ -1743,7 +1739,7 @@ impl zaino_source::GetMiningInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTxOut for ProptestMockchain {
+impl zaino_source::OneShotGetTxOut for ProptestMockchain {
     async fn get_tx_out(
         &self,
         _txid: zaino_primitives::types::TransactionId,
@@ -1755,7 +1751,7 @@ impl zaino_source::GetTxOut for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetSpentInfo for ProptestMockchain {
+impl zaino_source::OneShotGetSpentInfo for ProptestMockchain {
     async fn get_spent_info(
         &self,
         _outpoint: zaino_primitives::types::rpc::SpentOutpoint,
@@ -1765,7 +1761,7 @@ impl zaino_source::GetSpentInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for ProptestMockchain {
+impl zaino_source::OneShotGetNetworkSolPs for ProptestMockchain {
     async fn get_network_sol_ps(
         &self,
         _blocks: Option<u32>,
@@ -1775,7 +1771,7 @@ impl zaino_source::GetNetworkSolPs for ProptestMockchain {
     }
 }
 
-impl zaino_source::SendRawTransaction for ProptestMockchain {
+impl zaino_source::OneShotSendRawTransaction for ProptestMockchain {
     async fn send_raw_transaction(
         &self,
         _transaction: Vec<u8>,
@@ -1787,7 +1783,7 @@ impl zaino_source::SendRawTransaction for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTreestate for ProptestMockchain {
+impl zaino_source::OneShotGetTreestate for ProptestMockchain {
     async fn get_treestate(
         &self,
         _height: zaino_primitives::types::Height,
@@ -1797,7 +1793,7 @@ impl zaino_source::GetTreestate for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTreestateByHash for ProptestMockchain {
+impl zaino_source::OneShotGetTreestateByHash for ProptestMockchain {
     async fn get_treestate_by_hash(
         &self,
         _hash: zaino_primitives::types::BlockHash,
@@ -1807,7 +1803,7 @@ impl zaino_source::GetTreestateByHash for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for ProptestMockchain {
+impl zaino_source::OneShotGetSubtreeRoots for ProptestMockchain {
     async fn get_subtree_roots(
         &self,
         _pool: zaino_primitives::types::ShieldedPool,
@@ -1821,7 +1817,7 @@ impl zaino_source::GetSubtreeRoots for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressDeltas for ProptestMockchain {
+impl zaino_source::OneShotGetAddressDeltas for ProptestMockchain {
     async fn get_address_deltas(
         &self,
         _addresses: Vec<String>,
@@ -1835,7 +1831,7 @@ impl zaino_source::GetAddressDeltas for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressBalance for ProptestMockchain {
+impl zaino_source::OneShotGetAddressBalance for ProptestMockchain {
     async fn get_address_balance(
         &self,
         _addresses: Vec<String>,
@@ -1847,7 +1843,7 @@ impl zaino_source::GetAddressBalance for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressTxids for ProptestMockchain {
+impl zaino_source::OneShotGetAddressTxids for ProptestMockchain {
     async fn get_address_txids(
         &self,
         _addresses: Vec<String>,
@@ -1861,7 +1857,7 @@ impl zaino_source::GetAddressTxids for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressUtxos for ProptestMockchain {
+impl zaino_source::OneShotGetAddressUtxos for ProptestMockchain {
     async fn get_address_utxos(
         &self,
         _addresses: Vec<String>,

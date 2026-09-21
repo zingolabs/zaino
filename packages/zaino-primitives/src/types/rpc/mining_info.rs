@@ -6,7 +6,7 @@ use crate::types::{Difficulty, Height};
 ///
 /// # Fields not modelled
 ///
-/// The zcashd response carries a group of fields describing the *local mining
+/// The legacy full-node response carries a group of fields describing the *local mining
 /// daemon* — `genproclimit`, `localsolps`, `generate`, `errorstimestamp` — plus
 /// `pooledtx`. None are modelled here. Zaino is an indexer: it does not mine, so
 /// a local miner's thread limit, solution rate, and on/off state describe a

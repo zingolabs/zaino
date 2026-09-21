@@ -1,11 +1,18 @@
 //! Transaction and per-pool data.
 
 use super::{
-    EncryptedCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script,
-    SignedZatoshis, TransactionId, TxIndex, Zatoshis,
+    CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script,
+    SignedZatoshis, TransactionId, Zatoshis,
 };
 
 /// A transaction within a block.
+///
+/// A transaction carries no position field. Its slot in the block — and so
+/// whether it is the coinbase (position 0) — is a property of the
+/// [`Block`](super::Block) that holds it, read from the order of
+/// [`Block::transactions`](super::Block::transactions), never restated here.
+/// A `Transaction` outside a block (a mempool transaction) has no position at
+/// all, so there is no value to invent for one.
 #[derive(Debug, Clone)]
 pub struct Transaction {
     /// Transaction id.
@@ -14,8 +21,6 @@ pub struct Transaction {
     /// - In pre V5 transactions this is the transaction hash (sha256 of serialized tx).
     /// - From V5 onwards this field is the transaction ID (as defined in [zip 224](https://github.com/zcash/zips/blob/main/zips/zip-0244.rst).
     pub txid: TransactionId,
-    /// Position within the block (0-indexed).
-    pub index: TxIndex,
     /// Transparent pool data.
     pub transparent: TransparentData,
     /// Sapling pool data.
@@ -84,8 +89,8 @@ pub struct SaplingOutput {
     pub cmu: NoteCommitment,
     /// Ephemeral key for recipient detection.
     pub ephemeral_key: EphemeralKey,
-    /// Partial encrypted ciphertext (52 bytes, enough for scanning).
-    pub enc_ciphertext: EncryptedCiphertext,
+    /// Compact ciphertext head (52 bytes, enough for scanning).
+    pub enc_ciphertext: CompactCiphertext,
 }
 
 /// Orchard pool data within a transaction.
@@ -106,6 +111,6 @@ pub struct OrchardAction {
     pub cmx: NoteCommitment,
     /// Ephemeral key for recipient detection.
     pub ephemeral_key: EphemeralKey,
-    /// Partial encrypted ciphertext (52 bytes, enough for scanning).
-    pub enc_ciphertext: EncryptedCiphertext,
+    /// Compact ciphertext head (52 bytes, enough for scanning).
+    pub enc_ciphertext: CompactCiphertext,
 }

@@ -6,7 +6,7 @@
 //! running ChainHead.
 //!
 //! The handle is deliberately thin. Everything answerable *about the chain*
-//! lives on [`ChainHeadSnapshot`](crate::snapshot::ChainHeadSnapshot), because
+//! lives on [`ChainHeadSnapshot`], because
 //! that is what those questions are about; this port only produces snapshots
 //! and reports when a new one exists. Restating each query here as a method
 //! taking a snapshot would define every capability twice, and would make a
@@ -44,7 +44,7 @@ use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
 /// type answering all of them, so production composites and test mocks earn the
 /// bound the same way.
 ///
-/// Five questions, and deliberately no `GetChainTips`. ChainHead learns of a
+/// Six questions, and deliberately no `GetChainTips`. ChainHead learns of a
 /// competing branch only by living through the reorg that created it — walking
 /// back by hash from a block whose parent it does not hold — so it never asks a
 /// validator to enumerate tips. A bound naming a question nothing asks would
@@ -60,11 +60,11 @@ use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
 /// which is why `zaino_source_zebra::ZebraValidator` — which is not `Clone` —
 /// satisfies this bound directly rather than through a wrapper.
 pub trait ChainHeadBlockSource:
-    zaino_source::GetChainTip
-    + zaino_source::GetBlock
-    + zaino_source::GetBlockByHash
-    + zaino_source::GetCommitmentTreeRoots
-    + zaino_source::GetCommitmentTreeRootsByHeight
+    zaino_source::OneShotGetChainTip
+    + zaino_source::OneShotGetBlock
+    + zaino_source::OneShotGetBlockByHash
+    + zaino_source::OneShotGetCommitmentTreeRoots
+    + zaino_source::OneShotGetCommitmentTreeRootsByHeight
     + zaino_source::SubscribeBlocks
     + Send
     + Sync
@@ -73,11 +73,11 @@ pub trait ChainHeadBlockSource:
 }
 
 impl<T> ChainHeadBlockSource for T where
-    T: zaino_source::GetChainTip
-        + zaino_source::GetBlock
-        + zaino_source::GetBlockByHash
-        + zaino_source::GetCommitmentTreeRoots
-        + zaino_source::GetCommitmentTreeRootsByHeight
+    T: zaino_source::OneShotGetChainTip
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockByHash
+        + zaino_source::OneShotGetCommitmentTreeRoots
+        + zaino_source::OneShotGetCommitmentTreeRootsByHeight
         + zaino_source::SubscribeBlocks
         + Send
         + Sync

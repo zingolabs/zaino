@@ -31,7 +31,8 @@ pub enum GetAddressTxidsError {
 /// Fetch transaction ids involving transparent addresses over a height range.
 ///
 /// Maps to `getaddresstxids` over JSON-RPC.
-pub trait GetAddressTxids: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetAddressTxids: Send + Sync {
     /// Fetch address txids.
     fn get_address_txids(
         &self,

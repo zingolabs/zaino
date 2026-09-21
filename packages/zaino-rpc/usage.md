@@ -38,7 +38,7 @@ RpcError::Transport(..)           // connection, timeout
 RpcError::Auth                    // credentials rejected
 ```
 
-The `code` on `RpcError::Rpc` is the thing a zcashd-compatible client keys on,
+The `code` on `RpcError::Rpc` is the thing a legacy-compatible client keys on,
 so it must survive to the served response. It does, via
 `FailureMode::RpcError(i64)` and the downcast walk in `zaino-serve`.
 
@@ -46,7 +46,7 @@ so it must survive to the served response. It does, via
 
 `-1` (work queue full) is retried here, at the transport, because it is a
 property of the connection rather than of the question. Everything else is left
-to `zaino_source::Resilient`, which has the policy and the backoff. Do not add
+to `zaino_source::ValidatorClient`, which has the policy and the backoff. Do not add
 retry rules here — the layer above cannot see or override them.
 
 ## Probing a validator at startup

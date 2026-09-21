@@ -8,10 +8,42 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
-- `GetCommitmentTreeRootsByHeight` — tree roots at the best-chain block at a
-  height, answering with the block's hash alongside the roots. The hash names
-  which block answered, so a consumer pairing this query with a concurrent
-  hash-addressed read can detect a reorg between the two.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+- Two port layers. Each question is both a single-attempt `OneShot*` port
+  (returning `QueryError`, implemented by adapters) and a canonical resilient
+  port under the unqualified name (`GetBlock`, `GetChainTip`, … returning
+  `SourceError`, bound by consumers). The resilient port is the default name
+  because resilience is the default; reaching the single-attempt contract means
+  naming the awkward `OneShot*`. The resilient ports are sealed, so only
+  `ValidatorClient` implements them: a value satisfying a canonical port has
+  provably been through the retry ladder.
+- `#[resilient_port]` (in the new `zaino-source-macros` crate) — an attribute
+  on a `OneShot*` trait that derives its resilient twin and the
+  `ValidatorClient<V>` blanket impl, rewriting `QueryError<E>` ->
+  `SourceError<E>`. The twin's signature is never restated and the
+  retry/translation lives once in `ValidatorClient::with_retry`.
+### Changed
+- Every one-shot query port is renamed `GetX` -> `OneShotGetX`, freeing the
+  canonical names for the resilient twins.
+- `Resilient<V>` is renamed `ValidatorClient<V>`. It now implements the
+  canonical resilient ports rather than carrying its own inherent methods, and
+  forwards `SubscribeBlocks` / `SubscribeChainTip` unchanged.
+  `SendRawTransaction` gets no resilient port — retrying a non-idempotent send
+  risks a double-submit.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate. The driven ports for validator access: 36 single-method traits,
   one per question a consumer can ask about the chain, declared in
   `zaino-primitives` vocabulary with a per-question error type.

@@ -47,7 +47,7 @@ self.rpc.method(args)                // RPC only — the state service cannot an
 
 ## Two places the usual preference inverts
 
-Both are zcashd-era methods that **zebrad does not implement**, so the
+Both are legacy-era methods that **zebrad does not implement**, so the
 read-state derivation is the only implementation that exists:
 
 - `getblockdeltas` — routed to read-state first.

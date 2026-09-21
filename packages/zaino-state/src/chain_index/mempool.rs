@@ -71,7 +71,7 @@ impl<S> MempoolSourceAdapter<S> {
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolTxids for MempoolSourceAdapter<S> {
+impl<S: BlockchainSource> zaino_source::OneShotGetMempoolTxids for MempoolSourceAdapter<S> {
     fn get_mempool_txids(
         &self,
     ) -> impl std::future::Future<
@@ -84,7 +84,7 @@ impl<S: BlockchainSource> zaino_source::GetMempoolTxids for MempoolSourceAdapter
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolMetadata for MempoolSourceAdapter<S> {
+impl<S: BlockchainSource> zaino_source::OneShotGetMempoolMetadata for MempoolSourceAdapter<S> {
     fn get_mempool_metadata(
         &self,
     ) -> impl std::future::Future<
@@ -97,7 +97,9 @@ impl<S: BlockchainSource> zaino_source::GetMempoolMetadata for MempoolSourceAdap
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetRawMempoolTransaction for MempoolSourceAdapter<S> {
+impl<S: BlockchainSource> zaino_source::OneShotGetRawMempoolTransaction
+    for MempoolSourceAdapter<S>
+{
     fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -111,7 +113,7 @@ impl<S: BlockchainSource> zaino_source::GetRawMempoolTransaction for MempoolSour
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolSourceTip for MempoolSourceAdapter<S> {
+impl<S: BlockchainSource> zaino_source::OneShotGetMempoolSourceTip for MempoolSourceAdapter<S> {
     fn get_mempool_source_tip(
         &self,
     ) -> impl std::future::Future<

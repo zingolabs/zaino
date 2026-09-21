@@ -118,6 +118,24 @@ fn describe_metrics() {
         "Depth of chain reorganizations in blocks (0 for same-height reorgs)"
     );
 
+    // DB reads. The write path has been described since before the finalised
+    // state moved into its own crate; these are its reads, which a wallet
+    // syncing against this node spends almost all of its time in. One histogram
+    // covers the whole read surface, split by an `op` label naming the read
+    // (`compact_chunk`, `block_hash`, `txout_set`, ...); the wallet-sync hot
+    // path is `op="compact_chunk"`, which a client's sync rate is bounded by.
+    metrics::describe_histogram!(
+        DB_READ_SECONDS,
+        "Time to serve one finalized-database read, labelled by `op` (the read operation). The \
+         wallet-sync read path is `op=\"compact_chunk\"`: a client's sync rate is bounded by it"
+    );
+    metrics::describe_counter!(
+        DB_CORRUPT_ROWS_TOTAL,
+        "Rows read from the finalized database that could not be decoded. Non-zero means the \
+         database is damaged rather than merely behind; reads fall through to the validator, so \
+         queries continue to be answered and nothing else surfaces it"
+    );
+
     // DB
     metrics::describe_gauge!(
         DB_TIP_HEIGHT,
@@ -126,6 +144,23 @@ fn describe_metrics() {
     metrics::describe_gauge!(
         SYNC_LAST_BLOCK_WRITTEN_AT,
         "Unix timestamp of the last block written to the finalized database"
+    );
+    metrics::describe_gauge!(
+        FINALISED_EPHEMERAL,
+        "1 while finalised-state reads are served by the ephemeral passthrough rather than the \
+         persistent database (initial sync, or a migration in progress); 0 once the on-disk index \
+         is serving. Note this reads 1 for the whole life of a process configured with \
+         ephemeral_finalised_state = true"
+    );
+    metrics::describe_gauge!(
+        ACCUMULATOR_BUILT_HEIGHT,
+        "Height the persisted txout-set accumulator currently reflects. Lagging far behind the DB \
+         tip means the next sync will trigger a full from-genesis rebuild"
+    );
+    metrics::describe_gauge!(
+        ACCUMULATOR_REBUILD_ACTIVE,
+        "1 while a from-genesis txout-set accumulator rebuild is running. This is a multi-pass \
+         full-chain scan; expect elevated read I/O for its duration"
     );
 
     // Inbound gRPC
@@ -158,14 +193,6 @@ fn describe_metrics() {
     );
 
     // Mempool
-    metrics::describe_gauge!(
-        MEMPOOL_TRANSACTIONS,
-        "Current number of transactions in the mempool"
-    );
-    metrics::describe_counter!(
-        MEMPOOL_TIP_CHANGES_TOTAL,
-        "Total mempool resets due to chain tip changes"
-    );
     metrics::describe_gauge!(
         MEMPOOL_COHERENCE_FROZEN_SECONDS,
         "How long tip-coherent mempool reads have been frozen; 0 when live. \

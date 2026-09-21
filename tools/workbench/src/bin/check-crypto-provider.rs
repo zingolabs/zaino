@@ -116,7 +116,7 @@ fn check_ring_edges(ring_tree: &str) -> Result<(), Vec<String>> {
              this guard (see the module docs in check-crypto-provider.rs)",
         ));
     }
-    msg.push("see docs/adr/0006-aws-lc-rs-preferred-crypto-provider.md".to_string());
+    msg.push("see docs/adr/zaino/0006-aws-lc-rs-preferred-crypto-provider.md".to_string());
     Err(msg)
 }
 

@@ -22,7 +22,8 @@ pub enum GetChainTipError {
 ///
 /// Maps to `getbestblockhash()` + `getblock(hash, 0)` over JSON-RPC,
 /// or the equivalent ReadState query.
-pub trait GetChainTip: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetChainTip: Send + Sync {
     /// Fetch current tip.
     fn get_chain_tip(
         &self,

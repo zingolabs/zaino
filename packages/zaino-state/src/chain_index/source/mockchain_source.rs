@@ -416,13 +416,23 @@ impl MockchainSource {
 // build.
 // ---------------------------------------------------------------------------
 
-/// Confirmations are one more than the depth, or -1 when the block is not on the best
-/// chain. Depth is limited by height, so it never overflows an `i64`.
-fn confirmations_from_depth(depth: Option<u32>) -> i64 {
-    const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
-    depth
-        .map(|depth| i64::from(depth) + 1)
-        .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS)
+/// Tip-relative confirmation state of the block at `height` against the mock's
+/// active chain height.
+///
+/// The mock's best chain is its vector up to the active height, so a block is
+/// on the best chain exactly when it has a depth below that tip; above it, the
+/// block exists in the vector but is not active. Errs only on a height past
+/// the protocol maximum, which the mock's vectors never carry.
+fn block_confirmations(
+    active_height: u32,
+    height: u32,
+) -> Result<domain::BlockConfirmations, domain::HeightOverflow> {
+    let tip = domain::Height::try_from(active_height)?;
+    let height = domain::Height::try_from(height)?;
+    Ok(match height.depth_from(tip) {
+        Some(_) => domain::BlockConfirmations::of_best_chain_block(height, tip),
+        None => domain::BlockConfirmations::NotInBestChain,
+    })
 }
 
 // ***** zaino-source port implementations *****
@@ -445,6 +455,11 @@ pub(crate) fn port_fault<E: std::fmt::Debug + std::fmt::Display>(
     message: impl Into<String>,
 ) -> PortError<E> {
     PortError::Fetch(FetchError::new(FailureMode::Parse, message.into()))
+}
+
+/// A vector's `u64` tree size, as the domain carries it.
+fn tree_size(size: u64) -> domain::TreeSize {
+    domain::TreeSize::try_from(size).expect("test vector tree sizes fit u32")
 }
 
 impl MockchainSource {
@@ -474,7 +489,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlock for MockchainSource {
+impl zaino_source::OneShotGetRawBlock for MockchainSource {
     async fn get_raw_block(
         &self,
         height: domain::Height,
@@ -488,7 +503,7 @@ impl zaino_source::GetRawBlock for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for MockchainSource {
+impl zaino_source::OneShotGetRawBlockByHash for MockchainSource {
     async fn get_raw_block_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -510,10 +525,10 @@ impl MockchainSource {
     fn domain_block_at(&self, index: usize) -> Result<domain::Block, String> {
         let (sapling, orchard) = self.roots[index];
         let chain_metadata = domain::ChainMetadata {
-            sapling_tree_size: sapling.map_or(0, |(_, size)| size as u32),
-            orchard_tree_size: orchard.map_or(0, |(_, size)| size as u32),
+            sapling_tree_size: sapling.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
+            orchard_tree_size: orchard.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
             // The test vectors carry no ironwood tree.
-            ironwood_tree_size: 0,
+            ironwood_tree_size: domain::TreeSize::ZERO,
         };
 
         zaino_convert_zebra::block_from_zebra(&self.blocks[index], chain_metadata)
@@ -521,7 +536,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetBlock for MockchainSource {
+impl zaino_source::OneShotGetBlock for MockchainSource {
     async fn get_block(
         &self,
         height: domain::Height,
@@ -535,7 +550,7 @@ impl zaino_source::GetBlock for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockByHash for MockchainSource {
+impl zaino_source::OneShotGetBlockByHash for MockchainSource {
     async fn get_block_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -547,7 +562,7 @@ impl zaino_source::GetBlockByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetChainTip for MockchainSource {
+impl zaino_source::OneShotGetChainTip for MockchainSource {
     async fn get_chain_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<zaino_source::GetChainTipError>>
@@ -573,7 +588,7 @@ impl zaino_source::GetChainTip for MockchainSource {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for MockchainSource {
+impl zaino_source::OneShotGetBestBlockHeight for MockchainSource {
     async fn get_best_block_height(
         &self,
     ) -> Result<domain::Height, PortError<zaino_source::GetBestBlockHeightError>> {
@@ -595,7 +610,7 @@ impl zaino_source::GetBestBlockHeight for MockchainSource {
     }
 }
 
-impl zaino_source::GetDifficulty for MockchainSource {
+impl zaino_source::OneShotGetDifficulty for MockchainSource {
     async fn get_difficulty(
         &self,
     ) -> Result<domain::Difficulty, PortError<zaino_source::GetDifficultyError>> {
@@ -631,7 +646,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolTxids for MockchainSource {
+impl zaino_source::OneShotGetMempoolTxids for MockchainSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetMempoolTxidsError>> {
@@ -642,7 +657,7 @@ impl zaino_source::GetMempoolTxids for MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for MockchainSource {
+impl zaino_source::OneShotGetMempoolMetadata for MockchainSource {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>
@@ -667,7 +682,7 @@ impl zaino_source::GetMempoolMetadata for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for MockchainSource {
+impl zaino_source::OneShotGetRawMempoolTransaction for MockchainSource {
     async fn get_raw_mempool_transaction(
         &self,
         txid: domain::TransactionId,
@@ -687,7 +702,7 @@ impl zaino_source::GetRawMempoolTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for MockchainSource {
+impl zaino_source::OneShotGetMempoolSourceTip for MockchainSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<std::convert::Infallible>> {
@@ -696,7 +711,7 @@ impl zaino_source::GetMempoolSourceTip for MockchainSource {
         // `active_height` — so the single-source rule holds trivially here.
         // Routed through `GetChainTip` rather than duplicated so it stays that
         // way as the mock changes.
-        use zaino_source::GetChainTip as _;
+        use zaino_source::OneShotGetChainTip as _;
 
         // `GetChainTip` has a domain answer for "no tip yet"; this port has
         // none, by design (see `GetMempoolSourceTip`). Reported as a fault,
@@ -722,7 +737,7 @@ impl zaino_source::SourceLifecycle for MockchainSource {
     }
 }
 
-impl zaino_source::GetTransaction for MockchainSource {
+impl zaino_source::OneShotGetTransaction for MockchainSource {
     async fn get_transaction(
         &self,
         txid: domain::TransactionId,
@@ -758,7 +773,7 @@ impl zaino_source::GetTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for MockchainSource {
+impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
     async fn get_commitment_tree_roots(
         &self,
         block: domain::BlockHash,
@@ -776,7 +791,7 @@ impl zaino_source::GetCommitmentTreeRoots for MockchainSource {
         let (sapling, orchard) = self.roots[index];
         let info = |root: [u8; 32], size: u64| domain::TreeRootInfo {
             root: domain::TreeRoot::from(root),
-            size,
+            size: tree_size(size),
         };
 
         Ok(domain::TreeRoots {
@@ -788,7 +803,7 @@ impl zaino_source::GetCommitmentTreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRootsByHeight for MockchainSource {
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for MockchainSource {
     async fn get_commitment_tree_roots_by_height(
         &self,
         height: domain::Height,
@@ -802,21 +817,22 @@ impl zaino_source::GetCommitmentTreeRootsByHeight for MockchainSource {
             ));
         };
         let hash = domain::BlockHash::from(self.blocks[index].hash().0);
-        let roots = zaino_source::GetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
-            .await
-            .map_err(|error| match error {
-                // The hash was just resolved from this same chain, so a
-                // missing block is the mock's own fault, not an answer.
-                PortError::Domain(zaino_source::GetCommitmentTreeRootsError::BlockNotFound(
-                    hash,
-                )) => port_fault(format!("mockchain lost block {hash} it just indexed")),
-                PortError::Fetch(fetch) => PortError::Fetch(fetch),
-            })?;
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    // The hash was just resolved from this same chain, so a
+                    // missing block is the mock's own fault, not an answer.
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(hash),
+                    ) => port_fault(format!("mockchain lost block {hash} it just indexed")),
+                    PortError::Fetch(fetch) => PortError::Fetch(fetch),
+                })?;
         Ok((hash, roots))
     }
 }
 
-impl zaino_source::GetBlockVerboseByHash for MockchainSource {
+impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
     async fn get_block_verbose_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -831,12 +847,18 @@ impl zaino_source::GetBlockVerboseByHash for MockchainSource {
 
         let (_, orchard) = self.roots[index];
         let (sapling_size, orchard_size) = (
-            self.roots[index].0.map(|(_, size)| size).unwrap_or(0),
-            orchard.map(|(_, size)| size).unwrap_or(0),
+            self.roots[index]
+                .0
+                .map(|(_, size)| tree_size(size))
+                .unwrap_or(domain::TreeSize::ZERO),
+            orchard
+                .map(|(_, size)| tree_size(size))
+                .unwrap_or(domain::TreeSize::ZERO),
         );
 
         Ok(domain::BlockVerbose {
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             difficulty: block
                 .header
                 .difficulty_threshold
@@ -848,7 +870,7 @@ impl zaino_source::GetBlockVerboseByHash for MockchainSource {
             tree_sizes: domain::BlockTreeSizes {
                 sapling: sapling_size,
                 orchard: orchard_size,
-                ironwood: 0,
+                ironwood: domain::TreeSize::ZERO,
             },
             next_block_hash: self
                 .next_block_hash(index)
@@ -857,7 +879,7 @@ impl zaino_source::GetBlockVerboseByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for MockchainSource {
+impl zaino_source::OneShotGetRawBlockHeader for MockchainSource {
     async fn get_raw_block_header(
         &self,
         hash: domain::BlockHash,
@@ -872,7 +894,7 @@ impl zaino_source::GetRawBlockHeader for MockchainSource {
     }
 }
 
-impl zaino_source::GetTreestateByHash for MockchainSource {
+impl zaino_source::OneShotGetTreestateByHash for MockchainSource {
     async fn get_treestate_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -908,7 +930,7 @@ impl zaino_source::GetTreestateByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for MockchainSource {
+impl zaino_source::OneShotGetSubtreeRoots for MockchainSource {
     async fn get_subtree_roots(
         &self,
         pool: domain::ShieldedPool,
@@ -991,7 +1013,7 @@ impl zaino_source::GetSubtreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockHeader for MockchainSource {
+impl zaino_source::OneShotGetBlockHeader for MockchainSource {
     async fn get_block_header(
         &self,
         hash: domain::BlockHash,
@@ -1008,7 +1030,8 @@ impl zaino_source::GetBlockHeader for MockchainSource {
 
         Ok(domain::rpc::BlockHeaderVerbose {
             hash,
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             height: domain::Height::try_from(height.0).map_err(|e| port_fault(e.to_string()))?,
             version: header.version,
             merkle_root: domain::MerkleRoot::from(header.merkle_root.0),
@@ -1016,7 +1039,10 @@ impl zaino_source::GetBlockHeader for MockchainSource {
             nonce: *header.nonce,
             solution: equihash_solution_bytes(&header.solution)
                 .map_err(port_fault::<zaino_source::GetBlockHeaderError>)?,
-            bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+            bits: domain::CompactDifficulty::try_from_be_bytes(
+                header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| port_fault(e.to_string()))?,
             difficulty: header.difficulty_threshold.relative_to_network(&network),
             block_commitments: Some(domain::BlockCommitments::from(*header.commitment_bytes)),
             final_sapling_root: self.roots[index]
@@ -1032,7 +1058,7 @@ impl zaino_source::GetBlockHeader for MockchainSource {
     }
 }
 
-impl zaino_source::GetChainTips for MockchainSource {
+impl zaino_source::OneShotGetChainTips for MockchainSource {
     async fn get_chain_tips(
         &self,
     ) -> Result<Vec<domain::rpc::ChainTip>, PortError<zaino_source::GetChainTipsError>> {
@@ -1054,7 +1080,7 @@ impl zaino_source::GetChainTips for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressBalance for MockchainSource {
+impl zaino_source::OneShotGetAddressBalance for MockchainSource {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -1071,34 +1097,43 @@ impl zaino_source::GetAddressBalance for MockchainSource {
         let matching = self.matching_transparent_outputs(&valid, &network);
         let spent = self.spent_transparent_outpoints();
 
-        let mut balance = 0_u64;
-        let mut received = 0_u64;
+        let mut received_values = Vec::new();
+        let mut balance_values = Vec::new();
         for (outpoint, output) in matching {
-            let value = u64::from(output.output.value());
-            received = received.checked_add(value).ok_or_else(|| {
-                port_fault::<zaino_source::GetAddressBalanceError>(
-                    "address received amount overflowed u64",
-                )
-            })?;
+            let value = domain::Zatoshis::new(u64::from(output.output.value()))
+                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?;
+            received_values.push(value);
             if !spent.contains(&outpoint) {
-                balance = balance.checked_add(value).ok_or_else(|| {
-                    port_fault::<zaino_source::GetAddressBalanceError>(
-                        "address balance amount overflowed u64",
-                    )
-                })?;
+                balance_values.push(value);
             }
         }
 
-        Ok(domain::AddressBalance {
-            balance: domain::Zatoshis::new(balance)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-            received: domain::Zatoshis::new(received)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-        })
+        // Every matching output is a receipt, so the lifetime received total
+        // is a flow: it is derived here by the flow accumulate, not bounded by
+        // the supply.
+        let received = domain::ZatoshisFlowSum::try_accumulate(received_values.into_iter())
+            .ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "address received flow overflowed its accumulator",
+                )
+            })?;
+
+        // The unspent outputs coexist on the chain, so their total is a
+        // supply-bounded balance; a total past the supply means the UTXO set
+        // overlaps or double-counts, and is refused rather than wrapped.
+        let balance =
+            domain::Zatoshis::sum_balances(balance_values.into_iter()).ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "unspent output values total past the money supply: \
+                     overlapping or corrupt UTXO set",
+                )
+            })?;
+
+        Ok(domain::AddressBalance { balance, received })
     }
 }
 
-impl zaino_source::GetAddressTxids for MockchainSource {
+impl zaino_source::OneShotGetAddressTxids for MockchainSource {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -1145,7 +1180,7 @@ impl zaino_source::GetAddressTxids for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressUtxos for MockchainSource {
+impl zaino_source::OneShotGetAddressUtxos for MockchainSource {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -1245,7 +1280,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockDeltas for MockchainSource {
+impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
     async fn get_block_deltas(
         &self,
         hash: domain::BlockHash,
@@ -1274,7 +1309,8 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
                 inputs.push(domain::rpc::InputDelta {
                     address,
                     // Inputs are debits, so the amount leaves the address.
-                    satoshis: domain::SignedZatoshis::new(-(value as i64)),
+                    satoshis: domain::SignedZatoshis::try_new(-(value as i64))
+                        .map_err(|e| port_fault(e.to_string()))?,
                     index: input_index as u32,
                     prev_txid: domain::TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,
@@ -1310,7 +1346,8 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
 
         Ok(domain::rpc::BlockDeltas {
             hash,
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             size,
             height: domain::Height::try_from(height.0).map_err(|e| port_fault(e.to_string()))?,
             version: header.version,
@@ -1319,7 +1356,10 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
             time: header.time.timestamp() as u32,
             median_time: self.median_time_at(index) as u32,
             nonce: *header.nonce,
-            bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+            bits: domain::CompactDifficulty::try_from_be_bytes(
+                header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| port_fault(e.to_string()))?,
             difficulty: header.difficulty_threshold.relative_to_network(&network),
             previous_block_hash: Some(domain::BlockHash::from(header.previous_block_hash.0)),
             next_block_hash: self
@@ -1329,14 +1369,14 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressDeltas for MockchainSource {
+impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,
         start: domain::Height,
         end: domain::Height,
     ) -> Result<Vec<domain::AddressDelta>, PortError<zaino_source::GetAddressDeltasError>> {
-        use zaino_source::GetAddressTxids as _;
+        use zaino_source::OneShotGetAddressTxids as _;
 
         let valid = GetAddressBalanceRequest::new(addresses.clone())
             .valid_addresses()
@@ -1376,7 +1416,8 @@ impl zaino_source::GetAddressDeltas for MockchainSource {
                     continue;
                 }
                 deltas.push(domain::AddressDelta {
-                    satoshis: domain::SignedZatoshis::new(i64::from(output.value())),
+                    satoshis: domain::SignedZatoshis::try_new(i64::from(output.value()))
+                        .map_err(|e| port_fault(e.to_string()))?,
                     txid,
                     index: output_index as u32,
                     height: domain::Height::try_from(height.0)
@@ -1404,7 +1445,7 @@ impl zaino_source::GetAddressDeltas for MockchainSource {
 // the vectors would have to be extended to serve these, and the panic names
 // what is missing rather than inventing a plausible value.
 
-impl zaino_source::GetTreestate for MockchainSource {
+impl zaino_source::OneShotGetTreestate for MockchainSource {
     async fn get_treestate(
         &self,
         _height: domain::Height,
@@ -1415,7 +1456,7 @@ impl zaino_source::GetTreestate for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for MockchainSource {
+impl zaino_source::OneShotGetBlockchainInfo for MockchainSource {
     async fn get_blockchain_info(
         &self,
     ) -> Result<domain::BlockchainInfo, PortError<zaino_source::GetBlockchainInfoError>> {
@@ -1425,7 +1466,7 @@ impl zaino_source::GetBlockchainInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetNodeInfo for MockchainSource {
+impl zaino_source::OneShotGetNodeInfo for MockchainSource {
     async fn get_node_info(
         &self,
     ) -> Result<domain::rpc::NodeInfo, PortError<zaino_source::GetNodeInfoError>> {
@@ -1433,7 +1474,7 @@ impl zaino_source::GetNodeInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetPeerInfo for MockchainSource {
+impl zaino_source::OneShotGetPeerInfo for MockchainSource {
     async fn get_peer_info(
         &self,
     ) -> Result<Vec<domain::rpc::PeerInfo>, PortError<zaino_source::GetPeerInfoError>> {
@@ -1441,7 +1482,7 @@ impl zaino_source::GetPeerInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetMiningInfo for MockchainSource {
+impl zaino_source::OneShotGetMiningInfo for MockchainSource {
     async fn get_mining_info(
         &self,
     ) -> Result<domain::rpc::MiningInfo, PortError<zaino_source::GetMiningInfoError>> {
@@ -1451,7 +1492,7 @@ impl zaino_source::GetMiningInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockSubsidy for MockchainSource {
+impl zaino_source::OneShotGetBlockSubsidy for MockchainSource {
     async fn get_block_subsidy(
         &self,
         _height: domain::Height,
@@ -1462,7 +1503,7 @@ impl zaino_source::GetBlockSubsidy for MockchainSource {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for MockchainSource {
+impl zaino_source::OneShotGetNetworkSolPs for MockchainSource {
     async fn get_network_sol_ps(
         &self,
         _blocks: Option<u32>,
@@ -1474,7 +1515,7 @@ impl zaino_source::GetNetworkSolPs for MockchainSource {
     }
 }
 
-impl zaino_source::SendRawTransaction for MockchainSource {
+impl zaino_source::OneShotSendRawTransaction for MockchainSource {
     async fn send_raw_transaction(
         &self,
         _transaction: Vec<u8>,
@@ -1484,7 +1525,7 @@ impl zaino_source::SendRawTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetSpentInfo for MockchainSource {
+impl zaino_source::OneShotGetSpentInfo for MockchainSource {
     async fn get_spent_info(
         &self,
         _outpoint: domain::rpc::SpentOutpoint,
@@ -1495,7 +1536,7 @@ impl zaino_source::GetSpentInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetTxOut for MockchainSource {
+impl zaino_source::OneShotGetTxOut for MockchainSource {
     async fn get_tx_out(
         &self,
         _txid: domain::TransactionId,

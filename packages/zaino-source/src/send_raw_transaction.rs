@@ -26,7 +26,7 @@ pub enum SendRawTransactionError {
 /// must not treat an error as proof the transaction was not accepted earlier.
 ///
 /// Maps to `sendrawtransaction` over JSON-RPC.
-pub trait SendRawTransaction: Send + Sync {
+pub trait OneShotSendRawTransaction: Send + Sync {
     /// Submit a serialised transaction, returning its id on acceptance.
     fn send_raw_transaction(
         &self,

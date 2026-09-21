@@ -5,12 +5,12 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::{GetChainTip, GetChainTipError, QueryError, SubscribeChainTip, TipObservation};
+use crate::{GetChainTipError, OneShotGetChainTip, QueryError, SubscribeChainTip, TipObservation};
 
 /// A tip subscription built by polling a source that has no native stream.
 ///
 /// A decorator rather than something baked into each adapter, matching
-/// [`Resilient`](crate::Resilient): the capability is synthesised on top of any
+/// [`ValidatorClient`](crate::ValidatorClient): the capability is synthesised on top of any
 /// source that can answer [`GetChainTip`], so one implementation serves every
 /// pollable source rather than each adapter growing its own poll loop.
 ///
@@ -51,7 +51,7 @@ impl PolledChainTip {
         interval: Duration,
     ) -> Result<Self, QueryError<GetChainTipError>>
     where
-        S: GetChainTip + Send + 'static,
+        S: OneShotGetChainTip + Send + 'static,
     {
         let (hash, height) = source.get_chain_tip().await?;
         let (tx, tip) = watch::channel(TipObservation::now(hash, height));
@@ -130,16 +130,13 @@ mod tests {
                 time: 0,
                 merkle_root: [0; 32].into(),
                 block_commitments: [0; 32].into(),
-                bits: 0,
+                bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
+                    .expect("valid nBits"),
                 nonce: [0; 32],
                 solution: EquihashSolution::Regtest([0; 36]),
             },
             transactions: vec![],
-            chain_metadata: ChainMetadata {
-                sapling_tree_size: 0,
-                orchard_tree_size: 0,
-                ironwood_tree_size: 0,
-            },
+            chain_metadata: ChainMetadata::ZERO,
         }
     }
 

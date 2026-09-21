@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-28
+
+### Added
 - New crate. The domain half of the chain head subsystem: vocabulary and ports
   for the bounded, non-finalised head of the chain, with no runtime and no data
   structures. The runtime is `zaino-chain-head-service`. See ADR-0011.
@@ -32,8 +40,8 @@ and this library adheres to Rust's notion of
   for a chain store to ingest without re-fetching. A separate trait so a
   consumer bounds on it only when it wants the handoff. The stream is
   best-effort: see ADR-0011 for why gaps are expected rather than exceptional.
-- `ChainHeadBlockSource` — the driven port, a bound alias over six
-  `zaino-source` ports with a blanket impl, so any source answering all six
+- `ChainHeadBlockSource` — the driven port, a bound alias over five
+  `zaino-source` ports with a blanket impl, so any source answering all five
   satisfies it without being taught to. Deliberately not `Clone`: a source may
   own connections and a database handle that must not be duplicated.
 - `ChainHeadBlock` — a retained block: a `zaino_primitives::Block` with its

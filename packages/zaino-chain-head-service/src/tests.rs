@@ -15,6 +15,8 @@
 //!   the test is the only thing advancing the graph, so what it observes is
 //!   exactly what it caused.
 
+mod reorg_depth;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -31,16 +33,19 @@ use zaino_primitives::types::{
     MerkleRoot, TreeRoots,
 };
 use zaino_source::{
-    FailureMode, FetchError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
-    GetChainTip, GetChainTipError, GetChainTips, GetChainTipsError, GetCommitmentTreeRoots,
-    GetCommitmentTreeRootsByHeight, GetCommitmentTreeRootsByHeightError,
-    GetCommitmentTreeRootsError, QueryError, SubscribeBlocks,
+    FailureMode, FetchError, GetBlockByHashError, GetBlockError, GetChainTipError,
+    GetChainTipsError, GetCommitmentTreeRootsByHeightError, GetCommitmentTreeRootsError,
+    OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip, OneShotGetChainTips,
+    OneShotGetCommitmentTreeRoots, OneShotGetCommitmentTreeRootsByHeight, QueryError,
+    SubscribeBlocks,
 };
 
 use crate::{service::ChainHeadService, snapshot::MapBackedSnapshot};
 
 /// A valid nBits value: non-negative, non-zero, no overflow.
-const VALID_BITS: u32 = 0x2007_ffff;
+fn valid_bits() -> zaino_primitives::types::CompactDifficulty {
+    zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits")
+}
 
 fn hash(id: u16) -> BlockHash {
     let mut bytes = [0; 32];
@@ -69,16 +74,12 @@ fn block(h: u32, id: u16, parent: u16) -> Block {
             time: 0,
             merkle_root: MerkleRoot::from([0; 32]),
             block_commitments: BlockCommitments::from([0; 32]),
-            bits: VALID_BITS,
+            bits: valid_bits(),
             nonce: [0; 32],
             solution: EquihashSolution::Regtest([0; 36]),
         },
         transactions: vec![],
-        chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
-        },
+        chain_metadata: ChainMetadata::ZERO,
     }
 }
 
@@ -151,7 +152,7 @@ fn transport_failure<E: std::fmt::Debug + std::fmt::Display>() -> QueryError<E> 
     QueryError::Fetch(FetchError::new(FailureMode::Connection, "mock is down"))
 }
 
-impl GetChainTip for MockValidator {
+impl OneShotGetChainTip for MockValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         {
             let mut state = self.lock();
@@ -164,7 +165,7 @@ impl GetChainTip for MockValidator {
     }
 }
 
-impl GetChainTips for MockValidator {
+impl OneShotGetChainTips for MockValidator {
     async fn get_chain_tips(&self) -> Result<Vec<ChainTip>, QueryError<GetChainTipsError>> {
         let state = self.lock();
         let active_index = state.best_chain.len() - 1;
@@ -179,7 +180,7 @@ impl GetChainTips for MockValidator {
     }
 }
 
-impl GetBlock for MockValidator {
+impl OneShotGetBlock for MockValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         let state = self.lock();
         state
@@ -191,7 +192,7 @@ impl GetBlock for MockValidator {
     }
 }
 
-impl GetBlockByHash for MockValidator {
+impl OneShotGetBlockByHash for MockValidator {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -204,7 +205,7 @@ impl GetBlockByHash for MockValidator {
     }
 }
 
-impl GetCommitmentTreeRoots for MockValidator {
+impl OneShotGetCommitmentTreeRoots for MockValidator {
     async fn get_commitment_tree_roots(
         &self,
         _block: BlockHash,
@@ -217,7 +218,7 @@ impl GetCommitmentTreeRoots for MockValidator {
     }
 }
 
-impl GetCommitmentTreeRootsByHeight for MockValidator {
+impl OneShotGetCommitmentTreeRootsByHeight for MockValidator {
     async fn get_commitment_tree_roots_by_height(
         &self,
         height: Height,

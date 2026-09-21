@@ -8,6 +8,25 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+### Changed
+- Republished against `zaino-source` 0.2.0. The `RpcError` ->
+  `zaino_source::FetchError` conversion is unchanged; the retrying consumer it
+  serves is now named `ValidatorClient` (formerly `Resilient`).
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate. The JSON-RPC transport, replacing `zaino-fetch`'s
   `JsonRpSeeConnector`: HTTP, the request/response envelope, authentication,
   and retry-on-`-1`.

@@ -198,7 +198,6 @@ impl FullBlock {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(CompactBlock {
-            proto_version: 1,
             height: self.height as u64,
             hash: self.hdr.cached_hash.clone(),
             prev_hash: self.hdr.hash_prev_block(),

@@ -20,7 +20,8 @@ pub enum GetCommitmentTreeRootsByHeightError {
 /// between a height-addressed read and a hash-addressed one, so a consumer
 /// pairing this query with another must compare the returned hash against the
 /// block it holds.
-pub trait GetCommitmentTreeRootsByHeight: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetCommitmentTreeRootsByHeight: Send + Sync {
     /// Fetch tree roots at the best-chain block at this height, reporting which block answered.
     fn get_commitment_tree_roots_by_height(
         &self,
