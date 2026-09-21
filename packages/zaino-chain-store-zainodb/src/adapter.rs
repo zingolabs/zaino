@@ -586,12 +586,14 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         };
         let tip = domain_height(tip)?;
 
-        Ok(ChainStoreService::reader(self)
+        let chunk = ChainStoreService::reader(self)
             .blocks_chunk(tip, tip)
-            .await?
-            .into_iter()
-            .next()
-            .map(|block| block.chainwork))
+            .await?;
+        let tip_block = chunk
+            .first()
+            .ok_or_else(|| ChainStoreError::MissingRow(format!("the tip block at height {tip}")))?;
+
+        Ok(Some(tip_block.chainwork))
     }
 }
 
