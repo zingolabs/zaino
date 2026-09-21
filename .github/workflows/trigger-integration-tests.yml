@@ -29,6 +29,14 @@ jobs:
   trigger-integration:
     name: Trigger integration tests
     runs-on: ubuntu-latest
+    # The app-token step needs repository secrets. GitHub withholds them from
+    # pull requests that come from a fork and from runs that Dependabot triggers,
+    # so skip the dispatch there rather than fail it. Only pull-request events are
+    # restricted; every other trigger runs. See issue #991.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]')
     steps:
       - name: Generate app token
         id: app-token
