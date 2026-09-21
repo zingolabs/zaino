@@ -48,7 +48,7 @@ impl GetAddressDeltasParams {
     ///
     /// Infallible, unlike the other request conversions in this module. The two
     /// things that could be rejected here are not rejected by this interface:
-    /// the height range is open-ended by design — zcashd reads `0` in either
+    /// the height range is open-ended by design — the legacy full node reads `0` in either
     /// position as "unbounded" — and is resolved against the tip by the
     /// answering adapter, which is the only layer that knows the tip; and
     /// [`TransparentAddress`](zaino_primitives::types::TransparentAddress) is
@@ -174,7 +174,7 @@ impl AddressDelta {
 
     /// Renders a run of domain deltas as the served JSON shape.
     ///
-    /// Ordering is the source's — zcashd's documented `(height, blockindex,
+    /// Ordering is the source's — the legacy full node's documented `(height, blockindex,
     /// index)` — and is not re-sorted here.
     fn vec_from_domain(deltas: Vec<zaino_primitives::types::AddressDelta>) -> Vec<Self> {
         deltas
@@ -229,7 +229,7 @@ mod domain_tests {
 
     fn delta() -> domain::AddressDelta {
         domain::AddressDelta {
-            satoshis: SignedZatoshis::new(-1_000),
+            satoshis: SignedZatoshis::try_new(-1_000).expect("within the supply"),
             txid: domain::TransactionId::from(ASYMMETRIC),
             index: 2,
             height: Height::try_from(99u32).unwrap(),

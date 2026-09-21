@@ -127,14 +127,14 @@ pub struct CompactBlock {
 mod tests {
     use super::*;
     use crate::types::transaction::{OrchardData, Transaction};
-    use crate::types::EncryptedCiphertext;
+    use crate::types::CompactCiphertext;
 
     fn action(tag: u8) -> OrchardAction {
         OrchardAction {
             nullifier: [tag; 32].into(),
             cmx: [tag; 32].into(),
             ephemeral_key: [tag; 32].into(),
-            enc_ciphertext: EncryptedCiphertext::new(vec![tag]),
+            enc_ciphertext: CompactCiphertext::from([tag; 52]),
         }
     }
 
@@ -144,7 +144,6 @@ mod tests {
     fn compact_conversion_keeps_ironwood_and_orchard_apart() {
         let tx = Transaction {
             txid: [0; 32].into(),
-            index: 0,
             transparent: Default::default(),
             sapling: Default::default(),
             orchard: OrchardData {

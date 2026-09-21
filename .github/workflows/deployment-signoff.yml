@@ -1,0 +1,106 @@
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true.
+#
+# Manual deployment-gate sign-off — the human-driven path for the same signal
+# the cluster deployment gate posts automatically.
+#
+# The deployment gate (rc -> release-ready) is normally driven by the cluster:
+# the deployment-gate poller submits the live-chain validation WorkflowTemplate,
+# which posts a `deployment_status` back to the RC's Deployment (environment
+# `deployment`); deployment-advance.yml reacts to `success` by fast-forwarding
+# release-ready. This workflow lets a human post that same verdict by hand — for
+# the interim before the cluster validation is wired, or to override a soak.
+#
+# It posts as the release GitHub App, NOT GITHUB_TOKEN: a `deployment_status`
+# posted with GITHUB_TOKEN does not re-trigger deployment-advance. This is the
+# same reason the cluster poller posts as the App.
+#
+# PRECONDITION for manual mode: the cluster deployment-gate poller must not be
+# auto-passing, or it will claim the Deployment (post a status first) before a
+# human can. Suspend the `deployment-gate-poller` CronWorkflow when gating by
+# hand. A Deployment that already carries any status is considered claimed and is
+# skipped by the blank-id resolver below.
+
+name: Deployment gate sign-off (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: "Deployment-gate verdict for the RC."
+        type: choice
+        options:
+          - success
+          - failure
+        default: success
+      deployment_id:
+        description: "Target Deployment id. Blank = the newest unclaimed Deployment in the `deployment` environment."
+        type: string
+        required: false
+
+# Everything here authenticates as the App; GITHUB_TOKEN is used only for the
+# checkout-less API reads, which need no elevated scope.
+permissions:
+  contents: read
+
+jobs:
+  signoff:
+    name: Post deployment_status as the release App
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # Same App/secrets as rc-gate.yml and the cluster gate. The App must be
+      # installed with `deployments: write`; posting as it (vs GITHUB_TOKEN) is
+      # what lets deployment-advance react to the resulting status.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Resolve target deployment
+        id: dep
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DEP_ID: ${{ inputs.deployment_id }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DEP_ID}" ]; then
+            id="${DEP_ID}"
+          else
+            # Newest Deployment in the `deployment` environment with no status yet
+            # (unclaimed by the cluster gate). Same dedup rule as the poller: a
+            # Deployment's own status is its claim state.
+            id=""
+            for d in $(gh api \
+                "repos/${{ github.repository }}/deployments?environment=deployment&per_page=20" \
+                --jq '.[].id'); do
+              n="$(gh api "repos/${{ github.repository }}/deployments/${d}/statuses?per_page=1" \
+                    --jq 'length')"
+              if [ "$n" = "0" ]; then id="$d"; break; fi
+            done
+            if [ -z "$id" ]; then
+              echo "::error::No unclaimed Deployment in the 'deployment' environment. Pass deployment_id explicitly, or an earlier gate already recorded a verdict."
+              exit 1
+            fi
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Targeting deployment ${id}."
+
+      - name: Post deployment_status
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STATE: ${{ inputs.state }}
+          ID: ${{ steps.dep.outputs.id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/deployments/${ID}/statuses" -X POST \
+            -f state="${STATE}" \
+            -f environment=deployment \
+            -f description="deployment gate (manual sign-off): ${STATE}"
+          echo "Posted deployment_status=${STATE} for deployment ${ID} (manual sign-off)."
+          if [ "${STATE}" = "success" ]; then
+            echo "deployment-advance will fast-forward release-ready to this RC."
+          else
+            echo "Verdict recorded; release-ready is not advanced."
+          fi
