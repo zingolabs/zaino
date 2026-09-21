@@ -28,6 +28,17 @@ prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
 # requires a runtime env var and logs a loud warning when it activates.
 ztest-fixture = []
 
+# COMPAT STUBS — UNIMPLEMENTED. Accepted verbatim so ztest can build every SUT
+# image in a package run (sibling live-tests still request these), but they gate
+# NO behaviour on the greenfield stack. The og zainod's default-secure TLS
+# posture (no_tls_* / allow_unencrypted_*) and the fast-test NFS-depth seam are
+# not yet ported; restoring real behaviour is the "serving-security posture"
+# work. Do NOT treat these as functional — a build with them is exactly a build
+# without them.
+no_tls_use_unencrypted_traffic = []
+allow_unencrypted_public_json_rpc_bind = []
+fast-test-seam = []
+
 [dependencies]
 # Runtime stack (config-agnostic; zainod translates its config into their typed
 # params at boot). Path deps for the ones not yet in [workspace.dependencies].

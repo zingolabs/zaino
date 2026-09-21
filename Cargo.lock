@@ -6330,6 +6330,7 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "tracing",
+ "zaino-async",
  "zaino-convert-zebra",
  "zaino-primitives",
  "zaino-source",
