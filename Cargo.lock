@@ -5880,6 +5880,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-chain-head",
+ "zaino-consensus",
  "zaino-primitives",
  "zaino-source",
  "zaino-status",
