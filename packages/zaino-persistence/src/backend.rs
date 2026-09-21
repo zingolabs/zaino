@@ -1,24 +1,18 @@
-//! Backend trait — the storage interface for indexed data.
+//! The storage interface for indexed data.
 //!
-//! The sync engine writes through this, the serving layer reads from it.
-//! Both depend on the same abstraction; neither knows the concrete
-//! storage technology.
+//! [`Backend`] opens [`BackendReader`] and [`BackendWriter`] handles; reads and
+//! writes address a [`Namespace`] with raw byte keys and values ([`RawKey`],
+//! [`RawValue`]) and mutate through batched [`WriteOp`]s. See the
+//! [crate overview](crate) for the seam these traits form.
 //!
 //! # Namespaces
 //!
-//! The backend organises data into **namespaces** — independent
-//! keyspaces, each with its own key ordering. In LMDB these map to
-//! named databases; in RocksDB to column families; in the in-memory
-//! backend to separate `HashMap`s.
-//!
-//! Namespaces are declared at construction time. All writes and reads
-//! target a declared namespace.
-//!
-//! > **Note:** the upfront declaration requirement exists because LMDB
-//! > (our primary backend) needs the full set of named databases at
-//! > environment open time. A backend backed by RocksDB or a HashMap
-//! > could support dynamic namespace creation. If we add such a backend,
-//! > consider relaxing this to an `ensure_namespace` method.
+//! Data is organised into **namespaces**: independent keyspaces, each with its
+//! own key ordering (named databases in LMDB, column families in RocksDB,
+//! separate maps in the in-memory backend). Namespaces are declared when the
+//! backend is constructed, because LMDB — the primary backend — needs the full
+//! set of named databases at environment-open time. Every read and write targets
+//! a declared namespace.
 
 use crate::error::{CommitError, FlushError, OpenError, ReadError};
 

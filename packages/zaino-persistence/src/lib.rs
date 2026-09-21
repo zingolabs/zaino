@@ -1,8 +1,4 @@
-//! Driven port traits for index persistence.
-//!
-//! Defines the read/write interface that both the sync engine (writer)
-//! and the serving layer (reader) depend on. Backend adapters (LMDB,
-//! in-memory) implement these traits.
+#![doc = include_str!("../usage.md")]
 
 mod backend;
 mod error;
