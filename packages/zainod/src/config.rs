@@ -221,31 +221,40 @@ impl DaemonConfig {
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_ENV: &str = "ZAINO_TEST_REGTEST_DIRECT_FIXTURE";
 
-/// TEST-ONLY: an in-process config for the ztest regtest Direct-mode e2e.
-///
-/// ztest 0.1.21 mounts a *legacy*-schema `zainod.toml` this greenfield config
-/// cannot parse (and injects no `ZAINO_` env). Rather than couple the config to
-/// that legacy schema, the e2e sets [`TEST_FIXTURE_ENV`] and zainod boots this
-/// hardcoded config instead — ignoring the mounted `--config` — matching
-/// ztest's container paths/ports (writable root `/var/lib/zaino`, zebra cache
-/// shared at `/var/lib/zaino/zebra-db`, gRPC on `0.0.0.0:8137`, regtest).
-///
-/// NEVER for production: gated behind BOTH the `ztest-fixture` build feature and
-/// the runtime env var, and its activation logs a loud warning.
+/// Topology bindings for the [`direct_regtest`] profile: the values that depend
+/// on *where* the daemon runs, not *what* it serves. A deployer supplies these —
+/// the ztest e2e today, a `generate-config` emitter later — while the profile
+/// bakes everything else (tuning, network, retention).
 #[cfg(feature = "ztest-fixture")]
-pub fn regtest_direct_fixture() -> DaemonConfig {
-    // ztest's shared zebra volume mounts at a harness-chosen path (`/shared/…`),
-    // not a fixed one, so the e2e passes it via `TEST_FIXTURE_ZEBRA_ENV`; fall
-    // back to the default container path when unset.
-    let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/zaino/zebra-db"));
-    // In the ztest cluster the regtest validator's JSON-RPC lives on the
-    // validator pod, not localhost, so the e2e passes its in-cluster address via
-    // `TEST_FIXTURE_JSONRPC_ENV`; fall back to the local regtest default when
-    // unset (a plain local run still works). The NFS (chain-head) anchors here.
-    let jsonrpc_address =
-        std::env::var(TEST_FIXTURE_JSONRPC_ENV).unwrap_or_else(|_| "127.0.0.1:18232".to_string());
+pub(crate) struct DirectRegtestTopology {
+    /// Zebra's regtest state DB, opened as a RocksDB secondary — the Direct source.
+    pub(crate) zebra_cache_dir: PathBuf,
+    /// The validator's JSON-RPC `host:port`; the NFS (chain-head) dials it.
+    pub(crate) jsonrpc_address: String,
+    /// Where the daemon listens for the CompactTxStreamer gRPC.
+    pub(crate) grpc_listen_address: SocketAddr,
+    /// The finalised-store (FS) database directory.
+    pub(crate) store_path: PathBuf,
+}
+
+/// The `direct-regtest` serving profile: a Direct/`ReadState` source feeding the
+/// FS⊕NFS composition, serving compact blocks on regtest. Binds the supplied
+/// [`DirectRegtestTopology`] and bakes the tuning a regtest chain needs — index
+/// to the tip with no reorg margin, small map — so a handful of mined blocks are
+/// actually served.
+///
+/// This is the single definition of the profile. Its only caller today is
+/// [`regtest_direct_fixture`]; a `generate-config` emitter will later map
+/// topology flags onto this same function (and both ungate then). One spine
+/// means the fixture and the real emitter cannot drift.
+#[cfg(feature = "ztest-fixture")]
+pub(crate) fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
+    let DirectRegtestTopology {
+        zebra_cache_dir,
+        jsonrpc_address,
+        grpc_listen_address,
+        store_path,
+    } = topology;
     DaemonConfig {
         network: Network::Regtest,
         metrics_endpoint: None,
@@ -257,11 +266,11 @@ pub fn regtest_direct_fixture() -> DaemonConfig {
             password: None,
         },
         store: StoreConfig {
-            path: PathBuf::from("/var/lib/zaino/db"),
+            path: store_path,
             map_size_gb: 4,
         },
         serve: ServeConfig {
-            grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
+            grpc_listen_address,
         },
         indexer: IndexerConfig {
             // A regtest chain is a handful of blocks; index right to the tip
@@ -270,6 +279,40 @@ pub fn regtest_direct_fixture() -> DaemonConfig {
             ..IndexerConfig::default()
         },
     }
+}
+
+/// TEST-ONLY: the [`direct_regtest`] profile bound to ztest's container topology.
+///
+/// ztest 0.1.21 mounts a *legacy*-schema `zainod.toml` this greenfield config
+/// cannot parse (and injects no `ZAINO_` env). Rather than couple the config to
+/// that legacy schema, the e2e sets [`TEST_FIXTURE_ENV`] and zainod boots this
+/// instead — ignoring the mounted `--config`. Topology that varies per run (the
+/// shared zebra volume, the validator's in-cluster JSON-RPC) arrives by env; the
+/// rest matches ztest's container layout (writable root `/var/lib/zaino`, gRPC on
+/// `0.0.0.0:8137`, regtest).
+///
+/// NEVER for production: gated behind BOTH the `ztest-fixture` build feature and
+/// the runtime env var, and its activation logs a loud warning.
+#[cfg(feature = "ztest-fixture")]
+pub fn regtest_direct_fixture() -> DaemonConfig {
+    // ztest's shared zebra volume mounts at a harness-chosen path, not a fixed
+    // one, so the e2e passes it via `TEST_FIXTURE_ZEBRA_ENV`; fall back to the
+    // default container path when unset.
+    let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/zaino/zebra-db"));
+    // In the ztest cluster the regtest validator's JSON-RPC lives on the
+    // validator pod, not localhost, so the e2e passes its in-cluster address via
+    // `TEST_FIXTURE_JSONRPC_ENV`; a plain local run falls back to the regtest
+    // default. The NFS (chain-head) anchors here.
+    let jsonrpc_address =
+        std::env::var(TEST_FIXTURE_JSONRPC_ENV).unwrap_or_else(|_| "127.0.0.1:18232".to_string());
+    direct_regtest(DirectRegtestTopology {
+        zebra_cache_dir,
+        jsonrpc_address,
+        grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
+        store_path: PathBuf::from("/var/lib/zaino/db"),
+    })
 }
 
 /// Env var the e2e uses to hand the fixture the shared zebra volume's mount
