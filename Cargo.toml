@@ -37,6 +37,7 @@ members = [
     "packages/zaino-chain-head-service",
     "packages/zaino-chain-store",
     "packages/zaino-chain-store-zainodb",
+    "packages/zaino-chainview",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",

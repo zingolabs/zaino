@@ -5985,6 +5985,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-chainview"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+ "zaino-chainview",
+ "zaino-component",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-runtime",
+ "zaino-service",
+ "zaino-source",
+ "zaino-store",
+]
+
+[[package]]
 name = "zaino-common"
 version = "0.5.1"
 dependencies = [

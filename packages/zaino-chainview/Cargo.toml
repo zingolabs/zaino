@@ -1,0 +1,31 @@
+[package]
+name = "zaino-chainview"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Composes the finalised store (FS) and a non-finalised view (NFS) into one served, compact-block snapshot over a watermark-governed seam. Thin-marker: the composed snapshot forces only the reads compact-block serving needs."
+
+[features]
+# The in-memory stub NFS used by this crate's route tests and, later, by the
+# Stage-2 chain-head tests. Off by default so a production consumer never pulls it.
+testing = []
+
+[dependencies]
+zaino-core = { path = "../zaino-core" }
+zaino-primitives = { path = "../zaino-primitives" }
+zaino-service = { path = "../zaino-service" }
+futures = { workspace = true }
+
+[dev-dependencies]
+# The composed snapshot's route tests run over a *real* finalised store
+# (`zaino-store`'s `StoreReader`), indexed by the runtime's sync stack, paired
+# with the in-memory NFS stub (this crate's `testing` feature).
+zaino-chainview = { path = ".", features = ["testing"] }
+tokio = { workspace = true }
+zaino-store = { path = "../zaino-store" }
+zaino-runtime = { path = "../zaino-runtime" }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-indexes = { workspace = true }
+zaino-persistence = { workspace = true, features = ["testing"] }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
+zaino-component = { path = "../zaino-component" }
