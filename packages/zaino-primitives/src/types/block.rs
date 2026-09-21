@@ -119,24 +119,14 @@ pub struct ChainMetadata {
 }
 
 impl ChainMetadata {
-    /// Empty placeholder: every pool size zero.
-    ///
-    /// A source adapter that does not yet know the commitment tree sizes emits
-    /// this; the indexer fills the real sizes in later. All-zero is not a
-    /// "missing" sentinel — a genuinely empty tree is also all-zero — but at the
-    /// adapter layer it is the documented stand-in for "not computed here yet".
+    /// Every pool size zero.
     pub const ZERO: Self = Self {
         sapling_tree_size: TreeSize::ZERO,
         orchard_tree_size: TreeSize::ZERO,
         ironwood_tree_size: TreeSize::ZERO,
     };
 
-    /// Build from the three cumulative pool sizes, in Sapling / Orchard /
-    /// Ironwood order.
-    ///
-    /// Each argument accepts anything that converts infallibly into a
-    /// [`TreeSize`] (a `u32` count, or a `TreeSize` itself), so a caller holding
-    /// raw counts need not wrap them first.
+    /// Builds from the Sapling, Orchard, and Ironwood cumulative sizes.
     pub fn new(
         sapling_tree_size: impl Into<TreeSize>,
         orchard_tree_size: impl Into<TreeSize>,
