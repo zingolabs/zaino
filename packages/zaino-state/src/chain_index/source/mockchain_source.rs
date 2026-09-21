@@ -447,6 +447,11 @@ pub(crate) fn port_fault<E: std::fmt::Debug + std::fmt::Display>(
     PortError::Fetch(FetchError::new(FailureMode::Parse, message.into()))
 }
 
+/// A vector's `u64` tree size, as the domain carries it.
+fn tree_size(size: u64) -> domain::TreeSize {
+    domain::TreeSize::try_from(size).expect("test vector tree sizes fit u32")
+}
+
 impl MockchainSource {
     /// `Err` when a test has armed [`Self::set_failing`].
     fn forced_failure<E: std::fmt::Debug + std::fmt::Display>(&self) -> Option<PortError<E>> {
@@ -510,10 +515,10 @@ impl MockchainSource {
     fn domain_block_at(&self, index: usize) -> Result<domain::Block, String> {
         let (sapling, orchard) = self.roots[index];
         let chain_metadata = domain::ChainMetadata {
-            sapling_tree_size: sapling.map_or(0, |(_, size)| size as u32),
-            orchard_tree_size: orchard.map_or(0, |(_, size)| size as u32),
+            sapling_tree_size: sapling.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
+            orchard_tree_size: orchard.map_or(domain::TreeSize::ZERO, |(_, size)| tree_size(size)),
             // The test vectors carry no ironwood tree.
-            ironwood_tree_size: 0,
+            ironwood_tree_size: domain::TreeSize::ZERO,
         };
 
         zaino_convert_zebra::block_from_zebra(&self.blocks[index], chain_metadata)
@@ -776,7 +781,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
         let (sapling, orchard) = self.roots[index];
         let info = |root: [u8; 32], size: u64| domain::TreeRootInfo {
             root: domain::TreeRoot::from(root),
-            size,
+            size: tree_size(size),
         };
 
         Ok(domain::TreeRoots {
@@ -803,8 +808,13 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
 
         let (_, orchard) = self.roots[index];
         let (sapling_size, orchard_size) = (
-            self.roots[index].0.map(|(_, size)| size).unwrap_or(0),
-            orchard.map(|(_, size)| size).unwrap_or(0),
+            self.roots[index]
+                .0
+                .map(|(_, size)| tree_size(size))
+                .unwrap_or(domain::TreeSize::ZERO),
+            orchard
+                .map(|(_, size)| tree_size(size))
+                .unwrap_or(domain::TreeSize::ZERO),
         );
 
         Ok(domain::BlockVerbose {
@@ -820,7 +830,7 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
             tree_sizes: domain::BlockTreeSizes {
                 sapling: sapling_size,
                 orchard: orchard_size,
-                ironwood: 0,
+                ironwood: domain::TreeSize::ZERO,
             },
             next_block_hash: self
                 .next_block_hash(index)
@@ -988,7 +998,10 @@ impl zaino_source::OneShotGetBlockHeader for MockchainSource {
             nonce: *header.nonce,
             solution: equihash_solution_bytes(&header.solution)
                 .map_err(port_fault::<zaino_source::GetBlockHeaderError>)?,
-            bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+            bits: domain::CompactDifficulty::try_from_be_bytes(
+                header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| port_fault(e.to_string()))?,
             difficulty: header.difficulty_threshold.relative_to_network(&network),
             block_commitments: Some(domain::BlockCommitments::from(*header.commitment_bytes)),
             final_sapling_root: self.roots[index]
@@ -1301,7 +1314,10 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
             time: header.time.timestamp() as u32,
             median_time: self.median_time_at(index) as u32,
             nonce: *header.nonce,
-            bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+            bits: domain::CompactDifficulty::try_from_be_bytes(
+                header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| port_fault(e.to_string()))?,
             difficulty: header.difficulty_threshold.relative_to_network(&network),
             previous_block_hash: Some(domain::BlockHash::from(header.previous_block_hash.0)),
             next_block_hash: self

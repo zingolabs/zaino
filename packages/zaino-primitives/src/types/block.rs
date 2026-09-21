@@ -3,7 +3,7 @@
 use super::transaction::Transaction;
 use super::{
     BlockCommitments, BlockHash, BlockTime, CompactDifficulty, EquihashNonce, EquihashSolution,
-    Height, MerkleRoot,
+    Height, MerkleRoot, TreeSize,
 };
 
 /// Block header — every consensus field, plus the hash and height that name
@@ -111,11 +111,33 @@ impl Block {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainMetadata {
     /// Cumulative Sapling note commitment tree size after this block.
-    pub sapling_tree_size: u32,
+    pub sapling_tree_size: TreeSize,
     /// Cumulative Orchard note commitment tree size after this block.
-    pub orchard_tree_size: u32,
+    pub orchard_tree_size: TreeSize,
     /// Cumulative Ironwood note commitment tree size after this block (NU6.3).
-    pub ironwood_tree_size: u32,
+    pub ironwood_tree_size: TreeSize,
+}
+
+impl ChainMetadata {
+    /// Every pool size zero.
+    pub const ZERO: Self = Self {
+        sapling_tree_size: TreeSize::ZERO,
+        orchard_tree_size: TreeSize::ZERO,
+        ironwood_tree_size: TreeSize::ZERO,
+    };
+
+    /// Builds from the Sapling, Orchard, and Ironwood cumulative sizes.
+    pub fn new(
+        sapling_tree_size: impl Into<TreeSize>,
+        orchard_tree_size: impl Into<TreeSize>,
+        ironwood_tree_size: impl Into<TreeSize>,
+    ) -> Self {
+        Self {
+            sapling_tree_size: sapling_tree_size.into(),
+            orchard_tree_size: orchard_tree_size.into(),
+            ironwood_tree_size: ironwood_tree_size.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -132,7 +154,8 @@ mod tests {
             time: 0,
             merkle_root: [0u8; 32].into(),
             block_commitments: [0u8; 32].into(),
-            bits: 0,
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff)
+                .expect("the regtest difficulty threshold is valid"),
             nonce: [0u8; 32],
             solution: EquihashSolution::Regtest([0u8; 36]),
         }
@@ -140,9 +163,9 @@ mod tests {
 
     fn chain_metadata() -> ChainMetadata {
         ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         }
     }
 

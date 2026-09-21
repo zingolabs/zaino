@@ -1,7 +1,8 @@
 //! Blocks as the store holds and serves them.
 
 use zaino_primitives::types::{
-    BlockHeader, BlockRef, ChainWork, PreIndexCompactTx, ShieldedPool, SignedZatoshis, TreeRoots,
+    AbsoluteChainWork, BlockHeader, BlockRef, PreIndexCompactTx, ShieldedPool, SignedZatoshis,
+    TreeRoots,
 };
 
 /// A finalised block, as the store indexed it.
@@ -40,7 +41,7 @@ pub struct StoredBlock {
     /// roots are what an index needs and a compact block does not.
     pub tree_roots: TreeRoots,
     /// Cumulative work from genesis to this block.
-    pub chainwork: ChainWork,
+    pub chainwork: AbsoluteChainWork,
 }
 
 /// A block handed to a store to freeze.

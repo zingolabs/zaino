@@ -18,11 +18,11 @@ use zaino_chain_store::{
     TxOutSetIndexCapability,
 };
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition,
-    ChainWork as DomainChainWork, EncryptedCiphertext, Height as DomainHeight, Nullifier,
-    OrchardAction, Outpoint as DomainOutpoint, PreIndexCompactTx, SaplingOutput, Script,
-    ScriptType, SignedZatoshis, TransactionId, TransparentAddressKey, TransparentInput,
-    TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
+    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
+    Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
+    PreIndexCompactTx, SaplingOutput, Script, ScriptType, SignedZatoshis, TransactionId,
+    TransparentAddressKey, TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex,
+    Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
@@ -152,7 +152,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
         })?,
         merkle_root: data.merkle_root.into(),
         block_commitments: data.block_commitments.into(),
-        bits: data.bits.as_bits(),
+        bits: data.bits,
         nonce: data.nonce,
         solution: match data.solution {
             crate::types::EquihashSolution::Standard(bytes) => {
@@ -172,7 +172,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
             .map(stored_compact_tx)
             .collect::<Result<Vec<_>, _>>()?,
         tree_roots: tree_roots(&block.commitment_tree_data),
-        chainwork: domain_chainwork(context.chainwork()),
+        chainwork: context.chainwork(),
     })
 }
 
@@ -240,7 +240,7 @@ fn stored_compact_tx_body(tx: &CompactTxData) -> Result<PreIndexCompactTx, Chain
             .map(|output| SaplingOutput {
                 cmu: (*output.cmu()).into(),
                 ephemeral_key: (*output.ephemeral_key()).into(),
-                enc_ciphertext: EncryptedCiphertext::new(output.ciphertext().to_vec()),
+                enc_ciphertext: CompactCiphertext::from(*output.ciphertext()),
             })
             .collect(),
         orchard_actions: tx.orchard().actions().iter().map(orchard_action).collect(),
@@ -253,7 +253,7 @@ fn orchard_action(action: &crate::types::CompactOrchardAction) -> OrchardAction 
         nullifier: (*action.nullifier()).into(),
         cmx: (*action.cmx()).into(),
         ephemeral_key: (*action.ephemeral_key()).into(),
-        enc_ciphertext: EncryptedCiphertext::new(action.ciphertext().to_vec()),
+        enc_ciphertext: CompactCiphertext::from(*action.ciphertext()),
     }
 }
 
@@ -325,18 +325,6 @@ fn non_standard_key_script(output: &TxOutCompact) -> Vec<u8> {
 /// Reporting the zero root as present is what the stored bytes say, and
 /// inventing an absence from a zero value would make a pre-activation block
 /// indistinguishable from one with an empty tree.
-/// Stored chainwork, as the domain's 256-bit big-endian value.
-///
-/// The store holds work as a `u128`, which is ample — Zcash's cumulative work
-/// is nowhere near 2^128 — while the domain carries the 256-bit form the RPC
-/// surface reports. Widening is left-padding with zeroes, and cannot lose
-/// anything.
-pub(super) fn domain_chainwork(chainwork: &crate::types::ChainWork) -> DomainChainWork {
-    let mut bytes = [0u8; 32];
-    bytes[16..].copy_from_slice(&chainwork.as_non_zero_u128().get().to_be_bytes());
-    DomainChainWork::new(bytes)
-}
-
 pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     let roots = data.roots();
     let sizes = data.sizes();
@@ -344,15 +332,15 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     TreeRoots {
         sapling: Some(TreeRootInfo {
             root: (*roots.sapling()).into(),
-            size: u64::from(sizes.sapling()),
+            size: sizes.sapling().into(),
         }),
         orchard: Some(TreeRootInfo {
             root: (*roots.orchard()).into(),
-            size: u64::from(sizes.orchard()),
+            size: sizes.orchard().into(),
         }),
         ironwood: roots.ironwood().map(|root| TreeRootInfo {
             root: root.into(),
-            size: u64::from(sizes.ironwood()),
+            size: sizes.ironwood().into(),
         }),
     }
 }

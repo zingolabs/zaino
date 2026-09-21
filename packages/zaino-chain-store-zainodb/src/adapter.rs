@@ -51,8 +51,8 @@ pub(crate) use to_domain::domain_block_ref;
 use error_map::{chain_store_error, chain_store_source_error};
 use from_domain::{stored_hash, stored_height, stored_outpoint, tx_location};
 use to_domain::{
-    block_tx_position, domain_chainwork, domain_hash, domain_height, domain_txid,
-    store_capabilities, store_schema, stored_block, stored_tx_outs,
+    block_tx_position, domain_hash, domain_height, domain_txid, store_capabilities, store_schema,
+    stored_block, stored_tx_outs,
 };
 
 use core::future::Future;
@@ -64,7 +64,7 @@ use zaino_chain_store::{
     StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockTxPosition, ChainWork as DomainChainWork, CompactBlock,
+    AbsoluteChainWork, BlockHash as DomainBlockHash, BlockTxPosition, CompactBlock,
     Height as DomainHeight, Outpoint as DomainOutpoint, TransactionId,
 };
 use zaino_status::StatusType;
@@ -580,7 +580,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     /// Read through this store's own reader. That costs a whole block for one
     /// number, which no port offers alone — paid once per freeze batch, where
     /// the batch then folds forward in memory.
-    async fn tip_chainwork(&self) -> Result<Option<DomainChainWork>, ChainStoreError> {
+    async fn tip_chainwork(&self) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
         let Some(tip) = self.db_height().await.map_err(chain_store_error)? else {
             return Ok(None);
         };
@@ -593,37 +593,6 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             .next()
             .map(|block| block.chainwork))
     }
-}
-
-/// A block's chainwork, accumulated onto its parent's.
-///
-/// The store's own derivation, from data that is on the block itself: its
-/// difficulty says what it contributes, and the parent says what came before.
-/// Nothing a caller supplied takes part.
-fn accumulate_chainwork(
-    parent: Option<DomainChainWork>,
-    header: &zaino_primitives::types::BlockHeader,
-) -> Result<DomainChainWork, ChainStoreError> {
-    let hash = stored_hash(header.hash);
-    let block_work = crate::conversion::block_work(header.bits, hash).map_err(|error| {
-        ChainStoreError::backend_because(
-            format!("block {} has invalid difficulty", header.hash),
-            error,
-        )
-    })?;
-
-    // Widened through the same helper the read path uses, so the work a block
-    // contributes on the way in and the work reported on the way out are the
-    // same bytes rather than two independent widenings.
-    parent
-        .unwrap_or(DomainChainWork::ZERO)
-        .checked_add(domain_chainwork(&block_work).into())
-        .ok_or_else(|| {
-            ChainStoreError::backend(format!(
-                "256-bit chainwork overflowed at block {}",
-                header.hash
-            ))
-        })
 }
 
 impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
@@ -664,7 +633,17 @@ impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
                 });
             }
 
-            let chainwork = accumulate_chainwork(parent_chainwork, &block.header)?;
+            let chainwork = crate::conversion::chainwork_from_parent(
+                block.header.bits,
+                stored_hash(block.header.hash),
+                parent_chainwork,
+            )
+            .map_err(|error| {
+                ChainStoreError::backend_because(
+                    format!("block {} chainwork could not be derived", block.header.hash),
+                    error,
+                )
+            })?;
             let stored = StoredBlock {
                 header: block.header.clone(),
                 transactions: block.transactions.clone(),

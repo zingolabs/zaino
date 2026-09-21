@@ -127,14 +127,14 @@ pub struct CompactBlock {
 mod tests {
     use super::*;
     use crate::types::transaction::{OrchardData, Transaction};
-    use crate::types::EncryptedCiphertext;
+    use crate::types::CompactCiphertext;
 
     fn action(tag: u8) -> OrchardAction {
         OrchardAction {
             nullifier: [tag; 32].into(),
             cmx: [tag; 32].into(),
             ephemeral_key: [tag; 32].into(),
-            enc_ciphertext: EncryptedCiphertext::new(vec![tag]),
+            enc_ciphertext: CompactCiphertext::from([tag; 52]),
         }
     }
 
