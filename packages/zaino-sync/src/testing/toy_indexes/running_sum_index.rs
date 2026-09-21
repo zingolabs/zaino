@@ -4,7 +4,7 @@ use crate::descriptor::{BlockLocal, Fold};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeFold, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -107,21 +107,54 @@ impl Schema<RunningSum> for RunningSumIndex {
 impl EntryCodec for RunningSumIndex {
     type Key = SumKey;
     type Value = RunningSum;
+    type PersistentKey = PersistentSumKey;
+    type PersistentValue = PersistentRunningSum;
 
     fn fingerprint_samples() -> Vec<(SumKey, RunningSum)> {
         vec![(SumKey, RunningSum(1))]
     }
+}
 
-    fn encode_key(key: &Self::Key) -> Vec<u8> {
-        key.encode()
+/// On-disk record for [`SumKey`].
+pub struct PersistentSumKey(SumKey);
+
+impl PersistentRecord for PersistentSumKey {
+    type Domain = SumKey;
+
+    fn from_domain(domain: &SumKey) -> Self {
+        Self(*domain)
     }
-    fn encode_value(value: &Self::Value) -> Vec<u8> {
-        value.encode()
+    fn into_domain(self) -> Result<SumKey, PersistDecodeError> {
+        Ok(self.0)
     }
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
-        SumKey::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn encode(&self) -> Vec<u8> {
+        Encode::encode(&self.0)
     }
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
-        RunningSum::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        <SumKey as Decode>::decode(bytes)
+            .map(Self)
+            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    }
+}
+
+/// On-disk record for [`RunningSum`].
+pub struct PersistentRunningSum(RunningSum);
+
+impl PersistentRecord for PersistentRunningSum {
+    type Domain = RunningSum;
+
+    fn from_domain(domain: &RunningSum) -> Self {
+        Self(*domain)
+    }
+    fn into_domain(self) -> Result<RunningSum, PersistDecodeError> {
+        Ok(self.0)
+    }
+    fn encode(&self) -> Vec<u8> {
+        Encode::encode(&self.0)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        <RunningSum as Decode>::decode(bytes)
+            .map(Self)
+            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }

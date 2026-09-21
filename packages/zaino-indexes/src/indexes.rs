@@ -5,7 +5,6 @@
 
 pub mod address_history;
 pub mod chain_metadata;
-pub(crate) mod decode;
 pub mod hash_to_height;
 pub mod headers;
 pub mod orchard;

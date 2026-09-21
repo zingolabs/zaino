@@ -13,7 +13,10 @@
 //! decoding a queried t-address into `(type, hash160)`, so write and read agree
 //! without this index depending on the address-string parser.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec};
+use zaino_persistence_codec::layout::{Cursor, Writer};
+use zaino_persistence_codec::{
+    decode_key, decode_value, DecodeError, EntryCodec, PersistentRecord,
+};
 use zaino_primitives::types::{
     classify_script, OutputIndex, Script, ScriptType, TransactionId, Zatoshis,
 };
@@ -174,6 +177,8 @@ impl Schema<Vec<Vec<AddressReceive>>> for AddressHistoryIndex {
 impl EntryCodec for AddressHistoryIndex {
     type Key = AddrKey;
     type Value = Zatoshis;
+    type PersistentKey = PersistentAddrKey;
+    type PersistentValue = PersistentReceiveValue;
 
     fn fingerprint_samples() -> Vec<(AddrKey, Zatoshis)> {
         // Cover every ScriptType variant, since the type byte is part of the key.
@@ -197,52 +202,105 @@ impl EntryCodec for AddressHistoryIndex {
             sample(ScriptType::NonStandard, 3),
         ]
     }
+}
 
-    fn encode_key(key: &AddrKey) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(65);
-        buf.push(script_type_byte(key.addr.script_type));
-        buf.extend_from_slice(&key.addr.hash);
-        buf.extend_from_slice(&key.height.value().to_be_bytes());
-        buf.extend_from_slice(&<[u8; 32]>::from(key.txid));
-        buf.extend_from_slice(&key.output_index.to_be_bytes());
-        buf
-    }
+/// On-disk address-history key:
+/// `script_type(1) ++ hash(20) ++ height(8 BE) ++ txid(32) ++ output_index(4 BE)`
+/// = 65 bytes.
+///
+/// Height and output index are **big-endian** on purpose: the record is
+/// address-prefixed and byte-lexicographic order must match height order for a
+/// per-address range scan, so these two fields do not use the little-endian
+/// [`layout`](zaino_persistence_codec::layout) writers.
+pub struct PersistentAddrKey {
+    script_type: u8,
+    hash: [u8; 20],
+    height: u64,
+    txid: [u8; 32],
+    output_index: u32,
+}
 
-    fn encode_value(value: &Zatoshis) -> Vec<u8> {
-        u64::from(*value).to_le_bytes().to_vec()
-    }
+impl PersistentRecord for PersistentAddrKey {
+    type Domain = AddrKey;
 
-    fn decode_key(bytes: &[u8]) -> Result<AddrKey, DecodeError> {
-        if bytes.len() != 65 {
-            return Err(DecodeError::Invalid(format!(
-                "expected 65 bytes, got {}",
-                bytes.len()
-            )));
+    fn from_domain(domain: &AddrKey) -> Self {
+        Self {
+            script_type: script_type_byte(domain.addr.script_type),
+            hash: domain.addr.hash,
+            height: domain.height.value(),
+            txid: <[u8; 32]>::from(domain.txid),
+            output_index: domain.output_index,
         }
-        let script_type = script_type_from_byte(bytes[0])?;
-        let mut hash = [0u8; 20];
-        hash.copy_from_slice(&bytes[1..21]);
-        let height = u64::from_be_bytes(bytes[21..29].try_into().expect("8 bytes"));
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(&bytes[29..61]);
-        let output_index = u32::from_be_bytes(bytes[61..65].try_into().expect("4 bytes"));
+    }
+
+    fn into_domain(self) -> Result<AddrKey, DecodeError> {
+        let script_type = script_type_from_byte(self.script_type)?;
         Ok(AddrKey {
-            addr: AddrId { script_type, hash },
-            height: BlockHeight::new(height),
-            txid: TransactionId::from(txid),
-            output_index,
+            addr: AddrId {
+                script_type,
+                hash: self.hash,
+            },
+            height: BlockHeight::new(self.height),
+            txid: TransactionId::from(self.txid),
+            output_index: self.output_index,
         })
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<Zatoshis, DecodeError> {
-        if bytes.len() != 8 {
-            return Err(DecodeError::Invalid(format!(
-                "expected 8 bytes, got {}",
-                bytes.len()
-            )));
-        }
-        let raw = u64::from_le_bytes(bytes.try_into().expect("8 bytes"));
-        Zatoshis::new(raw).map_err(|e| DecodeError::Invalid(e.to_string()))
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(65);
+        buf.push(self.script_type);
+        buf.extend_from_slice(&self.hash);
+        buf.extend_from_slice(&self.height.to_be_bytes());
+        buf.extend_from_slice(&self.txid);
+        buf.extend_from_slice(&self.output_index.to_be_bytes());
+        buf
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let arr: [u8; 65] = bytes
+            .try_into()
+            .map_err(|_| DecodeError::Invalid(format!("expected 65 bytes, got {}", bytes.len())))?;
+        let mut hash = [0u8; 20];
+        hash.copy_from_slice(&arr[1..21]);
+        let mut txid = [0u8; 32];
+        txid.copy_from_slice(&arr[29..61]);
+        // Each fixed window below is exact by construction (arr is [u8; 65]), so
+        // the array `try_into`s cannot fail.
+        Ok(Self {
+            script_type: arr[0],
+            hash,
+            height: u64::from_be_bytes(arr[21..29].try_into().expect("8 bytes")),
+            txid,
+            output_index: u32::from_be_bytes(arr[61..65].try_into().expect("4 bytes")),
+        })
+    }
+}
+
+/// On-disk received-amount record: a single `u64` little-endian zatoshi count.
+pub struct PersistentReceiveValue(u64);
+
+impl PersistentRecord for PersistentReceiveValue {
+    type Domain = Zatoshis;
+
+    fn from_domain(domain: &Zatoshis) -> Self {
+        Self(u64::from(*domain))
+    }
+
+    fn into_domain(self) -> Result<Zatoshis, DecodeError> {
+        Zatoshis::new(self.0).map_err(|e| DecodeError::Invalid(e.to_string()))
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(8);
+        writer.u64(self.0);
+        writer.into_bytes()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let raw = cursor.u64()?;
+        cursor.finish()?;
+        Ok(Self(raw))
     }
 }
 
@@ -269,14 +327,14 @@ pub fn read_receives(
 ) -> Result<Vec<AddressReceive>, ReceivesReadError> {
     let mut out = Vec::new();
     for (raw_key, raw_value) in reader.scan(ID.into())? {
-        let key = AddressHistoryIndex::decode_key(&raw_key)?;
+        let key = decode_key::<AddressHistoryIndex>(&raw_key)?;
         if key.addr == addr {
             out.push(AddressReceive {
                 addr: key.addr,
                 height: key.height,
                 txid: key.txid,
                 output_index: key.output_index,
-                value: AddressHistoryIndex::decode_value(&raw_value)?,
+                value: decode_value::<AddressHistoryIndex>(&raw_value)?,
             });
         }
     }
@@ -287,6 +345,7 @@ pub fn read_receives(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zaino_persistence_codec::{encode_key, encode_value};
 
     fn txid(b: u8) -> TransactionId {
         TransactionId::from([b; 32])
@@ -331,23 +390,62 @@ mod tests {
             txid: txid(1),
             output_index: 2,
         };
-        let bytes = AddressHistoryIndex::encode_key(&key);
+        let bytes = encode_key::<AddressHistoryIndex>(&key);
         assert_eq!(bytes.len(), 65);
         // Address id is the leading 21 bytes — the range-scan prefix.
         assert_eq!(bytes[0], 0); // P2PKH
         assert_eq!(&bytes[1..21], &[7u8; 20]);
         assert_eq!(
-            AddressHistoryIndex::decode_key(&bytes).expect("decode"),
+            decode_key::<AddressHistoryIndex>(&bytes).expect("decode"),
             key
         );
     }
 
     #[test]
     fn value_round_trips() {
-        let bytes = AddressHistoryIndex::encode_value(&Zatoshis::new(12345).expect("valid"));
+        let bytes = encode_value::<AddressHistoryIndex>(&Zatoshis::new(12345).expect("valid"));
         assert_eq!(
-            AddressHistoryIndex::decode_value(&bytes).expect("decode"),
+            decode_value::<AddressHistoryIndex>(&bytes).expect("decode"),
             Zatoshis::new(12345).expect("valid")
+        );
+    }
+
+    #[test]
+    fn value_encodes_to_a_pinned_8_byte_layout() {
+        // Golden vector: 12345 = 0x3039, little-endian over 8 bytes.
+        let bytes = encode_value::<AddressHistoryIndex>(&Zatoshis::new(12345).expect("valid"));
+        assert_eq!(bytes, vec![0x39, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(
+            decode_value::<AddressHistoryIndex>(&bytes).expect("decode"),
+            Zatoshis::new(12345).expect("valid")
+        );
+    }
+
+    #[test]
+    fn key_encodes_to_a_pinned_65_byte_layout() {
+        // Golden vector: type(1) ++ hash(20) ++ height(8 BE) ++ txid(32) ++ index(4 BE).
+        let key = AddrKey {
+            addr: AddrId {
+                script_type: ScriptType::P2SH,
+                hash: [0xAB; 20],
+            },
+            height: BlockHeight::new(0x0102),
+            txid: txid(0xCD),
+            output_index: 0x0304,
+        };
+        let mut expected = Vec::new();
+        expected.push(1u8); // P2SH
+        expected.extend_from_slice(&[0xAB; 20]);
+        expected.extend_from_slice(&0x0102u64.to_be_bytes());
+        expected.extend_from_slice(&[0xCD; 32]);
+        expected.extend_from_slice(&0x0304u32.to_be_bytes());
+        assert_eq!(expected.len(), 65);
+
+        let bytes = encode_key::<AddressHistoryIndex>(&key);
+        assert_eq!(bytes, expected);
+        assert_eq!(
+            decode_key::<AddressHistoryIndex>(&bytes).expect("decode"),
+            key
         );
     }
 
@@ -395,8 +493,8 @@ mod tests {
             .into_iter()
             .map(|(k, v)| WriteOp::Put {
                 namespace: ID.into(),
-                key: AddressHistoryIndex::encode_key(&k),
-                value: AddressHistoryIndex::encode_value(&v),
+                key: encode_key::<AddressHistoryIndex>(&k),
+                value: encode_value::<AddressHistoryIndex>(&v),
             })
             .collect();
         let backend = InMemoryBackend::new();

@@ -1,6 +1,7 @@
 //! HashToHeightIndex (BlockLocal × Append): block hash → height.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec};
+use zaino_persistence_codec::keys::{HashKey, HeightKey};
+use zaino_persistence_codec::EntryCodec;
 use zaino_primitives::types::BlockHash;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -65,35 +66,12 @@ impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
 impl EntryCodec for HashToHeightIndex {
     type Key = BlockHash;
     type Value = BlockHeight;
+    // The key is a plain 32-byte hash and the value a plain block height, so both
+    // reuse the shared key records rather than re-deriving a layout.
+    type PersistentKey = HashKey<BlockHash>;
+    type PersistentValue = HeightKey<BlockHeight>;
 
     fn fingerprint_samples() -> Vec<(BlockHash, BlockHeight)> {
         vec![(BlockHash::from([1u8; 32]), BlockHeight::new(2))]
-    }
-
-    fn encode_key(key: &BlockHash) -> Vec<u8> {
-        <[u8; 32]>::from(*key).to_vec()
-    }
-
-    fn encode_value(value: &BlockHeight) -> Vec<u8> {
-        value.value().to_le_bytes().to_vec()
-    }
-
-    fn decode_key(bytes: &[u8]) -> Result<BlockHash, DecodeError> {
-        let mut arr = [0u8; 32];
-        if bytes.len() != 32 {
-            return Err(DecodeError::Invalid(format!(
-                "expected 32 bytes, got {}",
-                bytes.len()
-            )));
-        }
-        arr.copy_from_slice(bytes);
-        Ok(BlockHash::from(arr))
-    }
-
-    fn decode_value(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
-        let arr: [u8; 8] = bytes
-            .try_into()
-            .map_err(|_| DecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
-        Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 }

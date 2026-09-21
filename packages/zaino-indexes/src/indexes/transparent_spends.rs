@@ -3,7 +3,9 @@
 //! For each transparent input in each transaction, records which
 //! transaction spent that outpoint.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec};
+use zaino_persistence_codec::keys::HashKey;
+use zaino_persistence_codec::layout::{Cursor, Writer};
+use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::{OutputIndex, TransactionId};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::IndexId;
@@ -99,6 +101,9 @@ impl Schema<Vec<Vec<SpendEntry>>> for TransparentSpendsIndex {
 impl EntryCodec for TransparentSpendsIndex {
     type Key = OutpointKey;
     type Value = TransactionId;
+    type PersistentKey = PersistentOutpointKey;
+    // The value is a plain 32-byte spending txid — reuse the shared hash record.
+    type PersistentValue = HashKey<TransactionId>;
 
     fn fingerprint_samples() -> Vec<(OutpointKey, TransactionId)> {
         vec![(
@@ -109,43 +114,46 @@ impl EntryCodec for TransparentSpendsIndex {
             TransactionId::from([3u8; 32]),
         )]
     }
+}
 
-    fn encode_key(key: &OutpointKey) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(36);
-        buf.extend_from_slice(&<[u8; 32]>::from(key.prev_txid));
-        buf.extend_from_slice(&key.prev_index.to_le_bytes());
-        buf
-    }
+/// On-disk outpoint record: `prev_txid(32) ++ prev_index(4 LE)` = 36 bytes.
+pub struct PersistentOutpointKey {
+    prev_txid: [u8; 32],
+    prev_index: u32,
+}
 
-    fn encode_value(value: &TransactionId) -> Vec<u8> {
-        <[u8; 32]>::from(*value).to_vec()
-    }
+impl PersistentRecord for PersistentOutpointKey {
+    type Domain = OutpointKey;
 
-    fn decode_key(bytes: &[u8]) -> Result<OutpointKey, DecodeError> {
-        if bytes.len() != 36 {
-            return Err(DecodeError::Invalid(format!(
-                "expected 36 bytes, got {}",
-                bytes.len()
-            )));
+    fn from_domain(domain: &OutpointKey) -> Self {
+        Self {
+            prev_txid: <[u8; 32]>::from(domain.prev_txid),
+            prev_index: domain.prev_index,
         }
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(&bytes[0..32]);
-        let index = u32::from_le_bytes(bytes[32..36].try_into().expect("4 bytes"));
+    }
+
+    fn into_domain(self) -> Result<OutpointKey, DecodeError> {
         Ok(OutpointKey {
-            prev_txid: TransactionId::from(txid),
-            prev_index: index,
+            prev_txid: TransactionId::from(self.prev_txid),
+            prev_index: self.prev_index,
         })
     }
 
-    fn decode_value(bytes: &[u8]) -> Result<TransactionId, DecodeError> {
-        if bytes.len() != 32 {
-            return Err(DecodeError::Invalid(format!(
-                "expected 32 bytes, got {}",
-                bytes.len()
-            )));
-        }
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(bytes);
-        Ok(TransactionId::from(txid))
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(36);
+        writer.bytes32(&self.prev_txid);
+        writer.u32(self.prev_index);
+        writer.into_bytes()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let prev_txid = cursor.bytes32()?;
+        let prev_index = cursor.u32()?;
+        cursor.finish()?;
+        Ok(Self {
+            prev_txid,
+            prev_index,
+        })
     }
 }

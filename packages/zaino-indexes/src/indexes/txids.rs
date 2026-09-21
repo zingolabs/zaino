@@ -1,6 +1,7 @@
 //! TxidsIndex (BlockLocal × Append): height → list of transaction ids.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec};
+use zaino_persistence_codec::keys::HeightKey;
+use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -75,6 +76,8 @@ impl Schema<Vec<TxidsEntry>> for TxidsIndex {
 impl EntryCodec for TxidsIndex {
     type Key = BlockHeight;
     type Value = TxidsValue;
+    type PersistentKey = HeightKey<BlockHeight>;
+    type PersistentValue = PersistentTxidsValue;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, TxidsValue)> {
         vec![(
@@ -85,27 +88,40 @@ impl EntryCodec for TxidsIndex {
             ]),
         )]
     }
+}
 
-    fn encode_key(key: &BlockHeight) -> Vec<u8> {
-        key.value().to_le_bytes().to_vec()
+/// On-disk txids record: the 32-byte txids concatenated, no count prefix — the
+/// length is recovered by the multiple-of-32 division.
+pub struct PersistentTxidsValue(Vec<[u8; 32]>);
+
+impl PersistentRecord for PersistentTxidsValue {
+    type Domain = TxidsValue;
+
+    fn from_domain(domain: &TxidsValue) -> Self {
+        Self(
+            domain
+                .0
+                .iter()
+                .map(|txid| <[u8; 32]>::from(*txid))
+                .collect(),
+        )
     }
 
-    fn encode_value(value: &TxidsValue) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(value.0.len() * 32);
-        for txid in &value.0 {
-            buf.extend_from_slice(&<[u8; 32]>::from(*txid));
+    fn into_domain(self) -> Result<TxidsValue, DecodeError> {
+        Ok(TxidsValue(
+            self.0.into_iter().map(TransactionId::from).collect(),
+        ))
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(self.0.len() * 32);
+        for txid in &self.0 {
+            buf.extend_from_slice(txid);
         }
         buf
     }
 
-    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
-        let arr: [u8; 8] = bytes
-            .try_into()
-            .map_err(|_| DecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
-        Ok(BlockHeight::new(u64::from_le_bytes(arr)))
-    }
-
-    fn decode_value(bytes: &[u8]) -> Result<TxidsValue, DecodeError> {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         if !bytes.len().is_multiple_of(32) {
             return Err(DecodeError::Invalid(format!(
                 "txids length {} not multiple of 32",
@@ -114,12 +130,12 @@ impl EntryCodec for TxidsIndex {
         }
         let txids = bytes
             .chunks_exact(32)
-            .map(|c| {
+            .map(|chunk| {
                 let mut arr = [0u8; 32];
-                arr.copy_from_slice(c);
-                TransactionId::from(arr)
+                arr.copy_from_slice(chunk);
+                arr
             })
             .collect();
-        Ok(TxidsValue(txids))
+        Ok(Self(txids))
     }
 }

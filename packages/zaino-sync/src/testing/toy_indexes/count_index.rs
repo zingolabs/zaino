@@ -4,7 +4,7 @@ use crate::descriptor::{BlockLocal, Monoidal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeMonoidal, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
 
 /// Block context for this index: nothing needed.
 ///
@@ -112,21 +112,54 @@ impl Schema<BlockCount> for CountIndex {
 impl EntryCodec for CountIndex {
     type Key = TotalKey;
     type Value = BlockCount;
+    type PersistentKey = PersistentTotalKey;
+    type PersistentValue = PersistentBlockCount;
 
     fn fingerprint_samples() -> Vec<(TotalKey, BlockCount)> {
         vec![(TotalKey, BlockCount(1))]
     }
+}
 
-    fn encode_key(key: &Self::Key) -> Vec<u8> {
-        key.encode()
+/// On-disk record for [`TotalKey`].
+pub struct PersistentTotalKey(TotalKey);
+
+impl PersistentRecord for PersistentTotalKey {
+    type Domain = TotalKey;
+
+    fn from_domain(domain: &TotalKey) -> Self {
+        Self(*domain)
     }
-    fn encode_value(value: &Self::Value) -> Vec<u8> {
-        value.encode()
+    fn into_domain(self) -> Result<TotalKey, PersistDecodeError> {
+        Ok(self.0)
     }
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
-        TotalKey::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn encode(&self) -> Vec<u8> {
+        Encode::encode(&self.0)
     }
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
-        BlockCount::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        <TotalKey as Decode>::decode(bytes)
+            .map(Self)
+            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    }
+}
+
+/// On-disk record for [`BlockCount`].
+pub struct PersistentBlockCount(BlockCount);
+
+impl PersistentRecord for PersistentBlockCount {
+    type Domain = BlockCount;
+
+    fn from_domain(domain: &BlockCount) -> Self {
+        Self(*domain)
+    }
+    fn into_domain(self) -> Result<BlockCount, PersistDecodeError> {
+        Ok(self.0)
+    }
+    fn encode(&self) -> Vec<u8> {
+        Encode::encode(&self.0)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        <BlockCount as Decode>::decode(bytes)
+            .map(Self)
+            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }

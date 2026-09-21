@@ -48,8 +48,22 @@
 //!
 //! A codec owns **format**, not **placement**: the namespace is the caller's
 //! concern, supplied to every helper.
+//!
+//! # The DTO is what the format is fingerprinted over
+//!
+//! An [`EntryCodec`] does not encode its domain types directly. It names a
+//! [`PersistentRecord`] for its key and value — an explicit on-disk record that
+//! *is* the format — and every path to bytes goes through it
+//! (`PersistentValue::from_domain(v).encode()` on write,
+//! `PersistentValue::decode(b)?.into_domain()` on read). Because the fingerprint
+//! is computed over the record, a domain type can be refactored freely without
+//! bumping the version or forcing a resync, so long as its conversion still
+//! yields the same record bytes. The DTO decouples "what the indexer computes"
+//! from "what sits on disk".
 #![forbid(unsafe_code)]
 
+pub mod keys;
+pub mod layout;
 pub mod watermark;
 
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
@@ -92,35 +106,94 @@ pub enum DecodeError {
     Invalid(String),
 }
 
-/// The codec for one index's entries: its typed `Key`/`Value` ↔ on-disk bytes.
+/// An explicit on-disk record — the DTO that *defines* one side of a format.
 ///
-/// This is the DTO boundary — `decode_*` *is* the disk→domain validation step.
-/// It replaces the byte codec that used to live on the sync engine's `Schema`
-/// trait, so `Schema` can shrink to a pure domain projection. It owns format
-/// only; the namespace is supplied by the caller.
+/// A record sits between a domain type and its bytes. [`from_domain`] projects
+/// the domain value into the record (infallible — the domain value is already
+/// valid); [`into_domain`] is the reverse and *is the disk→domain validation
+/// step*, so it returns a [`DecodeError`]. [`encode`] and [`decode`] own the
+/// byte layout. The point of forcing this indirection: the format-version
+/// fingerprint is taken over the record's bytes, so the domain type can change
+/// shape without disturbing the on-disk format as long as the conversion still
+/// produces the same record.
+///
+/// [`from_domain`]: PersistentRecord::from_domain
+/// [`into_domain`]: PersistentRecord::into_domain
+/// [`encode`]: PersistentRecord::encode
+/// [`decode`]: PersistentRecord::decode
+pub trait PersistentRecord: Sized {
+    /// The domain type this record mirrors on disk.
+    type Domain;
+
+    /// Project a domain value into its on-disk record. Infallible: the domain
+    /// value is already valid, so no case can be rejected here.
+    fn from_domain(domain: &Self::Domain) -> Self;
+
+    /// Reconstruct the domain value from the record — the validation boundary
+    /// for bytes coming off disk.
+    fn into_domain(self) -> Result<Self::Domain, DecodeError>;
+
+    /// Serialise the record to its on-disk bytes — the layout lives here.
+    fn encode(&self) -> Vec<u8>;
+
+    /// Parse the record from on-disk bytes. Structural failures (wrong length,
+    /// truncation) are rejected here; domain validation happens in
+    /// [`into_domain`](PersistentRecord::into_domain).
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError>;
+}
+
+/// The codec for one index's entries: its typed `Key`/`Value` and the on-disk
+/// records they persist as.
+///
+/// The codec carries **no** encode/decode methods of its own — the only path to
+/// bytes is through the [`PersistentRecord`] DTOs it names. That is what forces
+/// the DTO: `PersistentValue::from_domain(v).encode()` on write,
+/// `PersistentValue::decode(b)?.into_domain()` on read (see [`put`], [`load`],
+/// and the [`encode_key`]/[`decode_value`] helpers). It owns format only; the
+/// namespace is supplied by the caller.
 pub trait EntryCodec {
     /// The typed key.
     type Key;
     /// The typed value.
     type Value;
-
-    /// Encode a key to its on-disk bytes.
-    fn encode_key(key: &Self::Key) -> Vec<u8>;
-    /// Encode a value to its on-disk bytes.
-    fn encode_value(value: &Self::Value) -> Vec<u8>;
-    /// Decode a key from its on-disk bytes — a validation boundary.
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, DecodeError>;
-    /// Decode a value from its on-disk bytes — a validation boundary.
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, DecodeError>;
+    /// The on-disk record for the key.
+    type PersistentKey: PersistentRecord<Domain = Self::Key>;
+    /// The on-disk record for the value.
+    type PersistentValue: PersistentRecord<Domain = Self::Value>;
 
     /// Canonical sample entries that characterise this codec's on-disk format.
     ///
-    /// The [`format_version`] fingerprint is the hash of these, encoded — so the
-    /// on-disk version tracks the format automatically. Construct each sample
-    /// with **every field explicit** (no `..Default`) and cover every enum
-    /// variant, so a format change cannot escape the fingerprint. The values
-    /// need not be meaningful; they only need to exercise the layout.
+    /// The [`format_version`] fingerprint is the hash of these routed through
+    /// the DTO and encoded — so the on-disk version tracks the record's format
+    /// automatically. Construct each sample with **every field explicit** (no
+    /// `..Default`) and cover every enum variant, so a format change cannot
+    /// escape the fingerprint. The values need not be meaningful; they only need
+    /// to exercise the layout.
     fn fingerprint_samples() -> Vec<(Self::Key, Self::Value)>;
+}
+
+/// Encode a codec's key through its [`PersistentKey`](EntryCodec::PersistentKey)
+/// record. The composition every write path shares.
+pub fn encode_key<C: EntryCodec>(key: &C::Key) -> Vec<u8> {
+    C::PersistentKey::from_domain(key).encode()
+}
+
+/// Encode a codec's value through its
+/// [`PersistentValue`](EntryCodec::PersistentValue) record.
+pub fn encode_value<C: EntryCodec>(value: &C::Value) -> Vec<u8> {
+    C::PersistentValue::from_domain(value).encode()
+}
+
+/// Decode a codec's key: parse the record, then validate it back into the
+/// domain key.
+pub fn decode_key<C: EntryCodec>(bytes: &[u8]) -> Result<C::Key, DecodeError> {
+    C::PersistentKey::decode(bytes)?.into_domain()
+}
+
+/// Decode a codec's value: parse the record, then validate it back into the
+/// domain value.
+pub fn decode_value<C: EntryCodec>(bytes: &[u8]) -> Result<C::Value, DecodeError> {
+    C::PersistentValue::decode(bytes)?.into_domain()
 }
 
 /// A deterministic 64-bit FNV-1a hash.
@@ -145,7 +218,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 pub fn format_version<C: EntryCodec>() -> FormatVersion {
     let mut framed = Vec::new();
     for (key, value) in C::fingerprint_samples() {
-        for blob in [C::encode_key(&key), C::encode_value(&value)] {
+        for blob in [encode_key::<C>(&key), encode_value::<C>(&value)] {
             let len = u64::try_from(blob.len()).expect("canonical sample length fits u64");
             framed.extend_from_slice(&len.to_le_bytes());
             framed.extend_from_slice(&blob);
@@ -181,8 +254,8 @@ pub fn version_stamp<C: EntryCodec>(namespace: Namespace) -> WriteOp {
 pub fn put<C: EntryCodec>(namespace: Namespace, key: &C::Key, value: &C::Value) -> WriteOp {
     WriteOp::Put {
         namespace,
-        key: C::encode_key(key),
-        value: C::encode_value(value),
+        key: encode_key::<C>(key),
+        value: encode_value::<C>(value),
     }
 }
 
@@ -240,7 +313,7 @@ pub fn load<C: EntryCodec>(
         .into_iter()
         .map(
             |(raw_key, raw_value)| -> Result<(C::Key, C::Value), LoadError> {
-                Ok((C::decode_key(&raw_key)?, C::decode_value(&raw_value)?))
+                Ok((decode_key::<C>(&raw_key)?, decode_value::<C>(&raw_value)?))
             },
         )
         .collect()
@@ -267,63 +340,140 @@ mod tests {
         );
     }
 
-    /// A toy codec — little-endian.
+    /// A `u32` key record, little-endian.
+    struct KeyLe(u32);
+    impl PersistentRecord for KeyLe {
+        type Domain = u32;
+        fn from_domain(domain: &u32) -> Self {
+            Self(*domain)
+        }
+        fn into_domain(self) -> Result<u32, DecodeError> {
+            Ok(self.0)
+        }
+        fn encode(&self) -> Vec<u8> {
+            self.0.to_le_bytes().to_vec()
+        }
+        fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+            let tag: [u8; 4] = bytes
+                .try_into()
+                .map_err(|_| DecodeError::Invalid("bad key width".to_owned()))?;
+            Ok(Self(u32::from_le_bytes(tag)))
+        }
+    }
+
+    /// A `u64` value record, little-endian.
+    struct ValueLe(u64);
+    impl PersistentRecord for ValueLe {
+        type Domain = u64;
+        fn from_domain(domain: &u64) -> Self {
+            Self(*domain)
+        }
+        fn into_domain(self) -> Result<u64, DecodeError> {
+            Ok(self.0)
+        }
+        fn encode(&self) -> Vec<u8> {
+            self.0.to_le_bytes().to_vec()
+        }
+        fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+            let tag: [u8; 8] = bytes
+                .try_into()
+                .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
+            Ok(Self(u64::from_le_bytes(tag)))
+        }
+    }
+
+    /// A `u64` value record, **big-endian** — the same domain, a different
+    /// on-disk layout.
+    struct ValueBe(u64);
+    impl PersistentRecord for ValueBe {
+        type Domain = u64;
+        fn from_domain(domain: &u64) -> Self {
+            Self(*domain)
+        }
+        fn into_domain(self) -> Result<u64, DecodeError> {
+            Ok(self.0)
+        }
+        fn encode(&self) -> Vec<u8> {
+            self.0.to_be_bytes().to_vec()
+        }
+        fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+            let tag: [u8; 8] = bytes
+                .try_into()
+                .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
+            Ok(Self(u64::from_be_bytes(tag)))
+        }
+    }
+
+    /// A toy codec — little-endian value record.
     struct Toy;
     impl EntryCodec for Toy {
         type Key = u32;
         type Value = u64;
+        type PersistentKey = KeyLe;
+        type PersistentValue = ValueLe;
 
-        fn encode_key(key: &u32) -> Vec<u8> {
-            key.to_le_bytes().to_vec()
-        }
-        fn encode_value(value: &u64) -> Vec<u8> {
-            value.to_le_bytes().to_vec()
-        }
-        fn decode_key(bytes: &[u8]) -> Result<u32, DecodeError> {
-            let tag: [u8; 4] = bytes
-                .try_into()
-                .map_err(|_| DecodeError::Invalid("bad key width".to_owned()))?;
-            Ok(u32::from_le_bytes(tag))
-        }
-        fn decode_value(bytes: &[u8]) -> Result<u64, DecodeError> {
-            let tag: [u8; 8] = bytes
-                .try_into()
-                .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
-            Ok(u64::from_le_bytes(tag))
-        }
         fn fingerprint_samples() -> Vec<(u32, u64)> {
             vec![(1, 1), (u32::MAX, u64::MAX)]
         }
     }
 
-    /// The same entries but a **different byte layout** (big-endian) — a format
+    /// The same entries but a **different value layout** (big-endian) — a format
     /// change that a hand-set version could forget to bump, but the fingerprint
     /// cannot.
     struct ToyBigEndian;
     impl EntryCodec for ToyBigEndian {
         type Key = u32;
         type Value = u64;
+        type PersistentKey = KeyLe;
+        type PersistentValue = ValueBe;
 
-        fn encode_key(key: &u32) -> Vec<u8> {
-            key.to_be_bytes().to_vec()
+        fn fingerprint_samples() -> Vec<(u32, u64)> {
+            vec![(1, 1), (u32::MAX, u64::MAX)]
         }
-        fn encode_value(value: &u64) -> Vec<u8> {
-            value.to_be_bytes().to_vec()
+    }
+
+    /// A **newtype domain** over the same `u64`, reusing the same value record.
+    /// Standing in for a refactor of the domain type: its shape differs from
+    /// `Toy`'s `u64`, but its DTO — hence its bytes — is identical.
+    #[derive(Clone, Copy)]
+    struct Evolved(u64);
+    impl From<u32> for Evolved {
+        fn from(v: u32) -> Self {
+            Self(u64::from(v))
         }
-        fn decode_key(bytes: &[u8]) -> Result<u32, DecodeError> {
+    }
+    struct EvolvedKey(u32);
+    impl PersistentRecord for EvolvedKey {
+        type Domain = Evolved;
+        fn from_domain(domain: &Evolved) -> Self {
+            // The evolved domain still projects to the *same* key record bytes.
+            Self(u32::try_from(domain.0).unwrap_or(u32::MAX))
+        }
+        fn into_domain(self) -> Result<Evolved, DecodeError> {
+            Ok(Evolved(u64::from(self.0)))
+        }
+        fn encode(&self) -> Vec<u8> {
+            self.0.to_le_bytes().to_vec()
+        }
+        fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
             let tag: [u8; 4] = bytes
                 .try_into()
                 .map_err(|_| DecodeError::Invalid("bad key width".to_owned()))?;
-            Ok(u32::from_be_bytes(tag))
+            Ok(Self(u32::from_le_bytes(tag)))
         }
-        fn decode_value(bytes: &[u8]) -> Result<u64, DecodeError> {
-            let tag: [u8; 8] = bytes
-                .try_into()
-                .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
-            Ok(u64::from_be_bytes(tag))
-        }
-        fn fingerprint_samples() -> Vec<(u32, u64)> {
-            vec![(1, 1), (u32::MAX, u64::MAX)]
+    }
+    struct ToyEvolved;
+    impl EntryCodec for ToyEvolved {
+        type Key = Evolved;
+        type Value = u64;
+        type PersistentKey = EvolvedKey;
+        type PersistentValue = ValueLe;
+
+        fn fingerprint_samples() -> Vec<(Evolved, u64)> {
+            vec![
+                (Evolved::from(1u32), 1),
+                (Evolved::from(u32::MAX), u64::MAX),
+            ]
         }
     }
 
@@ -342,6 +492,15 @@ mod tests {
         // Same samples, same declared version-intent — only the encoding differs.
         // A hand-set number could stay equal here; the fingerprint must not.
         assert_ne!(format_version::<Toy>(), format_version::<ToyBigEndian>());
+    }
+
+    #[test]
+    fn evolving_the_domain_without_the_dto_keeps_the_fingerprint() {
+        // `ToyEvolved` has a different *domain* key type than `Toy` (a newtype
+        // over u64 vs a bare u32) but names DTOs that encode to identical bytes.
+        // Because the fingerprint flows through the DTO, the version is unchanged
+        // — a domain refactor needs no resync.
+        assert_eq!(format_version::<Toy>(), format_version::<ToyEvolved>());
     }
 
     #[test]

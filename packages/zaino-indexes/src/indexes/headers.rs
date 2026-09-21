@@ -1,6 +1,8 @@
 //! HeadersIndex (BlockLocal × Append): height → (hash, prev_hash, time, bits).
 
-use zaino_persistence_codec::{DecodeError, EntryCodec};
+use zaino_persistence_codec::keys::HeightKey;
+use zaino_persistence_codec::layout::{Cursor, Writer};
+use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -90,6 +92,8 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
 impl EntryCodec for HeadersIndex {
     type Key = BlockHeight;
     type Value = HeaderValue;
+    type PersistentKey = HeightKey<BlockHeight>;
+    type PersistentValue = PersistentHeaderValue;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, HeaderValue)> {
         vec![(
@@ -102,51 +106,96 @@ impl EntryCodec for HeadersIndex {
             },
         )]
     }
+}
 
-    fn encode_key(key: &BlockHeight) -> Vec<u8> {
-        key.value().to_le_bytes().to_vec()
-    }
+/// On-disk header record: `hash(32) ++ prev_hash(32) ++ time(4 LE) ++ bits(4 LE)`
+/// = 72 bytes.
+pub struct PersistentHeaderValue {
+    hash: [u8; 32],
+    prev_hash: [u8; 32],
+    time: u32,
+    bits: u32,
+}
 
-    fn encode_value(value: &HeaderValue) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(72);
-        buf.extend_from_slice(&<[u8; 32]>::from(value.hash));
-        buf.extend_from_slice(&<[u8; 32]>::from(value.prev_hash));
-        buf.extend_from_slice(&value.time.to_le_bytes());
-        buf.extend_from_slice(&value.bits.as_bits().to_le_bytes());
-        buf
-    }
+impl PersistentRecord for PersistentHeaderValue {
+    type Domain = HeaderValue;
 
-    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
-        let arr: [u8; 8] = bytes
-            .try_into()
-            .map_err(|_| DecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
-        Ok(BlockHeight::new(u64::from_le_bytes(arr)))
-    }
-
-    fn decode_value(bytes: &[u8]) -> Result<HeaderValue, DecodeError> {
-        if bytes.len() != 72 {
-            return Err(DecodeError::Invalid(format!(
-                "expected 72 bytes, got {}",
-                bytes.len()
-            )));
+    fn from_domain(domain: &HeaderValue) -> Self {
+        Self {
+            hash: <[u8; 32]>::from(domain.hash),
+            prev_hash: <[u8; 32]>::from(domain.prev_hash),
+            time: domain.time,
+            bits: domain.bits.as_bits(),
         }
-        let mut hash = [0u8; 32];
-        let mut prev_hash = [0u8; 32];
-        hash.copy_from_slice(&bytes[0..32]);
-        prev_hash.copy_from_slice(&bytes[32..64]);
-        // The 72-byte length is checked above, so each fixed-offset window below
-        // is exactly 4 bytes and the `try_into` array conversions cannot fail.
-        // PLAN: replace this manual offset arithmetic with a fixed-layout decode
-        // helper (a cursor / typed field reader) that removes these guarded
-        // `expect`s entirely.
+    }
+
+    fn into_domain(self) -> Result<HeaderValue, DecodeError> {
         Ok(HeaderValue {
-            hash: BlockHash::from(hash),
-            prev_hash: BlockHash::from(prev_hash),
-            time: u32::from_le_bytes(bytes[64..68].try_into().expect("4 bytes")),
-            bits: CompactDifficulty::try_from_bits(u32::from_le_bytes(
-                bytes[68..72].try_into().expect("4 bytes"),
-            ))
-            .map_err(|_| DecodeError::Invalid("invalid nBits".to_owned()))?,
+            hash: BlockHash::from(self.hash),
+            prev_hash: BlockHash::from(self.prev_hash),
+            time: self.time,
+            bits: CompactDifficulty::try_from_bits(self.bits)
+                .map_err(|_| DecodeError::Invalid("invalid nBits".to_owned()))?,
         })
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(72);
+        writer.bytes32(&self.hash);
+        writer.bytes32(&self.prev_hash);
+        writer.u32(self.time);
+        writer.u32(self.bits);
+        writer.into_bytes()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let hash = cursor.bytes32()?;
+        let prev_hash = cursor.bytes32()?;
+        let time = cursor.u32()?;
+        let bits = cursor.u32()?;
+        cursor.finish()?;
+        Ok(Self {
+            hash,
+            prev_hash,
+            time,
+            bits,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_value_encodes_to_a_pinned_72_byte_layout() {
+        let value = HeaderValue {
+            hash: BlockHash::from([0x11; 32]),
+            prev_hash: BlockHash::from([0x22; 32]),
+            time: 0x0403_0201,
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+        };
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&[0x11; 32]);
+        expected.extend_from_slice(&[0x22; 32]);
+        expected.extend_from_slice(&0x0403_0201u32.to_le_bytes());
+        expected.extend_from_slice(&0x2007_ffffu32.to_le_bytes());
+        assert_eq!(expected.len(), 72);
+
+        let bytes = PersistentHeaderValue::from_domain(&value).encode();
+        assert_eq!(bytes, expected);
+
+        let back = PersistentHeaderValue::decode(&bytes)
+            .expect("decode")
+            .into_domain()
+            .expect("into_domain");
+        assert_eq!(back, value);
+    }
+
+    #[test]
+    fn a_short_header_buffer_is_rejected() {
+        assert!(PersistentHeaderValue::decode(&[0u8; 71]).is_err());
+        assert!(PersistentHeaderValue::decode(&[0u8; 73]).is_err());
     }
 }

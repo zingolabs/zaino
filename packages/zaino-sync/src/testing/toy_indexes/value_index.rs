@@ -4,7 +4,8 @@ use crate::descriptor::{Append, BlockLocal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
+use zaino_persistence_codec::keys::HeightKey;
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
 
 /// Block context for this index: height and value.
 pub struct Context {
@@ -97,24 +98,33 @@ impl Schema<Vec<Entry>> for ValueIndex {
 impl EntryCodec for ValueIndex {
     type Key = BlockHeight;
     type Value = BlockValue;
+    // The key is a plain block height — reuse the shared height record.
+    type PersistentKey = HeightKey<BlockHeight>;
+    type PersistentValue = PersistentBlockValue;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, BlockValue)> {
         vec![(BlockHeight::new(1), BlockValue(2))]
     }
+}
 
-    fn encode_key(key: &Self::Key) -> Vec<u8> {
-        key.encode()
+/// On-disk record for [`BlockValue`].
+pub struct PersistentBlockValue(BlockValue);
+
+impl PersistentRecord for PersistentBlockValue {
+    type Domain = BlockValue;
+
+    fn from_domain(domain: &BlockValue) -> Self {
+        Self(*domain)
     }
-
-    fn encode_value(value: &Self::Value) -> Vec<u8> {
-        value.encode()
+    fn into_domain(self) -> Result<BlockValue, PersistDecodeError> {
+        Ok(self.0)
     }
-
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
-        BlockHeight::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn encode(&self) -> Vec<u8> {
+        Encode::encode(&self.0)
     }
-
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
-        BlockValue::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        <BlockValue as Decode>::decode(bytes)
+            .map(Self)
+            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }

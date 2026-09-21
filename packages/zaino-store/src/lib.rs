@@ -48,7 +48,9 @@ use zaino_indexes::indexes::sapling::{self, SaplingIndex};
 use zaino_indexes::indexes::transparent_data::{self, TransparentDataIndex};
 use zaino_indexes::indexes::txids::{self, TxidsIndex};
 use zaino_persistence::{Backend, BackendReader, Namespace};
-use zaino_persistence_codec::{freshness, watermark, EntryCodec, Freshness};
+use zaino_persistence_codec::{
+    decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
+};
 use zaino_primitives::types::{
     CompactBlock, OrchardAction, PreIndexCompactTx, SaplingOutput, TransparentInput,
     TransparentOutput,
@@ -258,12 +260,12 @@ where
     {
         return Ok(None);
     }
-    let key = C::encode_key(&BlockHeight::new(u64::from(height)));
+    let key = encode_key::<C>(&BlockHeight::new(u64::from(height)));
     match reader
         .get(namespace, &key)
         .map_err(|e| Transient(format!("read {}: {e}", namespace.as_str())))?
     {
-        Some(bytes) => C::decode_value(&bytes)
+        Some(bytes) => decode_value::<C>(&bytes)
             .map(Some)
             .map_err(|e| Transient(format!("decode {}: {e}", namespace.as_str()))),
         None => Ok(None),
@@ -282,13 +284,13 @@ fn resolve_hash<B: Backend>(
     {
         return Ok(None);
     }
-    let key = HashToHeightIndex::encode_key(&hash);
+    let key = encode_key::<HashToHeightIndex>(&hash);
     match reader
         .get(namespace, &key)
         .map_err(|e| Transient(format!("read {}: {e}", namespace.as_str())))?
     {
         Some(bytes) => {
-            let block_height = HashToHeightIndex::decode_value(&bytes)
+            let block_height = decode_value::<HashToHeightIndex>(&bytes)
                 .map_err(|e| Transient(format!("decode {}: {e}", namespace.as_str())))?;
             Height::try_from(
                 u32::try_from(block_height.value()).map_err(|_| {

@@ -10,7 +10,9 @@
 use crate::descriptor::{Append, SelfCumulative};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{CumulativeAppend, ExtractCumulative, IndexDef, MergeAppend, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
+use zaino_persistence_codec::keys::HeightKey;
+use zaino_persistence_codec::layout::{Cursor, Writer};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
 
 /// Block context: the block's height and its value.
 pub struct Context {
@@ -87,27 +89,36 @@ impl Schema<Vec<SeriesEntry>> for CumulativeSeriesIndex {
 impl EntryCodec for CumulativeSeriesIndex {
     type Key = BlockHeight;
     type Value = RunningTotal;
+    // The key is a plain block height — reuse the shared height record.
+    type PersistentKey = HeightKey<BlockHeight>;
+    type PersistentValue = PersistentRunningTotal;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, RunningTotal)> {
         vec![(BlockHeight::new(1), RunningTotal(1))]
     }
+}
 
-    fn encode_key(key: &BlockHeight) -> Vec<u8> {
-        key.value().to_le_bytes().to_vec()
+/// On-disk record for [`RunningTotal`]: a single `u64` little-endian.
+pub struct PersistentRunningTotal(u64);
+
+impl PersistentRecord for PersistentRunningTotal {
+    type Domain = RunningTotal;
+
+    fn from_domain(domain: &RunningTotal) -> Self {
+        Self(domain.0)
     }
-    fn encode_value(value: &RunningTotal) -> Vec<u8> {
-        value.0.to_le_bytes().to_vec()
+    fn into_domain(self) -> Result<RunningTotal, PersistDecodeError> {
+        Ok(RunningTotal(self.0))
     }
-    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, PersistDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-            PersistDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
-        })?;
-        Ok(BlockHeight::new(u64::from_le_bytes(arr)))
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(8);
+        writer.u64(self.0);
+        writer.into_bytes()
     }
-    fn decode_value(bytes: &[u8]) -> Result<RunningTotal, PersistDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
-            PersistDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
-        })?;
-        Ok(RunningTotal(u64::from_le_bytes(arr)))
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let raw = cursor.u64()?;
+        cursor.finish()?;
+        Ok(Self(raw))
     }
 }

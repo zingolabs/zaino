@@ -14,7 +14,9 @@
 //! sapling, orchard, and ironwood commitments the block adds (ironwood shares
 //! orchard's action shape), and each accumulates into its own cumulative size.
 
-use zaino_persistence_codec::{DecodeError, EntryCodec};
+use zaino_persistence_codec::keys::HeightKey;
+use zaino_persistence_codec::layout::{Cursor, Writer};
+use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::{ChainMetadata, TreeSize, TreeSizeOutOfRange};
 use zaino_sync::descriptor::{Append, SelfCumulative};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -107,6 +109,8 @@ impl Schema<Vec<ChainMetadataEntry>> for ChainMetadataIndex {
 impl EntryCodec for ChainMetadataIndex {
     type Key = BlockHeight;
     type Value = ChainMetadata;
+    type PersistentKey = HeightKey<BlockHeight>;
+    type PersistentValue = PersistentChainMetadata;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, ChainMetadata)> {
         vec![(
@@ -118,42 +122,53 @@ impl EntryCodec for ChainMetadataIndex {
             },
         )]
     }
+}
 
-    fn encode_key(key: &BlockHeight) -> Vec<u8> {
-        key.value().to_le_bytes().to_vec()
+/// On-disk chain-metadata record: `sapling(4 LE) ++ orchard(4 LE) ++
+/// ironwood(4 LE)` = 12 bytes, one `u32` tree size per pool.
+pub struct PersistentChainMetadata {
+    sapling: u32,
+    orchard: u32,
+    ironwood: u32,
+}
+
+impl PersistentRecord for PersistentChainMetadata {
+    type Domain = ChainMetadata;
+
+    fn from_domain(domain: &ChainMetadata) -> Self {
+        Self {
+            sapling: u32::from(domain.sapling_tree_size),
+            orchard: u32::from(domain.orchard_tree_size),
+            ironwood: u32::from(domain.ironwood_tree_size),
+        }
     }
 
-    fn encode_value(value: &ChainMetadata) -> Vec<u8> {
-        // sapling(4) + orchard(4) + ironwood(4) = 12 bytes.
-        let mut buf = Vec::with_capacity(12);
-        buf.extend_from_slice(&u32::from(value.sapling_tree_size).to_le_bytes());
-        buf.extend_from_slice(&u32::from(value.orchard_tree_size).to_le_bytes());
-        buf.extend_from_slice(&u32::from(value.ironwood_tree_size).to_le_bytes());
-        buf
-    }
-
-    fn decode_key(bytes: &[u8]) -> Result<BlockHeight, DecodeError> {
-        let arr: [u8; 8] = bytes
-            .try_into()
-            .map_err(|_| DecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
-        Ok(BlockHeight::new(u64::from_le_bytes(arr)))
-    }
-
-    fn decode_value(bytes: &[u8]) -> Result<ChainMetadata, DecodeError> {
-        // Fix the width up front: a `[u8; 12]` makes each 4-byte window exact by
-        // construction, so the per-field reads are panic-free without asserting.
-        let arr: [u8; 12] = bytes
-            .try_into()
-            .map_err(|_| DecodeError::Invalid(format!("expected 12 bytes, got {}", bytes.len())))?;
-        let field = |offset: usize| {
-            let mut word = [0u8; 4];
-            word.copy_from_slice(&arr[offset..offset + 4]);
-            TreeSize::from(u32::from_le_bytes(word))
-        };
+    fn into_domain(self) -> Result<ChainMetadata, DecodeError> {
         Ok(ChainMetadata {
-            sapling_tree_size: field(0),
-            orchard_tree_size: field(4),
-            ironwood_tree_size: field(8),
+            sapling_tree_size: TreeSize::from(self.sapling),
+            orchard_tree_size: TreeSize::from(self.orchard),
+            ironwood_tree_size: TreeSize::from(self.ironwood),
+        })
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(12);
+        writer.u32(self.sapling);
+        writer.u32(self.orchard);
+        writer.u32(self.ironwood);
+        writer.into_bytes()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut cursor = Cursor::new(bytes);
+        let sapling = cursor.u32()?;
+        let orchard = cursor.u32()?;
+        let ironwood = cursor.u32()?;
+        cursor.finish()?;
+        Ok(Self {
+            sapling,
+            orchard,
+            ironwood,
         })
     }
 }

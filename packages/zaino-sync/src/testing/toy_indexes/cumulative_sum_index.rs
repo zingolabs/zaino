@@ -10,7 +10,7 @@ use crate::descriptor::{Monoidal, SelfCumulative};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractCumulative, IndexDef, MergeMonoidal, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
+use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -131,21 +131,54 @@ impl Schema<CumulativeSum> for CumulativeSumIndex {
 impl EntryCodec for CumulativeSumIndex {
     type Key = CumSumKey;
     type Value = CumulativeSum;
+    type PersistentKey = PersistentCumSumKey;
+    type PersistentValue = PersistentCumulativeSum;
 
     fn fingerprint_samples() -> Vec<(CumSumKey, CumulativeSum)> {
         vec![(CumSumKey, CumulativeSum(1))]
     }
+}
 
-    fn encode_key(key: &Self::Key) -> Vec<u8> {
-        key.encode()
+/// On-disk record for [`CumSumKey`].
+pub struct PersistentCumSumKey(CumSumKey);
+
+impl PersistentRecord for PersistentCumSumKey {
+    type Domain = CumSumKey;
+
+    fn from_domain(domain: &CumSumKey) -> Self {
+        Self(*domain)
     }
-    fn encode_value(value: &Self::Value) -> Vec<u8> {
-        value.encode()
+    fn into_domain(self) -> Result<CumSumKey, PersistDecodeError> {
+        Ok(self.0)
     }
-    fn decode_key(bytes: &[u8]) -> Result<Self::Key, PersistDecodeError> {
-        CumSumKey::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn encode(&self) -> Vec<u8> {
+        Encode::encode(&self.0)
     }
-    fn decode_value(bytes: &[u8]) -> Result<Self::Value, PersistDecodeError> {
-        CumulativeSum::decode(bytes).map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        <CumSumKey as Decode>::decode(bytes)
+            .map(Self)
+            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+    }
+}
+
+/// On-disk record for [`CumulativeSum`].
+pub struct PersistentCumulativeSum(CumulativeSum);
+
+impl PersistentRecord for PersistentCumulativeSum {
+    type Domain = CumulativeSum;
+
+    fn from_domain(domain: &CumulativeSum) -> Self {
+        Self(*domain)
+    }
+    fn into_domain(self) -> Result<CumulativeSum, PersistDecodeError> {
+        Ok(self.0)
+    }
+    fn encode(&self) -> Vec<u8> {
+        Encode::encode(&self.0)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
+        <CumulativeSum as Decode>::decode(bytes)
+            .map(Self)
+            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
     }
 }

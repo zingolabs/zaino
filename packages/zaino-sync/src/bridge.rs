@@ -561,9 +561,12 @@ where
         let Some(height) = resume_from else {
             return Ok(());
         };
-        let raw = reader.get(namespace, &I::encode_key(&height))?;
+        let raw = reader.get(
+            namespace,
+            &zaino_persistence_codec::encode_key::<I>(&height),
+        )?;
         if let Some(bytes) = raw {
-            let value = I::decode_value(&bytes)?;
+            let value = zaino_persistence_codec::decode_value::<I>(&bytes)?;
             *self.carry.lock().expect("carry mutex poisoned") = value;
         }
         Ok(())

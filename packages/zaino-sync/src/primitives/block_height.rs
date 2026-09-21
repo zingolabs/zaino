@@ -24,6 +24,18 @@ impl BlockHeight {
     }
 }
 
+impl From<u64> for BlockHeight {
+    fn from(height: u64) -> Self {
+        Self(height)
+    }
+}
+
+impl From<BlockHeight> for u64 {
+    fn from(height: BlockHeight) -> Self {
+        height.0
+    }
+}
+
 impl core::fmt::Display for BlockHeight {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)
