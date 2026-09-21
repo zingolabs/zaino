@@ -130,6 +130,53 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
 }
 
+/// Bridges the finalised store's watermark to the confirmed-height signal the
+/// chain head trims against.
+///
+/// The chain head must not trim a height the finalised store cannot yet serve,
+/// so it reads the store's durably-committed tip height. A `Passthrough`
+/// watermark means the store is answering from the validator while it builds
+/// and holds nothing of its own, so it confirms nothing — `None` — and the
+/// chain head retains everything until the store commits durable data.
+///
+/// The task ends when its cancellation token fires or the store drops its
+/// watermark sender.
+fn spawn_confirmed_watermark_bridge(
+    mut store_watermark: tokio::sync::watch::Receiver<zaino_chain_store::StoreWatermark>,
+    cancel: CancellationToken,
+) -> tokio::sync::watch::Receiver<Option<zaino_primitives::types::Height>> {
+    let (confirmed, receiver) =
+        tokio::sync::watch::channel(confirmed_height(&store_watermark.borrow()));
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                changed = store_watermark.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let height = confirmed_height(&store_watermark.borrow());
+                    if confirmed.send(height).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    receiver
+}
+
+/// The height the finalised store has durably confirmed, or `None` when it
+/// holds nothing durable yet.
+fn confirmed_height(
+    watermark: &zaino_chain_store::StoreWatermark,
+) -> Option<zaino_primitives::types::Height> {
+    match watermark.provenance {
+        zaino_chain_store::Provenance::Durable => watermark.tip.map(|tip| tip.height),
+        zaino_chain_store::Provenance::Passthrough => None,
+    }
+}
+
 /// Current wall-clock time as a Unix timestamp in fractional seconds, for
 /// "event happened at" gauges. Falls back to `0.0` if the clock is before the
 /// Unix epoch (never in practice).
@@ -820,12 +867,23 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         // at the source is what keeps the two from drifting — the alternative,
         // relaying the epoch through some second handle, would let the coherence
         // layer freeze against a tip nobody was being served.
+        // The chain head trims against the finalised store's confirmed
+        // watermark, so a block is never dropped from the non-finalised window
+        // before the finalised side can serve it. The store publishes a
+        // `StoreWatermark`; the chain head wants only the durably-confirmed
+        // height, so the two are bridged here.
+        let confirmed_watermark = spawn_confirmed_watermark_bridge(
+            zaino_chain_store::ChainStoreService::subscribe_watermark(finalized_db.as_ref()),
+            cancel_token.child_token(),
+        );
+
         let chain_head = ChainHeadService::spawn(
             source.chain_head_source(),
             ChainHeadConfig::with_max_depth(
                 std::num::NonZeroU32::new(OPERATIONAL_NFS_DEPTH)
                     .expect("the operational chain-head depth derives from a non-zero reorg bound"),
             ),
+            confirmed_watermark,
             cancel_token.child_token(),
         )
         .await

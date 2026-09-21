@@ -16,12 +16,20 @@ use zaino_chain_head_service::ChainHeadService;
 let head = ChainHeadService::spawn(
     Arc::new(validator),
     ChainHeadConfig::default(),
+    confirmed_watermark, // watch::Receiver<Option<Height>> from the finalised store
     cancel_token.child_token(),
 )
 .await?;
 
 let reader = head.subscriber(); // hand this out, not `head`
 ```
+
+The `confirmed_watermark` is the finalised store's highest durably-committed
+height, or `None` when it holds nothing. The runtime never trims a block above
+that watermark (less a small overlap), so no height is ever dropped from the
+non-finalised window before the finalised side can serve it — the seam between
+the two never gaps. A chain head running without a finalised store passes a
+receiver fixed at `None`, which retains the whole window down to its anchor.
 
 Hand out the subscriber. It produces snapshots and reports status, and can do
 nothing else — no starting, no stopping, no stepping. Handing out the service
@@ -86,14 +94,14 @@ inside the reorg walk to "make the intermediate state visible".
 
 There is one writer, which is why publication is a plain store rather than a
 compare-and-swap. Adding a second writer breaks more than the store: the epoch
-bump and the freeze emission both assume exclusive access to what changed.
+bump assumes exclusive access to what changed.
 
 ## Testing: two styles, and which to use
 
 **Stepped** — `spawn_without_writer` + `advance_once`, both compiled out of
 production builds. No writer task runs, so the test is the only thing advancing
-the graph and observes exactly what it caused. Use this for reorg shapes,
-trimming, and freeze emission, where precise sequencing matters and timing does
+the graph and observes exactly what it caused. Use this for reorg shapes and
+watermark-driven trimming, where precise sequencing matters and timing does
 not.
 
 **Running** — `spawn` the real service against a mock source and observe through

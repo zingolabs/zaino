@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tokio::sync::{broadcast, watch};
-use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockService, ChainHeadFreezeEvents};
+use tokio::sync::watch;
+use zaino_chain_head::ChainHeadBlockService;
 use zaino_primitives::types::ChainStateEpoch;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
@@ -29,7 +29,6 @@ pub struct ChainHeadSubscriber {
     /// process lifetime would never see the chain move again.
     current: Arc<ArcSwap<MapBackedSnapshot>>,
     updates: watch::Receiver<ChainStateEpoch>,
-    frozen: broadcast::Sender<ChainHeadBlock>,
     /// A clone of the runtime's own cell, not a copy of its value.
     ///
     /// Reading how the runtime is faring is not driving it: a status read
@@ -54,13 +53,11 @@ impl ChainHeadSubscriber {
     pub(crate) fn new(
         current: Arc<ArcSwap<MapBackedSnapshot>>,
         updates: watch::Receiver<ChainStateEpoch>,
-        frozen: broadcast::Sender<ChainHeadBlock>,
         status: NamedAtomicStatus,
     ) -> Self {
         Self {
             current,
             updates,
-            frozen,
             status,
         }
     }
@@ -90,16 +87,5 @@ impl ChainHeadBlockService for ChainHeadSubscriber {
 
     fn subscribe_updates(&self) -> watch::Receiver<ChainStateEpoch> {
         self.updates.clone()
-    }
-}
-
-impl ChainHeadFreezeEvents for ChainHeadSubscriber {
-    /// Subscribing is what makes the runtime start emitting.
-    ///
-    /// With no receivers the runtime skips the work of collecting frozen blocks
-    /// entirely, so a consumer running in Independent Mode pays nothing for a
-    /// capability it never uses.
-    fn subscribe_frozen(&self) -> broadcast::Receiver<ChainHeadBlock> {
-        self.frozen.subscribe()
     }
 }

@@ -21,10 +21,9 @@ use std::{
     time::Duration,
 };
 
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use zaino_chain_head::{
-    ChainHeadBlockService as _, ChainHeadConfig, ChainHeadFreezeEvents as _, ChainHeadSnapshot as _,
-};
+use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot as _};
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
@@ -253,14 +252,35 @@ fn running_config(max_depth: u32) -> ChainHeadConfig {
     config
 }
 
+/// A confirmed-watermark receiver fixed at `value` for its whole life.
+///
+/// The sender is dropped, so `borrow()` keeps returning `value`: a test that
+/// does not exercise the confirm-before-trim handshake supplies a fixed floor
+/// and reads the graph transitions alone. `None` — the finalised store holds
+/// nothing — is the value that keeps trimming down to genesis, which is what
+/// most graph tests want when their depth already saturates the floor.
+fn fixed_watermark(value: Option<Height>) -> watch::Receiver<Option<Height>> {
+    watch::channel(value).1
+}
+
 /// An anchored chain head with no writer, for stepped tests.
 async fn stepped(
     validator: &MockValidator,
     max_depth: u32,
 ) -> Arc<ChainHeadService<MockValidator>> {
+    stepped_with_watermark(validator, max_depth, fixed_watermark(None)).await
+}
+
+/// A stepped chain head whose confirmed watermark the test controls.
+async fn stepped_with_watermark(
+    validator: &MockValidator,
+    max_depth: u32,
+    confirmed_watermark: watch::Receiver<Option<Height>>,
+) -> Arc<ChainHeadService<MockValidator>> {
     ChainHeadService::spawn_without_writer(
         Arc::new(validator.clone()),
         test_config(max_depth),
+        confirmed_watermark,
         CancellationToken::new(),
     )
     .await
@@ -275,6 +295,7 @@ async fn running(
     ChainHeadService::spawn(
         Arc::new(validator.clone()),
         running_config(max_depth),
+        fixed_watermark(None),
         CancellationToken::new(),
     )
     .await
@@ -341,6 +362,7 @@ async fn spawn_fails_when_the_validator_never_answers() {
     let error = ChainHeadService::spawn(
         Arc::new(validator),
         test_config(100),
+        fixed_watermark(None),
         CancellationToken::new(),
     )
     .await
@@ -435,19 +457,27 @@ async fn a_same_height_reorg_is_caught_without_a_higher_block() {
     assert_eq!(snapshot.best_tip().hash, hash(40));
 }
 
-/// Growth past the window drops the oldest blocks, so retention stays bounded
-/// rather than accumulating one block per new block.
+/// With a finalised store keeping up — its confirmed watermark tracking
+/// `tip - max_depth` — retention stays bounded rather than accumulating one
+/// block per new block.
+///
+/// The watermark is what admits trimming here: without it the non-finalised
+/// head must retain everything the finalised side has not confirmed. A store
+/// that stays a window behind the tip lets the floor rise to
+/// `watermark - RETENTION_MARGIN`, reproducing the old tip-relative bound.
 #[tokio::test]
-async fn the_window_stays_bounded_as_the_chain_grows() {
+async fn the_window_stays_bounded_when_the_store_keeps_up() {
     let validator = MockValidator::linear(40);
-    let service = stepped(&validator, 5).await;
+    // A keeping-up finalised store confirms up to `tip - max_depth` (39 - 5).
+    let watermark = fixed_watermark(Some(height(34)));
+    let service = stepped_with_watermark(&validator, 5, watermark).await;
     step_to_tip(&service, &validator).await;
 
     let snapshot = service.subscriber().current();
     assert_eq!(snapshot.best_tip().height, height(39));
-    // Trimming keeps a margin below the configured depth so it never cuts
-    // inside the reorg-possible range, so the window is bounded but not
-    // exactly `depth` blocks.
+    // Floor is `min(tip - max_depth, watermark - margin)` = min(34, 24) = 24,
+    // so heights 24..=39 are retained: 16 blocks, bounded but not exactly
+    // `depth` because the confirmation overlap keeps a few more.
     assert!(
         snapshot.retained_block_count() <= 17,
         "window grew to {} blocks",
@@ -586,61 +616,89 @@ async fn a_failed_advance_leaves_the_snapshot_intact() {
     assert_eq!(service.subscriber().current().best_tip(), before);
 }
 
-// ------------------------------------------------------------ freeze handoff
+// ------------------------------------------------ confirm-before-trim floor
 
-/// Blocks are handed off once they pass below the consensus seam, ascending and
-/// contiguous.
+/// Grows the source one block at a time, stepping the head after each, so the
+/// graph tracks the tip without ever re-anchoring — the path where the trim
+/// floor, not the anchor floor, decides what is retained.
+async fn grow_stepping(
+    service: &ChainHeadService<MockValidator>,
+    validator: &MockValidator,
+    next_ids: impl IntoIterator<Item = u16>,
+) {
+    for id in next_ids {
+        validator.extend(id);
+        service.advance_once().await.expect("advance succeeds");
+    }
+}
+
+/// A finalised store lagging behind the reorg window holds the floor down: the
+/// non-finalised head must not trim a height the store has not yet confirmed,
+/// even one already outside the tip-relative reorg window.
+///
+/// The graph anchors at genesis and grows to tip 20 with depth 5, so the
+/// reorg-safety floor alone would trim everything below 15. The store has
+/// confirmed only height 5, so the confirmation floor saturates to genesis and
+/// wins: heights below the tip-relative window — 10, say — stay retained
+/// because the store cannot yet serve them.
 #[tokio::test]
-async fn frozen_blocks_are_emitted_in_order_below_the_seam() {
-    let validator = MockValidator::linear(20);
-    let service = stepped(&validator, 5).await;
-    let mut frozen = service.subscriber().subscribe_frozen();
-
+async fn a_lagging_watermark_retains_below_the_tip_relative_window() {
+    let validator = MockValidator::linear(6);
+    let watermark = fixed_watermark(Some(height(5)));
+    let service = stepped_with_watermark(&validator, 5, watermark).await;
     step_to_tip(&service, &validator).await;
 
-    // Tip 19, depth 5, so everything at or below 14 is frozen. The anchor sits
-    // at 14, and the graph only holds 14 upwards, so 14 is where it starts.
-    let mut heights = Vec::new();
-    while let Ok(block) = frozen.try_recv() {
-        heights.push(u32::from(block.height()));
-    }
-    assert!(!heights.is_empty(), "nothing was handed off");
+    grow_stepping(&service, &validator, 6..=20).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip().height, height(20));
+    // Height 10 is below the tip-relative window floor (20 - 5 = 15) yet still
+    // retained: the lagging watermark forbids trimming what the store has not
+    // confirmed.
     assert!(
-        heights.windows(2).all(|w| w[1] == w[0] + 1),
-        "handoff was not contiguous and ascending: {heights:?}",
-    );
-    assert!(
-        heights.iter().all(|h| *h <= 14),
-        "a block still inside the reorg-possible range was handed off: {heights:?}",
+        snapshot.best_block_by_height(height(10)).is_some(),
+        "a height below the tip-relative window was trimmed before the store \
+         confirmed it",
     );
 }
 
-/// A block is handed off once, not on every publish that follows.
+/// An advancing watermark lets the floor track it: as the finalised store
+/// confirms more, the non-finalised head trims up to `watermark - margin`, and
+/// no further.
 #[tokio::test]
-async fn a_frozen_block_is_emitted_only_once() {
-    let validator = MockValidator::linear(20);
-    let service = stepped(&validator, 5).await;
-    let mut frozen = service.subscriber().subscribe_frozen();
-
+async fn an_advancing_watermark_moves_the_trim_floor_to_the_overlap() {
+    let validator = MockValidator::linear(6);
+    let (sender, receiver) = watch::channel(Some(height(0)));
+    let service = stepped_with_watermark(&validator, 5, receiver).await;
     step_to_tip(&service, &validator).await;
-    let mut seen = Vec::new();
-    while let Ok(block) = frozen.try_recv() {
-        seen.push(u32::from(block.height()));
-    }
+    grow_stepping(&service, &validator, 6..=30).await;
 
-    // An advance that moves nothing must hand off nothing.
-    service.advance_once().await.expect("advance succeeds");
+    // Watermark 0: floor is `min(25, 0 - margin)` = genesis, so a height far
+    // below the tip-relative window is still retained.
     assert!(
-        frozen.try_recv().is_err(),
-        "an advance with no tip change handed off a block again",
+        service
+            .subscriber()
+            .current()
+            .best_block_by_height(height(10))
+            .is_some(),
+        "the head trimmed below the confirmed watermark",
     );
 
-    validator.extend(20);
-    service.advance_once().await.expect("advance succeeds");
-    let next = frozen.try_recv().expect("one more block crossed the seam");
-    assert_eq!(
-        u32::from(next.height()),
-        seen.last().expect("some were handed off") + 1,
+    // The store confirms up to 25. The floor becomes `min(31 - 5, 25 - 10)` =
+    // 15, so the next tip-changing tick drops everything below 15 and keeps the
+    // overlap at and above it.
+    sender.send_replace(Some(height(25)));
+    grow_stepping(&service, &validator, [31]).await;
+
+    let snapshot = service.subscriber().current();
+    assert!(
+        snapshot.best_block_by_height(height(14)).is_none(),
+        "a height below `watermark - margin` survived after the store confirmed \
+         past it",
+    );
+    assert!(
+        snapshot.best_block_by_height(height(15)).is_some(),
+        "the confirmation overlap was not kept: height 15 should survive",
     );
 }
 

@@ -125,15 +125,3 @@ finalised state and the mempool, and that combining belongs to the consumer.
 
 A retained block is a parsed projection, not the consensus bytes, so raw
 transaction and raw block queries cannot be served from here.
-
-## Freeze events are best-effort
-
-`ChainHeadFreezeEvents` carries blocks that have fallen below the consensus seam,
-whole and with their tree roots, so a chain store can ingest without re-fetching.
-
-Treat gaps as normal. It is a broadcast channel — the chain head follows the tip
-and will not stall on a slow consumer — so a lagging subscriber gets
-`RecvError::Lagged(n)`, and a chain head re-anchoring after an outage never
-emits what it skipped. A store must be able to build from source regardless;
-this only spares it the fetch in steady state. Building a consumer that assumes
-contiguity is the mistake this section exists to prevent.

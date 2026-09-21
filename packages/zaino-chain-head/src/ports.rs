@@ -29,11 +29,11 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 
 use zaino_primitives::types::ChainStateEpoch;
 
-use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
+use crate::snapshot::ChainHeadSnapshot;
 
 /// Every question ChainHead asks a validator.
 ///
@@ -113,28 +113,6 @@ pub trait ChainHeadBlockService: Clone + Send + Sync + 'static {
     /// every republication, so a consumer pinned to an epoch is told the chain
     /// moved only when it actually did.
     fn subscribe_updates(&self) -> watch::Receiver<ChainStateEpoch>;
-}
-
-/// Blocks the chain head has finalised, for a store to ingest.
-///
-/// Optional and separate from [`ChainHeadBlockService`] so a consumer bounds on
-/// it only when it wants the handoff. A chain head running in Independent Mode
-/// — where the store builds from the source itself — never touches this.
-///
-/// A block is emitted once it falls below the consensus seam, past which no
-/// reorg can reach it. The whole block travels, parsed and with its commitment
-/// tree roots, because the point of the handoff is that the store does not
-/// fetch it again.
-///
-/// **The stream is best-effort.** It is a `broadcast`, so a consumer that falls
-/// behind receives `RecvError::Lagged(n)` and learns exactly how many it
-/// missed; a chain head re-anchoring after a long outage moves its floor
-/// discontinuously and simply never emits the blocks it skipped. Neither is an
-/// error. The store's own build from source is the authority, and this only
-/// spares it the fetch in steady state.
-pub trait ChainHeadFreezeEvents: Clone + Send + Sync + 'static {
-    /// Subscribe to blocks as they pass below the seam.
-    fn subscribe_frozen(&self) -> broadcast::Receiver<ChainHeadBlock>;
 }
 
 #[cfg(test)]

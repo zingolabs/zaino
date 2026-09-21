@@ -38,10 +38,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use tokio::{
-    sync::{broadcast, watch},
-    task::JoinHandle,
-};
+use tokio::{sync::watch, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
@@ -60,21 +57,15 @@ use crate::{
 /// The name this component reports status under.
 const COMPONENT: &str = "ChainHead";
 
-/// Retention margin below the configured depth.
+/// Confirmation overlap kept below the finalised store's confirmed watermark.
 ///
-/// Trimming stops this far below the tip rather than exactly at the configured
-/// depth, so it never cuts inside the reorg-possible range. It also bounds the
-/// reorg ancestry walk: that walk should never recurse further back than the
-/// window it maintains.
+/// The trim floor stops this far below the confirmed watermark rather than
+/// exactly at it, so the non-finalised and finalised windows overlap by a few
+/// blocks. The overlap is what closes the seam: even if the two sides observe
+/// the boundary height a tick apart, no height is ever below the non-finalised
+/// floor and above the finalised watermark at the same time, so none falls in a
+/// gap served by neither.
 const RETENTION_MARGIN: u32 = 10;
-
-/// How many frozen blocks the handoff channel buffers before a slow consumer
-/// starts missing them.
-///
-/// A consumer keeping up needs one slot; this leaves room for a store that
-/// pauses briefly without it having to rebuild the gap. Beyond that it learns
-/// it lagged and rebuilds, which it can always do.
-const FROZEN_CHANNEL_CAPACITY: usize = 256;
 
 /// The bounded non-finalised head of the chain, kept current with a validator.
 ///
@@ -89,7 +80,11 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// readers, who will hold a stale copy.
     current: Arc<ArcSwap<MapBackedSnapshot>>,
     updates: watch::Sender<ChainStateEpoch>,
-    frozen: broadcast::Sender<ChainHeadBlock>,
+    /// The finalised store's confirmed watermark: the highest height it has
+    /// durably committed, or `None` when it holds nothing (an empty or young
+    /// chain). Read at trim time so the non-finalised floor never rises above
+    /// what the finalised side can already serve.
+    confirmed_watermark: watch::Receiver<Option<Height>>,
     status: NamedAtomicStatus,
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
@@ -132,9 +127,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     pub async fn spawn(
         source: Arc<S>,
         config: ChainHeadConfig,
+        confirmed_watermark: watch::Receiver<Option<Height>>,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let service = Self::anchored(source, config, cancel).await?;
+        let service = Self::anchored(source, config, confirmed_watermark, cancel).await?;
 
         let worker = Arc::clone(&service);
         let handle = tokio::spawn(async move { worker.run().await });
@@ -157,9 +153,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     pub async fn spawn_without_writer(
         source: Arc<S>,
         config: ChainHeadConfig,
+        confirmed_watermark: watch::Receiver<Option<Height>>,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, cancel).await
+        Self::anchored(source, config, confirmed_watermark, cancel).await
     }
 
     /// Advances the graph by one iteration and publishes the result.
@@ -176,6 +173,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     async fn anchored(
         source: Arc<S>,
         config: ChainHeadConfig,
+        confirmed_watermark: watch::Receiver<Option<Height>>,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
@@ -191,13 +189,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             generation: 0,
             best_tip: snapshot.best_tip(),
         });
-        let (frozen, _) = broadcast::channel(FROZEN_CHANNEL_CAPACITY);
 
         let service = Arc::new(Self {
             source,
             current: Arc::new(ArcSwap::from_pointee(snapshot)),
             updates,
-            frozen,
+            confirmed_watermark,
             status,
             cancel,
             task: Mutex::new(None),
@@ -219,7 +216,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         ChainHeadSubscriber::new(
             Arc::clone(&self.current),
             self.updates.subscribe(),
-            self.frozen.clone(),
             self.status.clone(),
         )
     }
@@ -436,14 +432,28 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
         self.check_for_nonhigher_reorgs(&mut graph).await?;
 
-        // Trim to a fixed window below the tip. This was the greater of the
-        // finalised database's height and this tip-relative cap; the cap is now
-        // the whole rule, and it is what bounded memory before whenever the
-        // database under-reported or was pinned at zero in ephemeral mode.
-        graph.remove_finalized_blocks(height_below(
-            graph.best_tip().height,
-            self.max_retained_depth(),
-        ));
+        // Trim floor: retain every height at or above it, drop below. Two
+        // independent floors are computed and the lower — the one that retains
+        // more — wins:
+        //
+        // - the reorg-safety floor keeps the whole consensus reorg window, so a
+        //   reorg can always be walked back to its fork point regardless of what
+        //   the finalised store has confirmed.
+        // - the confirmation floor keeps everything the finalised store has not
+        //   yet durably confirmed, less the retention overlap. With no
+        //   confirmed watermark the finalised side holds nothing, so this floor
+        //   is genesis and nothing below the reorg window is dropped.
+        //
+        // The confirmation floor is the seam invariant: this floor never rises
+        // above the finalised store's confirmed watermark minus the retention
+        // overlap, so no height is ever below the non-finalised floor and above
+        // the finalised watermark at once — the seam between the two never gaps.
+        let reorg_safety_floor = height_below(graph.best_tip().height, self.config.max_depth());
+        let confirmation_floor = match *self.confirmed_watermark.borrow() {
+            Some(watermark) => height_below(watermark, RETENTION_MARGIN),
+            None => Height::GENESIS,
+        };
+        graph.remove_finalized_blocks(reorg_safety_floor.min(confirmation_floor));
 
         // Best chain is the most-work branch retained, which a reorg may have
         // left as something other than the block we just extended to.
@@ -485,12 +495,13 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let mut branch = Vec::new();
         let mut parent_hash = block.parent_hash();
         let mut descended = 0u32;
-        // The walk should never leave the window it maintains, even for a
-        // complete reorg of the whole graph.
+        // The walk is bounded by the consensus reorg limit, not by retention: a
+        // reorg cannot be deeper than the configured depth however much the
+        // graph happens to retain below it.
         let fork_point = loop {
-            if descended > self.max_retained_depth() {
+            if descended > self.config.max_depth() {
                 return Err(ChainHeadAdvanceError::ReorgFailure(
-                    "reorg handling walked beyond the retained window".to_string(),
+                    "reorg handling walked beyond the consensus reorg limit".to_string(),
                 ));
             }
             descended = descended.saturating_add(1);
@@ -545,7 +556,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     ///
     /// It steps down one height at a time from the tip until the source can
     /// serve a block, then reorgs to it if it differs from the tip. Bounded by
-    /// the retained window: a source that cannot serve within it is inconsistent.
+    /// the consensus reorg limit: a source that cannot serve within it is
+    /// inconsistent.
     async fn check_for_nonhigher_reorgs(
         &self,
         graph: &mut MapBackedSnapshot,
@@ -553,11 +565,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let tip_height = graph.best_tip().height;
         let mut target_height = tip_height;
         loop {
-            if u32::from(target_height).saturating_add(self.max_retained_depth())
+            if u32::from(target_height).saturating_add(self.config.max_depth())
                 < u32::from(tip_height)
             {
                 return Err(ChainHeadAdvanceError::ReorgFailure(
-                    "reorg detection walked beyond the retained window".to_string(),
+                    "reorg detection walked beyond the consensus reorg limit".to_string(),
                 ));
             }
 
@@ -570,7 +582,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 }
                 None => {
                     // The source cannot serve this height. Walk down until it
-                    // can, bounded by the retained window above.
+                    // can, bounded by the consensus reorg limit above.
                     if u32::from(target_height) == 0 {
                         return Ok(());
                     }
@@ -588,23 +600,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     fn publish_snapshot(&self, previous: &MapBackedSnapshot, mut next: MapBackedSnapshot) {
         let (stale_tip, new_tip) = (previous.best_tip(), next.best_tip());
         let tip_changed = new_tip != stale_tip;
-
-        // Blocks that crossed the consensus seam during this iteration are now
-        // beyond the reach of any reorg, so they can be handed to a store. The
-        // seam sits at the configured depth; the retention floor is lower, so
-        // a frozen block is still retained for a while after it is emitted.
-        let frozen: Vec<ChainHeadBlock> = if self.frozen.receiver_count() > 0 {
-            let was_frozen_below = height_below(stale_tip.height, self.config.max_depth());
-            let now_frozen_below = height_below(new_tip.height, self.config.max_depth());
-            next.best_chain()
-                .filter(|block| {
-                    block.height() > was_frozen_below && block.height() <= now_frozen_below
-                })
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
 
         // Stamped *before* the store, so a reader that captures the view and
         // asks for its epoch is told the epoch this publication carries rather
@@ -632,17 +627,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 best_tip: new_tip,
             });
         }
-
-        for block in frozen {
-            // A full channel drops the oldest; the consumer sees `Lagged` and
-            // rebuilds the gap from its own source, which it can always do.
-            let _ = self.frozen.send(block);
-        }
-    }
-
-    /// How far below the tip blocks are retained.
-    fn max_retained_depth(&self) -> u32 {
-        self.config.max_depth().saturating_add(RETENTION_MARGIN)
     }
 
     async fn block_to_chainblock(

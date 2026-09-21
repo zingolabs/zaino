@@ -33,6 +33,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot as _};
@@ -278,9 +279,14 @@ async fn build_non_finalised_head(
     let config = ChainHeadConfig::with_max_depth(
         NonZeroU32::new(max_depth).expect("demo max_depth is not zero"),
     );
+    // No finalised store drives the demo, so the head is told the store has
+    // confirmed nothing: it retains everything down to its anchor and never
+    // trims a height the (absent) finalised side cannot serve.
+    let (_confirmed, confirmed_watermark) = watch::channel::<Option<Height>>(None);
     let head = ChainHeadService::spawn_without_writer(
         Arc::new(validator),
         config,
+        confirmed_watermark,
         CancellationToken::new(),
     )
     .await
