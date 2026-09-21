@@ -9,7 +9,7 @@ use zaino_primitives::types::{Block, BlockHash, BlockRef, TreeRoots};
 /// ChainHead never reads the finalised state, so it has no way to learn the
 /// absolute chainwork of the block it anchors on. It does not need to: chain
 /// selection is a comparison, and every branch retained in the window
-/// accumulates from the same anchor past th reorg boundary, so the comparison
+/// accumulates from the same anchor past the reorg boundary, so the comparison
 /// is exact even though the magnitudes are not absolute.
 ///
 /// What this value is *not* is the `chainwork` a validator reports. Anything

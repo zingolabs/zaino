@@ -641,7 +641,16 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         block: &zaino_primitives::types::Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        chain_head_block(block.clone(), &tree_roots, Some(prev_block.work))
+        let work = prev_block
+            .work
+            .checked_add(block_work(block))
+            .ok_or_else(|| {
+                ChainHeadAdvanceError::ReorgFailure(format!(
+                    "accumulated work overflowed at block {}",
+                    block.header.hash
+                ))
+            })?;
+        Ok(chain_head_block(block.clone(), &tree_roots, work))
     }
 
     /// Get commitment tree roots from the blockchain source.
@@ -676,7 +685,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         })?;
 
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        chain_head_block(block, &tree_roots, None)
+        let work = ChainHeadWork::anchored_at(block_work(&block));
+        Ok(chain_head_block(block, &tree_roots, work))
     }
 
     /// One coherent height/hash pair from the source.
@@ -798,30 +808,18 @@ fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
     }
 }
 
-/// Builds a [`ChainHeadBlock`], accumulating work onto its parent's.
-///
-/// The old `create_indexed_block_with_optional_roots`, less the parts only a
-/// persisted block needed. `parent_work` is `None` only for the window floor,
-/// whose accumulation starts at its own work — see `ChainHeadWork` for why that
-/// is anchor-relative rather than absolute.
+/// This block's own work, from its difficulty.
+fn block_work(block: &zaino_primitives::types::Block) -> u128 {
+    std::num::NonZeroU128::from(block.header.bits.to_work()).get()
+}
+
+/// Builds a [`ChainHeadBlock`] carrying `work`.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
     tree_roots: &TreeRoots,
-    parent_work: Option<ChainHeadWork>,
-) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-    let block_work = std::num::NonZeroU128::from(block.header.bits.to_work()).get();
-
-    let work = match parent_work {
-        Some(parent) => parent.checked_add(block_work).ok_or_else(|| {
-            ChainHeadAdvanceError::ReorgFailure(format!(
-                "accumulated work overflowed at block {}",
-                block.header.hash
-            ))
-        })?,
-        None => ChainHeadWork::anchored_at(block_work),
-    };
-
-    Ok(ChainHeadBlock {
+    work: ChainHeadWork,
+) -> ChainHeadBlock {
+    ChainHeadBlock {
         reference: BlockRef {
             hash: block.header.hash,
             height: block.header.height,
@@ -830,7 +828,7 @@ fn chain_head_block(
         work,
         block,
         tree_roots: tree_roots.clone(),
-    })
+    }
 }
 
 /// Anchors the graph, retrying transient source failures.
@@ -891,11 +889,12 @@ async fn window_floor<S: ChainHeadBlockSource>(
         .await
         .map_err(|error| ChainHeadAdvanceError::InconsistentSource(error.to_string()))?;
 
+    let work = ChainHeadWork::anchored_at(block_work(&block));
     Ok(MapBackedSnapshot::from_initial_block(chain_head_block(
         block,
         &tree_roots,
-        None,
-    )?))
+        work,
+    )))
 }
 
 /// Sleeps, unless cancelled first.
