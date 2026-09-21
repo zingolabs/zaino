@@ -41,8 +41,16 @@ zaino-indexes = { workspace = true }
 zaino-backend-lmdb = { workspace = true }
 zaino-persistence = { workspace = true }
 zaino-source = { workspace = true }
+zaino-source-zebra = { workspace = true }
+zaino-source-zebra-rpc = { workspace = true }
 zaino-source-zebra-readstate = { workspace = true }
 zaino-consensus = { workspace = true }
+
+# The composed serving stack: the finalised store, the non-finalised chain head,
+# and the engine that composes them behind the light-wallet serve profile.
+zaino-store-service = { path = "../zaino-store-service" }
+zaino-chain-head = { workspace = true }
+zaino-chain-head-service = { workspace = true }
 
 # Validator connection + probe.
 zaino-common = { workspace = true }

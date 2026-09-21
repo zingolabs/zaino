@@ -21,6 +21,13 @@ pub enum IndexerError {
     /// Opening the Zebra ReadState database failed (Direct source mode).
     #[error("opening the validator ReadState database failed: {0}")]
     OpenReadState(String),
+    /// Building the validator JSON-RPC client failed (from the configured
+    /// coordinates in Direct/Rpc source mode).
+    #[error("building the validator JSON-RPC client failed")]
+    RpcClient(#[source] zaino_rpc::RpcError),
+    /// The non-finalised chain-head could not anchor against the validator.
+    #[error("the chain-head could not anchor against the validator")]
+    ChainHeadInit(#[source] zaino_chain_head_service::ChainHeadInitError),
     /// Opening the LMDB index store failed.
     #[error(transparent)]
     OpenStore(#[from] zaino_persistence::OpenError),

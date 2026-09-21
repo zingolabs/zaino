@@ -9,25 +9,33 @@
 //! (`GetLatestBlock`/`GetBlock`/`GetBlockRange`). Transactions, treestate,
 //! address queries, `SendTransaction`, and node JSON-RPC are not served yet.
 
+use std::num::NonZeroU32;
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
-use zaino_component::{ComponentName, ReachabilityProbe};
+use zaino_chain_head::ChainHeadConfig;
+use zaino_chain_head_service::ChainHeadService;
+use zaino_component::{CancellationToken, ComponentName, ReachabilityProbe};
+use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_indexer::{SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_pre_index_compact_block, index_set};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, ServeComponent, ValidatorComponent};
-use zaino_source::{
-    GetChainTip, GetPreIndexCompactBlock, RetryPolicy, SubscribeChainTip, ValidatorClient,
-    ValidatorSource,
+use zaino_rpc::{RpcClient, RpcClientConfig};
+use zaino_runtime::{
+    IndexerComponent, OrchestraBuilder, RunComponent, ServeComponent, ValidatorComponent,
 };
+use zaino_source::{RetryPolicy, ValidatorClient};
+use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
+use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zaino_store::{StoreComponent, StoreReader};
+use zaino_store_service::Engine;
 
 use crate::config::{DaemonConfig, Network, SourceMode};
 use crate::error::IndexerError;
@@ -45,7 +53,12 @@ pub async fn start_indexer(
     spawn_indexer(config).await
 }
 
-/// Build the validator source per configured mode, then boot the runtime.
+/// Build the validator per configured mode, then boot the runtime.
+///
+/// Direct mode assembles a [`ZebraValidator`] over both transports: the state
+/// database (the finalised-block fast path the indexer and chain-head source
+/// through) and JSON-RPC (required for the mempool/passthrough seam, even though
+/// the compact-serving slice stubs those). The two are shared behind one `Arc`.
 pub async fn spawn_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
@@ -53,11 +66,24 @@ pub async fn spawn_indexer(
     let network = to_zebra_network(config.network);
 
     match &config.source {
-        SourceMode::Direct { zebra_cache_dir } => {
+        SourceMode::Direct {
+            zebra_cache_dir,
+            jsonrpc_address,
+            cookie_path,
+            user,
+            password,
+        } => {
             info!(cache = %zebra_cache_dir.display(), "opening validator ReadState (Direct)");
-            let adapter = ZebraReadStateAdapter::open(zebra_cache_dir, &network)
+            let readstate = ZebraReadStateAdapter::open(zebra_cache_dir, &network)
                 .map_err(IndexerError::OpenReadState)?;
-            boot(adapter, config).await
+            let rpc = ZebraRpcAdapter::new(rpc_client_from_config(
+                jsonrpc_address,
+                cookie_path.as_deref(),
+                user.as_deref(),
+                password.as_deref(),
+            )?);
+            let validator = Arc::new(ZebraValidator::with_read_state(rpc, readstate));
+            boot(validator, config).await
         }
         // The Rpc selector is preserved in config, but only Direct/ReadState
         // sourcing is wired so far. Fail loud and typed rather than panic.
@@ -65,24 +91,69 @@ pub async fn spawn_indexer(
     }
 }
 
-/// Boot the runtime over `adapter`: an LMDB-backed compact-block index, the
-/// store that composes blocks on read, and the wallet gRPC server, supervised
-/// under one Orchestra (validator gated first).
+/// Build the validator JSON-RPC client from the configured coordinates.
+fn rpc_client_from_config(
+    jsonrpc_address: &str,
+    cookie_path: Option<&Path>,
+    user: Option<&str>,
+    password: Option<&str>,
+) -> Result<RpcClient, IndexerError> {
+    RpcClient::new(RpcClientConfig {
+        url: format!("http://{jsonrpc_address}"),
+        auth: rpc_auth(cookie_path, user, password)?,
+        ..RpcClientConfig::default()
+    })
+    .map_err(IndexerError::RpcClient)
+}
+
+/// The basic-auth credentials the validator expects, from the configured parts.
 ///
-/// Generic over the adapter so any source plugs into one boot path (only the
-/// ReadState adapter is wired today; the seam is ready for others); the bound is
-/// stated on the resilient [`ValidatorClient`] wrapper, which is what the
-/// provisioner actually consumes.
-async fn boot<A>(
-    adapter: A,
+/// A cookie path wins over an explicit user/password pair (a cookie-auth
+/// validator rejects the pair); the `__cookie__:` prefix is stripped when
+/// present. With neither configured — the regtest default — the client sends no
+/// auth.
+fn rpc_auth(
+    cookie_path: Option<&Path>,
+    user: Option<&str>,
+    password: Option<&str>,
+) -> Result<Option<(String, String)>, IndexerError> {
+    match (cookie_path, user, password) {
+        (Some(path), _, _) => {
+            let contents = std::fs::read_to_string(path).map_err(|source| {
+                IndexerError::ConfigError(format!(
+                    "reading validator cookie {}: {source}",
+                    path.display(),
+                ))
+            })?;
+            let token = contents.trim();
+            let token = token.strip_prefix("__cookie__:").unwrap_or(token);
+            Ok(Some(("__cookie__".to_string(), token.to_string())))
+        }
+        (None, Some(user), Some(password)) => Ok(Some((user.to_string(), password.to_string()))),
+        (None, _, _) => Ok(None),
+    }
+}
+
+/// Boot the runtime over the shared `validator`: an LMDB-backed compact-block
+/// index (the FS), the self-synchronising non-finalised chain head (the NFS), the
+/// engine that composes the two into one served chain, and the wallet gRPC
+/// server — all supervised under one Orchestra (validator gated first).
+///
+/// The one `Arc<ZebraValidator>` backs both source consumers: the FS indexer
+/// wraps it in the resilient [`ValidatorClient`]; the chain-head reaches the raw
+/// one-shot ports through the `Arc` directly. The chain-head's confirmed-watermark
+/// gate is the seam owner — it trims only what the FS has committed.
+async fn boot(
+    validator: Arc<ZebraValidator>,
     config: DaemonConfig,
-) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
-where
-    A: ValidatorSource + Send + Sync + 'static,
-    ValidatorClient<A>:
-        GetPreIndexCompactBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
-{
-    let source = Arc::new(ValidatorClient::new(adapter, RetryPolicy::default()));
+) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    // The FS indexer sources through the resilient wrapper over the shared
+    // validator; the chain-head reaches the same validator's raw one-shot ports
+    // through the `Arc`.
+    let source = Arc::new(ValidatorClient::new(
+        Arc::clone(&validator),
+        RetryPolicy::default(),
+    ));
 
     // LMDB must declare every namespace up front: one per index in the set, plus
     // the engine's reserved watermark / format-version namespaces.
@@ -98,11 +169,11 @@ where
         namespaces,
     })?;
 
-    // The finalised store: the indexer writes it, the gRPC server composes
-    // blocks on read from it. One reader, shared (Arc-backed clone).
+    // The finalised store: the indexer writes it, the engine composes blocks on
+    // read from it. One reader, shared (Arc-backed clone).
     let store_reader = StoreReader::new(Arc::new(backend.clone()));
 
-    // The indexer sources the cheap pre-index compact block and builds the
+    // The FS indexer sources the cheap pre-index compact block and builds the
     // current-zaino index set, resuming from the backend watermark.
     let driver = SourceSyncDriver::resuming_compact(
         &backend,
@@ -116,27 +187,54 @@ where
             concurrency: config.indexer.concurrency,
         },
     )?;
+    // Capture the confirmed-watermark receiver before the driver is moved into
+    // its component — it is the chain-head's only handle onto what the FS has
+    // durably committed (confirm-before-trim).
+    let confirmed_watermark = driver.subscribe_confirmed_watermark();
+
+    // The NFS chain head, anchored over the raw validator. Its cancel is a child
+    // of the runtime's root token (governs anchoring; the run loop is cancelled
+    // through the token its RunComponent hands it).
+    let runtime_cancel = CancellationToken::new();
+    let (chain_head_subscriber, chain_head_writer) = ChainHeadService::anchor(
+        Arc::clone(&validator),
+        ChainHeadConfig::with_max_depth(
+            NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT).expect("the consensus reorg bound is non-zero"),
+        ),
+        confirmed_watermark,
+        runtime_cancel.child_token(),
+    )
+    .await
+    .map_err(IndexerError::ChainHeadInit)?;
+
+    // Compose FS ⊕ NFS into the served engine, behind the light-wallet profile.
+    let engine = Engine::new(store_reader.clone(), chain_head_subscriber);
 
     // Reachability was already confirmed (Direct opened its state DB), so the
     // runtime's validator gate is a formality here.
-    let validator = ValidatorComponent::connect(&AlreadyReachable).await?;
+    let validator_component = ValidatorComponent::connect(&AlreadyReachable).await?;
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
-    let store = StoreComponent::new(ComponentName("store"), store_reader.clone());
+    let store = StoreComponent::new(ComponentName("store"), store_reader);
+    // The chain-head writer is escalated and supervised exactly like the indexer.
+    let chain_head = RunComponent::new(ComponentName("chain-head"), chain_head_writer);
     let light_serve = ServeComponent::new(
         ComponentName("light-serve"),
-        GrpcServer::new(
-            LightServe::new(store_reader),
-            config.serve.grpc_listen_address,
-        ),
+        GrpcServer::new(LightServe::new(engine), config.serve.grpc_listen_address),
     );
 
+    // Readiness-gated order: validator, then the FS indexer (so its watermark is
+    // published before the chain-head trims against it), then the store, then the
+    // chain-head writer, then the server.
     let mut orchestra = OrchestraBuilder::new()
-        .boot_observed(validator)
+        .boot_observed(validator_component)
         .await
         .boot(indexer)
         .await
         .map_err(|e| IndexerError::Boot(Box::new(e)))?
         .boot(store)
+        .await
+        .map_err(|e| IndexerError::Boot(Box::new(e)))?
+        .boot(chain_head)
         .await
         .map_err(|e| IndexerError::Boot(Box::new(e)))?
         .boot(light_serve)
@@ -146,7 +244,7 @@ where
 
     info!(
         grpc = %config.serve.grpc_listen_address,
-        "Zaino runtime booted; serving compact blocks"
+        "Zaino runtime booted; serving compact blocks over the composed FS⊕NFS chain"
     );
 
     Ok(tokio::spawn(async move {
@@ -156,11 +254,13 @@ where
             signal = shutdown_signal() => {
                 info!(signal, "shutdown signal received");
                 orchestra.shutdown();
+                runtime_cancel.cancel();
                 return Ok(());
             }
             escalation = orchestra.next_escalation() => escalation,
         };
         orchestra.shutdown();
+        runtime_cancel.cancel();
         match escalation {
             Some(component) => {
                 error!(%component, "runtime component escalated; restarting");

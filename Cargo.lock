@@ -5922,6 +5922,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-chain-head",
+ "zaino-component",
  "zaino-core",
  "zaino-primitives",
  "zaino-service",
@@ -6387,6 +6388,7 @@ dependencies = [
  "zaino-chain-store",
  "zaino-chain-store-zainodb",
  "zaino-common",
+ "zaino-component",
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",
@@ -6440,8 +6442,7 @@ name = "zaino-store-service"
 version = "0.1.0"
 dependencies = [
  "futures",
- "zaino-chain-head",
- "zaino-chain-store",
+ "zaino-chainview",
  "zaino-core",
  "zaino-service",
 ]
@@ -6487,6 +6488,8 @@ dependencies = [
  "toml",
  "tracing",
  "zaino-backend-lmdb",
+ "zaino-chain-head",
+ "zaino-chain-head-service",
  "zaino-common",
  "zaino-component",
  "zaino-consensus",
@@ -6499,9 +6502,12 @@ dependencies = [
  "zaino-rpc",
  "zaino-runtime",
  "zaino-source",
+ "zaino-source-zebra",
  "zaino-source-zebra-readstate",
+ "zaino-source-zebra-rpc",
  "zaino-status",
  "zaino-store",
+ "zaino-store-service",
  "zebra-chain",
 ]
 

@@ -47,10 +47,26 @@ pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum SourceMode {
     /// Direct Zebra `ReadState`: reads the on-disk state DB under `zebra_cache_dir`.
+    ///
+    /// The JSON-RPC coordinates are still required: the state database serves
+    /// finalised blocks (the compact-serving fast path) but cannot answer the
+    /// mempool or passthrough RPCs, which reach the validator no other way. The
+    /// auth fields mirror [`SourceMode::Rpc`].
     Direct {
         /// Root of the validator's Zebra cache directory (the state DB lives
         /// under it, keyed by network).
         zebra_cache_dir: PathBuf,
+        /// The validator's JSON-RPC listen address (`host:port`).
+        jsonrpc_address: String,
+        /// Path to the validator's auth cookie, if it uses cookie auth.
+        #[serde(default)]
+        cookie_path: Option<PathBuf>,
+        /// JSON-RPC basic-auth user, if configured.
+        #[serde(default)]
+        user: Option<String>,
+        /// JSON-RPC basic-auth password, if configured.
+        #[serde(default)]
+        password: Option<String>,
     },
     /// Zebra JSON-RPC.
     Rpc {
@@ -185,7 +201,10 @@ impl DaemonConfig {
     /// database-open failure later). Socket addresses are already typed, so
     /// they need no re-parsing here.
     pub fn validate(&self) -> Result<(), IndexerError> {
-        if let SourceMode::Direct { zebra_cache_dir } = &self.source {
+        if let SourceMode::Direct {
+            zebra_cache_dir, ..
+        } = &self.source
+        {
             if !zebra_cache_dir.is_dir() {
                 return Err(IndexerError::ConfigError(format!(
                     "source.mode = \"direct\" but zebra_cache_dir {} is not an existing directory",
@@ -224,7 +243,15 @@ pub fn regtest_direct_fixture() -> DaemonConfig {
     DaemonConfig {
         network: Network::Regtest,
         metrics_endpoint: None,
-        source: SourceMode::Direct { zebra_cache_dir },
+        source: SourceMode::Direct {
+            zebra_cache_dir,
+            // ztest runs a regtest validator with JSON-RPC on the default
+            // regtest port and no auth.
+            jsonrpc_address: "127.0.0.1:18232".to_string(),
+            cookie_path: None,
+            user: None,
+            password: None,
+        },
         store: StoreConfig {
             path: PathBuf::from("/var/lib/zaino/db"),
             map_size_gb: 4,
@@ -328,6 +355,7 @@ network = "Mainnet"
 [source]
 mode = "direct"
 zebra_cache_dir = "{}"
+jsonrpc_address = "127.0.0.1:18232"
 
 [store]
 path = "/tmp/zaino-store"
@@ -339,7 +367,17 @@ grpc_listen_address = "127.0.0.1:8137"
         );
         let path = write(&dir, "direct.toml", &toml);
         let config = load_config(&path).expect("load");
-        assert!(matches!(config.source, SourceMode::Direct { .. }));
+        match config.source {
+            SourceMode::Direct {
+                jsonrpc_address,
+                cookie_path,
+                ..
+            } => {
+                assert_eq!(jsonrpc_address, "127.0.0.1:18232");
+                assert!(cookie_path.is_none());
+            }
+            other => panic!("expected Direct source, got {other:?}"),
+        }
         assert_eq!(config.network, Network::Mainnet);
     }
 
