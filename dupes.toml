@@ -1,0 +1,7 @@
+# live-tests excluded (inline topology per test = required shape, see live-tests/CLAUDE.md)
+# min_nodes 50 = calibrated floor (below: unrelated field-copy/getter rhymes)
+min_nodes = 50
+exclude = ["live-tests/", "zaino-proto", "/tests/", "target/"]
+exclude_tests = true
+max_exact_duplicates = 0
+max_near_duplicates = 0

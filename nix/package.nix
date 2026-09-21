@@ -5,7 +5,6 @@
 , autoPatchelfHook
 , protobuf
 , pkg-config
-, cmake
 , withTls ? true
 , gitCommit ? "unknown"
 , gitBranch ? "unknown"
@@ -40,7 +39,6 @@ let
     nativeBuildInputs = [
       protobuf
       pkg-config
-      cmake
       # Sets LIBCLANG_PATH so librocksdb-sys's bindgen finds libclang
       # without dragging LLVM into the build.
       rustPlatform.bindgenHook

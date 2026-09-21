@@ -14,4 +14,12 @@ deny = [
     { crate = "openssl-sys", reason = "Use rustls or other pure-Rust TLS implementations instead" },
     { crate = "boring", reason = "Use rustls or other pure-Rust TLS implementations instead" },
     { crate = "boring-sys", reason = "Use rustls or other pure-Rust TLS implementations instead" },
+    # ring only via rustls/rustls-webpki (zebra-node-services reqwest `rustls-tls`; dormant, zaino installs aws-lc-rs)
+    { crate = "ring", wrappers = ["rustls", "rustls-webpki"], reason = "Crypto provider = aws-lc-rs (ADR-0006)" },
 ]
+
+# aws-lc-rs + prefer-post-quantum required; `exact` = drift fails both ways (ring gone → drop it + the ring ban)
+[[bans.features]]
+crate = "rustls"
+allow = ["aws_lc_rs", "log", "logging", "prefer-post-quantum", "ring", "std", "tls12"]
+exact = true

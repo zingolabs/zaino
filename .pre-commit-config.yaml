@@ -1,0 +1,60 @@
+# Tools = nix devshell (pinned by flake.lock); `pre-commit install` once
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        language: system
+        entry: shellcheck
+        types: [shell]
+      - id: fmt
+        name: cargo fmt
+        language: system
+        entry: cargo fmt --all -- --check
+        types: [rust]
+        exclude: ^live-tests/
+        pass_filenames: false
+      - id: fmt-live-tests
+        name: cargo fmt (live-tests)
+        language: system
+        entry: cargo fmt --manifest-path live-tests/Cargo.toml --all -- --check
+        files: ^live-tests/.*\.rs$
+        pass_filenames: false
+      - id: boundary-conversions
+        name: ast-grep (sgconfig.yml)
+        language: system
+        # --color never: `auto` probes the tty bg color (OSC 11) in raw mode → garbles pre-commit output
+        entry: ast-grep scan --color never
+        types: [rust]
+      - id: no-openssl-apt
+        name: no OpenSSL apt packages (TLS = rustls)
+        language: pygrep
+        entry: ^[^#]*(libssl|openssl)
+        files: (Dockerfile|Containerfile)
+      - id: cargo-deny
+        name: cargo deny (deny.toml)
+        language: system
+        entry: cargo deny check bans
+        files: (Cargo\.(toml|lock)|deny\.toml)$
+        pass_filenames: false
+      - id: code-dupes
+        name: code-dupes (dupes.toml)
+        language: system
+        entry: code-dupes check
+        types: [rust]
+        pass_filenames: false
+      - id: clippy
+        name: cargo clippy
+        language: system
+        entry: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        pass_filenames: false
+        stages: [pre-push]
+      - id: clippy-live-tests
+        name: cargo clippy (live-tests)
+        language: system
+        entry: cargo clippy --locked --manifest-path live-tests/Cargo.toml --all-targets --all-features -- -D warnings
+        files: ^live-tests/
+        pass_filenames: false
+        stages: [pre-push]

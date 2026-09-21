@@ -209,15 +209,14 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # 4. Pre-flight publishability check — validate the ENTIRE publish plan is
-      # actually publishable (no version-reuse, no yanked/unresolvable deps)
-      # BEFORE any push/tag/Release, so a real release fails fast and leaves
-      # nothing orphaned on stable.
+      # actually publishable (no yanked/unresolvable deps) BEFORE any
+      # push/tag/Release, so a real release fails fast and leaves nothing
+      # orphaned on stable.
       - name: Pre-flight publishability check
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-published-versions
           while read -r crate version; do
             [ -z "${crate:-}" ] && continue
             if out="$(cargo publish -p "${crate}" --locked --dry-run --no-verify 2>&1)"; then

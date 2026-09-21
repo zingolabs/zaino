@@ -13,8 +13,10 @@ concurrency:
 permissions:
   contents: read
 
-# No protoc: zaino-proto & zebra-rpc build.rs fall back to checked-in generated code
-# (protoc present = regenerate over tracked sources)
+# every run step inside the flake devshell (flake.lock pins all tools)
+defaults:
+  run:
+    shell: nix develop -c bash --noprofile --norc -eo pipefail {0}
 
 jobs:
   lint:
@@ -22,29 +24,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
-            tools/workbench
+            live-tests
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-make,cargo-deny,cargo-nextest
+      # pre-push stage = every hook (stage-less hooks run in all stages)
+      - run: pre-commit run --all-files --hook-stage pre-push
 
-      # Same task as the pre-push hook (shellcheck preinstalled on ubuntu-latest)
-      - run: cargo make lint
-
-  test:
+  unit-test:
     name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
-
-      - uses: taiki-e/install-action@nextest
+        with:
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
 
@@ -58,11 +59,51 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
-
-      - uses: taiki-e/install-action@cargo-hack
 
       - run: cargo hack check --locked --workspace --each-feature --lib --bins --tests
         env:
           RUSTFLAGS: -D warnings
+
+  integration:
+    name: Integration
+    needs: [lint, unit-test]
+    # forks: read-only token → no OIDC → no tailnet
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    # OIDC subject must be `…:environment:ztest-cluster` (without it: `…:pull_request` → 403)
+    environment: ztest-cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
+
+      # CLI must match the library (`cluster check` compares role hashes)
+      - run: cargo install ztest_cli --locked --version "$(awk -F'"' '/^name = "ztest"$/ { getline; print $2 }' live-tests/Cargo.lock)"
+
+      - uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
+          audience: ${{ vars.TS_OIDC_AUDIENCE }}
+          tags: tag:ztest-runner
+
+      - run: tailscale configure kubeconfig tailscale-operator
+
+      - run: >
+          ztest cluster add zingo-infra --kube-context "$(kubectl config current-context)"
+          --extra-config '${{ vars.ZTEST_CLUSTER_CONFIG_URL }}' --set-default --yes
+
+      - run: ztest cluster check
+
+      - run: ztest run
+        working-directory: live-tests
+
+      # no janitor on zingo-infra; by run id (untargeted reaps peers)
+      - if: always()
+        continue-on-error: true
+        run: ztest cleanup --force '${{ github.run_id }}'

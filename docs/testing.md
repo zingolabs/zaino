@@ -39,8 +39,8 @@ ztest run -p clientless --rerun latest
 ## Local Ztest Cluster Setup
 
 ```sh
-# 1. The CLI. It is not a workspace member; it is expected on PATH.
-cargo install ztest_cli --version '^0.1' --locked
+# 1. The CLI, at the version live-tests/Cargo.lock pins (`ztest cluster check` compares it to the library)
+cargo install ztest_cli --locked --version "$(awk -F'"' '/^name = "ztest"$/ { getline; print $2 }' live-tests/Cargo.lock)"
 
 # 2. A cluster. Any reachable cluster works; kind is the usual local one.
 # https://kind.sigs.k8s.io/docs/user/quick-start/#installation
