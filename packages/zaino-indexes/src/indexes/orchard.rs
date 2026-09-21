@@ -2,7 +2,7 @@
 
 use zaino_persistence_codec::keys::HeightKey;
 use zaino_persistence_codec::layout::{Cursor, Writer};
-use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord, RecordLayout};
 use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -158,7 +158,12 @@ impl PersistentRecord for PersistentOrchardValue {
         }
         Ok(OrchardBlockValue(txs))
     }
+}
 
+// Nested count-prefixed collections (tx list, per-tx action list) are irregular
+// framing, so this record implements the byte layout by hand rather than
+// deriving it.
+impl RecordLayout for PersistentOrchardValue {
     fn encode(&self) -> Vec<u8> {
         let mut writer = Writer::new();
         writer.count(self.txs.len());

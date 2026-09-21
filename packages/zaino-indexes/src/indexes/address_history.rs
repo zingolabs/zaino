@@ -13,7 +13,6 @@
 //! decoding a queried t-address into `(type, hash160)`, so write and read agree
 //! without this index depending on the address-string parser.
 
-use zaino_persistence_codec::layout::{Cursor, Writer};
 use zaino_persistence_codec::{
     decode_key, decode_value, DecodeError, EntryCodec, PersistentRecord,
 };
@@ -210,13 +209,16 @@ impl EntryCodec for AddressHistoryIndex {
 ///
 /// Height and output index are **big-endian** on purpose: the record is
 /// address-prefixed and byte-lexicographic order must match height order for a
-/// per-address range scan, so these two fields do not use the little-endian
-/// [`layout`](zaino_persistence_codec::layout) writers.
+/// per-address range scan, so these two fields carry the `#[persistent(be)]`
+/// attribute rather than the little-endian default.
+#[derive(PersistentRecord)]
 pub struct PersistentAddrKey {
     script_type: u8,
     hash: [u8; 20],
+    #[persistent(be)]
     height: u64,
     txid: [u8; 32],
+    #[persistent(be)]
     output_index: u32,
 }
 
@@ -245,38 +247,10 @@ impl PersistentRecord for PersistentAddrKey {
             output_index: self.output_index,
         })
     }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(65);
-        buf.push(self.script_type);
-        buf.extend_from_slice(&self.hash);
-        buf.extend_from_slice(&self.height.to_be_bytes());
-        buf.extend_from_slice(&self.txid);
-        buf.extend_from_slice(&self.output_index.to_be_bytes());
-        buf
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let arr: [u8; 65] = bytes
-            .try_into()
-            .map_err(|_| DecodeError::Invalid(format!("expected 65 bytes, got {}", bytes.len())))?;
-        let mut hash = [0u8; 20];
-        hash.copy_from_slice(&arr[1..21]);
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(&arr[29..61]);
-        // Each fixed window below is exact by construction (arr is [u8; 65]), so
-        // the array `try_into`s cannot fail.
-        Ok(Self {
-            script_type: arr[0],
-            hash,
-            height: u64::from_be_bytes(arr[21..29].try_into().expect("8 bytes")),
-            txid,
-            output_index: u32::from_be_bytes(arr[61..65].try_into().expect("4 bytes")),
-        })
-    }
 }
 
 /// On-disk received-amount record: a single `u64` little-endian zatoshi count.
+#[derive(PersistentRecord)]
 pub struct PersistentReceiveValue(u64);
 
 impl PersistentRecord for PersistentReceiveValue {
@@ -288,19 +262,6 @@ impl PersistentRecord for PersistentReceiveValue {
 
     fn into_domain(self) -> Result<Zatoshis, DecodeError> {
         Zatoshis::new(self.0).map_err(|e| DecodeError::Invalid(e.to_string()))
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut writer = Writer::with_capacity(8);
-        writer.u64(self.0);
-        writer.into_bytes()
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut cursor = Cursor::new(bytes);
-        let raw = cursor.u64()?;
-        cursor.finish()?;
-        Ok(Self(raw))
     }
 }
 

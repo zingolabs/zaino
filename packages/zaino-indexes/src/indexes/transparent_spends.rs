@@ -4,7 +4,6 @@
 //! transaction spent that outpoint.
 
 use zaino_persistence_codec::keys::HashKey;
-use zaino_persistence_codec::layout::{Cursor, Writer};
 use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::{OutputIndex, TransactionId};
 use zaino_sync::descriptor::{Append, BlockLocal};
@@ -117,6 +116,7 @@ impl EntryCodec for TransparentSpendsIndex {
 }
 
 /// On-disk outpoint record: `prev_txid(32) ++ prev_index(4 LE)` = 36 bytes.
+#[derive(PersistentRecord)]
 pub struct PersistentOutpointKey {
     prev_txid: [u8; 32],
     prev_index: u32,
@@ -136,24 +136,6 @@ impl PersistentRecord for PersistentOutpointKey {
         Ok(OutpointKey {
             prev_txid: TransactionId::from(self.prev_txid),
             prev_index: self.prev_index,
-        })
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut writer = Writer::with_capacity(36);
-        writer.bytes32(&self.prev_txid);
-        writer.u32(self.prev_index);
-        writer.into_bytes()
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut cursor = Cursor::new(bytes);
-        let prev_txid = cursor.bytes32()?;
-        let prev_index = cursor.u32()?;
-        cursor.finish()?;
-        Ok(Self {
-            prev_txid,
-            prev_index,
         })
     }
 }

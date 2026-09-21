@@ -68,6 +68,14 @@ pub mod watermark;
 
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
 
+/// Derive the [`RecordLayout`] half of a [`PersistentRecord`] — the mechanical
+/// `encode`/`decode` — for a DTO struct whose fields are layout atoms in
+/// declaration order. The domain-crossing half (`from_domain`/`into_domain`)
+/// stays a hand-written `impl PersistentRecord`. See the
+/// [macro's docs](macro@PersistentRecord) for the supported field types and the
+/// `#[persistent(be)]` big-endian attribute.
+pub use zaino_persistence_macros::PersistentRecord;
+
 /// Metadata namespace recording each index namespace's on-disk format version.
 /// Separate from the index namespaces so a version stamp never collides with a
 /// real key.
@@ -106,22 +114,44 @@ pub enum DecodeError {
     Invalid(String),
 }
 
+/// The *record ⇄ on-disk bytes* serde — the mechanical, position-driven half of
+/// a [`PersistentRecord`].
+///
+/// [`encode`](RecordLayout::encode) writes the record's fields to bytes and
+/// [`decode`](RecordLayout::decode) reads them back; the byte layout lives here.
+/// For a struct whose fields are layout atoms in declaration order this is pure
+/// boilerplate — one [`Writer`](layout::Writer) call per field out, one
+/// [`Cursor`](layout::Cursor) read per field in — so it is exactly what
+/// [`#[derive(PersistentRecord)]`](macro@PersistentRecord) generates. A record
+/// whose framing is irregular (an unframed repetition, a count-prefixed nested
+/// collection) implements this trait by hand instead.
+pub trait RecordLayout: Sized {
+    /// Serialise the record to its on-disk bytes — the layout lives here.
+    fn encode(&self) -> Vec<u8>;
+
+    /// Parse the record from on-disk bytes. Structural failures (wrong length,
+    /// truncation) are rejected here; domain validation happens in
+    /// [`into_domain`](PersistentRecord::into_domain).
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError>;
+}
+
 /// An explicit on-disk record — the DTO that *defines* one side of a format.
 ///
 /// A record sits between a domain type and its bytes. [`from_domain`] projects
 /// the domain value into the record (infallible — the domain value is already
 /// valid); [`into_domain`] is the reverse and *is the disk→domain validation
-/// step*, so it returns a [`DecodeError`]. [`encode`] and [`decode`] own the
-/// byte layout. The point of forcing this indirection: the format-version
-/// fingerprint is taken over the record's bytes, so the domain type can change
-/// shape without disturbing the on-disk format as long as the conversion still
-/// produces the same record.
+/// step*, so it returns a [`DecodeError`]. The [`encode`]/[`decode`] byte layout
+/// is the separate [`RecordLayout`] half — mechanical, and usually derived. The
+/// point of forcing this indirection: the format-version fingerprint is taken
+/// over the record's bytes, so the domain type can change shape without
+/// disturbing the on-disk format as long as the conversion still produces the
+/// same record.
 ///
 /// [`from_domain`]: PersistentRecord::from_domain
 /// [`into_domain`]: PersistentRecord::into_domain
-/// [`encode`]: PersistentRecord::encode
-/// [`decode`]: PersistentRecord::decode
-pub trait PersistentRecord: Sized {
+/// [`encode`]: RecordLayout::encode
+/// [`decode`]: RecordLayout::decode
+pub trait PersistentRecord: RecordLayout {
     /// The domain type this record mirrors on disk.
     type Domain;
 
@@ -132,14 +162,6 @@ pub trait PersistentRecord: Sized {
     /// Reconstruct the domain value from the record — the validation boundary
     /// for bytes coming off disk.
     fn into_domain(self) -> Result<Self::Domain, DecodeError>;
-
-    /// Serialise the record to its on-disk bytes — the layout lives here.
-    fn encode(&self) -> Vec<u8>;
-
-    /// Parse the record from on-disk bytes. Structural failures (wrong length,
-    /// truncation) are rejected here; domain validation happens in
-    /// [`into_domain`](PersistentRecord::into_domain).
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError>;
 }
 
 /// The codec for one index's entries: its typed `Key`/`Value` and the on-disk
@@ -342,14 +364,7 @@ mod tests {
 
     /// A `u32` key record, little-endian.
     struct KeyLe(u32);
-    impl PersistentRecord for KeyLe {
-        type Domain = u32;
-        fn from_domain(domain: &u32) -> Self {
-            Self(*domain)
-        }
-        fn into_domain(self) -> Result<u32, DecodeError> {
-            Ok(self.0)
-        }
+    impl RecordLayout for KeyLe {
         fn encode(&self) -> Vec<u8> {
             self.0.to_le_bytes().to_vec()
         }
@@ -360,17 +375,19 @@ mod tests {
             Ok(Self(u32::from_le_bytes(tag)))
         }
     }
+    impl PersistentRecord for KeyLe {
+        type Domain = u32;
+        fn from_domain(domain: &u32) -> Self {
+            Self(*domain)
+        }
+        fn into_domain(self) -> Result<u32, DecodeError> {
+            Ok(self.0)
+        }
+    }
 
     /// A `u64` value record, little-endian.
     struct ValueLe(u64);
-    impl PersistentRecord for ValueLe {
-        type Domain = u64;
-        fn from_domain(domain: &u64) -> Self {
-            Self(*domain)
-        }
-        fn into_domain(self) -> Result<u64, DecodeError> {
-            Ok(self.0)
-        }
+    impl RecordLayout for ValueLe {
         fn encode(&self) -> Vec<u8> {
             self.0.to_le_bytes().to_vec()
         }
@@ -381,11 +398,7 @@ mod tests {
             Ok(Self(u64::from_le_bytes(tag)))
         }
     }
-
-    /// A `u64` value record, **big-endian** — the same domain, a different
-    /// on-disk layout.
-    struct ValueBe(u64);
-    impl PersistentRecord for ValueBe {
+    impl PersistentRecord for ValueLe {
         type Domain = u64;
         fn from_domain(domain: &u64) -> Self {
             Self(*domain)
@@ -393,6 +406,12 @@ mod tests {
         fn into_domain(self) -> Result<u64, DecodeError> {
             Ok(self.0)
         }
+    }
+
+    /// A `u64` value record, **big-endian** — the same domain, a different
+    /// on-disk layout.
+    struct ValueBe(u64);
+    impl RecordLayout for ValueBe {
         fn encode(&self) -> Vec<u8> {
             self.0.to_be_bytes().to_vec()
         }
@@ -401,6 +420,15 @@ mod tests {
                 .try_into()
                 .map_err(|_| DecodeError::Invalid("bad value width".to_owned()))?;
             Ok(Self(u64::from_be_bytes(tag)))
+        }
+    }
+    impl PersistentRecord for ValueBe {
+        type Domain = u64;
+        fn from_domain(domain: &u64) -> Self {
+            Self(*domain)
+        }
+        fn into_domain(self) -> Result<u64, DecodeError> {
+            Ok(self.0)
         }
     }
 
@@ -443,15 +471,7 @@ mod tests {
         }
     }
     struct EvolvedKey(u32);
-    impl PersistentRecord for EvolvedKey {
-        type Domain = Evolved;
-        fn from_domain(domain: &Evolved) -> Self {
-            // The evolved domain still projects to the *same* key record bytes.
-            Self(u32::try_from(domain.0).unwrap_or(u32::MAX))
-        }
-        fn into_domain(self) -> Result<Evolved, DecodeError> {
-            Ok(Evolved(u64::from(self.0)))
-        }
+    impl RecordLayout for EvolvedKey {
         fn encode(&self) -> Vec<u8> {
             self.0.to_le_bytes().to_vec()
         }
@@ -460,6 +480,16 @@ mod tests {
                 .try_into()
                 .map_err(|_| DecodeError::Invalid("bad key width".to_owned()))?;
             Ok(Self(u32::from_le_bytes(tag)))
+        }
+    }
+    impl PersistentRecord for EvolvedKey {
+        type Domain = Evolved;
+        fn from_domain(domain: &Evolved) -> Self {
+            // The evolved domain still projects to the *same* key record bytes.
+            Self(u32::try_from(domain.0).unwrap_or(u32::MAX))
+        }
+        fn into_domain(self) -> Result<Evolved, DecodeError> {
+            Ok(Evolved(u64::from(self.0)))
         }
     }
     struct ToyEvolved;

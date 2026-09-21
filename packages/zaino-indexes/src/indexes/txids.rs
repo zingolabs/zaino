@@ -1,7 +1,7 @@
 //! TxidsIndex (BlockLocal × Append): height → list of transaction ids.
 
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord, RecordLayout};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -112,7 +112,12 @@ impl PersistentRecord for PersistentTxidsValue {
             self.0.into_iter().map(TransactionId::from).collect(),
         ))
     }
+}
 
+// The txids are concatenated with no count prefix — the length is recovered by
+// the multiple-of-32 division. That unframed repetition is irregular framing, so
+// this record implements the byte layout by hand rather than deriving it.
+impl RecordLayout for PersistentTxidsValue {
     fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.0.len() * 32);
         for txid in &self.0 {

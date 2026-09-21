@@ -50,7 +50,7 @@ impl Writer {
     /// The count is a `u32`, the width every on-disk format in this workspace
     /// assumes for block-bounded collections. A count that overflows it cannot
     /// be encoded faithfully and
-    /// [`PersistentRecord::encode`](crate::PersistentRecord::encode) is
+    /// [`RecordLayout::encode`](crate::RecordLayout::encode) is
     /// infallible by contract — so this asserts the invariant loudly rather than
     /// silently truncating.
     pub fn count(&mut self, count: usize) {
@@ -72,7 +72,7 @@ impl Writer {
     ///
     /// The count is a `u32`, the width every on-disk format in this workspace
     /// assumes for block-bounded runs. A run that overflows it cannot be encoded
-    /// faithfully, and [`PersistentRecord::encode`](crate::PersistentRecord::encode)
+    /// faithfully, and [`RecordLayout::encode`](crate::RecordLayout::encode)
     /// is infallible by contract — so this asserts the invariant loudly rather
     /// than silently truncating the length.
     pub fn len_prefixed(&mut self, bytes: &[u8]) {

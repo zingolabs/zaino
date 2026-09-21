@@ -6182,7 +6182,17 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
  "zaino-persistence",
+ "zaino-persistence-macros",
  "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-persistence-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]

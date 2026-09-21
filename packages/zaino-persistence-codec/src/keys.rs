@@ -13,27 +13,17 @@
 //! record without extra glue.
 
 use crate::layout::{Cursor, Writer};
-use crate::{DecodeError, PersistentRecord};
+use crate::{DecodeError, PersistentRecord, RecordLayout};
 
 /// The on-disk record for a `u64`-valued domain key: 8 bytes, little-endian.
 ///
 /// Reused for any key or value that is exactly a block height.
 pub struct HeightKey<K>(pub K);
 
-impl<K> PersistentRecord for HeightKey<K>
+impl<K> RecordLayout for HeightKey<K>
 where
     K: Copy + From<u64> + Into<u64>,
 {
-    type Domain = K;
-
-    fn from_domain(domain: &K) -> Self {
-        Self(*domain)
-    }
-
-    fn into_domain(self) -> Result<K, DecodeError> {
-        Ok(self.0)
-    }
-
     fn encode(&self) -> Vec<u8> {
         let mut writer = Writer::with_capacity(8);
         writer.u64(self.0.into());
@@ -48,10 +38,42 @@ where
     }
 }
 
+impl<K> PersistentRecord for HeightKey<K>
+where
+    K: Copy + From<u64> + Into<u64>,
+{
+    type Domain = K;
+
+    fn from_domain(domain: &K) -> Self {
+        Self(*domain)
+    }
+
+    fn into_domain(self) -> Result<K, DecodeError> {
+        Ok(self.0)
+    }
+}
+
 /// The on-disk record for a 32-byte domain key: the bytes verbatim.
 ///
 /// Reused for any key whose domain is a 32-byte hash (block hash, txid, ...).
 pub struct HashKey<K>(pub K);
+
+impl<K> RecordLayout for HashKey<K>
+where
+    K: Copy + From<[u8; 32]> + Into<[u8; 32]>,
+{
+    fn encode(&self) -> Vec<u8> {
+        let bytes: [u8; 32] = self.0.into();
+        bytes.to_vec()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let array: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| DecodeError::Invalid(format!("expected 32 bytes, got {}", bytes.len())))?;
+        Ok(Self(K::from(array)))
+    }
+}
 
 impl<K> PersistentRecord for HashKey<K>
 where
@@ -65,18 +87,6 @@ where
 
     fn into_domain(self) -> Result<K, DecodeError> {
         Ok(self.0)
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let bytes: [u8; 32] = self.0.into();
-        bytes.to_vec()
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let array: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| DecodeError::Invalid(format!("expected 32 bytes, got {}", bytes.len())))?;
-        Ok(Self(K::from(array)))
     }
 }
 

@@ -1,7 +1,6 @@
 //! HeadersIndex (BlockLocal × Append): height → (hash, prev_hash, time, bits).
 
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::layout::{Cursor, Writer};
 use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty};
 use zaino_sync::descriptor::{Append, BlockLocal};
@@ -110,6 +109,7 @@ impl EntryCodec for HeadersIndex {
 
 /// On-disk header record: `hash(32) ++ prev_hash(32) ++ time(4 LE) ++ bits(4 LE)`
 /// = 72 bytes.
+#[derive(PersistentRecord)]
 pub struct PersistentHeaderValue {
     hash: [u8; 32],
     prev_hash: [u8; 32],
@@ -138,35 +138,15 @@ impl PersistentRecord for PersistentHeaderValue {
                 .map_err(|_| DecodeError::Invalid("invalid nBits".to_owned()))?,
         })
     }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut writer = Writer::with_capacity(72);
-        writer.bytes32(&self.hash);
-        writer.bytes32(&self.prev_hash);
-        writer.u32(self.time);
-        writer.u32(self.bits);
-        writer.into_bytes()
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut cursor = Cursor::new(bytes);
-        let hash = cursor.bytes32()?;
-        let prev_hash = cursor.bytes32()?;
-        let time = cursor.u32()?;
-        let bits = cursor.u32()?;
-        cursor.finish()?;
-        Ok(Self {
-            hash,
-            prev_hash,
-            time,
-            bits,
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `RecordLayout` brings the derived `encode`/`decode` into scope for the
+    // direct calls below (the free `encode_value`/`decode_value` helpers go
+    // through `PersistentRecord`, but these tests exercise the record directly).
+    use zaino_persistence_codec::RecordLayout;
 
     #[test]
     fn header_value_encodes_to_a_pinned_72_byte_layout() {

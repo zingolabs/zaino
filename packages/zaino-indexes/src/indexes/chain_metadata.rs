@@ -15,7 +15,6 @@
 //! orchard's action shape), and each accumulates into its own cumulative size.
 
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::layout::{Cursor, Writer};
 use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::{ChainMetadata, TreeSize, TreeSizeOutOfRange};
 use zaino_sync::descriptor::{Append, SelfCumulative};
@@ -126,6 +125,7 @@ impl EntryCodec for ChainMetadataIndex {
 
 /// On-disk chain-metadata record: `sapling(4 LE) ++ orchard(4 LE) ++
 /// ironwood(4 LE)` = 12 bytes, one `u32` tree size per pool.
+#[derive(PersistentRecord)]
 pub struct PersistentChainMetadata {
     sapling: u32,
     orchard: u32,
@@ -148,27 +148,6 @@ impl PersistentRecord for PersistentChainMetadata {
             sapling_tree_size: TreeSize::from(self.sapling),
             orchard_tree_size: TreeSize::from(self.orchard),
             ironwood_tree_size: TreeSize::from(self.ironwood),
-        })
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut writer = Writer::with_capacity(12);
-        writer.u32(self.sapling);
-        writer.u32(self.orchard);
-        writer.u32(self.ironwood);
-        writer.into_bytes()
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut cursor = Cursor::new(bytes);
-        let sapling = cursor.u32()?;
-        let orchard = cursor.u32()?;
-        let ironwood = cursor.u32()?;
-        cursor.finish()?;
-        Ok(Self {
-            sapling,
-            orchard,
-            ironwood,
         })
     }
 }

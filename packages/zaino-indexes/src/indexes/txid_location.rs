@@ -1,7 +1,6 @@
 //! TxidLocationIndex (BlockLocal × Append): txid → (height, tx_index).
 
 use zaino_persistence_codec::keys::HashKey;
-use zaino_persistence_codec::layout::{Cursor, Writer};
 use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
@@ -101,6 +100,7 @@ impl EntryCodec for TxidLocationIndex {
 
 /// On-disk transaction-location record: `height(8 LE) ++ tx_index(4 LE)` = 12
 /// bytes.
+#[derive(PersistentRecord)]
 pub struct PersistentTxLocation {
     height: u64,
     tx_index: u32,
@@ -121,20 +121,5 @@ impl PersistentRecord for PersistentTxLocation {
             height: BlockHeight::new(self.height),
             tx_index: self.tx_index,
         })
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut writer = Writer::with_capacity(12);
-        writer.u64(self.height);
-        writer.u32(self.tx_index);
-        writer.into_bytes()
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let mut cursor = Cursor::new(bytes);
-        let height = cursor.u64()?;
-        let tx_index = cursor.u32()?;
-        cursor.finish()?;
-        Ok(Self { height, tx_index })
     }
 }

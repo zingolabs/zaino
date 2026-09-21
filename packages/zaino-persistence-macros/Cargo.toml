@@ -1,0 +1,21 @@
+[package]
+name = "zaino-persistence-macros"
+version = "0.1.0"
+description = "Procedural macros for zaino-persistence-codec: derive the mechanical encode/decode (record⇄on-disk bytes) half of PersistentRecord for DTO structs whose byte layout is positional."
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

@@ -11,6 +11,7 @@ description = "The domain persistence port: typed, versioned entries over the lo
 
 [dependencies]
 zaino-persistence = { workspace = true }
+zaino-persistence-macros = { workspace = true }
 thiserror = { workspace = true }
 zaino-primitives = { version = "0.2.0", path = "../zaino-primitives" }
 
