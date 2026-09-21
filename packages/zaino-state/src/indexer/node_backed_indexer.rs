@@ -1060,10 +1060,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
     ///
     /// We don't currently support the `blockhash` parameter since lightwalletd does not
     /// use it.
-    ///
-    /// In verbose mode, we only expose the `hex` and `height` fields since
-    /// lightwalletd uses only those:
-    /// <https://github.com/zcash/lightwalletd/blob/631bb16404e3d8b045e74a7c5489db626790b2f6/common/common.go#L119>
     async fn get_raw_transaction(
         &self,
         txid_hex: String,
@@ -1117,37 +1113,49 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
                 "best-chain height out of range: {e}"
             )))
         };
-        let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
-            Some(types::BestChainLocation::Block(block_hash, height)) => {
-                let confirmations = zaino_primitives::types::TxConfirmations::Mined(
-                    zaino_primitives::types::BlockConfirmations::of_best_chain_block(
-                        zaino_primitives::types::Height::try_from(height.0)
+        // `time`/`blocktime` are the containing block's header timestamp, which the
+        // index already holds — no validator round-trip. An unmined transaction has
+        // no containing block, so both fields stay absent, as zebrad leaves them.
+        let (height, confirmations, block_hash, block_time, in_best_chain) =
+            match best_chain_location {
+                Some(types::BestChainLocation::Block(block_hash, height)) => {
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mined(
+                        zaino_primitives::types::BlockConfirmations::of_best_chain_block(
+                            zaino_primitives::types::Height::try_from(height.0)
+                                .map_err(out_of_range)?,
+                            zaino_primitives::types::Height::try_from(u32::from(
+                                snapshot.best_tip().height,
+                            ))
                             .map_err(out_of_range)?,
-                        zaino_primitives::types::Height::try_from(u32::from(
-                            snapshot.best_tip().height,
-                        ))
-                        .map_err(out_of_range)?,
-                    ),
-                );
+                        ),
+                    );
 
-                (
-                    Some(zebra_chain::block::Height::from(height)),
-                    Some(confirmations.to_rpc_i64()),
-                    Some(zebra_chain::block::Hash::from(block_hash)),
-                    Some(confirmations.is_in_best_chain()),
-                )
-            }
-            Some(types::BestChainLocation::Mempool(_height)) => {
-                let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
-                (
-                    None,
-                    Some(confirmations.to_rpc_i64()),
-                    None,
-                    Some(confirmations.is_in_best_chain()),
-                )
-            }
-            None => (None, None, None, Some(false)),
-        };
+                    let block_time = self
+                        .indexer
+                        .get_indexed_block_by_hash(&snapshot, &block_hash)
+                        .await?
+                        .and_then(|block| chrono::DateTime::from_timestamp(block.data().time(), 0));
+
+                    (
+                        Some(zebra_chain::block::Height::from(height)),
+                        Some(confirmations.to_rpc_i64()),
+                        Some(zebra_chain::block::Hash::from(block_hash)),
+                        block_time,
+                        Some(confirmations.is_in_best_chain()),
+                    )
+                }
+                Some(types::BestChainLocation::Mempool(_height)) => {
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
+                    (
+                        None,
+                        Some(confirmations.to_rpc_i64()),
+                        None,
+                        None,
+                        Some(confirmations.is_in_best_chain()),
+                    )
+                }
+                None => (None, None, None, None, Some(false)),
+            };
 
         Ok(GetRawTransaction::Object(Box::new(
             TransactionObject::from_transaction(
@@ -1156,7 +1164,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
                 confirmations,
                 #[allow(deprecated)]
                 &self.data.network(),
-                None,
+                block_time,
                 block_hash,
                 in_best_chain,
                 zebra_chain::transaction::Hash::from(txid),
