@@ -42,6 +42,19 @@ where
     }
 }
 
+// A composer is only as clonable as the two handles it holds, both of which are
+// cheap `Arc`-backed clones in practice. Derived by hand rather than with
+// `#[derive(Clone)]` so no `Clone` bound leaks onto the `TakeSnapshot` impls —
+// the composition needs no `Clone`, only the served facade does.
+impl<Fs: Clone, Nfs: Clone> Clone for ChainView<Fs, Nfs> {
+    fn clone(&self) -> Self {
+        Self {
+            fs: self.fs.clone(),
+            nfs: self.nfs.clone(),
+        }
+    }
+}
+
 impl<Fs, Nfs> TakeSnapshot for ChainView<Fs, Nfs>
 where
     Fs: TakeSnapshot,
