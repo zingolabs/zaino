@@ -38,6 +38,7 @@
 pub mod metric_names;
 
 mod error;
+mod graph;
 mod service;
 mod snapshot;
 mod subscriber;
