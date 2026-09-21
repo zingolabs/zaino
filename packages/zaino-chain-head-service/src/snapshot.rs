@@ -102,9 +102,8 @@ impl MapBackedSnapshot {
 
     /// Create initial snapshot from a single block.
     ///
-    /// The block is the window floor, and its work accumulates from
-    /// [`AnchoredRelativeChainWork::ZERO`](zaino_chain_head::AnchoredRelativeChainWork::ZERO),
-    /// so the anchor is its parent by construction. Derived here rather than
+    /// The block is the window floor, and its work starts at its own block
+    /// work, so the anchor is its parent by construction. Derived here rather than
     /// passed in: the two are the same fact, and a caller that could supply one
     /// independently of the other could contradict it.
     pub(crate) fn from_initial_block(block: ChainHeadBlock) -> Self {

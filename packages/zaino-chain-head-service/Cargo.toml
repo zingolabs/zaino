@@ -29,7 +29,6 @@ testing = []
 
 [dependencies]
 zaino-chain-head = { workspace = true }
-zaino-consensus = { workspace = true }
 zaino-primitives = { workspace = true }
 zaino-source = { workspace = true }
 zaino-status = { workspace = true }
@@ -46,6 +45,7 @@ metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "test-util"] }
+zaino-consensus = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

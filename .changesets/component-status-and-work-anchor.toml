@@ -1,14 +1,4 @@
 [[changes]]
-crate = "zaino-primitives"
-kind = "feature"
-description = """
-`ChainWork` is ordered, and converts to and from a `u128`. Ordering is what \
-chain selection does with chainwork, and the derive is correct rather than \
-convenient: the bytes are big-endian, so comparing them left to right compares \
-the number. `from_u128` widens losslessly; `as_u128` narrows and so returns \
-`Option`, because the protocol permits a value it cannot hold."""
-
-[[changes]]
 crate = "zaino-chain-store"
 kind = "breaking"
 description = """
@@ -44,20 +34,13 @@ tracked internally and converted at the port; a caller matching on \
 crate = "zaino-chain-head"
 kind = "breaking"
 description = """
-`ChainHeadWork` is now `AnchoredRelativeChainWork`, counted over `(anchor, B]` \
-from the parent of the window floor, and `ChainHeadSnapshot::work_anchor` names \
-that anchor so a consumer can rebase onto absolute chainwork. It wraps \
-`zaino_primitives::ChainWork` rather than a `u128`, because the protocol \
-permits a single block whose work exceeds one."""
+`ChainHeadSnapshot::work_anchor` names the block `ChainHeadWork` is counted \
+from: the parent of the window floor, so a block's work sums block work over \
+`(anchor, B]` and a consumer can rebase it onto absolute chainwork."""
 migration = """
-Rename `ChainHeadWork` to `AnchoredRelativeChainWork`. \
-`ChainHeadWork::anchored_at(work)` becomes \
-`AnchoredRelativeChainWork::ZERO.checked_add(work)`, which is the same value \
-because the anchor contributes none. `checked_add` now takes a `ChainWork`, so \
-a `u128` block work is widened with `ChainWork::from_u128`; `as_u128` becomes \
-`as_chainwork`. Implementors of `ChainHeadSnapshot` must add `work_anchor`, \
-returning the parent of the lowest block their graph accumulates from, or \
-`None` when that block is genesis."""
+Implementors of `ChainHeadSnapshot` must add `work_anchor`, returning the \
+parent of the lowest block their graph accumulates from, or `None` when that \
+block is genesis."""
 
 [[changes]]
 crate = "zaino-chain-head"

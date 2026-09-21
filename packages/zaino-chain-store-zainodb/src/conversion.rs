@@ -59,7 +59,7 @@ use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
-    BlockContext, BlockData, BlockHash, ChainWork, CompactDifficulty, CompactOrchardAction,
+    AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactDifficulty, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
     IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, TransactionHash,
     TransparentCompactTx, TxInCompact, TxOutCompact,
@@ -68,15 +68,6 @@ use crate::types::{
 /// A domain block could not be expressed as an [`IndexedBlock`].
 #[derive(Debug, thiserror::Error)]
 pub enum BlockConversionError {
-    /// The header's difficulty does not decode to a valid target.
-    #[error("block {hash} has invalid difficulty: {reason}")]
-    InvalidDifficulty {
-        /// The block that could not be converted.
-        hash: BlockHash,
-        /// Why the difficulty was rejected.
-        reason: String,
-    },
-
     /// A transparent output's value exceeds what the compact form can hold.
     #[error("block {hash} has a transparent output that cannot be compacted")]
     OutputNotCompactable {
@@ -97,8 +88,8 @@ pub enum BlockConversionError {
     /// width.
     ///
     /// The block-order position is a `usize`; the stored compact form records
-    /// it as `u64`. Rejected rather than truncated for the same reason as the
-    /// tree sizes: a wrapped position would put a wrong index on disk. This
+    /// it as `u64`. Rejected rather than truncated: a wrapped position would
+    /// put a wrong index on disk. This
     /// cannot happen for any real block — the block size limit bounds the
     /// transaction count far below `u64::MAX` — but the conversion refuses it
     /// rather than assert it away.
@@ -109,35 +100,6 @@ pub enum BlockConversionError {
         /// The position that did not fit.
         position: usize,
     },
-
-    /// A commitment tree has grown past what the stored form can record.
-    ///
-    /// The domain counts tree sizes in `u64` where the stored form uses `u32`.
-    /// Rejected rather than truncated: a silently wrapped size would put a
-    /// wrong treestate on disk, which no later read could detect.
-    #[error("block {hash} has a {pool} commitment tree size that does not fit into u32: {size}")]
-    TreeSizeOverflow {
-        /// The block that could not be converted.
-        hash: BlockHash,
-        /// Which pool's tree overflowed.
-        pool: &'static str,
-        /// The size that did not fit.
-        size: u64,
-    },
-}
-
-/// This block's own proof-of-work contribution, ignoring its ancestry.
-///
-/// Split from [`chainwork_from_parent`] because a bulk sync folds the
-/// cumulative work over a run of already-fetched blocks *before* assembling any
-/// of them: the fold is the only ordering constraint in block building, and it
-/// is pure integer arithmetic, so it must not be held behind the expensive
-/// conversion.
-pub fn block_work(
-    header_bits: zaino_primitives::types::CompactDifficulty,
-    hash: BlockHash,
-) -> Result<ChainWork, BlockConversionError> {
-    Ok(difficulty(header_bits, hash)?.to_work())
 }
 
 /// This block's chainwork, accumulated onto its parent's.
@@ -149,21 +111,21 @@ pub fn block_work(
 ///
 /// `None` for the parent means genesis, whose chainwork is its own work.
 pub fn chainwork_from_parent(
-    header_bits: zaino_primitives::types::CompactDifficulty,
+    header_bits: CompactDifficulty,
     hash: BlockHash,
-    parent_chainwork: Option<ChainWork>,
-) -> Result<ChainWork, BlockConversionError> {
-    let block_work = block_work(header_bits, hash)?;
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<AbsoluteChainWork, BlockConversionError> {
+    let block_work = header_bits.to_work();
     match parent_chainwork {
         Some(parent) => {
             parent
-                .add(&block_work)
+                .accumulate(block_work)
                 .map_err(|error| BlockConversionError::ChainWorkOverflow {
                     hash,
                     reason: error.to_string(),
                 })
         }
-        None => Ok(block_work),
+        None => Ok(AbsoluteChainWork::genesis(block_work)),
     }
 }
 
@@ -179,11 +141,11 @@ pub fn chainwork_from_parent(
 pub fn indexed_block(
     block: &Block,
     tree_roots: &TreeRoots,
-    chainwork: ChainWork,
+    chainwork: AbsoluteChainWork,
 ) -> Result<IndexedBlock, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
-    let data = block_data(&block.header)?;
+    let data = block_data(&block.header);
 
     let transactions = block
         .transactions
@@ -203,7 +165,7 @@ pub fn indexed_block(
         context,
         data,
         transactions,
-        commitment_tree_data(tree_roots, hash)?,
+        commitment_tree_data(tree_roots),
     ))
 }
 
@@ -213,34 +175,20 @@ pub fn indexed_block(
 /// start from the same [`BlockHeader`] — a block arriving from a validator and
 /// a block read back off disk carry the identical type — so a second copy of
 /// this mapping is not a parallel implementation but the same one, free to
-/// drift. It already had: the read path stringified the difficulty failure this
-/// one keeps typed.
+/// drift. Total: every fallible field, difficulty included, is already
+/// validated by the types the header carries.
 ///
 /// `pub(crate)` for the sibling adapter, which is the only other caller.
-pub(crate) fn block_data(
-    header: &zaino_primitives::types::BlockHeader,
-) -> Result<BlockData, BlockConversionError> {
-    Ok(BlockData {
+pub(crate) fn block_data(header: &zaino_primitives::types::BlockHeader) -> BlockData {
+    BlockData {
         version: header.version,
         time: i64::from(header.time),
         merkle_root: header.merkle_root.into(),
         block_commitments: header.block_commitments.into(),
-        bits: difficulty(header.bits, BlockHash(header.hash.into()))?,
+        bits: header.bits,
         nonce: header.nonce,
         solution: solution(&header.solution),
-    })
-}
-
-fn difficulty(
-    bits: zaino_primitives::types::CompactDifficulty,
-    hash: BlockHash,
-) -> Result<CompactDifficulty, BlockConversionError> {
-    CompactDifficulty::try_from_bits(bits).map_err(|error| {
-        BlockConversionError::InvalidDifficulty {
-            hash,
-            reason: error.to_string(),
-        }
-    })
+    }
 }
 
 fn solution(solution: &zaino_primitives::types::EquihashSolution) -> EquihashSolution {
@@ -262,43 +210,27 @@ fn solution(solution: &zaino_primitives::types::EquihashSolution) -> EquihashSol
 /// pre-activation heights — so it is preserved rather than tidied.
 ///
 /// Public so the port layer converts a treestate through this rather than
-/// through a second copy of the mapping. The tree-size narrowing below is why
-/// that matters: it refuses a size the stored width cannot hold, where a cast
-/// would write a smaller one and nothing downstream would notice.
-pub fn commitment_tree_data(
-    roots: &TreeRoots,
-    hash: BlockHash,
-) -> Result<CommitmentTreeData, BlockConversionError> {
+/// through a second copy of the mapping.
+pub fn commitment_tree_data(roots: &TreeRoots) -> CommitmentTreeData {
     let root_bytes = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
         root.as_ref().map(|info| <[u8; 32]>::from(info.root))
     };
-    let size = |root: &Option<zaino_primitives::types::TreeRootInfo>,
-                pool: &'static str|
-     -> Result<u32, BlockConversionError> {
-        match root.as_ref() {
-            Some(info) => {
-                u32::try_from(info.size).map_err(|_| BlockConversionError::TreeSizeOverflow {
-                    hash,
-                    pool,
-                    size: info.size,
-                })
-            }
-            None => Ok(0),
-        }
+    let size = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
+        root.as_ref().map_or(0, |info| u32::from(info.size))
     };
 
-    Ok(CommitmentTreeData::new(
+    CommitmentTreeData::new(
         CommitmentTreeRoots::new(
             root_bytes(&roots.sapling).unwrap_or_default(),
             root_bytes(&roots.orchard).unwrap_or_default(),
             root_bytes(&roots.ironwood),
         ),
         CommitmentTreeSizes::new(
-            size(&roots.sapling, "sapling")?,
-            size(&roots.orchard, "orchard")?,
-            size(&roots.ironwood, "ironwood")?,
+            size(&roots.sapling),
+            size(&roots.orchard),
+            size(&roots.ironwood),
         ),
-    ))
+    )
 }
 
 /// `position` is the transaction's slot in block order, the sole authority for
@@ -397,7 +329,7 @@ fn sapling(transaction: &Transaction) -> SaplingCompactTx {
                 CompactSaplingOutput::new(
                     output.cmu.into(),
                     output.ephemeral_key.into(),
-                    ciphertext_prefix(&output.enc_ciphertext),
+                    output.enc_ciphertext.into(),
                 )
             })
             .collect(),
@@ -417,26 +349,11 @@ fn orchard_shaped(pool: &zaino_primitives::types::OrchardData) -> OrchardCompact
                     action.nullifier.into(),
                     action.cmx.into(),
                     action.ephemeral_key.into(),
-                    ciphertext_prefix(&action.enc_ciphertext),
+                    action.enc_ciphertext.into(),
                 )
             })
             .collect(),
     )
-}
-
-/// The 52-byte scanning prefix.
-///
-/// The domain type already holds exactly this prefix rather than the full
-/// 580-byte ciphertext, so this is a reshape and not a truncation. A shorter
-/// value is zero-padded rather than rejected: the stored form is a fixed-width
-/// field, and a source that supplied less has produced a block no wallet can
-/// scan regardless.
-fn ciphertext_prefix(ciphertext: &zaino_primitives::types::EncryptedCiphertext) -> [u8; 52] {
-    let bytes: Vec<u8> = ciphertext.clone().into();
-    let mut prefix = [0u8; 52];
-    let usable = bytes.len().min(52);
-    prefix[..usable].copy_from_slice(&bytes[..usable]);
-    prefix
 }
 
 #[cfg(test)]

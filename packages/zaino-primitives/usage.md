@@ -32,11 +32,11 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 
 - `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
   `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
-  `Treestate`, `ShieldedPool`, `ChainMetadata`, `CompactDifficulty`,
-  `ChainWork`, the zatoshi quantity family `Zatoshis` / `ZatoshisFlowSum` /
-  `SignedZatoshis`, and the transparent-script family `Script` / `ScriptType` /
-  `classify_script` / `TransparentAddressKey` / `TransparentAddress` (the
-  families and chainwork are covered below).
+  `Treestate`, `ShieldedPool`, `ChainMetadata`, `CompactDifficulty`, the work
+  quantity family `SingleBlockWork` / `AbsoluteChainWork`, the zatoshi quantity
+  family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis`, and the
+  transparent-script family `Script` / `ScriptType` / `classify_script` /
+  `TransparentAddressKey` / `TransparentAddress` (all four families below).
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
@@ -60,12 +60,18 @@ Types enforce what they claim:
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
 let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
+let c = CompactCiphertext::try_new(&bytes)?; // rejects anything but exactly 52 bytes
 ```
 
 A transaction's position is the block's to know, not the transaction's:
 `Transaction` stores no index, and coinbase-ness is read from block order via
 `Block::coinbase()` (position 0), never from a per-transaction field that could
 disagree with the container.
+
+`CompactCiphertext` is the 52-byte compact head of a note ciphertext — the
+form a compact transaction serves to light clients, not the full 580-byte
+encryption output. Once constructed it converts infallibly to `[u8; 52]`, so
+no consumer re-checks the width.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the
@@ -184,6 +190,56 @@ layer has no business carrying it. Keying on the hash keeps it out entirely.
 belong to whichever backend writes them, so a second backend can choose its own
 without this crate having already decided; a backend maps to and from its own
 tags at its persistence boundary.
+
+## The work quantity family
+
+Two quantities share the proof-of-work unit and are not interchangeable:
+
+| type | is |
+|---|---|
+| `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
+| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
+
+Each fold is a method on the type it returns, and each is checked:
+
+```rust,ignore
+// A chain of one block has that block's work.
+let mut total = AbsoluteChainWork::genesis(block_work);
+
+// Extend by one block; unwind one on reorg. Both checked, with typed errors.
+total = total.accumulate(next_block_work)?;
+total = total.rollback(next_block_work)?;
+```
+
+`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
+sends, and answers `Ok(None)` when the validator does not track the value;
+`to_be_bytes` renders back for the wire. For an integer you already hold, use
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+
+The `types::work` module documentation covers why these are separate
+types, and what `AbsoluteChainWork` is *not* — in particular
+`zaino-chain-head`'s anchor-relative work, which is a third quantity.
+
+### Where `SingleBlockWork` comes from: `CompactDifficulty`
+
+The nBits encoding from the block header is its own validated type,
+`CompactDifficulty`, and the whole bits → target → work conversion is native
+to this crate — the domain owns its arithmetic, and consensus implementations
+serve as *differential-test oracles* (`zaino-convert-zebra` sweeps the
+pipeline against zebra across the encoding space) rather than as dependencies.
+
+Construction is only through checked doors — `try_from_bits(u32)` for a value
+carried numerically, `try_from_be_bytes([u8; 4])` for one carried as its
+display-order bytes. Both apply the acceptance set a validator enforces before
+comparing a hash (clear sign bit, target within 256 bits, non-zero target),
+plus one domain rule: the target's work must fit the 128 bits work is recorded
+in. Each rejected rule has its own `CompactDifficultyError` variant. `as_bits`
+reads the raw `u32` back out for wire and persistence renders.
+
+The work — `floor(2^256 / (target + 1))` — is computed once at construction,
+so `to_work()` is an infallible getter returning the block's
+`SingleBlockWork`. The expanded 256-bit target itself never leaves the type:
+no consumer reasons about targets, only about validity and work.
 
 ## Byte order
 
