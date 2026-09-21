@@ -6,8 +6,8 @@ publish = false
 description = "Composes the finalised store (FS) and a non-finalised view (NFS) into one served, compact-block snapshot over a watermark-governed seam. Thin-marker: the composed snapshot forces only the reads compact-block serving needs."
 
 [features]
-# The in-memory stub NFS used by this crate's route tests and, later, by the
-# Stage-2 chain-head tests. Off by default so a production consumer never pulls it.
+# The in-memory stub NFS used by this crate's route tests. Off by default so a
+# production consumer never pulls it.
 testing = []
 
 [dependencies]

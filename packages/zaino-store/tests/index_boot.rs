@@ -19,7 +19,7 @@ use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
-use zaino_service::{CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
+use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader};

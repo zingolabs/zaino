@@ -39,9 +39,9 @@ use zaino_service::error::{
     TreestateReadError, TxReadError,
 };
 use zaino_service::{
-    AddressRead, BlockRead, Broadcast, ChainInfoRead, CompactBlockRead, CompactNullifierRead,
-    IndexerService, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable, Snapshot,
-    SpendRead, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead,
+    CompactNullifierRead, IndexerService, MempoolSubscribe, Passthrough, ReportedUpgrades,
+    Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
 };
 
 /// Genesis height, for an empty finalised store.
@@ -157,7 +157,7 @@ where
 
 // --- coherence marker (on the snapshot) --------------------------------------
 
-impl<R, N> Snapshot for StoreSnapshot<R, N>
+impl<R, N> ChainSegment for StoreSnapshot<R, N>
 where
     R: ChainStoreReader,
     N: ChainHeadSnapshot,
@@ -172,6 +172,23 @@ where
         })
     }
 
+    fn coverage(&self) -> Option<HeightRange> {
+        // The composed view serves `[genesis, overall tip]`: the finalised store
+        // prefix from genesis up to its watermark, then the non-finalised head
+        // suffix up to the best tip. The head is never empty, so the union always
+        // covers at least genesis.
+        Some(HeightRange {
+            start: genesis(),
+            end: self.head.best_tip().height,
+        })
+    }
+}
+
+impl<R, N> Snapshot for StoreSnapshot<R, N>
+where
+    R: ChainStoreReader,
+    N: ChainHeadSnapshot,
+{
     fn serviceable_range(&self) -> ServiceableRange {
         // Finalised seam from the store watermark; tip from the chain head.
         let finalized_tip = self

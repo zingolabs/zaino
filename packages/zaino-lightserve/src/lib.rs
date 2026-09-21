@@ -28,7 +28,7 @@ use futures::stream::{BoxStream, StreamExt};
 use zaino_core::{BlockRef, HeightRange};
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
-use zaino_service::{CompactBlockRead, LightServeService, Snapshot};
+use zaino_service::{ChainSegment, CompactBlockRead, LightServeService};
 
 use crate::wire::{to_hex, ToWire};
 

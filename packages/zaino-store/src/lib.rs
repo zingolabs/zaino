@@ -58,8 +58,8 @@ use zaino_service::error::{
     TxReadError,
 };
 use zaino_service::{
-    AddressRead, Broadcast, CompactBlockRead, CompactNullifierRead, MempoolSubscribe, Serviceable,
-    Snapshot, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
+    AddressRead, Broadcast, ChainSegment, CompactBlockRead, CompactNullifierRead, MempoolSubscribe,
+    Serviceable, Snapshot, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
 };
 use zaino_sync::primitives::BlockHeight;
 
@@ -160,11 +160,22 @@ impl<B> Clone for StoreSnapshot<B> {
     }
 }
 
-impl<B: Backend + 'static> Snapshot for StoreSnapshot<B> {
+impl<B: Backend + 'static> ChainSegment for StoreSnapshot<B> {
     fn pinned_tip(&self) -> Option<BlockId> {
         self.pinned_tip
     }
 
+    fn coverage(&self) -> Option<HeightRange> {
+        // The finalised store serves `[genesis, finalized_tip]`; an empty store
+        // (no watermark) covers nothing.
+        self.finalized_tip.map(|end| HeightRange {
+            start: Height::GENESIS,
+            end,
+        })
+    }
+}
+
+impl<B: Backend + 'static> Snapshot for StoreSnapshot<B> {
     fn serviceable_range(&self) -> ServiceableRange {
         // No non-finalised window is wired, so the view answers up to the
         // finalised tip only: `tip == finalized_tip`.

@@ -11,12 +11,20 @@ use zaino_core::{
     TipEvent, TransactionId,
 };
 
-use crate::bundle::Snapshot;
+use crate::bundle::ChainSegment;
 use crate::error::{BroadcastRejection, ReadError, Transient};
 
-/// Pin the current best chain into a [`Snapshot`].
+/// Pin the current view into a [`ChainSegment`].
+///
+/// The capture port both sides of the seam provide: the finalised store and the
+/// non-finalised head each pin a coherent view, and the composer captures both
+/// in one shot so the seam is coherent. The bound is [`ChainSegment`], not the
+/// served [`Snapshot`](crate::Snapshot), so a non-finalised head — which has a
+/// volatile window but no finalised boundary of its own — satisfies it without
+/// having to fake one. A served view is a `Snapshot`, which *is* a
+/// `ChainSegment`, so it satisfies this too.
 pub trait TakeSnapshot: Send + Sync {
-    type Snapshot: Snapshot;
+    type Snapshot: ChainSegment;
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send;
 }
 

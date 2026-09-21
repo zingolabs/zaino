@@ -31,9 +31,10 @@ use crate::error::{
     TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, BlockRead, Broadcast, ChainInfoRead, CompactBlockRead, CompactNullifierRead,
-    ForkReconcile, IndexerService, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable,
-    Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead,
+    CompactNullifierRead, ForkReconcile, IndexerService, MempoolSubscribe, Passthrough,
+    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
+    TransactionRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -257,11 +258,22 @@ impl ChainInfoRead for MockSnapshot {
     }
 }
 
-impl Snapshot for MockSnapshot {
+impl ChainSegment for MockSnapshot {
     fn pinned_tip(&self) -> Option<BlockId> {
         self.chain.tip
     }
 
+    fn coverage(&self) -> Option<HeightRange> {
+        // The mock serves `[genesis, tip]` when it holds a tip, nothing when
+        // empty — mirroring the finalised store's neutral coverage.
+        self.chain.tip.map(|tip| HeightRange {
+            start: Height::GENESIS,
+            end: tip.height,
+        })
+    }
+}
+
+impl Snapshot for MockSnapshot {
     fn serviceable_range(&self) -> ServiceableRange {
         self.chain.serviceable.unwrap_or_else(|| {
             let zero = Height::try_from(0).expect("0 is a valid height");

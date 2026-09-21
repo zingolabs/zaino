@@ -25,7 +25,7 @@ mod reads;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use bundle::{IndexerService, Snapshot};
+pub use bundle::{ChainSegment, IndexerService, Snapshot};
 pub use controls::{
     Broadcast, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable, TakeSnapshot,
     TipSubscribe,

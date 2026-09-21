@@ -123,6 +123,28 @@ pub struct CompactBlock {
     pub chain_metadata: ChainMetadata,
 }
 
+impl CompactBlock {
+    /// Pair a [`PreIndexCompactBlock`] with the [`ChainMetadata`] indexing
+    /// supplies to form the serving block.
+    ///
+    /// The pre-index block already carries every per-block field; this only
+    /// adds the cumulative tree sizes, which are not derivable from the block
+    /// alone. A finalised store reads them from its cumulative index; the
+    /// non-finalised head composes them from the block's own tree roots (see
+    /// [`ChainMetadata::from_tree_roots`]).
+    pub fn from_pre_index(pre: PreIndexCompactBlock, chain_metadata: ChainMetadata) -> Self {
+        Self {
+            hash: pre.hash,
+            prev_hash: pre.prev_hash,
+            height: pre.height,
+            time: pre.time,
+            bits: pre.bits,
+            transactions: pre.transactions,
+            chain_metadata,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +182,35 @@ mod tests {
 
         assert_eq!(compact.orchard_actions, vec![action(1)]);
         assert_eq!(compact.ironwood_actions, vec![action(2), action(3)]);
+    }
+
+    #[test]
+    fn from_pre_index_carries_every_field_and_adds_the_metadata() {
+        use crate::types::TreeSize;
+
+        let pre = PreIndexCompactBlock {
+            hash: [1u8; 32].into(),
+            prev_hash: [2u8; 32].into(),
+            height: 99,
+            time: 12_345,
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+            transactions: vec![PreIndexCompactTx::from(&Transaction {
+                txid: [3u8; 32].into(),
+                transparent: Default::default(),
+                sapling: Default::default(),
+                orchard: Default::default(),
+                ironwood: Default::default(),
+            })],
+        };
+        let metadata = ChainMetadata::new(TreeSize::from(7u32), TreeSize::ZERO, TreeSize::ZERO);
+
+        let block = CompactBlock::from_pre_index(pre.clone(), metadata.clone());
+
+        assert_eq!(block.hash, pre.hash);
+        assert_eq!(block.prev_hash, pre.prev_hash);
+        assert_eq!(block.height, pre.height);
+        assert_eq!(block.time, pre.time);
+        assert_eq!(block.transactions.len(), pre.transactions.len());
+        assert_eq!(block.chain_metadata, metadata);
     }
 }

@@ -6,13 +6,11 @@ use zaino_core::{
     BlockId, BlockRef, Capability, CompactBlock, Height, HeightRange, ServiceableRange,
 };
 use zaino_service::error::{BlockReadError, ReadError};
-use zaino_service::{CompactBlockRead, Snapshot};
-
-use crate::view::NonFinalisedView;
+use zaino_service::{ChainSegment, CompactBlockRead, Snapshot};
 
 /// A pinned, reorg-coherent view over the composed chain — the finalised store
-/// snapshot `S` and the non-finalised view `Nfs`, captured together so the seam
-/// watermark and the volatile window agree.
+/// segment `F` and the non-finalised head segment `N`, captured together so the
+/// seam watermark and the volatile window agree.
 ///
 /// # The seam, as a relation over heights
 ///
@@ -31,15 +29,18 @@ use crate::view::NonFinalisedView;
 /// volatile window; the `gap` is on-chain but held by neither side (the FS is
 /// still building up toward the NFS floor); above the tip there is no block.
 ///
-/// Only [`CompactBlockRead`] and the [`Snapshot`] coherence marker are composed
-/// here — the reads compact-block serving needs. Other reads are named
-/// separately or passed through.
+/// Both sides are named only through the shared `zaino-service` ports — each is
+/// a [`ChainSegment`] (its coverage names the seam bounds) and a
+/// [`CompactBlockRead`] (its by-height/by-hash reads). Only these two capability
+/// families are composed here, the reads compact-block serving needs; other
+/// reads are named separately or passed through.
 #[derive(Clone)]
-pub struct ChainViewSnapshot<S, Nfs> {
-    /// The finalised store snapshot, pinned at capture. Serves `[genesis, w]`.
-    fs: S,
-    /// The non-finalised view, captured together with `fs`. Serves `[f, t]`.
-    nfs: Nfs,
+pub struct ChainViewSnapshot<F, N> {
+    /// The finalised store segment, pinned at capture. Serves `[genesis, w]`.
+    fs: F,
+    /// The non-finalised head segment, captured together with `fs`. Serves
+    /// `[f, t]`.
+    nfs: N,
     /// The seam watermark `w`: the FS's finalised tip height, or `None` when the
     /// FS holds nothing. Derived once at capture so the seam is fixed for the
     /// life of the pin.
@@ -61,21 +62,20 @@ enum Route {
     AboveTip,
 }
 
-impl<S, Nfs> ChainViewSnapshot<S, Nfs>
+impl<F, N> ChainViewSnapshot<F, N>
 where
-    S: Snapshot + CompactBlockRead,
-    Nfs: NonFinalisedView + Clone,
+    F: ChainSegment + CompactBlockRead,
+    N: ChainSegment + CompactBlockRead,
 {
-    /// Compose a pinned view from a finalised store snapshot and a non-finalised
-    /// view captured at the same instant. The watermark is the FS's finalised
-    /// tip height read once here, so the seam is coherent for the life of the
-    /// pin.
-    pub(crate) fn new(fs: S, nfs: Nfs) -> Self {
-        // The FS is pinned to its finalised tip, so its `pinned_tip` height *is*
-        // the watermark `w` — `None` distinguishes an empty FS from a genesis-
-        // only FS (`Some(0)`), which `serviceable_range().finalized_tip`
+    /// Compose a pinned view from a finalised store segment and a non-finalised
+    /// segment captured at the same instant. The watermark is the FS's coverage
+    /// high read once here, so the seam is coherent for the life of the pin.
+    pub(crate) fn new(fs: F, nfs: N) -> Self {
+        // The FS covers `[genesis, w]`, so the high of its coverage *is* the
+        // watermark `w` — `None` distinguishes an empty FS from a genesis-only
+        // FS (`Some(0)`), which `serviceable_range().finalized_tip`
         // (GENESIS-on-empty) cannot.
-        let watermark = fs.pinned_tip().map(|id| id.height);
+        let watermark = fs.coverage().map(|range| range.end);
         Self { fs, nfs, watermark }
     }
 
@@ -87,22 +87,21 @@ where
         {
             return Route::Finalised;
         }
-        // Above the watermark (or the FS is empty): consult the NFS window.
-        match (self.nfs.floor(), self.nfs.tip()) {
-            (Some(floor), Some(tip)) => {
-                if height > tip.height {
+        // Above the watermark (or the FS is empty): consult the NFS window,
+        // whose coverage names its floor and tip.
+        match self.nfs.coverage() {
+            Some(window) => {
+                if height > window.end {
                     Route::AboveTip
-                } else if height >= floor {
+                } else if height >= window.start {
                     Route::Volatile
                 } else {
                     Route::InitialBuildGap
                 }
             }
-            // No servable window: an empty head, or a degenerate half-populated
-            // one (the `NonFinalisedView` contract pairs `floor` with `tip`, so
-            // the mixed arms should not arise) — nothing above the watermark is
+            // No servable window (an empty head): nothing above the watermark is
             // served.
-            (None, None) | (Some(_), None) | (None, Some(_)) => Route::AboveTip,
+            None => Route::AboveTip,
         }
     }
 
@@ -117,37 +116,59 @@ where
     async fn read_routed(&self, height: Height) -> Result<Option<CompactBlock>, BlockReadError> {
         match self.route(height) {
             Route::Finalised => self.fs.compact_block(BlockRef::Height(height)).await,
-            Route::Volatile => Ok(self.nfs.compact_block_at(height)),
+            Route::Volatile => self.nfs.compact_block(BlockRef::Height(height)).await,
             Route::InitialBuildGap => Err(BlockReadError::NotServiceable(Capability::Blocks)),
             Route::AboveTip => Ok(None),
         }
     }
 }
 
-impl<S, Nfs> Snapshot for ChainViewSnapshot<S, Nfs>
+impl<F, N> ChainSegment for ChainViewSnapshot<F, N>
 where
-    S: Snapshot + CompactBlockRead,
-    Nfs: NonFinalisedView + Clone + 'static,
+    F: ChainSegment + CompactBlockRead,
+    N: ChainSegment + CompactBlockRead,
 {
     fn pinned_tip(&self) -> Option<BlockId> {
         // The composed tip: the volatile NFS tip when present, else the
         // finalised tip the FS is pinned to.
-        self.nfs.tip().or_else(|| self.fs.pinned_tip())
+        self.nfs.pinned_tip().or_else(|| self.fs.pinned_tip())
     }
 
+    fn coverage(&self) -> Option<HeightRange> {
+        // The composed span `FS ∪ NFS`: low is the FS floor (genesis) when the
+        // FS holds anything, else the NFS floor; high is the NFS tip when the
+        // head holds anything, else the FS high. `None` only when both sides are
+        // empty.
+        let fs = self.fs.coverage();
+        let nfs = self.nfs.coverage();
+        let start = fs.or(nfs).map(|range| range.start)?;
+        let end = nfs.or(fs).map(|range| range.end)?;
+        Some(HeightRange { start, end })
+    }
+}
+
+impl<F, N> Snapshot for ChainViewSnapshot<F, N>
+where
+    F: ChainSegment + CompactBlockRead,
+    N: ChainSegment + CompactBlockRead,
+{
     fn serviceable_range(&self) -> ServiceableRange {
         let finalized_tip = self.watermark.unwrap_or(Height::GENESIS);
         // The served tip is the NFS tip height, falling back to the watermark
         // (or genesis) when the head is empty.
-        let tip = self.nfs.tip().map(|id| id.height).unwrap_or(finalized_tip);
+        let tip = self
+            .nfs
+            .pinned_tip()
+            .map(|id| id.height)
+            .unwrap_or(finalized_tip);
         ServiceableRange { finalized_tip, tip }
     }
 }
 
-impl<S, Nfs> CompactBlockRead for ChainViewSnapshot<S, Nfs>
+impl<F, N> CompactBlockRead for ChainViewSnapshot<F, N>
 where
-    S: Snapshot + CompactBlockRead,
-    Nfs: NonFinalisedView + Clone + 'static,
+    F: ChainSegment + CompactBlockRead,
+    N: ChainSegment + CompactBlockRead,
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
         match at {
@@ -157,7 +178,7 @@ where
             // window.
             BlockRef::Hash(hash) => match self.fs.compact_block(BlockRef::Hash(hash)).await? {
                 Some(block) => Ok(Some(block)),
-                None => Ok(self.nfs.compact_block_by_hash(hash)),
+                None => self.nfs.compact_block(BlockRef::Hash(hash)).await,
             },
         }
     }

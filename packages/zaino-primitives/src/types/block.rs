@@ -3,7 +3,7 @@
 use super::transaction::Transaction;
 use super::{
     BlockCommitments, BlockHash, BlockTime, CompactDifficulty, EquihashNonce, EquihashSolution,
-    Height, MerkleRoot, TreeSize,
+    Height, MerkleRoot, TreeRoots, TreeSize,
 };
 
 /// Block header — every consensus field, plus the hash and height that name
@@ -148,6 +148,31 @@ impl ChainMetadata {
             ironwood_tree_size: ironwood_tree_size.into(),
         }
     }
+
+    /// The cumulative pool sizes a block's [`TreeRoots`] carries.
+    ///
+    /// A pool with no reported root contributes [`TreeSize::ZERO`] — it has
+    /// committed no notes at this height. Unlike [`ZERO`](Self::ZERO), this is
+    /// the *real* metadata for a block whose sizes are known: the non-finalised
+    /// head reports each block's tree roots directly, so it composes the
+    /// metadata here rather than folding a cumulative index as the finalised
+    /// store does.
+    pub fn from_tree_roots(roots: &TreeRoots) -> Self {
+        Self::new(
+            roots
+                .sapling
+                .as_ref()
+                .map_or(TreeSize::ZERO, |info| info.size),
+            roots
+                .orchard
+                .as_ref()
+                .map_or(TreeSize::ZERO, |info| info.size),
+            roots
+                .ironwood
+                .as_ref()
+                .map_or(TreeSize::ZERO, |info| info.size),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -177,6 +202,24 @@ mod tests {
             orchard_tree_size: TreeSize::ZERO,
             ironwood_tree_size: TreeSize::ZERO,
         }
+    }
+
+    #[test]
+    fn chain_metadata_from_tree_roots_takes_sizes_and_zeroes_inactive_pools() {
+        use crate::types::{TreeRootInfo, TreeRoots};
+
+        let roots = TreeRoots {
+            sapling: Some(TreeRootInfo {
+                root: [7u8; 32].into(),
+                size: TreeSize::from(42u32),
+            }),
+            orchard: None,
+            ironwood: None,
+        };
+        let meta = ChainMetadata::from_tree_roots(&roots);
+        assert_eq!(meta.sapling_tree_size, TreeSize::from(42u32));
+        assert_eq!(meta.orchard_tree_size, TreeSize::ZERO);
+        assert_eq!(meta.ironwood_tree_size, TreeSize::ZERO);
     }
 
     fn tx(tag: u8) -> Transaction {

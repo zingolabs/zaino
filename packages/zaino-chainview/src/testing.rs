@@ -1,16 +1,23 @@
 //! In-memory stand-in for the non-finalised side of the seam.
 //!
 //! [`StubNonFinalised`] holds a fixed set of best-chain compact blocks over
-//! `[floor, tip]` and answers [`NonFinalisedView`] lookups against them. It
-//! stands in for the real `ChainGraph`-backed head (a later stage), so the FS⊕
-//! NFS route can be exercised end to end without wiring the volatile graph.
+//! `[floor, tip]` and answers the shared `zaino-service` segment ports against
+//! them. It stands in for the real `ChainGraph`-backed head, so the FS⊕NFS route
+//! can be exercised end to end without wiring the volatile graph.
+//!
+//! A fixed window is already its own pinned view: it never advances, so
+//! [`TakeSnapshot::snapshot`] just clones it. The real chain-head, which does
+//! advance, captures a fresh snapshot per pin.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 
-use zaino_core::{BlockHash, BlockId, ChainMetadata, CompactBlock, Height};
+use futures::stream::{self, BoxStream, StreamExt};
+
+use zaino_core::{BlockHash, BlockId, BlockRef, ChainMetadata, CompactBlock, Height, HeightRange};
 use zaino_primitives::types::CompactDifficulty;
-
-use crate::view::NonFinalisedView;
+use zaino_service::error::{BlockReadError, ReadError, Transient};
+use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 
 /// A fixed non-finalised window backed by an in-memory map.
 ///
@@ -51,24 +58,53 @@ impl StubNonFinalised {
     }
 }
 
-impl NonFinalisedView for StubNonFinalised {
-    fn tip(&self) -> Option<BlockId> {
+impl ChainSegment for StubNonFinalised {
+    fn pinned_tip(&self) -> Option<BlockId> {
         self.tip
     }
 
-    fn floor(&self) -> Option<Height> {
-        self.blocks.keys().next().copied()
+    fn coverage(&self) -> Option<HeightRange> {
+        let start = *self.blocks.keys().next()?;
+        let end = *self.blocks.keys().next_back()?;
+        Some(HeightRange { start, end })
+    }
+}
+
+impl CompactBlockRead for StubNonFinalised {
+    fn compact_block(
+        &self,
+        at: BlockRef,
+    ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send {
+        // Best-effort over the stored window: a height maps directly, a hash
+        // matches any stored block. Reads never fail in the stub.
+        let block = match at {
+            BlockRef::Height(height) => self.blocks.get(&height).cloned(),
+            BlockRef::Hash(hash) => self
+                .blocks
+                .values()
+                .find(|block| block.hash == hash)
+                .cloned(),
+        };
+        std::future::ready(Ok(block))
     }
 
-    fn compact_block_at(&self, height: Height) -> Option<CompactBlock> {
-        self.blocks.get(&height).cloned()
+    fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
+        let start = u32::from(range.start);
+        let end = u32::from(range.end);
+        let blocks: Vec<Result<CompactBlock, ReadError>> = (start..=end)
+            .filter_map(|height| Height::try_from(height).ok())
+            .filter_map(|height| self.blocks.get(&height).cloned())
+            .map(Ok)
+            .collect();
+        stream::iter(blocks).boxed()
     }
+}
 
-    fn compact_block_by_hash(&self, hash: BlockHash) -> Option<CompactBlock> {
-        self.blocks
-            .values()
-            .find(|block| block.hash == hash)
-            .cloned()
+impl TakeSnapshot for StubNonFinalised {
+    type Snapshot = Self;
+
+    fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
+        std::future::ready(Ok(self.clone()))
     }
 }
 

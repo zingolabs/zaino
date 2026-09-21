@@ -41,6 +41,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 metrics = { workspace = true, optional = true }
+zaino-service = { version = "0.1.0", path = "../zaino-service" }
+zaino-core = { version = "0.1.0", path = "../zaino-core" }
 
 [dev-dependencies]
 proptest.workspace = true

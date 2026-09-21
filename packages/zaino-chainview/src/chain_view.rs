@@ -1,25 +1,30 @@
-//! The composer: pairs a finalised store with a non-finalised view.
+//! The composer: pairs a finalised store with a non-finalised head, both named
+//! only through the shared `zaino-service` ports.
 
 use std::future::Future;
 
 use zaino_service::error::Transient;
-use zaino_service::{CompactBlockRead, Snapshot, TakeSnapshot};
+use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 
 use crate::snapshot::ChainViewSnapshot;
-use crate::view::NonFinalisedView;
 
-/// Composes a finalised store `Fs` and a non-finalised view `Nfs` into one
+/// Composes a finalised store `Fs` and a non-finalised head `Nfs` into one
 /// served chain for compact-block serving.
 ///
-/// [`snapshot`](TakeSnapshot::snapshot) captures the FS snapshot and the NFS
-/// view **together**, in one shot, so the seam watermark and the volatile
-/// window are coherent — a read through the resulting [`ChainViewSnapshot`]
-/// never sees a watermark from one instant and a window from another.
+/// Both sides are named through the same shared ports — each is a
+/// [`TakeSnapshot`] whose snapshot is a [`ChainSegment`] (coherence coordinate)
+/// and a [`CompactBlockRead`] (compact-block serving). The composer assigns the
+/// roles by slot: `fs` is the durable prefix, `nfs` the volatile suffix.
+///
+/// [`snapshot`](TakeSnapshot::snapshot) captures both snapshots **together**, in
+/// one shot, so the seam watermark and the volatile window are coherent — a read
+/// through the resulting [`ChainViewSnapshot`] never sees a watermark from one
+/// instant and a window from another.
 pub struct ChainView<Fs, Nfs> {
     /// The finalised store, taken as of each snapshot. Serves the durable
     /// prefix up to its watermark.
     fs: Fs,
-    /// The non-finalised view, cloned into each snapshot. Serves the volatile
+    /// The non-finalised head, pinned into each snapshot. Serves the volatile
     /// window above the watermark.
     nfs: Nfs,
 }
@@ -27,10 +32,11 @@ pub struct ChainView<Fs, Nfs> {
 impl<Fs, Nfs> ChainView<Fs, Nfs>
 where
     Fs: TakeSnapshot,
-    Fs::Snapshot: Snapshot + CompactBlockRead,
-    Nfs: NonFinalisedView + Clone + 'static,
+    Fs::Snapshot: ChainSegment + CompactBlockRead,
+    Nfs: TakeSnapshot,
+    Nfs::Snapshot: ChainSegment + CompactBlockRead,
 {
-    /// Compose over a finalised store and a non-finalised view.
+    /// Compose over a finalised store and a non-finalised head.
     pub fn new(fs: Fs, nfs: Nfs) -> Self {
         Self { fs, nfs }
     }
@@ -39,17 +45,17 @@ where
 impl<Fs, Nfs> TakeSnapshot for ChainView<Fs, Nfs>
 where
     Fs: TakeSnapshot,
-    Fs::Snapshot: Snapshot + CompactBlockRead,
-    Nfs: NonFinalisedView + Clone + 'static,
+    Fs::Snapshot: ChainSegment + CompactBlockRead,
+    Nfs: TakeSnapshot,
+    Nfs::Snapshot: ChainSegment + CompactBlockRead,
 {
-    type Snapshot = ChainViewSnapshot<Fs::Snapshot, Nfs>;
+    type Snapshot = ChainViewSnapshot<Fs::Snapshot, Nfs::Snapshot>;
 
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
-        // Capture the FS snapshot and the NFS view together — one shot — so the
-        // watermark pinned by the FS and the window held by the NFS are the same
-        // instant's coordinates.
+        // Capture both snapshots together — one shot — so the watermark the FS
+        // pins and the window the NFS pins are the same instant's coordinates.
         let fs = self.fs.snapshot();
-        let nfs = self.nfs.clone();
-        async move { Ok(ChainViewSnapshot::new(fs.await?, nfs)) }
+        let nfs = self.nfs.snapshot();
+        async move { Ok(ChainViewSnapshot::new(fs.await?, nfs.await?)) }
     }
 }

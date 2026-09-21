@@ -24,7 +24,7 @@ use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_service::error::{BlockReadError, ReadError};
-use zaino_service::{CompactBlockRead, Snapshot, TakeSnapshot};
+use zaino_service::{ChainSegment, CompactBlockRead, Snapshot, TakeSnapshot};
 use zaino_source::mock::{MockChain, test_block};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader};

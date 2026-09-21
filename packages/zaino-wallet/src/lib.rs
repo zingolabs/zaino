@@ -20,7 +20,7 @@ mod error;
 pub use dto::{WalletTip, WalletTxId};
 pub use error::WalletError;
 
-use zaino_service::{Snapshot, WalletLibService};
+use zaino_service::{ChainSegment, WalletLibService};
 
 /// The indexer a full wallet library queries, over a [`WalletLibService`] engine.
 pub struct Indexer<W: WalletLibService> {

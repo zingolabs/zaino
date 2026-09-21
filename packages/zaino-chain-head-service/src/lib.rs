@@ -39,6 +39,7 @@ pub mod metric_names;
 
 mod error;
 mod graph;
+mod serve;
 mod service;
 mod snapshot;
 mod subscriber;
@@ -47,6 +48,7 @@ mod subscriber;
 mod tests;
 
 pub use error::{ChainHeadAdvanceError, ChainHeadInitError};
+pub use serve::HeadSnapshot;
 pub use service::ChainHeadService;
 pub use snapshot::MapBackedSnapshot;
 pub use subscriber::ChainHeadSubscriber;
