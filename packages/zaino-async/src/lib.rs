@@ -11,7 +11,7 @@ mod panic;
 mod task;
 
 pub use panic::{catch_panic, panic_message};
-pub use task::{Task, TaskError, TaskName};
+pub use task::{Task, TaskError, TaskName, run_blocking};
 
 // The cooperative-cancellation token a [`Task`] body receives, re-exported so a
 // consumer naming it (e.g. a server's run signature) need not depend on
