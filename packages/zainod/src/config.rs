@@ -240,14 +240,18 @@ pub fn regtest_direct_fixture() -> DaemonConfig {
     let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/var/lib/zaino/zebra-db"));
+    // In the ztest cluster the regtest validator's JSON-RPC lives on the
+    // validator pod, not localhost, so the e2e passes its in-cluster address via
+    // `TEST_FIXTURE_JSONRPC_ENV`; fall back to the local regtest default when
+    // unset (a plain local run still works). The NFS (chain-head) anchors here.
+    let jsonrpc_address =
+        std::env::var(TEST_FIXTURE_JSONRPC_ENV).unwrap_or_else(|_| "127.0.0.1:18232".to_string());
     DaemonConfig {
         network: Network::Regtest,
         metrics_endpoint: None,
         source: SourceMode::Direct {
             zebra_cache_dir,
-            // ztest runs a regtest validator with JSON-RPC on the default
-            // regtest port and no auth.
-            jsonrpc_address: "127.0.0.1:18232".to_string(),
+            jsonrpc_address,
             cookie_path: None,
             user: None,
             password: None,
@@ -272,6 +276,12 @@ pub fn regtest_direct_fixture() -> DaemonConfig {
 /// path (see [`regtest_direct_fixture`]).
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_ZEBRA_ENV: &str = "ZAINO_TEST_ZEBRA_CACHE_DIR";
+
+/// Env var the e2e uses to hand the fixture the validator's in-cluster JSON-RPC
+/// address (`host:port`), which the NFS (chain-head) dials for non-final blocks
+/// (see [`regtest_direct_fixture`]).
+#[cfg(feature = "ztest-fixture")]
+pub const TEST_FIXTURE_JSONRPC_ENV: &str = "ZAINO_TEST_ZEBRA_JSONRPC";
 
 /// Serialize the built-in defaults into a commented example config file.
 pub fn generate_default_config() -> Result<String, IndexerError> {
