@@ -1,28 +1,36 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "packages/zaino-status",
+    "packages/zaino-component",
+    "packages/zaino-consensus",
+    "packages/zaino-encoding",
+    "packages/zaino-primitives",
+    "packages/zaino-persistence",
+    "packages/zaino-address",
+    "packages/zaino-source-macros",
+    "packages/zaino-source",
+    "packages/zaino-rpc",
+    "packages/zaino-convert-zebra",
+    "packages/zaino-source-zebra-rpc",
+    "packages/zaino-source-zebra-readstate",
+    "packages/zaino-source-zebra",
+    "packages/zaino-mempool",
+    "packages/zaino-mempool-service",
     "packages/zaino-common",
+    "packages/zaino-chain-head",
+    "packages/zaino-chain-head-service",
+    "packages/zaino-chain-store",
+    "packages/zaino-chain-store-zainodb",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
-    "packages/zaino-fetch",
     "packages/zaino-proto",
-    # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
-    # zaino-testutils first: the e2e/clientless partitions depend on it.
-    "live-tests/zaino-testutils",
-    "live-tests/clientless",
-    "live-tests/e2e",
-]
-# `container-test` runs a bare `cargo nextest run`, which operates on
-# default-members — so the heavy live-test crates are built and tested only
-# when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
-default-members = [
-    "packages/zaino-common",
-    "packages/zainod",
-    "packages/zaino-serve",
-    "packages/zaino-state",
-    "packages/zaino-fetch",
-    "packages/zaino-proto",
+    # NOTE: live-tests/ is its own standalone workspace (see
+    # live-tests/Cargo.toml). It has been migrated onto the ztest k8s harness
+    # (`ztest` from crates.io), which stands the system up as deployed images and
+    # drives it over its served interfaces, so the suite links no production
+    # crate and shares no lockfile with one. Build and run it from live-tests/.
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -40,16 +48,17 @@ license = "Apache-2.0"
 
 # Librustzcash
 incrementalmerkletree = "0.8"
+sapling-crypto = "0.7"
 zcash_address = "0.13"
-zcash_keys = "0.15"
+zcash_keys = "0.16"
 zcash_protocol = "0.10"
-zcash_primitives = "0.29"
-zcash_transparent = "0.9"
+zcash_primitives = "0.30"
+zcash_transparent = "0.10"
 
 # Zebra
-zebra-chain = "11.1"
-zebra-state = "10.1"
-zebra-rpc = "11.1"
+zebra-chain = "12.0"
+zebra-state = "13.0"
+zebra-rpc = "16.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -68,12 +77,10 @@ tracing-subscriber = { version = "0.3.20", features = [
     "json",
 ] }
 tracing-tree = "0.4"
-nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
 
 # Network / RPC
 http = "1.1"
-url = "2.5"
 reqwest = { version = "0.13", default-features = false, features = [
     "cookies",
     "rustls-no-provider",
@@ -84,7 +91,6 @@ tonic = { version = "0.14" }
 prost = "0.14"
 serde = "1.0"
 serde_json = "1.0"
-jsonrpsee-types = "0.24"
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
 
 # Hashmaps, channels, DBs
@@ -99,16 +105,14 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 
 # Utility
+bytes = "1.12"
+strum = { version = "0.27", features = ["derive"] }
 thiserror = "2.0"
 once_cell = "1.20"
 chrono = "0.4"
 which = "8"
 whoami = "2.1"
 corez = "0.1"
-
-# Formats
-base64 = "0.22"
-byteorder = "1.5"
 sha2 = "0.10"
 blake2 = "0.10"
 hex = "0.4"
@@ -118,40 +122,83 @@ bitflags = "2.9"
 
 # Test
 tempfile = "3.2"
-# `zcashd_support` is opt-in, not a default (docs/adr/0005), so these path deps
-# no longer need `default-features = false` to drop it: their default feature
-# set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
-zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
-# default-features = false so the default-on `zcashd_support` feature can be
-# dropped end-to-end via `--no-default-features`; each consumer re-enables it
-# by forwarding `zcashd_support` in its own `default`. See
-# docs/adr/0001-zcashd-support-feature-gate.md.
-zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.1", default-features = false }
-zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
-zaino-state = { path = "packages/zaino-state", version = "0.3.1", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.3.1", default-features = false }
-zaino-testutils = { path = "live-tests/zaino-testutils" }
+# Service status and health-probe vocabulary. A leaf with one dependency
+# (`tracing`), so any subsystem can report its status without inheriting a
+# dependency graph to do it.
+zaino-status = { path = "packages/zaino-status", version = "0.1.1" }
+# Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
+# and the protocol-limit validation built on them. A leaf that depends on no
+# node implementation, so referencing a consensus fact costs neither a
+# general-purpose dependency nor a peer's reading of the specification.
+zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
+# Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
+# traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
+# formats are written in. A leaf over `corez` alone, so a storage backend and a
+# wire codec can share one encoding vocabulary without either depending on the
+# other. Holds no impl for any domain type: those live with the type whose
+# bytes they describe, which is what keeps a schema out of the vocabulary
+# crates. See docs/adr/zaino/0012.
+zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
+# Zero-dependency domain vocabulary. Every crate that needs chain-level types
+# (heights, hashes, blocks, transactions) depends on this rather than on
+# `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
+zaino-primitives = { path = "packages/zaino-primitives", version = "0.2.0" }
+# Zcash address parsing and classification, for the two address-validation RPCs.
+# A leaf: it isolates the librustzcash address stack from everything else.
+zaino-address = { path = "packages/zaino-address", version = "0.1.0" }
+# Driven port traits for validator access: one trait per question a consumer can
+# ask, so each consumer's bound names exactly the capabilities it uses and an
+# adapter that cannot answer a question simply does not implement it.
+zaino-source = { path = "packages/zaino-source", version = "0.2.0" }
+zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.0" }
+zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.0" }
+zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.0" }
+# JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
+zaino-rpc = { path = "packages/zaino-rpc", version = "0.2.0" }
+# The single place `zebra_chain` types are translated into domain types.
+zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.2.0" }
+# Source adapters. The RPC adapter answers every question over the Zcash
+# JSON-RPC interface; the ReadState adapter answers the subset zebra's
+# in-process state can serve, and simply does not implement the rest.
+zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.2.0" }
+zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.2.0" }
+# Composite over the two adapters: capability decides what each can answer,
+# this decides which to ask.
+zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.0" }
+zaino-common = { path = "packages/zaino-common", version = "0.5.1" }
+# ChainHead: the bounded non-finalised block graph, its canonical chain, and the
+# competing branches retained alongside it. This crate is the domain half —
+# types and ports only, no runtime — so a consumer can name what ChainHead
+# answers without depending on the service that answers it. See docs/adr/zaino/0011.
+zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
+# The ChainHead runtime: owns the writer task that keeps the graph reconciled
+# with the validator, and publishes each snapshot. Separate from the domain
+# crate so a consumer can name what ChainHead answers without depending on the
+# machinery that answers it.
+zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.1.0" }
+# ChainStore: the finalised half of the chain — everything below the reorg
+# seam, and the indexes built over it. This crate is the domain half: types and
+# ports only, no storage, so a consumer can name what a store answers without
+# depending on the implementation that answers it, and a second implementation
+# is a matter of satisfying the traits. It also owns Zaino's UTXO-set
+# commitment, which is a contract between implementations rather than any one
+# implementation's business. See docs/adr/zaino/0012.
+zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
+# The LMDB implementation of those ports, and the on-disk vocabulary it is
+# built from. Named for the backend rather than for the role: a second
+# implementation is expected, and neither should be able to claim to be *the*
+# chain store. Consumers depend on the ports; this is what a deployment picks.
+zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.1.0" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.5.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.8.0", default-features = false }
+zaino-serve = { path = "packages/zaino-serve", version = "0.7.0", default-features = false }
 
-# Zingo-infra (validator launcher driving the live tests; not a prod dep).
-# Pinned to an exact commit past zcash_local_net_v0.7.0: the v0.7.0 launcher's
-# zebrad config writer silently drops NU6.3 activation heights
-# (https://github.com/zingolabs/zaino/issues/1368). This rev additionally
-# makes the Validator the sole compile-time source of activation-height
-# truth (infrastructure ADR 0003, PR #278): wallet clients derive their
-# heights via `WalletNetwork::from_validator`, and `ZainodConfig` carries a
-# payload-free network kind. Restore a release tag once one is cut upstream.
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "85502cd0b5faf9308e590865dae51bf31fdd342e" }
 
-wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 proptest = "~1.11"
-anyhow = "1.0"
 arc-swap = "1.7.1"
-derive_more = "2.0.1"
 
 [profile.test]
 opt-level = 3
 debug = true
-
-[patch.crates-io]

@@ -3,15 +3,16 @@
 use tokio::time::Instant;
 use tracing::info;
 
-use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
+use zaino_rpc::probe_node;
 use zaino_serve::{
     rpc::grpc_routes,
     server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
 };
 use zaino_state::{
     IndexerService, LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig,
-    StatusType, ZcashIndexer, ZcashService,
+    ZcashIndexer, ZcashService,
 };
+use zaino_status::StatusType;
 
 use crate::{config::ZainodConfig, error::IndexerError};
 
@@ -50,9 +51,9 @@ pub async fn spawn_indexer(
     if let Some(donation_address) = &config.donation_address {
         info!(%donation_address, "instance donation address");
     }
-    let zebrad_uri = test_node_and_return_url(
+    let zebrad_uri = probe_node(
         &config.validator_settings.validator_jsonrpc_listen_address,
-        config.validator_settings.validator_cookie_path.clone(),
+        config.validator_settings.validator_cookie_path.as_deref(),
         config.validator_settings.validator_user.clone(),
         config.validator_settings.validator_password.clone(),
     )
@@ -286,6 +287,16 @@ where
             None => StatusType::Offline,
         };
 
+        // `chain_state: Ready` on its own is ambiguous: while initial sync or a migration runs, an
+        // ephemeral passthrough serves finalised-state reads and reports `Ready` exactly like the
+        // real on-disk index. Reporting the mode next to the status is what lets an operator — or a
+        // containerised test polling this line — tell the two apart.
+        let finalised_state_mode = self
+            .service
+            .as_ref()
+            .map(|service| service.inner_ref().finalised_state_mode().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
         let json_server_status = match &self.json_server {
             Some(json_server) => json_server.status(),
             None => StatusType::Offline,
@@ -298,6 +309,7 @@ where
 
         info!(
             chain_state = %service_status,
+            fs_mode = %finalised_state_mode,
             json_rpc = %json_server_status,
             grpc = %grpc_server_status,
             "Zaino status check"

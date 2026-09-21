@@ -11,7 +11,7 @@
 #   https://github.com/zingolabs/zaino
 
 backend = 'fetch'
-zebra_db_path = '/home/cupress/.cache/zebra'
+zebra_db_path = '<PATH_TO_ZEBRA>'
 network = 'Testnet'
 
 # Run the finalised state in ephemeral/stateless mode. When true, Zaino opens no
@@ -36,7 +36,7 @@ capacity = 10000
 shard_power = 4
 
 [storage.database]
-path = '/home/cupress/.cache/zaino'
+path = '<ZAINO_CACHE>'
 size = 128
 # Heap budget (in GiB) for the bulk-sync write batch (buffered blocks only). Lower this on
 # memory-constrained hosts; a larger value does not speed up a small host, it just risks the

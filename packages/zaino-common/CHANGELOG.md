@@ -8,33 +8,58 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.1] - 2026-08-28
+
+### Added
+### Changed
+- Documentation-only republish: a comment on `SyncWriteBatchSize::default`
+  now notes that bulk sync is pipelined, so peak memory is up to twice the
+  batch bound. No code change.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.0] - 2026-08-14
+
+### Added
+- `consensus::validate_raw_transaction_hex` / `validate_raw_transaction_bytes`,
+  `RawTransactionError` and `MAX_BLOCK_BYTES` — moved from `zaino-fetch`. This
+  is a consensus-limit check, which is what this module exists for; the
+  `LegacyCode` mapping that travelled with it stays in `zaino-serve`.
+### Changed
+### Deprecated
+### Removed
+- **Breaking** — status reporting moved to the new `zaino-status` crate:
+  `StatusType`, `Status`, `NamedAtomicStatus`, and the `Liveness` / `Readiness`
+  / `VitalsProbe` probing traits. Reporting a status from here cost a dependency
+  on the validator config, the logging stack, TLS and `zebra-chain`, which
+  subsystems built to depend on as little as possible could not accept.
+- **Breaking** — the `consensus` module moved to the new `zaino-consensus`
+  crate, for the same reason and one more: those values are protocol facts, not
+  a node implementation's, and are now stated with their provenance rather than
+  re-exported from `zebra-chain`.
+- `AtomicStatus`, superseded by `NamedAtomicStatus` and deleted rather than
+  moved — it had no callers left.
+- Dependencies `hex` and `thiserror` again, the `consensus` module having been
+  their only remaining user.
+### Fixed
+
+## [0.4.0] - 2026-07-13
+
+### Added
 - `ActivationHeights.nu6_3` (serde key `"NU6.3"`) for the NU6.3 network
   upgrade. `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS` currently leaves it `None`
   (inactive); a chain with NU6.3 active needs the height stated explicitly.
-- `StorageConfig::database.sync_checkpoint_interval` (seconds, default 120) — max
-  wall-clock time spent buffering a bulk-sync write batch before flushing. Under
-  the env's `NO_SYNC` mode this also bounds the window of unflushed writes at risk
-  on a hard kill / eviction; lower it to shrink that window.
-- `StorageConfig::database.accumulator_rebuild_memory_size` (GiB, default 8, new
-  `AccumulatorRebuildMemorySize` newtype) — dedicated heap budget for the
-  from-genesis txout-set accumulator rebuild's spent set, kept **separate** from
-  `sync_write_batch_size` so the two operations cannot inflate each other's peak
-  memory.
 ### Changed
 - `crypto::ensure_default_crypto_provider` now installs rustls's
   **aws-lc-rs** provider (was ring) as the process-level default, and the
   crate's rustls features become `aws_lc_rs` + `prefer-post-quantum`
   (ADR-0006). First-install-wins semantics are unchanged.
-- **Breaking** — `StorageConfig::database.sync_write_batch_bytes` (raw bytes) is
-  renamed to `sync_write_batch_size` and now expressed in **GiB** (new
-  `SyncWriteBatchSize` newtype, mirroring `DatabaseSize`); the default is 8 GiB.
-  It is now a heap budget for buffered blocks only — the accumulator rebuild uses
-  the separate `accumulator_rebuild_memory_size`. Existing TOML configs setting
-  `sync_write_batch_bytes` must switch to `sync_write_batch_size` (in GiB).
-- **Breaking** — `DatabaseConfig` now uses `#[serde(deny_unknown_fields)]`: an
-  unrecognized key under `[storage.database]` (e.g. a stale `sync_write_batch_bytes`)
-  is a hard parse error instead of being silently ignored and falling back to the
-  default budget — the silent fallback previously OOM-killed nodes.
 - The `ActivationHeights` ↔ `ConfiguredActivationHeights` conversions and the
   zebra-network → `ActivationHeights` extraction are now generated from a single
   variant/field pair list (internal refactor; conversion behavior unchanged).
@@ -56,6 +81,33 @@ and this library adheres to Rust's notion of
   `show_span_events`, which no caller could reach). Logging is configured via the
   `ZAINOLOG_FORMAT` / `ZAINOLOG_COLOR` / `RUST_LOG` environment variables, whose
   behavior is unchanged.
+### Fixed
+
+## [0.3.0] - 2026-07-02
+
+### Added
+- `StorageConfig::database.sync_checkpoint_interval` (seconds, default 120) — max
+  wall-clock time spent buffering a bulk-sync write batch before flushing. Under
+  the env's `NO_SYNC` mode this also bounds the window of unflushed writes at risk
+  on a hard kill / eviction; lower it to shrink that window.
+- `StorageConfig::database.accumulator_rebuild_memory_size` (GiB, default 8, new
+  `AccumulatorRebuildMemorySize` newtype) — dedicated heap budget for the
+  from-genesis txout-set accumulator rebuild's spent set, kept **separate** from
+  `sync_write_batch_size` so the two operations cannot inflate each other's peak
+  memory.
+### Changed
+- **Breaking** — `StorageConfig::database.sync_write_batch_bytes` (raw bytes) is
+  renamed to `sync_write_batch_size` and now expressed in **GiB** (new
+  `SyncWriteBatchSize` newtype, mirroring `DatabaseSize`); the default is 8 GiB.
+  It is now a heap budget for buffered blocks only — the accumulator rebuild uses
+  the separate `accumulator_rebuild_memory_size`. Existing TOML configs setting
+  `sync_write_batch_bytes` must switch to `sync_write_batch_size` (in GiB).
+- **Breaking** — `DatabaseConfig` now uses `#[serde(deny_unknown_fields)]`: an
+  unrecognized key under `[storage.database]` (e.g. a stale `sync_write_batch_bytes`)
+  is a hard parse error instead of being silently ignored and falling back to the
+  default budget — the silent fallback previously OOM-killed nodes.
+### Deprecated
+### Removed
 ### Fixed
 
 ## [0.2.0] - 2026-06-17

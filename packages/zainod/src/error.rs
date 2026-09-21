@@ -1,6 +1,5 @@
 //! Hold error types for the Indexer and related functionality.
 
-use zaino_fetch::jsonrpsee::error::TransportError;
 use zaino_serve::server::error::ServerError;
 
 use zaino_state::NodeBackedIndexerServiceError;
@@ -14,9 +13,9 @@ pub enum IndexerError {
     /// Configuration errors.
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    /// JSON RPSee connector errors.
-    #[error("JSON RPSee connector error: {0}")]
-    TransportError(#[from] TransportError),
+    /// Could not reach the backing validator's JSON-RPC endpoint at startup.
+    #[error("validator probe error: {0}")]
+    ProbeError(#[from] zaino_rpc::ProbeError),
     /// NodeBackedIndexerService errors.
     #[error("NodeBackedIndexerService error: {0}")]
     NodeBackedIndexerServiceError(Box<NodeBackedIndexerServiceError>),

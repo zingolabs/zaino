@@ -2,7 +2,7 @@
   description = "Zaino — indexer and proxy server for the Zcash protocol";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
 
     crane.url = "github:ipetkov/crane";
@@ -15,7 +15,6 @@
 
   ### Build with Nix
   # nix build .#zainod — build the binary (output at `./result/bin/zainod`)
-  # nix flake check — run fmt, clippy, doc, and the test suite
   # nix develop — enter a dev shell with the pinned Rust toolchain and build deps
 
 
@@ -28,7 +27,7 @@
         (crane.mkLib pkgs).overrideToolchain (p:
           fenix.packages.${p.stdenv.buildPlatform.system}.fromToolchainFile {
             file = ./rust-toolchain.toml;
-            sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+            sha256 = "sha256-mvUGEOHYJpn3ikC5hckneuGixaC+yGrkMM/liDIDgoU=";
           });
 
       overlay = final: _prev: {
@@ -54,10 +53,8 @@
           gitCommit = self.rev or self.dirtyRev;
         };
 
-        # Single source of truth for src + build env lives in nix/package.nix
-        # and is re-exposed through the derivation's passthru for downstream
-        # checks. Avoids duplicating the source filter or env settings here.
-        inherit (zainod.passthru) commonArgs cargoArtifacts;
+        # Build env defined once in nix/package.nix; devShell reuses it via passthru
+        inherit (zainod.passthru) commonArgs;
       in
       {
         packages = {
@@ -82,29 +79,19 @@
             cargo-nextest
             cargo-deny
             cargo-make
+            shellcheck
             rust-analyzer
+
+            # Integration tests
+            kind
+            kubectl
+            openshift
           ];
 
-          inherit (commonArgs) env;
-        };
-
-        checks = {
-          clippy = craneLib.cargoClippy (commonArgs // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- -D warnings";
-          });
-
-          fmt = craneLib.cargoFmt {
-            inherit (commonArgs) src pname version;
+          env = commonArgs.env // {
+            # Needed for librocksdb-sys
+            LD_LIBRARY_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
           };
-
-          nextest = craneLib.cargoNextest (commonArgs // {
-            inherit cargoArtifacts;
-          });
-
-          doc = craneLib.cargoDoc (commonArgs // {
-            inherit cargoArtifacts;
-          });
         };
 
         formatter = pkgs.nixfmt-rfc-style;

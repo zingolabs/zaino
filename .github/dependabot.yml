@@ -27,10 +27,9 @@ updates:
           - minor
           - patch
 
-  # Rust dependencies for the integration-tests sub-workspace, which is a
-  # separate workspace (excluded from the root one in Cargo.toml).
+  # live-tests/ = standalone workspace (not a root member)
   - package-ecosystem: cargo
-    directory: "/integration-tests"
+    directory: "/live-tests"
     target-branch: "dev"
     schedule:
       interval: weekly
@@ -43,7 +42,7 @@ updates:
       - dependencies
       - rust
     groups:
-      integration-tests-minor-patch:
+      live-tests-minor-patch:
         update-types:
           - minor
           - patch

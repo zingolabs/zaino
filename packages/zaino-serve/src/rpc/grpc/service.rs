@@ -171,7 +171,7 @@ where
         get_block_range(BlockRange) -> Self::GetBlockRangeStream as streaming,
         "Same as GetBlockRange except actions contain only nullifiers."
         get_block_range_nullifiers(BlockRange) -> Self::GetBlockRangeStream as streaming,
-        "Return the requested full (not compact) transaction (as from zcashd)."
+        "Return the requested full (not compact) transaction (as from the legacy full node)."
         get_transaction(TxFilter) -> RawTransaction,
         "submit the given transaction to the zcash network."
         send_transaction(RawTransaction) -> SendResponse,
@@ -200,7 +200,7 @@ where
         values also (even though they can be obtained using GetBlock).
         The block can be specified by either height or hash."
         get_tree_state(BlockId) -> TreeState,
-        "Returns a stream of information about roots of subtrees of the Sapling and Orchard \
+        "Returns a stream of information about roots of subtrees of the Sapling, Orchard, and Ironwood \
         note commitment trees."
         get_subtree_roots(GetSubtreeRootsArg) -> Self::GetSubtreeRootsStream as streaming,
         "Returns all unspent outputs for a list of addresses. \

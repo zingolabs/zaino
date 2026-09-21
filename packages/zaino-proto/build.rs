@@ -88,12 +88,22 @@ fn build() -> io::Result<()> {
     // )
     COMPACT_FORMAT_TYPES
         .iter()
-        .fold(configure().build_server(true), |builder, name| {
-            builder.extern_path(
-                format!(".cash.z.wallet.sdk.rpc.{name}"),
-                format!("crate::proto::compact_formats::{name}"),
-            )
-        })
+        .fold(
+            configure()
+                .build_server(true)
+                // Generate `Bytes` (not `Vec<u8>`) for the raw-transaction
+                // payload, so serving the same transaction to many streaming
+                // clients is a refcount bump instead of a copy per client.
+                // Scoped to this one field: it is the only payload large enough,
+                // and fanned out widely enough, for the copy to matter.
+                .bytes(".cash.z.wallet.sdk.rpc.RawTransaction.data"),
+            |builder, name| {
+                builder.extern_path(
+                    format!(".cash.z.wallet.sdk.rpc.{name}"),
+                    format!("crate::proto::compact_formats::{name}"),
+                )
+            },
+        )
         .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
     // Build the proposal types.
