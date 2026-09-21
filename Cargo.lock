@@ -5994,6 +5994,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-logging"
+version = "0.1.0"
+dependencies = [
+ "time",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tree",
+]
+
+[[package]]
 name = "zaino-mempool"
 version = "0.2.0"
 dependencies = [
