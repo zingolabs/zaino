@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 
 use rayon::prelude::*;
+use tokio::sync::watch;
 
 use crate::backend::{Backend, BackendWriter, WriteOp};
 use crate::block_buffer::BlockBuffer;
@@ -90,6 +91,10 @@ pub struct SyncEngine<Ctx, B: Backend> {
     /// when all indexes have persisted for that batch.
     pending_ops: HashMap<BatchIndex, Vec<WriteOp>>,
     evicted_through: Option<BatchIndex>,
+    /// Publishes the highest durably committed height after each atomic batch
+    /// write — the finalised store's confirmed watermark, which the
+    /// non-finalised chain-head consumes to gate trimming (confirm-before-trim).
+    confirmed_watermark: watch::Sender<Option<Height>>,
 }
 
 impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
@@ -116,14 +121,18 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         let reader = backend.reader()?;
         // The committed watermark is where append-cumulative carries resume from
         // (an O(1) tip point-read); `None` is a fresh backend.
-        let resume_from = zaino_persistence_codec::watermark::read(&reader)?
-            .map(|height| BlockHeight::new(u64::from(height)));
+        let persisted_watermark = zaino_persistence_codec::watermark::read(&reader)?;
+        let resume_from = persisted_watermark.map(|height| BlockHeight::new(u64::from(height)));
         for pipeline in pipelines.values() {
             pipeline.load_state(&reader, resume_from)?;
         }
 
         let batch_size = config.batch_size;
         let scheduler = Scheduler::new(dag, batch_size);
+
+        // Seed the confirmed-watermark signal with whatever is already durable,
+        // so a resuming engine republishes its persisted watermark.
+        let (confirmed_watermark, _) = watch::channel(persisted_watermark);
 
         Ok(Self {
             scheduler,
@@ -133,6 +142,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             start_height: config.start_height,
             pending_ops: HashMap::new(),
             evicted_through: None,
+            confirmed_watermark,
         })
     }
 
@@ -146,6 +156,17 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             zaino_persistence_codec::watermark::read(&backend.reader()?)?
                 .map(|height| BlockHeight::new(u64::from(height))),
         )
+    }
+
+    /// Subscribe to the finalised store's confirmed watermark — the highest
+    /// durably committed height, published `Some(w)` after each atomic batch
+    /// write (so it never leads its data) and `None` on a fresh backend.
+    ///
+    /// The non-finalised chain-head consumes this to gate trimming
+    /// (confirm-before-trim): it never drops a block the finalised store has not
+    /// yet confirmed, so the seam between them cannot open a gap.
+    pub fn subscribe_confirmed_watermark(&self) -> watch::Receiver<Option<Height>> {
+        self.confirmed_watermark.subscribe()
     }
 
     /// Sync a pre-loaded range of blocks.
@@ -511,6 +532,10 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
             let mut writer = self.backend.writer()?;
             writer.commit(ops)?;
+
+            // The batch — including the watermark stamp — is now durable, so the
+            // confirmed watermark can be published: it never leads its data.
+            self.confirmed_watermark.send_replace(Some(watermark));
 
             self.try_evict(candidate);
         }
