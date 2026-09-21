@@ -1,0 +1,10 @@
+name: devshell
+description: Nix + the flake devshell's /nix/store, cached (saved from dev only; PR caches are invisible to other PRs)
+runs:
+  using: composite
+  steps:
+    - uses: cachix/install-nix-action@v31
+    - uses: nix-community/cache-nix-action@v7
+      with:
+        primary-key: devshell-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml', 'nix/**') }}
+        save: ${{ github.ref == 'refs/heads/dev' }}

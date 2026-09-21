@@ -13,15 +13,18 @@ concurrency:
 permissions:
   contents: read
 
+# every run step inside the flake devshell (flake.lock pins all tools)
+defaults:
+  run:
+    shell: nix develop -c bash --noprofile --norc -eo pipefail {0}
+
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      # hook tools pinned by flake.lock (same as local)
-      - uses: cachix/install-nix-action@v31
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -31,19 +34,18 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
 
       # pre-push stage = every hook (stage-less hooks run in all stages)
-      - run: nix develop -c pre-commit run --all-files --hook-stage pre-push
+      - run: pre-commit run --all-files --hook-stage pre-push
 
   unit-test:
     name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-
-      - uses: taiki-e/install-action@nextest
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
 
@@ -57,10 +59,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       - uses: Swatinem/rust-cache@v2
-
-      - uses: taiki-e/install-action@cargo-hack
 
       - run: cargo hack check --locked --workspace --each-feature --lib --bins --tests
         env:
@@ -80,11 +81,10 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/devshell
 
       # CLI must match the library (`cluster check` compares role hashes)
       - run: cargo install ztest_cli --locked --version "$(awk -F'"' '/^name = "ztest"$/ { getline; print $2 }' live-tests/Cargo.lock)"
-
-      - uses: azure/setup-kubectl@v4
 
       - uses: tailscale/github-action@v4
         with:

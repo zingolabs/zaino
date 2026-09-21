@@ -83,9 +83,9 @@
           packages = with pkgs; [
             protobuf
             pkg-config
-            cmake
             rustPlatform.bindgenHook
             cargo-nextest
+            cargo-hack
 
             # .pre-commit-config.yaml hooks
             pre-commit
