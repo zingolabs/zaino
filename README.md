@@ -189,7 +189,7 @@ Practical guidance for working *in* a crate — its scope, its invariants, and t
 mistakes its design is trying to prevent.
 - [`zaino-status`](./packages/zaino-status/usage.md): the status vocabulary, and why it stays vocabulary.
 - [`zaino-async`](./packages/zaino-async/usage.md): the low-level async/tokio primitives (named, panic-rendering `Task`) the component layer is built on.
-- [`zaino-logging`](./packages/zaino-logging/src/lib.rs): tracing/log initialisation and the panic hook, as a standalone cross-cutting crate.
+- [`zaino-logging`](./packages/zaino-logging/usage.md): centralized tracing setup, and the panic-at-origin hook that routes panics through the same sink.
 - [`zaino-component`](./packages/zaino-component/usage.md): the component abstraction, its two independent axes, and the observed/owned line.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.

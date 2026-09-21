@@ -1,34 +1,8 @@
+#![doc = include_str!("../usage.md")]
 #![forbid(unsafe_code)]
+#![deny(clippy::wildcard_enum_match_arm)]
 
-//! Logging infrastructure for Zaino.
-//!
-//! Centralised tracing setup plus the panic hook that routes every panic through
-//! `tracing` at its origin. Its own crate — one layer of cross-cutting infra,
-//! depending only on the tracing stack — so a consumer that just wants
-//! structured logs need not pull a heavier "common" grab-bag (and its
-//! transitive `zebra-chain`) to initialise them.
-//!
-//! This crate provides centralized logging configuration with support for:
-//! - Stream view (flat chronological output) - DEFAULT
-//! - Tree view (hierarchical span-based output)
-//! - JSON output (machine-parseable)
-//!
-//! # Environment Variables
-//!
-//! - `RUST_LOG`: Standard tracing filter. By default only zaino crates are logged.
-//!   Set `RUST_LOG=info` to include all crates (zebra, etc.), or use specific
-//!   filters like `RUST_LOG=zaino=debug,zebra_state=info`.
-//! - `ZAINOLOG_FORMAT`: Output format ("stream", "tree", or "json")
-//! - `ZAINOLOG_COLOR`: Color mode ("true"/"false"/"auto"). Defaults to color enabled.
-//! - `ZAINOLOG_LOCATION`: Show each event's source `file:line` ("1"/"true"/…).
-//!   Off by default — opt in when debugging.
-//!
-//! # Example
-//!
-//! ```no_run
-//! // Initialize logging, configured via the environment variables above.
-//! zaino_logging::init();
-//! ```
+//! Entry points: [`init`] for binaries, [`try_init`] for tests.
 
 use std::env;
 use std::io::IsTerminal;
@@ -126,7 +100,8 @@ impl Default for LogConfig {
     }
 }
 
-/// Initialize logging, configured from the environment (see module docs).
+/// Initialise logging, configured from the environment (see the [crate
+/// docs](crate)). Installs the global subscriber and the panic hook.
 ///
 /// # Panics
 ///
@@ -136,9 +111,8 @@ pub fn init() {
     install_panic_logger();
 }
 
-/// Try to initialize logging (won't fail if already initialized).
-///
-/// Useful for tests where multiple test functions may try to initialize logging.
+/// Idempotent variant of [`init`] for tests, where several test functions may
+/// each try to initialise. Does not panic if a subscriber is already set.
 pub fn try_init() {
     let _ = try_install(LogConfig::default());
     install_panic_logger();
@@ -147,15 +121,13 @@ pub fn try_init() {
 /// Installed at most once, regardless of how many times logging is initialized.
 static PANIC_LOGGER: Once = Once::new();
 
-/// Route every panic through `tracing` as a structured `error` event, so a
-/// panic anywhere — including one on a worker thread that would otherwise only
-/// surface as a `JoinError::Panic` at some distant `await` — is logged
-/// coherently at its origin, with the same sink as every other error. The
-/// previous hook is preserved and still runs, so the default stderr backtrace
-/// behaviour is unchanged; this only *adds* the structured log.
+/// Install the panic hook that routes panics through `tracing`. Idempotent —
+/// installed at most once. See the [crate docs](crate) for the panic-at-origin
+/// rationale.
 ///
-/// Structural, not per-site: any binary that initialises logging gets it, so
-/// panic visibility is not a matter of remembering to handle them.
+/// The hook logs each panic as a structured `error` event under the `panic`
+/// target (thread, location, message), then chains to the hook already
+/// installed, so the default stderr backtrace is unchanged.
 fn install_panic_logger() {
     PANIC_LOGGER.call_once(|| {
         let previous = std::panic::take_hook();
