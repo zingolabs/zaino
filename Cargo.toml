@@ -7,6 +7,7 @@ members = [
     "packages/zaino-consensus",
     "packages/zaino-encoding",
     "packages/zaino-primitives",
+    "packages/zaino-persistence",
     "packages/zaino-address",
     "packages/zaino-source-macros",
     "packages/zaino-source",
