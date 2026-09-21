@@ -21,6 +21,7 @@ zebra-rpc.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+zaino-async = { version = "0.1.0", path = "../zaino-async" }
 
 [features]
 tracing = ["dep:tracing"]

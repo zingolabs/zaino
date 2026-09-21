@@ -32,6 +32,7 @@ use tower::ServiceExt;
 use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService, ZebraDb};
 
+use zaino_async::{run_blocking, TaskName};
 use zaino_primitives::types::{
     Block, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
 };
@@ -214,8 +215,14 @@ impl ZebraReadStateAdapter {
             }
         };
         if due {
-            // Blocking RocksDB I/O; keep it off the async runtime's workers.
-            match tokio::task::spawn_blocking(move || db.try_catch_up_with_primary()).await {
+            // Blocking RocksDB I/O: run it off the async workers through the
+            // async layer's blocking primitive, which renders a panic as a named
+            // error rather than leaking a raw tokio JoinError.
+            match run_blocking(TaskName("readstate-catch-up"), move || {
+                db.try_catch_up_with_primary()
+            })
+            .await
+            {
                 Ok(Ok(())) => {}
                 Ok(Err(catch_up_err)) => {
                     let _ = &catch_up_err;
@@ -225,11 +232,11 @@ impl ZebraReadStateAdapter {
                         "read-state secondary catch-up failed; serving current view"
                     );
                 }
-                Err(join_err) => {
-                    let _ = &join_err;
+                Err(task_err) => {
+                    let _ = &task_err;
                     #[cfg(feature = "tracing")]
                     tracing::debug!(
-                        error = %join_err,
+                        error = %task_err,
                         "read-state secondary catch-up task did not run; serving current view"
                     );
                 }
