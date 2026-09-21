@@ -4,7 +4,9 @@ use crate::descriptor::{BlockLocal, Monoidal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeMonoidal, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, PersistentRecord, RecordLayout,
+};
 
 /// Block context for this index: nothing needed.
 ///
@@ -132,6 +134,9 @@ impl PersistentRecord for PersistentTotalKey {
     fn into_domain(self) -> Result<TotalKey, PersistDecodeError> {
         Ok(self.0)
     }
+}
+
+impl RecordLayout for PersistentTotalKey {
     fn encode(&self) -> Vec<u8> {
         Encode::encode(&self.0)
     }
@@ -154,6 +159,9 @@ impl PersistentRecord for PersistentBlockCount {
     fn into_domain(self) -> Result<BlockCount, PersistDecodeError> {
         Ok(self.0)
     }
+}
+
+impl RecordLayout for PersistentBlockCount {
     fn encode(&self) -> Vec<u8> {
         Encode::encode(&self.0)
     }

@@ -25,6 +25,7 @@ use zaino_primitives::types::BlockRef;
 
 #[cfg(feature = "tip_aware_mempool")]
 use zaino_mempool::ports::NfsEpochObserver;
+#[cfg(feature = "tip_aware_mempool")]
 use zaino_primitives::types::ChainStateEpoch;
 
 // ---- mock ports --------------------------------------------------------

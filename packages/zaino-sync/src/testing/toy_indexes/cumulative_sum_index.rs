@@ -10,7 +10,9 @@ use crate::descriptor::{Monoidal, SelfCumulative};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractCumulative, IndexDef, MergeMonoidal, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, PersistentRecord, RecordLayout,
+};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -151,6 +153,9 @@ impl PersistentRecord for PersistentCumSumKey {
     fn into_domain(self) -> Result<CumSumKey, PersistDecodeError> {
         Ok(self.0)
     }
+}
+
+impl RecordLayout for PersistentCumSumKey {
     fn encode(&self) -> Vec<u8> {
         Encode::encode(&self.0)
     }
@@ -173,6 +178,9 @@ impl PersistentRecord for PersistentCumulativeSum {
     fn into_domain(self) -> Result<CumulativeSum, PersistDecodeError> {
         Ok(self.0)
     }
+}
+
+impl RecordLayout for PersistentCumulativeSum {
     fn encode(&self) -> Vec<u8> {
         Encode::encode(&self.0)
     }

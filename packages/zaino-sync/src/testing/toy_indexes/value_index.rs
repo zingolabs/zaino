@@ -5,7 +5,9 @@ use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, PersistentRecord, RecordLayout,
+};
 
 /// Block context for this index: height and value.
 pub struct Context {
@@ -119,6 +121,9 @@ impl PersistentRecord for PersistentBlockValue {
     fn into_domain(self) -> Result<BlockValue, PersistDecodeError> {
         Ok(self.0)
     }
+}
+
+impl RecordLayout for PersistentBlockValue {
     fn encode(&self) -> Vec<u8> {
         Encode::encode(&self.0)
     }

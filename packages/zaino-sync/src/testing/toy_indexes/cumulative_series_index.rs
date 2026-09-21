@@ -12,7 +12,9 @@ use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{CumulativeAppend, ExtractCumulative, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::keys::HeightKey;
 use zaino_persistence_codec::layout::{Cursor, Writer};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, PersistentRecord, RecordLayout,
+};
 
 /// Block context: the block's height and its value.
 pub struct Context {
@@ -110,6 +112,9 @@ impl PersistentRecord for PersistentRunningTotal {
     fn into_domain(self) -> Result<RunningTotal, PersistDecodeError> {
         Ok(RunningTotal(self.0))
     }
+}
+
+impl RecordLayout for PersistentRunningTotal {
     fn encode(&self) -> Vec<u8> {
         let mut writer = Writer::with_capacity(8);
         writer.u64(self.0);

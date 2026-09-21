@@ -4,7 +4,9 @@ use crate::descriptor::{BlockLocal, Fold};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeFold, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, PersistentRecord, RecordLayout,
+};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -127,6 +129,9 @@ impl PersistentRecord for PersistentSumKey {
     fn into_domain(self) -> Result<SumKey, PersistDecodeError> {
         Ok(self.0)
     }
+}
+
+impl RecordLayout for PersistentSumKey {
     fn encode(&self) -> Vec<u8> {
         Encode::encode(&self.0)
     }
@@ -149,6 +154,9 @@ impl PersistentRecord for PersistentRunningSum {
     fn into_domain(self) -> Result<RunningSum, PersistDecodeError> {
         Ok(self.0)
     }
+}
+
+impl RecordLayout for PersistentRunningSum {
     fn encode(&self) -> Vec<u8> {
         Encode::encode(&self.0)
     }

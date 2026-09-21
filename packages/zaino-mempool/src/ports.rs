@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
+#[cfg(feature = "tip_aware_mempool")]
 use zaino_primitives::types::ChainStateEpoch;
 
 use crate::snapshot::MempoolSnapshot;
@@ -49,8 +50,8 @@ use crate::update::MempoolUpdate;
 /// answered by the **same** transport. The core tags each published set with
 /// [`get_mempool_source_tip`](zaino_source::GetMempoolSourceTip::get_mempool_source_tip)
 /// so the coherence layer can judge the set's coherence without re-fetching it,
-/// and that comparison is only sound for a single-source pair. `ZebraValidator`
-/// upholds this by routing all four to JSON-RPC; see
+/// and that comparison is only sound for a single-source pair. `ZebraRpcAdapter`
+/// upholds this by answering all four over JSON-RPC; see
 /// [`GetMempoolSourceTip`](zaino_source::GetMempoolSourceTip)'s documentation.
 ///
 /// [`SubscribeBlocks`](zaino_source::SubscribeBlocks) is exempt, and is the
