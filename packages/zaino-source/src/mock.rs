@@ -168,16 +168,13 @@ mod tests {
                 time: 0,
                 merkle_root: [0; 32].into(),
                 block_commitments: [0; 32].into(),
-                bits: 0,
+                bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
+                    .expect("valid nBits"),
                 nonce: [0; 32],
                 solution: EquihashSolution::Regtest([0; 36]),
             },
             transactions: vec![],
-            chain_metadata: ChainMetadata {
-                sapling_tree_size: 0,
-                orchard_tree_size: 0,
-                ironwood_tree_size: 0,
-            },
+            chain_metadata: ChainMetadata::ZERO,
         }
     }
 

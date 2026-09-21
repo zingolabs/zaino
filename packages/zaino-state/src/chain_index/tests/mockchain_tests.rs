@@ -1,4 +1,4 @@
-use super::{load_test_vectors_and_sync_chain_index, MockchainMode};
+use super::{load_test_vectors_and_sync_chain_index, MockchainMode, DEEP_FINALISED_SEED_TIP};
 use crate::{
     chain_index::{
         tests::vectors::MockSource,
@@ -11,7 +11,7 @@ use crate::{
     },
     BlockchainSource as _, Outpoint,
 };
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 use tokio_stream::StreamExt as _;
 use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
@@ -588,10 +588,20 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
         .unwrap_or_default();
     mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
+    // Same ordering constraint as the expected-tip variant below: the stream
+    // must open before the mine, or it observes the drained post-mine
+    // mempool and collects nothing. Without an expected tip there is no
+    // guard at open, so the lost race presents as an assertion failure
+    // rather than a hang. The handshake makes the ordering deterministic.
+    let (stream_opened_tx, stream_opened_rx) = tokio::sync::oneshot::channel();
+
     let mempool_stream_task = tokio::spawn(async move {
         let mempool_stream = index_reader
             .get_mempool_stream(None)
             .expect("failed to create mempool stream");
+        stream_opened_tx
+            .send(())
+            .expect("the main task awaits the handshake");
         let mut mempool_stream = std::pin::pin!(mempool_stream);
 
         let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
@@ -610,7 +620,9 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
         indexer_mempool_transactions
     });
 
-    sleep(Duration::from_millis(500)).await;
+    stream_opened_rx
+        .await
+        .expect("the collector task opens the stream");
 
     mockchain.source().mine_blocks(1);
 
@@ -658,11 +670,22 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
         .unwrap_or_default();
     mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
+    // The stream closes only when the chain tip moves away from the tip its
+    // snapshot recorded, and the mine below is that one move: the snapshot
+    // and stream-open must therefore happen strictly before the mine, or the
+    // stream arms itself against the post-mine tip and waits forever for a
+    // second mine that never comes. A handshake makes the ordering
+    // deterministic where a sleep only made it likely on an idle machine.
+    let (stream_opened_tx, stream_opened_rx) = tokio::sync::oneshot::channel();
+
     let mempool_stream_task = tokio::spawn(async move {
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
         let mempool_stream = index_reader
             .get_mempool_stream(Some(&nonfinalized_snapshot))
             .expect("failed to create mempool stream");
+        stream_opened_tx
+            .send(())
+            .expect("the main task awaits the handshake");
         let mut mempool_stream = std::pin::pin!(mempool_stream);
 
         let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
@@ -681,7 +704,9 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
         indexer_mempool_transactions
     });
 
-    sleep(Duration::from_millis(500)).await;
+    stream_opened_rx
+        .await
+        .expect("the collector task opens the stream");
 
     mockchain.source().mine_blocks(1);
 
@@ -851,10 +876,10 @@ async fn get_address_deltas() {
             assert_eq!(u32::from(start.height), 0);
             assert_eq!(u32::from(end.height), active_height);
 
-            // zcashd reports each delta's `blockindex` and documents the
+            // the legacy full node reports each delta's `blockindex` and documents the
             // ordering as `(height, blockindex, index)`. A source that knows the
             // transaction's position in its block must report it: dropping it
-            // both omits a field zcashd sends and makes the documented order
+            // both omits a field the legacy full node sends and makes the documented order
             // unverifiable.
             assert!(
                 deltas.iter().all(|delta| delta.block_index.is_some()),
@@ -1020,18 +1045,19 @@ async fn get_address_utxos() {
 }
 
 /// Walks zaino's own indexed view of the test-vector chain and derives, for every
-/// non-coinbase transparent input, the `(outpoint, spending txid)` it represents, plus
-/// every transparent outpoint created on the chain.
+/// non-coinbase transparent input, the `(spend height, outpoint, spending txid)` it
+/// represents, plus every transparent outpoint created on the chain.
 ///
 /// Ground truth is built from `CompactTxData` — the exact representation
 /// `get_outpoint_spenders` scans — so the assertions also confirm the outpoint byte order
 /// matches between an indexed input and the looked-up key.
 fn outpoint_spend_ground_truth(
     blocks: &[TestVectorBlockData],
-) -> (Vec<(Outpoint, TransactionHash)>, Vec<Outpoint>) {
+) -> (Vec<(u32, Outpoint, TransactionHash)>, Vec<Outpoint>) {
     let mut spends = Vec::new();
     let mut created = Vec::new();
     for block in indexed_block_chain(blocks) {
+        let height = u32::from(block.height());
         for tx in block.transactions() {
             let txid = *tx.txid();
             let transparent = tx.transparent();
@@ -1042,7 +1068,7 @@ fn outpoint_spend_ground_truth(
             // whose null-prevout filtering and outpoint construction are pinned by its own
             // unit tests; here we only pair each spent outpoint with its spending txid.
             for outpoint in transparent.spent_outpoints() {
-                spends.push((outpoint, txid));
+                spends.push((height, outpoint, txid));
             }
         }
     }
@@ -1062,18 +1088,19 @@ async fn get_outpoint_spenders() {
     );
 
     // Every spent outpoint resolves to its spending txid, index-aligned with the input.
-    let outpoints: Vec<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let outpoints: Vec<Outpoint> = spends.iter().map(|(_, op, _)| *op).collect();
     let result = index_reader
         .get_outpoint_spenders(&snapshot, outpoints, ChainScope::FullChain)
         .await
         .unwrap();
     assert_eq!(result.len(), spends.len());
-    for ((outpoint, expected_txid), got) in spends.iter().zip(result) {
+    for ((_, outpoint, expected_txid), got) in spends.iter().zip(result) {
         assert_eq!(got, Some(*expected_txid), "wrong spender for {outpoint:?}");
     }
 
     // Outpoints that were created but never spent must report `None`.
-    let spent_set: std::collections::HashSet<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let spent_set: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(_, op, _)| *op).collect();
     let unspent: Vec<Outpoint> = created
         .into_iter()
         .filter(|op| !spent_set.contains(op))
@@ -1085,6 +1112,56 @@ async fn get_outpoint_spenders() {
         .unwrap();
     assert_eq!(unspent_result.len(), unspent.len());
     assert!(unspent_result.iter().all(Option::is_none));
+}
+
+/// `ChainScope` decides how deep a spend lookup reaches. Under
+/// [`MockchainMode::StaticDeepFinalised`] the finalised index holds the chain up to
+/// [`DEEP_FINALISED_SEED_TIP`] while the non-finalised state holds everything above the
+/// seam, so one spend sits in both stores and one in the non-finalised state alone —
+/// `Finalised` must see only the first. This is the only exercise of the finalised
+/// `TxLocation -> txid` resolution through the `ChainIndex`.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_outpoint_spenders_chain_scope() {
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::StaticDeepFinalised).await;
+    let snapshot = index_reader.snapshot_nonfinalized_state();
+
+    let (spends, created) = outpoint_spend_ground_truth(&blocks);
+    let (finalised_outpoint, finalised_spender) = spends
+        .iter()
+        .find(|(height, ..)| *height <= DEEP_FINALISED_SEED_TIP)
+        .map(|(_, outpoint, txid)| (*outpoint, *txid))
+        .expect("the corpus must spend a transparent output inside the finalised range");
+    let (nonfinalised_outpoint, nonfinalised_spender) = spends
+        .iter()
+        .find(|(height, ..)| *height > DEEP_FINALISED_SEED_TIP)
+        .map(|(_, outpoint, txid)| (*outpoint, *txid))
+        .expect("the corpus must spend a transparent output above the finalised range");
+    let spent: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(_, outpoint, _)| *outpoint).collect();
+    let unspent = created
+        .into_iter()
+        .find(|outpoint| !spent.contains(outpoint))
+        .expect("the corpus must leave a transparent output unspent");
+
+    let outpoints = vec![finalised_outpoint, nonfinalised_outpoint, unspent];
+
+    assert_eq!(
+        index_reader
+            .get_outpoint_spenders(&snapshot, outpoints.clone(), ChainScope::FullChain)
+            .await
+            .unwrap(),
+        vec![Some(finalised_spender), Some(nonfinalised_spender), None],
+        "FullChain resolves both spends and leaves the unspent outpoint as None"
+    );
+    assert_eq!(
+        index_reader
+            .get_outpoint_spenders(&snapshot, outpoints, ChainScope::Finalised)
+            .await
+            .unwrap(),
+        vec![Some(finalised_spender), None, None],
+        "Finalised never reads the non-finalised state, so only the buried spend resolves"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1103,7 +1180,7 @@ async fn get_outpoint_spenders_empty_and_single() {
     let (spends, created) = outpoint_spend_ground_truth(&blocks);
 
     // Length-1 query (the "single request" path) returns the expected spender.
-    let (op, txid) = spends.first().unwrap();
+    let (_, op, txid) = spends.first().unwrap();
     assert_eq!(
         index_reader
             .get_outpoint_spenders(&snapshot, vec![*op], ChainScope::FullChain)
@@ -1113,7 +1190,8 @@ async fn get_outpoint_spenders_empty_and_single() {
     );
 
     // ...and a length-1 query for an unspent outpoint returns `None`.
-    let spent_set: std::collections::HashSet<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let spent_set: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(_, op, _)| *op).collect();
     let unspent = created
         .into_iter()
         .find(|op| !spent_set.contains(op))
@@ -1333,7 +1411,7 @@ async fn z_get_block_resolves_negative_heights_against_the_tip() {
     assert_eq!(by_negative_height, by_tip_height);
 }
 
-/// An unparsable `getblock` identifier must carry zcashd's legacy
+/// An unparsable `getblock` identifier must carry the legacy full node's legacy
 /// InvalidParameter code (-8) as a typed `RpcError` in the `source()` chain,
 /// not be flattened into an internal-error string: the serve layer recovers
 /// legacy codes by downcast-walking the chain.
@@ -1445,7 +1523,7 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
     );
 }
 
-/// `sendrawtransaction` rejections must carry zcashd's legacy error code:
+/// `sendrawtransaction` rejections must carry the legacy full node's legacy error code:
 /// zaino-serve forwards the code by downcast-walking the `source()` chain for
 /// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),
 /// so stringifying it downgrades the legacy `-8` "invalid hex" rejection to a

@@ -1,15 +1,15 @@
 //! Sapling payment-address component extraction.
 
 /// Extracts the diversifier and pk_d bytes from a validated Sapling
-/// [`sapling_crypto::PaymentAddress`], returning pk_d in zcashd's big-endian
+/// [`sapling_crypto::PaymentAddress`], returning pk_d in the legacy full node's big-endian
 /// byte order.
 ///
 /// # Deprecation
 ///
 /// See [`DEPRECATION_NOTICE`](crate::DEPRECATION_NOTICE). This function exists
 /// to support the `z_validateaddress` RPC, which itself exists solely for
-/// zcashd compatibility. The pk_d bytes are reversed from `sapling-crypto`'s
-/// native little-endian representation to match zcashd's big-endian hex output.
+/// the legacy full node compatibility. The pk_d bytes are reversed from `sapling-crypto`'s
+/// native little-endian representation to match the legacy full node's big-endian hex output.
 ///
 /// # Precondition
 ///
@@ -112,15 +112,15 @@ mod tests {
     }
 
     /// Verifies that our Sapling address parsing logic produces the same
-    /// diversifier and diversified transmission key (pk_d) bytes as zcashd's
+    /// diversifier and diversified transmission key (pk_d) bytes as the legacy full node's
     /// `z_validateaddress` RPC.
     ///
     /// # Guarantees
     ///
     /// - Exercises the production [`sapling_key_bytes`] function directly.
-    /// - The 11-byte diversifier matches the zcashd-derived test vector.
+    /// - The 11-byte diversifier matches the legacy-derived test vector.
     /// - The 32-byte pk_d (after the endian reversal inside
-    ///   [`sapling_key_bytes`]) matches the zcashd-derived test vector.
+    ///   [`sapling_key_bytes`]) matches the legacy-derived test vector.
     /// - If the upstream serialization changes, the failure message classifies
     ///   the mismatch (endian swap, bit-reversal, chunk swap, or unrecognized)
     ///   to aid diagnosis.
@@ -128,7 +128,7 @@ mod tests {
     /// # Non-guarantees
     ///
     /// - Does not prove the test vector constants themselves are correct; they
-    ///   were captured from zcashd and are trusted as ground truth.
+    ///   were captured from the legacy full node and are trusted as ground truth.
     /// - Does not verify behavior for malformed Sapling addresses or addresses
     ///   on other networks (mainnet, testnet).
     #[test]

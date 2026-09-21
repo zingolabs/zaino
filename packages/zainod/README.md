@@ -3,7 +3,7 @@
 `zainod` is the Zaino indexer daemon — an indexer for the Zcash blockchain,
 written in Rust.
 
-It sits between a Zcash full validator (Zebra or Zcashd) and client
+It sits between a Zcash full validator (Zebra) and client
 applications, serving:
 
 - the [lightclient protocol API](https://github.com/zcash/lightwallet-protocol), the interface today

@@ -1,4 +1,4 @@
-//! Zcash chain fetch and tx submission service backed by zcashds JsonRPC service.
+//! Zcash chain fetch and tx submission service backed by the validator's JsonRPC service.
 
 use futures::StreamExt;
 use hex::FromHex;
@@ -38,14 +38,15 @@ use zaino_proto::proto::{
 };
 
 use crate::{
-    chain_index::chain_head::WithChainHeadSource, ChainIndex, ChainIndexRpcExt, MapBackedSnapshot,
-    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
+    ChainIndex, ChainIndexRpcExt, MapBackedSnapshot, NodeBackedChainIndex,
+    NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
 use crate::{
     chain_index::{source::BlockchainSource, types, validator_source::ZebraValidatorSource},
     config::{
-        ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
+        CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
         ValidatorConnectionType,
     },
     error::NodeBackedIndexerServiceError,
@@ -76,7 +77,7 @@ use zaino_status::{Status, StatusType};
 /// NOTE: We do not implement `Clone` for the central service: it owns and closes its
 /// child processes. Subscribers are the clone-safe read handles.
 pub struct NodeBackedIndexerService<
-    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     indexer: NodeBackedChainIndex<Source>,
@@ -86,13 +87,17 @@ pub struct NodeBackedIndexerService<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Status for NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
+    for NodeBackedIndexerService<Source>
+{
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerService<Source>
+{
     /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
     /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
     /// [`Drop`].
@@ -159,7 +164,7 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
 
         let indexer = NodeBackedChainIndex::new(
             source,
-            ChainIndexConfig::from_backend_config(&config.common, network),
+            crate::config::ChainIndexConfig::from_backend_config(&config.common, network),
         )
         .await
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
@@ -206,7 +211,9 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Drop for NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Drop
+    for NodeBackedIndexerService<Source>
+{
     fn drop(&mut self) {
         self.shutdown_blocking();
     }
@@ -215,7 +222,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> Drop for NodeBackedIndexerS
 /// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
 #[derive(Debug, Clone)]
 pub struct NodeBackedIndexerServiceSubscriber<
-    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber<Source>,
@@ -225,7 +232,7 @@ pub struct NodeBackedIndexerServiceSubscriber<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Status
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
     for NodeBackedIndexerServiceSubscriber<Source>
 {
     fn status(&self) -> StatusType {
@@ -233,7 +240,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> Status
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerServiceSubscriber<Source>
+{
     /// Fetches the current status
     #[deprecated(note = "Use the Status trait method instead")]
     pub fn get_status(&self) -> StatusType {
@@ -272,7 +281,7 @@ fn compact_tx_to_proto(
         nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
         cmx: <[u8; 32]>::from(action.cmx).to_vec(),
         ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+        ciphertext: <[u8; 52]>::from(action.enc_ciphertext).to_vec(),
     };
 
     CompactTx {
@@ -298,7 +307,7 @@ fn compact_tx_to_proto(
                 ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
                 // Already truncated to the compact head at the domain
                 // boundary, so there is no second truncation here.
-                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+                ciphertext: <[u8; 52]>::from(output.enc_ciphertext).to_vec(),
             })
             .collect(),
         actions: tx.orchard_actions.iter().map(orchard_action).collect(),
@@ -367,7 +376,9 @@ fn test_service_parts(
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerService<Source>
+{
     /// Wraps a chain index in a service for tests, with placeholder
     /// metadata/config. Lets unit tests exercise the service lifecycle over a
     /// mock source (no real validator). Production builds go through
@@ -386,7 +397,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<So
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerServiceSubscriber<Source>
+{
     /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
     /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
     /// (no real validator). Production builds go through [`ZcashService::get_subscriber`].
@@ -422,7 +435,9 @@ impl ChainTipSubscriber {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerServiceSubscriber<Source>
+{
     /// A subscriber to chain-tip updates, when the backing source exposes a
     /// local tip-change stream. `Some` only on the `Direct` connection; the
     /// `Rpc` connection (and any other stream-less source) observes tips by
@@ -564,7 +579,7 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> ZcashIndexer
     for NodeBackedIndexerServiceSubscriber<Source>
 {
     type Error = NodeBackedIndexerServiceError;
@@ -583,9 +598,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     /// If the resulting start is greater than end, the call fails with an error.
     /// (Thus, [tip, tip] is valid and returns only the tip block.)
     ///
-    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    /// [the original legacy full-node implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
     ///
-    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// Zcash RPC reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
     /// method: post
     /// tags: address
     async fn get_address_deltas(
@@ -597,15 +612,15 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns software information from the RPC server, as a [`NodeInfo`] JSON struct.
     ///
-    /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
+    /// Zcash RPC reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
     /// tags: control
     ///
     /// # Notes
     ///
-    /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
+    /// [The Zcash RPC reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
     /// in Zebra's [`NodeInfo`]. Zebra uses the field names and formats from the
-    /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
+    /// [the legacy full node's code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     fn network(&self) -> zebra_chain::parameters::Network {
         self.data.network()
     }
@@ -616,13 +631,13 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns blockchain state information, as a [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo) JSON struct.
     ///
-    /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
+    /// Zcash RPC reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
     /// tags: blockchain
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo). It only contains the fields
+    /// Some fields from the Zcash RPC reference are missing from Zebra's [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo). It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(
         &self,
@@ -639,9 +654,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     /// Canonical source code implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     ///
     /// Zebra does not support this RPC call directly.
-    async fn get_mempool_info(
-        &self,
-    ) -> Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error> {
+    async fn get_mempool_info(&self) -> Result<zaino_primitives::types::MempoolInfo, Self::Error> {
         Ok(self.indexer.get_mempool_info().await)
     }
 
@@ -651,7 +664,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
-    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// Zcash RPC reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     /// method: post
     /// tags: blockchain
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
@@ -664,7 +677,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
-    /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
+    /// Zcash RPC reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
     /// tags: address
     ///
@@ -675,14 +688,14 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     ///
     /// # Notes
     ///
-    /// zcashd also accepts a single string parameter instead of an array of strings, but Zebra
+    /// the legacy full node also accepts a single string parameter instead of an array of strings, but Zebra
     /// doesn't because lightwalletd always calls this RPC with an array of addresses.
     ///
-    /// zcashd also returns the total amount of Zatoshis received by the addresses, but Zebra
+    /// the legacy full node also returns the total amount of Zatoshis received by the addresses, but Zebra
     /// doesn't because lightwalletd doesn't use that information.
     ///
     /// The RPC documentation says that the returned object has a string `balance` field, but
-    /// zcashd actually [returns an
+    /// the legacy full node actually [returns an
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
     async fn z_get_address_balance(
         &self,
@@ -694,7 +707,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
     /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
     ///
-    /// zcashd reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
+    /// Zcash RPC reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
     /// tags: transaction
     ///
@@ -704,7 +717,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     ///
     /// # Notes
     ///
-    /// zcashd accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
+    /// the legacy full node accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
     /// because lightwalletd doesn't use it.
     async fn send_raw_transaction(
         &self,
@@ -721,7 +734,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     /// [error code `-8`.](https://github.com/zcash/zcash/issues/5758) if a height was
     /// passed or -5 if a hash was passed.
     ///
-    /// zcashd reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
+    /// Zcash RPC reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -750,11 +763,11 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns information about the given block and its transactions.
     ///
-    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// Zcash RPC reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
     /// method: post
     /// tags: blockchain
     ///
-    /// Note: This method has only been implemented in `zcashd`. Zebra has no intention of supporting it.
+    /// Note: This method has only been implemented in the legacy full node. Zebra has no intention of supporting it.
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
         Ok(self.indexer.get_block_deltas(hash).await?)
     }
@@ -773,7 +786,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns statistics about the unspent transaction output set.
     ///
-    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// Zcash RPC reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
     /// method: post
     /// tags: blockchain
     async fn get_tx_out_set_info(
@@ -783,8 +796,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     }
 
     /// Returns the hash of the best block (tip) of the longest chain.
-    /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
-    /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
+    /// online Zcash RPC reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
+    /// The legacy full-node doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
     /// method: post
     /// tags: blockchain
     /// Return the hex encoded hash of the best (tip) block, in the longest block chain.
@@ -809,7 +822,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns the current block count in the best valid block chain.
     ///
-    /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
+    /// Zcash RPC reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
@@ -831,7 +844,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     /// # Parameters
     /// - `address`: (string, required, example="tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb") The Zcash transparent address to validate.
     ///
-    /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
+    /// Zcash RPC reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
     /// tags: blockchain
     async fn validate_address(&self, address: String) -> Result<ValidatedAddress, Self::Error> {
@@ -849,7 +862,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
-    /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
+    /// Zcash RPC reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
@@ -865,7 +878,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns information about the given block's Sapling & Orchard tree state.
     ///
-    /// zcashd reference: [`z_gettreestate`](https://zcash.github.io/rpc/z_gettreestate.html)
+    /// Zcash RPC reference: [`z_gettreestate`](https://zcash.github.io/rpc/z_gettreestate.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -875,7 +888,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     ///
     /// # Notes
     ///
-    /// The zcashd doc reference above says that the parameter "`height` can be
+    /// The legacy full-node doc reference above says that the parameter "`height` can be
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
@@ -964,7 +977,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
     ///
-    /// zcashd reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
+    /// Zcash RPC reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
     /// method: post
     /// tags: blockchain
     ///
@@ -978,8 +991,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     ///
     /// While Zebra is doing its initial subtree index rebuild, subtrees will become available
     /// starting at the chain tip. This RPC will return an empty list if the `start_index` subtree
-    /// exists, but has not been rebuilt yet. This matches `zcashd`'s behaviour when subtrees aren't
-    /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
+    /// exists, but has not been rebuilt yet. This matches the legacy full node's behaviour when subtrees aren't
+    /// available yet. (But the legacy full node does its rebuild before syncing any blocks.)
     #[allow(deprecated)]
     async fn z_get_subtrees_by_index(
         &self,
@@ -1034,7 +1047,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
-    /// zcashd reference: [`getrawtransaction`](https://zcash.github.io/rpc/getrawtransaction.html)
+    /// Zcash RPC reference: [`getrawtransaction`](https://zcash.github.io/rpc/getrawtransaction.html)
     /// method: post
     /// tags: transaction
     ///
@@ -1047,10 +1060,6 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     ///
     /// We don't currently support the `blockhash` parameter since lightwalletd does not
     /// use it.
-    ///
-    /// In verbose mode, we only expose the `hex` and `height` fields since
-    /// lightwalletd uses only those:
-    /// <https://github.com/zcash/lightwalletd/blob/631bb16404e3d8b045e74a7c5489db626790b2f6/common/common.go#L119>
     async fn get_raw_transaction(
         &self,
         txid_hex: String,
@@ -1096,23 +1105,57 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
             .get_transaction_status(&snapshot, &txid)
             .await?;
 
-        let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
-            Some(types::BestChainLocation::Block(block_hash, height)) => {
-                let confirmations: i64 = u32::from(snapshot.best_tip().height)
-                    .saturating_sub(height.0)
-                    .saturating_add(1)
-                    .into();
-
-                (
-                    Some(zebra_chain::block::Height::from(height)),
-                    Some(confirmations),
-                    Some(zebra_chain::block::Hash::from(block_hash)),
-                    Some(true),
-                )
-            }
-            Some(types::BestChainLocation::Mempool(_height)) => (None, Some(0), None, Some(false)),
-            None => (None, None, None, Some(false)),
+        // The zebra sink still takes the RPC integers, so the typed state is
+        // rendered through its codec at this boundary; the constructor owns
+        // the depth + 1 off-by-one the arithmetic here used to fold in.
+        let out_of_range = |e: zaino_primitives::types::HeightOverflow| {
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(format!(
+                "best-chain height out of range: {e}"
+            )))
         };
+        // `time`/`blocktime` are the containing block's header timestamp, which the
+        // index already holds — no validator round-trip. An unmined transaction has
+        // no containing block, so both fields stay absent, as zebrad leaves them.
+        let (height, confirmations, block_hash, block_time, in_best_chain) =
+            match best_chain_location {
+                Some(types::BestChainLocation::Block(block_hash, height)) => {
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mined(
+                        zaino_primitives::types::BlockConfirmations::of_best_chain_block(
+                            zaino_primitives::types::Height::try_from(height.0)
+                                .map_err(out_of_range)?,
+                            zaino_primitives::types::Height::try_from(u32::from(
+                                snapshot.best_tip().height,
+                            ))
+                            .map_err(out_of_range)?,
+                        ),
+                    );
+
+                    let block_time = self
+                        .indexer
+                        .get_indexed_block_by_hash(&snapshot, &block_hash)
+                        .await?
+                        .and_then(|block| chrono::DateTime::from_timestamp(block.data().time(), 0));
+
+                    (
+                        Some(zebra_chain::block::Height::from(height)),
+                        Some(confirmations.to_rpc_i64()),
+                        Some(zebra_chain::block::Hash::from(block_hash)),
+                        block_time,
+                        Some(confirmations.is_in_best_chain()),
+                    )
+                }
+                Some(types::BestChainLocation::Mempool(_height)) => {
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
+                    (
+                        None,
+                        Some(confirmations.to_rpc_i64()),
+                        None,
+                        None,
+                        Some(confirmations.is_in_best_chain()),
+                    )
+                }
+                None => (None, None, None, None, Some(false)),
+            };
 
         Ok(GetRawTransaction::Object(Box::new(
             TransactionObject::from_transaction(
@@ -1121,7 +1164,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
                 confirmations,
                 #[allow(deprecated)]
                 &self.data.network(),
-                None,
+                block_time,
                 block_hash,
                 in_best_chain,
                 zebra_chain::transaction::Hash::from(txid),
@@ -1131,7 +1174,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns details about an unspent transaction output.
     ///
-    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// Zcash RPC reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
     /// method: post
     /// tags: transaction
     async fn get_tx_out(
@@ -1156,7 +1199,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     }
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
-    /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
+    /// Zcash RPC reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
     /// method: post
     /// tags: address
     ///
@@ -1186,7 +1229,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// zcashd reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
+    /// Zcash RPC reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
     /// method: post
     /// tags: address
     ///
@@ -1207,7 +1250,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
-    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// Zcash RPC reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -1228,17 +1271,18 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 }
 
 #[allow(deprecated)]
-impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> LightWalletIndexer
     for NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let tip = self.indexer.snapshot_nonfinalized_state().best_tip();
-        Ok(types::BlockIndex {
-            height: types::Height(u32::from(tip.height)),
-            hash: types::BlockHash(tip.hash.into()),
-        }
-        .to_wire())
+        Ok(crate::chain_index::wire_types::block_index_to_wire(
+            &types::BlockIndex {
+                height: types::Height(u32::from(tip.height)),
+                hash: types::BlockHash(tip.hash.into()),
+            },
+        ))
     }
 
     /// Return the compact block corresponding to the given block identifier
@@ -1276,7 +1320,10 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             .get_compact_block(
                 &snapshot,
                 types::Height(height),
-                PoolTypeFilter::includes_all(),
+                // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
+                // `GetBlockRange` serves an empty one. `includes_all` here would make a
+                // height's content depend on which RPC asked.
+                PoolTypeFilter::default(),
             )
             .await
         {
@@ -1356,7 +1403,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             .get_compact_block(
                 &snapshot,
                 types::Height(height),
-                PoolTypeFilter::includes_all(),
+                // As `get_block`. `includes_all` here leaks transparent-only txs as
+                // nullifier-less husks the range form never emits.
+                PoolTypeFilter::default(),
             )
             .await
         {
@@ -1448,7 +1497,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
         .await
     }
 
-    /// Return the requested full (not compact) transaction (as from zcashd)
+    /// Return the requested full (not compact) transaction (as from the legacy full node)
     async fn get_transaction(&self, request: TxFilter) -> Result<RawTransaction, Self::Error> {
         let hash = request.hash;
         if hash.len() == 32 {
@@ -1582,16 +1631,30 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let mut total_balance: u64 = 0;
+                    // Per-address balances coexist at one moment, so their
+                    // running total is itself a supply-bounded balance: the
+                    // incremental form of `Zatoshis::sum_balances`, demanded
+                    // by the streaming shape. A total past the supply means
+                    // the request's addresses overlap or the source
+                    // double-counts, and is refused rather than wrapped.
+                    let mut total_balance = zaino_primitives::types::Zatoshis::ZERO;
                     loop {
                         match channel_rx.recv().await {
                             Some(taddr) => {
                                 let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
                                 let balance = service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance += u64::from(balance.balance);
+                                total_balance = total_balance
+                                    .checked_add(balance.balance)
+                                    .ok_or_else(|| {
+                                        tonic::Status::data_loss(
+                                            "Error: address balances total past the money \
+                                                 supply; the requested addresses overlap or the \
+                                                 source data is corrupt.",
+                                        )
+                                    })?;
                             }
                             None => {
-                                return Ok(total_balance);
+                                return Ok(u64::from(total_balance));
                             }
                         }
                     }
@@ -1727,10 +1790,12 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
                                         ))
                                     })
                                     .and_then(|transaction| {
-                                        // Index 0: a mempool transaction is in no
-                                        // block, and this field is its position
-                                        // within one.
-                                        zaino_convert_zebra::transaction_from_zebra(&transaction, 0)
+                                        // A mempool transaction is in no block, so
+                                        // it carries no position. The served
+                                        // `CompactTx.index` is set to 0 at the
+                                        // proto boundary (`compact_tx_to_proto`),
+                                        // not on the domain type.
+                                        zaino_convert_zebra::transaction_from_zebra(&transaction)
                                             .map_err(|e| tonic::Status::unknown(e.to_string()))
                                     })
                                     .map(|transaction| {
@@ -2123,7 +2188,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
 mod compact_tx_to_proto_tests {
     use super::compact_tx_to_proto;
     use zaino_primitives::types::{
-        EncryptedCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
+        CompactCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
         TransparentInput, TransparentOutput, Zatoshis,
     };
 
@@ -2132,7 +2197,7 @@ mod compact_tx_to_proto_tests {
             nullifier: [tag; 32].into(),
             cmx: [tag.wrapping_add(1); 32].into(),
             ephemeral_key: [tag.wrapping_add(2); 32].into(),
-            enc_ciphertext: EncryptedCiphertext::new(vec![tag; 52]),
+            enc_ciphertext: CompactCiphertext::from([tag; 52]),
         }
     }
 

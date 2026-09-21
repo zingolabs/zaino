@@ -53,7 +53,7 @@ pub enum FailureMode {
 }
 ```
 
-`RpcError(i64)` is what lets a zcashd legacy code survive from the validator to
+`RpcError(i64)` is what lets a legacy full-node legacy code survive from the validator to
 the served response.
 
 ## Domain errors name answers, not failures
@@ -68,7 +68,7 @@ GetSpentInfoError::{ NotSpent, Unsupported }
 
 Write the variant that says what happened. A generic `NotFound` on every port
 throws away the thing the caller needs to act on — and, at the serving
-boundary, the thing that decides which zcashd error code the client sees.
+boundary, the thing that decides which the legacy full node error code the client sees.
 
 ## Two port layers: `OneShot*` and the canonical resilient ports
 

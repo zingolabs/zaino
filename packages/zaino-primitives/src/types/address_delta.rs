@@ -17,7 +17,7 @@ pub struct AddressDelta {
     pub address: TransparentAddress,
     /// Zero-based position of the transaction within its containing block.
     ///
-    /// `None` when the source cannot supply it. zcashd documents
+    /// `None` when the source cannot supply it. the legacy full node documents
     /// `getaddressdeltas` as ordered by `(height, blockindex, index)`, so a
     /// source that knows this can be sorted correctly and one that does not
     /// cannot — modelling it as optional keeps that distinction visible instead

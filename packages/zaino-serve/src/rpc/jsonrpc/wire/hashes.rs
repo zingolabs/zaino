@@ -1,7 +1,7 @@
 //! Responses that are a single hash: `getbestblockhash`, `sendrawtransaction`.
 //!
 //! Both render as one hex string in RPC display order, and both reuse Zebra's
-//! own type — there is nothing zcashd-specific left to reimplement, so this
+//! own type — there is nothing legacy-specific left to reimplement, so this
 //! module holds only the conversions.
 
 use zaino_primitives::types::{BlockHash, TransactionId};

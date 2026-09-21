@@ -22,10 +22,6 @@
 //! becomes a test failure rather than a silent behaviour change, without
 //! anything having to depend on zebra to obtain a number.
 
-pub mod work;
-
-pub use work::{work_from_bits, WorkError};
-
 /// Number of confirmations before a coinbase output becomes spendable.
 ///
 /// Zcash protocol specification §3.10: a coinbase output cannot be spent until
@@ -55,7 +51,7 @@ pub const FAST_TEST_MAX_NONFINALISED_DEPTH: u32 = MAX_NONFINALISED_DEPTH / 10;
 ///
 /// A local rejection: nothing here needs the chain, only the protocol's size
 /// limit and hex encoding. Callers map it onto whatever their interface's error
-/// vocabulary is — the zcashd legacy codes live in the serving layer, not here.
+/// vocabulary is — the legacy full-node legacy codes live in the serving layer, not here.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RawTransactionError {
     /// The submitted string is not valid hex.
