@@ -16,12 +16,13 @@
 //!   deployment's transport mix cannot silently change what a query means.
 //! - **Preference is this routing table.** Each trait below delegates: to the
 //!   state service where it can answer, to JSON-RPC otherwise, and — in the two
-//!   cases where the fast path is *semantically* incomplete rather than merely
+//!   cases where the state path is *semantically* incomplete rather than merely
 //!   absent — to the state service first and JSON-RPC after.
 //!
 //! The JSON-RPC adapter is not optional. Every deployment has one, because the
 //! mempool and the passthrough RPCs are reachable no other way. The state
-//! adapter is the accelerator layered over it, which is why it is the `Option`.
+//! adapter is the optional state path layered over it, which is why it is the
+//! `Option`.
 
 mod fallback;
 mod routing;
