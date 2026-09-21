@@ -877,7 +877,13 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
             cancel_token.child_token(),
         );
 
-        let chain_head = ChainHeadService::spawn(
+        // Anchor the chain-head (its readable handle is fetched via
+        // `.subscriber()` where needed), then self-drive its writer loop. The
+        // chain-head is now a `RunLoop`; the runtime stack boots it as a
+        // supervised component, but this legacy index owns its own supervision,
+        // so it drives the loop directly on a child token — cancelling
+        // `cancel_token` (in `shutdown_sync_best_effort`) stops it.
+        let (_chain_head_subscriber, chain_head) = ChainHeadService::anchor(
             source.chain_head_source(),
             ChainHeadConfig::with_max_depth(
                 std::num::NonZeroU32::new(OPERATIONAL_NFS_DEPTH)
@@ -888,6 +894,19 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         )
         .await
         .map_err(crate::InitError::ChainHeadInitialisationError)?;
+        let chain_head = Arc::new(chain_head);
+        {
+            let writer = Arc::clone(&chain_head);
+            let cancel = cancel_token.child_token();
+            tokio::spawn(async move {
+                let _ = zaino_component::RunLoop::run(
+                    writer,
+                    cancel,
+                    zaino_component::RunReporter::new(|_| {}),
+                )
+                .await;
+            });
+        }
 
         let (block_wake_signal, block_wake) = tokio::sync::watch::channel(());
 

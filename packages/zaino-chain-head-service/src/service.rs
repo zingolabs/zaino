@@ -23,27 +23,35 @@
 //! trimming with its keep-the-highest rule — reconciles the two into a graph
 //! driven only through the [`ChainGraph`] moves `extend` and `rewind_to`.
 //!
+//! # Construction and the writer are separate
+//!
+//! [`anchor`](ChainHeadService::anchor) builds a complete window and returns a
+//! read handle (a [`ChainHeadSubscriber`]) alongside the runnable writer. The
+//! writer is a [`RunLoop`]: the runtime boots it as a supervised `RunComponent`,
+//! exactly as it does the finalised indexer, so the chain-head escalates and is
+//! supervised the same way. This mirrors the finalised side — a readable handle
+//! composed into the served view, plus a run loop the Orchestra drives — rather
+//! than the chain-head spawning and owning its own task.
+//!
 //! # Advancing is not an operation
 //!
 //! There is no `sync`, `update` or `reconcile` here at any visibility. The
-//! writer task is the only thing that advances the graph, and it does so
+//! writer loop is the only thing that advances the graph, and it does so
 //! through private methods that build a *new* snapshot and hand it to
 //! [`publish_snapshot`](ChainHeadService::publish_snapshot). Nothing else can
 //! reach the published cell, so a reader can never observe a half-applied
 //! reorg or a partially-extended window.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use arc_swap::ArcSwap;
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _, ChainHeadWork,
 };
+use zaino_component::{Lifecycle, RunLoop, RunReporter};
 use zaino_primitives::types::{BlockHash, BlockRef, ChainStateEpoch, Height, TreeRoots};
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
@@ -69,8 +77,10 @@ const RETENTION_MARGIN: u32 = 10;
 
 /// The bounded non-finalised head of the chain, kept current with a validator.
 ///
-/// Owns exactly one writer task. Everything else holds a
-/// [`ChainHeadSubscriber`], which reads published snapshots and nothing else.
+/// The *writer*: it advances the graph. It is anchored by
+/// [`anchor`](Self::anchor) and then driven as a [`RunLoop`] by a runtime
+/// `RunComponent`. Everything else holds a [`ChainHeadSubscriber`], which reads
+/// published snapshots and nothing else.
 pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// We need access to the validator's best block hash, as well as a source
     /// of blocks.
@@ -86,8 +96,6 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// what the finalised side can already serve.
     confirmed_watermark: watch::Receiver<Option<Height>>,
     status: NamedAtomicStatus,
-    cancel: CancellationToken,
-    task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
 }
 
@@ -101,54 +109,45 @@ impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
 }
 
 impl<S: ChainHeadBlockSource> ChainHeadService<S> {
-    /// Anchors the graph, then starts the writer task that extends it.
+    /// Anchors the graph and returns a read handle alongside the runnable writer.
     ///
     /// Anchoring is the old `initialize` with `resolve_anchor_block`: one block
-    /// at the anchor height, which the writer task then extends one block at a
-    /// time. Doing it before returning is what makes
-    /// `ChainHeadSubscriber::current` total — there is no state in which a
-    /// ChainHead exists with nothing to answer from.
+    /// at the anchor height, which the writer then extends one block at a time.
+    /// Doing it before returning is what makes `ChainHeadSubscriber::current`
+    /// total — there is no state in which a ChainHead exists with nothing to
+    /// answer from.
     ///
-    /// # Shutdown contract
+    /// The returned [`ChainHeadSubscriber`] is the read handle (composed into the
+    /// served chain view); the returned `Self` is the writer, which the runtime
+    /// boots as a [`RunLoop`]-driven `RunComponent`. The subscriber shares the
+    /// same published cell and status the writer publishes into, so it observes
+    /// every later advance without holding the writer.
     ///
-    /// **Dropping the returned `Arc` does not stop the writer task.** The task
-    /// holds its own `Arc<Self>`, so the service outlives every handle a caller
-    /// keeps. Stop it by cancelling `cancel` or by calling
-    /// [`shutdown`](Self::shutdown); a caller that does neither leaks the task
-    /// for the life of the process.
-    ///
-    /// This is deliberate rather than an oversight. A writer that stopped when
-    /// the last read handle went away would stop mid-request in any consumer
-    /// that briefly holds no subscriber, and the task must outlive its handles
-    /// to publish at all. The cost is that the caller owns the lifetime, so
-    /// pass a token that is actually cancelled — see the cancellation section
-    /// of this crate's `usage.md` for why it should be a *child* token.
-    #[instrument(name = "ChainHeadService::spawn", skip_all, fields(max_depth = config.max_depth()))]
-    pub async fn spawn(
+    /// `cancel` governs only the anchoring retry here; the run loop is cancelled
+    /// through the token its `RunComponent` hands [`RunLoop::run`]. Pass a token
+    /// that is a *child* of the runtime's, so runtime shutdown reaches anchoring.
+    #[instrument(name = "ChainHeadService::anchor", skip_all, fields(max_depth = config.max_depth()))]
+    pub async fn anchor(
         source: Arc<S>,
         config: ChainHeadConfig,
         confirmed_watermark: watch::Receiver<Option<Height>>,
         cancel: CancellationToken,
-    ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let service = Self::anchored(source, config, confirmed_watermark, cancel).await?;
-
-        let worker = Arc::clone(&service);
-        let handle = tokio::spawn(async move { worker.run().await });
-        *service.task.lock().expect("chain head task mutex poisoned") = Some(handle);
-
-        Ok(service)
+    ) -> Result<(ChainHeadSubscriber, Self), ChainHeadInitError> {
+        let writer = Self::anchored(source, config, confirmed_watermark, &cancel).await?;
+        let subscriber = writer.subscriber();
+        Ok((subscriber, writer))
     }
 
-    /// An anchored service with **no writer task**, for tests that step it.
+    /// An anchored service, wrapped in an `Arc` and with **no writer running**,
+    /// for tests that step it.
     ///
     /// Compiled out of production builds. Pair with
     /// [`advance_once`](Self::advance_once): with no writer running, a stepping
     /// test is the only thing advancing the graph, so what it observes is
     /// exactly what it caused.
     ///
-    /// Shares `anchored` with [`spawn`](Self::spawn), so the
-    /// two construction paths cannot drift — they differ only in whether the
-    /// task is started.
+    /// Shares `anchored` with [`anchor`](Self::anchor), so the two construction
+    /// paths cannot drift — they differ only in whether the writer is driven.
     #[cfg(any(test, feature = "testing"))]
     pub async fn spawn_without_writer(
         source: Arc<S>,
@@ -156,29 +155,32 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         confirmed_watermark: watch::Receiver<Option<Height>>,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, confirmed_watermark, cancel).await
+        Ok(Arc::new(
+            Self::anchored(source, config, confirmed_watermark, &cancel).await?,
+        ))
     }
 
     /// Advances the graph by one iteration and publishes the result.
     ///
-    /// Compiled out of production builds. This is what the writer task does per
-    /// tick; exposing it to tests lets them assert on a specific reorg shape
-    /// without racing a timer.
+    /// Compiled out of production builds. This is what the writer does per tick;
+    /// exposing it to tests lets them assert on a specific reorg shape without
+    /// racing a timer.
     #[cfg(any(test, feature = "testing"))]
     pub async fn advance_once(&self) -> Result<(), ChainHeadAdvanceError> {
         self.tick().await
     }
 
-    /// Everything [`spawn`](Self::spawn) does except start the task.
+    /// Everything [`anchor`](Self::anchor) does except hand back the subscriber:
+    /// anchor the graph and build the writer.
     async fn anchored(
         source: Arc<S>,
         config: ChainHeadConfig,
         confirmed_watermark: watch::Receiver<Option<Height>>,
-        cancel: CancellationToken,
-    ) -> Result<Arc<Self>, ChainHeadInitError> {
+        cancel: &CancellationToken,
+    ) -> Result<Self, ChainHeadInitError> {
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
-        let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
+        let snapshot = anchor_with_retry(&source, &config, cancel).await?;
         info!(
             height = u32::from(snapshot.best_tip().height),
             hash = %snapshot.best_tip().hash,
@@ -190,22 +192,18 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             best_tip: snapshot.best_tip(),
         });
 
-        let service = Arc::new(Self {
+        // Still `Syncing`: the anchor is the window's floor, not its tip, so a
+        // reader served now would see a head up to `max_depth` below the
+        // chain. `Ready` is published by the first successful advance, which
+        // is the first moment the snapshot matches the validator's tip.
+        Ok(Self {
             source,
             current: Arc::new(ArcSwap::from_pointee(snapshot)),
             updates,
             confirmed_watermark,
             status,
-            cancel,
-            task: Mutex::new(None),
             config,
-        });
-        // Still `Syncing`: the anchor is the window's floor, not its tip, so a
-        // reader served now would see a head up to `max_depth` below the
-        // chain. `Ready` is published by the first successful advance, which
-        // is the first moment the snapshot matches the validator's tip.
-
-        Ok(service)
+        })
     }
 
     /// A read-only handle onto the published snapshot.
@@ -225,98 +223,33 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         self.status.load()
     }
 
-    /// Stops the writer task.
+    /// Publishes `Closing` on the status cell, for a consumer that stops the
+    /// writer out of band (the legacy `zaino-state` index owns its own cancel
+    /// token and cancels it directly).
     ///
-    /// The cancellation token passed to [`spawn`](Self::spawn) also stops the
-    /// task; this additionally publishes `Closing` and releases the handle, so
-    /// shutdown is observable rather than merely effective.
-    ///
-    /// Synchronous, and does **not** wait for the task to wind down: it cancels
-    /// and then aborts. It cannot wait, because it is called from `Drop`. The
-    /// abort is safe rather than merely expedient — a snapshot is installed with
-    /// one atomic store, so a task killed part-way through building a candidate
-    /// leaves the last published snapshot whole. The status is stored before the
-    /// abort so `Closing` is observable on every handle regardless of when the
-    /// task dies.
+    /// This does **not** stop the writer — the run loop is stopped by cancelling
+    /// the token its `RunComponent` (or its self-driver) handed
+    /// [`RunLoop::run`]. It only makes the shutdown observable on every handle:
+    /// the run loop also publishes `Closing` when it exits on cancellation, but
+    /// a synchronous consumer wants the transition visible immediately rather
+    /// than after the loop next wakes.
     pub fn shutdown(&self) {
         self.status.store(StatusType::Closing);
-        self.cancel.cancel();
-        if let Some(handle) = self
-            .task
-            .lock()
-            .expect("chain head task mutex poisoned")
-            .take()
-        {
-            handle.abort();
-        }
     }
 
-    /// The writer task.
-    ///
-    /// The loop ChainIndex's sync worker ran for the non-finalised state, with
-    /// the same backoff ladder and the same escalation to `CriticalError` after
-    /// a run of failures.
-    async fn run(self: Arc<Self>) {
-        let mut wake = self.source.subscribe_to_blocks_received();
-        let mut backoff = self.config.initial_backoff();
-        let mut consecutive_failures = 0u32;
-
-        loop {
-            if self.cancel.is_cancelled() {
-                break;
-            }
-
-            let iteration = tokio::select! {
-                biased;
-                _ = self.cancel.cancelled() => break,
-                result = self.tick() => result,
-            };
-
-            match iteration {
-                Ok(()) => {
-                    consecutive_failures = 0;
-                    backoff = self.config.initial_backoff();
-                    // `Ready` is already published from inside `tick`, before
-                    // the advanced snapshot becomes observable to readers.
-                    if self.wait_for_work(&mut wake).await.is_break() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    consecutive_failures += 1;
-                    if consecutive_failures >= self.config.max_consecutive_failures() {
-                        warn!(
-                            %error,
-                            attempts = consecutive_failures,
-                            "ChainHead giving up on the validator; last published snapshot is now stale",
-                        );
-                        self.status.apply(|s| next_status(s, TickOutcome::GaveUp));
-                        break;
-                    }
-                    warn!(%error, attempts = consecutive_failures, "ChainHead failed to advance; retrying");
-                    self.status.apply(|s| next_status(s, TickOutcome::Retrying));
-                    if sleep_or_cancel(backoff, &self.cancel).await.is_break() {
-                        break;
-                    }
-                    backoff = (backoff * 2).min(self.config.max_backoff());
-                }
-            }
-        }
-
-        debug!("ChainHead writer task stopped");
-    }
-
-    /// Waits for the poll interval, or for the source to say it has new blocks.
+    /// One turn of the writer loop's wait: the poll interval, cancellation, or
+    /// the source saying it has new blocks.
     ///
     /// The wake is a latency hint and nothing more: it carries no payload, and
     /// the next iteration re-reads the source regardless.
     async fn wait_for_work(
         &self,
         wake: &mut Option<watch::Receiver<()>>,
+        cancel: &CancellationToken,
     ) -> std::ops::ControlFlow<()> {
         match wake {
             Some(rx) => tokio::select! {
-                _ = self.cancel.cancelled() => std::ops::ControlFlow::Break(()),
+                _ = cancel.cancelled() => std::ops::ControlFlow::Break(()),
                 _ = tokio::time::sleep(self.config.poll_interval()) => std::ops::ControlFlow::Continue(()),
                 changed = rx.changed() => {
                     if changed.is_err() {
@@ -327,7 +260,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     std::ops::ControlFlow::Continue(())
                 }
             },
-            None => sleep_or_cancel(self.config.poll_interval(), &self.cancel).await,
+            None => sleep_or_cancel(self.config.poll_interval(), cancel).await,
         }
     }
 
@@ -732,16 +665,91 @@ impl<S: ChainHeadBlockSource> Status for ChainHeadService<S> {
     }
 }
 
-impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        if let Some(handle) = self
-            .task
-            .lock()
-            .expect("chain head task mutex poisoned")
-            .take()
-        {
-            handle.abort();
+impl<S: ChainHeadBlockSource> RunLoop for ChainHeadService<S> {
+    type Error = ChainHeadAdvanceError;
+    const LABEL: &'static str = "chain-head";
+    // A writer, not a server: it already serves dependents (its anchored window)
+    // while it catches up, so the running-but-not-yet-`Ready` phase is `Syncing`.
+    const RUNNING: Lifecycle = Lifecycle::Syncing;
+
+    /// The writer loop.
+    ///
+    /// The loop ChainIndex's sync worker ran for the non-finalised state, with
+    /// the same backoff ladder, reshaped as a supervised [`RunLoop`]: it reports
+    /// `Ready` on its first successful advance (the first moment the published
+    /// snapshot matches the validator tip), reports progress as the tip advances,
+    /// and runs until `cancel`. A clean cancellation returns `Ok(())` (the
+    /// component settles `Offline`); giving up on the validator after
+    /// `max_consecutive_failures` returns the last error as `Err` (the component
+    /// flips `Critical` and the Orchestra escalates), rather than silently
+    /// parking on a stale snapshot.
+    async fn run(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        reporter: RunReporter,
+    ) -> Result<(), ChainHeadAdvanceError> {
+        let mut wake = self.source.subscribe_to_blocks_received();
+        let mut backoff = self.config.initial_backoff();
+        let mut consecutive_failures = 0u32;
+        let mut announced_ready = false;
+
+        loop {
+            if cancel.is_cancelled() {
+                self.status.store(StatusType::Closing);
+                return Ok(());
+            }
+
+            let iteration = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    self.status.store(StatusType::Closing);
+                    return Ok(());
+                }
+                result = self.tick() => result,
+            };
+
+            match iteration {
+                Ok(()) => {
+                    consecutive_failures = 0;
+                    backoff = self.config.initial_backoff();
+                    // The first successful advance is the ready condition: the
+                    // window now reaches the validator tip. `Ready` on the
+                    // status cell is already published from inside `tick`; this
+                    // additionally tells the component (idempotent after the
+                    // first call).
+                    if !announced_ready {
+                        reporter.ready();
+                        announced_ready = true;
+                    }
+                    // Progress: the published tip is, after a successful tick,
+                    // the tip this iteration read — so current and target agree.
+                    let tip = u64::from(u32::from(self.current.load().best_tip().height));
+                    reporter.progress(tip, Some(tip));
+                    if self.wait_for_work(&mut wake, &cancel).await.is_break() {
+                        self.status.store(StatusType::Closing);
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= self.config.max_consecutive_failures() {
+                        warn!(
+                            %error,
+                            attempts = consecutive_failures,
+                            "ChainHead giving up on the validator; last published snapshot is now stale",
+                        );
+                        self.status.apply(|s| next_status(s, TickOutcome::GaveUp));
+                        return Err(error);
+                    }
+                    warn!(%error, attempts = consecutive_failures, "ChainHead failed to advance; retrying");
+                    self.status.apply(|s| next_status(s, TickOutcome::Retrying));
+                    if sleep_or_cancel(backoff, &cancel).await.is_break() {
+                        self.status.store(StatusType::Closing);
+                        return Ok(());
+                    }
+                    backoff = (backoff * 2).min(self.config.max_backoff());
+                }
+            }
         }
     }
 }

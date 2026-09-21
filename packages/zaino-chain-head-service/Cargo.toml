@@ -29,6 +29,7 @@ testing = []
 
 [dependencies]
 zaino-chain-head = { workspace = true }
+zaino-component = { version = "0.1.0", path = "../zaino-component" }
 zaino-primitives = { workspace = true }
 zaino-source = { workspace = true }
 zaino-status = { workspace = true }

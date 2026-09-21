@@ -24,6 +24,7 @@ use std::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot as _};
+use zaino_component::{RunLoop as _, RunReporter};
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
@@ -287,19 +288,33 @@ async fn stepped_with_watermark(
     .expect("mock validator is reachable")
 }
 
-/// A chain head with its writer running, for behaviour tests.
+/// A chain head with its writer loop driven, for behaviour tests.
+///
+/// Mirrors how the runtime boots it — anchor, then drive the [`RunLoop`] — but
+/// spawns the loop directly rather than through a `RunComponent`, so the crate's
+/// tests stay free of the runtime. The loop's own cancel token is never
+/// cancelled; the task is torn down with the test's runtime, and
+/// [`ChainHeadService::shutdown`] is what the shutdown tests exercise.
 async fn running(
     validator: &MockValidator,
     max_depth: u32,
 ) -> Arc<ChainHeadService<MockValidator>> {
-    ChainHeadService::spawn(
+    let (_subscriber, writer) = ChainHeadService::anchor(
         Arc::new(validator.clone()),
         running_config(max_depth),
         fixed_watermark(None),
         CancellationToken::new(),
     )
     .await
-    .expect("mock validator is reachable")
+    .expect("mock validator is reachable");
+    let service = Arc::new(writer);
+    let runner = Arc::clone(&service);
+    tokio::spawn(async move {
+        let _ = runner
+            .run(CancellationToken::new(), RunReporter::new(|_| {}))
+            .await;
+    });
+    service
 }
 
 /// Polls the subscriber until the predicate holds, as `zaino-mempool-rpc` does.
@@ -359,7 +374,7 @@ async fn spawn_fails_when_the_validator_never_answers() {
     let validator = MockValidator::linear(5);
     validator.lock().fail_calls = usize::MAX;
 
-    let error = ChainHeadService::spawn(
+    let error = ChainHeadService::anchor(
         Arc::new(validator),
         test_config(100),
         fixed_watermark(None),
