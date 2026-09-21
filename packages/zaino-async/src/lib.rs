@@ -4,9 +4,8 @@
 
 //! Low-level async/tokio building blocks, one layer **below** the component and
 //! supervision model. Domain-free: no Zcash, no indexing — only concurrency
-//! plumbing that many crates re-implement inline today (see the crate guide for
-//! the intended set). Today it provides [`Task`], the named, panic-rendering
-//! task the component layer and its consumers spawn through.
+//! plumbing. Provides [`Task`], the named, panic-rendering task the component
+//! layer and its consumers spawn through.
 
 mod panic;
 mod task;

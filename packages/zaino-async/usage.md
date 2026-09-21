@@ -26,26 +26,10 @@ assert_eq!(sum.join().await.unwrap(), 42);
 # }
 ```
 
-`join()` yields the task's output, or a [`TaskError`] that names the failing task
-by **our** [`TaskName`] — never tokio's opaque runtime task id — and preserves a
-panic's message, so a caller placing it on a health `reason` still says *what*
-failed. This is the single home for the `JoinError` → typed-error rendering that
-was otherwise re-derived (and sometimes stringified) at each spawn site.
+`join()` yields the task's output, or a [`TaskError`]. This crate is the single
+home for rendering a `tokio` `JoinError` as a typed, named error — see
+[`TaskError`] for what it preserves and why.
 
 `spawn` hands the body a [`CancellationToken`] to poll for a cooperative stop;
 `cancel()` requests that, `abort()` stops the task hard, `is_finished()` checks
 without awaiting.
-
-## Intended scope (filled in as we go)
-
-This crate is the home for the async patterns Zaino currently open-codes inline.
-As each earns a second caller it moves here, defined and tested once:
-
-- bounded, order-preserving concurrency runner (N fetches in flight, first-error
-  aborts) — today hand-rolled in the source provisioner;
-- `spawn_blocking` with the same panic-rendered join, for CPU/DB offload;
-- interval-poll-into-a-`watch` loop;
-- typed `timeout`/deadline wrappers;
-- watch fan-in (`select` over many status receivers);
-- the generic backoff scheduler underlying source retry (classification stays
-  with the source).

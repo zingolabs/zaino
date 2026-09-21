@@ -27,7 +27,7 @@ impl fmt::Display for TaskName {
 
 /// What can go wrong awaiting a supervised task.
 ///
-/// Renders a `tokio` [`JoinError`] by **our** [`TaskName`], never its opaque
+/// Renders a `tokio` `JoinError` by **our** [`TaskName`], never its opaque
 /// runtime task id — and keeps a panic's message, so a caller surfacing this
 /// (e.g. on a health `reason`) still says *what* failed, not merely *that* a
 /// task died.
