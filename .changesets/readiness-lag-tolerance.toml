@@ -1,0 +1,12 @@
+[[changes]]
+crate = "zaino-runtime"
+kind = "feature"
+description = """
+`ReadinessCriteria` gains `max_blocks_behind`, which defaults to two blocks as \
+Zebra's `ready_max_blocks_behind` does. A `Syncing` component that reports \
+progress within the tolerance of its target counts as serving, so readiness \
+does not flap while the index follows the tip. A `Ready` component that falls \
+further behind than the tolerance stops counting as serving, and the runtime \
+reports `Degraded`.
+"""
+issues = ["#1239"]
