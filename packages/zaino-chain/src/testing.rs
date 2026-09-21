@@ -34,9 +34,9 @@ use futures::Stream;
 use tokio::sync::{broadcast, watch};
 
 use zaino_chain_head::{
-    AnchoredRelativeChainWork, ChainHeadBlock, ChainHeadBlockIter, ChainHeadBlockService,
-    ChainHeadError, ChainHeadFreezeEvents, ChainHeadSnapshot, ChainHeadTransactionLocations,
-    ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
+    ChainHeadBlock, ChainHeadBlockIter, ChainHeadBlockService, ChainHeadError,
+    ChainHeadFreezeEvents, ChainHeadSnapshot, ChainHeadTransactionLocations,
+    ChainHeadTransactionService, ChainHeadTxPosition, ChainHeadWork, SpenderLocation,
 };
 use zaino_chain_store::{
     ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
@@ -48,10 +48,11 @@ use zaino_chain_store::{
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockTreeSizes,
-    BlockTxPosition, BlockVerbose, ChainMetadata, ChainStateEpoch, ChainWork, EquihashNonce,
-    EquihashSolution, Height, MerkleRoot, Outpoint, PreIndexCompactBlock, PreIndexCompactTx,
-    ShieldedPool, SubtreeRoot, TransactionId, TransactionLocation, TreeRoots, Treestate, Utxo,
+    AbsoluteChainWork, AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef,
+    BlockTreeSizes, BlockTxPosition, BlockVerbose, ChainMetadata, ChainStateEpoch,
+    CompactDifficulty, EquihashNonce, EquihashSolution, Height, MerkleRoot, Outpoint,
+    PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId,
+    TransactionLocation, TreeRoots, TreeSize, Treestate, Utxo,
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
@@ -146,7 +147,7 @@ pub fn block_at(h: u32) -> Block {
             time: 0,
             merkle_root: MerkleRoot::from([0u8; 32]),
             block_commitments: zaino_primitives::types::BlockCommitments::from([0u8; 32]),
-            bits: 0,
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
             nonce: EquihashNonce::from([0u8; 32]),
             // Regtest: 36 bytes rather than 1344, so a long chain costs
             // kilobytes instead of megabytes. Nothing here verifies work.
@@ -154,9 +155,9 @@ pub fn block_at(h: u32) -> Block {
         },
         transactions: Vec::new(),
         chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         },
     }
 }
@@ -168,14 +169,12 @@ pub fn block_at(h: u32) -> Block {
 /// chain-head rebase checkable against the store: the head accumulates one unit
 /// per block too, and `chainwork(anchor) + work(B)` lands exactly on the value
 /// the store holds for the same block.
-fn chainwork_of(h: u32) -> ChainWork {
-    let mut bytes = [0u8; 32];
-    bytes[28..].copy_from_slice(&h.saturating_add(1).to_be_bytes());
-    ChainWork::from(bytes)
+fn chainwork_of(h: u32) -> AbsoluteChainWork {
+    AbsoluteChainWork::new(core::num::NonZeroU128::MIN.saturating_add(u128::from(h)))
 }
 
 /// The same value, for a test asserting on the rebase.
-pub fn chainwork_at(h: u32) -> ChainWork {
+pub fn chainwork_at(h: u32) -> AbsoluteChainWork {
     chainwork_of(h)
 }
 
@@ -207,7 +206,7 @@ fn head_from_block(block: &Block) -> ChainHeadBlock {
         // Placeholder. Work is anchor-relative, so it depends on where the
         // window floor is, which a single block does not know — `FakeHead`
         // assigns it once the window is known.
-        work: AnchoredRelativeChainWork::ZERO,
+        work: ChainHeadWork::anchored_at(1),
         block: block.clone(),
         tree_roots: empty_tree_roots(),
     }
@@ -545,13 +544,13 @@ impl ChainStoreFreezeSink for FakeStore {
                 });
             }
 
-            // Derived here exactly as the real store derives it, so a caller
-            // that started smuggling work in would fail the same way.
+            // Derived here rather than taken from the caller, as the real
+            // store does.
             held.push(StoredBlock {
                 header: block.header.clone(),
                 transactions: block.transactions.clone(),
                 tree_roots: block.tree_roots.clone(),
-                chainwork: ChainWork::new([0u8; 32]),
+                chainwork: chainwork_of(height),
             });
         }
 
@@ -625,9 +624,9 @@ fn compact_of(block: &StoredBlock) -> zaino_primitives::types::CompactBlock {
             .map(|tx| tx.compact.clone())
             .collect(),
         chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         },
     }
 }
@@ -807,7 +806,7 @@ impl FakeHeadSnapshot {
     /// the caller put there. Work is measured from the parent of the window
     /// floor, so it is a fact about the window and not about a block in
     /// isolation — and one unit per block makes the rebase check exact against
-    /// [`FakeStore`], whose chainwork at `h` is `h`.
+    /// [`FakeStore`], whose chainwork at `h` is `h + 1`.
     pub fn new(mut blocks: Vec<ChainHeadBlock>) -> Self {
         let work_anchor = blocks.first().and_then(|floor| {
             floor.height().checked_sub(1).map(|height| BlockRef {
@@ -816,12 +815,8 @@ impl FakeHeadSnapshot {
             })
         });
 
-        let mut work = AnchoredRelativeChainWork::ZERO;
-        for block in &mut blocks {
-            work = work
-                .checked_add(ChainWork::from_u128(1))
-                .expect("a fake window cannot overflow");
-            block.work = work;
+        for (index, block) in blocks.iter_mut().enumerate() {
+            block.work = ChainHeadWork::anchored_at(index as u128 + 1);
         }
 
         Self {
@@ -849,15 +844,13 @@ impl FakeHeadSnapshot {
     /// [`new`](Self::new) assigns along the canonical chain, so a competing
     /// block at a height weighs the same as the canonical one it competes
     /// with.
-    fn work_at(&self, height: Height) -> AnchoredRelativeChainWork {
+    fn work_at(&self, height: Height) -> ChainHeadWork {
         let above_anchor = match self.work_anchor {
             Some(anchor) => u32::from(height).saturating_sub(u32::from(anchor.height)),
             // No anchor: the floor is genesis, so height is already the count.
             None => u32::from(height).saturating_add(1),
         };
-        AnchoredRelativeChainWork::ZERO
-            .checked_add(ChainWork::from_u128(u128::from(above_anchor)))
-            .expect("a fake window cannot overflow")
+        ChainHeadWork::anchored_at(u128::from(above_anchor))
     }
 
     /// A block on a competing branch at `h`, distinguished by `tag`.
@@ -872,7 +865,7 @@ impl FakeHeadSnapshot {
             parent_hash: hash_of(h.saturating_sub(1)),
             // Placeholder, as in `head_from_block`: `with_branch_block`
             // assigns the work once the window it joins is known.
-            work: AnchoredRelativeChainWork::ZERO,
+            work: ChainHeadWork::anchored_at(1),
             block,
             tree_roots: empty_tree_roots(),
         }
@@ -1205,9 +1198,9 @@ impl OneShotGetBlockVerbose for FakeSource {
                 chain_supply: None,
                 value_pools: Vec::new(),
                 tree_sizes: BlockTreeSizes {
-                    sapling: 0,
-                    orchard: 0,
-                    ironwood: 0,
+                    sapling: TreeSize::ZERO,
+                    orchard: TreeSize::ZERO,
+                    ironwood: TreeSize::ZERO,
                 },
                 next_block_hash: None,
             })

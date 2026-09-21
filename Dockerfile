@@ -35,6 +35,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       protobuf-compiler=3.21.12-3+deb12u1 \
   && rm -rf /var/lib/apt/lists/*
 
+# rust-toolchain.toml lists these components; installing them here keeps
+# the download in a cached layer instead of re-syncing the channel on
+# every build of the workspace layer below.
+RUN rustup component add clippy rustfmt
+
 # Copy entire workspace (prevents missing members)
 COPY . .
 

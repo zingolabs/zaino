@@ -16,7 +16,7 @@
 //!
 //! Until then, one thing about the result is load-bearing: its `chainwork` is
 //! **anchor-relative**, because ChainHead accumulates from its own window
-//! rather than from genesis (see [`AnchoredRelativeChainWork`]). Blocks produced here are
+//! rather than from genesis (see [`ChainHeadWork`]). Blocks produced here are
 //! served, never persisted — the finalised state syncs from the validator
 //! independently and computes absolute chainwork itself. Writing one of these
 //! to the database would put a wrong chainwork on disk.
@@ -24,11 +24,11 @@
 use std::sync::Arc;
 
 use crate::chain_index::{
-    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::ChainWork,
+    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::AbsoluteChainWork,
     validator_source::ValidatorSource,
 };
 use crate::IndexedBlock;
-use zaino_chain_head::{AnchoredRelativeChainWork, ChainHeadBlock, ChainHeadBlockSource};
+use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource, ChainHeadWork};
 
 /// A source that can also answer ChainHead's questions.
 ///
@@ -121,27 +121,13 @@ pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadCo
 
 /// ChainHead's anchor-relative work, as the type `IndexedBlock` stores.
 ///
-/// # This is not absolute chainwork
-///
-/// `IndexedBlock` holds the value a validator would report, and this is the
-/// value measured from the chain head's own anchor. Serving one as the other is
-/// wrong, and knowingly so: it is what the pre-ChainView path did, and it goes
-/// when `ChainIndex` reads through `zaino-chain`, which rebases against the
-/// finalised store and answers `None` rather than guessing. Nothing
-/// client-facing reads it meanwhile.
-///
-/// Non-zero by construction: every retained block is at least its own block
-/// work above the anchor, and a block's work cannot be zero, so this conversion
-/// cannot fail.
-fn chainwork(work: AnchoredRelativeChainWork) -> ChainWork {
-    ChainWork::new(
-        work.as_chainwork()
-            .as_u128()
-            .and_then(std::num::NonZeroU128::new)
-            .expect(
-                "a retained block carries at least its own non-zero block work, and no window \
-                 this size accumulates past u128",
-            ),
+/// Non-zero by construction: ChainHead starts each accumulation at the anchor
+/// block's own work rather than at zero, precisely so this conversion cannot
+/// fail.
+fn chainwork(work: ChainHeadWork) -> AbsoluteChainWork {
+    AbsoluteChainWork::new(
+        core::num::NonZeroU128::new(work.as_u128())
+            .expect("chain head work is accumulated from a non-zero anchor"),
     )
 }
 
@@ -150,7 +136,12 @@ mod tests {
     use super::*;
     use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
     use crate::chain_index::types::TxInCompact;
-    use zaino_primitives::types::TreeRoots;
+    use zaino_primitives::types::{TreeRoots, TreeSize};
+
+    /// A vector's `u64` tree size, as the domain carries it.
+    fn vector_tree_size(size: u64) -> TreeSize {
+        TreeSize::try_from(size).expect("vector tree sizes fit u32")
+    }
 
     /// This conversion and the finalised state's must produce the same
     /// `IndexedBlock` from the same block.
@@ -179,26 +170,23 @@ mod tests {
         let vectors = load_test_vectors().expect("test vectors load");
         let expected: Vec<IndexedBlock> = indexed_block_chain(&vectors.blocks).collect();
 
-        let mut work: Option<AnchoredRelativeChainWork> = None;
+        let mut work: Option<ChainHeadWork> = None;
         for (vector, expected) in vectors.blocks.iter().zip(&expected) {
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
-                zaino_primitives::types::ChainMetadata {
-                    sapling_tree_size: vector.sapling_tree_size as u32,
-                    orchard_tree_size: vector.orchard_tree_size as u32,
-                    ironwood_tree_size: 0,
-                },
+                zaino_primitives::types::ChainMetadata::new(
+                    vector_tree_size(vector.sapling_tree_size),
+                    vector_tree_size(vector.orchard_tree_size),
+                    zaino_primitives::types::TreeSize::ZERO,
+                ),
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = zaino_primitives::types::ChainWork::from_u128(
-                zaino_consensus::work_from_bits(block.header.bits)
-                    .expect("vector block has valid difficulty"),
-            );
-            let accumulated = work
-                .unwrap_or(AnchoredRelativeChainWork::ZERO)
-                .checked_add(block_work)
-                .expect("no overflow");
+            let block_work = std::num::NonZeroU128::from(block.header.bits.to_work()).get();
+            let accumulated = match work {
+                Some(parent) => parent.checked_add(block_work).expect("no overflow"),
+                None => ChainHeadWork::anchored_at(block_work),
+            };
             work = Some(accumulated);
 
             let chain_head_block = ChainHeadBlock {
@@ -212,11 +200,11 @@ mod tests {
                 tree_roots: TreeRoots {
                     sapling: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.sapling_root).into(),
-                        size: vector.sapling_tree_size,
+                        size: vector_tree_size(vector.sapling_tree_size),
                     }),
                     orchard: Some(zaino_primitives::types::TreeRootInfo {
                         root: <[u8; 32]>::from(vector.orchard_root).into(),
-                        size: vector.orchard_tree_size,
+                        size: vector_tree_size(vector.orchard_tree_size),
                     }),
                     ironwood: None,
                 },

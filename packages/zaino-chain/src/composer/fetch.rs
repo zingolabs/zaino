@@ -192,9 +192,9 @@ impl<Source: ChainViewSource> Fetcher<Source> {
         Ok(Some(super::stream::compact_from_pre_index(
             pre_index,
             ChainMetadata {
-                sapling_tree_size: narrow(verbose.tree_sizes.sapling),
-                orchard_tree_size: narrow(verbose.tree_sizes.orchard),
-                ironwood_tree_size: narrow(verbose.tree_sizes.ironwood),
+                sapling_tree_size: verbose.tree_sizes.sapling,
+                orchard_tree_size: verbose.tree_sizes.orchard,
+                ironwood_tree_size: verbose.tree_sizes.ironwood,
             },
             pools,
         )))
@@ -233,13 +233,4 @@ impl<Source: ChainViewSource> Fetcher<Source> {
         self.permitted(async { miss(self.source.get_block_by_hash(hash).await) })
             .await
     }
-}
-
-/// A cumulative tree size, as the compact protocol carries it.
-///
-/// Saturates rather than truncating: the protocol field is 32 bits, so a larger
-/// size is unrepresentable whatever this does, and wrapping to a small number is
-/// the failure a wallet would silently act on. Unreachable on any real chain.
-fn narrow(size: u64) -> u32 {
-    u32::try_from(size).unwrap_or(u32::MAX)
 }

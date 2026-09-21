@@ -20,7 +20,7 @@ use zaino_chain::{
     CompactBlockRead as _,
 };
 use zaino_chain_store::PoolFilter;
-use zaino_primitives::types::ChainMetadata;
+use zaino_primitives::types::{ChainMetadata, TreeSize};
 
 /// The vector chain, as domain blocks.
 ///
@@ -36,9 +36,11 @@ fn vector_chain() -> Option<Chain> {
             zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
                 ChainMetadata {
-                    sapling_tree_size: u32::try_from(vector.sapling_tree_size).unwrap_or(u32::MAX),
-                    orchard_tree_size: u32::try_from(vector.orchard_tree_size).unwrap_or(u32::MAX),
-                    ironwood_tree_size: 0,
+                    sapling_tree_size: TreeSize::try_from(vector.sapling_tree_size)
+                        .expect("vector tree sizes fit u32"),
+                    orchard_tree_size: TreeSize::try_from(vector.orchard_tree_size)
+                        .expect("vector tree sizes fit u32"),
+                    ironwood_tree_size: TreeSize::ZERO,
                 },
             )
             .expect("a checked-in vector block converts")

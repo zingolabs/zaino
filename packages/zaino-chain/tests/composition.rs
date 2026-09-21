@@ -16,7 +16,7 @@ use zaino_chain::{
     TreestateRead as _,
 };
 use zaino_chain_store::PoolFilter;
-use zaino_primitives::types::{BlockRef, ChainWork};
+use zaino_primitives::types::{BlockRef, SingleBlockWork};
 
 fn chain() -> Chain {
     Chain::of_length(1201)
@@ -759,7 +759,7 @@ async fn chainwork_is_continuous_across_the_finalised_seam() {
     assert_eq!(
         recent,
         finalised
-            .checked_add(ChainWork::from_u128(1).into())
+            .accumulate(SingleBlockWork::try_new(1).expect("non-zero"))
             .expect("one unit cannot overflow"),
         "one block of work apart, with no step at the seam",
     );

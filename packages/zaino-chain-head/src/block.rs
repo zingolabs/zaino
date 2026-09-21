@@ -1,73 +1,44 @@
 //! The block as ChainHead retains it, and the work that orders competing
 //! branches.
 
-use zaino_primitives::types::{Block, BlockHash, BlockRef, ChainWork, TreeRoots};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, TreeRoots};
 
-/// Proof-of-work accumulated from the ChainHead anchor, **not** from genesis.
+/// Cumulative proof-of-work measured from the ChainHead anchor, **not** from
+/// genesis.
 ///
-/// The anchor is the parent of the window floor: the block immediately below
-/// the lowest one the graph retains. It contributes nothing itself, so for a
-/// block `B` this value is the sum of block work over `(anchor, B]` and the
-/// floor's own value is just the floor's block work.
+/// ChainHead never reads the finalised state, so it has no way to learn the
+/// absolute chainwork of the block it anchors on. It does not need to: chain
+/// selection is a comparison, and every branch retained in the window
+/// accumulates from the same anchor past the reorg boundary, so the comparison
+/// is exact even though the magnitudes are not absolute.
 ///
-/// # Why it is relative
+/// What this value is *not* is the `chainwork` a validator reports. Anything
+/// that serves or persists absolute chainwork must rebase this against the
+/// anchor's true cumulative work first.
 ///
-/// ChainHead never reads the finalised state, so it cannot learn the anchor's
-/// absolute chainwork. It does not need to: chain selection is a comparison,
-/// and every branch retained in the window accumulates from that same anchor,
-/// so the comparison is exact even though the magnitudes are not.
-///
-/// That uniformity is load-bearing. A graph holding some absolute values and
-/// some relative ones has no usable ordering at all — any absolute value dwarfs
-/// every relative one — so the heaviest branch would be chosen by which value
-/// happened to be rebased rather than by work.
-///
-/// # Making it absolute
-///
-/// Because the anchor contributes zero, rebasing is one addition and no
-/// subtraction:
-///
-/// ```text
-/// absolute(B) = chainwork(anchor) + relative(B)
-/// ```
-///
-/// [`ChainHeadSnapshot::work_anchor`](crate::ChainHeadSnapshot::work_anchor)
-/// names the anchor so a consumer can look its chainwork up in a finalised
-/// store; `zaino-chain` does exactly that, and answers `None` rather than a
-/// guess until the store has built that far.
-///
-/// What this value is *not* is the `chainwork` a validator reports. That is why
-/// it is its own type rather than [`zaino_primitives::types::ChainWork`]: the
-/// two are not interchangeable and the type system should say so.
+/// The anchor is the parent of the window floor, named by
+/// [`ChainHeadSnapshot::work_anchor`](crate::ChainHeadSnapshot::work_anchor).
+/// Accumulation starts at the floor's *own* work rather than at zero, so the
+/// value is always non-zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AnchoredRelativeChainWork(ChainWork);
+pub struct ChainHeadWork(u128);
 
-impl AnchoredRelativeChainWork {
-    /// The anchor's own contribution: none.
-    ///
-    /// The identity this accumulation folds from, so the window floor is built
-    /// by the same step as every block above it rather than by a special case.
-    /// No *retained* block holds it — every one of them is at least its own
-    /// block work above the anchor.
-    pub const ZERO: Self = Self(ChainWork::ZERO);
+impl ChainHeadWork {
+    /// The work contributed by a single block, as the base of a new
+    /// accumulation. Used for the window floor, which has no retained parent.
+    pub fn anchored_at(block_work: u128) -> Self {
+        Self(block_work)
+    }
 
     /// Extends this accumulation by one block's work.
     ///
-    /// Returns `None` on overflow of the 256-bit total. The window spans a
-    /// bounded number of blocks, so this cannot happen in practice; the caller
-    /// still handles it rather than asserting, because "cannot happen" is a
-    /// claim about the configuration, not about the type.
-    pub fn checked_add(self, block_work: ChainWork) -> Option<Self> {
-        self.0.checked_add(block_work.into()).map(Self)
+    /// Returns `None` on overflow.
+    pub fn checked_add(self, block_work: u128) -> Option<Self> {
+        self.0.checked_add(block_work).map(Self)
     }
 
-    /// The accumulated work as a chainwork magnitude.
-    ///
-    /// The same 256 bits consensus specifies, so a single block whose work
-    /// exceeds a `u128` is representable here. Read the type's documentation
-    /// before using it: this is measured from the anchor, not from genesis, and
-    /// becomes absolute only by adding the anchor's own chainwork.
-    pub fn as_chainwork(self) -> ChainWork {
+    /// The accumulated work as a plain integer.
+    pub fn as_u128(self) -> u128 {
         self.0
     }
 }
@@ -85,10 +56,8 @@ pub struct ChainHeadBlock {
     pub reference: BlockRef,
     /// The parent block's hash. The graph's only edge.
     pub parent_hash: BlockHash,
-    /// Work accumulated from the anchor. See
-    /// [`AnchoredRelativeChainWork`] — this is not absolute chainwork, and
-    /// becomes so only by adding the anchor's.
-    pub work: AnchoredRelativeChainWork,
+    /// Work accumulated from the ChainHead's anchor.
+    pub work: ChainHeadWork,
     /// The parsed block.
     pub block: Block,
     /// Commitment tree roots and sizes after this block is applied.

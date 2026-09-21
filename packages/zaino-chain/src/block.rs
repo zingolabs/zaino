@@ -3,14 +3,14 @@
 use zaino_chain_store::FrozenBlock;
 use zaino_chain_store::StoredBlock;
 use zaino_chain_store::StoredTx;
+use zaino_primitives::types::{AbsoluteChainWork, BlockHeader, BlockRef, TreeRoots};
 use zaino_primitives::types::{Block, PreIndexCompactTx, SignedZatoshis};
-use zaino_primitives::types::{BlockHeader, BlockRef, ChainWork, TreeRoots};
 
 /// A block, from whichever provider held it.
 ///
 /// **Seperate from [`StoredBlock`]**:
 ///
-/// [`StoredBlock::chainwork`] is a plain [`ChainWork`], because a store always
+/// [`StoredBlock::chainwork`] is a plain [`AbsoluteChainWork`], because a store always
 /// knows it: the store's coverage runs from genesis, so the cumulative sum is
 /// available for every block it holds. A chain view has no such guarantee — it
 /// answers from providers that individually cannot know it — so here the field
@@ -34,7 +34,7 @@ pub struct ChainBlock {
     /// Chainwork is *cumulative*: it is the total work of every block from
     /// genesis to this one. Knowing it therefore requires an unbroken chain
     /// below this block, not merely this block.
-    pub chainwork: Option<ChainWork>,
+    pub chainwork: Option<AbsoluteChainWork>,
 }
 
 impl ChainBlock {
@@ -60,7 +60,7 @@ impl ChainBlock {
     pub(crate) fn from_parsed(
         block: &Block,
         tree_roots: TreeRoots,
-        chainwork: Option<ChainWork>,
+        chainwork: Option<AbsoluteChainWork>,
     ) -> Self {
         Self {
             header: block.header.clone(),

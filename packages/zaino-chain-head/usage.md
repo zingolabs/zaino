@@ -85,7 +85,7 @@ is compiled out of production builds. Do not add one here.
 
 ## Work is anchor-relative
 
-`AnchoredRelativeChainWork` is accumulated from the chain head's **own anchor**,
+`ChainHeadWork` is accumulated from the chain head's **own anchor**,
 not from genesis. It orders competing branches correctly, which is all the chain
 head needs, and it is not the absolute chainwork a validator reports.
 
@@ -95,7 +95,7 @@ work, so for a block `B` the value sums block work over `(anchor, B]`, and the
 floor's own value is just the floor's block work.
 
 The distinct type is there to stop the two being confused. Do not serve an
-`AnchoredRelativeChainWork` where an API promises chainwork, and do not compare
+`ChainHeadWork` where an API promises chainwork, and do not compare
 one against a value from a validator — two chain heads with different anchors
 produce different numbers for the same block.
 

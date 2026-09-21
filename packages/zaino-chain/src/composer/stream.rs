@@ -24,7 +24,7 @@
 use zaino_chain_store::PoolFilter;
 use zaino_primitives::types::{
     ChainMetadata, CompactBlock, Height, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool,
-    TreeRoots,
+    TreeRoots, TreeSize,
 };
 
 use crate::composer::coverage::Segment;
@@ -178,8 +178,8 @@ pub(crate) fn metadata_from_roots(roots: &TreeRoots) -> ChainMetadata {
     }
 }
 
-fn size_of(info: Option<&zaino_primitives::types::TreeRootInfo>) -> u32 {
-    info.map_or(0, |info| u32::try_from(info.size).unwrap_or(u32::MAX))
+fn size_of(info: Option<&zaino_primitives::types::TreeRootInfo>) -> TreeSize {
+    info.map_or(TreeSize::ZERO, |info| info.size)
 }
 
 /// Clears the pools the caller did not ask for.

@@ -36,9 +36,9 @@ use zaino_chain_store::{
     TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_primitives::types::{
-    rpc::ChainTip, AddressBalance, AddressDelta, BlockHash, BlockHeader, BlockRef, ChainStateEpoch,
-    ChainWork, CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex, SubtreeRoot,
-    TransactionId, TransparentAddress, Treestate, Utxo,
+    rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockHash, BlockHeader,
+    BlockRef, ChainStateEpoch, CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex,
+    SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 
 use crate::block::ChainBlock;
@@ -430,7 +430,7 @@ pub struct ComposerSnapshot<Reader, HeadSnapshot, Source> {
     /// The inner `None` — the store has not built as far as the anchor — is
     /// cached like any other answer, because coverage is pinned too and so
     /// cannot become resolvable within one snapshot.
-    chainwork_offset: Arc<tokio::sync::OnceCell<Option<ChainWork>>>,
+    chainwork_offset: Arc<tokio::sync::OnceCell<AnchorChainWork>>,
     fetch: fetch::Fetcher<Source>,
     config: Arc<ChainViewConfig>,
 }
@@ -496,11 +496,30 @@ pub(crate) fn store_err(error: ChainStoreError) -> ChainViewError {
 
 /// A chain-head block's work made absolute, given the anchor's chainwork.
 ///
-/// `None` when the offset is unknown, and also on 256-bit overflow — which no
-/// real chain reaches, and which is reported absent rather than wrong for the
-/// same reason every other unknown is.
-fn rebase(offset: Option<ChainWork>, block: &ChainHeadBlock) -> Option<ChainWork> {
-    offset?.checked_add(block.work.as_chainwork().into())
+/// `None` when the anchor's chainwork is unknown, and also on overflow — which
+/// no real chain reaches, and which is reported absent rather than wrong for
+/// the same reason every other unknown is.
+fn rebase(anchor: AnchorChainWork, block: &ChainHeadBlock) -> Option<AbsoluteChainWork> {
+    let relative = block.work.as_u128();
+    let absolute = match anchor {
+        AnchorChainWork::FromGenesis => relative,
+        AnchorChainWork::Known(anchor) => core::num::NonZeroU128::from(anchor)
+            .get()
+            .checked_add(relative)?,
+        AnchorChainWork::Unknown => return None,
+    };
+    core::num::NonZeroU128::new(absolute).map(AbsoluteChainWork::new)
+}
+
+/// The absolute chainwork of the chain head's anchor.
+#[derive(Debug, Clone, Copy)]
+enum AnchorChainWork {
+    /// The window floor is genesis, so the head's work is already absolute.
+    FromGenesis,
+    /// The anchor's absolute chainwork, read from the store.
+    Known(AbsoluteChainWork),
+    /// The store has not built up to the anchor yet.
+    Unknown,
 }
 
 /// This deployment does not offer `capability`.
@@ -565,7 +584,10 @@ where
     /// the head retains accumulates from the same anchor, and a competing
     /// block's chainwork is a real quantity — it is what makes one branch
     /// heavier than another.
-    async fn absolute_chainwork(&self, block: &ChainHeadBlock) -> Result<Option<ChainWork>> {
+    async fn absolute_chainwork(
+        &self,
+        block: &ChainHeadBlock,
+    ) -> Result<Option<AbsoluteChainWork>> {
         Ok(rebase(self.chainwork_offset().await?, block))
     }
 
@@ -583,13 +605,13 @@ where
     /// Looking the anchor up by height is sound: the store is append-only, so
     /// it never holds a different block at a height it has already built.
     /// `rewind_to` is a repair path with no caller outside the store.
-    async fn chainwork_offset(&self) -> Result<Option<ChainWork>> {
+    async fn chainwork_offset(&self) -> Result<AnchorChainWork> {
         self.chainwork_offset
             .get_or_try_init(|| async {
                 let Some(anchor) = self.coverage.work_anchor else {
                     // The floor is genesis: no block below it, so the head's
                     // work is already absolute.
-                    return Ok(Some(ChainWork::ZERO));
+                    return Ok(AnchorChainWork::FromGenesis);
                 };
 
                 if self
@@ -597,7 +619,7 @@ where
                     .store_top
                     .is_none_or(|top| top < anchor.height)
                 {
-                    return Ok(None);
+                    return Ok(AnchorChainWork::Unknown);
                 }
 
                 Ok(self
@@ -607,7 +629,9 @@ where
                     .map_err(store_err)?
                     .into_iter()
                     .next()
-                    .map(|block| block.chainwork))
+                    .map_or(AnchorChainWork::Unknown, |block| {
+                        AnchorChainWork::Known(block.chainwork)
+                    }))
             })
             .await
             .copied()
