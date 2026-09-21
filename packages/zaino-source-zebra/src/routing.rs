@@ -153,9 +153,11 @@ impl zaino_source::ValidatorSource for ZebraValidator {
 
 impl OneShotGetBlock for ZebraValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        // A height names a best-chain block, which the finalized state has, so
-        // there is nothing the slow path could add on a miss.
-        fast_or_slow!(self, get_block, height)
+        // The finalized state holds only heights at or below its own finalized
+        // tip; the volatile top of the chain sits above it. A miss there means
+        // "not finalized yet", not "no such block", so it falls through to
+        // JSON-RPC, which sees the whole best chain.
+        fast_then_slow!(self, get_block, height)
     }
 }
 
@@ -175,7 +177,9 @@ impl OneShotGetBlockByHash for ZebraValidator {
 
 impl OneShotGetRawBlock for ZebraValidator {
     async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
-        fast_or_slow!(self, get_raw_block, height)
+        // Same finalized-tip boundary as `get_block`: a height above the
+        // finalized state is served over JSON-RPC.
+        fast_then_slow!(self, get_raw_block, height)
     }
 }
 
@@ -192,13 +196,19 @@ impl OneShotGetRawBlockByHash for ZebraValidator {
 
 impl OneShotGetChainTip for ZebraValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
-        fast_or_slow!(self, get_chain_tip)
+        // The chain tip is the best block, which lives in the volatile top of
+        // the chain — above the finalized state's tip. Only JSON-RPC reports it;
+        // the read-only finalized state would answer with its own lagging tip,
+        // which is why routing the tip through the fast path froze the head at
+        // the boot-time finalized height.
+        self.rpc.get_chain_tip().await
     }
 }
 
 impl OneShotGetBestBlockHeight for ZebraValidator {
     async fn get_best_block_height(&self) -> Result<Height, QueryError<GetBestBlockHeightError>> {
-        fast_or_slow!(self, get_best_block_height)
+        // The best height tracks the chain tip; see [`get_chain_tip`].
+        self.rpc.get_best_block_height().await
     }
 }
 
@@ -207,7 +217,10 @@ impl OneShotGetPreIndexCompactBlock for ZebraValidator {
         &self,
         height: Height,
     ) -> Result<PreIndexCompactBlock, QueryError<GetBlockError>> {
-        fast_or_slow!(self, get_pre_index_compact_block, height)
+        // The compact fast path only reaches the finalized state; the volatile
+        // top — every block on a chain that has not finalized yet, e.g. all of
+        // regtest — is served over JSON-RPC on the finalized-tip miss.
+        fast_then_slow!(self, get_pre_index_compact_block, height)
     }
 }
 
