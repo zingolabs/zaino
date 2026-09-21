@@ -67,6 +67,9 @@ impl Default for SyncWriteBatchSize {
         // host (or a cgroup-limited container). A larger value does not make a small host faster — it
         // just risks the OOM-killer, and a kill under `NO_SYNC` is what then corrupts the on-disk DB.
         // (Previously 32 GiB, which OOM-killed small hosts.)
+        //
+        // Bulk sync is pipelined, so this bounds *one* batch and peak usage is up to twice it: the
+        // batch being committed stays resident while its successor fills.
         SyncWriteBatchSize(8)
     }
 }

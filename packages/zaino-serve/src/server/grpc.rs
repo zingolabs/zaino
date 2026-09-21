@@ -8,7 +8,7 @@ use tonic::{
     transport::{server::TcpIncoming, Server},
 };
 use tracing::warn;
-use zaino_state::{NamedAtomicStatus, StatusType};
+use zaino_status::{NamedAtomicStatus, StatusType};
 
 use crate::server::{config::GrpcServerConfig, error::ServerError};
 

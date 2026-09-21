@@ -71,8 +71,8 @@ ever match caller-chosen heights. The only correct source is the running
 zebrad — and it already publishes its schedule: `getblockchaininfo` returns
 an `upgrades` map with per-upgrade `activationheight`, which zaino already
 parses (`GetBlockchainInfoResponse.upgrades`,
-`zaino-fetch/src/jsonrpsee/response.rs:356-359`, round-trip tested at
-`response.rs:530+`). Both backends already call the validator at startup
+`zaino-source-zebra-rpc/src/parse.rs` since ADR-0008, tested alongside it;
+was `zaino-fetch/src/jsonrpsee/response.rs:356-359` when this was written). Both backends already call the validator at startup
 (`get_info` at `state.rs:198`, `get_blockchain_info` in the tip-wait loop at
 `state.rs:226`). The handshake exists; the heights are simply never adopted
 from it.
@@ -140,11 +140,11 @@ nu5 = 2, nu6 = 2, nu6_1 = 2, nu6_2 = 2, nu6_3 = 6
   Confirm nothing else needs a `Network` before the validator RPC is
   reachable; if something does, that is a design conflict to surface, not
   paper over.
-- **zcashd as validator**: the legacy e2e path (`devtool_zcashd.rs`) drives
-  zcashd, whose `getblockchaininfo` also reports an `upgrades` map. Prefer
-  making the adoption path validator-generic so zcashd rides along; if its
+- **the legacy full node as validator**: the legacy e2e path (`devtool_the legacy full node.rs`) drives
+  the legacy full node, whose `getblockchaininfo` also reports an `upgrades` map. Prefer
+  making the adoption path validator-generic so the legacy full node rides along; if its
   map shape differs materially, scope this spec to zebrad and record the
-  divergence in the zcashd test docs.
+  divergence in the legacy full-node test docs.
 - **zaino-testutils**: `live-tests/zaino-testutils/src/lib.rs:497` uses the
   constant to *launch zebrad* — that is legitimate harness-side
   configuration of the truth source, not adoption of it. Keep the height

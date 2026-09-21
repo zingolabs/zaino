@@ -34,7 +34,7 @@ Other channels where you may be able to reach Zingolabs developers that include 
 Code and documentation are very helpful and the lifeblood of Free Software. To merge in code to this repo, one will have to have a [GitHub account](https://docs.github.com/en/account-and-profile).
 
 Code, being Rust, must be formatted using `rustfmt` and applying the `clippy` suggestions.
-For convenience, there are scripts included in the `tools/scripts` directory which run these tools and remove trailing whitespaces. From the project's workspace root, you can run `./tools/scripts/precommit-check.sh`
+Run `makers lint` before pushing: it runs every lint CI runs. `git config core.hooksPath .githooks` runs it as a pre-push hook.
 
 In general, PRs should be opened against [the `dev` branch](https://github.com/zingolabs/zaino/tree/dev).
 
@@ -77,7 +77,7 @@ Error handling must be included and expose underlying information as much as and
 
 Merges must minimally reflect the zcash RPC spec and include a link to the relevant zcash C++ implementation (URLs that point at the analogous logic), OR reflect the C++ implementation.
 
-Tests are encouraged that show parity bewteen responses from `zcash-cli` + `zcashd` and `zaino`+ a `zebra` backend, and the local cache.
+Tests are encouraged that show parity between responses from `zaino` + a `zebra` backend and the local cache.
 
 ## Local Testing
 Local testing requires a system with ample resources, particularly RAM.
@@ -97,6 +97,15 @@ For more details see our [testing document](./docs/testing.md).
 ## More Documentation
 
 To see more included documentation, please see [our docs directory](./docs/).
+
+Architecture decision records live in
+[zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs). This repository
+holds only a submodule pointer to it at `docs/adr/`; run
+`git submodule update --init docs/adr` to read the records. Propose a record as
+a pull request to zingo-adrs, not to this repository; its README explains the
+record shape and how to advance the pointer. A code pull request may advance
+the pointer, for example when the code cites a record newer than the pinned
+commit; the change is one line and needs no separate pull request.
 ## Software Philosophy
 We believe in the power of Free and Open Source Software (FOSS) as the best path for individual and social freedom in computing.
 

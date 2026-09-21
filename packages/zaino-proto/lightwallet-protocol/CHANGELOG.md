@@ -1,15 +1,40 @@
-# Lightwallet Protocol Changelog
-
-All notable changes to the lightwallet / `walletrpc` gRPC **protocol**
-definitions (the `.proto` files vendored under this directory) are documented
-here. This is the wire-protocol version history and is independent of:
-
-- the `zaino-proto` Rust crate version — see `packages/zaino-proto/CHANGELOG.md`;
-- the Zaino workspace release history — see the repository-root `CHANGELOG.md`.
+# Changelog
+All notable changes to this library will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and the protocol adheres to
+and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [v0.5.0] - 2026-06-30
+
+### Added
+- `compact_formats.ChainMetadata` has added field `ironwoodCommitmentTreeSize`.
+- `compact_formats.CompactTx` has added field `ironwoodActions`, which may be
+  used to represent Ironwood action data.
+- `service.PoolType` has added value `IRONWOOD`.
+- `service.ShieldedProtocol` has added value `ironwood`.
+- `service.TreeState` has added field `ironwoodTree`, which represents the
+  Ironwood commitment tree state.
+
+### Changed
+- Documentation has been updated throughout to reflect that the Ironwood pool
+  is included in the shielded pools that service methods return data for by
+  default. See [#29](https://github.com/zcash/lightwallet-protocol/pull/29).
+
+### Removed
+- `compact_formats.CompactBlock.protoVersion` has been removed. The field
+  number `1` and name `protoVersion` are now reserved. See
+  [#25](https://github.com/zcash/lightwallet-protocol/issues/25).
+
+## [v0.4.1] - 2026-02-20
+
+### Added
+- `README.md`
+
+### Changed
+- Designate `GetBlockNullifiers` and `GetBlockRangeNullifiers` as deprecated
+- Document `GetBlock` transparent data behavior
+- Clarify documentation of `GetBlockNullifiers` and `GetBlockRangeNullifiers`
 
 ## [v0.4.0] - 2025-12-03
 
@@ -35,14 +60,6 @@ and the protocol adheres to
 - `service.Exclude` has been renamed to `service.GetMempoolTxRequest` and has
   an added `poolTypes` field, which allows the caller of this method to specify
   which pools the resulting `CompactTx` values should contain data for.
-
-## [v0.5.0] - 2026-07-03
-
-### Added
-- `compact_formats.ChainMetadata` has added field `ironwoodCommitmentTreeSize`
-- `compact_formats.CompactTx` has added field `ironwoodActions`
-- `service.PoolType` has added `IRONWOOD`
-- `service.TreeState` has added `ironwoodTree`
 
 ### Deprecated
 - `service.CompactTxStreamer`:

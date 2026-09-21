@@ -70,7 +70,7 @@ body:
       description: |
         Please include:
         - Zaino version or commit hash
-        - Backend version (zebra/zcashd)
+        - Backend version (zebra)
         - OS and platform
       placeholder: |
         Zaino: v0.x.x or commit abc123
