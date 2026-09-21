@@ -283,9 +283,15 @@ pub struct SourceSyncDriver<S, B: Backend, Ctx, F, Fetch> {
     /// poller to read the committed watermark (concurrent with the engine's
     /// writer — the persisted watermark is the on-disk truth it reports).
     backend: B,
+    /// The engine's confirmed-watermark publisher, captured before the engine is
+    /// moved behind the run-once mutex. Handed to the non-finalised chain-head so
+    /// it can gate trimming on what the finalised store has confirmed
+    /// (confirm-before-trim). Exposed via
+    /// [`subscribe_confirmed_watermark`](Self::subscribe_confirmed_watermark).
+    confirmed_watermark: watch::Receiver<Option<Height>>,
 }
 
-impl<S, B: Backend, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
+impl<S, B: Backend, Ctx: Send + Sync + 'static, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
     /// A driver syncing from `start` to the **finalised boundary**, buffering up
     /// to `channel_capacity` contexts between the provisioner and the engine.
     ///
@@ -310,6 +316,10 @@ impl<S, B: Backend, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
         channel_capacity: usize,
         backend: B,
     ) -> Self {
+        // Capture the confirmed-watermark receiver before the engine is moved
+        // behind the run-once mutex — it is the only handle the chain-head has
+        // onto what the finalised store has committed.
+        let confirmed_watermark = engine.subscribe_confirmed_watermark();
         Self {
             engine: Mutex::new(Some(engine)),
             provisioner,
@@ -317,7 +327,18 @@ impl<S, B: Backend, Ctx, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
             finalised_depth,
             channel_capacity,
             backend,
+            confirmed_watermark,
         }
+    }
+
+    /// A receiver onto the engine's confirmed watermark — the highest height the
+    /// finalised store has durably committed, or `None` on a fresh backend.
+    ///
+    /// The composed runtime hands this to the non-finalised chain-head so it can
+    /// gate trimming on what the finalised store can already serve
+    /// (confirm-before-trim), closing the seam between the two.
+    pub fn subscribe_confirmed_watermark(&self) -> watch::Receiver<Option<Height>> {
+        self.confirmed_watermark.clone()
     }
 
     /// The finalised boundary for a given source tip: `tip − finalised_depth`,
