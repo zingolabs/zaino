@@ -9,6 +9,7 @@
 //! fn sync<V: GetBlock + GetChainTip>(validator: &V) { ... }
 //! ```
 
+mod arc_forward;
 mod error;
 mod get_address_balance;
 mod get_address_deltas;
