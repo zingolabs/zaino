@@ -312,20 +312,6 @@ fn parse_display_txid(
     Ok(zaino_primitives::types::TransactionId::from(internal))
 }
 
-/// This crate's shielded pool as the port names it.
-///
-/// The two enums share a name and their variants, but not a role: this crate's
-/// also carries activation semantics that a zero-dependency crate cannot hold.
-fn domain_pool(pool: crate::chain_index::ShieldedPool) -> zaino_primitives::types::ShieldedPool {
-    match pool {
-        crate::chain_index::ShieldedPool::Sapling => zaino_primitives::types::ShieldedPool::Sapling,
-        crate::chain_index::ShieldedPool::Orchard => zaino_primitives::types::ShieldedPool::Orchard,
-        crate::chain_index::ShieldedPool::Ironwood => {
-            zaino_primitives::types::ShieldedPool::Ironwood
-        }
-    }
-}
-
 /// A sapling tree root as zebra's own type, paired with its size.
 ///
 /// Fallible: 32 bytes that are not a point on the pool's curve cannot be a
@@ -337,7 +323,7 @@ fn sapling_root(
     let bytes: [u8; 32] = info.root.into();
     let root = zebra_chain::sapling::tree::Root::try_from(bytes)
         .map_err(|_| invalid("sapling tree root is not a valid curve point".to_string()))?;
-    Ok((root, info.size))
+    Ok((root, u64::from(info.size)))
 }
 
 /// Orchard and Ironwood share a root type, as they share an action shape.
@@ -347,7 +333,7 @@ fn orchard_root(
     let bytes: [u8; 32] = info.root.into();
     let root = zebra_chain::orchard::tree::Root::try_from(bytes)
         .map_err(|_| invalid("orchard tree root is not a valid curve point".to_string()))?;
-    Ok((root, info.size))
+    Ok((root, u64::from(info.size)))
 }
 
 /// Parse a 32-byte identifier written in RPC display order.
@@ -401,7 +387,11 @@ fn pool_balance(
         "lockbox" | "deferred" => GetBlockchainInfoBalance::deferred(value, delta),
         "ironwood" => GetBlockchainInfoBalance::ironwood(value, delta),
         // `chainSupply` is a total rather than a pool, and arrives unnamed.
-        "" => GetBlockchainInfoBalance::chain_supply(Default::default()),
+        // `chain_supply` sums a `ValueBalance`, so the total is handed to it as a
+        // one-pool balance — the only public constructor that leaves `id` empty.
+        "" => GetBlockchainInfoBalance::chain_supply(
+            zebra_chain::value_balance::ValueBalance::from_transparent_amount(value),
+        ),
         other => return Err(invalid(format!("unknown value pool `{other}`"))),
     })
 }
@@ -746,11 +736,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                         zebra_rpc::client::TransactionObject::from_transaction(
                             transaction.clone(),
                             Some(block_height),
-                            Some(verbose.confirmations),
+                            Some(verbose.confirmations.to_rpc_i64()),
                             &self.network,
                             Some(block_time),
                             Some(block_hash),
-                            Some(verbose.confirmations >= 0),
+                            Some(verbose.confirmations.is_in_best_chain()),
                             transaction.hash(),
                         ),
                     ))
@@ -767,7 +757,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         Ok(GetBlock::Object(Box::new(
             zebra_rpc::methods::BlockObject::new(
                 block_hash,
-                verbose.confirmations,
+                verbose.confirmations.to_rpc_i64(),
                 Some(raw.len() as i64),
                 Some(block_height),
                 Some(block.header.version),
@@ -792,9 +782,9 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                     Some(value_pool_array(&verbose.value_pools)?)
                 },
                 GetBlockTrees::new(
-                    verbose.tree_sizes.sapling,
-                    verbose.tree_sizes.orchard,
-                    verbose.tree_sizes.ironwood,
+                    u64::from(verbose.tree_sizes.sapling),
+                    u64::from(verbose.tree_sizes.orchard),
+                    u64::from(verbose.tree_sizes.ironwood),
                 ),
                 Some(block.header.previous_block_hash),
                 verbose
@@ -914,7 +904,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
         let roots = self
             .validator
-            .get_subtree_roots(domain_pool(pool), start_index, max_entries)
+            .get_subtree_roots(
+                zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(pool),
+                start_index,
+                max_entries,
+            )
             .await
             .map_err(err)?;
 
@@ -1401,9 +1395,18 @@ mod tests {
         use crate::chain_index::ShieldedPool as Ours;
         use zaino_primitives::types::ShieldedPool as Theirs;
 
-        assert_eq!(domain_pool(Ours::Sapling), Theirs::Sapling);
-        assert_eq!(domain_pool(Ours::Orchard), Theirs::Orchard);
-        assert_eq!(domain_pool(Ours::Ironwood), Theirs::Ironwood);
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Sapling),
+            Theirs::Sapling
+        );
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Orchard),
+            Theirs::Orchard
+        );
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Ironwood),
+            Theirs::Ironwood
+        );
     }
 
     /// Block identifiers arrive from the interface in display order. This is
@@ -1433,7 +1436,7 @@ mod tests {
     fn a_tree_root_that_is_not_a_curve_point_is_rejected() {
         let impossible = zaino_primitives::types::TreeRootInfo {
             root: zaino_primitives::types::TreeRoot::new([0xff; 32]),
-            size: 1,
+            size: zaino_primitives::types::TreeSize::from(1),
         };
 
         assert!(sapling_root(impossible.clone()).is_err());
@@ -1507,12 +1510,12 @@ fn pool_treestate_slot(
 #[cfg(test)]
 mod pool_treestate_slot_tests {
     use super::pool_treestate_slot;
-    use zaino_primitives::types::{TreeRoot, TreeRootInfo};
+    use zaino_primitives::types::{TreeRoot, TreeRootInfo, TreeSize};
 
     fn root_info(byte: u8) -> TreeRootInfo {
         TreeRootInfo {
             root: TreeRoot::from([byte; 32]),
-            size: 1,
+            size: TreeSize::from(1),
         }
     }
 
@@ -1560,7 +1563,7 @@ mod pool_treestate_slot_tests {
             }),
             Some(TreeRootInfo {
                 root: TreeRoot::from(internal),
-                size: 1,
+                size: TreeSize::from(1),
             }),
         )
         .expect("a reported tree maps to a populated slot");

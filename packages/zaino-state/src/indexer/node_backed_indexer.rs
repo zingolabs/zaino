@@ -38,14 +38,15 @@ use zaino_proto::proto::{
 };
 
 use crate::{
-    chain_index::chain_head::WithChainHeadSource, ChainIndex, ChainIndexRpcExt, MapBackedSnapshot,
-    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
+    ChainIndex, ChainIndexRpcExt, MapBackedSnapshot, NodeBackedChainIndex,
+    NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
 use crate::{
     chain_index::{source::BlockchainSource, types, validator_source::ZebraValidatorSource},
     config::{
-        ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
+        CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
         ValidatorConnectionType,
     },
     error::NodeBackedIndexerServiceError,
@@ -76,7 +77,7 @@ use zaino_status::{Status, StatusType};
 /// NOTE: We do not implement `Clone` for the central service: it owns and closes its
 /// child processes. Subscribers are the clone-safe read handles.
 pub struct NodeBackedIndexerService<
-    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     indexer: NodeBackedChainIndex<Source>,
@@ -86,13 +87,17 @@ pub struct NodeBackedIndexerService<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Status for NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
+    for NodeBackedIndexerService<Source>
+{
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerService<Source>
+{
     /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
     /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
     /// [`Drop`].
@@ -159,7 +164,7 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
 
         let indexer = NodeBackedChainIndex::new(
             source,
-            ChainIndexConfig::from_backend_config(&config.common, network),
+            crate::config::ChainIndexConfig::from_backend_config(&config.common, network),
         )
         .await
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
@@ -206,7 +211,9 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Drop for NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Drop
+    for NodeBackedIndexerService<Source>
+{
     fn drop(&mut self) {
         self.shutdown_blocking();
     }
@@ -215,7 +222,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> Drop for NodeBackedIndexerS
 /// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
 #[derive(Debug, Clone)]
 pub struct NodeBackedIndexerServiceSubscriber<
-    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber<Source>,
@@ -225,7 +232,7 @@ pub struct NodeBackedIndexerServiceSubscriber<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> Status
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
     for NodeBackedIndexerServiceSubscriber<Source>
 {
     fn status(&self) -> StatusType {
@@ -233,7 +240,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> Status
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerServiceSubscriber<Source>
+{
     /// Fetches the current status
     #[deprecated(note = "Use the Status trait method instead")]
     pub fn get_status(&self) -> StatusType {
@@ -272,7 +281,7 @@ fn compact_tx_to_proto(
         nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
         cmx: <[u8; 32]>::from(action.cmx).to_vec(),
         ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+        ciphertext: <[u8; 52]>::from(action.enc_ciphertext).to_vec(),
     };
 
     CompactTx {
@@ -298,7 +307,7 @@ fn compact_tx_to_proto(
                 ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
                 // Already truncated to the compact head at the domain
                 // boundary, so there is no second truncation here.
-                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+                ciphertext: <[u8; 52]>::from(output.enc_ciphertext).to_vec(),
             })
             .collect(),
         actions: tx.orchard_actions.iter().map(orchard_action).collect(),
@@ -367,7 +376,9 @@ fn test_service_parts(
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerService<Source>
+{
     /// Wraps a chain index in a service for tests, with placeholder
     /// metadata/config. Lets unit tests exercise the service lifecycle over a
     /// mock source (no real validator). Production builds go through
@@ -386,7 +397,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<So
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerServiceSubscriber<Source>
+{
     /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
     /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
     /// (no real validator). Production builds go through [`ZcashService::get_subscriber`].
@@ -422,7 +435,9 @@ impl ChainTipSubscriber {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedIndexerServiceSubscriber<Source>
+{
     /// A subscriber to chain-tip updates, when the backing source exposes a
     /// local tip-change stream. `Some` only on the `Direct` connection; the
     /// `Rpc` connection (and any other stream-less source) observes tips by
@@ -564,7 +579,7 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> ZcashIndexer
     for NodeBackedIndexerServiceSubscriber<Source>
 {
     type Error = NodeBackedIndexerServiceError;
@@ -639,9 +654,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     /// Canonical source code implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     ///
     /// Zebra does not support this RPC call directly.
-    async fn get_mempool_info(
-        &self,
-    ) -> Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error> {
+    async fn get_mempool_info(&self) -> Result<zaino_primitives::types::MempoolInfo, Self::Error> {
         Ok(self.indexer.get_mempool_info().await)
     }
 
@@ -1047,10 +1060,6 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     ///
     /// We don't currently support the `blockhash` parameter since lightwalletd does not
     /// use it.
-    ///
-    /// In verbose mode, we only expose the `hex` and `height` fields since
-    /// lightwalletd uses only those:
-    /// <https://github.com/zcash/lightwalletd/blob/631bb16404e3d8b045e74a7c5489db626790b2f6/common/common.go#L119>
     async fn get_raw_transaction(
         &self,
         txid_hex: String,
@@ -1096,23 +1105,57 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
             .get_transaction_status(&snapshot, &txid)
             .await?;
 
-        let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
-            Some(types::BestChainLocation::Block(block_hash, height)) => {
-                let confirmations: i64 = u32::from(snapshot.best_tip().height)
-                    .saturating_sub(height.0)
-                    .saturating_add(1)
-                    .into();
-
-                (
-                    Some(zebra_chain::block::Height::from(height)),
-                    Some(confirmations),
-                    Some(zebra_chain::block::Hash::from(block_hash)),
-                    Some(true),
-                )
-            }
-            Some(types::BestChainLocation::Mempool(_height)) => (None, Some(0), None, Some(false)),
-            None => (None, None, None, Some(false)),
+        // The zebra sink still takes the RPC integers, so the typed state is
+        // rendered through its codec at this boundary; the constructor owns
+        // the depth + 1 off-by-one the arithmetic here used to fold in.
+        let out_of_range = |e: zaino_primitives::types::HeightOverflow| {
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(format!(
+                "best-chain height out of range: {e}"
+            )))
         };
+        // `time`/`blocktime` are the containing block's header timestamp, which the
+        // index already holds — no validator round-trip. An unmined transaction has
+        // no containing block, so both fields stay absent, as zebrad leaves them.
+        let (height, confirmations, block_hash, block_time, in_best_chain) =
+            match best_chain_location {
+                Some(types::BestChainLocation::Block(block_hash, height)) => {
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mined(
+                        zaino_primitives::types::BlockConfirmations::of_best_chain_block(
+                            zaino_primitives::types::Height::try_from(height.0)
+                                .map_err(out_of_range)?,
+                            zaino_primitives::types::Height::try_from(u32::from(
+                                snapshot.best_tip().height,
+                            ))
+                            .map_err(out_of_range)?,
+                        ),
+                    );
+
+                    let block_time = self
+                        .indexer
+                        .get_indexed_block_by_hash(&snapshot, &block_hash)
+                        .await?
+                        .and_then(|block| chrono::DateTime::from_timestamp(block.data().time(), 0));
+
+                    (
+                        Some(zebra_chain::block::Height::from(height)),
+                        Some(confirmations.to_rpc_i64()),
+                        Some(zebra_chain::block::Hash::from(block_hash)),
+                        block_time,
+                        Some(confirmations.is_in_best_chain()),
+                    )
+                }
+                Some(types::BestChainLocation::Mempool(_height)) => {
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
+                    (
+                        None,
+                        Some(confirmations.to_rpc_i64()),
+                        None,
+                        None,
+                        Some(confirmations.is_in_best_chain()),
+                    )
+                }
+                None => (None, None, None, None, Some(false)),
+            };
 
         Ok(GetRawTransaction::Object(Box::new(
             TransactionObject::from_transaction(
@@ -1121,7 +1164,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
                 confirmations,
                 #[allow(deprecated)]
                 &self.data.network(),
-                None,
+                block_time,
                 block_hash,
                 in_best_chain,
                 zebra_chain::transaction::Hash::from(txid),
@@ -1228,17 +1271,18 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
 }
 
 #[allow(deprecated)]
-impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> LightWalletIndexer
     for NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         let tip = self.indexer.snapshot_nonfinalized_state().best_tip();
-        Ok(types::BlockIndex {
-            height: types::Height(u32::from(tip.height)),
-            hash: types::BlockHash(tip.hash.into()),
-        }
-        .to_wire())
+        Ok(crate::chain_index::wire_types::block_index_to_wire(
+            &types::BlockIndex {
+                height: types::Height(u32::from(tip.height)),
+                hash: types::BlockHash(tip.hash.into()),
+            },
+        ))
     }
 
     /// Return the compact block corresponding to the given block identifier
@@ -1276,7 +1320,10 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             .get_compact_block(
                 &snapshot,
                 types::Height(height),
-                PoolTypeFilter::includes_all(),
+                // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
+                // `GetBlockRange` serves an empty one. `includes_all` here would make a
+                // height's content depend on which RPC asked.
+                PoolTypeFilter::default(),
             )
             .await
         {
@@ -1356,7 +1403,9 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             .get_compact_block(
                 &snapshot,
                 types::Height(height),
-                PoolTypeFilter::includes_all(),
+                // As `get_block`. `includes_all` here leaks transparent-only txs as
+                // nullifier-less husks the range form never emits.
+                PoolTypeFilter::default(),
             )
             .await
         {
@@ -1582,16 +1631,30 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let mut total_balance: u64 = 0;
+                    // Per-address balances coexist at one moment, so their
+                    // running total is itself a supply-bounded balance: the
+                    // incremental form of `Zatoshis::sum_balances`, demanded
+                    // by the streaming shape. A total past the supply means
+                    // the request's addresses overlap or the source
+                    // double-counts, and is refused rather than wrapped.
+                    let mut total_balance = zaino_primitives::types::Zatoshis::ZERO;
                     loop {
                         match channel_rx.recv().await {
                             Some(taddr) => {
                                 let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
                                 let balance = service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance += u64::from(balance.balance);
+                                total_balance = total_balance
+                                    .checked_add(balance.balance)
+                                    .ok_or_else(|| {
+                                        tonic::Status::data_loss(
+                                            "Error: address balances total past the money \
+                                                 supply; the requested addresses overlap or the \
+                                                 source data is corrupt.",
+                                        )
+                                    })?;
                             }
                             None => {
-                                return Ok(total_balance);
+                                return Ok(u64::from(total_balance));
                             }
                         }
                     }
@@ -1727,10 +1790,12 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
                                         ))
                                     })
                                     .and_then(|transaction| {
-                                        // Index 0: a mempool transaction is in no
-                                        // block, and this field is its position
-                                        // within one.
-                                        zaino_convert_zebra::transaction_from_zebra(&transaction, 0)
+                                        // A mempool transaction is in no block, so
+                                        // it carries no position. The served
+                                        // `CompactTx.index` is set to 0 at the
+                                        // proto boundary (`compact_tx_to_proto`),
+                                        // not on the domain type.
+                                        zaino_convert_zebra::transaction_from_zebra(&transaction)
                                             .map_err(|e| tonic::Status::unknown(e.to_string()))
                                     })
                                     .map(|transaction| {
@@ -2123,7 +2188,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
 mod compact_tx_to_proto_tests {
     use super::compact_tx_to_proto;
     use zaino_primitives::types::{
-        EncryptedCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
+        CompactCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
         TransparentInput, TransparentOutput, Zatoshis,
     };
 
@@ -2132,7 +2197,7 @@ mod compact_tx_to_proto_tests {
             nullifier: [tag; 32].into(),
             cmx: [tag.wrapping_add(1); 32].into(),
             ephemeral_key: [tag.wrapping_add(2); 32].into(),
-            enc_ciphertext: EncryptedCiphertext::new(vec![tag; 52]),
+            enc_ciphertext: CompactCiphertext::from([tag; 52]),
         }
     }
 

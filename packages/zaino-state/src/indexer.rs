@@ -237,7 +237,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Original implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     fn get_mempool_info(
         &self,
-    ) -> impl SendFut<Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::MempoolInfo, Self::Error>>;
 
     /// Returns data about each connected network node as a json array of objects.
     ///

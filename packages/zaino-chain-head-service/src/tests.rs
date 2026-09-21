@@ -15,6 +15,8 @@
 //!   the test is the only thing advancing the graph, so what it observes is
 //!   exactly what it caused.
 
+mod reorg_depth;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -40,7 +42,9 @@ use zaino_source::{
 use crate::{service::ChainHeadService, snapshot::MapBackedSnapshot};
 
 /// A valid nBits value: non-negative, non-zero, no overflow.
-const VALID_BITS: u32 = 0x2007_ffff;
+fn valid_bits() -> zaino_primitives::types::CompactDifficulty {
+    zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits")
+}
 
 fn hash(id: u16) -> BlockHash {
     let mut bytes = [0; 32];
@@ -69,16 +73,12 @@ fn block(h: u32, id: u16, parent: u16) -> Block {
             time: 0,
             merkle_root: MerkleRoot::from([0; 32]),
             block_commitments: BlockCommitments::from([0; 32]),
-            bits: VALID_BITS,
+            bits: valid_bits(),
             nonce: [0; 32],
             solution: EquihashSolution::Regtest([0; 36]),
         },
         transactions: vec![],
-        chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
-        },
+        chain_metadata: ChainMetadata::ZERO,
     }
 }
 
