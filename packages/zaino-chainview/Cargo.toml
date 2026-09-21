@@ -29,3 +29,8 @@ zaino-indexes = { workspace = true }
 zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-component = { path = "../zaino-component" }
+zaino-chain-head-service = { workspace = true, features = ["testing"] }
+zaino-logging = { path = "../zaino-logging" }
+zaino-chain-head.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
