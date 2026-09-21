@@ -366,6 +366,21 @@ async fn spawn_anchors_at_the_window_floor() {
     assert_eq!(snapshot.retained_block_count(), 1);
 }
 
+/// An anchored service reports `Syncing` until its first advance reaches the tip, and `Ready` after it.
+#[tokio::test]
+async fn an_anchored_service_is_syncing_until_its_first_advance() {
+    use zaino_status::StatusType;
+
+    let validator = MockValidator::linear(50);
+    let service = stepped(&validator, 10).await;
+
+    assert_eq!(service.status(), StatusType::Syncing);
+
+    step_to_tip(&service, &validator).await;
+
+    assert_eq!(service.status(), StatusType::Ready);
+}
+
 /// A chain shorter than the depth anchors at genesis.
 #[tokio::test]
 async fn a_short_chain_anchors_at_genesis() {
