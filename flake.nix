@@ -55,6 +55,15 @@
 
         # Build env defined once in nix/package.nix; devShell reuses it via passthru
         inherit (zainod.passthru) commonArgs;
+
+        # not in nixpkgs; crates.io tarball + its own Cargo.lock
+        code-dupes = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "code-dupes";
+          version = "0.2.1";
+          src = pkgs.fetchCrate { inherit pname version; hash = "sha256-WUF++iDROO4mjA5FseT3FpFExbVx0GEBd+KylkpYWc0="; };
+          cargoHash = "sha256-sv7jawb02hi4h2LPLoDJA10Rnp8YVz/L+X5GNcm4/+Y=";
+          doCheck = false; # tests read ../cargo-dupes/tests/fixtures (absent from crates.io tarball)
+        };
       in
       {
         packages = {
@@ -77,9 +86,13 @@
             cmake
             rustPlatform.bindgenHook
             cargo-nextest
-            cargo-deny
-            cargo-make
+
+            # .pre-commit-config.yaml hooks
+            pre-commit
             shellcheck
+            ast-grep
+            cargo-deny
+            code-dupes
             rust-analyzer
 
             # Integration tests
@@ -89,8 +102,7 @@
           ];
 
           env = commonArgs.env // {
-            # Needed for librocksdb-sys
-            LD_LIBRARY_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath commonArgs.buildInputs;
           };
         };
 

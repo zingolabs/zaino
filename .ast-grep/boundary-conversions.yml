@@ -1,0 +1,12 @@
+id: boundary-conversions
+language: rust
+severity: error
+message: 'Persistent*/proto:: boundary = named methods (from_business/into_business, to_wire/try_from_wire), not From/TryFrom (CLAUDE.md)'
+ignores: [packages/zaino-proto/**]
+rule:
+  kind: impl_item
+  all:
+    - has: { field: trait, regex: '(^|::)(Try)?From<' }
+    - any:
+        - has: { field: trait, regex: '\bPersistent|proto::' }
+        - has: { field: type, regex: '^(\w+::)*Persistent|proto::' }

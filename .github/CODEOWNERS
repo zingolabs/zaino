@@ -17,6 +17,5 @@
 
 # Example per-path ownership. Uncomment and point at real teams as the review
 # structure firms up — more specific paths win over the default above.
-# /tools/relman/                    @zingolabs/PLACEHOLDER-release-tooling
 # /.github/workflows/               @zingolabs/PLACEHOLDER-ci
 # /docs/release/   @zingolabs/PLACEHOLDER-maintainers

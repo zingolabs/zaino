@@ -34,7 +34,7 @@ Other channels where you may be able to reach Zingolabs developers that include 
 Code and documentation are very helpful and the lifeblood of Free Software. To merge in code to this repo, one will have to have a [GitHub account](https://docs.github.com/en/account-and-profile).
 
 Code, being Rust, must be formatted using `rustfmt` and applying the `clippy` suggestions.
-Run `makers lint` before pushing: it runs every lint CI runs. `git config core.hooksPath .githooks` runs it as a pre-push hook.
+Lints are pre-commit hooks; see [Development](README.md#development) in the README for tool setup and the commands CI runs.
 
 In general, PRs should be opened against [the `dev` branch](https://github.com/zingolabs/zaino/tree/dev).
 
@@ -88,9 +88,7 @@ Tier 2 platforms are platforms that are currently understood to be working as we
 
 Currently, [Arch Linux](https://archlinux.org) AMD64 `x86_64-unknown-linux-gnu` is understood to be Tier 2.
 
-Zaino uses [`cargo nextest`](https://nexte.st/). On the linux command line, with a system already using Rust (and `cargo`), you can install this using `cargo install cargo-nextest --locked` or from GitHub with `cargo install --git https://github.com/nextest-rs/nextest --bin cargo-nextest`.
-
-After installing this crate, all tests can be run locally with `cargo nextest run`.
+Zaino uses [`cargo nextest`](https://nexte.st/); tool setup and the test commands are in [Development](README.md#development) in the README.
 
 For more details see our [testing document](./docs/testing.md).
 

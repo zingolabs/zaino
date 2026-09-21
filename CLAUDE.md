@@ -115,8 +115,7 @@ TransactionHash, etc.).
 
 **Enforcement (covers both boundaries)**:
 
-- CI lint: `makers lint-boundary-conversions` (run as part of
-  `makers lint`) greps the tree for any `impl From` / `impl TryFrom`
+- CI lint: `.ast-grep/boundary-conversions.yml` (pre-commit hook) matches any `impl From` / `impl TryFrom`
   where either side is a `Persistent*` type or a `proto::` type and
   fails the build. Mechanically prevents the common drift at both
   boundaries.

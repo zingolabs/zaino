@@ -81,15 +81,11 @@ live-tests/                        Live-test suite — standalone workspace, run
   zaino-testutils/                   Shared test harness and utilities
 
 docs/                              Architecture diagrams, specs, and usage guides
-tools/                             Development tools
-  workbench/                         Repo guards run by `makers lint`
-  relman/                            Release manager
 .github/                           CI workflows and issue templates
-.githooks/                         Git hooks (pre-push)
+.pre-commit-config.yaml            Lint hooks (pre-commit; tools from the nix devshell)
 
 Cargo.toml                         Top-level workspace manifest
 Cargo.lock                         Resolved dependency graph (committed)
-Makefile.toml                      cargo-make task definitions
 rust-toolchain.toml                Pinned Rust toolchain
 deny.toml                          cargo-deny policy (licenses, advisories)
 
@@ -129,7 +125,37 @@ Do not expose it to untrusted networks, and only enable
 `allow_unencrypted_public_json_rpc_bind` when an external layer secures the
 connection.
 
-## Running tests
+## Development
+
+### Tools
+
+**With Nix (recommended):** `nix develop` gives you the pinned Rust toolchain,
+build dependencies and every lint/test tool, at the versions CI uses
+(`flake.lock`).
+
+**Without Nix:** install Rust via [rustup](https://rustup.rs) (it picks up
+`rust-toolchain.toml`), then with [Homebrew](https://brew.sh) (macOS or Linux):
+
+```sh
+brew install pre-commit shellcheck ast-grep cargo-deny cargo-nextest
+cargo install --locked code-dupes@0.2.1   # not packaged anywhere; builds in ~1 min
+```
+
+Homebrew ships the latest releases, while CI uses the versions pinned in
+`flake.lock`; if a lint behaves differently from CI, compare against `nix develop`.
+
+### Lints
+
+Every lint is a hook in [`.pre-commit-config.yaml`](./.pre-commit-config.yaml);
+CI runs exactly these.
+
+```sh
+pre-commit install                                        # once: fast checks on commit, clippy on push
+pre-commit run --all-files --hook-stage pre-push          # everything, as CI runs it
+pre-commit run clippy --all-files --hook-stage pre-push   # a single hook
+```
+
+### Tests
 
 Production-crate tests run on your host; the live suites run on a Kubernetes
 cluster via [`ztest`](https://crates.io/crates/ztest_cli):
@@ -139,9 +165,13 @@ cargo nextest run                          # packages/*, no live validator
 cd live-tests && ztest run -p clientless -p e2e   # both live partitions
 ```
 
-The live suites need the `ztest` CLI and a registered cluster
-(`cargo install ztest_cli`, then `kind create cluster` and `ztest cluster
-setup`) — see [docs/testing.md](./docs/testing.md) for the full setup.
+The live suites need the `ztest` CLI at the version `live-tests/Cargo.lock`
+pins, plus a registered cluster (`kind create cluster`, then `ztest cluster
+setup`); see [docs/testing.md](./docs/testing.md) for the full setup.
+
+```sh
+cargo install ztest_cli --locked --version "$(awk -F'"' '/^name = "ztest"$/ { getline; print $2 }' live-tests/Cargo.lock)"
+```
 
 On lower-resource machines you may hit occasional contention flakes under full
 parallelism — re-run, or lower `--test-threads`.

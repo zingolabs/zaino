@@ -1,4 +1,4 @@
-# Duplicate groups the check-code-duplication lint has been told to allow.
+# Duplicate groups the code-dupes hook (dupes.toml) has been told to allow.
 #
 # An entry here is a claim that a group is irreducible, not that it is
 # unimportant. Each one names why sharing the code would make things worse, so
