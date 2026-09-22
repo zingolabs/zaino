@@ -10,3 +10,9 @@ zaino-service = { path = "../zaino-service" }
 zaino-core = { path = "../zaino-core" }
 zaino-chainview = { path = "../zaino-chainview" }
 futures = "0.3"
+zaino-source = { version = "0.2.0", path = "../zaino-source" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
+zaino-source = { path = "../zaino-source", features = ["testing"] }

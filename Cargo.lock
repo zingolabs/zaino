@@ -6453,9 +6453,11 @@ name = "zaino-store-service"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "tokio",
  "zaino-chainview",
  "zaino-core",
  "zaino-service",
+ "zaino-source",
 ]
 
 [[package]]

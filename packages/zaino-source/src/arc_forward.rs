@@ -20,11 +20,12 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use zaino_primitives::types::{BlockHash, Height, PreIndexCompactBlock};
+use zaino_primitives::types::{BlockHash, Height, PreIndexCompactBlock, TransactionId};
 
 use crate::{
     GetBlockError, GetChainTipError, OneShotGetChainTip, OneShotGetPreIndexCompactBlock,
-    QueryError, SubscribeChainTip, TipObservation, ValidatorSource,
+    OneShotSendRawTransaction, QueryError, SendRawTransactionError, SubscribeChainTip,
+    TipObservation, ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -54,5 +55,19 @@ impl<V: OneShotGetChainTip + ?Sized> OneShotGetChainTip for Arc<V> {
 impl<V: SubscribeChainTip + ?Sized> SubscribeChainTip for Arc<V> {
     fn subscribe_to_chain_tip(&self) -> Option<watch::Receiver<TipObservation>> {
         (**self).subscribe_to_chain_tip()
+    }
+}
+
+// The serving path's broadcast control reaches the validator's send port through
+// the same `Arc<V>`, so the composed engine can relay a wallet's transaction
+// without holding the concrete adapter.
+impl<V: OneShotSendRawTransaction + ?Sized> OneShotSendRawTransaction for Arc<V> {
+    fn send_raw_transaction(
+        &self,
+        transaction: Vec<u8>,
+    ) -> impl Future<
+        Output = Result<TransactionId, QueryError<SendRawTransactionError, Self::NonDomain>>,
+    > + Send {
+        (**self).send_raw_transaction(transaction)
     }
 }

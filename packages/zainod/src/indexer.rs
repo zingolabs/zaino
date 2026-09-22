@@ -208,7 +208,13 @@ async fn boot(
     .map_err(IndexerError::ChainHeadInit)?;
 
     // Compose FS ⊕ NFS into the served engine, behind the light-wallet profile.
-    let engine = Engine::new(store_reader.clone(), chain_head_subscriber);
+    // The shared validator handle backs the passthrough controls (broadcast today);
+    // the engine reaches it only through the source ports, never the concrete type.
+    let engine = Engine::new(
+        store_reader.clone(),
+        chain_head_subscriber,
+        Arc::clone(&validator),
+    );
 
     // Reachability was already confirmed (Direct opened its state DB), so the
     // runtime's validator gate is a formality here.

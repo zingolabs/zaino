@@ -6,10 +6,13 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use zaino_primitives::types::{Block, BlockHash, Height, Treestate};
+use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
 
 use crate::error::{FailureMode, NonDomainError};
-use crate::{GetBlockByHashError, GetBlockError, GetChainTipError, GetTreestateError, QueryError};
+use crate::{
+    GetBlockByHashError, GetBlockError, GetChainTipError, GetTreestateError, QueryError,
+    SendRawTransactionError,
+};
 
 /// A pre-populated in-memory chain for testing.
 pub struct MockChain {
@@ -19,6 +22,9 @@ pub struct MockChain {
     treestates: HashMap<u32, Treestate>,
     failures_remaining: AtomicU32,
     failure_mode: FailureMode,
+    /// When set, `send_raw_transaction` rejects with this domain error; otherwise
+    /// it accepts and echoes an id derived from the submitted bytes.
+    send_rejection: Option<SendRawTransactionError>,
 }
 
 impl MockChain {
@@ -31,7 +37,15 @@ impl MockChain {
             treestates: HashMap::new(),
             failures_remaining: AtomicU32::new(0),
             failure_mode: FailureMode::Connection,
+            send_rejection: None,
         }
+    }
+
+    /// Make `send_raw_transaction` reject with a domain error, for exercising a
+    /// consumer's rejection path.
+    pub fn reject_send(mut self, err: SendRawTransactionError) -> Self {
+        self.send_rejection = Some(err);
+        self
     }
 
     /// Add a block. The last block added becomes the tip.
@@ -152,6 +166,26 @@ impl crate::OneShotGetTreestate for MockChain {
 // subscription", so a consumer bound on `SubscribeChainTip` still accepts it
 // (and simply does not tip-follow).
 impl crate::SubscribeChainTip for MockChain {}
+
+impl crate::OneShotSendRawTransaction for MockChain {
+    async fn send_raw_transaction(
+        &self,
+        transaction: Vec<u8>,
+    ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        if let Some(rejection) = &self.send_rejection {
+            return Err(QueryError::Domain(rejection.clone()));
+        }
+        // Accept: echo a deterministic id from the submitted bytes so a test can
+        // assert the exact transaction was relayed.
+        let mut id = [0u8; 32];
+        let taken = transaction.len().min(32);
+        id[..taken].copy_from_slice(&transaction[..taken]);
+        Ok(TransactionId::from(id))
+    }
+}
 
 /// A minimal test [`Block`] at `height` with hash `[hash_byte; 32]`, for seeding
 /// a [`MockChain`] (or other source fixtures) from downstream crates. Behind the

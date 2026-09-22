@@ -15,12 +15,13 @@
 //!
 //! **Serviceable slice.** Compact-block serving (`compact_block` / `stream_compact`)
 //! and the coherence surface (pin, coverage, serviceable range, chain info) are
-//! wired against the real composed view. The conversion-heavy per-block reads
-//! (`Block` / `Treestate` / address / spend / nullifier) return `NotServiceable`;
-//! the controls that need a validator handle (`Broadcast`, `Passthrough`) refuse,
-//! and the streaming controls (`TipSubscribe`, `MempoolSubscribe`) are empty
-//! streams. Threading a real validator handle for broadcast/passthrough is a
-//! deliberate follow-up.
+//! wired against the real composed view. `Broadcast` passes a wallet's
+//! transaction through to the validator's send port (reached through the source
+//! trait, never a concrete adapter — see [`Engine`]'s `Src`). The
+//! conversion-heavy per-block reads (`Block` / `Treestate` / address / spend /
+//! nullifier) still return `NotServiceable`; `Passthrough` refuses and the
+//! streaming controls (`TipSubscribe`, `MempoolSubscribe`) are empty streams —
+//! wiring those through the same source is the next increment.
 //!
 //! The milestone this crate proves is the static assertion in `tests`: the
 //! composed engine type-checks as **every** profile (`WalletLibService`,
@@ -28,9 +29,12 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
 
+use core::fmt;
+
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::{ChainView, ChainViewSnapshot};
+use zaino_source::{OneShotSendRawTransaction, QueryError, SendRawTransactionError};
 
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
@@ -60,28 +64,34 @@ fn genesis() -> Height {
 /// `Fs` is the finalised store source, `Nfs` the non-finalised head source. Both
 /// are captured together on each [`snapshot`](TakeSnapshot::snapshot), so a read
 /// through the returned [`EngineSnapshot`] is coherent.
-pub struct Engine<Fs, Nfs> {
+pub struct Engine<Fs, Nfs, Src> {
     view: ChainView<Fs, Nfs>,
+    source: Src,
 }
 
-impl<Fs: Clone, Nfs: Clone> Clone for Engine<Fs, Nfs> {
+impl<Fs: Clone, Nfs: Clone, Src: Clone> Clone for Engine<Fs, Nfs, Src> {
     fn clone(&self) -> Self {
         Self {
             view: self.view.clone(),
+            source: self.source.clone(),
         }
     }
 }
 
-impl<Fs, Nfs> Engine<Fs, Nfs>
+impl<Fs, Nfs, Src> Engine<Fs, Nfs, Src>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
 {
-    /// Compose a finalised store source and a non-finalised head source into one
-    /// engine.
-    pub fn new(fs: Fs, nfs: Nfs) -> Self {
+    /// Compose a finalised store source, a non-finalised head source, and the
+    /// validator handle into one engine. The view answers block reads from the
+    /// composed FS⊕NFS chain; `source` answers the controls the view cannot —
+    /// broadcast today, mempool/tip next — through the source ports, never a
+    /// concrete adapter.
+    pub fn new(fs: Fs, nfs: Nfs, source: Src) -> Self {
         Self {
             view: ChainView::new(fs, nfs),
+            source,
         }
     }
 }
@@ -102,10 +112,11 @@ impl<F: Clone, N: Clone> Clone for EngineSnapshot<F, N> {
 
 // --- controls (on the engine) ------------------------------------------------
 
-impl<Fs, Nfs> TakeSnapshot for Engine<Fs, Nfs>
+impl<Fs, Nfs, Src> TakeSnapshot for Engine<Fs, Nfs, Src>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    Src: Send + Sync + 'static,
 {
     type Snapshot = EngineSnapshot<Fs::Snapshot, Nfs::Snapshot>;
 
@@ -116,53 +127,83 @@ where
     }
 }
 
-impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static> TipSubscribe for Engine<Fs, Nfs> {
+impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static, Src: Send + Sync + 'static> TipSubscribe
+    for Engine<Fs, Nfs, Src>
+{
     fn subscribe_tip(&self) -> BoxStream<'_, TipEvent> {
         // Follow-up: bridge the chain-head epoch watch to tip events.
         stream::empty().boxed()
     }
 }
 
-impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static> MempoolSubscribe for Engine<Fs, Nfs> {
+impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static, Src: Send + Sync + 'static>
+    MempoolSubscribe for Engine<Fs, Nfs, Src>
+{
     fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx> {
         // Follow-up: wire the mempool handle.
         stream::empty().boxed()
     }
 }
 
-impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static> Broadcast for Engine<Fs, Nfs> {
-    async fn broadcast(&self, _raw_tx: Vec<u8>) -> Result<TransactionId, BroadcastRejection> {
-        // Follow-up: relay through the validator handle.
-        Err(BroadcastRejection::Invalid(
-            "broadcast not wired yet".into(),
-        ))
+impl<Fs, Nfs, Src> Broadcast for Engine<Fs, Nfs, Src>
+where
+    Fs: Send + Sync + 'static,
+    Nfs: Send + Sync + 'static,
+    Src: OneShotSendRawTransaction<NonDomain: fmt::Display> + 'static,
+{
+    async fn broadcast(&self, raw_tx: Vec<u8>) -> Result<TransactionId, BroadcastRejection> {
+        // Passthrough to the validator's send port — the only thing that can
+        // broadcast. Reached through the source trait, never a concrete adapter.
+        match self.source.send_raw_transaction(raw_tx).await {
+            Ok(txid) => Ok(txid),
+            Err(QueryError::Domain(SendRawTransactionError::Malformed(reason))) => {
+                Err(BroadcastRejection::Malformed(reason))
+            }
+            Err(QueryError::Domain(SendRawTransactionError::Rejected(reason))) => {
+                Err(BroadcastRejection::Invalid(reason))
+            }
+            // A transport failure is not a rejection of the transaction, but
+            // `BroadcastRejection` has no transient arm; surface the cause as
+            // `Invalid` so the caller can resubmit. A dedicated transient variant
+            // on the serving error surface is a follow-up.
+            Err(QueryError::NonDomain(cause)) => Err(BroadcastRejection::Invalid(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
     }
 }
 
-impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static> Serviceable for Engine<Fs, Nfs> {
+impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static, Src: Send + Sync + 'static> Serviceable
+    for Engine<Fs, Nfs, Src>
+{
     fn serviceability(&self) -> ServiceabilityManifest {
         ServiceabilityManifest::default()
     }
 }
 
-impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static> ReportedUpgrades for Engine<Fs, Nfs> {
+impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static, Src: Send + Sync + 'static>
+    ReportedUpgrades for Engine<Fs, Nfs, Src>
+{
     async fn reported_upgrades(&self) -> Result<Vec<ReportedUpgrade>, ReadError> {
         // Follow-up: pass through the validator schedule.
         Ok(Vec::new())
     }
 }
 
-impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static> Passthrough for Engine<Fs, Nfs> {
+impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static, Src: Send + Sync + 'static> Passthrough
+    for Engine<Fs, Nfs, Src>
+{
     async fn passthrough(&self, _query: PassthroughQuery) -> Result<PassthroughAnswer, Transient> {
         // Follow-up: relay to the validator.
         Err(Transient("passthrough not wired yet".into()))
     }
 }
 
-impl<Fs, Nfs> IndexerService for Engine<Fs, Nfs>
+impl<Fs, Nfs, Src> IndexerService for Engine<Fs, Nfs, Src>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,
+    Src: OneShotSendRawTransaction<NonDomain: fmt::Display> + 'static,
 {
 }
 
@@ -352,11 +393,59 @@ mod tests {
     /// The milestone: the composed engine type-checks as every public profile,
     /// over any two composer inputs (each a `TakeSnapshot` whose snapshot is a
     /// `ChainSegment + CompactBlockRead`). Compile-time only.
-    fn _engine_satisfies_all_profiles<Fs, Nfs>()
+    fn _engine_satisfies_all_profiles<Fs, Nfs, Src>()
     where
         Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
         Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-        Engine<Fs, Nfs>: WalletLibService + LightServeService + NodeRpcService,
+        Src: zaino_source::OneShotSendRawTransaction<NonDomain: core::fmt::Display> + 'static,
+        Engine<Fs, Nfs, Src>: WalletLibService + LightServeService + NodeRpcService,
     {
+    }
+
+    // Broadcast passthrough, exercised entirely with in-crate mocks: two empty
+    // stub views for the composed chain, a `MockChain` for the validator source.
+    // No cluster, no validator — the routing is deterministic.
+    use zaino_chainview::testing::StubNonFinalised;
+    use zaino_service::error::BroadcastRejection;
+    use zaino_service::Broadcast;
+    use zaino_source::mock::MockChain;
+    use zaino_source::SendRawTransactionError;
+
+    fn engine_with(source: MockChain) -> Engine<StubNonFinalised, StubNonFinalised, MockChain> {
+        Engine::new(StubNonFinalised::empty(), StubNonFinalised::empty(), source)
+    }
+
+    #[tokio::test]
+    async fn broadcast_relays_to_the_source_and_returns_its_txid() {
+        let engine = engine_with(MockChain::new());
+        let raw = vec![7u8; 32];
+        let txid = engine.broadcast(raw.clone()).await.expect("accepted");
+        // The mock echoes the submitted bytes as the id, proving the exact
+        // transaction reached the source's send port.
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(&raw);
+        assert_eq!(txid, super::TransactionId::from(expected));
+    }
+
+    #[tokio::test]
+    async fn broadcast_maps_a_validator_rejection_to_invalid() {
+        let engine = engine_with(
+            MockChain::new().reject_send(SendRawTransactionError::Rejected("bad script".into())),
+        );
+        match engine.broadcast(vec![1, 2, 3]).await {
+            Err(BroadcastRejection::Invalid(reason)) => assert_eq!(reason, "bad script"),
+            other => panic!("expected an Invalid rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_maps_malformed_bytes_to_malformed() {
+        let engine = engine_with(
+            MockChain::new().reject_send(SendRawTransactionError::Malformed("not a tx".into())),
+        );
+        match engine.broadcast(vec![0xff]).await {
+            Err(BroadcastRejection::Malformed(reason)) => assert_eq!(reason, "not a tx"),
+            other => panic!("expected a Malformed rejection, got {other:?}"),
+        }
     }
 }
