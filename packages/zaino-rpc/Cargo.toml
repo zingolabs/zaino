@@ -6,6 +6,9 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Shared JSON-RPC 2.0 client: envelope, retry, auth. No validator knowledge."
 
 [features]
