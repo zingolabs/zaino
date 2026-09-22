@@ -1,7 +1,6 @@
 [package]
-name = "zaino-source-macros"
+name = "zaino-persistence"
 version = "0.1.0"
-description = "Procedural macros for zaino-source: derive the resilient validator-port traits from their single-attempt OneShot* twins."
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -10,14 +9,14 @@ license.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-
-[lib]
-proc-macro = true
+description = "Driven port traits for index persistence (read/write)."
 
 [dependencies]
-syn = { version = "2.0", features = ["full"] }
-quote = "1.0"
-proc-macro2 = "1.0"
+zaino-primitives = { path = "../zaino-primitives" }
+thiserror.workspace = true
+
+[features]
+testing = []
 
 [lints.rust]
 unsafe_code = "forbid"
