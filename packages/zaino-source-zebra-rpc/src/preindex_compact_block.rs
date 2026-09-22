@@ -42,6 +42,7 @@ struct PreindexCompactTransaction {
     sapling_nullifiers: Vec<String>,
     sapling_outputs: Vec<PreindexCompactSaplingOutput>,
     orchard_actions: Vec<PreindexCompactOrchardAction>,
+    ironwood_actions: Vec<PreindexCompactOrchardAction>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,18 +140,8 @@ impl PreindexCompactTransaction {
                 })
             })
             .collect::<Result<Vec<_>, ParseError>>()?;
-        let orchard_actions = self
-            .orchard_actions
-            .into_iter()
-            .map(|action| {
-                Ok(CompactOrchardAction {
-                    nullifier: hex_array::<32>(&action.nullifier)?,
-                    cmx: hex_array::<32>(&action.cmx)?,
-                    ephemeral_key: hex_array::<32>(&action.ephemeral_key)?,
-                    enc_ciphertext_head: hex_array::<52>(&action.enc_ciphertext_head)?,
-                })
-            })
-            .collect::<Result<Vec<_>, ParseError>>()?;
+        let orchard_actions = actions_into_zebra(self.orchard_actions)?;
+        let ironwood_actions = actions_into_zebra(self.ironwood_actions)?;
         Ok(CompactTransaction {
             txid,
             transparent_inputs,
@@ -158,8 +149,27 @@ impl PreindexCompactTransaction {
             sapling_nullifiers,
             sapling_outputs,
             orchard_actions,
+            ironwood_actions,
         })
     }
+}
+
+/// Reconstruct a pool's compact actions (Orchard or Ironwood — same shape) from
+/// their wire hex fields.
+fn actions_into_zebra(
+    actions: Vec<PreindexCompactOrchardAction>,
+) -> Result<Vec<CompactOrchardAction>, ParseError> {
+    actions
+        .into_iter()
+        .map(|action| {
+            Ok(CompactOrchardAction {
+                nullifier: hex_array::<32>(&action.nullifier)?,
+                cmx: hex_array::<32>(&action.cmx)?,
+                ephemeral_key: hex_array::<32>(&action.ephemeral_key)?,
+                enc_ciphertext_head: hex_array::<52>(&action.enc_ciphertext_head)?,
+            })
+        })
+        .collect()
 }
 
 /// Decode a hex string to bytes, naming the failure for the seam.
@@ -189,7 +199,8 @@ mod tests {
                 "transparent_outputs": [{{ "value": 12345, "script": "deadbeef" }}],
                 "sapling_nullifiers": ["{nf}"],
                 "sapling_outputs": [{{ "cmu": "{cmu}", "ephemeral_key": "{epk}", "enc_ciphertext_head": "{ct}" }}],
-                "orchard_actions": [{{ "nullifier": "{onf}", "cmx": "{cmx}", "ephemeral_key": "{oepk}", "enc_ciphertext_head": "{oct}" }}]
+                "orchard_actions": [{{ "nullifier": "{onf}", "cmx": "{cmx}", "ephemeral_key": "{oepk}", "enc_ciphertext_head": "{oct}" }}],
+                "ironwood_actions": [{{ "nullifier": "{inf}", "cmx": "{icmx}", "ephemeral_key": "{iepk}", "enc_ciphertext_head": "{ict}" }}]
             }}"#,
             txid = "11".repeat(32),
             prev = "22".repeat(32),
@@ -201,6 +212,10 @@ mod tests {
             cmx = "88".repeat(32),
             oepk = "99".repeat(32),
             oct = "aa".repeat(52),
+            inf = "bb".repeat(32),
+            icmx = "cc".repeat(32),
+            iepk = "dd".repeat(32),
+            ict = "ee".repeat(52),
         );
 
         let wire: PreindexCompactTransaction =
@@ -223,6 +238,10 @@ mod tests {
         assert_eq!(tx.orchard_actions[0].cmx, [0x88; 32]);
         assert_eq!(tx.orchard_actions[0].ephemeral_key, [0x99; 32]);
         assert_eq!(tx.orchard_actions[0].enc_ciphertext_head, [0xaa; 52]);
+        assert_eq!(tx.ironwood_actions[0].nullifier, [0xbb; 32]);
+        assert_eq!(tx.ironwood_actions[0].cmx, [0xcc; 32]);
+        assert_eq!(tx.ironwood_actions[0].ephemeral_key, [0xdd; 32]);
+        assert_eq!(tx.ironwood_actions[0].enc_ciphertext_head, [0xee; 52]);
     }
 
     #[test]

@@ -149,21 +149,17 @@ pub fn transaction_from_zebra(
     })
 }
 
-/// Convert the zebra fork's compact block into the domain's pre-index compact
-/// block — the cheap source path for the indexer.
+/// Convert the fork's compact block into the domain's pre-index compact block —
+/// the source path the indexer reads.
 ///
-/// The fork's `ReadRequest::CompactBlock` returns a block with proofs,
-/// signatures, and input scripts already dropped, so this is the same domain
-/// output as [`block_from_zebra`] → [`PreIndexCompactBlock::from`], reached
-/// without deserializing what indexing never reads. The header conversion is
+/// The fork's `ReadRequest::CompactBlock` projects each transaction to compact
+/// form — transparent outpoints and outputs, shielded nullifiers, note
+/// commitments, ephemeral keys, and the compact ciphertext head — dropping
+/// proofs, signatures, and input scripts. It parses with zebra's own
+/// deserializer, so the id and every field are correct for every transaction
+/// version (the v5 ZIP-244 id, the Ironwood pool). The header conversion is
 /// shared with the full path via [`header_from_parts`], so hash/prev-hash/time/
 /// difficulty endianness cannot drift between the two.
-///
-/// KNOWN GAP: the fork's compact format carries no ironwood actions, so
-/// `ironwood_actions` is empty and the ironwood tree size stays 0 on this path.
-/// Ironwood activates near the current tip (~3.43M) so this is effectively
-/// correct today, but the fork's compact format must add ironwood before that
-/// pool sees real use; full-block sourcing ([`block_from_zebra`]) retains it.
 pub fn pre_index_compact_block_from_zebra(
     compact: &zebra_chain::transaction::compact::CompactBlock,
 ) -> Result<PreIndexCompactBlock, ConvertError> {
@@ -214,16 +210,15 @@ fn compact_tx_from_zebra(
             enc_ciphertext: CompactCiphertext::from(out.enc_ciphertext_head),
         })
         .collect();
-    let orchard_actions = tx
-        .orchard_actions
-        .iter()
-        .map(|act| OrchardAction {
+    let compact_action =
+        |act: &zebra_chain::transaction::compact::CompactOrchardAction| OrchardAction {
             nullifier: Nullifier::from(act.nullifier),
             cmx: NoteCommitment::from(act.cmx),
             ephemeral_key: EphemeralKey::from(act.ephemeral_key),
             enc_ciphertext: CompactCiphertext::from(act.enc_ciphertext_head),
-        })
-        .collect();
+        };
+    let orchard_actions = tx.orchard_actions.iter().map(compact_action).collect();
+    let ironwood_actions = tx.ironwood_actions.iter().map(compact_action).collect();
     Ok(PreIndexCompactTx {
         txid: TransactionId::from(tx.txid.0),
         transparent_inputs,
@@ -235,9 +230,7 @@ fn compact_tx_from_zebra(
             .collect(),
         sapling_outputs,
         orchard_actions,
-        // KNOWN GAP: the fork's compact format omits ironwood (see
-        // `pre_index_compact_block_from_zebra`); full-block sourcing retains it.
-        ironwood_actions: Vec::new(),
+        ironwood_actions,
     })
 }
 

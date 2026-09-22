@@ -4953,7 +4953,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "1.1.1"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "futures",
  "futures-core",
@@ -4969,7 +4969,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.43"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -6722,7 +6722,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "12.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -6790,7 +6790,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "15.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6832,7 +6832,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "12.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -6869,7 +6869,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "10.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6884,7 +6884,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "16.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "base64",
  "chrono",
@@ -6944,7 +6944,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "11.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "libzcash_script",
  "rand 0.8.6",
@@ -6957,7 +6957,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "13.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "bincode",
  "chrono",
@@ -6995,7 +6995,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "4.0.0"
-source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#e40ccccc39fe09085499dac2057c2fdb595ab404"
+source = "git+https://github.com/nachog00/zebra.git?branch=feat%2Fcompact-block-read-v6.3.0#d1c128a9b0a47c8f4161a7d93c8bbb9c68f26a1f"
 dependencies = [
  "color-eyre",
  "futures",
