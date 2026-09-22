@@ -38,7 +38,10 @@
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::{ChainView, ChainViewSnapshot};
-use zaino_source::{GetTreestate, SendRawTransaction};
+use zaino_source::{
+    GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos, GetTreestate,
+    SendRawTransaction,
+};
 
 mod remote;
 pub use remote::RemoteChainView;
@@ -332,34 +335,47 @@ impl<F, N, Src> AddressRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
-    Src: Clone + Send + Sync + 'static,
+    Src: GetAddressBalance
+        + GetAddressUtxos
+        + GetAddressTxids
+        + GetAddressDeltas
+        + Send
+        + Sync
+        + 'static,
 {
+    // Passthrough: zaino does not yet index transparent addresses, so the remote
+    // view answers these live from the validator. That address reads are remote
+    // is the read-set's per-capability classification, expressed here — and a
+    // stopgap: passing addresses to the validator discloses them, which a local
+    // transparent index exists to avoid (see `RemoteChainView::balance`).
     async fn balance(
         &self,
-        _addr: &TransparentAddress,
+        addr: &TransparentAddress,
         _range: HeightRange,
     ) -> Result<AddressBalance, AddressReadError> {
-        Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+        // The requested range is not honoured — `getaddressbalance` is
+        // range-less; this is balance as of the validator's tip.
+        self.remote.balance(addr).await
     }
     async fn unspent_outpoints(
         &self,
-        _addr: &TransparentAddress,
+        addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+        self.remote.unspent_outpoints(addr).await
     }
     async fn deltas(
         &self,
-        _addr: &TransparentAddress,
-        _range: HeightRange,
+        addr: &TransparentAddress,
+        range: HeightRange,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
-        Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+        self.remote.deltas(addr, range).await
     }
     async fn tx_ids(
         &self,
-        _addr: &TransparentAddress,
-        _range: HeightRange,
+        addr: &TransparentAddress,
+        range: HeightRange,
     ) -> Result<Vec<TransactionId>, AddressReadError> {
-        Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+        self.remote.tx_ids(addr, range).await
     }
 }
 
@@ -420,7 +436,14 @@ mod tests {
     where
         Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
         Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-        Src: zaino_source::GetTreestate + zaino_source::SendRawTransaction + Clone + 'static,
+        Src: zaino_source::GetTreestate
+            + zaino_source::SendRawTransaction
+            + zaino_source::GetAddressBalance
+            + zaino_source::GetAddressUtxos
+            + zaino_source::GetAddressTxids
+            + zaino_source::GetAddressDeltas
+            + Clone
+            + 'static,
         Engine<Fs, Nfs, Src>: WalletLibService + LightServeService + NodeRpcService,
     {
     }
@@ -434,7 +457,7 @@ mod tests {
     use zaino_source::mock::MockChain;
     use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
 
-    use super::Height;
+    use super::{Height, HeightRange, TransparentAddress};
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid height")
@@ -497,6 +520,58 @@ mod tests {
     async fn light_serve_conformance_over_a_provisioned_source() {
         let engine = engine_with(MockChain::new());
         zaino_service::conformance::assert_light_serve_conformance(&engine).await;
+    }
+
+    #[tokio::test]
+    async fn address_reads_pass_through_and_answer() {
+        // No rejection seeded: the mock answers empty (no-match) results. An
+        // `Ok` — not a `NotServiceable` stub — proves each address read routes to
+        // the passthrough provider.
+        use zaino_service::AddressRead;
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
+        let range = HeightRange {
+            start: height(0),
+            end: height(10),
+        };
+        AddressRead::balance(&snapshot, &addr, range)
+            .await
+            .expect("balance served");
+        assert!(AddressRead::unspent_outpoints(&snapshot, &addr)
+            .await
+            .expect("utxos served")
+            .is_empty());
+        assert!(AddressRead::tx_ids(&snapshot, &addr, range)
+            .await
+            .expect("txids served")
+            .is_empty());
+        assert!(AddressRead::deltas(&snapshot, &addr, range)
+            .await
+            .expect("deltas served")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn address_reads_map_an_invalid_address_to_fatal() {
+        // The mock rejects the addresses as invalid; the remote provider maps
+        // that domain rejection to a definitive (non-retryable) read failure,
+        // proving the read routes to the source and its rejection is surfaced.
+        use zaino_service::error::AddressReadError;
+        use zaino_service::AddressRead;
+        let engine = engine_with(MockChain::new().reject_addresses("bad t-addr"));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let addr = TransparentAddress::new("bogus".to_string());
+        let range = HeightRange {
+            start: height(0),
+            end: height(10),
+        };
+        match AddressRead::balance(&snapshot, &addr, range).await {
+            Err(AddressReadError::Fatal(msg)) => {
+                assert!(msg.contains("invalid address"), "got: {msg}")
+            }
+            other => panic!("expected a definitive invalid-address failure, got {other:?}"),
+        }
     }
 
     #[tokio::test]

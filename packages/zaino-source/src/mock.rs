@@ -10,9 +10,11 @@ use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate
 
 use crate::error::{FailureMode, NonDomainError};
 use crate::{
+    GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
     GetBlockByHashError, GetBlockError, GetChainTipError, GetTreestateError, QueryError,
     SendRawTransactionError,
 };
+use zaino_primitives::types::{AddressBalance, AddressDelta, Utxo};
 
 /// A pre-populated in-memory chain for testing.
 pub struct MockChain {
@@ -25,6 +27,9 @@ pub struct MockChain {
     /// When set, `send_raw_transaction` rejects with this domain error; otherwise
     /// it accepts and echoes an id derived from the submitted bytes.
     send_rejection: Option<SendRawTransactionError>,
+    /// When set, every address query rejects the addresses as invalid with this
+    /// reason; otherwise they answer with empty (no-match) results.
+    address_rejection: Option<String>,
 }
 
 impl MockChain {
@@ -38,6 +43,7 @@ impl MockChain {
             failures_remaining: AtomicU32::new(0),
             failure_mode: FailureMode::Connection,
             send_rejection: None,
+            address_rejection: None,
         }
     }
 
@@ -45,6 +51,13 @@ impl MockChain {
     /// consumer's rejection path.
     pub fn reject_send(mut self, err: SendRawTransactionError) -> Self {
         self.send_rejection = Some(err);
+        self
+    }
+
+    /// Make every address query reject its addresses as invalid, for exercising
+    /// a consumer's domain-rejection path on the address reads.
+    pub fn reject_addresses(mut self, reason: impl Into<String>) -> Self {
+        self.address_rejection = Some(reason.into());
         self
     }
 
@@ -114,6 +127,7 @@ impl Clone for MockChain {
             failures_remaining: AtomicU32::new(self.failures_remaining.load(Ordering::SeqCst)),
             failure_mode: self.failure_mode.clone(),
             send_rejection: self.send_rejection.clone(),
+            address_rejection: self.address_rejection.clone(),
         }
     }
 }
@@ -202,6 +216,81 @@ impl crate::OneShotSendRawTransaction for MockChain {
         let taken = transaction.len().min(32);
         id[..taken].copy_from_slice(&transaction[..taken]);
         Ok(TransactionId::from(id))
+    }
+}
+
+impl crate::OneShotGetAddressBalance for MockChain {
+    async fn get_address_balance(
+        &self,
+        _addresses: Vec<String>,
+    ) -> Result<AddressBalance, QueryError<GetAddressBalanceError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        if let Some(reason) = &self.address_rejection {
+            return Err(QueryError::Domain(GetAddressBalanceError::InvalidAddress(
+                reason.clone(),
+            )));
+        }
+        Ok(AddressBalance {
+            balance: zaino_primitives::types::Zatoshis::ZERO,
+            received: zaino_primitives::types::ZatoshisFlowSum::from_summed(0),
+        })
+    }
+}
+
+impl crate::OneShotGetAddressUtxos for MockChain {
+    async fn get_address_utxos(
+        &self,
+        _addresses: Vec<String>,
+    ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        if let Some(reason) = &self.address_rejection {
+            return Err(QueryError::Domain(GetAddressUtxosError::InvalidAddress(
+                reason.clone(),
+            )));
+        }
+        Ok(Vec::new())
+    }
+}
+
+impl crate::OneShotGetAddressTxids for MockChain {
+    async fn get_address_txids(
+        &self,
+        _addresses: Vec<String>,
+        _start: Height,
+        _end: Height,
+    ) -> Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        if let Some(reason) = &self.address_rejection {
+            return Err(QueryError::Domain(GetAddressTxidsError::InvalidAddress(
+                reason.clone(),
+            )));
+        }
+        Ok(Vec::new())
+    }
+}
+
+impl crate::OneShotGetAddressDeltas for MockChain {
+    async fn get_address_deltas(
+        &self,
+        _addresses: Vec<String>,
+        _start: Height,
+        _end: Height,
+    ) -> Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        if let Some(reason) = &self.address_rejection {
+            return Err(QueryError::Domain(GetAddressDeltasError::InvalidAddress(
+                reason.clone(),
+            )));
+        }
+        Ok(Vec::new())
     }
 }
 

@@ -9,21 +9,27 @@
 //! bounds, so a single validator handle serves both consumers without cloning
 //! the adapter.
 //!
-//! Only the ports the compact-indexer path needs are forwarded:
-//! [`ValidatorSource`] (the shared supertrait), [`OneShotGetPreIndexCompactBlock`],
-//! [`OneShotGetChainTip`], and [`SubscribeChainTip`] — the exact set
-//! `ValidatorClient`'s resilient `GetPreIndexCompactBlock` / `GetChainTip`
-//! delegate to, plus the tip subscription the driver forwards unchanged.
+//! The forwarded set is exactly the ports the shared `Arc<V>` must satisfy for
+//! the two consumers: [`ValidatorSource`] (the shared supertrait) plus the
+//! compact-indexer path ([`OneShotGetPreIndexCompactBlock`],
+//! [`OneShotGetChainTip`], [`SubscribeChainTip`]) and the serving path's
+//! passthrough ports ([`OneShotGetTreestate`], [`OneShotSendRawTransaction`],
+//! and the transparent-address reads). Each is a mechanical `Deref`-forward.
 
 use std::future::Future;
 use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use zaino_primitives::types::{BlockHash, Height, PreIndexCompactBlock, TransactionId, Treestate};
+use zaino_primitives::types::{
+    AddressBalance, AddressDelta, BlockHash, Height, PreIndexCompactBlock, TransactionId,
+    Treestate, Utxo,
+};
 
 use crate::{
-    GetBlockError, GetChainTipError, GetTreestateError, OneShotGetChainTip,
+    GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
+    GetBlockError, GetChainTipError, GetTreestateError, OneShotGetAddressBalance,
+    OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetChainTip,
     OneShotGetPreIndexCompactBlock, OneShotGetTreestate, OneShotSendRawTransaction, QueryError,
     SendRawTransactionError, SubscribeChainTip, TipObservation, ValidatorSource,
 };
@@ -81,5 +87,54 @@ impl<V: OneShotSendRawTransaction + ?Sized> OneShotSendRawTransaction for Arc<V>
         Output = Result<TransactionId, QueryError<SendRawTransactionError, Self::NonDomain>>,
     > + Send {
         (**self).send_raw_transaction(transaction)
+    }
+}
+
+// The serving path's transparent-address reads reach the validator through the
+// same `Arc<V>` (a passthrough stopgap pending a local transparent index).
+impl<V: OneShotGetAddressBalance + ?Sized> OneShotGetAddressBalance for Arc<V> {
+    fn get_address_balance(
+        &self,
+        addresses: Vec<String>,
+    ) -> impl Future<
+        Output = Result<AddressBalance, QueryError<GetAddressBalanceError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_address_balance(addresses)
+    }
+}
+
+impl<V: OneShotGetAddressUtxos + ?Sized> OneShotGetAddressUtxos for Arc<V> {
+    fn get_address_utxos(
+        &self,
+        addresses: Vec<String>,
+    ) -> impl Future<Output = Result<Vec<Utxo>, QueryError<GetAddressUtxosError, Self::NonDomain>>> + Send
+    {
+        (**self).get_address_utxos(addresses)
+    }
+}
+
+impl<V: OneShotGetAddressTxids + ?Sized> OneShotGetAddressTxids for Arc<V> {
+    fn get_address_txids(
+        &self,
+        addresses: Vec<String>,
+        start: Height,
+        end: Height,
+    ) -> impl Future<
+        Output = Result<Vec<TransactionId>, QueryError<GetAddressTxidsError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_address_txids(addresses, start, end)
+    }
+}
+
+impl<V: OneShotGetAddressDeltas + ?Sized> OneShotGetAddressDeltas for Arc<V> {
+    fn get_address_deltas(
+        &self,
+        addresses: Vec<String>,
+        start: Height,
+        end: Height,
+    ) -> impl Future<
+        Output = Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_address_deltas(addresses, start, end)
     }
 }

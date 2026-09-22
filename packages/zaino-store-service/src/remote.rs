@@ -18,10 +18,15 @@
 //! to passthrough (the validator's state cannot be pinned to our view). That is
 //! sound for the immutable, historical data light clients query.
 
-use zaino_core::{Height, TransactionId, Treestate};
-use zaino_service::error::{BroadcastRejection, TreestateReadError};
+use zaino_core::{
+    AddressBalance, AddressDelta, Height, HeightRange, TransactionId, TransparentAddress,
+    Treestate, Utxo,
+};
+use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
 use zaino_source::{
-    GetTreestate, GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
+    GetAddressBalance, GetAddressBalanceError, GetAddressDeltas, GetAddressDeltasError,
+    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError, GetTreestate,
+    GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -71,6 +76,141 @@ where
                 "validator unavailable: {cause}"
             ))),
         }
+    }
+}
+
+/// Map a source failure on an address read to the read surface. Each address
+/// port supplies its own domain mapping (its rejections differ); the transport
+/// arms are shared — an unreachable validator or an unusable answer is transient
+/// on every one of them.
+fn address_failure<E: std::fmt::Debug + std::fmt::Display>(
+    err: SourceError<E>,
+    domain: impl FnOnce(E) -> AddressReadError,
+) -> AddressReadError {
+    match err {
+        SourceError::Domain(e) => domain(e),
+        SourceError::NonDomain(cause) => {
+            AddressReadError::Transient(format!("validator unavailable: {cause}"))
+        }
+        SourceError::Unavailable(cause) => {
+            AddressReadError::Transient(format!("validator unavailable: {cause}"))
+        }
+    }
+}
+
+/// Convert the read surface's half-open `[start, end)` [`HeightRange`] to the
+/// inclusive `[start, last]` bounds the address source ports take. Returns
+/// `None` for an empty range, so the caller answers empty without troubling the
+/// validator.
+fn inclusive_bounds(range: HeightRange) -> Option<(Height, Height)> {
+    let last = range.end.checked_sub(1)?;
+    (range.start <= last).then_some((range.start, last))
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetAddressBalance,
+{
+    /// The transparent balance of `addr`, live from the validator.
+    ///
+    /// Stopgap: `getaddressbalance` is range-less, so the caller's requested
+    /// [`HeightRange`] cannot be honoured — this answers the balance as of the
+    /// validator's tip. A range-scoped balance is a reason to move address reads
+    /// local. Passing transparent addresses to the validator also discloses them,
+    /// the privacy cost a local transparent index exists to remove.
+    pub(crate) async fn balance(
+        &self,
+        addr: &TransparentAddress,
+    ) -> Result<AddressBalance, AddressReadError> {
+        self.source
+            .get_address_balance(vec![addr.as_str().to_owned()])
+            .await
+            .map_err(|err| {
+                address_failure(err, |GetAddressBalanceError::InvalidAddress(a)| {
+                    AddressReadError::Fatal(format!("invalid address: {a}"))
+                })
+            })
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetAddressUtxos,
+{
+    /// The unspent transparent outputs of `addr`, live from the validator. See
+    /// [`balance`](Self::balance) for the address-disclosure privacy cost.
+    pub(crate) async fn unspent_outpoints(
+        &self,
+        addr: &TransparentAddress,
+    ) -> Result<Vec<Utxo>, AddressReadError> {
+        self.source
+            .get_address_utxos(vec![addr.as_str().to_owned()])
+            .await
+            .map_err(|err| {
+                address_failure(err, |GetAddressUtxosError::InvalidAddress(a)| {
+                    AddressReadError::Fatal(format!("invalid address: {a}"))
+                })
+            })
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetAddressTxids,
+{
+    /// The txids touching `addr` over `range`, live from the validator. See
+    /// [`balance`](Self::balance) for the address-disclosure privacy cost.
+    pub(crate) async fn tx_ids(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+    ) -> Result<Vec<TransactionId>, AddressReadError> {
+        let Some((start, end)) = inclusive_bounds(range) else {
+            return Ok(Vec::new());
+        };
+        self.source
+            .get_address_txids(vec![addr.as_str().to_owned()], start, end)
+            .await
+            .map_err(|err| {
+                address_failure(err, |domain| match domain {
+                    GetAddressTxidsError::InvalidAddress(a) => {
+                        AddressReadError::Fatal(format!("invalid address: {a}"))
+                    }
+                    GetAddressTxidsError::InvalidRange { start, end } => AddressReadError::Fatal(
+                        format!("unserviceable height range {start}..={end}"),
+                    ),
+                })
+            })
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetAddressDeltas,
+{
+    /// The balance deltas for `addr` over `range`, live from the validator. See
+    /// [`balance`](Self::balance) for the address-disclosure privacy cost.
+    pub(crate) async fn deltas(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+    ) -> Result<Vec<AddressDelta>, AddressReadError> {
+        let Some((start, end)) = inclusive_bounds(range) else {
+            return Ok(Vec::new());
+        };
+        self.source
+            .get_address_deltas(vec![addr.as_str().to_owned()], start, end)
+            .await
+            .map_err(|err| {
+                address_failure(err, |domain| match domain {
+                    GetAddressDeltasError::InvalidAddress(a) => {
+                        AddressReadError::Fatal(format!("invalid address: {a}"))
+                    }
+                    GetAddressDeltasError::InvalidRange { start, end } => AddressReadError::Fatal(
+                        format!("unserviceable height range {start}..={end}"),
+                    ),
+                })
+            })
     }
 }
 
