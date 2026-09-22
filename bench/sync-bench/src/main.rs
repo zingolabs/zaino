@@ -23,7 +23,6 @@
 //! [`sync_to`]: zaino_indexer::SourceSyncDriver
 #![forbid(unsafe_code)]
 
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -42,17 +41,11 @@ use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
 use zaino_primitives::types::Height;
 use zaino_service::{CompactBlockRead, TakeSnapshot};
-use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_store::StoreReader;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
-use zebra_chain::parameters::Network;
 
-/// A boxed error is enough for a benchmark binary — every step already carries a
-/// typed cause, and the harness only reports the failure, it does not react to
-/// its variant.
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+use sync_bench::{default_concurrency, init_logging, open_source, report, BoxError, NetworkArg};
 
 /// Index a bounded window of pre-index compact blocks from a Zebra ReadState
 /// validator into LMDB and report throughput.
@@ -96,7 +89,7 @@ struct Args {
 
     /// Fetches kept in flight by the provisioner (1 = serial). The knob for the
     /// concurrency-vs-throughput sweep; `0` is rejected at parse time.
-    #[arg(long, env = "SYNC_CONCURRENCY", default_value_t = FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero")))]
+    #[arg(long, env = "SYNC_CONCURRENCY", default_value_t = default_concurrency())]
     concurrency: FetchConcurrency,
 
     /// LMDB map size in GiB (the maximum on-disk size; reserved up front).
@@ -114,32 +107,9 @@ struct Args {
     verify: bool,
 }
 
-/// The networks the bench supports, mapped to zebra's [`Network`].
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum NetworkArg {
-    Mainnet,
-    Testnet,
-}
-
-impl NetworkArg {
-    fn to_zebra(self) -> Network {
-        match self {
-            NetworkArg::Mainnet => Network::Mainnet,
-            NetworkArg::Testnet => Network::new_default_testnet(),
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_logging();
 
     let args = Args::parse();
     let network = args.network.to_zebra();
@@ -147,8 +117,7 @@ async fn main() -> Result<(), BoxError> {
     // Source: the ReadState adapter opens the on-disk state DB read-only, wrapped
     // in the resilient decorator so the provisioner binds the resilient ports.
     // Retry stays at the policy default; on a local read it should never fire.
-    let adapter = ZebraReadStateAdapter::open(&args.zebra_cache, &network)?;
-    let source = Arc::new(ValidatorClient::new(adapter, RetryPolicy::default()));
+    let source = open_source(&args.zebra_cache, &network)?;
 
     // Backend: LMDB must declare every namespace up front — one per index in the
     // set, plus the engine's reserved watermark / format-version namespaces.
@@ -238,33 +207,13 @@ async fn main() -> Result<(), BoxError> {
     provision.await??;
     let elapsed = started.elapsed();
 
-    report(count, elapsed, args.concurrency);
+    report("indexed", count, elapsed, args.concurrency);
 
     if args.verify {
         verify(&backend, resume, to).await?;
     }
 
     Ok(())
-}
-
-/// Report throughput both as a human line and as a structured event (→ stdout →
-/// Loki/Grafana on the cluster).
-fn report(blocks: u32, elapsed: std::time::Duration, concurrency: FetchConcurrency) {
-    let seconds = elapsed.as_secs_f64();
-    let per_second = f64::from(blocks) / seconds;
-    println!(
-        "indexed {blocks} blocks in {seconds:.3}s = {per_second:.1} blocks/s \
-         ({:.3} ms/block, concurrency {concurrency})",
-        elapsed.as_secs_f64() * 1000.0 / f64::from(blocks),
-    );
-    tracing::info!(
-        target: "sync_bench::result",
-        blocks,
-        elapsed_ms = elapsed.as_millis(),
-        blocks_per_second = per_second,
-        concurrency = concurrency.get(),
-        "sync window complete"
-    );
 }
 
 /// Read a sample of the just-built window back through the store's
