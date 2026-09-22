@@ -331,6 +331,19 @@ pub const TEST_FIXTURE_JSONRPC_ENV: &str = "ZAINO_TEST_ZEBRA_JSONRPC";
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_STORE_ENV: &str = "ZAINO_TEST_STORE_DIR";
 
+/// Env var handing the mainnet state fixture the LMDB map size in GiB — the
+/// reserved store ceiling (see [`mainnet_direct_state_fixture`]). Optional;
+/// defaults to a mainnet-safe value. Tune it per deploy without a rebuild, and
+/// keep it below the backing volume's capacity.
+#[cfg(feature = "ztest-fixture")]
+pub const TEST_FIXTURE_MAP_SIZE_ENV: &str = "ZAINO_TEST_MAP_SIZE_GB";
+
+/// Default LMDB map size (GiB) for the mainnet state fixture. A full mainnet
+/// index far exceeds a regtest chain's, so this is generous headroom over what
+/// the index actually occupies; the deploy caps it under the volume size.
+#[cfg(feature = "ztest-fixture")]
+const MAINNET_FIXTURE_MAP_SIZE_GB: usize = 64;
+
 /// The env var that activates the mainnet Direct/state fixture (only with the
 /// `ztest-fixture` feature). Its presence — any value — triggers it.
 ///
@@ -351,6 +364,7 @@ pub const MAINNET_STATE_FIXTURE_ENV: &str = "ZAINO_MAINNET_DIRECT_STATE_FIXTURE"
 /// - [`TEST_FIXTURE_ZEBRA_ENV`]: the RO-mounted zebra cache root (Direct source).
 /// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`.
 /// - [`TEST_FIXTURE_STORE_ENV`]: the writable FS-store directory.
+/// - [`TEST_FIXTURE_MAP_SIZE_ENV`]: the LMDB map size in GiB (store ceiling).
 ///
 /// The serving policy (mainnet, reorg-margin finalised depth, gRPC on
 /// `0.0.0.0:8137`) is baked. NEVER for production: gated behind BOTH the
@@ -366,6 +380,10 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
     let store_path = std::env::var_os(TEST_FIXTURE_STORE_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/home/zaino/.cache/zaino/store"));
+    let map_size_gb = std::env::var(TEST_FIXTURE_MAP_SIZE_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(MAINNET_FIXTURE_MAP_SIZE_GB);
     DaemonConfig {
         network: Network::Mainnet,
         metrics_endpoint: None,
@@ -378,7 +396,7 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
         },
         store: StoreConfig {
             path: store_path,
-            map_size_gb: 16,
+            map_size_gb,
         },
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
