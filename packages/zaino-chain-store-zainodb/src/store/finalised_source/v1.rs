@@ -319,8 +319,8 @@ const MIN_LMDB_READERS: usize = 2048;
 
 /// Upper bound on LMDB reader slots.
 ///
-/// 8192 slots is ~512 KiB of shared memory, and leaves headroom above the concurrent-client
-/// counts we benchmark (5000) for Zaino's own internal readers: the sync loop, startup
+/// 8192 slots is ~512 KiB of shared memory, and leaves headroom above a 5000 concurrent-client
+/// target for Zaino's own internal readers: the sync loop, startup
 /// validation, the chain head, and the mempool all take slots of their own.
 const MAX_LMDB_READERS: usize = 8192;
 
@@ -527,7 +527,7 @@ impl DbV1 {
         // belongs to a read *transaction* rather than a thread: every concurrent read holds one,
         // and exhausting the table fails reads with `MDB_READERS_FULL`. The old ceiling of 4096
         // with a floor of 512 gave exactly 512 on any host with 16 cores or fewer — low enough
-        // that an ordinary load test exhausted it (zingolabs/zaino, benchmark run 2026-08-21).
+        // that ordinary concurrent load exhausted it.
         //
         // Raising this does not make exhaustion safe to hit. A client can still open more
         // concurrent reads than there are slots, and `MDB_READERS_FULL` is currently treated as

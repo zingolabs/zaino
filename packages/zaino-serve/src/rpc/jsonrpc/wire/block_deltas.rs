@@ -2,45 +2,15 @@
 
 use zebra_chain::amount::{Amount, NonNegative};
 
+use crate::rpc::jsonrpc::wire::common::amount;
 use crate::rpc::jsonrpc::wire::display_hex;
-
-/// A delta amount that does not fit the wire's amount type.
-///
-/// # Why this is the one fallible `from_domain` in the module
-///
-/// Response rendering is otherwise infallible: a domain value is already valid,
-/// so emitting it cannot fail. That does not quite hold here.
-/// [`SignedZatoshis`](zaino_primitives::types::SignedZatoshis) is an unbounded
-/// `i64`, while the wire's `Amount` enforces the money range — so the domain
-/// type is strictly wider than what can be rendered, and the gap has to be
-/// reported rather than papered over.
-///
-/// The old conversion in the source layer was fallible for exactly this reason;
-/// keeping it fallible preserves that behaviour rather than trading it for a
-/// panic or a silent clamp. Bounding `SignedZatoshis` at construction would
-/// close the gap in the domain instead and let this become infallible, but that
-/// is a change to the primitive's contract and belongs in its own commit.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("block delta amount out of range: {0}")]
-pub struct DeltaAmountOutOfRange(String);
 
 impl BlockDeltas {
     /// Renders the domain type as the served JSON shape.
-    ///
-    /// Fails only if a delta amount falls outside the money range — see
-    /// [`DeltaAmountOutOfRange`].
-    pub fn from_domain(
-        deltas: zaino_primitives::types::rpc::BlockDeltas,
-    ) -> Result<Self, DeltaAmountOutOfRange> {
-        fn amount<C: zebra_chain::amount::Constraint>(
-            zats: i64,
-        ) -> Result<Amount<C>, DeltaAmountOutOfRange> {
-            Amount::try_from(zats).map_err(|e| DeltaAmountOutOfRange(e.to_string()))
-        }
-
-        Ok(Self {
+    pub fn from_domain(deltas: zaino_primitives::types::rpc::BlockDeltas) -> Self {
+        Self {
             hash: display_hex(deltas.hash.into()),
-            confirmations: deltas.confirmations,
+            confirmations: deltas.confirmations.to_rpc_i64(),
             size: deltas.size as i64,
             height: deltas.height.into(),
             version: deltas.version,
@@ -48,53 +18,39 @@ impl BlockDeltas {
             time: i64::from(deltas.time),
             median_time: i64::from(deltas.median_time),
             nonce: hex::encode(deltas.nonce),
-            bits: format!("{:08x}", deltas.bits),
+            bits: format!("{:08x}", deltas.bits.as_bits()),
             difficulty: deltas.difficulty,
             previous_block_hash: deltas.previous_block_hash.map(|h| display_hex(h.into())),
             next_block_hash: deltas.next_block_hash.map(|h| display_hex(h.into())),
             deltas: deltas
                 .deltas
                 .into_iter()
-                .map(|delta| {
-                    Ok(BlockDelta {
-                        txid: display_hex(delta.txid.into()),
-                        index: delta.index,
-                        inputs: delta
-                            .inputs
-                            .into_iter()
-                            .map(|input| {
-                                Ok(InputDelta {
-                                    address: String::from(input.address),
-                                    satoshis: amount(i64::from(input.satoshis))?,
-                                    index: input.index,
-                                    prevtxid: display_hex(input.prev_txid.into()),
-                                    prevout: input.prev_output,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, DeltaAmountOutOfRange>>()?,
-                        outputs: delta
-                            .outputs
-                            .into_iter()
-                            .map(|output| {
-                                // `Zatoshis` is already bounded by the money
-                                // range, so the only step that can fail is the
-                                // widening to `i64` — which cannot, given that
-                                // bound. It is still checked rather than
-                                // asserted, so the two amount paths read alike.
-                                Ok(OutputDelta {
-                                    address: String::from(output.address),
-                                    satoshis: amount(
-                                        i64::try_from(u64::from(output.satoshis))
-                                            .map_err(|e| DeltaAmountOutOfRange(e.to_string()))?,
-                                    )?,
-                                    index: output.index,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, DeltaAmountOutOfRange>>()?,
-                    })
+                .map(|delta| BlockDelta {
+                    txid: display_hex(delta.txid.into()),
+                    index: delta.index,
+                    inputs: delta
+                        .inputs
+                        .into_iter()
+                        .map(|input| InputDelta {
+                            address: String::from(input.address),
+                            satoshis: amount::negative_allowed(input.satoshis),
+                            index: input.index,
+                            prevtxid: display_hex(input.prev_txid.into()),
+                            prevout: input.prev_output,
+                        })
+                        .collect(),
+                    outputs: delta
+                        .outputs
+                        .into_iter()
+                        .map(|output| OutputDelta {
+                            address: String::from(output.address),
+                            satoshis: amount::non_negative(output.satoshis),
+                            index: output.index,
+                        })
+                        .collect(),
                 })
-                .collect::<Result<Vec<_>, DeltaAmountOutOfRange>>()?,
-        })
+                .collect(),
+        }
     }
 }
 
@@ -234,7 +190,9 @@ mod tests {
     fn sample() -> domain::rpc::BlockDeltas {
         domain::rpc::BlockDeltas {
             hash: domain::BlockHash::from(ASYMMETRIC),
-            confirmations: 7,
+            confirmations: domain::BlockConfirmations::Confirmed(
+                std::num::NonZeroU32::new(7).expect("non-zero"),
+            ),
             size: 1_234,
             height: Height::try_from(42u32).unwrap(),
             version: 4,
@@ -243,14 +201,16 @@ mod tests {
                 txid: domain::TransactionId::from(ASYMMETRIC),
                 index: 1,
                 inputs: vec![domain::rpc::InputDelta {
-                    address: TransparentAddress::new("t1spender".to_string()),
-                    satoshis: SignedZatoshis::new(-5_000),
+                    address: TransparentAddress::try_new("t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs")
+                        .expect("valid mainnet t1"),
+                    satoshis: SignedZatoshis::try_new(-5_000).expect("within the supply"),
                     index: 0,
                     prev_txid: domain::TransactionId::from([0xbb; 32]),
                     prev_output: 3,
                 }],
                 outputs: vec![domain::rpc::OutputDelta {
-                    address: TransparentAddress::new("t1payee".to_string()),
+                    address: TransparentAddress::try_new("t3JZcvsuaXE6ygokL4XUiZSTrQBUoPYFnXJ")
+                        .expect("valid mainnet t3"),
                     satoshis: Zatoshis::new(5_000).unwrap(),
                     index: 0,
                 }],
@@ -258,7 +218,7 @@ mod tests {
             time: 1_700_000_000,
             median_time: 1_699_999_000,
             nonce: [0xcc; 32],
-            bits: 0x1d00_ffff,
+            bits: domain::CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid nBits"),
             difficulty: 1.0,
             previous_block_hash: Some(domain::BlockHash::from([0xdd; 32])),
             next_block_hash: None,
@@ -268,7 +228,7 @@ mod tests {
     /// Pins the legacy full node's field names and encodings. A rename here is a wire break.
     #[test]
     fn renders_legacy_field_names_and_encodings() {
-        let wire = BlockDeltas::from_domain(sample()).expect("amounts in range");
+        let wire = BlockDeltas::from_domain(sample());
         let json = serde_json::to_value(&wire).unwrap();
 
         let mut display_order = ASYMMETRIC;
@@ -293,14 +253,21 @@ mod tests {
         assert_eq!(json["deltas"][0]["outputs"][0]["satoshis"], 5_000i64);
     }
 
+    /// The largest-magnitude delta a [`SignedZatoshis`] can hold renders on the
+    /// wire. The wire's money range and the delta's supply bound coincide, so a
+    /// value beyond the wire's range cannot reach this conversion:
+    /// [`SignedZatoshis::try_new`] refuses it upstream when the delta is built.
     #[test]
-    fn rejects_an_input_amount_outside_the_money_range() {
-        let mut deltas = sample();
-        deltas.deltas[0].inputs[0].satoshis = SignedZatoshis::new(i64::MIN);
+    fn an_input_at_the_supply_extreme_renders() {
+        let max = i64::from(SignedZatoshis::MAX);
 
-        assert!(
-            BlockDeltas::from_domain(deltas).is_err(),
-            "an unrepresentable amount must be reported, not clamped or panicked on"
-        );
+        let mut deltas = sample();
+        deltas.deltas[0].inputs[0].satoshis =
+            SignedZatoshis::try_new(-max).expect("the supply extreme is a valid delta");
+
+        let wire = BlockDeltas::from_domain(deltas);
+        let json = serde_json::to_value(&wire).unwrap();
+
+        assert_eq!(json["deltas"][0]["inputs"][0]["satoshis"], -max);
     }
 }

@@ -6,7 +6,7 @@
 //! (`PersistentBlockContext`), and the two types round-trip via `from_business`/
 //! `to_business` conversion methods defined on that type.
 
-use super::{BlockHash, BlockIndex, ChainWork, Height};
+use super::{AbsoluteChainWork, BlockHash, BlockIndex, Height};
 
 /// The block's [`BlockIndex`], parent hash, and cumulative chainwork.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub struct BlockContext {
     pub parent_hash: BlockHash,
     /// The cumulative proof-of-work of the blockchain up to this block,
     /// used for chain selection.
-    pub chainwork: ChainWork,
+    pub chainwork: AbsoluteChainWork,
 }
 
 impl BlockContext {
@@ -26,7 +26,7 @@ impl BlockContext {
     pub fn new(
         hash: BlockHash,
         parent_hash: BlockHash,
-        chainwork: ChainWork,
+        chainwork: AbsoluteChainWork,
         height: Height,
     ) -> Self {
         Self {
@@ -46,9 +46,9 @@ impl BlockContext {
         &self.parent_hash
     }
 
-    /// Returns the cumulative chainwork up to this block.
-    pub fn chainwork(&self) -> &ChainWork {
-        &self.chainwork
+    /// Returns the total chain work up to this block.
+    pub fn chainwork(&self) -> AbsoluteChainWork {
+        self.chainwork
     }
 
     /// Returns the height of this block.

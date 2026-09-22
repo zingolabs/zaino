@@ -1,72 +1,39 @@
 [package]
 name = "zaino-testutils"
-description = "Crate containing Zaino test specific functionality."
+description = "Shared helpers for Zaino live tests running on the ztest Kubernetes harness."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.2.0"
+version = { workspace = true }
 publish = false
 
-[features]
-default = []
-
-# **Experimental and alpha features**
-# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
-
-# Activates transparent address history capability in zaino
-#
-# NOTE: currently this is only implemented in the finalised state.
-transparent_address_history_experimental = [
-    "zaino-state/transparent_address_history_experimental",
-    "zaino-serve/transparent_address_history_experimental",
-    "zainod/transparent_address_history_experimental"
-]
-
 [dependencies]
-# Zaino
-zaino-state = { workspace = true }
+# The k8s test harness. Owns validator/indexer/wallet lifecycle and exposes
+# typed RPC handles back to test code (replaces zcash_local_net's subprocess
+# launcher and Zaino's in-process service subscribers).
+ztest = { workspace = true }
 
-# The finalised store's on-disk types, for the legacy parser that rebuilds an
-# `IndexedBlock` independently and compares. Named directly rather than through
-# `zaino-state`, which no longer passes them through: they belong to the backend
-# that writes them.
-zaino-chain-store-zainodb = { workspace = true }
-zaino-serve.workspace = true
-zaino-common.workspace = true
-zaino-proto = { workspace = true }
-# test_dependencies enables Indexer::launch_inner_with_listeners (and forwards
-# zaino-serve/test_dependencies) so the harness can serve on pre-bound sockets.
-zainod = { workspace = true, features = ["test_dependencies"] }
+# `anyhow::Result` on the parity helpers; JSON-RPC response comparison in the
+# `json` / `rpc` parity helpers.
+anyhow = { workspace = true }
+serde_json = { workspace = true }
 
-# Librustzcash. local-consensus is test-only (regtest params); kept off the
-# root workspace entry so prod resolution is unchanged.
-zcash_protocol = { workspace = true, features = ["local-consensus"] }
-
-# Zebra
+# `legacy_parser` only. It is the independent second parser the transaction
+# vectors compare against, so it renders into the same compact-format types the
+# server serves. `default-features = false` keeps the `heavy` feature — and with
+# it zebra-state and rocksdb — out of the live-test dependency graph.
+zaino-proto = { workspace = true, default-features = false }
 zebra-chain = { workspace = true }
-zebra-state = { workspace = true }
-zebra-rpc = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
 
-# Zingo-infra
-zcash_local_net = { workspace = true }
-
-# Miscellaneous
-futures = { workspace = true }
-http = { workspace = true }
-once_cell = { workspace = true }
+# The hex codec behind the `hex` module.
+hex = "0.4"
+# Polling clock behind the `finalised` gate.
 tokio = { workspace = true }
-tracing.workspace = true
-zaino-primitives.workspace = true
-thiserror.workspace = true
-hex.workspace = true
-prost.workspace = true
-zaino-rpc.workspace = true
-serde_json.workspace = true
-zaino-status.workspace = true
 
 [dev-dependencies]
-tonic.workspace = true
-wire_serialized_transaction_test_data.workspace = true
+# Drives `legacy_parser::transaction`'s own round-trip tests.
+wire_serialized_transaction_test_data = { workspace = true }

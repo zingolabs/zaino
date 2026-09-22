@@ -16,7 +16,7 @@ use zaino_primitives::types::{Block, BlockHash, BlockRef, TreeRoots};
 /// that serves or persists absolute chainwork must rebase this against the
 /// anchor's true cumulative work first. That rebasing is not implemented
 /// anywhere yet — which is why this is its own type rather than
-/// [`zaino_primitives::types::ChainWork`]: the two are not interchangeable and
+/// [`zaino_primitives::types::AbsoluteChainWork`]: the two are not interchangeable and
 /// the type system should say so.
 ///
 /// Accumulation starts at the anchor block's *own* work rather than at zero,

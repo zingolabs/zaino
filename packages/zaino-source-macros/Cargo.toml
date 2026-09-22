@@ -1,11 +1,15 @@
 [package]
 name = "zaino-source-macros"
 version = "0.1.0"
+description = "Procedural macros for zaino-source: derive the resilient validator-port traits from their single-attempt OneShot* twins."
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 proc-macro = true

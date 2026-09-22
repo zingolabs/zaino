@@ -11,7 +11,7 @@
 //! - Transaction types: TransactionHash, CompactTxData, TransparentCompactTx, etc.
 //! - Address types: AddrScript, Outpoint, AddrHistRecord, etc.
 //! - Shielded types: SaplingCompactTx, OrchardCompactTx, etc.
-//! - Primitives: Height, ChainWork, ShardIndex, etc.
+//! - Primitives: Height, AbsoluteChainWork, ShardIndex, etc.
 //!
 //! ## Helper Types
 //! Non-database types for in-memory operations and conversions:
@@ -47,7 +47,7 @@ pub use db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 // Re-export business-layer primitives and containers
 pub use block_context::BlockContext;
 pub use primitives::{
-    BlockIndex, ChainWork, ChainWorkError, CompactDifficulty, CompactDifficultyError,
+    AbsoluteChainWork, BlockIndex, CompactDifficulty, CompactDifficultyError, SingleBlockWork,
 };
 
 // Re-export helper types

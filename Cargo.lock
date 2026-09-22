@@ -588,9 +588,9 @@ dependencies = [
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -685,34 +685,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "clientless"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "futures",
- "hex",
- "serde_json",
- "tokio",
- "wire_serialized_transaction_test_data",
- "zaino-address",
- "zaino-chain-store-zainodb",
- "zaino-common",
- "zaino-consensus",
- "zaino-primitives",
- "zaino-proto",
- "zaino-rpc",
- "zaino-serve",
- "zaino-state",
- "zaino-status",
- "zaino-testutils",
- "zainod",
- "zcash_local_net",
- "zebra-chain",
- "zebra-rpc",
- "zebra-state",
-]
 
 [[package]]
 name = "cmake"
@@ -1184,33 +1156,6 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
-name = "e2e"
-version = "0.2.0"
-dependencies = [
- "corez",
- "futures",
- "hex",
- "serde_json",
- "tokio",
- "tower 0.4.13",
- "zaino-chain-store-zainodb",
- "zaino-common",
- "zaino-consensus",
- "zaino-encoding",
- "zaino-primitives",
- "zaino-proto",
- "zaino-serve",
- "zaino-state",
- "zaino-testutils",
- "zainod",
- "zcash_local_net",
- "zcash_primitives",
- "zebra-chain",
- "zebra-rpc",
- "zebra-state",
-]
 
 [[package]]
 name = "ed25519"
@@ -3548,7 +3493,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
 dependencies = [
- "chacha20 0.10.1",
+ "chacha20 0.10.2",
  "getrandom 0.4.3",
  "rand_core 0.10.1",
 ]
@@ -4518,9 +4463,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
@@ -5837,12 +5782,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wire_serialized_transaction_test_data"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aebb4f5d78d0832cc4a1760a20288470c6fafa02f18e555a7ece133cd8cef5ca"
-
-[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5915,21 +5854,6 @@ dependencies = [
  "zcash_keys",
  "zcash_protocol",
  "zcash_transparent",
-]
-
-[[package]]
-name = "zaino-bench"
-version = "0.1.0"
-dependencies = [
- "clap",
- "futures",
- "reqwest 0.13.1",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "zaino-common",
- "zaino-proto",
- "zaino-state",
 ]
 
 [[package]]
@@ -6022,7 +5946,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-common"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rustls",
  "serde",
@@ -6034,18 +5958,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-component"
+version = "0.1.0"
+dependencies = [
+ "strum",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "zaino-consensus"
 version = "0.1.0"
 dependencies = [
  "hex",
- "primitive-types 0.14.0",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "zaino-convert-zebra"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "proptest",
  "thiserror 2.0.18",
  "zaino-consensus",
  "zaino-primitives",
@@ -6061,7 +5995,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-mempool"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -6073,7 +6007,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-mempool-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "async-stream",
@@ -6090,15 +6024,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-primitives"
+name = "zaino-persistence"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-primitives"
+version = "0.2.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zcash_address",
+ "zcash_protocol",
 ]
 
 [[package]]
 name = "zaino-proto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "prost",
  "tonic",
@@ -6111,7 +6055,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-rpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "reqwest 0.13.1",
  "serde",
@@ -6125,7 +6069,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "futures",
  "hex",
@@ -6153,7 +6097,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -6172,7 +6116,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tokio",
  "zaino-primitives",
@@ -6183,7 +6127,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra-readstate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -6200,7 +6144,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra-rpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "incrementalmerkletree",
@@ -6220,7 +6164,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arc-swap",
  "blake2",
@@ -6282,45 +6226,14 @@ dependencies = [
 
 [[package]]
 name = "zaino-status"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "tracing",
-]
-
-[[package]]
-name = "zaino-testutils"
-version = "0.2.0"
-dependencies = [
- "futures",
- "hex",
- "http",
- "once_cell",
- "prost",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tracing",
- "wire_serialized_transaction_test_data",
- "zaino-chain-store-zainodb",
- "zaino-common",
- "zaino-primitives",
- "zaino-proto",
- "zaino-rpc",
- "zaino-serve",
- "zaino-state",
- "zaino-status",
- "zainod",
- "zcash_local_net",
- "zcash_protocol",
- "zebra-chain",
- "zebra-rpc",
- "zebra-state",
 ]
 
 [[package]]
 name = "zainod"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "config",
@@ -6407,24 +6320,6 @@ dependencies = [
  "zcash_protocol",
  "zcash_transparent",
  "zip32",
-]
-
-[[package]]
-name = "zcash_local_net"
-version = "0.7.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=85502cd0b5faf9308e590865dae51bf31fdd342e#85502cd0b5faf9308e590865dae51bf31fdd342e"
-dependencies = [
- "hex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "zingo-consensus",
- "zingo_test_vectors",
 ]
 
 [[package]]
@@ -6959,16 +6854,6 @@ dependencies = [
  "quote",
  "syn 2.0.118",
 ]
-
-[[package]]
-name = "zingo-consensus"
-version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=85502cd0b5faf9308e590865dae51bf31fdd342e#85502cd0b5faf9308e590865dae51bf31fdd342e"
-
-[[package]]
-name = "zingo_test_vectors"
-version = "0.0.1"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=85502cd0b5faf9308e590865dae51bf31fdd342e#85502cd0b5faf9308e590865dae51bf31fdd342e"
 
 [[package]]
 name = "zip32"
