@@ -34,8 +34,9 @@ use zaino_primitives::types::{
 };
 use zaino_source::{
     FailureMode, FetchError, GetBlockByHashError, GetBlockError, GetChainTipError,
-    GetChainTipsError, GetCommitmentTreeRootsError, OneShotGetBlock, OneShotGetBlockByHash,
-    OneShotGetChainTip, OneShotGetChainTips, OneShotGetCommitmentTreeRoots, QueryError,
+    GetChainTipsError, GetCommitmentTreeRootsByHeightError, GetCommitmentTreeRootsError,
+    OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip, OneShotGetChainTips,
+    OneShotGetCommitmentTreeRoots, OneShotGetCommitmentTreeRootsByHeight, QueryError,
     SubscribeBlocks,
 };
 
@@ -90,6 +91,10 @@ struct MockState {
     best_chain: Vec<BlockHash>,
     /// Fail this many more calls before answering normally.
     fail_calls: usize,
+    /// Answer this many more by-height roots reads with a hash no block has.
+    stale_roots_answers: usize,
+    /// How many hash-addressed roots reads have been answered.
+    roots_by_hash_reads: usize,
 }
 
 /// A validator whose chain the test controls.
@@ -115,6 +120,16 @@ impl MockValidator {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, MockState> {
         self.state.lock().expect("mock state mutex poisoned")
+    }
+
+    /// Makes the next `count` by-height roots reads name a block the walk did not fetch.
+    fn answer_stale_roots(&self, count: usize) {
+        self.lock().stale_roots_answers = count;
+    }
+
+    /// How many hash-addressed roots reads this validator has answered.
+    fn roots_by_hash_reads(&self) -> usize {
+        self.lock().roots_by_hash_reads
     }
 
     /// Appends one block to the best chain.
@@ -209,11 +224,43 @@ impl OneShotGetCommitmentTreeRoots for MockValidator {
         &self,
         _block: BlockHash,
     ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
+        self.lock().roots_by_hash_reads += 1;
         Ok(TreeRoots {
             sapling: None,
             orchard: None,
             ironwood: None,
         })
+    }
+}
+
+impl OneShotGetCommitmentTreeRootsByHeight for MockValidator {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<(BlockHash, TreeRoots), QueryError<GetCommitmentTreeRootsByHeightError>> {
+        let mut state = self.lock();
+        let best_chain_hash = state
+            .best_chain
+            .get(u32::from(height) as usize)
+            .copied()
+            .ok_or(QueryError::Domain(
+                GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+            ))?;
+        let hash = if state.stale_roots_answers > 0 {
+            state.stale_roots_answers -= 1;
+            hash(u16::MAX)
+        } else {
+            best_chain_hash
+        };
+        drop(state);
+        Ok((
+            hash,
+            TreeRoots {
+                sapling: None,
+                orchard: None,
+                ironwood: None,
+            },
+        ))
     }
 }
 
@@ -319,6 +366,21 @@ async fn spawn_anchors_at_the_window_floor() {
     assert_eq!(snapshot.retained_block_count(), 1);
 }
 
+/// An anchored service reports `Syncing` until its first advance reaches the tip, and `Ready` after it.
+#[tokio::test]
+async fn an_anchored_service_is_syncing_until_its_first_advance() {
+    use zaino_status::StatusType;
+
+    let validator = MockValidator::linear(50);
+    let service = stepped(&validator, 10).await;
+
+    assert_eq!(service.status(), StatusType::Syncing);
+
+    step_to_tip(&service, &validator).await;
+
+    assert_eq!(service.status(), StatusType::Ready);
+}
+
 /// A chain shorter than the depth anchors at genesis.
 #[tokio::test]
 async fn a_short_chain_anchors_at_genesis() {
@@ -374,6 +436,37 @@ async fn advancing_extends_to_the_chain_tip() {
     assert_eq!(snapshot.best_tip().height, height(9));
     assert_eq!(snapshot.best_tip().hash, hash(9));
     assert_eq!(snapshot.retained_block_count(), 10);
+}
+
+/// The catch-up walk needs no hash-addressed roots read while each by-height answer names the block it fetched.
+#[tokio::test]
+async fn matching_roots_answers_need_no_read_by_hash() {
+    let validator = MockValidator::linear(50);
+    let service = stepped(&validator, 10).await;
+    let reads_after_anchoring = validator.roots_by_hash_reads();
+
+    step_to_tip(&service, &validator).await;
+
+    assert_eq!(service.subscriber().current().best_tip().height, height(49));
+    assert_eq!(validator.roots_by_hash_reads(), reads_after_anchoring);
+}
+
+/// The catch-up walk discards a by-height roots answer that names another block, and refetches by the hash it holds.
+#[tokio::test]
+async fn a_roots_answer_naming_another_block_is_refetched_by_hash() {
+    const STALE_ANSWERS: usize = 3;
+    let validator = MockValidator::linear(50);
+    let service = stepped(&validator, 10).await;
+    let reads_after_anchoring = validator.roots_by_hash_reads();
+    validator.answer_stale_roots(STALE_ANSWERS);
+
+    step_to_tip(&service, &validator).await;
+
+    assert_eq!(service.subscriber().current().best_tip().height, height(49));
+    assert_eq!(
+        validator.roots_by_hash_reads(),
+        reads_after_anchoring + STALE_ANSWERS
+    );
 }
 
 /// Work accumulates from the anchor, so a later block always outweighs an
