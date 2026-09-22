@@ -11,9 +11,9 @@
 pub use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, ChainMetadata, CompactBlock,
     CompactCiphertext, Height, Nullifier, OrchardAction, OutputIndex, PreIndexCompactBlock,
-    PreIndexCompactTx, SaplingOutput, Script, ShieldedPool, SubtreeRoot, Transaction,
-    TransactionId, TransactionLocation, TransparentAddress, TransparentInput, TransparentOutput,
-    Treestate, Utxo, Zatoshis,
+    PreIndexCompactTx, RawTransaction, SaplingOutput, Script, ShieldedPool, SubtreeRoot,
+    Transaction, TransactionId, TransactionLocation, TransparentAddress, TransparentInput,
+    TransparentOutput, Treestate, Utxo, Zatoshis,
 };
 
 mod chain_info;

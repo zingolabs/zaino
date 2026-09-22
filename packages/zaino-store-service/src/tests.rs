@@ -8,11 +8,14 @@
 
 use zaino_chainview::testing::StubNonFinalised;
 use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
-use zaino_service::{AddressRead, Broadcast, TakeSnapshot, TreestateRead};
+use zaino_service::{AddressRead, Broadcast, RawTransactionRead, TakeSnapshot, TreestateRead};
 use zaino_source::mock::MockChain;
 use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
 
-use zaino_core::{Height, HeightRange, TransactionId, TransparentAddress};
+use zaino_core::{
+    Height, HeightRange, RawTransaction, ShieldedPool, TransactionId, TransactionLocation,
+    TransparentAddress,
+};
 
 use crate::Engine;
 
@@ -29,6 +32,8 @@ where
         + zaino_source::GetAddressUtxos
         + zaino_source::GetAddressTxids
         + zaino_source::GetAddressDeltas
+        + zaino_source::GetTransaction
+        + zaino_source::GetSubtreeRoots
         + Clone
         + 'static,
     Engine<Fs, Nfs, Src>: zaino_service::WalletLibService
@@ -147,6 +152,52 @@ async fn address_reads_map_an_invalid_address_to_fatal() {
         }
         other => panic!("expected a definitive invalid-address failure, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn raw_transaction_passes_through_the_bytes_and_location() {
+    // Seed a canned response: passthrough must relay the exact bytes and where
+    // the validator placed the transaction, unparsed.
+    let bytes = vec![0xab, 0xcd, 0xef];
+    let engine = engine_with(
+        MockChain::new()
+            .respond_transaction(bytes.clone(), TransactionLocation::BestChain(height(9))),
+    );
+    let snapshot = engine.snapshot().await.expect("snapshot acquired");
+    let got = RawTransactionRead::raw_transaction(&snapshot, TransactionId::from([1u8; 32]))
+        .await
+        .expect("served");
+    assert_eq!(
+        got,
+        Some(RawTransaction {
+            data: bytes,
+            location: TransactionLocation::BestChain(height(9)),
+        })
+    );
+}
+
+#[tokio::test]
+async fn raw_transaction_maps_a_missing_txid_to_none() {
+    // No response seeded: the mock answers NotFound, a domain miss the passthrough
+    // maps to `Ok(None)` — not a NotServiceable stub.
+    let engine = engine_with(MockChain::new());
+    let snapshot = engine.snapshot().await.expect("snapshot acquired");
+    let got = RawTransactionRead::raw_transaction(&snapshot, TransactionId::from([2u8; 32]))
+        .await
+        .expect("served");
+    assert_eq!(got, None);
+}
+
+#[tokio::test]
+async fn subtree_roots_pass_through_from_an_index() {
+    // An `Ok` — not a NotServiceable stub — proves the index-addressed subtree
+    // read routes to the passthrough provider.
+    let engine = engine_with(MockChain::new());
+    let snapshot = engine.snapshot().await.expect("snapshot acquired");
+    let roots = TreestateRead::subtree_roots(&snapshot, ShieldedPool::Sapling, 0, None)
+        .await
+        .expect("subtree roots served");
+    assert!(roots.is_empty());
 }
 
 #[tokio::test]

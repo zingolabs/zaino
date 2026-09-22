@@ -11,21 +11,22 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::ChainViewSnapshot;
 use zaino_source::{
-    GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos, GetTreestate,
+    GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos, GetSubtreeRoots,
+    GetTransaction, GetTreestate,
 };
 
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
-    ChainInfo, CompactBlock, Height, HeightRange, Outpoint, ServiceableRange, ShieldedPool,
-    SpendStatus, SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus,
-    Utxo,
+    ChainInfo, CompactBlock, Height, HeightRange, Outpoint, RawTransaction, ServiceableRange,
+    ShieldedPool, SpendStatus, SubtreeRoot, Transaction, TransactionId, TransparentAddress,
+    Treestate, TxStatus, Utxo,
 };
 use zaino_service::error::{
     AddressReadError, BlockReadError, ReadError, SpendReadError, TreestateReadError, TxReadError,
 };
 use zaino_service::{
     AddressRead, BlockRead, ChainInfoRead, ChainSegment, CompactBlockRead, CompactNullifierRead,
-    Snapshot, SpendRead, TransactionRead, TreestateRead,
+    RawTransactionRead, Snapshot, SpendRead, TransactionRead, TreestateRead,
 };
 
 use crate::remote::RemoteChainView;
@@ -147,6 +148,9 @@ where
     Src: Clone + Send + Sync + 'static,
 {
     async fn transaction(&self, _id: TransactionId) -> Result<Option<Transaction>, TxReadError> {
+        // The pool-decomposed read needs a bytes→Transaction parse zaino does not
+        // yet have — an explorer/node surface, off the wallet path. The wallet's
+        // raw-bytes read is served by `RawTransactionRead` below.
         Err(TxReadError::NotServiceable(Capability::RawTransaction))
     }
     async fn transaction_status(&self, _id: TransactionId) -> Result<TxStatus, TxReadError> {
@@ -154,11 +158,27 @@ where
     }
 }
 
+impl<F, N, Src> RawTransactionRead for EngineSnapshot<F, N, Src>
+where
+    F: ChainSegment + CompactBlockRead,
+    N: ChainSegment + CompactBlockRead,
+    Src: GetTransaction + Send + Sync + 'static,
+{
+    async fn raw_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<RawTransaction>, TxReadError> {
+        // Passthrough: the wallet-facing transaction read is raw bytes + location,
+        // which the validator returns directly (`getrawtransaction`) — no parse.
+        self.remote.raw_transaction(id).await
+    }
+}
+
 impl<F, N, Src> TreestateRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
-    Src: GetTreestate + Send + Sync + 'static,
+    Src: GetTreestate + GetSubtreeRoots + Send + Sync + 'static,
 {
     async fn treestate(&self, at: Height) -> Result<Treestate, TreestateReadError> {
         // Passthrough: zaino does not index treestate, so the remote view answers
@@ -168,13 +188,13 @@ where
     }
     async fn subtree_roots(
         &self,
-        _pool: ShieldedPool,
-        _range: HeightRange,
+        pool: ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
-        // Still stubbed: the service asks by height range, the source by
-        // subtree-index + limit — passthrough needs a translation, not a straight
-        // relay. Wired once that mapping lands.
-        Err(TreestateReadError::NotServiceable(Capability::SubtreeRoots))
+        // Passthrough: the read is index-addressed exactly like the source's
+        // `z_getsubtreesbyindex`, so it relays straight through.
+        self.remote.subtree_roots(pool, start_index, limit).await
     }
 }
 

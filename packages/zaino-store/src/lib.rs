@@ -36,8 +36,8 @@ use std::sync::Arc;
 use futures::stream::{self, BoxStream, StreamExt};
 use zaino_core::{
     AddressBalance, AddressDelta, BlockHash, BlockId, BlockRef, Capability, Height, HeightRange,
-    MempoolTx, ServiceabilityManifest, ServiceableRange, ShieldedPool, SubtreeRoot, TipEvent,
-    Transaction, TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
+    MempoolTx, RawTransaction, ServiceabilityManifest, ServiceableRange, ShieldedPool, SubtreeRoot,
+    TipEvent, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
 };
 use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
@@ -61,7 +61,8 @@ use zaino_service::error::{
 };
 use zaino_service::{
     AddressRead, Broadcast, ChainSegment, CompactBlockRead, CompactNullifierRead, MempoolSubscribe,
-    Serviceable, Snapshot, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
+    RawTransactionRead, Serviceable, Snapshot, TakeSnapshot, TipSubscribe, TransactionRead,
+    TreestateRead,
 };
 use zaino_sync::primitives::BlockHeight;
 
@@ -527,6 +528,15 @@ impl<B: Backend + 'static> TransactionRead for StoreSnapshot<B> {
     }
 }
 
+impl<B: Backend + 'static> RawTransactionRead for StoreSnapshot<B> {
+    async fn raw_transaction(
+        &self,
+        _id: TransactionId,
+    ) -> Result<Option<RawTransaction>, TxReadError> {
+        Err(TxReadError::NotServiceable(Capability::RawTransaction))
+    }
+}
+
 impl<B: Backend + 'static> TreestateRead for StoreSnapshot<B> {
     async fn treestate(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
         Err(TreestateReadError::NotServiceable(Capability::Treestate))
@@ -534,7 +544,8 @@ impl<B: Backend + 'static> TreestateRead for StoreSnapshot<B> {
     async fn subtree_roots(
         &self,
         _pool: ShieldedPool,
-        _range: HeightRange,
+        _start_index: u16,
+        _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
         Err(TreestateReadError::NotServiceable(Capability::SubtreeRoots))
     }

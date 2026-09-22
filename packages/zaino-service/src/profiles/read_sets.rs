@@ -10,17 +10,25 @@
 //! constituent read capabilities.
 
 use crate::reads::{
-    AddressRead, BlockRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, SpendRead,
-    TransactionRead, TreestateRead,
+    AddressRead, BlockRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead,
+    RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
 };
 
 /// Reads shared by every wallet-shaped consumer — scan compact blocks, build
-/// note-commitment witnesses, track transparent funds. The common base of
-/// [`FullWalletReads`] and [`LightWalletReads`], which are siblings over it: extracting
-/// the core keeps the two from evolving through each other.
-pub trait WalletReadCore: CompactBlockRead + TreestateRead + AddressRead + TransactionRead {}
+/// note-commitment witnesses, track transparent funds, fetch a transaction's
+/// bytes. The common base of [`FullWalletReads`] and [`LightWalletReads`], which
+/// are siblings over it: extracting the core keeps the two from evolving through
+/// each other.
+///
+/// A wallet takes a transaction as raw bytes ([`RawTransactionRead`]) and parses
+/// it locally; the pool-decomposed [`TransactionRead`] is the node/explorer
+/// surface ([`NodeRpcReads`]), not a wallet read.
+pub trait WalletReadCore:
+    CompactBlockRead + TreestateRead + AddressRead + RawTransactionRead
+{
+}
 impl<T> WalletReadCore for T where
-    T: CompactBlockRead + TreestateRead + AddressRead + TransactionRead
+    T: CompactBlockRead + TreestateRead + AddressRead + RawTransactionRead
 {
 }
 

@@ -54,16 +54,15 @@ pub async fn assert_light_wallet_reads<Snap: LightWalletReads>(snap: &Snap) {
     // Compact-block serving — the light path's block read.
     assert_serviceable!(snap.compact_block(block_ref).await, "compact_block");
 
-    // Commitment treestate at a height, and per-pool subtree roots over a range.
+    // Commitment treestate at a height, and per-pool subtree roots from an index.
     assert_serviceable!(snap.treestate(height).await, "treestate");
     assert_serviceable!(
-        snap.subtree_roots(ShieldedPool::Sapling, range).await,
+        snap.subtree_roots(ShieldedPool::Sapling, 0, None).await,
         "subtree_roots"
     );
 
-    // Transaction lookup + status.
-    assert_serviceable!(snap.transaction(txid).await, "transaction");
-    assert_serviceable!(snap.transaction_status(txid).await, "transaction_status");
+    // Raw transaction fetch — the wallet parses the bytes locally.
+    assert_serviceable!(snap.raw_transaction(txid).await, "raw_transaction");
 
     // Transparent address history — the subset a light wallet pulls.
     assert_serviceable!(snap.balance(&addr, range).await, "balance");

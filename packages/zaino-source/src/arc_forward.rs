@@ -14,7 +14,8 @@
 //! compact-indexer path ([`OneShotGetPreIndexCompactBlock`],
 //! [`OneShotGetChainTip`], [`SubscribeChainTip`]) and the serving path's
 //! passthrough ports ([`OneShotGetTreestate`], [`OneShotSendRawTransaction`],
-//! and the transparent-address reads). Each is a mechanical `Deref`-forward.
+//! [`OneShotGetTransaction`], [`OneShotGetSubtreeRoots`], and the
+//! transparent-address reads). Each is a mechanical `Deref`-forward.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -22,16 +23,18 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, BlockHash, Height, PreIndexCompactBlock, TransactionId,
-    Treestate, Utxo,
+    AddressBalance, AddressDelta, BlockHash, Height, PreIndexCompactBlock, ShieldedPool,
+    SubtreeRoot, TransactionId, Treestate, Utxo,
 };
 
 use crate::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockError, GetChainTipError, GetTreestateError, OneShotGetAddressBalance,
-    OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetChainTip,
-    OneShotGetPreIndexCompactBlock, OneShotGetTreestate, OneShotSendRawTransaction, QueryError,
-    SendRawTransactionError, SubscribeChainTip, TipObservation, ValidatorSource,
+    GetBlockError, GetChainTipError, GetSubtreeRootsError, GetTransactionError, GetTreestateError,
+    OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
+    OneShotGetAddressUtxos, OneShotGetChainTip, OneShotGetPreIndexCompactBlock,
+    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate, OneShotSendRawTransaction,
+    QueryError, SendRawTransactionError, SubscribeChainTip, TipObservation, TransactionResponse,
+    ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -136,5 +139,31 @@ impl<V: OneShotGetAddressDeltas + ?Sized> OneShotGetAddressDeltas for Arc<V> {
         Output = Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError, Self::NonDomain>>,
     > + Send {
         (**self).get_address_deltas(addresses, start, end)
+    }
+}
+
+// The serving path's raw-transaction fetch and subtree-root paging reach the
+// validator through the same `Arc<V>` (both pure passthrough).
+impl<V: OneShotGetTransaction + ?Sized> OneShotGetTransaction for Arc<V> {
+    fn get_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<
+        Output = Result<TransactionResponse, QueryError<GetTransactionError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_transaction(txid)
+    }
+}
+
+impl<V: OneShotGetSubtreeRoots + ?Sized> OneShotGetSubtreeRoots for Arc<V> {
+    fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> impl Future<
+        Output = Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_subtree_roots(pool, start_index, limit)
     }
 }

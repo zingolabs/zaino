@@ -21,9 +21,9 @@ use futures::stream::{self, BoxStream, StreamExt};
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
     ChainInfo, CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint,
-    PassthroughAnswer, PassthroughQuery, ReportedUpgrade, ServiceabilityManifest, ServiceableRange,
-    ShieldedPool, SpendStatus, SubtreeRoot, Transaction, TransactionId, TransparentAddress,
-    Treestate, TxStatus, Utxo,
+    PassthroughAnswer, PassthroughQuery, RawTransaction, ReportedUpgrade, ServiceabilityManifest,
+    ServiceableRange, ShieldedPool, SpendStatus, SubtreeRoot, Transaction, TransactionId,
+    TransparentAddress, Treestate, TxStatus, Utxo,
 };
 
 use crate::error::{
@@ -33,8 +33,8 @@ use crate::error::{
 use crate::{
     AddressRead, BlockRead, Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead,
     CompactNullifierRead, ForkReconcile, IndexerService, MempoolSubscribe, Passthrough,
-    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
-    TransactionRead, TreestateRead,
+    RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot,
+    TipSubscribe, TransactionRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -177,6 +177,15 @@ impl TransactionRead for MockSnapshot {
     }
 }
 
+impl RawTransactionRead for MockSnapshot {
+    async fn raw_transaction(
+        &self,
+        _id: TransactionId,
+    ) -> Result<Option<RawTransaction>, TxReadError> {
+        Ok(None)
+    }
+}
+
 impl TreestateRead for MockSnapshot {
     async fn treestate(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
         Err(TreestateReadError::NotServiceable(Capability::Treestate))
@@ -184,7 +193,8 @@ impl TreestateRead for MockSnapshot {
     async fn subtree_roots(
         &self,
         _pool: ShieldedPool,
-        _range: HeightRange,
+        _start_index: u16,
+        _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
         Ok(Vec::new())
     }

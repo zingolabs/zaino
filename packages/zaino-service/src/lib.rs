@@ -38,5 +38,5 @@ pub use profiles::{
 };
 pub use reads::{
     AddressRead, BlockRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, ForkReconcile,
-    SpendRead, TransactionRead, TreestateRead,
+    RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
 };

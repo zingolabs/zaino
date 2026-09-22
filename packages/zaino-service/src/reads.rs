@@ -7,8 +7,9 @@ use futures::stream::BoxStream;
 
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, ChainInfo,
-    CompactBlock, ForkPoint, Height, HeightRange, Locator, Outpoint, ShieldedPool, SpendStatus,
-    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
+    CompactBlock, ForkPoint, Height, HeightRange, Locator, Outpoint, RawTransaction, ShieldedPool,
+    SpendStatus, SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus,
+    Utxo,
 };
 
 use crate::error::{
@@ -43,7 +44,11 @@ pub trait CompactBlockRead: Send + Sync {
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>>;
 }
 
-/// Backed by: txid-location index.
+/// The pool-decomposed transaction read: the transaction parsed into its
+/// transparent/shielded structure. The explorer/node surface — a wallet takes
+/// the transaction as bytes and parses locally (see [`RawTransactionRead`]).
+///
+/// Backed by: txid-location index plus a bytes→[`Transaction`] parse.
 pub trait TransactionRead: Send + Sync {
     fn transaction(
         &self,
@@ -55,16 +60,37 @@ pub trait TransactionRead: Send + Sync {
     ) -> impl Future<Output = Result<TxStatus, TxReadError>> + Send;
 }
 
+/// The wallet-facing transaction read: the transaction as raw serialized bytes
+/// plus where it lives, the lightwalletd `GetTransaction` shape. A wallet parses
+/// the bytes itself, so this needs no parse and passes straight through to the
+/// validator; the pool-decomposed [`TransactionRead`] is the explorer/node
+/// surface.
+///
+/// Backed by: passthrough to the validator's raw-transaction fetch.
+pub trait RawTransactionRead: Send + Sync {
+    fn raw_transaction(
+        &self,
+        id: TransactionId,
+    ) -> impl Future<Output = Result<Option<RawTransaction>, TxReadError>> + Send;
+}
+
 /// Backed by: commitment-tree index.
 pub trait TreestateRead: Send + Sync {
     fn treestate(
         &self,
         at: Height,
     ) -> impl Future<Output = Result<Treestate, TreestateReadError>> + Send;
+    /// Complete note-commitment subtree roots for `pool`, addressed by subtree
+    /// index: a run of at most `limit` roots starting at `start_index` (all from
+    /// there when `limit` is `None`). Index-addressed, not height-addressed,
+    /// because a subtree completes at a height fixed by note-commitment density —
+    /// there is no height→index mapping — and because this is exactly how a wallet
+    /// pages the frontier and how the `z_getsubtreesbyindex` source answers.
     fn subtree_roots(
         &self,
         pool: ShieldedPool,
-        range: HeightRange,
+        start_index: u16,
+        limit: Option<u16>,
     ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
 }
 

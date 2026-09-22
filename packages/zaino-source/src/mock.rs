@@ -11,10 +11,13 @@ use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate
 use crate::error::{FailureMode, NonDomainError};
 use crate::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockByHashError, GetBlockError, GetChainTipError, GetTreestateError, QueryError,
-    SendRawTransactionError,
+    GetBlockByHashError, GetBlockError, GetChainTipError, GetSubtreeRootsError,
+    GetTransactionError, GetTreestateError, QueryError, SendRawTransactionError,
+    TransactionResponse,
 };
-use zaino_primitives::types::{AddressBalance, AddressDelta, Utxo};
+use zaino_primitives::types::{
+    AddressBalance, AddressDelta, ShieldedPool, SubtreeRoot, TransactionLocation, Utxo,
+};
 
 /// A pre-populated in-memory chain for testing.
 pub struct MockChain {
@@ -30,6 +33,11 @@ pub struct MockChain {
     /// When set, every address query rejects the addresses as invalid with this
     /// reason; otherwise they answer with empty (no-match) results.
     address_rejection: Option<String>,
+    /// Canned raw-transaction response, returned for any txid; `None` answers a
+    /// domain not-found.
+    transaction_response: Option<TransactionResponse>,
+    /// Canned subtree roots, returned for any index query.
+    subtree_roots: Vec<SubtreeRoot>,
 }
 
 impl MockChain {
@@ -44,7 +52,21 @@ impl MockChain {
             failure_mode: FailureMode::Connection,
             send_rejection: None,
             address_rejection: None,
+            transaction_response: None,
+            subtree_roots: Vec::new(),
         }
+    }
+
+    /// Seed the response `get_transaction` returns for any txid.
+    pub fn respond_transaction(mut self, bytes: Vec<u8>, location: TransactionLocation) -> Self {
+        self.transaction_response = Some(TransactionResponse { bytes, location });
+        self
+    }
+
+    /// Seed a subtree root `get_subtree_roots` returns.
+    pub fn with_subtree_root(mut self, root: SubtreeRoot) -> Self {
+        self.subtree_roots.push(root);
+        self
     }
 
     /// Make `send_raw_transaction` reject with a domain error, for exercising a
@@ -128,6 +150,8 @@ impl Clone for MockChain {
             failure_mode: self.failure_mode.clone(),
             send_rejection: self.send_rejection.clone(),
             address_rejection: self.address_rejection.clone(),
+            transaction_response: self.transaction_response.clone(),
+            subtree_roots: self.subtree_roots.clone(),
         }
     }
 }
@@ -291,6 +315,34 @@ impl crate::OneShotGetAddressDeltas for MockChain {
             )));
         }
         Ok(Vec::new())
+    }
+}
+
+impl crate::OneShotGetTransaction for MockChain {
+    async fn get_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.transaction_response
+            .clone()
+            .ok_or(QueryError::Domain(GetTransactionError::NotFound(txid)))
+    }
+}
+
+impl crate::OneShotGetSubtreeRoots for MockChain {
+    async fn get_subtree_roots(
+        &self,
+        _pool: ShieldedPool,
+        _start_index: u16,
+        _limit: Option<u16>,
+    ) -> Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        Ok(self.subtree_roots.clone())
     }
 }
 

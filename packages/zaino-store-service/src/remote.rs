@@ -19,14 +19,15 @@
 //! sound for the immutable, historical data light clients query.
 
 use zaino_core::{
-    AddressBalance, AddressDelta, Height, HeightRange, TransactionId, TransparentAddress,
-    Treestate, Utxo,
+    AddressBalance, AddressDelta, Height, HeightRange, RawTransaction, ShieldedPool, SubtreeRoot,
+    TransactionId, TransparentAddress, Treestate, Utxo,
 };
-use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
+use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError, TxReadError};
 use zaino_source::{
     GetAddressBalance, GetAddressBalanceError, GetAddressDeltas, GetAddressDeltasError,
-    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError, GetTreestate,
-    GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
+    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError, GetSubtreeRoots,
+    GetSubtreeRootsError, GetTransaction, GetTransactionError, GetTreestate, GetTreestateError,
+    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -226,6 +227,67 @@ where
             Ok(treestate) => Ok(treestate),
             Err(SourceError::Domain(GetTreestateError::HeightNotFound(height))) => Err(
                 TreestateReadError::Fatal(format!("no treestate at height {height}")),
+            ),
+            Err(SourceError::NonDomain(cause)) => Err(TreestateReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(TreestateReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetTransaction,
+{
+    /// The raw transaction bytes plus where it lives, live from the validator.
+    /// Passthrough: zaino does not re-serialize — a wallet parses the bytes
+    /// locally. A missing txid is a domain miss (`Ok(None)`); a transport failure
+    /// is transient.
+    pub(crate) async fn raw_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<RawTransaction>, TxReadError> {
+        match self.source.get_transaction(id).await {
+            Ok(TransactionResponse { bytes, location }) => Ok(Some(RawTransaction {
+                data: bytes,
+                location,
+            })),
+            Err(SourceError::Domain(GetTransactionError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(TxReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(TxReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetSubtreeRoots,
+{
+    /// Complete note-commitment subtree roots from `start_index`, live from the
+    /// validator. Passthrough: the read is index-addressed exactly like the
+    /// source. A pool that is not available is a definitive answer; a transport
+    /// failure is transient.
+    pub(crate) async fn subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        match self
+            .source
+            .get_subtree_roots(pool, start_index, limit)
+            .await
+        {
+            Ok(roots) => Ok(roots),
+            Err(SourceError::Domain(GetSubtreeRootsError::PoolUnavailable(pool))) => Err(
+                TreestateReadError::Fatal(format!("pool unavailable: {pool}")),
             ),
             Err(SourceError::NonDomain(cause)) => Err(TreestateReadError::Transient(format!(
                 "validator unavailable: {cause}"
