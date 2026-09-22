@@ -461,7 +461,8 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             previous = *location;
 
             result.push(Utxo {
-                address: TransparentAddress::new(address.to_string()),
+                address: TransparentAddress::try_new(address.to_string())
+                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                 txid: zaino_primitives::types::TransactionId::from(txid.0),
                 output_index: location.output_index().index(),
                 script: Script::new(output.lock_script.as_raw_bytes().to_vec()),
@@ -634,7 +635,8 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                     txid: delta_txid,
                     index: index as u32,
                     height,
-                    address: TransparentAddress::new(address),
+                    address: TransparentAddress::try_new(address)
+                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                     block_index: Some(u32::from(location.index.index())),
                 });
             }
@@ -1360,7 +1362,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 };
 
                 inputs.push(InputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| parse(e.to_string()))?,
                     // A spend debits the address, so the value leaves it.
                     satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
                         .map_err(|e| parse(e.to_string()))?,
@@ -1376,7 +1379,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     continue;
                 };
                 outputs.push(OutputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| parse(e.to_string()))?,
                     satoshis: Zatoshis::new(u64::from(output.value))
                         .map_err(|e| parse(e.to_string()))?,
                     index: index as u32,
