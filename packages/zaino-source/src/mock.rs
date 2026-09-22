@@ -100,6 +100,24 @@ impl Default for MockChain {
     }
 }
 
+// Manual because `AtomicU32` is not `Clone`; the remaining-failures count is
+// copied by value. Consumers that need a cloneable resilient handle (the engine
+// captures its source into each snapshot) wrap the mock in a `ValidatorClient`,
+// which is `Clone` only when its inner source is.
+impl Clone for MockChain {
+    fn clone(&self) -> Self {
+        Self {
+            blocks: self.blocks.clone(),
+            by_hash: self.by_hash.clone(),
+            tip: self.tip,
+            treestates: self.treestates.clone(),
+            failures_remaining: AtomicU32::new(self.failures_remaining.load(Ordering::SeqCst)),
+            failure_mode: self.failure_mode.clone(),
+            send_rejection: self.send_rejection.clone(),
+        }
+    }
+}
+
 impl crate::ValidatorSource for MockChain {
     type NonDomain = crate::NonDomainError;
 }

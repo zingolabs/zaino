@@ -15,13 +15,19 @@
 //!
 //! **Serviceable slice.** Compact-block serving (`compact_block` / `stream_compact`)
 //! and the coherence surface (pin, coverage, serviceable range, chain info) are
-//! wired against the real composed view. `Broadcast` passes a wallet's
-//! transaction through to the validator's send port (reached through the source
-//! trait, never a concrete adapter — see [`Engine`]'s `Src`). The
-//! conversion-heavy per-block reads (`Block` / `Treestate` / address / spend /
+//! wired against the real composed view. Passthrough capabilities are answered
+//! by [`RemoteChainView`] over the resilient source ports: `Broadcast` relays a
+//! wallet's transaction, and `Treestate` reads live from the validator (zaino
+//! does not index it). The remaining per-block reads (`Block` / address / spend /
 //! nullifier) still return `NotServiceable`; `Passthrough` refuses and the
 //! streaming controls (`TipSubscribe`, `MempoolSubscribe`) are empty streams —
-//! wiring those through the same source is the next increment.
+//! wiring those through the same provider is the next increment.
+//!
+//! The classification is *which provider carries a capability*: local ones on the
+//! composed [`ChainView`], passthrough ones on [`RemoteChainView`]. Consumers bind
+//! the **canonical** (resilient) source traits, never the raw `OneShot*` ports —
+//! those belong to the adapters and the `ValidatorClient` decorator the root
+//! injects.
 //!
 //! The milestone this crate proves is the static assertion in `tests`: the
 //! composed engine type-checks as **every** profile (`WalletLibService`,
@@ -29,12 +35,10 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
 
-use core::fmt;
-
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::{ChainView, ChainViewSnapshot};
-use zaino_source::OneShotSendRawTransaction;
+use zaino_source::{GetTreestate, SendRawTransaction};
 
 mod remote;
 pub use remote::RemoteChainView;
@@ -105,11 +109,21 @@ where
 /// The coherence marker, the served range, and the compact-block reads delegate
 /// to the inner composed view; the reads the compact-serving slice does not yet
 /// source are `NotServiceable` stubs on top.
-pub struct EngineSnapshot<F, N>(ChainViewSnapshot<F, N>);
+pub struct EngineSnapshot<F, N, Src> {
+    /// Pinned local reads — the composed FS⊕NFS view.
+    local: ChainViewSnapshot<F, N>,
+    /// Live passthrough reads — the validator through the source ports. Captured
+    /// at snapshot time; its reads are live (not pinned), which is sound for the
+    /// immutable data light clients query.
+    remote: RemoteChainView<Src>,
+}
 
-impl<F: Clone, N: Clone> Clone for EngineSnapshot<F, N> {
+impl<F: Clone, N: Clone, Src: Clone> Clone for EngineSnapshot<F, N, Src> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            local: self.local.clone(),
+            remote: self.remote.clone(),
+        }
     }
 }
 
@@ -119,14 +133,18 @@ impl<Fs, Nfs, Src> TakeSnapshot for Engine<Fs, Nfs, Src>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    Src: Send + Sync + 'static,
+    Src: Clone + Send + Sync + 'static,
 {
-    type Snapshot = EngineSnapshot<Fs::Snapshot, Nfs::Snapshot>;
+    type Snapshot = EngineSnapshot<Fs::Snapshot, Nfs::Snapshot, Src>;
 
     async fn snapshot(&self) -> Result<Self::Snapshot, Transient> {
-        // Delegate to the composer so both sides are captured in one shot — the
-        // pin stays coherent across the seam.
-        Ok(EngineSnapshot(self.view.snapshot().await?))
+        // Delegate to the composer so both local sides are captured in one shot
+        // — the pin stays coherent across the seam. The remote handle rides along
+        // for passthrough reads (live, not pinned).
+        Ok(EngineSnapshot {
+            local: self.view.snapshot().await?,
+            remote: self.remote.clone(),
+        })
     }
 }
 
@@ -152,7 +170,7 @@ impl<Fs, Nfs, Src> Broadcast for Engine<Fs, Nfs, Src>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
-    Src: OneShotSendRawTransaction<NonDomain: fmt::Display> + 'static,
+    Src: SendRawTransaction + 'static,
 {
     async fn broadcast(&self, raw_tx: Vec<u8>) -> Result<TransactionId, BroadcastRejection> {
         // Forward to the passthrough provider — a one-line delegate, no routing
@@ -192,7 +210,7 @@ impl<Fs, Nfs, Src> IndexerService for Engine<Fs, Nfs, Src>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,
-    Src: OneShotSendRawTransaction<NonDomain: fmt::Display> + 'static,
+    Src: GetTreestate + SendRawTransaction + Clone + 'static,
 {
 }
 
@@ -201,27 +219,29 @@ where
 // Delegated to the composed view: the pin, the coverage, and the finalised/tip
 // boundary are exactly what the composer already computes across the seam.
 
-impl<F, N> ChainSegment for EngineSnapshot<F, N>
+impl<F, N, Src> ChainSegment for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     fn pinned_tip(&self) -> Option<BlockId> {
-        self.0.pinned_tip()
+        self.local.pinned_tip()
     }
 
     fn coverage(&self) -> Option<HeightRange> {
-        self.0.coverage()
+        self.local.coverage()
     }
 }
 
-impl<F, N> Snapshot for EngineSnapshot<F, N>
+impl<F, N, Src> Snapshot for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     fn serviceable_range(&self) -> ServiceableRange {
-        self.0.serviceable_range()
+        self.local.serviceable_range()
     }
 }
 
@@ -230,27 +250,29 @@ where
 // Compact-block serving and chain-info are wired; the conversion-heavy per-block
 // reads are NotServiceable until they are sourced.
 
-impl<F, N> CompactBlockRead for EngineSnapshot<F, N>
+impl<F, N, Src> CompactBlockRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
-        self.0.compact_block(at).await
+        self.local.compact_block(at).await
     }
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
-        self.0.stream_compact(range)
+        self.local.stream_compact(range)
     }
 }
 
-impl<F, N> BlockRead for EngineSnapshot<F, N>
+impl<F, N, Src> BlockRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     async fn tip(&self) -> Result<BlockId, BlockReadError> {
         // The composed tip — the NFS tip, falling back to the finalised tip.
-        self.0
+        self.local
             .pinned_tip()
             .ok_or(BlockReadError::NotServiceable(Capability::Blocks))
     }
@@ -268,10 +290,11 @@ where
     }
 }
 
-impl<F, N> TransactionRead for EngineSnapshot<F, N>
+impl<F, N, Src> TransactionRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     async fn transaction(&self, _id: TransactionId) -> Result<Option<Transaction>, TxReadError> {
         Err(TxReadError::NotServiceable(Capability::RawTransaction))
@@ -281,27 +304,35 @@ where
     }
 }
 
-impl<F, N> TreestateRead for EngineSnapshot<F, N>
+impl<F, N, Src> TreestateRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: GetTreestate + Send + Sync + 'static,
 {
-    async fn treestate(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
-        Err(TreestateReadError::NotServiceable(Capability::Treestate))
+    async fn treestate(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+        // Passthrough: zaino does not index treestate, so the remote view answers
+        // it live. That treestate is remote is the read-set's per-capability
+        // local/passthrough classification, expressed here.
+        self.remote.treestate(at).await
     }
     async fn subtree_roots(
         &self,
         _pool: ShieldedPool,
         _range: HeightRange,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        // Still stubbed: the service asks by height range, the source by
+        // subtree-index + limit — passthrough needs a translation, not a straight
+        // relay. Wired once that mapping lands.
         Err(TreestateReadError::NotServiceable(Capability::SubtreeRoots))
     }
 }
 
-impl<F, N> AddressRead for EngineSnapshot<F, N>
+impl<F, N, Src> AddressRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     async fn balance(
         &self,
@@ -332,20 +363,22 @@ where
     }
 }
 
-impl<F, N> SpendRead for EngineSnapshot<F, N>
+impl<F, N, Src> SpendRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     async fn spend_status(&self, _outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
         Err(SpendReadError::NotServiceable(Capability::SpendStatus))
     }
 }
 
-impl<F, N> CompactNullifierRead for EngineSnapshot<F, N>
+impl<F, N, Src> CompactNullifierRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     async fn compact_block_nullifiers(
         &self,
@@ -355,14 +388,15 @@ where
     }
 }
 
-impl<F, N> ChainInfoRead for EngineSnapshot<F, N>
+impl<F, N, Src> ChainInfoRead for EngineSnapshot<F, N, Src>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
+    Src: Clone + Send + Sync + 'static,
 {
     async fn chain_info(&self) -> Result<ChainInfo, ReadError> {
         // Read from the composed pinned tip; an empty view falls back to genesis.
-        let tip = self.0.pinned_tip();
+        let tip = self.local.pinned_tip();
         let estimated_height = tip.map(|id| id.height).unwrap_or_else(genesis);
         Ok(ChainInfo {
             tip,
@@ -386,7 +420,7 @@ mod tests {
     where
         Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
         Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-        Src: zaino_source::OneShotSendRawTransaction<NonDomain: core::fmt::Display> + 'static,
+        Src: zaino_source::GetTreestate + zaino_source::SendRawTransaction + Clone + 'static,
         Engine<Fs, Nfs, Src>: WalletLibService + LightServeService + NodeRpcService,
     {
     }
@@ -395,13 +429,27 @@ mod tests {
     // stub views for the composed chain, a `MockChain` for the validator source.
     // No cluster, no validator — the routing is deterministic.
     use zaino_chainview::testing::StubNonFinalised;
-    use zaino_service::error::BroadcastRejection;
-    use zaino_service::Broadcast;
+    use zaino_service::error::{BroadcastRejection, TreestateReadError};
+    use zaino_service::{Broadcast, TreestateRead};
     use zaino_source::mock::MockChain;
-    use zaino_source::SendRawTransactionError;
+    use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
 
-    fn engine_with(source: MockChain) -> Engine<StubNonFinalised, StubNonFinalised, MockChain> {
-        Engine::new(StubNonFinalised::empty(), StubNonFinalised::empty(), source)
+    use super::Height;
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid height")
+    }
+
+    // The engine consumes the *canonical* (resilient) source, so the mock is
+    // wrapped in the ValidatorClient decorator — exactly how the root injects it.
+    fn engine_with(
+        source: MockChain,
+    ) -> Engine<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>> {
+        Engine::new(
+            StubNonFinalised::empty(),
+            StubNonFinalised::empty(),
+            ValidatorClient::new(source, RetryPolicy::default()),
+        )
     }
 
     #[tokio::test]
@@ -435,6 +483,22 @@ mod tests {
         match engine.broadcast(vec![0xff]).await {
             Err(BroadcastRejection::Malformed(reason)) => assert_eq!(reason, "not a tx"),
             other => panic!("expected a Malformed rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn treestate_passes_through_a_missing_height() {
+        // No treestate seeded: the mock answers HeightNotFound, which the remote
+        // provider maps to a definitive read failure. Proves treestate routes to
+        // the passthrough provider (the read-set's per-cap classification) — not a
+        // NotServiceable stub.
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match TreestateRead::treestate(&snapshot, height(5)).await {
+            Err(TreestateReadError::Fatal(msg)) => {
+                assert!(msg.contains("no treestate at height"), "got: {msg}")
+            }
+            other => panic!("expected a definitive miss, got {other:?}"),
         }
     }
 }

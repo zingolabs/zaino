@@ -26,6 +26,7 @@ pub enum SendRawTransactionError {
 /// must not treat an error as proof the transaction was not accepted earlier.
 ///
 /// Maps to `sendrawtransaction` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotSendRawTransaction: ValidatorSource + Send + Sync {
     /// Submit a serialised transaction, returning its id on acceptance.
     fn send_raw_transaction(

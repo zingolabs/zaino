@@ -92,7 +92,9 @@ pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHa
 pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
 pub use lifecycle::SourceLifecycle;
 pub use polled_chain_tip::PolledChainTip;
-pub use send_raw_transaction::{OneShotSendRawTransaction, SendRawTransactionError};
+pub use send_raw_transaction::{
+    OneShotSendRawTransaction, SendRawTransaction, SendRawTransactionError,
+};
 pub use subscribe_blocks::SubscribeBlocks;
 pub use subscribe_chain_tip::{SubscribeChainTip, TipObservation};
 pub use validator_client::{RetryPolicy, ValidatorClient};

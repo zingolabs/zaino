@@ -208,12 +208,13 @@ async fn boot(
     .map_err(IndexerError::ChainHeadInit)?;
 
     // Compose FS ⊕ NFS into the served engine, behind the light-wallet profile.
-    // The shared validator handle backs the passthrough controls (broadcast today);
-    // the engine reaches it only through the source ports, never the concrete type.
+    // The engine's passthrough side (broadcast today, treestate next) consumes the
+    // resilient ValidatorClient decorator over the shared validator — the canonical
+    // ports, never the raw one-shots, and never the concrete adapter type.
     let engine = Engine::new(
         store_reader.clone(),
         chain_head_subscriber,
-        Arc::clone(&validator),
+        ValidatorClient::new(Arc::clone(&validator), RetryPolicy::default()),
     );
 
     // Reachability was already confirmed (Direct opened its state DB), so the

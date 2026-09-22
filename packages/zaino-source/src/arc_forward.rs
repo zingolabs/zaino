@@ -20,12 +20,12 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use zaino_primitives::types::{BlockHash, Height, PreIndexCompactBlock, TransactionId};
+use zaino_primitives::types::{BlockHash, Height, PreIndexCompactBlock, TransactionId, Treestate};
 
 use crate::{
-    GetBlockError, GetChainTipError, OneShotGetChainTip, OneShotGetPreIndexCompactBlock,
-    OneShotSendRawTransaction, QueryError, SendRawTransactionError, SubscribeChainTip,
-    TipObservation, ValidatorSource,
+    GetBlockError, GetChainTipError, GetTreestateError, OneShotGetChainTip,
+    OneShotGetPreIndexCompactBlock, OneShotGetTreestate, OneShotSendRawTransaction, QueryError,
+    SendRawTransactionError, SubscribeChainTip, TipObservation, ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -55,6 +55,18 @@ impl<V: OneShotGetChainTip + ?Sized> OneShotGetChainTip for Arc<V> {
 impl<V: SubscribeChainTip + ?Sized> SubscribeChainTip for Arc<V> {
     fn subscribe_to_chain_tip(&self) -> Option<watch::Receiver<TipObservation>> {
         (**self).subscribe_to_chain_tip()
+    }
+}
+
+// The serving path's passthrough reads reach the validator through the same
+// `Arc<V>`: treestate today, more as the read-set is wired.
+impl<V: OneShotGetTreestate + ?Sized> OneShotGetTreestate for Arc<V> {
+    fn get_treestate(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Treestate, QueryError<GetTreestateError, Self::NonDomain>>> + Send
+    {
+        (**self).get_treestate(height)
     }
 }
 
