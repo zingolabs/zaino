@@ -23,6 +23,8 @@ mod profiles;
 mod reads;
 
 #[cfg(feature = "testing")]
+pub mod conformance;
+#[cfg(feature = "testing")]
 pub mod testing;
 
 pub use bundle::{ChainSegment, IndexerService, Snapshot};

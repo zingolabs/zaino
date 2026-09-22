@@ -486,6 +486,19 @@ mod tests {
         }
     }
 
+    // The acceptance gate for the full light-wallet read-set (#10): the composed
+    // engine must serve every read `LightServeService` demands — none reporting
+    // itself `NotServiceable`. Red today (per-block reads / nullifiers / subtree
+    // roots are still stubs); un-ignore each cap's grind as it greens, and drop
+    // the `#[ignore]` when the whole read-set is wired. The per-cap tests below
+    // are the incremental, always-run signal on the way there.
+    #[tokio::test]
+    #[ignore = "acceptance: un-ignore when the full light-wallet read-set is served (#10)"]
+    async fn light_serve_conformance_over_a_provisioned_source() {
+        let engine = engine_with(MockChain::new());
+        zaino_service::conformance::assert_light_serve_conformance(&engine).await;
+    }
+
     #[tokio::test]
     async fn treestate_passes_through_a_missing_height() {
         // No treestate seeded: the mock answers HeightNotFound, which the remote

@@ -15,4 +15,5 @@ zaino-source = { version = "0.2.0", path = "../zaino-source" }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
+zaino-service = { path = "../zaino-service", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
