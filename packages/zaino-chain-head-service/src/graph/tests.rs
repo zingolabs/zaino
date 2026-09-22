@@ -107,6 +107,16 @@ macro_rules! graph_contract {
             }
 
             #[test]
+            fn rewinding_to_the_oldest_retained_block_succeeds() {
+                checks::rewinding_to_the_oldest_retained_block_succeeds::<$graph>();
+            }
+
+            #[test]
+            fn rewinding_to_a_trimmed_block_is_refused() {
+                checks::rewinding_to_a_trimmed_block_is_refused::<$graph>();
+            }
+
+            #[test]
             fn a_heavier_competing_block_is_the_heaviest() {
                 checks::a_heavier_competing_block_is_the_heaviest::<$graph>();
             }

@@ -23,6 +23,21 @@ use crate::{
 /// genesis.
 const BASE_HEIGHT: u32 = 100;
 
+/// How far above the tip a trim floor can sit.
+///
+/// A floor above the tip asks the graph to drop every block it holds, which is
+/// where the tip's exemption from trimming is decided. Any positive number
+/// generates that case; four gives it a few variants rather than one.
+const TRIM_ABOVE_TIP: u8 = 4;
+
+/// How far below the tip a trim floor can sit.
+///
+/// Deeper than a generated sequence usually builds, so floors run from
+/// removing nothing to removing all but the tip. The window the service
+/// actually retains is a deployment fact — `max_depth` plus its retention
+/// margin — and is not what this is measuring.
+const TRIM_BELOW_TIP: u8 = 15;
+
 #[derive(Debug, Clone)]
 pub(super) enum Move {
     /// A child of the tip carrying `work` more than the tip.
@@ -40,7 +55,8 @@ pub(super) enum Move {
     Rewind { depth: u8 },
     /// To a retained block off the best chain, or to one never retained.
     RewindOffChain { pick: u8 },
-    /// Trims at `tip + 4 - shift`: from four above the tip to fifteen below.
+    /// Trims at a floor between [`TRIM_ABOVE_TIP`] above the tip and
+    /// [`TRIM_BELOW_TIP`] below it.
     Trim { shift: u8 },
 }
 
@@ -56,7 +72,7 @@ pub(super) fn a_move() -> impl Strategy<Value = Move> {
         }),
         2 => any::<u8>().prop_map(|depth| Move::Rewind { depth }),
         1 => any::<u8>().prop_map(|pick| Move::RewindOffChain { pick }),
-        1 => (0u8..20).prop_map(|shift| Move::Trim { shift }),
+        1 => (0u8..=TRIM_ABOVE_TIP + TRIM_BELOW_TIP).prop_map(|shift| Move::Trim { shift }),
     ]
 }
 
@@ -214,10 +230,10 @@ fn apply<G: InspectableGraph>(
             prop_assert_eq!(fingerprint(graph), before);
         }
         Move::Trim { shift } => {
-            let floor = if shift <= 4 {
-                tip.height + u32::from(4 - shift)
+            let floor = if shift <= TRIM_ABOVE_TIP {
+                tip.height + u32::from(TRIM_ABOVE_TIP - shift)
             } else {
-                tip.height.saturating_sub(u32::from(shift - 4))
+                tip.height.saturating_sub(u32::from(shift - TRIM_ABOVE_TIP))
             };
             graph.remove_finalized_blocks(height(floor));
             model

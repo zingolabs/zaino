@@ -191,6 +191,7 @@ mistakes its design is trying to prevent.
 - [`zaino-component`](./packages/zaino-component/usage.md): the component abstraction, its two independent axes, and the observed/owned line.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
+- [`zaino-persistence`](./packages/zaino-persistence/usage.md): the storage backend port, and why index code never names a concrete store.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
 - [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
@@ -205,6 +206,7 @@ mistakes its design is trying to prevent.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
+- [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
 
 
 ## Security Vulnerability Disclosure

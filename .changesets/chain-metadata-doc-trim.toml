@@ -1,0 +1,2 @@
+[empty]
+reason = "Doc-comment-only trim of ChainMetadata::ZERO and ChainMetadata::new in zaino-primitives."

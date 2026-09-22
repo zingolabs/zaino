@@ -85,7 +85,7 @@ struct BatchBuild {
 struct BatchCursor {
     /// Height of the next block to build.
     next: u32,
-    parent_chainwork: Option<crate::types::ChainWork>,
+    parent_chainwork: Option<crate::types::AbsoluteChainWork>,
     last_progress_log: std::time::Instant,
 }
 
@@ -148,12 +148,12 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
         let mut prepared = Vec::with_capacity(fetched.len());
         for (height_int, parts) in heights.into_iter().zip(fetched) {
             let parent_chainwork = cursor.parent_chainwork;
-            let block_work = parts.block_work()?;
+            let block_work = parts.block_work();
             cursor.parent_chainwork = Some(match parent_chainwork {
                 Some(parent) => parent
-                    .add(&block_work)
+                    .accumulate(block_work)
                     .map_err(|e| StoreError::Custom(format!("chainwork overflow: {e}")))?,
-                None => block_work,
+                None => crate::types::AbsoluteChainWork::genesis(block_work),
             });
             prepared.push((height_int, parts, parent_chainwork));
         }
@@ -435,28 +435,30 @@ impl DbWrite for DbV1 {
             not(feature = "transparent_address_history_experimental"),
             allow(unused_mut)
         )]
-        let (start_height, mut parent_chainwork): (u32, Option<crate::types::ChainWork>) =
-            match self.tip_height().await? {
-                None => (GENESIS_HEIGHT.0, None),
-                Some(tip) => {
-                    let tip_bytes = tip.to_bytes()?;
-                    let chainwork = tokio::task::block_in_place(|| {
-                        let ro = self.env.begin_ro_txn()?;
-                        match ro.get(self.headers, &tip_bytes) {
-                            Ok(raw) => {
-                                let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
-                                    .map_err(|e| {
-                                        StoreError::Custom(format!("tip header decode error: {e}"))
-                                    })?;
-                                Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
-                            }
-                            Err(lmdb::Error::NotFound) => Ok(None),
-                            Err(e) => Err(StoreError::LmdbError(e)),
+        let (start_height, mut parent_chainwork): (
+            u32,
+            Option<crate::types::AbsoluteChainWork>,
+        ) = match self.tip_height().await? {
+            None => (GENESIS_HEIGHT.0, None),
+            Some(tip) => {
+                let tip_bytes = tip.to_bytes()?;
+                let chainwork = tokio::task::block_in_place(|| {
+                    let ro = self.env.begin_ro_txn()?;
+                    match ro.get(self.headers, &tip_bytes) {
+                        Ok(raw) => {
+                            let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                                .map_err(|e| {
+                                    StoreError::Custom(format!("tip header decode error: {e}"))
+                                })?;
+                            Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
                         }
-                    })?;
-                    (tip.0 + 1, chainwork)
-                }
-            };
+                        Err(lmdb::Error::NotFound) => Ok(None),
+                        Err(e) => Err(StoreError::LmdbError(e)),
+                    }
+                })?;
+                (tip.0 + 1, chainwork)
+            }
+        };
 
         // Nothing to do when the tip already meets the target. Importantly, this means a steady-state
         // poll (the indexer calls `sync_to_height` repeatedly) does *not* trigger the bulk accumulator
