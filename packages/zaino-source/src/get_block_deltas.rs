@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{rpc::BlockDeltas, BlockHash};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetBlockDeltas`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -23,10 +23,10 @@ pub enum GetBlockDeltasError {
 ///
 /// Maps to `getblockdeltas` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBlockDeltas: Send + Sync {
+pub trait OneShotGetBlockDeltas: ValidatorSource + Send + Sync {
     /// Fetch a block's transparent deltas.
     fn get_block_deltas(
         &self,
         hash: BlockHash,
-    ) -> impl Future<Output = Result<BlockDeltas, QueryError<GetBlockDeltasError>>> + Send;
+    ) -> impl Future<Output = Result<BlockDeltas, QueryError<GetBlockDeltasError, Self::NonDomain>>> + Send;
 }

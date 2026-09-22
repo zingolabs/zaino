@@ -71,13 +71,18 @@ impl<S> MempoolSourceAdapter<S> {
     }
 }
 
+impl<S: BlockchainSource> zaino_source::ValidatorSource for MempoolSourceAdapter<S> {
+    // Delegates to the inner source; its non-domain type passes through.
+    type NonDomain = <S as zaino_source::ValidatorSource>::NonDomain;
+}
+
 impl<S: BlockchainSource> zaino_source::OneShotGetMempoolTxids for MempoolSourceAdapter<S> {
     fn get_mempool_txids(
         &self,
     ) -> impl std::future::Future<
         Output = Result<
             Vec<zaino_primitives::types::TransactionId>,
-            zaino_source::QueryError<zaino_source::GetMempoolTxidsError>,
+            zaino_source::QueryError<zaino_source::GetMempoolTxidsError, Self::NonDomain>,
         >,
     > + Send {
         self.source.get_mempool_txids()
@@ -90,7 +95,7 @@ impl<S: BlockchainSource> zaino_source::OneShotGetMempoolMetadata for MempoolSou
     ) -> impl std::future::Future<
         Output = Result<
             Vec<zaino_source::MempoolTxMeta>,
-            zaino_source::QueryError<zaino_source::GetMempoolMetadataError>,
+            zaino_source::QueryError<zaino_source::GetMempoolMetadataError, Self::NonDomain>,
         >,
     > + Send {
         self.source.get_mempool_metadata()
@@ -106,7 +111,7 @@ impl<S: BlockchainSource> zaino_source::OneShotGetRawMempoolTransaction
     ) -> impl std::future::Future<
         Output = Result<
             Vec<u8>,
-            zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError>,
+            zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError, Self::NonDomain>,
         >,
     > + Send {
         self.source.get_raw_mempool_transaction(txid)
@@ -122,7 +127,7 @@ impl<S: BlockchainSource> zaino_source::OneShotGetMempoolSourceTip for MempoolSo
                 zaino_primitives::types::BlockHash,
                 zaino_primitives::types::Height,
             ),
-            zaino_source::QueryError<std::convert::Infallible>,
+            zaino_source::QueryError<std::convert::Infallible, Self::NonDomain>,
         >,
     > + Send {
         self.source.get_mempool_source_tip()

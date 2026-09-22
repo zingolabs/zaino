@@ -19,7 +19,7 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 /// the way out, and `legacy_code_from_error_source` in
 /// `zaino-serve/src/rpc/jsonrpc/service.rs` is what recovers it.
 ///
-/// Distinct from [`FetchError`](zaino_source::FetchError), which carries a code
+/// Distinct from [`NonDomainError`](zaino_source::NonDomainError), which carries a code
 /// the *validator* produced. This one is Zaino's.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]

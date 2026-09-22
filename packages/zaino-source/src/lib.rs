@@ -51,7 +51,7 @@ mod subscribe_chain_tip;
 
 pub mod validator_client;
 
-pub use error::{FailureMode, FetchError, QueryError, SourceError, UnavailableError};
+pub use error::{FailureMode, NonDomainError, QueryError, SourceError, UnavailableError};
 pub use get_address_balance::{GetAddressBalanceError, OneShotGetAddressBalance};
 pub use get_address_deltas::{GetAddressDeltasError, OneShotGetAddressDeltas};
 pub use get_address_txids::{GetAddressTxidsError, OneShotGetAddressTxids};
@@ -129,6 +129,27 @@ pub use get_subtree_roots::GetSubtreeRoots;
 pub use get_transaction::GetTransaction;
 pub use get_treestate_by_hash::GetTreestateByHash;
 pub use get_tx_out::GetTxOut;
+
+/// The contract every single-attempt source adapter satisfies.
+///
+/// An adapter names its **own** non-domain error type — its vocabulary for *the
+/// source did not yield a domain answer*: unreachable, timed out, unauthorized,
+/// or an unusable/undecodable response. It is never a domain rejection (that is
+/// [`QueryError::Domain`], per-operation typed). The `Into<NonDomainError>` bound
+/// is the **deterministic mapping into the shared seam** that the resilience
+/// wrapper relies on to classify a failure without seeing adapter internals.
+///
+/// Every `OneShot*` port has this as a supertrait, so each method's error is
+/// `QueryError<E, Self::NonDomain>`: the domain rejection stays per-operation, the
+/// non-domain side is the adapter's own type. An adapter whose faults already
+/// *are* the seam sets `type NonDomain = NonDomainError` (the identity mapping);
+/// an adapter with its own vocabulary (e.g. the read-state adapter's
+/// `ReadStateError`) names it and provides the single `Into` impl — so the
+/// classification lives in one place, not inline at every call site.
+pub trait ValidatorSource: Send + Sync {
+    /// This adapter's non-domain failure type (see the trait docs).
+    type NonDomain: std::error::Error + Send + Sync + 'static + Into<NonDomainError>;
+}
 
 // `cfg(test)` as well as the feature: without it this crate's own tests never
 // compile the mock, so neither its tests nor `ValidatorClient`'s integration tests

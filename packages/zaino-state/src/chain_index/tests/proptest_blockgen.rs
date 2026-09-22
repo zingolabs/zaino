@@ -1086,6 +1086,10 @@ impl ProptestMockchain {
     }
 }
 
+impl zaino_source::ValidatorSource for ProptestMockchain {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
     async fn get_raw_block(
         &self,
@@ -1303,7 +1307,7 @@ impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
                     "proptest mockchain has no chain tip to serve the mempool",
                 )
             }
-            PortError::Fetch(fetch) => PortError::Fetch(fetch),
+            PortError::NonDomain(fetch) => PortError::NonDomain(fetch),
         })
     }
 }

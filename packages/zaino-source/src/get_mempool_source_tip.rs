@@ -5,7 +5,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{BlockHash, Height};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Fetch the chain tip of the source that supplies mempool data.
 ///
@@ -41,14 +41,14 @@ use super::QueryError;
 /// it is free to be answered from the state database, and the ReadState adapter
 /// genuinely observes "no tip yet" as an answer rather than a failure.
 ///
-/// So this is typed `QueryError<Infallible>` rather than given an unproducible
+/// So this is typed `QueryError<Infallible, Self::NonDomain>` rather than given an unproducible
 /// variant. A domain error no implementation can return is worse than none: it
 /// tells a consumer to handle a case that cannot arise, and reads as though the
 /// condition were being reported when it is not.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetMempoolSourceTip: Send + Sync {
+pub trait OneShotGetMempoolSourceTip: ValidatorSource + Send + Sync {
     /// Fetch the mempool source's tip.
     fn get_mempool_source_tip(
         &self,
-    ) -> impl Future<Output = Result<(BlockHash, Height), QueryError<Infallible>>> + Send;
+    ) -> impl Future<Output = Result<(BlockHash, Height), QueryError<Infallible, Self::NonDomain>>> + Send;
 }

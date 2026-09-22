@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{TransactionId, TransactionLocation};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// A fetched transaction: raw bytes and where it was found.
 #[derive(Debug, Clone)]
@@ -28,10 +28,12 @@ pub enum GetTransactionError {
 /// Maps to `getrawtransaction(txid, 1)` over JSON-RPC, or the
 /// equivalent ReadState query.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetTransaction: Send + Sync {
+pub trait OneShotGetTransaction: ValidatorSource + Send + Sync {
     /// Fetch transaction.
     fn get_transaction(
         &self,
         txid: TransactionId,
-    ) -> impl Future<Output = Result<TransactionResponse, QueryError<GetTransactionError>>> + Send;
+    ) -> impl Future<
+        Output = Result<TransactionResponse, QueryError<GetTransactionError, Self::NonDomain>>,
+    > + Send;
 }
