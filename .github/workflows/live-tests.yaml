@@ -30,7 +30,7 @@ jobs:
         with:
           ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -88,7 +88,7 @@ jobs:
           version: ${{ steps.ztest.outputs.version }}
           locked: true
 
-      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-kubectl@v5
 
       # Workload identity federation (GitHub OIDC) — no stored secret. Client ID and
       # audience are non-secret repo *variables*. tag:ztest-runner reaches
