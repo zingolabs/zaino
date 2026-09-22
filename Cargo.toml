@@ -163,3 +163,17 @@ rayon = "1.10"
 [profile.test]
 opt-level = 3
 debug = true
+
+# Lazy point decompression stack (zebra-chain parses without curve arithmetic)
+# - path deps while unpublished: zebra perf/lazy-point-decompression, librustzcash
+#   perf/lazy-point-decompression, orchard perf/bytes-commitments, sapling-crypto perf/encoding-views
+[patch.crates-io]
+zebra-chain = { path = "../zebra/zebra-chain" }
+orchard = { path = "../orchard" }
+sapling-crypto = { path = "../sapling-crypto" }
+zcash_primitives = { path = "../librustzcash/zcash_primitives" }
+zcash_protocol = { path = "../librustzcash/components/zcash_protocol" }
+zcash_transparent = { path = "../librustzcash/zcash_transparent" }
+zcash_address = { path = "../librustzcash/components/zcash_address" }
+zcash_keys = { path = "../librustzcash/zcash_keys" }
+equihash = { path = "../librustzcash/components/equihash" }
