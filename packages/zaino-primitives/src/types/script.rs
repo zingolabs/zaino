@@ -100,6 +100,40 @@ pub fn classify_script(script: &[u8]) -> ([u8; 20], ScriptType) {
     (hash, ScriptType::NonStandard)
 }
 
+/// How an index keys a transparent output: its 20-byte hash and the script
+/// form that hash came from.
+///
+/// The unencoded counterpart of
+/// [`TransparentAddress`](super::TransparentAddress), and what
+/// [`classify_script`] produces. For P2PKH the hash is a public-key hash and
+/// for P2SH a script hash, so the pair reconstructs a standard address given a
+/// network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TransparentAddressKey {
+    /// The 20-byte hash the output is keyed by.
+    pub hash: [u8; 20],
+    /// Which script form those bytes came from.
+    pub script_type: ScriptType,
+}
+
+impl TransparentAddressKey {
+    /// A key from its parts.
+    pub fn new(hash: [u8; 20], script_type: ScriptType) -> Self {
+        Self { hash, script_type }
+    }
+
+    /// The key a locking script is indexed under.
+    pub fn from_script(script: &[u8]) -> Self {
+        let (hash, script_type) = classify_script(script);
+        Self { hash, script_type }
+    }
+
+    /// Whether this key names a standard, reconstructible address.
+    pub fn is_standard(&self) -> bool {
+        !matches!(self.script_type, ScriptType::NonStandard)
+    }
+}
+
 /// A transparent output script (raw bytes).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Script(Vec<u8>);
@@ -199,5 +233,41 @@ mod tests {
             classify_script(&script),
             ([0x44; 20], ScriptType::NonStandard)
         );
+    }
+}
+
+#[cfg(test)]
+mod address_key_tests {
+    use super::{classify_script, ScriptType, TransparentAddressKey};
+
+    fn p2pkh(hash: [u8; 20]) -> Vec<u8> {
+        let mut script = vec![0x76, 0xa9, 0x14];
+        script.extend_from_slice(&hash);
+        script.extend_from_slice(&[0x88, 0xac]);
+        script
+    }
+
+    /// The key is exactly what the classification says, for every script.
+    ///
+    /// The two must not be able to disagree: the store keys outputs by one and
+    /// a consumer merging in the chain head's half keys by the other, and a
+    /// difference would show up as an address with a gap in its history rather
+    /// than as anything that looks like a bug.
+    #[test]
+    fn from_script_agrees_with_the_classification() {
+        for script in [p2pkh([7; 20]), vec![0xde, 0xad], Vec::new()] {
+            let (hash, script_type) = classify_script(&script);
+            assert_eq!(
+                TransparentAddressKey::from_script(&script),
+                TransparentAddressKey::new(hash, script_type),
+            );
+        }
+    }
+
+    /// A non-standard key is not a reconstructible address.
+    #[test]
+    fn only_the_standard_forms_are_standard() {
+        assert!(TransparentAddressKey::from_script(&p2pkh([7; 20])).is_standard());
+        assert!(!TransparentAddressKey::new([0; 20], ScriptType::NonStandard).is_standard());
     }
 }

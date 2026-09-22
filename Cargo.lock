@@ -6045,10 +6045,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-persistence"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-primitives"
 version = "0.2.0"
 dependencies = [
  "thiserror 2.0.18",
+ "zcash_address",
+ "zcash_protocol",
 ]
 
 [[package]]
