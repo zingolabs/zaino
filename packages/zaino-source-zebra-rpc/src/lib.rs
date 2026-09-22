@@ -6,5 +6,6 @@
 
 mod adapter;
 mod parse;
+mod preindex_compact_block;
 
 pub use adapter::ZebraRpcAdapter;

@@ -257,16 +257,24 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraRpcAdapter {
         &self,
         height: Height,
     ) -> Result<zaino_primitives::types::PreIndexCompactBlock, QueryError<GetBlockError>> {
-        // RPC returns full block bytes — no way to request compact from the validator.
-        // We full-deserialize via zebra-chain then convert to our compact type.
-        // The savings vs get_block is skipping the domain Block intermediate —
-        // we go zebra Block → compact directly.
-        //
-        // TODO: once compact_deserialize supports streaming (Reader instead of
-        // &[u8]), we can skip the full zebra deserialize on this path too.
-        use zaino_source::OneShotGetBlock;
-        let block = self.get_block(height).await?;
-        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
+        // Source the compact block via the validator's proof-skipping
+        // `getpreindexcompactblock`: it returns only the fields indexing reads, so
+        // this path never pays to deserialize proofs, signatures, or input
+        // scripts. The reconstructed compact block flows through the same
+        // `pre_index_compact_block_from_zebra` conversion as the in-process
+        // (ReadState) path, so the two cannot drift.
+        let params = vec![serde_json::Value::String(u32::from(height).to_string())];
+        let value = self
+            .rpc
+            .call("getpreindexcompactblock", params)
+            .await
+            .map_err(|error| absent_or_fetch(error, || GetBlockError::HeightNotFound(height)))?;
+        let response: crate::preindex_compact_block::PreindexCompactBlockResponse =
+            serde_json::from_value(value)
+                .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+        let compact = response.into_zebra_compact().map_err(from_parse)?;
+        zaino_convert_zebra::pre_index_compact_block_from_zebra(&compact)
+            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())).into())
     }
 }
 
