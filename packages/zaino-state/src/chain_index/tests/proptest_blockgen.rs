@@ -1308,6 +1308,44 @@ impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
     }
 }
 
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ProptestMockchain {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockHash,
+            zaino_primitives::types::TreeRoots,
+        ),
+        PortError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let block = zaino_source::OneShotGetBlock::get_block(self, height)
+            .await
+            .map_err(|error| match error {
+                PortError::Domain(zaino_source::GetBlockError::HeightNotFound(height)) => {
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                    )
+                }
+                PortError::Fetch(fetch) => PortError::Fetch(fetch),
+            })?;
+        let hash = block.header.hash;
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    // The hash-addressed mock answers every hash, known or not.
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(hash),
+                    ) => super::super::source::mockchain_source::port_fault(format!(
+                        "proptest mockchain lost block {hash} it just served"
+                    )),
+                    PortError::Fetch(fetch) => PortError::Fetch(fetch),
+                })?;
+        Ok((hash, roots))
+    }
+}
+
 impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
     async fn get_commitment_tree_roots(
         &self,
