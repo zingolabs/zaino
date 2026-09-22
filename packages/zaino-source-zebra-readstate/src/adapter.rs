@@ -31,7 +31,7 @@ use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
 use zaino_primitives::types::{
-    Block, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
+    Block, BlockConfirmations, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
 };
 use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
 
@@ -461,7 +461,8 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             previous = *location;
 
             result.push(Utxo {
-                address: TransparentAddress::new(address.to_string()),
+                address: TransparentAddress::try_new(address.to_string())
+                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                 txid: zaino_primitives::types::TransactionId::from(txid.0),
                 output_index: location.output_index().index(),
                 script: Script::new(output.lock_script.as_raw_bytes().to_vec()),
@@ -634,7 +635,8 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                     txid: delta_txid,
                     index: index as u32,
                     height,
-                    address: TransparentAddress::new(address),
+                    address: TransparentAddress::try_new(address)
+                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                     block_index: Some(u32::from(location.index.index())),
                 });
             }
@@ -1314,6 +1316,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             }
             _ => return Err(unexpected_response("Tip").into()),
         };
+        let domain_tip = Height::try_from(tip.0).map_err(|e| parse(e.to_string()))?;
 
         let next_block_hash = match read(
             &self.state,
@@ -1359,7 +1362,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 };
 
                 inputs.push(InputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| parse(e.to_string()))?,
                     // A spend debits the address, so the value leaves it.
                     satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
                         .map_err(|e| parse(e.to_string()))?,
@@ -1375,7 +1379,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     continue;
                 };
                 outputs.push(OutputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| parse(e.to_string()))?,
                     satoshis: Zatoshis::new(u64::from(output.value))
                         .map_err(|e| parse(e.to_string()))?,
                     index: index as u32,
@@ -1392,7 +1397,10 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
 
         Ok(BlockDeltas {
             hash,
-            confirmations: i64::from(tip.0.saturating_sub(height.0)) + 1,
+            // A best-chain answer by construction: the block was looked up on
+            // the best chain above. The constructor owns the depth + 1
+            // off-by-one and the height-above-tip clamp.
+            confirmations: BlockConfirmations::of_best_chain_block(domain_height, domain_tip),
             size: block
                 .zcash_serialized_size()
                 .try_into()

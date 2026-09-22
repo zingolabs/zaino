@@ -49,6 +49,18 @@ impl Height {
     pub fn abs_diff(self, other: Self) -> u32 {
         self.0.abs_diff(other.0)
     }
+
+    /// Depth of this height below `tip`: `tip − self`, or `None` when this
+    /// height is above the tip.
+    ///
+    /// The single home for the "tip minus height" subtraction. The tip itself
+    /// is at depth `0`; a height above the tip has no depth below it, and the
+    /// caller decides what that absence means —
+    /// [`BlockConfirmations::of_best_chain_block`](super::BlockConfirmations::of_best_chain_block)
+    /// clamps it, a reorg check might treat it as an error.
+    pub fn depth_from(self, tip: Height) -> Option<u32> {
+        tip.0.checked_sub(self.0)
+    }
 }
 
 impl TryFrom<u32> for Height {
@@ -133,6 +145,26 @@ mod tests {
     #[test]
     fn saturating_sub_floors_at_zero() {
         assert_eq!(Height::GENESIS.saturating_sub(100), Height::GENESIS);
+    }
+
+    #[test]
+    fn depth_from_tip_is_zero() {
+        let tip = Height::try_from(100).expect("valid");
+        assert_eq!(tip.depth_from(tip), Some(0));
+    }
+
+    #[test]
+    fn depth_from_counts_down_from_tip() {
+        let height = Height::try_from(97).expect("valid");
+        let tip = Height::try_from(100).expect("valid");
+        assert_eq!(height.depth_from(tip), Some(3));
+    }
+
+    #[test]
+    fn depth_from_above_tip_is_none() {
+        let height = Height::try_from(101).expect("valid");
+        let tip = Height::try_from(100).expect("valid");
+        assert_eq!(height.depth_from(tip), None);
     }
 
     #[test]

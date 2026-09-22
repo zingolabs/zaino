@@ -31,11 +31,12 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
         ScriptPubKey, SpentInfo, TxOut,
     },
-    AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
-    BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
-    MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot,
-    TransactionId, TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots,
-    TreeSize, TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations,
+    BlockHash, BlockTreeSizes, BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId,
+    ConsensusBranchIds, Height, MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script,
+    SignedZatoshis, SubtreeRoot, TransactionId, TransactionLocation, TransparentAddress,
+    TransparentAddressError, TreeRoot, TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange,
+    Treestate, TxConfirmations, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -102,6 +103,22 @@ pub(crate) fn as_bool(value: &serde_json::Value) -> Result<bool, ParseError> {
 pub(crate) fn as_height(value: &serde_json::Value) -> Result<Height, ParseError> {
     let h = as_u32(value)?;
     Height::try_from(h).map_err(|e| ParseError::Height(e.to_string()))
+}
+
+/// Parse a `confirmations` field reported for a block.
+///
+/// The primitives door is the validation: an integer that encodes no block
+/// state — `0` (the mempool state, which a block does not have), anything
+/// below `-1`, a count past `u32` — fails the parse rather than flowing
+/// through as a number downstream code would misread.
+fn as_block_confirmations(value: &serde_json::Value) -> Result<BlockConfirmations, ParseError> {
+    BlockConfirmations::try_from_rpc_i64(as_i64(value)?).map_err(ParseError::Confirmations)
+}
+
+/// Parse a `confirmations` field reported for a transaction or its outputs,
+/// where `0` is the mempool. Same discipline as [`as_block_confirmations`].
+fn as_tx_confirmations(value: &serde_json::Value) -> Result<TxConfirmations, ParseError> {
+    TxConfirmations::try_from_rpc_i64(as_i64(value)?).map_err(ParseError::Confirmations)
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +322,10 @@ pub(crate) enum ParseError {
     #[error("tree size: {0}")]
     TreeSize(#[from] TreeSizeOutOfRange),
 
+    /// A reported `confirmations` integer encodes no state in the wire scheme.
+    #[error("confirmations: {0}")]
+    Confirmations(zaino_primitives::types::ConfirmationsCodecError),
+
     /// Height validation failed.
     #[error("invalid height: {0}")]
     Height(String),
@@ -316,6 +337,11 @@ pub(crate) enum ParseError {
     /// A monetary amount was invalid or out of range.
     #[error("invalid amount: {0}")]
     Amount(String),
+
+    /// A transparent address string was rejected. The validator is expected to
+    /// send valid addresses, so this is corrupt source data.
+    #[error("invalid transparent address: {0}")]
+    Address(#[from] TransparentAddressError),
 
     /// Block deserialization failed.
     #[error("deserialize: {0}")]
@@ -385,7 +411,7 @@ pub(crate) fn parse_block_header_verbose(
 ) -> Result<BlockHeaderVerbose, ParseError> {
     Ok(BlockHeaderVerbose {
         hash: parse_block_hash(field(value, "hash")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         height: as_height(field(value, "height")?)?,
         version: as_u32(field(value, "version")?)?,
         merkle_root: as_merkle_root(field(value, "merkleroot")?)?,
@@ -584,7 +610,7 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
     let script = field(value, "scriptPubKey")?;
     Ok(Some(TxOut {
         best_block: parse_block_hash(field(value, "bestblock")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_tx_confirmations(field(value, "confirmations")?)?,
         value: zatoshis_field(value, "valueZat", "value")?,
         coinbase: opt_field(value, "coinbase")
             .map(as_bool)
@@ -602,8 +628,8 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
                 .map(|v| as_str(v).map(str::to_owned))
                 .transpose()?,
             required_signatures: opt_field(script, "reqSigs").map(as_u32).transpose()?,
-            addresses: parse_optional_list(script, "addresses", |a| {
-                Ok(TransparentAddress::new(as_str(a)?.to_owned()))
+            addresses: parse_optional_list(script, "addresses", |v| {
+                Ok(TransparentAddress::try_new(as_str(v)?)?)
             })?,
         },
     }))
@@ -653,7 +679,7 @@ pub(crate) fn parse_address_deltas(
                 txid: as_txid(field(d, "txid")?)?,
                 index: as_u32(field(d, "index")?)?,
                 height: as_height(field(d, "height")?)?,
-                address: TransparentAddress::new(as_str(field(d, "address")?)?.to_owned()),
+                address: TransparentAddress::try_new(as_str(field(d, "address")?)?)?,
                 // the legacy full node emits `blockindex`; a validator that does not is
                 // reported as not knowing it rather than as position zero.
                 block_index: match opt_field(d, "blockindex") {
@@ -671,7 +697,7 @@ pub(crate) fn parse_address_utxos(value: &serde_json::Value) -> Result<Vec<Utxo>
         .iter()
         .map(|u| {
             Ok(Utxo {
-                address: TransparentAddress::new(as_str(field(u, "address")?)?.to_owned()),
+                address: TransparentAddress::try_new(as_str(field(u, "address")?)?)?,
                 txid: as_txid(field(u, "txid")?)?,
                 output_index: as_u32(field(u, "outputIndex")?)?,
                 script: Script::new(
@@ -1016,7 +1042,7 @@ fn parse_upgrades(
 pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerbose, ParseError> {
     let trees = opt_field(value, "trees");
     Ok(BlockVerbose {
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
         chainwork: opt_field(value, "chainwork")
             .map(parse_reported_chain_work)
@@ -1062,7 +1088,7 @@ fn tree_size(count: usize) -> Result<TreeSize, ParseError> {
 pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDeltas, ParseError> {
     Ok(BlockDeltas {
         hash: parse_block_hash(field(value, "hash")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         size: as_u64(field(value, "size")?)?,
         height: as_height(field(value, "height")?)?,
         version: as_u32(field(value, "version")?)?,
@@ -1084,7 +1110,7 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
                 index: as_u32(field(d, "index")?)?,
                 inputs: parse_optional_list(d, "inputs", |i| {
                     Ok(InputDelta {
-                        address: TransparentAddress::new(as_str(field(i, "address")?)?.to_owned()),
+                        address: TransparentAddress::try_new(as_str(field(i, "address")?)?)?,
                         satoshis: SignedZatoshis::try_new(as_i64(field(i, "satoshis")?)?)
                             .map_err(|e| ParseError::Amount(e.to_string()))?,
                         index: as_u32(field(i, "index")?)?,
@@ -1094,7 +1120,7 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
                 })?,
                 outputs: parse_optional_list(d, "outputs", |o| {
                     Ok(OutputDelta {
-                        address: TransparentAddress::new(as_str(field(o, "address")?)?.to_owned()),
+                        address: TransparentAddress::try_new(as_str(field(o, "address")?)?)?,
                         satoshis: Zatoshis::new(as_u64(field(o, "satoshis")?)?)
                             .map_err(|e| ParseError::Amount(e.to_string()))?,
                         index: as_u32(field(o, "index")?)?,
