@@ -34,7 +34,10 @@ use core::fmt;
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::{ChainView, ChainViewSnapshot};
-use zaino_source::{OneShotSendRawTransaction, QueryError, SendRawTransactionError};
+use zaino_source::OneShotSendRawTransaction;
+
+mod remote;
+pub use remote::RemoteChainView;
 
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
@@ -66,14 +69,14 @@ fn genesis() -> Height {
 /// through the returned [`EngineSnapshot`] is coherent.
 pub struct Engine<Fs, Nfs, Src> {
     view: ChainView<Fs, Nfs>,
-    source: Src,
+    remote: RemoteChainView<Src>,
 }
 
 impl<Fs: Clone, Nfs: Clone, Src: Clone> Clone for Engine<Fs, Nfs, Src> {
     fn clone(&self) -> Self {
         Self {
             view: self.view.clone(),
-            source: self.source.clone(),
+            remote: self.remote.clone(),
         }
     }
 }
@@ -91,7 +94,7 @@ where
     pub fn new(fs: Fs, nfs: Nfs, source: Src) -> Self {
         Self {
             view: ChainView::new(fs, nfs),
-            source,
+            remote: RemoteChainView::new(source),
         }
     }
 }
@@ -152,24 +155,10 @@ where
     Src: OneShotSendRawTransaction<NonDomain: fmt::Display> + 'static,
 {
     async fn broadcast(&self, raw_tx: Vec<u8>) -> Result<TransactionId, BroadcastRejection> {
-        // Passthrough to the validator's send port — the only thing that can
-        // broadcast. Reached through the source trait, never a concrete adapter.
-        match self.source.send_raw_transaction(raw_tx).await {
-            Ok(txid) => Ok(txid),
-            Err(QueryError::Domain(SendRawTransactionError::Malformed(reason))) => {
-                Err(BroadcastRejection::Malformed(reason))
-            }
-            Err(QueryError::Domain(SendRawTransactionError::Rejected(reason))) => {
-                Err(BroadcastRejection::Invalid(reason))
-            }
-            // A transport failure is not a rejection of the transaction, but
-            // `BroadcastRejection` has no transient arm; surface the cause as
-            // `Invalid` so the caller can resubmit. A dedicated transient variant
-            // on the serving error surface is a follow-up.
-            Err(QueryError::NonDomain(cause)) => Err(BroadcastRejection::Invalid(format!(
-                "validator unavailable: {cause}"
-            ))),
-        }
+        // Forward to the passthrough provider — a one-line delegate, no routing
+        // decision here. The classification (broadcast is remote) is that the
+        // remote view carries this capability.
+        self.remote.broadcast(raw_tx).await
     }
 }
 
