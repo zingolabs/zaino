@@ -22,10 +22,13 @@ default = []
 # Prometheus /metrics scrape endpoint.
 prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
 
-# TEST-ONLY: enables an in-process, hardcoded regtest Direct config fixture for
-# the ztest e2e harness (which mounts a legacy-schema config this greenfield
-# config cannot parse). Never enable in a production build; the fixture also
-# requires a runtime env var and logs a loud warning when it activates.
+# TEST/DEPLOY-ONLY: enables in-process, env-triggered config fixtures that ignore
+# the mounted `--config` — a regtest Direct fixture for the ztest e2e harness and
+# a mainnet Direct/state fixture for cluster state-mode deploys. Both exist
+# because the surrounding harness/chart mounts a legacy-schema config this
+# greenfield config cannot parse. Never enable in a production build; each
+# fixture also requires its own runtime env var and logs a loud warning when it
+# activates.
 ztest-fixture = []
 
 # COMPAT STUBS — UNIMPLEMENTED. Accepted verbatim so ztest can build every SUT

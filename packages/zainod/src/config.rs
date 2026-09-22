@@ -326,6 +326,67 @@ pub const TEST_FIXTURE_ZEBRA_ENV: &str = "ZAINO_TEST_ZEBRA_CACHE_DIR";
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_JSONRPC_ENV: &str = "ZAINO_TEST_ZEBRA_JSONRPC";
 
+/// Env var handing the mainnet state fixture the writable FS-store directory
+/// (see [`mainnet_direct_state_fixture`]). Optional; defaults to a cache path.
+#[cfg(feature = "ztest-fixture")]
+pub const TEST_FIXTURE_STORE_ENV: &str = "ZAINO_TEST_STORE_DIR";
+
+/// The env var that activates the mainnet Direct/state fixture (only with the
+/// `ztest-fixture` feature). Its presence — any value — triggers it.
+///
+/// The deploy-time analogue of [`TEST_FIXTURE_ENV`]: it lets the greenfield
+/// daemon boot a Direct/state config against a cluster's shared read-only zebra
+/// state cache when the surrounding deploy still mounts a legacy-schema
+/// `zainod.toml` this loader cannot parse.
+#[cfg(feature = "ztest-fixture")]
+pub const MAINNET_STATE_FIXTURE_ENV: &str = "ZAINO_MAINNET_DIRECT_STATE_FIXTURE";
+
+/// TEST/DEPLOY-ONLY: a mainnet Direct/state [`DaemonConfig`] built entirely from
+/// env-supplied topology, for booting the greenfield daemon in a cluster's
+/// state-mode deploy — a shared read-only zebra state cache (the Direct source)
+/// plus the validator's JSON-RPC (tip / mempool / passthrough) — whose chart
+/// still mounts a legacy-schema config this loader rejects.
+///
+/// Topology arrives by env so one image serves any cluster:
+/// - [`TEST_FIXTURE_ZEBRA_ENV`]: the RO-mounted zebra cache root (Direct source).
+/// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`.
+/// - [`TEST_FIXTURE_STORE_ENV`]: the writable FS-store directory.
+///
+/// The serving policy (mainnet, reorg-margin finalised depth, gRPC on
+/// `0.0.0.0:8137`) is baked. NEVER for production: gated behind BOTH the
+/// `ztest-fixture` build feature and the runtime env var, with a loud warning on
+/// activation.
+#[cfg(feature = "ztest-fixture")]
+pub fn mainnet_direct_state_fixture() -> DaemonConfig {
+    let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/cache/zebrad-cache"));
+    let jsonrpc_address = std::env::var(TEST_FIXTURE_JSONRPC_ENV)
+        .unwrap_or_else(|_| "zebra.golden-zebra-state.svc:8232".to_string());
+    let store_path = std::env::var_os(TEST_FIXTURE_STORE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/home/zaino/.cache/zaino/store"));
+    DaemonConfig {
+        network: Network::Mainnet,
+        metrics_endpoint: None,
+        source: SourceMode::Direct {
+            zebra_cache_dir,
+            jsonrpc_address,
+            cookie_path: None,
+            user: None,
+            password: None,
+        },
+        store: StoreConfig {
+            path: store_path,
+            map_size_gb: 16,
+        },
+        serve: ServeConfig {
+            grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
+        },
+        indexer: IndexerConfig::default(),
+    }
+}
+
 /// Serialize the built-in defaults into a commented example config file.
 pub fn generate_default_config() -> Result<String, IndexerError> {
     let toml = toml::to_string_pretty(&DaemonConfig::default())
