@@ -10,10 +10,10 @@
 // Domain data + identifiers — the real vocabulary, from the zero-dependency crate.
 pub use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, ChainMetadata, CompactBlock,
-    CompactCiphertext, Height, Nullifier, OrchardAction, OutputIndex, PreIndexCompactBlock,
-    PreIndexCompactTx, RawTransaction, SaplingOutput, Script, ShieldedPool, SubtreeRoot,
-    Transaction, TransactionId, TransactionLocation, TransparentAddress, TransparentInput,
-    TransparentOutput, Treestate, Utxo, Zatoshis,
+    CompactCiphertext, CompactDifficulty, Height, Nullifier, OrchardAction, OutputIndex,
+    PreIndexCompactBlock, PreIndexCompactTx, RawTransaction, SaplingOutput, Script, ShieldedPool,
+    SubtreeRoot, Transaction, TransactionId, TransactionLocation, TransparentAddress,
+    TransparentInput, TransparentOutput, Treestate, Utxo, Zatoshis,
 };
 
 mod chain_info;

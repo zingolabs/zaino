@@ -38,6 +38,7 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
 mod engine;
+mod nullifiers;
 mod remote;
 mod snapshot;
 

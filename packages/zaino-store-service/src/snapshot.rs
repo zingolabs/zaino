@@ -265,9 +265,15 @@ where
 {
     async fn compact_block_nullifiers(
         &self,
-        _at: BlockRef,
+        at: BlockRef,
     ) -> Result<Option<CompactBlock>, BlockReadError> {
-        Err(BlockReadError::NotServiceable(Capability::Blocks))
+        // Local: the same compact block the store already serves, reduced to its
+        // spend markers. A projection, not a separate index.
+        Ok(self
+            .local
+            .compact_block(at)
+            .await?
+            .map(crate::nullifiers::strip_to_nullifiers))
     }
 }
 

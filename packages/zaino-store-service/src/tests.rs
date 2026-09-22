@@ -93,13 +93,11 @@ async fn broadcast_maps_malformed_bytes_to_malformed() {
 }
 
 // The acceptance gate for the full light-wallet read-set (#10): the composed
-// engine must serve every read `LightServeService` demands — none reporting
-// itself `NotServiceable`. Red today (per-block reads / nullifiers / subtree
-// roots are still stubs); un-ignore each cap's grind as it greens, and drop the
-// `#[ignore]` when the whole read-set is wired. The per-cap tests below are the
-// incremental, always-run signal on the way there.
+// engine serves every read `LightServeService` demands — none reporting itself
+// `NotServiceable`. Green now that the whole read-set is wired (compact blocks
+// and nullifiers local; treestate, subtree roots, raw transaction, and address
+// reads passthrough). The per-cap tests below pin each capability's routing.
 #[tokio::test]
-#[ignore = "acceptance: un-ignore when the full light-wallet read-set is served (#10)"]
 async fn light_serve_conformance_over_a_provisioned_source() {
     let engine = engine_with(MockChain::new());
     zaino_service::conformance::assert_light_serve_conformance(&engine).await;
@@ -198,6 +196,23 @@ async fn subtree_roots_pass_through_from_an_index() {
         .await
         .expect("subtree roots served");
     assert!(roots.is_empty());
+}
+
+#[tokio::test]
+async fn compact_block_nullifiers_are_served_locally() {
+    // Local projection over the composed compact block. The empty stub views
+    // hold no block, so the answer is a domain miss (`Ok(None)`) — serviceable,
+    // not a `NotServiceable` stub. The projection itself is unit-tested in
+    // `crate::nullifiers`.
+    use zaino_core::BlockRef;
+    use zaino_service::CompactNullifierRead;
+    let engine = engine_with(MockChain::new());
+    let snapshot = engine.snapshot().await.expect("snapshot acquired");
+    let got =
+        CompactNullifierRead::compact_block_nullifiers(&snapshot, BlockRef::Height(height(0)))
+            .await
+            .expect("served");
+    assert!(got.is_none());
 }
 
 #[tokio::test]
