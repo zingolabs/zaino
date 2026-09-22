@@ -78,7 +78,7 @@ pub use transaction::{
 };
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;
-pub use transparent_address::TransparentAddress;
+pub use transparent_address::{TransparentAddress, TransparentAddressError};
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};
