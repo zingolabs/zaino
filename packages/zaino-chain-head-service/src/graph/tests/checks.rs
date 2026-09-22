@@ -1,7 +1,4 @@
 //! Single moves on a [`ChainGraph`], without a service around them.
-//!
-//! The graph always holds its tip, so every question below has an answer
-//! whatever has been trimmed or rewound.
 
 use zaino_primitives::types::BlockRef;
 
@@ -96,4 +93,44 @@ pub(super) fn the_tip_wins_an_equal_work_tie<G: ChainGraph>() {
     assert_eq!(graph.extend(chain_head_block(1, 11, 0, 2)), Ok(()));
 
     assert_eq!(graph.heaviest_block().hash(), hash(11));
+}
+
+/// `0 -> 1 -> 2 -> 3 -> 4`, with block 4 the tip.
+fn five_block_graph<G: ChainGraph>() -> G {
+    let mut graph = G::from_initial_block(chain_head_block(0, 0, 0, 1));
+    for h in 1..5u32 {
+        let id = u16::try_from(h).expect("test heights fit a block id");
+        assert_eq!(
+            graph.extend(chain_head_block(h, id, id - 1, u128::from(h) + 1)),
+            Ok(())
+        );
+    }
+    graph
+}
+
+pub(super) fn rewinding_to_the_oldest_retained_block_succeeds<G: InspectableGraph>() {
+    let mut graph = five_block_graph::<G>();
+    graph.remove_finalized_blocks(height(2));
+    let floor = graph
+        .block_by_hash(&hash(2))
+        .expect("the floor block is retained")
+        .reference;
+
+    assert_eq!(graph.rewind_to(floor), Ok(()));
+
+    assert_eq!(graph.tip_block().hash(), hash(2));
+    assert_eq!(best_chain_hashes(&graph), vec![hash(2)]);
+}
+
+pub(super) fn rewinding_to_a_trimmed_block_is_refused<G: InspectableGraph>() {
+    let mut graph = five_block_graph::<G>();
+    graph.remove_finalized_blocks(height(2));
+    let trimmed = BlockRef {
+        hash: hash(1),
+        height: height(1),
+    };
+
+    assert_eq!(graph.rewind_to(trimmed), Err(NotOnBestChain));
+
+    assert_eq!(graph.tip_block().hash(), hash(4));
 }

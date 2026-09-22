@@ -10,7 +10,7 @@ impl BlockDeltas {
     pub fn from_domain(deltas: zaino_primitives::types::rpc::BlockDeltas) -> Self {
         Self {
             hash: display_hex(deltas.hash.into()),
-            confirmations: deltas.confirmations,
+            confirmations: deltas.confirmations.to_rpc_i64(),
             size: deltas.size as i64,
             height: deltas.height.into(),
             version: deltas.version,
@@ -18,7 +18,7 @@ impl BlockDeltas {
             time: i64::from(deltas.time),
             median_time: i64::from(deltas.median_time),
             nonce: hex::encode(deltas.nonce),
-            bits: format!("{:08x}", deltas.bits),
+            bits: format!("{:08x}", deltas.bits.as_bits()),
             difficulty: deltas.difficulty,
             previous_block_hash: deltas.previous_block_hash.map(|h| display_hex(h.into())),
             next_block_hash: deltas.next_block_hash.map(|h| display_hex(h.into())),
@@ -190,7 +190,9 @@ mod tests {
     fn sample() -> domain::rpc::BlockDeltas {
         domain::rpc::BlockDeltas {
             hash: domain::BlockHash::from(ASYMMETRIC),
-            confirmations: 7,
+            confirmations: domain::BlockConfirmations::Confirmed(
+                std::num::NonZeroU32::new(7).expect("non-zero"),
+            ),
             size: 1_234,
             height: Height::try_from(42u32).unwrap(),
             version: 4,
@@ -199,14 +201,16 @@ mod tests {
                 txid: domain::TransactionId::from(ASYMMETRIC),
                 index: 1,
                 inputs: vec![domain::rpc::InputDelta {
-                    address: TransparentAddress::new("t1spender".to_string()),
+                    address: TransparentAddress::try_new("t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs")
+                        .expect("valid mainnet t1"),
                     satoshis: SignedZatoshis::try_new(-5_000).expect("within the supply"),
                     index: 0,
                     prev_txid: domain::TransactionId::from([0xbb; 32]),
                     prev_output: 3,
                 }],
                 outputs: vec![domain::rpc::OutputDelta {
-                    address: TransparentAddress::new("t1payee".to_string()),
+                    address: TransparentAddress::try_new("t3JZcvsuaXE6ygokL4XUiZSTrQBUoPYFnXJ")
+                        .expect("valid mainnet t3"),
                     satoshis: Zatoshis::new(5_000).unwrap(),
                     index: 0,
                 }],
@@ -214,7 +218,7 @@ mod tests {
             time: 1_700_000_000,
             median_time: 1_699_999_000,
             nonce: [0xcc; 32],
-            bits: 0x1d00_ffff,
+            bits: domain::CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid nBits"),
             difficulty: 1.0,
             previous_block_hash: Some(domain::BlockHash::from([0xdd; 32])),
             next_block_hash: None,

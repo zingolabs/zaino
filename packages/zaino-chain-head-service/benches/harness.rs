@@ -19,14 +19,15 @@ use tokio_util::sync::CancellationToken;
 use zaino_chain_head::ChainHeadConfig;
 use zaino_chain_head_service::ChainHeadService;
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
-    MerkleRoot, OrchardData, SaplingData, Transaction, TransactionId, TransparentData,
-    TransparentInput, TreeRoots,
+    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
+    EquihashSolution, Height, MerkleRoot, OrchardData, SaplingData, Transaction, TransactionId,
+    TransparentData, TransparentInput, TreeRoots, TreeSize,
 };
 use zaino_source::{
-    GetBlockByHashError, GetBlockError, GetChainTipError, GetCommitmentTreeRootsError,
-    OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip, OneShotGetCommitmentTreeRoots,
-    QueryError, SubscribeBlocks,
+    GetBlockByHashError, GetBlockError, GetChainTipError, GetCommitmentTreeRootsByHeightError,
+    GetCommitmentTreeRootsError, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip,
+    OneShotGetCommitmentTreeRoots, OneShotGetCommitmentTreeRootsByHeight, QueryError,
+    SubscribeBlocks,
 };
 
 /// Blocks the chain head retains: the reorg limit plus its retention margin.
@@ -43,7 +44,9 @@ const INPUTS: usize = 2;
 pub(crate) const TICKS: u32 = 8;
 
 /// A valid nBits value: non-negative, non-zero, no overflow.
-const VALID_BITS: u32 = 0x2007_ffff;
+fn valid_bits() -> CompactDifficulty {
+    CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits")
+}
 
 // ------------------------------------------------------------- the validator
 
@@ -157,6 +160,30 @@ impl OneShotGetCommitmentTreeRoots for MockValidator {
     }
 }
 
+impl OneShotGetCommitmentTreeRootsByHeight for MockValidator {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        at: Height,
+    ) -> Result<(BlockHash, TreeRoots), QueryError<GetCommitmentTreeRootsByHeightError>> {
+        let state = self.lock();
+        let hash = state
+            .best_chain
+            .get(usize::try_from(u32::from(at)).expect("bench heights fit usize"))
+            .copied()
+            .ok_or(QueryError::Domain(
+                GetCommitmentTreeRootsByHeightError::HeightNotFound(at),
+            ))?;
+        Ok((
+            hash,
+            TreeRoots {
+                sapling: None,
+                orchard: None,
+                ironwood: None,
+            },
+        ))
+    }
+}
+
 impl SubscribeBlocks for MockValidator {}
 
 // ---------------------------------------------------------------- the blocks
@@ -202,7 +229,7 @@ fn block_at(at: u32) -> Block {
             time: 0,
             merkle_root: MerkleRoot::from([0; 32]),
             block_commitments: BlockCommitments::from([0; 32]),
-            bits: VALID_BITS,
+            bits: valid_bits(),
             nonce: [0; 32],
             solution: EquihashSolution::Regtest([0; 36]),
         },
@@ -210,9 +237,9 @@ fn block_at(at: u32) -> Block {
             .map(|index| transaction(at, index))
             .collect(),
         chain_metadata: ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         },
     }
 }

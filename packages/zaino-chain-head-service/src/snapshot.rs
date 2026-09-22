@@ -128,8 +128,8 @@ impl ChainGraph for MapBackedSnapshot {
         &self.tip
     }
 
-    /// Folds over `others` from the tip, so the tip is the answer unless a
-    /// block carries strictly more work.
+    /// Folds over `others` from the tip, replacing it only on strictly more
+    /// work.
     fn heaviest_block(&self) -> &ChainHeadBlock {
         self.others.values().fold(&self.tip, |heaviest, block| {
             if block.work > heaviest.work {

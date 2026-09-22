@@ -6,6 +6,9 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
 version = "0.1.0"
 # The benchmarks share `benches/harness.rs`, which is a module rather than a
 # target of its own; without this, cargo would build it as one.
@@ -32,7 +35,6 @@ testing = []
 
 [dependencies]
 zaino-chain-head = { workspace = true }
-zaino-consensus = { workspace = true }
 zaino-primitives = { workspace = true }
 zaino-source = { workspace = true }
 zaino-status = { workspace = true }
@@ -51,6 +53,7 @@ criterion.workspace = true
 proptest.workspace = true
 stats_alloc = "0.1.10"
 tokio = { workspace = true, features = ["macros", "test-util"] }
+zaino-consensus = { workspace = true }
 
 # The library has no benchmarks of its own; without this, `cargo bench` runs
 # the test harness too and it rejects the benchmark's arguments.

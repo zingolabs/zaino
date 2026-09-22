@@ -128,7 +128,7 @@ The chain head does not validate blocks and sees only what it retained, so the
 source's tip is the best chain. After every advance the tip's work is compared
 against the heaviest retained block. A heavier retained block means the source
 moved away from it — a rollback, an invalidation, or a misbehaving source — and
-is logged at `warn`, not followed. Selection by retained work remains available
+is logged at `warn`, not followed. Selection by retained work is available
 inside the crate as a policy; under it, a rollback is overridden.
 
 The comparison against the tip is strictly greater-than. Taking the heaviest
