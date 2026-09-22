@@ -9,7 +9,7 @@ ARG HOME=/home/container_user
 ############################
 # Builder
 ############################
-FROM docker.io/library/rust:1.96.0-bookworm AS builder
+FROM docker.io/library/rust:1.98.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
@@ -22,7 +22,7 @@ ARG CARGO_FEATURES=""
 
 # Build deps incl. protoc for prost-build
 # Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
-# match the candidate versions in docker.io/library/rust:1.96.0-bookworm; bump
+# match the candidate versions in docker.io/library/rust:1.98.0-bookworm; bump
 # them together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config=1.8.1-1 \
