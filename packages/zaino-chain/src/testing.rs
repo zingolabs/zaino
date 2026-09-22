@@ -28,6 +28,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 
 use futures::Stream;
@@ -48,10 +49,10 @@ use zaino_chain_store::{
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    AbsoluteChainWork, AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef,
-    BlockTreeSizes, BlockTxPosition, BlockVerbose, ChainMetadata, ChainStateEpoch,
-    CompactDifficulty, EquihashNonce, EquihashSolution, Height, MerkleRoot, Outpoint,
-    PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId,
+    AbsoluteChainWork, AddressBalance, AddressDelta, Block, BlockConfirmations, BlockHash,
+    BlockHeader, BlockRef, BlockTreeSizes, BlockTxPosition, BlockVerbose, ChainMetadata,
+    ChainStateEpoch, CompactDifficulty, EquihashNonce, EquihashSolution, Height, MerkleRoot,
+    Outpoint, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId,
     TransactionLocation, TreeRoots, TreeSize, Treestate, Utxo,
 };
 use zaino_source::{
@@ -1188,7 +1189,7 @@ impl OneShotGetBlockVerbose for FakeSource {
         let _in_flight = self.begin(SourceCall::BlockVerbose(height)).await;
         self.at(height)
             .map(|_| BlockVerbose {
-                confirmations: 1,
+                confirmations: BlockConfirmations::Confirmed(NonZeroU32::MIN),
                 difficulty: 1.0,
                 // Zebra does not track cumulative work per height
                 // (ZcashFoundation/zebra#7109), so a real validator answers

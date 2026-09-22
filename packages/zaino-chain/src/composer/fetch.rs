@@ -22,7 +22,8 @@ use crate::source::ChainViewSource;
 /// A validator answer, with a domain rejection folded into `None`.
 ///
 /// The validator saying "no such block" is an answer, not a failure; a
-/// transport failure is transient. One helper rather than a mapping per read.
+/// transport failure carries its cause through unchanged. One helper rather
+/// than a mapping per read.
 pub(crate) fn miss<T, E>(result: core::result::Result<T, QueryError<E>>) -> Result<Option<T>>
 where
     E: core::fmt::Debug + core::fmt::Display,
@@ -30,7 +31,7 @@ where
     match result {
         Ok(value) => Ok(Some(value)),
         Err(QueryError::Domain(_)) => Ok(None),
-        Err(QueryError::Fetch(error)) => Err(ChainViewError::Transient(error.to_string())),
+        Err(QueryError::Fetch(error)) => Err(ChainViewError::SourceUnavailable(error)),
     }
 }
 

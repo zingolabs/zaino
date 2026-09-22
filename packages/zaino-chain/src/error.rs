@@ -1,5 +1,7 @@
 //! What can go wrong asking a chain view a question.
 
+use zaino_source::FetchError;
+
 /// A chain view could not answer.
 ///
 /// # A miss is not an error
@@ -9,7 +11,7 @@
 /// transaction never mined, an address never paid — none are failures, and
 /// phrasing them as failures is how a consumer comes to treat absent *data* as
 /// absent *chain*.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ChainViewError {
     /// The view does not offer this, or cannot reach that far.
@@ -21,8 +23,16 @@ pub enum ChainViewError {
     #[error("chain view cannot service this read: {0}")]
     NotServiceable(&'static str),
 
-    /// A retry may succeed: the validator was unreachable, or a tier was
-    /// briefly between states.
+    /// The validator could not be reached. A retry may succeed.
+    ///
+    /// Carries the transport [`FetchError`] as its `#[source]`, so
+    /// [`Error::source`](std::error::Error::source) yields the underlying cause
+    /// — and with it the machine-readable [`FailureMode`](zaino_source::FailureMode)
+    /// — rather than a flattened string.
+    #[error("validator unavailable: {0}")]
+    SourceUnavailable(#[source] FetchError),
+
+    /// A retry may succeed: a tier was briefly between states.
     ///
     /// Carries a description rather than the underlying error, because a chain
     /// view sits above several unrelated backends and preserving each one's
