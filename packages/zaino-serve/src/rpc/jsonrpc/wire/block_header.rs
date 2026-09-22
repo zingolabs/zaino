@@ -125,7 +125,7 @@ impl VerboseBlockHeader {
     pub fn from_domain(header: zaino_primitives::types::rpc::BlockHeaderVerbose) -> Self {
         Self {
             hash: zebra_chain::block::Hash(header.hash.into()),
-            confirmations: header.confirmations,
+            confirmations: header.confirmations.to_rpc_i64(),
             height: header.height.into(),
             version: header.version,
             merkle_root: zebra_chain::block::merkle::Root(header.merkle_root.into()),
@@ -134,7 +134,7 @@ impl VerboseBlockHeader {
             time: i64::from(header.time),
             nonce: hex::encode(header.nonce),
             solution: hex::encode(header.solution),
-            bits: format!("{:08x}", header.bits),
+            bits: format!("{:08x}", header.bits.as_bits()),
             difficulty: header.difficulty,
             chainwork: header.chainwork.map(|work| hex::encode(work.to_be_bytes())),
             previous_block_hash: header
@@ -160,14 +160,16 @@ mod from_domain_tests {
     fn sample() -> domain::rpc::BlockHeaderVerbose {
         domain::rpc::BlockHeaderVerbose {
             hash: domain::BlockHash::from(ASYMMETRIC),
-            confirmations: 10,
+            confirmations: domain::BlockConfirmations::Confirmed(
+                std::num::NonZeroU32::new(10).expect("non-zero"),
+            ),
             height: Height::try_from(123_456u32).unwrap(),
             version: 4,
             merkle_root: domain::MerkleRoot::from([0xaa; 32]),
             time: 1_700_000_000,
             nonce: [0xcc; 32],
             solution: vec![0xde, 0xad, 0xbe, 0xef],
-            bits: 0x1d00_ffff,
+            bits: domain::CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid nBits"),
             difficulty: 1.0,
             block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
             final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),

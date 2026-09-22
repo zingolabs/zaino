@@ -31,7 +31,7 @@ use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
 use zaino_primitives::types::{
-    Block, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
+    Block, BlockConfirmations, BlockHash, ChainMetadata, Height, TreeRoot, TreeRootInfo, TreeSize,
 };
 use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
 
@@ -461,7 +461,8 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             previous = *location;
 
             result.push(Utxo {
-                address: TransparentAddress::new(address.to_string()),
+                address: TransparentAddress::try_new(address.to_string())
+                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                 txid: zaino_primitives::types::TransactionId::from(txid.0),
                 output_index: location.output_index().index(),
                 script: Script::new(output.lock_script.as_raw_bytes().to_vec()),
@@ -634,7 +635,8 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                     txid: delta_txid,
                     index: index as u32,
                     height,
-                    address: TransparentAddress::new(address),
+                    address: TransparentAddress::try_new(address)
+                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                     block_index: Some(u32::from(location.index.index())),
                 });
             }
@@ -738,6 +740,41 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
             orchard,
             ironwood,
         })
+    }
+}
+
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZebraReadStateAdapter {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<
+        (BlockHash, zaino_primitives::types::TreeRoots),
+        QueryError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let hash = match read(&self.state, ReadRequest::BestChainBlockHash(zebra_height)).await? {
+            ReadResponse::BlockHash(Some(hash)) => BlockHash::from(hash.0),
+            ReadResponse::BlockHash(None) => {
+                return Err(QueryError::Domain(
+                    zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                ))
+            }
+            _ => return Err(unexpected_response("BlockHash").into()),
+        };
+        // The hash-addressed read can no longer miss: the hash was just
+        // resolved from the same state, so its `BlockNotFound` is a fault.
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    QueryError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(_),
+                    ) => QueryError::Domain(
+                        zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                    ),
+                    QueryError::Fetch(fetch) => QueryError::Fetch(fetch),
+                })?;
+        Ok((hash, roots))
     }
 }
 
@@ -1046,6 +1083,45 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))
             };
 
+        // Every pool the interface has a slot for, in its order. Omitting one
+        // reports it as zero, which is indistinguishable from an empty pool —
+        // that is how ironwood read as empty across NU6.3 activation.
+        let pools = [
+            ("transparent", balance.transparent_amount()),
+            ("sprout", balance.sprout_amount()),
+            ("sapling", balance.sapling_amount()),
+            ("orchard", balance.orchard_amount()),
+            ("lockbox", balance.deferred_amount()),
+            ("ironwood", balance.ironwood_amount()),
+        ];
+        let value_pools = pools
+            .iter()
+            .map(|(id, amount)| {
+                Ok(ValuePoolBalance {
+                    id: (*id).to_string(),
+                    chain_value: to_zatoshis(*amount)?,
+                    monitored: amount.zatoshis() != 0,
+                    value_delta: None,
+                })
+            })
+            .collect::<Result<Vec<_>, FetchError>>()?;
+
+        // `chainSupply` is the sum over those pools, carried unnamed — a total,
+        // not a pool. It is not the transparent balance.
+        let supply = pools
+            .iter()
+            .try_fold(
+                zebra_chain::amount::Amount::<zebra_chain::amount::NonNegative>::zero(),
+                |acc, (_, amount)| acc + *amount,
+            )
+            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+        let chain_supply = ValuePoolBalance {
+            id: String::new(),
+            chain_value: to_zatoshis(supply)?,
+            monitored: supply.zatoshis() != 0,
+            value_delta: None,
+        };
+
         Ok(BlockchainInfo {
             chain: self.network.bip70_network_name(),
             blocks: Height::try_from(height.0)
@@ -1068,32 +1144,8 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
             // Not tracked by the read-state; the legacy full node counts sprout commitments
             // only, which has no meaning for a modern chain.
             commitments: 0,
-            chain_supply: ValuePoolBalance {
-                id: "transparent".to_string(),
-                chain_value: to_zatoshis(balance.transparent_amount())?,
-                monitored: true,
-                value_delta: None,
-            },
-            value_pools: vec![
-                ValuePoolBalance {
-                    id: "sprout".to_string(),
-                    chain_value: to_zatoshis(balance.sprout_amount())?,
-                    monitored: true,
-                    value_delta: None,
-                },
-                ValuePoolBalance {
-                    id: "sapling".to_string(),
-                    chain_value: to_zatoshis(balance.sapling_amount())?,
-                    monitored: true,
-                    value_delta: None,
-                },
-                ValuePoolBalance {
-                    id: "orchard".to_string(),
-                    chain_value: to_zatoshis(balance.orchard_amount())?,
-                    monitored: true,
-                    value_delta: None,
-                },
-            ],
+            chain_supply,
+            value_pools,
             upgrades,
             consensus: ConsensusBranchIds {
                 chain_tip: branch_at(height),
@@ -1299,6 +1351,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             }
             _ => return Err(unexpected_response("Tip").into()),
         };
+        let domain_tip = Height::try_from(tip.0).map_err(|e| parse(e.to_string()))?;
 
         let next_block_hash = match read(
             &self.state,
@@ -1344,7 +1397,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 };
 
                 inputs.push(InputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| parse(e.to_string()))?,
                     // A spend debits the address, so the value leaves it.
                     satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
                         .map_err(|e| parse(e.to_string()))?,
@@ -1360,7 +1414,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     continue;
                 };
                 outputs.push(OutputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| parse(e.to_string()))?,
                     satoshis: Zatoshis::new(u64::from(output.value))
                         .map_err(|e| parse(e.to_string()))?,
                     index: index as u32,
@@ -1377,7 +1432,10 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
 
         Ok(BlockDeltas {
             hash,
-            confirmations: i64::from(tip.0.saturating_sub(height.0)) + 1,
+            // A best-chain answer by construction: the block was looked up on
+            // the best chain above. The constructor owns the depth + 1
+            // off-by-one and the height-above-tip clamp.
+            confirmations: BlockConfirmations::of_best_chain_block(domain_height, domain_tip),
             size: block
                 .zcash_serialized_size()
                 .try_into()
@@ -1391,9 +1449,12 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             median_time: self.median_time_past(&block).await?,
             nonce: *block.header.nonce,
             // Same conversion `zaino-convert-zebra` uses for a block header:
-            // zebra has no `CompactDifficulty::to_bits()`, so the nBits value
-            // is recovered from its display-order bytes.
-            bits: u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order()),
+            // zebra exposes no raw-bits accessor, so the nBits value crosses
+            // as its display-order bytes, revalidated at the primitives door.
+            bits: zaino_primitives::types::CompactDifficulty::try_from_be_bytes(
+                block.header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| parse(e.to_string()))?,
             difficulty: block_difficulty(block.header.difficulty_threshold, &self.network),
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,

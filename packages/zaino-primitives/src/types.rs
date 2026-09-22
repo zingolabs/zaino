@@ -12,7 +12,9 @@ mod block_verbose;
 mod blockchain_info;
 mod chain_state_epoch;
 mod compact_block;
-mod encrypted_ciphertext;
+mod compact_ciphertext;
+mod compact_difficulty;
+mod confirmations;
 mod ephemeral_key;
 mod equihash_solution;
 mod height;
@@ -42,10 +44,7 @@ mod zatoshis;
 
 pub use address_balance::AddressBalance;
 pub use address_delta::AddressDelta;
-pub use aliases::{
-    BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, OutputIndex,
-    SubtreeIndex, TxIndex,
-};
+pub use aliases::{BlockTime, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TxIndex};
 pub use block::{Block, BlockError, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
@@ -55,7 +54,9 @@ pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
 pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
-pub use encrypted_ciphertext::EncryptedCiphertext;
+pub use compact_ciphertext::{CompactCiphertext, CompactCiphertextLength};
+pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
+pub use confirmations::{BlockConfirmations, ConfirmationsCodecError, TxConfirmations};
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
 pub use height::{Height, HeightOverflow};
@@ -68,7 +69,7 @@ pub use network_upgrade::{
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use outpoint::Outpoint;
-pub use script::{classify_script, Script, ScriptType};
+pub use script::{classify_script, Script, ScriptType, TransparentAddressKey};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
@@ -77,7 +78,7 @@ pub use transaction::{
 };
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;
-pub use transparent_address::TransparentAddress;
+pub use transparent_address::{TransparentAddress, TransparentAddressError};
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};

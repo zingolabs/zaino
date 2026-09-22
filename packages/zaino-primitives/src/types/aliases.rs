@@ -6,17 +6,11 @@
 /// Output index within a transaction.
 pub type OutputIndex = u32;
 
-/// Number of confirmations (depth from tip). Ephemeral, query-time only.
-pub type Confirmations = i64;
-
 /// Difficulty target. Protocol-specific float representation.
 pub type Difficulty = f64;
 
 /// Subtree index within a shielded pool's commitment tree.
 pub type SubtreeIndex = u16;
-
-/// Compact difficulty target (nBits encoding).
-pub type CompactDifficulty = u32;
 
 /// Block timestamp (Unix epoch seconds).
 pub type BlockTime = u32;

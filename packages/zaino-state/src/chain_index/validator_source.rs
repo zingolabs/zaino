@@ -387,7 +387,11 @@ fn pool_balance(
         "lockbox" | "deferred" => GetBlockchainInfoBalance::deferred(value, delta),
         "ironwood" => GetBlockchainInfoBalance::ironwood(value, delta),
         // `chainSupply` is a total rather than a pool, and arrives unnamed.
-        "" => GetBlockchainInfoBalance::chain_supply(Default::default()),
+        // `chain_supply` sums a `ValueBalance`, so the total is handed to it as a
+        // one-pool balance — the only public constructor that leaves `id` empty.
+        "" => GetBlockchainInfoBalance::chain_supply(
+            zebra_chain::value_balance::ValueBalance::from_transparent_amount(value),
+        ),
         other => return Err(invalid(format!("unknown value pool `{other}`"))),
     })
 }
@@ -732,11 +736,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                         zebra_rpc::client::TransactionObject::from_transaction(
                             transaction.clone(),
                             Some(block_height),
-                            Some(verbose.confirmations),
+                            Some(verbose.confirmations.to_rpc_i64()),
                             &self.network,
                             Some(block_time),
                             Some(block_hash),
-                            Some(verbose.confirmations >= 0),
+                            Some(verbose.confirmations.is_in_best_chain()),
                             transaction.hash(),
                         ),
                     ))
@@ -753,7 +757,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         Ok(GetBlock::Object(Box::new(
             zebra_rpc::methods::BlockObject::new(
                 block_hash,
-                verbose.confirmations,
+                verbose.confirmations.to_rpc_i64(),
                 Some(raw.len() as i64),
                 Some(block_height),
                 Some(block.header.version),
