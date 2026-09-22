@@ -158,18 +158,16 @@ fn sapling_from_zebra(
         spends: tx
             .sapling_nullifiers()
             .map(|nf| SaplingSpend {
-                nullifier: Nullifier::from(<[u8; 32]>::from(*nf)),
+                nullifier: Nullifier::from(<[u8; 32]>::from(nf)),
             })
             .collect(),
         outputs: tx
             .sapling_outputs()
             .map(|out| {
-                let epk_bytes: [u8; 32] = (&out.ephemeral_key).into();
-                let enc_bytes: [u8; 580] = out.enc_ciphertext.into();
                 Ok(SaplingOutput {
-                    cmu: NoteCommitment::from(out.cm_u.to_bytes()),
-                    ephemeral_key: EphemeralKey::from(epk_bytes),
-                    enc_ciphertext: compact_prefix(&enc_bytes)?,
+                    cmu: NoteCommitment::from(out.cmu().to_bytes()),
+                    ephemeral_key: EphemeralKey::from(out.ephemeral_key().0),
+                    enc_ciphertext: compact_prefix(out.enc_ciphertext())?,
                 })
             })
             .collect::<Result<Vec<_>, ConvertError>>()?,
@@ -211,14 +209,12 @@ fn orchard_shaped_from_zebra<'a>(
     Ok(OrchardData {
         actions: actions
             .map(|act| {
-                let nf_bytes: [u8; 32] = act.nullifier.into();
-                let epk_bytes: [u8; 32] = (&act.ephemeral_key).into();
-                let enc_bytes: [u8; 580] = act.enc_ciphertext.into();
+                let encrypted_note = act.encrypted_note();
                 Ok(OrchardAction {
-                    nullifier: Nullifier::from(nf_bytes),
-                    cmx: NoteCommitment::from(<[u8; 32]>::from(act.cm_x)),
-                    ephemeral_key: EphemeralKey::from(epk_bytes),
-                    enc_ciphertext: compact_prefix(&enc_bytes)?,
+                    nullifier: Nullifier::from(act.nullifier().to_bytes()),
+                    cmx: NoteCommitment::from(act.cmx().to_bytes()),
+                    ephemeral_key: EphemeralKey::from(encrypted_note.epk_bytes),
+                    enc_ciphertext: compact_prefix(&encrypted_note.enc_ciphertext)?,
                 })
             })
             .collect::<Result<Vec<_>, ConvertError>>()?,
