@@ -85,9 +85,27 @@ pub async fn spawn_indexer(
             let validator = Arc::new(ZebraValidator::with_read_state(rpc, readstate));
             boot(validator, config).await
         }
-        // The Rpc selector is preserved in config, but only Direct/ReadState
-        // sourcing is wired so far. Fail loud and typed rather than panic.
-        SourceMode::Rpc { .. } => Err(IndexerError::RpcSourceUnsupported),
+        // Off-node: reach the validator over JSON-RPC alone, no co-located state
+        // DB. The FS indexer sources compact blocks over RPC and the chain-head
+        // polls the tip over the same transport, so this follows the chain — it is
+        // not catch-up-only. It trades the state DB's disk-speed reads for
+        // per-block RPC round-trips.
+        SourceMode::Rpc {
+            jsonrpc_address,
+            cookie_path,
+            user,
+            password,
+        } => {
+            info!(rpc = %jsonrpc_address, "connecting validator JSON-RPC (Rpc)");
+            let rpc = ZebraRpcAdapter::new(rpc_client_from_config(
+                jsonrpc_address,
+                cookie_path.as_deref(),
+                user.as_deref(),
+                password.as_deref(),
+            )?);
+            let validator = Arc::new(ZebraValidator::rpc_only(rpc));
+            boot(validator, config).await
+        }
     }
 }
 

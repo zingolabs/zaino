@@ -40,9 +40,10 @@ pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 /// Where the daemon sources blocks from the validator.
 ///
 /// `Direct` reads the validator's on-disk state database in-process (fastest;
-/// must be co-located with the validator, and follows the live tip). `Rpc`
-/// talks JSON-RPC (works off-node; catch-up only — the RPC source cannot push a
-/// tip, so it does not follow the chain past the height it caught up to).
+/// must be co-located with the validator). `Rpc` talks JSON-RPC (works off-node,
+/// no state DB). Both follow the live tip: the chain-head polls the tip over the
+/// configured transport. `Rpc` trades the state DB's disk-speed reads for
+/// per-block RPC round-trips.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum SourceMode {

@@ -10,14 +10,6 @@ pub enum IndexerError {
     /// Configuration is missing, malformed, or invalid.
     #[error("configuration error: {0}")]
     ConfigError(String),
-    /// RPC source mode is configured but not yet wired in runtime serving.
-    ///
-    /// The `SourceMode::Rpc` selector is preserved so the config shape is
-    /// stable, but only Direct/ReadState sourcing is implemented for now.
-    #[error(
-        "RPC source mode is not yet supported in runtime serving; use source.mode = \"direct\""
-    )]
-    RpcSourceUnsupported,
     /// Opening the Zebra ReadState database failed (Direct source mode).
     #[error("opening the validator ReadState database failed")]
     OpenReadState(#[source] zaino_source_zebra_readstate::OpenReadStateError),
