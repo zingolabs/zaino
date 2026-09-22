@@ -199,11 +199,15 @@ fn ironwood_from_zebra(
 /// Convert an Orchard-shaped action stream and its value balance.
 ///
 /// Shared by the Orchard and Ironwood pools: Ironwood actions are the same
-/// `zebra_chain::orchard::Action` type, so the two differ only in which
-/// accessors the caller reads them from. Keeping one conversion means a fix to
-/// action handling cannot reach one pool and miss the other.
+/// `orchard::ActionBytes` type, so the two differ only in which accessors the
+/// caller reads them from. Keeping one conversion means a fix to action
+/// handling cannot reach one pool and miss the other.
 fn orchard_shaped_from_zebra<'a>(
-    actions: impl Iterator<Item = &'a zebra_chain::orchard::Action>,
+    actions: impl Iterator<
+        Item = &'a orchard::ActionBytes<
+            <orchard::bundle::Authorized as orchard::bundle::Authorization>::SpendAuth,
+        >,
+    >,
     value_balance: i64,
 ) -> Result<OrchardData, ConvertError> {
     Ok(OrchardData {
@@ -232,7 +236,9 @@ mod tests {
     /// inside it — otherwise one pool's balance would be reported for both.
     #[test]
     fn shared_conversion_reports_the_balance_it_was_given() {
-        let empty: [&zebra_chain::orchard::Action; 0] = [];
+        let empty: [&orchard::ActionBytes<
+            <orchard::bundle::Authorized as orchard::bundle::Authorization>::SpendAuth,
+        >; 0] = [];
 
         let pool = orchard_shaped_from_zebra(empty.into_iter(), -42).expect("a valid balance");
 

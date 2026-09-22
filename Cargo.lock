@@ -694,6 +694,7 @@ dependencies = [
  "digest 0.10.7",
  "fiat-crypto",
  "rustc_version",
+ "serde",
  "subtle",
  "zeroize",
 ]
@@ -4144,6 +4145,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "x25519-dalek"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+dependencies = [
+ "curve25519-dalek",
+ "rand_core 0.6.4",
+ "serde",
+ "zeroize",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4796,10 +4809,8 @@ dependencies = [
  "hex",
  "humantime",
  "incrementalmerkletree",
- "itertools",
  "jubjub",
  "lazy_static",
- "nonempty",
  "num-integer",
  "orchard",
  "primitive-types",
@@ -4820,8 +4831,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uint 0.10.0",
+ "x25519-dalek",
  "zcash_address",
- "zcash_encoding",
  "zcash_history",
  "zcash_note_encryption",
  "zcash_primitives",
