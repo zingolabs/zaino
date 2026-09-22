@@ -47,6 +47,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 metrics = { workspace = true, optional = true }
+imbl = { workspace = true }
 
 [dev-dependencies]
 criterion.workspace = true

@@ -15,11 +15,11 @@
 //!
 //! [`MapBackedSnapshot`] is this crate's implementation of
 //! `zaino_chain_head::ChainHeadSnapshot`, and the trait is what consumers name.
-//! Storing the graph differently — persistent structures sharing unchanged
-//! subtrees between publishes, rather than maps cloned on each one — is a
-//! change to this crate alone. The writer builds graphs only through the
-//! crate-private `ChainGraph` moves, so another representation implements that
-//! trait as well.
+//! It holds the graph in persistent collections, so a published snapshot
+//! shares its structure with the one it came from instead of copying every
+//! block. Storing it differently is a change to this crate alone: the writer
+//! builds graphs only through the crate-private `ChainGraph` moves, so another
+//! representation implements that trait as well.
 //!
 //! # Publication is all-or-nothing
 //!
