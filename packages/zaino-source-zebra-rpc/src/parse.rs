@@ -809,12 +809,12 @@ fn parse_tree_roots_inner(value: &serde_json::Value) -> Result<TreeRoots, ParseE
         sapling: pool_root::<sapling_crypto::Node>(opt_field(value, "sapling"), |r| r.to_bytes())?,
         // Orchard and Ironwood share a node type and a root representation, so
         // they share this reader — they differ only in which field they read.
-        orchard: pool_root::<zebra_chain::orchard::tree::Node>(opt_field(value, "orchard"), |r| {
-            r.to_repr()
+        orchard: pool_root::<orchard::tree::MerkleHashOrchard>(opt_field(value, "orchard"), |r| {
+            r.to_bytes()
         })?,
-        ironwood: pool_root::<zebra_chain::orchard::tree::Node>(
+        ironwood: pool_root::<orchard::tree::MerkleHashOrchard>(
             opt_field(value, "ironwood"),
-            |r| r.to_repr(),
+            |r| r.to_bytes(),
         )?,
     })
 }
