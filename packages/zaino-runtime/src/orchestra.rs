@@ -199,11 +199,28 @@ impl Orchestra {
     pub async fn run(mut self) -> RuntimeOutcome {
         match self.next_escalation().await {
             Some(component) => {
-                tracing::error!(%component, "component escalated; tearing down the runtime");
+                // Narrate the teardown so the trail from "component Critical" to
+                // the process coming down is legible, not a silent jump. Name the
+                // escalating component with its Critical detail (its status
+                // `reason`), so a reader sees *why* the runtime is stopping.
+                match self.statuses.iter().find(|s| s.status().name == component) {
+                    Some(source) => tracing::error!(
+                        status = %source.status(),
+                        "runtime escalation: component went Critical; tearing down all components"
+                    ),
+                    None => tracing::error!(
+                        %component,
+                        "runtime escalation: component went Critical; tearing down all components"
+                    ),
+                }
                 self.shutdown();
+                tracing::warn!(%component, "runtime torn down after escalation; outcome is fatal");
                 RuntimeOutcome::Fatal { component }
             }
-            None => RuntimeOutcome::Settled,
+            None => {
+                tracing::info!("runtime settled: every component stopped without escalation");
+                RuntimeOutcome::Settled
+            }
         }
     }
 
@@ -226,7 +243,17 @@ impl Orchestra {
     }
 
     /// Stop supervising every component.
+    ///
+    /// This cancels each component's supervisor; it does not itself await the
+    /// components' own tasks releasing their resources (e.g. the serve socket) —
+    /// that gap is why an immediate re-boot can still race a not-yet-freed port.
     pub fn shutdown(&self) {
+        let components: Vec<ComponentName> =
+            self.statuses.iter().map(|s| s.status().name).collect();
+        tracing::info!(
+            ?components,
+            "runtime shutdown: cancelling every component supervisor"
+        );
         for babysitter in &self.babysitters {
             babysitter.cancel();
         }
