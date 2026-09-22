@@ -27,7 +27,7 @@ use criterion::{
     measurement::{Measurement, ValueFormatter},
     BatchSize, Criterion, Throughput,
 };
-use harness::{anchored, synced, MockValidator, TICKS, WINDOW};
+use harness::{anchored, hold_publications, synced, MockValidator, TICKS, WINDOW};
 use stats_alloc::{StatsAlloc, INSTRUMENTED_SYSTEM};
 use tokio::runtime::Runtime;
 use zaino_chain_head::ChainHeadBlockService as _;
@@ -204,18 +204,7 @@ fn publication(criterion: &mut Criterion<Allocations>) {
                 let service = synced(&runtime, &validator);
                 (validator, service)
             },
-            |(validator, service)| {
-                let mut held: Vec<Arc<MapBackedSnapshot>> =
-                    Vec::with_capacity(usize::try_from(TICKS).expect("the tick count fits usize"));
-                for _ in 0..TICKS {
-                    validator.extend();
-                    runtime.block_on(async {
-                        service.advance_once().await.expect("advance succeeds")
-                    });
-                    held.push(service.subscriber().current());
-                }
-                held
-            },
+            |(validator, service)| hold_publications(&runtime, &validator, &service),
             BatchSize::LargeInput,
         );
     });

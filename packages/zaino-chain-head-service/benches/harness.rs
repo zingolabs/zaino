@@ -16,8 +16,8 @@ use std::{
 
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
-use zaino_chain_head::ChainHeadConfig;
-use zaino_chain_head_service::ChainHeadService;
+use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig};
+use zaino_chain_head_service::{ChainHeadService, MapBackedSnapshot};
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
     EquihashSolution, Height, MerkleRoot, OrchardData, SaplingData, Transaction, TransactionId,
@@ -309,4 +309,23 @@ pub(crate) fn synced(
     let service = anchored(runtime, validator);
     runtime.block_on(async { service.advance_once().await.expect("the advance succeeds") });
     service
+}
+
+/// Steady state: one new block per tick, for [`TICKS`] ticks, with every
+/// publication still held, as a reader holds them.
+///
+/// The returned snapshots are what the measurement is about, so the caller
+/// hands them back to criterion rather than dropping them.
+pub(crate) fn hold_publications(
+    runtime: &Runtime,
+    validator: &MockValidator,
+    service: &ChainHeadService<MockValidator>,
+) -> Vec<Arc<MapBackedSnapshot>> {
+    let mut held = Vec::with_capacity(usize::try_from(TICKS).expect("the tick count fits usize"));
+    for _ in 0..TICKS {
+        validator.extend();
+        runtime.block_on(async { service.advance_once().await.expect("advance succeeds") });
+        held.push(service.subscriber().current());
+    }
+    held
 }
