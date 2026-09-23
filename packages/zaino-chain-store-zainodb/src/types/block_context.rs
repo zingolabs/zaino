@@ -8,31 +8,21 @@
 
 use super::{AbsoluteChainWork, BlockHash, BlockIndex, Height};
 
-/// The block's [`BlockIndex`], parent hash, and cumulative chainwork.
+/// The block's [`BlockIndex`], parent hash, and cumulative chainwork, where `Work` is [`AbsoluteChainWork`] once the total is known and `Option<AbsoluteChainWork>` where the producer may not know it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlockContext {
+pub struct BlockContext<Work = Option<AbsoluteChainWork>> {
     /// Uniquely identifies this block: its `(height, hash)` pair.
     pub index: BlockIndex,
     /// The hash of this block's parent block (previous block in chain).
     pub parent_hash: BlockHash,
-    /// Total chain work up to this block.
-    ///
-    /// `None` when the producer of the block cannot know it — a chain head
-    /// serves blocks from a bounded window and has no view of the work below
-    /// it. A block without chain work has no stored form, and the encode
-    /// boundary refuses one.
-    pub chainwork: Option<AbsoluteChainWork>,
+    /// Total chain work up to this block, in whichever form `Work` names.
+    pub chainwork: Work,
 }
 
-impl BlockContext {
+impl<Work> BlockContext<Work> {
     /// Constructs a new `BlockContext` by packaging `(height, hash)` into a
     /// [`BlockIndex`].
-    pub fn new(
-        hash: BlockHash,
-        parent_hash: BlockHash,
-        chainwork: Option<AbsoluteChainWork>,
-        height: Height,
-    ) -> Self {
+    pub fn new(hash: BlockHash, parent_hash: BlockHash, chainwork: Work, height: Height) -> Self {
         Self {
             index: BlockIndex { height, hash },
             parent_hash,
@@ -50,13 +40,26 @@ impl BlockContext {
         &self.parent_hash
     }
 
-    /// Returns the total chain work up to this block, when it is known.
-    pub fn chainwork(&self) -> Option<AbsoluteChainWork> {
-        self.chainwork
-    }
-
     /// Returns the height of this block.
     pub fn height(&self) -> Height {
         self.index.height
+    }
+}
+
+impl<Work: Copy> BlockContext<Work> {
+    /// Returns the total chain work up to this block, in whichever form `Work` names.
+    pub fn chainwork(&self) -> Work {
+        self.chainwork
+    }
+}
+
+impl BlockContext<AbsoluteChainWork> {
+    /// The same context with its known chainwork in the optional slot, for a path that serves stored and unstored blocks alike.
+    pub fn with_optional_chainwork(self) -> BlockContext {
+        BlockContext {
+            index: self.index,
+            parent_hash: self.parent_hash,
+            chainwork: Some(self.chainwork),
+        }
     }
 }

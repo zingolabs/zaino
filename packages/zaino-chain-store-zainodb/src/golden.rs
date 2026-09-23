@@ -183,16 +183,16 @@ fn block_data() -> BlockData {
     }
 }
 
-fn block_context() -> BlockContext {
+fn block_context() -> BlockContext<AbsoluteChainWork> {
     BlockContext::new(
         block_hash(),
         BlockHash::from([0x99; 32]),
-        Some(AbsoluteChainWork::new(CHAINWORK)),
+        AbsoluteChainWork::new(CHAINWORK),
         height(),
     )
 }
 
-fn block_header_data() -> BlockHeaderData {
+fn block_header_data() -> BlockHeaderData<AbsoluteChainWork> {
     BlockHeaderData::new(block_context(), block_data())
 }
 

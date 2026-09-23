@@ -107,7 +107,7 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let header: BlockHeaderData = *StoredEntryVar::from_bytes(raw)
+            let header: BlockHeaderData<AbsoluteChainWork> = *StoredEntryVar::from_bytes(raw)
                 .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
                 .inner();
 
@@ -246,12 +246,10 @@ impl DbV1 {
                     .inner();
 
             // Construct IndexedBlock
-            Ok(Some(IndexedBlock::new(
-                header.context,
-                *header.data(),
-                txs,
-                commitment_tree_data,
-            )))
+            Ok(Some(
+                IndexedBlock::new(header.context, *header.data(), txs, commitment_tree_data)
+                    .with_optional_chainwork(),
+            ))
         }
     }
 

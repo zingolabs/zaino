@@ -174,7 +174,7 @@ impl DbV1 {
             let raw = ro
                 .get(self.headers, &height_key)
                 .map_err(StoreError::LmdbError)?;
-            let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+            let entry = StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(raw)
                 .map_err(|e| fail(&format!("header corrupt data: {e}")))?;
             if !entry.verify(&height_key) {
                 return Err(fail("header checksum mismatch"));
@@ -288,7 +288,7 @@ impl DbV1 {
                 let raw = ro
                     .get(self.headers, &parent_block_height_key)
                     .map_err(StoreError::LmdbError)?;
-                let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                let entry = StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(raw)
                     .map_err(|e| fail(&format!("parent header corrupt data: {e}")))?;
 
                 *entry.inner().context.hash()
@@ -589,11 +589,12 @@ impl DbV1 {
                     }
                 })?;
 
-                let hash = StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
-                    .inner()
-                    .context
-                    .index
-                    .hash;
+                let hash =
+                    StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::deserialize(bytes)?
+                        .inner()
+                        .context
+                        .index
+                        .hash;
 
                 match self.validate_block_blocking(height, hash) {
                     Ok(()) => {}
@@ -646,11 +647,12 @@ impl DbV1 {
                         }
                     })?;
 
-                    let hash = StoredEntryVar::<BlockHeaderData>::deserialize(bytes)?
-                        .inner()
-                        .context
-                        .index
-                        .hash;
+                    let hash =
+                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::deserialize(bytes)?
+                            .inner()
+                            .context
+                            .index
+                            .hash;
 
                     match self.validate_block_blocking(height, hash) {
                         Ok(()) => {}

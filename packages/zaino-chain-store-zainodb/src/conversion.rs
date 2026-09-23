@@ -100,25 +100,48 @@ pub enum BlockConversionError {
         /// The position that did not fit.
         position: usize,
     },
+    /// A block above genesis was built without its parent's chainwork, which only genesis may lack.
+    #[error("block {hash} at height {height} has no parent chainwork to accumulate onto")]
+    ParentChainWorkUnknown {
+        /// The block that could not be converted.
+        hash: BlockHash,
+        /// The block's height, which is above genesis.
+        height: Height,
+    },
 }
 
-/// This block's chainwork accumulated onto its parent's, which is the block's own work at [`GENESIS_HEIGHT`] and `None` above it when the parent's chainwork is unknown.
+/// This block's chainwork accumulated onto its parent's, which is the block's own work at [`GENESIS_HEIGHT`] and an error above it when the parent's chainwork is unknown.
 pub fn chainwork_from_parent(
     block_work: SingleBlockWork,
     hash: BlockHash,
     height: Height,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<Option<AbsoluteChainWork>, BlockConversionError> {
+) -> Result<AbsoluteChainWork, BlockConversionError> {
     match parent_chainwork {
-        Some(parent) => parent.accumulate(block_work).map(Some).map_err(|error| {
-            BlockConversionError::ChainWorkOverflow {
-                hash,
-                reason: error.to_string(),
-            }
-        }),
-        None if height == GENESIS_HEIGHT => Ok(Some(AbsoluteChainWork::genesis(block_work))),
-        None => Ok(None),
+        Some(parent) => {
+            parent
+                .accumulate(block_work)
+                .map_err(|error| BlockConversionError::ChainWorkOverflow {
+                    hash,
+                    reason: error.to_string(),
+                })
+        }
+        None if height == GENESIS_HEIGHT => Ok(AbsoluteChainWork::genesis(block_work)),
+        None => Err(BlockConversionError::ParentChainWorkUnknown { hash, height }),
     }
+}
+
+/// [`chainwork_from_parent`] for a builder that may not know the parent's chainwork, whose block above genesis then has none.
+pub fn chainwork_from_parent_if_known(
+    block_work: SingleBlockWork,
+    hash: BlockHash,
+    height: Height,
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<Option<AbsoluteChainWork>, BlockConversionError> {
+    if parent_chainwork.is_none() && height != GENESIS_HEIGHT {
+        return Ok(None);
+    }
+    chainwork_from_parent(block_work, hash, height, parent_chainwork).map(Some)
 }
 
 /// Re-expresses a domain block as this backend's [`IndexedBlock`].
@@ -129,13 +152,14 @@ pub fn chainwork_from_parent(
 /// derivable from one block.
 ///
 /// `chainwork` is passed in rather than derived, because a block alone does not
-/// determine it. See [`chainwork_from_parent`]. `None` where the caller cannot
-/// know it — see [`BlockContext::chainwork`].
-pub fn indexed_block(
+/// determine it. See [`chainwork_from_parent`]. Its form decides the block's:
+/// an [`AbsoluteChainWork`] builds the block the writer takes, and `None`
+/// builds one that can only be served — see [`BlockContext`].
+pub fn indexed_block<Work>(
     block: &Block,
     tree_roots: &TreeRoots,
-    chainwork: Option<AbsoluteChainWork>,
-) -> Result<IndexedBlock, BlockConversionError> {
+    chainwork: Work,
+) -> Result<IndexedBlock<Work>, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
     let data = block_data(&block.header);
@@ -364,12 +388,18 @@ mod chainwork_from_parent {
         BlockHash([1u8; 32])
     }
 
-    /// A block above genesis whose parent's chainwork is unknown has no chainwork, not genesis work.
+    /// A block above genesis whose parent's chainwork is unknown cannot be given one, and is not given genesis work.
     #[test]
-    fn an_unknown_parent_above_genesis_yields_no_chainwork() {
-        let chainwork =
-            chainwork_from_parent(work(), hash(), Height(1), None).expect("nothing to overflow");
-        assert!(chainwork.is_none());
+    fn an_unknown_parent_above_genesis_is_an_error() {
+        let error = chainwork_from_parent(work(), hash(), Height(1), None)
+            .expect_err("no parent to accumulate onto");
+        assert!(matches!(
+            error,
+            BlockConversionError::ParentChainWorkUnknown {
+                height: Height(1),
+                ..
+            }
+        ));
     }
 
     /// Genesis has no parent, and its chainwork is its own work.
@@ -377,7 +407,7 @@ mod chainwork_from_parent {
     fn genesis_chainwork_is_its_own_work() {
         let chainwork = chainwork_from_parent(work(), hash(), GENESIS_HEIGHT, None)
             .expect("nothing to overflow");
-        assert!(chainwork == Some(AbsoluteChainWork::genesis(work())));
+        assert!(chainwork == AbsoluteChainWork::genesis(work()));
     }
 
     /// A block with a known parent accumulates its own work onto the parent's.
@@ -386,7 +416,28 @@ mod chainwork_from_parent {
         let parent = AbsoluteChainWork::genesis(work());
         let chainwork = chainwork_from_parent(work(), hash(), Height(1), Some(parent))
             .expect("nothing to overflow");
-        assert!(chainwork == Some(parent.accumulate(work()).expect("no overflow")));
+        assert!(chainwork == parent.accumulate(work()).expect("no overflow"));
+    }
+
+    /// A block above genesis whose parent's chainwork is unknown has no chainwork, not genesis work.
+    #[test]
+    fn if_known_leaves_an_unknown_parent_above_genesis_without_chainwork() {
+        let chainwork = chainwork_from_parent_if_known(work(), hash(), Height(1), None)
+            .expect("nothing to overflow");
+        assert!(chainwork.is_none());
+    }
+
+    /// The optional form still seeds genesis and still accumulates onto a known parent.
+    #[test]
+    fn if_known_agrees_with_the_total_form_where_that_form_answers() {
+        let genesis = chainwork_from_parent_if_known(work(), hash(), GENESIS_HEIGHT, None)
+            .expect("nothing to overflow");
+        assert!(genesis == Some(AbsoluteChainWork::genesis(work())));
+
+        let parent = AbsoluteChainWork::genesis(work());
+        let next = chainwork_from_parent_if_known(work(), hash(), Height(1), Some(parent))
+            .expect("nothing to overflow");
+        assert!(next == Some(parent.accumulate(work()).expect("no overflow")));
     }
 }
 

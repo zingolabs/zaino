@@ -32,10 +32,10 @@ use crate::store::capability::{
 };
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactOrchardAction, CompactSaplingSpend,
-    CompactTxData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
-    TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
+    AbsoluteChainWork, BlockHash, BlockHeaderData, CommitmentTreeData, CompactOrchardAction,
+    CompactSaplingSpend, CompactTxData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList,
+    Outpoint, SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx,
+    TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
 };
 use crate::{config::StoreSettings, error::StoreError};
 use zaino_encoding::{CompactSize, FixedEncodedLen as _, ZainoVersionedSerde as _};
@@ -758,7 +758,11 @@ impl DbV1 {
                     let hash_opt = (|| -> Option<BlockHash> {
                         let ro = zaino_db.env.begin_ro_txn().ok()?;
                         let bytes = ro.get(zaino_db.headers, &hkey).ok()?;
-                        let entry = StoredEntryVar::<BlockHeaderData>::deserialize(bytes).ok()?;
+                        let entry =
+                            StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::deserialize(
+                                bytes,
+                            )
+                            .ok()?;
                         Some(entry.inner().context.index.hash)
                     })();
 
@@ -922,8 +926,10 @@ impl DbV1 {
             for (height_bytes, header_entry_bytes) in cursor.iter() {
                 let height = Height::from_bytes(height_bytes)?;
                 let header_entry =
-                    StoredEntryVar::<BlockHeaderData>::from_bytes(header_entry_bytes)
-                        .map_err(|e| StoreError::Custom(format!("corrupt header entry: {e}")))?;
+                    StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
+                        header_entry_bytes,
+                    )
+                    .map_err(|e| StoreError::Custom(format!("corrupt header entry: {e}")))?;
                 let hash = *header_entry.inner().context.hash();
 
                 zaino_db.validate_block_blocking(height, hash)?

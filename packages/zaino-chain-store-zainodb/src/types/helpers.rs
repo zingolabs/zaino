@@ -310,7 +310,7 @@ impl<'a> BlockWithMetadata<'a> {
             .map(|height| Height(height.0))
             .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-        let chainwork = crate::conversion::chainwork_from_parent(
+        let chainwork = crate::conversion::chainwork_from_parent_if_known(
             block_work(&block.header)?,
             hash,
             height,

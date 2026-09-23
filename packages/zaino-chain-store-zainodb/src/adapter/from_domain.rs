@@ -14,7 +14,7 @@ use zaino_primitives::types::{
 };
 
 use crate::types::{
-    BlockHash, CompactTxData, Height, IndexedBlock, Outpoint, TransactionHash,
+    AbsoluteChainWork, BlockHash, CompactTxData, Height, IndexedBlock, Outpoint, TransactionHash,
     TransparentCompactTx, TxLocation,
 };
 
@@ -60,14 +60,16 @@ pub(super) fn stored_outpoint(outpoint: &DomainOutpoint) -> Outpoint {
 /// adapter produces. One conversion serving both directions is what keeps a
 /// block from changing shape as it crosses the finalised seam. It goes private
 /// again when `IndexedBlock` stops being ChainIndex's block.
-pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, ChainStoreError> {
+pub fn indexed_block_from_stored(
+    block: &StoredBlock,
+) -> Result<IndexedBlock<AbsoluteChainWork>, ChainStoreError> {
     let header = &block.header;
     let hash = stored_hash(header.hash);
 
     let context = crate::types::BlockContext::new(
         hash,
         stored_hash(header.prev_hash),
-        Some(block.chainwork),
+        block.chainwork,
         Height(u32::from(header.height)),
     );
 

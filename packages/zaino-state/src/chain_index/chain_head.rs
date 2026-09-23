@@ -155,7 +155,8 @@ mod tests {
     #[test]
     fn conversion_agrees_with_the_finalised_state_path() {
         let vectors = load_test_vectors().expect("test vectors load");
-        let expected: Vec<IndexedBlock> = indexed_block_chain(&vectors.blocks).collect();
+        let expected: Vec<IndexedBlock<zaino_primitives::types::AbsoluteChainWork>> =
+            indexed_block_chain(&vectors.blocks).collect();
 
         let mut work = RelativeChainWork::ZERO;
         for (vector, expected) in vectors.blocks.iter().zip(&expected) {
@@ -203,10 +204,6 @@ mod tests {
             assert_eq!(
                 actual.context.chainwork, None,
                 "a chain head block cannot know its total chain work",
-            );
-            assert!(
-                expected.context.chainwork.is_some(),
-                "the finalised path computes total chain work",
             );
             assert_eq!(actual.data, expected.data, "block header data");
             assert_eq!(

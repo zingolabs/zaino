@@ -311,7 +311,7 @@ pub(crate) async fn build_indexed_block_from_source<S: ChainStoreSource + ?Sized
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let fetched = fetch_block_for_indexing(source, height_int).await?;
     assemble_indexed_block(
         fetched,
@@ -374,7 +374,7 @@ pub(crate) fn assemble_indexed_block(
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let _assembling = crate::timer::Timer::start(metrics::histogram!(
         crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS
     ));
@@ -465,7 +465,7 @@ pub(crate) fn indexed_block_from_parts(
     block: &zaino_primitives::types::Block,
     tree_roots: &zaino_primitives::types::TreeRoots,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let hash = crate::types::BlockHash(block.header.hash.into());
     let chainwork = crate::conversion::chainwork_from_parent(
         block.header.bits.to_work(),
@@ -1222,7 +1222,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     ///
     /// For reorg handling, callers should delete tip blocks using [`FinalisedState::delete_block_at_height`]
     /// or [`FinalisedState::delete_block`] before re-appending.
-    pub async fn write_block(&self, b: IndexedBlock) -> Result<(), StoreError> {
+    pub async fn write_block(&self, b: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         self.db.write_block(b).await?;
         self.refresh_watermark().await;
         Ok(())
@@ -1488,7 +1488,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             )?;
 
             let chain_block = indexed_block_from_parts(&block, &tree_roots, parent_chainwork)?;
-            parent_chainwork = chain_block.context.chainwork;
+            parent_chainwork = Some(chain_block.context.chainwork);
 
             db.write_block_v1_0_0(chain_block).await?;
         }

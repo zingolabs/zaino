@@ -102,7 +102,8 @@ pub(crate) async fn block_at<R: StoredBlockRead>(
     };
     match blocks.pop() {
         Some(block) => Ok(Some(
-            zaino_chain_store_zainodb::adapter::indexed_block_from_stored(&block)?,
+            zaino_chain_store_zainodb::adapter::indexed_block_from_stored(&block)?
+                .with_optional_chainwork(),
         )),
         None => Ok(None),
     }

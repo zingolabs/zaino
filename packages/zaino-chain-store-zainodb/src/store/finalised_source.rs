@@ -74,10 +74,10 @@ use crate::store::{
 };
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    db::metadata::FinalisedTxOutSetInfoAccumulator, BlockHash, BlockHeaderData, CommitmentTreeData,
-    Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
-    SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
-    TxOutCompact, TxidList,
+    db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, BlockHeaderData,
+    CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
+    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
+    TxLocation, TxOutCompact, TxidList,
 };
 use crate::{config::StoreSettings, error::StoreError};
 use zaino_chain_store::ChainStoreSource;
@@ -477,7 +477,7 @@ impl<T: ChainStoreSource> DbWrite for FinalisedSource<T> {
     /// Write a fully-indexed block into the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), StoreError> {
+    async fn write_block(&self, block: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.write_block(block).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
@@ -937,7 +937,10 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
     /// This method does not perform safety checks and must not be used in production code.
     ///
     /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(&self, block: IndexedBlock) -> Result<(), StoreError> {
+    pub(crate) async fn write_block_v1_0_0(
+        &self,
+        block: IndexedBlock<AbsoluteChainWork>,
+    ) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.write_block_v1_0_0(block).await,
             Self::Ephemeral(_) => Err(StoreError::Custom(

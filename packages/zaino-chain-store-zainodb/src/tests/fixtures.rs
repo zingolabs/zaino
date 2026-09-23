@@ -16,7 +16,7 @@ pub(crate) use super::fake_validator::fake_validator_with_tip;
 #[cfg(test)]
 pub(crate) use super::fake_validator::{fake_validator_from_vectors, FakeValidator};
 use crate::types::{
-    AbsoluteChainWork, BlockMetadata, BlockWithMetadata, CompactTxData, IndexedBlock,
+    AbsoluteChainWork, BlockContext, BlockMetadata, BlockWithMetadata, CompactTxData, IndexedBlock,
 };
 
 /// The network the vector chain was mined on.
@@ -56,7 +56,9 @@ pub fn vector_network() -> zebra_chain::parameters::Network {
 /// Built through `BlockWithMetadata` — the `zebra_chain` path — deliberately.
 /// That is what makes it an *independent* oracle for the store's own build
 /// path, which now assembles blocks from `zaino-primitives` instead.
-pub fn indexed_block_chain(blocks: &[VectorBlock]) -> impl Iterator<Item = IndexedBlock> + '_ {
+pub fn indexed_block_chain(
+    blocks: &[VectorBlock],
+) -> impl Iterator<Item = IndexedBlock<AbsoluteChainWork>> + '_ {
     let network = vector_network();
     let mut parent_chainwork: Option<AbsoluteChainWork> = None;
 
@@ -70,11 +72,32 @@ pub fn indexed_block_chain(blocks: &[VectorBlock]) -> impl Iterator<Item = Index
             parent_chainwork,
             network: network.clone(),
         };
-        let block = IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata))
-            .expect("vector blocks are valid");
-        parent_chainwork = block.context.chainwork;
+        let block = with_known_chainwork(
+            IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata))
+                .expect("vector blocks are valid"),
+        );
+        parent_chainwork = Some(block.context.chainwork);
         block
     })
+}
+
+/// The oracle's block in the writer's shape, which the `zebra_chain` builder cannot produce itself because its parent chainwork is optional.
+fn with_known_chainwork(block: IndexedBlock) -> IndexedBlock<AbsoluteChainWork> {
+    let chainwork = block
+        .context
+        .chainwork
+        .expect("the oracle threads every parent chainwork, so each block has one");
+    IndexedBlock::new(
+        BlockContext::new(
+            block.context.index.hash,
+            block.context.parent_hash,
+            chainwork,
+            block.context.index.height,
+        ),
+        block.data,
+        block.transactions,
+        block.commitment_tree_data,
+    )
 }
 
 /// The chain, plus a flat `(height, tx_index)` lookup into its transactions.
@@ -84,7 +107,10 @@ pub fn indexed_block_chain(blocks: &[VectorBlock]) -> impl Iterator<Item = Index
 #[allow(clippy::type_complexity)]
 pub fn index_vector_blocks(
     blocks: &[VectorBlock],
-) -> (Vec<IndexedBlock>, HashMap<(u32, u64), CompactTxData>) {
+) -> (
+    Vec<IndexedBlock<AbsoluteChainWork>>,
+    HashMap<(u32, u64), CompactTxData>,
+) {
     let mut indexed = Vec::with_capacity(blocks.len());
     let mut by_position: HashMap<(u32, u64), CompactTxData> = HashMap::new();
 
@@ -176,7 +202,7 @@ pub fn load_test_vectors() -> corez::io::Result<TestVectorData> {
 fn vector_chain_up_to(
     blocks: &[VectorBlock],
     height_limit: Option<u32>,
-) -> impl Iterator<Item = IndexedBlock> + '_ {
+) -> impl Iterator<Item = IndexedBlock<AbsoluteChainWork>> + '_ {
     indexed_block_chain(blocks).take_while(move |block| {
         height_limit.is_none_or(|limit| block.context.index.height.0 <= limit)
     })

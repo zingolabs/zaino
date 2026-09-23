@@ -126,6 +126,19 @@ it.
 The writer requires `db_tip_height + 1`. It is strictly append-only; `rewind_to`
 is a repair path, not part of following the chain.
 
+The writer takes `IndexedBlock<AbsoluteChainWork>` and nothing else. A block's
+chain work is the one field a block alone does not determine, so `BlockContext`,
+`BlockHeaderData` and `IndexedBlock` carry it in whichever form the producer
+has: `AbsoluteChainWork` where the total is known, which is the only form with
+a stored encoding, and `Option<AbsoluteChainWork>` (the default) where it may
+not be, as on a block the chain head or the ephemeral backend serves. The
+finalised build path folds each block's work onto its parent's through
+`conversion::chainwork_from_parent`, which refuses an unknown parent above
+genesis before any block is built, so no runtime check stands between a block
+the writer accepts and its bytes on disk. A block read back from the store is
+`IndexedBlock<AbsoluteChainWork>`; `with_optional_chainwork()` widens it where a
+read path answers for stored and unstored blocks alike.
+
 `ChainStoreFreezeSink::freeze` takes a slice, and the adapter dispatches:
 `write_block_batch_blocking` when it can, and the per-block path when
 `transparent_address_history_experimental` is on, because that feature's

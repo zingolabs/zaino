@@ -1015,10 +1015,14 @@ impl ZainoVersionedSerde for EquihashSolution {
 
 /// Represents the indexing data of a single compact Zcash block used internally by Zaino.
 /// Provides efficient indexing for blockchain state queries and updates.
+///
+/// `Work` is the form of the block's chainwork, as on [`BlockContext`]: the
+/// writer takes only `IndexedBlock<AbsoluteChainWork>`, and a served block may
+/// carry `Option<AbsoluteChainWork>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndexedBlock {
+pub struct IndexedBlock<Work = Option<AbsoluteChainWork>> {
     /// The block's `BlockIndex`, parent hash, and cumulative chainwork.
-    pub context: BlockContext,
+    pub context: BlockContext<Work>,
     /// Essential header and metadata information for the block.
     pub data: BlockData,
     /// Compact representations of transactions in this block.
@@ -1028,10 +1032,29 @@ pub struct IndexedBlock {
     pub commitment_tree_data: CommitmentTreeData,
 }
 
-impl IndexedBlock {
+impl<Work: Copy> IndexedBlock<Work> {
+    /// Returns the total chain work up to this block, in whichever form `Work` names.
+    pub fn chainwork(&self) -> Work {
+        self.context.chainwork()
+    }
+}
+
+impl IndexedBlock<AbsoluteChainWork> {
+    /// The same block with its known chainwork in the optional slot, for a read path that serves stored and unstored blocks alike.
+    pub fn with_optional_chainwork(self) -> IndexedBlock {
+        IndexedBlock {
+            context: self.context.with_optional_chainwork(),
+            data: self.data,
+            transactions: self.transactions,
+            commitment_tree_data: self.commitment_tree_data,
+        }
+    }
+}
+
+impl<Work> IndexedBlock<Work> {
     /// Creates a new `IndexedBlock`.
     pub fn new(
-        context: BlockContext,
+        context: BlockContext<Work>,
         data: BlockData,
         tx: Vec<CompactTxData>,
         commitment_tree_data: CommitmentTreeData,
@@ -1067,11 +1090,6 @@ impl IndexedBlock {
     /// Returns the block height if available.
     pub fn height(&self) -> Height {
         self.context.height()
-    }
-
-    /// Returns the total chain work, when it is known.
-    pub fn chainwork(&self) -> Option<AbsoluteChainWork> {
-        self.context.chainwork()
     }
 
     /// Returns the single-block proof-of-work contribution.
@@ -2449,16 +2467,16 @@ impl FixedEncodedLen for ShardRoot {
 /// Holds full block header data, split into the block's [`BlockContext`] and
 /// additional header data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlockHeaderData {
+pub struct BlockHeaderData<Work = Option<AbsoluteChainWork>> {
     /// The block's `BlockIndex`, parent hash, and cumulative chainwork.
-    pub context: BlockContext,
+    pub context: BlockContext<Work>,
     /// Block header data
     data: BlockData,
 }
 
-impl BlockHeaderData {
+impl<Work> BlockHeaderData<Work> {
     /// Constructs a new `BlockHeaderData`.
-    pub fn new(context: BlockContext, data: BlockData) -> Self {
+    pub fn new(context: BlockContext<Work>, data: BlockData) -> Self {
         Self { context, data }
     }
 
@@ -2468,7 +2486,19 @@ impl BlockHeaderData {
     }
 }
 
-impl ZainoVersionedSerde for BlockHeaderData {
+impl BlockHeaderData<AbsoluteChainWork> {
+    /// The same header with its known chainwork in the optional slot, for a read path that serves stored and unstored blocks alike.
+    pub fn with_optional_chainwork(self) -> BlockHeaderData {
+        BlockHeaderData {
+            context: self.context.with_optional_chainwork(),
+            data: self.data,
+        }
+    }
+}
+
+/// Only a header whose chainwork is known has a stored form, so the encoder is
+/// total and the decoder yields the same shape.
+impl ZainoVersionedSerde for BlockHeaderData<AbsoluteChainWork> {
     const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -2480,12 +2510,12 @@ impl ZainoVersionedSerde for BlockHeaderData {
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from_business(&self.context)?.serialize_with_version(&mut *w, 1)?;
+        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 1)?;
         self.data.serialize_with_version(w, 1)
     }
 
     fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from_business(&self.context)?.serialize_with_version(&mut *w, 2)?;
+        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 2)?;
         self.data.serialize_with_version(w, 1)
     }
 

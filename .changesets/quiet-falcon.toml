@@ -15,8 +15,8 @@ migration   = "Replace ChainHeadWork with zaino_primitives::types::RelativeChain
 [[changes]]
 crate       = "zaino-chain-store-zainodb"
 kind        = "breaking"
-description = "A block's chain work is now optional: BlockContext::chainwork is Option<AbsoluteChainWork>, and encoding a block without it is refused. The on-disk format is unchanged."
-migration   = "BlockContext::new takes Option<AbsoluteChainWork>; pass Some(..) for blocks read from or written to the store. conversion::indexed_block takes the same. Blocks produced from the chain head carry None and cannot be persisted."
+description = "A block's chain work may be unknown, and the type says so: BlockContext, BlockHeaderData and IndexedBlock take a Work parameter that is AbsoluteChainWork where the total is known and Option<AbsoluteChainWork> (the default) where the producer may not know it. Only the known form has a stored form, so the writer takes IndexedBlock<AbsoluteChainWork> and the encoder is total. The on-disk format is unchanged."
+migration   = "BlockContext::new and conversion::indexed_block take the chainwork in whichever form the caller has; pass an AbsoluteChainWork to build the block the writer accepts, or None for a block that is only served. A block read back from the store, or built from a StoredBlock, is IndexedBlock<AbsoluteChainWork>; call with_optional_chainwork() where a path serves stored and unstored blocks alike. Blocks produced from the chain head carry None and cannot be passed to the writer."
 
 [[changes]]
 crate       = "zaino-chain-head-service"
@@ -35,6 +35,7 @@ description = """
 A block whose parent chainwork is unknown no longer receives a fabricated \
 genesis chainwork. `chainwork_from_parent` takes the block's height and \
 yields the block's own work only at `GENESIS_HEIGHT`; above it, an unknown \
-parent yields no chainwork, which the persistence boundary refuses. The \
-bulk-sync fold and the zebra-block builder both go through that one rule.
+parent is an error on the finalised path and, through \
+`chainwork_from_parent_if_known`, no chainwork on the zebra-block builder. \
+Both go through that one rule.
 """

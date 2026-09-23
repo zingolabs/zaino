@@ -21,7 +21,7 @@ const CANONICAL_CHAINWORK: NonZeroU128 = NonZeroU128::new(0x42).expect("nonzero 
 /// Changing the values produced here invalidates every golden-bytes test
 /// that pins an encoding — regenerate goldens and audit the change for
 /// on-disk-stability implications.
-pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
+pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData<AbsoluteChainWork> {
     let hash = crate::types::BlockHash::from([1u8; 32]);
     let parent_hash = crate::types::BlockHash::from([2u8; 32]);
     let chainwork = AbsoluteChainWork::new(CANONICAL_CHAINWORK);
@@ -29,7 +29,7 @@ pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let solution = EquihashSolution::Standard([6u8; 1344]);
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");
 
-    let bctx = BlockContext::new(hash, parent_hash, Some(chainwork), height);
+    let bctx = BlockContext::new(hash, parent_hash, chainwork, height);
     let bdata = BlockData {
         version: 1,
         time: 2,
