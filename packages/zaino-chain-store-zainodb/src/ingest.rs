@@ -22,7 +22,7 @@ pub(crate) struct BlockWork {
 impl BlockWork {
     /// - No Sprout JoinSplits (absent from the stored compact tx model)
     /// - Saturating: a corrupt source read must degrade a metric, not panic ingest
-    pub(crate) fn tally(block: &IndexedBlock) -> Self {
+    pub(crate) fn tally<Work>(block: &IndexedBlock<Work>) -> Self {
         let mut work = Self {
             transactions: block.transactions().len() as u64,
             ..Self::default()
