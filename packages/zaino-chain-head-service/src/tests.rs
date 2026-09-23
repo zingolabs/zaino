@@ -494,6 +494,38 @@ async fn the_anchor_carries_zero_work() {
     assert_eq!(anchor.work, RelativeChainWork::ZERO);
 }
 
+/// A re-anchor seeds the new window's fold from zero too, so its anchor carries no work and the block above it carries its own.
+#[tokio::test]
+async fn a_re_anchor_carries_zero_work() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 5).await;
+    step_to_tip(&service, &validator).await;
+
+    // A hundred blocks past the window, so the next tick re-anchors at
+    // `tip - max_depth` rather than walking the gap.
+    for id in 5..105 {
+        validator.extend(id);
+    }
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    let anchor_height = snapshot.lowest_retained_height();
+    assert!(
+        u32::from(anchor_height) > 4,
+        "the window must have re-anchored above the old tip, not extended from it: \
+         lowest retained {anchor_height:?}, tip {:?}",
+        snapshot.best_tip(),
+    );
+    let anchor = snapshot
+        .best_block_by_height(anchor_height)
+        .expect("the anchor is retained");
+    let above = snapshot
+        .best_block_by_height(height(u32::from(anchor_height) + 1))
+        .expect("the block above the anchor is retained");
+    assert_eq!(anchor.work, RelativeChainWork::ZERO);
+    assert!(above.work > RelativeChainWork::ZERO);
+}
+
 /// A reorg to a longer chain. The displaced block stays retained — it is a
 /// competing block now — but is no longer canonical at its height.
 ///
@@ -619,9 +651,11 @@ async fn the_generation_advances_across_a_re_anchor() {
     // so the held tip has to fall below that for the re-anchor branch to be
     // taken at all — asserted, so this cannot quietly become a test of the
     // ordinary extension path.
-    validator.extend(100);
+    for id in 5..105 {
+        validator.extend(id);
+    }
     assert!(
-        u32::from(before.best_tip.height) < 105 - 5,
+        u32::from(before.best_tip.height) < 104 - 5,
         "the held tip must be below the anchor the next tick computes",
     );
     step_to_tip(&service, &validator).await;

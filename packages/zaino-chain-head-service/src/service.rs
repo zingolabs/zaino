@@ -112,7 +112,7 @@ impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
 impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// Anchors the graph, then starts the writer task that extends it.
     ///
-    /// Anchoring is the old `initialize` with `resolve_anchor_block`: one block
+    /// Anchoring is the old `initialize`, through `anchor_block`: one block
     /// at the anchor height, which the writer task then extends one block at a
     /// time. Doing it before returning is what makes
     /// `ChainHeadSubscriber::current` total — there is no state in which a
@@ -832,7 +832,7 @@ enum ParentWork {
     Retained(RelativeChainWork),
 }
 
-/// Builds a [`ChainHeadBlock`] whose work is `parent`'s total plus its own, which cannot overflow for [`ParentWork::Anchor`].
+/// Builds a [`ChainHeadBlock`] whose work is [`RelativeChainWork::ZERO`] for [`ParentWork::Anchor`] and otherwise its parent's total plus its own.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
     tree_roots: TreeRoots,
