@@ -30,7 +30,7 @@ use zaino_chain_head::{
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
-    MerkleRoot, TreeRoots,
+    MerkleRoot, RelativeChainWork, TreeRoots,
 };
 use zaino_source::{
     FailureMode, FetchError, GetBlockByHashError, GetBlockError, GetChainTipError,
@@ -481,6 +481,17 @@ async fn work_accumulates_along_the_chain() {
     let first = snapshot.best_block_by_height(height(0)).expect("anchor");
     let last = snapshot.best_block_by_height(height(4)).expect("tip");
     assert!(last.work > first.work);
+}
+
+/// Work is measured from the anchor, so the anchor itself has accumulated none.
+#[tokio::test]
+async fn the_anchor_carries_zero_work() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+
+    let snapshot = service.subscriber().current();
+    let anchor = snapshot.best_block_by_height(height(0)).expect("anchor");
+    assert_eq!(anchor.work, RelativeChainWork::ZERO);
 }
 
 /// A reorg to a longer chain. The displaced block stays retained — it is a

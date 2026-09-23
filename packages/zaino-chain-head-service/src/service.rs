@@ -443,7 +443,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     // hold is authoritative, so refetch by it.
                     _ => tree_roots(self.source.as_ref(), block.header.hash).await?,
                 };
-                let chainblock = chain_head_block(block.clone(), &roots, Some(prev_block.work))?;
+                let chainblock =
+                    chain_head_block(block, roots, ParentWork::Retained(prev_block.work))?;
                 info!(
                     height = u32::from(chainblock.height()),
                     hash = %chainblock.hash(),
@@ -819,29 +820,34 @@ async fn anchor_block<S: ChainHeadBlockSource>(
         .await
         .map_err(|error| advance_error(error, &format!("anchor block {height}")))?;
     let tree_roots = tree_roots(source, block.header.hash).await?;
-    chain_head_block(block, &tree_roots, None)
+    chain_head_block(block, tree_roots, ParentWork::Anchor)
 }
 
-/// Builds a [`ChainHeadBlock`], accumulating its work onto its parent's.
-///
-/// `parent_work` is `None` only for the anchor. Work is measured from the
-/// anchor, so the anchor has accumulated none of it, and every block above
-/// folds its own work onto its parent's total.
+/// What a block being built folds its own work onto.
+#[derive(Clone, Copy, Debug)]
+enum ParentWork {
+    /// The block is the window's anchor, where work is measured from, so it folds onto nothing.
+    Anchor,
+    /// The block extends a retained parent that has accumulated this much work.
+    Retained(RelativeChainWork),
+}
+
+/// Builds a [`ChainHeadBlock`] whose work is `parent`'s total plus its own, which cannot overflow for [`ParentWork::Anchor`].
 fn chain_head_block(
     block: zaino_primitives::types::Block,
-    tree_roots: &TreeRoots,
-    parent_work: Option<RelativeChainWork>,
+    tree_roots: TreeRoots,
+    parent: ParentWork,
 ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-    let work = match parent_work {
-        Some(parent) => parent
+    let work = match parent {
+        ParentWork::Retained(parent_work) => parent_work
             .accumulate(block.header.bits.to_work())
             .map_err(|error| {
-                ChainHeadAdvanceError::ReorgFailure(format!(
+                ChainHeadAdvanceError::InconsistentSource(format!(
                     "work overflowed at block {}: {error}",
                     block.header.hash
                 ))
             })?,
-        None => RelativeChainWork::ZERO,
+        ParentWork::Anchor => RelativeChainWork::ZERO,
     };
 
     Ok(ChainHeadBlock {
@@ -852,7 +858,7 @@ fn chain_head_block(
         parent_hash: block.header.prev_hash,
         work,
         block,
-        tree_roots: tree_roots.clone(),
+        tree_roots,
     })
 }
 
@@ -1069,7 +1075,11 @@ impl Block for zaino_primitives::types::Block {
         service: &ChainHeadService<S>,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let tree_roots = tree_roots(service.source.as_ref(), self.header.hash).await?;
-        chain_head_block(self.clone(), &tree_roots, Some(prev_block.work))
+        chain_head_block(
+            self.clone(),
+            tree_roots,
+            ParentWork::Retained(prev_block.work),
+        )
     }
 }
 
