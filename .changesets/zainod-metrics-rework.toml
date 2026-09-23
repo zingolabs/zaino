@@ -67,8 +67,3 @@ migration = "Pass method names as string literals. Removed metrics: `zaino.rpc.o
 crate = "zaino-source-zebra-rpc"
 kind = "internal"
 description = "Adapter call helpers take `&'static str` method names, following `zaino-rpc`."
-
-[[changes]]
-crate = "zainod"
-kind = "fix"
-description = "A `metrics_endpoint` that fails to bind now fails startup with the error, instead of leaving the process running with no `/metrics`, no `/livez`, and no upkeep of the recorder's histogram samples. The listener is bound before the recorder is installed."

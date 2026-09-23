@@ -54,22 +54,10 @@ fn is_fresh(heartbeat: Option<Instant>) -> bool {
     heartbeat.is_none_or(|at| at.elapsed() < HEARTBEAT_MAX_AGE)
 }
 
-/// Binds the admin endpoint, which `metrics::init` calls before it installs the recorder so that no sample is ever recorded without a listener to drain it.
-pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, IndexerError> {
-    let listener = std::net::TcpListener::bind(endpoint).map_err(|e| {
-        IndexerError::MetricsError(format!("admin endpoint {endpoint} failed to bind: {e}"))
-    })?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| IndexerError::MetricsError(format!("admin endpoint {endpoint}: {e}")))?;
-    Ok(listener)
-}
-
-/// Serves a bound admin listener on a thread and runtime of its own.
-pub(crate) fn spawn(
-    listener: std::net::TcpListener,
-    handle: PrometheusHandle,
-) -> Result<(), IndexerError> {
+/// Start the admin listener on its own thread.
+///
+/// - A bind failure downs telemetry, not the indexer, so it logs rather than returns
+pub(crate) fn spawn(endpoint: SocketAddr, handle: PrometheusHandle) -> Result<(), IndexerError> {
     std::thread::Builder::new()
         .name("zaino-admin".to_string())
         .spawn(move || {
@@ -80,15 +68,14 @@ pub(crate) fn spawn(
                 Ok(runtime) => runtime,
                 Err(e) => return error!(%e, "admin runtime failed to build; no /metrics or probes"),
             };
-            runtime.block_on(serve(listener, handle));
+            runtime.block_on(serve(endpoint, handle));
         })
         .map_err(|e| IndexerError::MetricsError(format!("failed to spawn admin thread: {e}")))?;
     Ok(())
 }
 
-async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
-    // The listener was bound before the recorder was installed (`metrics::init`),
-    // so every sample recorded from here on has this loop, or a scrape, to drain it
+async fn serve(endpoint: SocketAddr, handle: PrometheusHandle) {
+    // Before the bind: a failed bind must not leave samples piling up
     let upkeep = handle.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(UPKEEP_INTERVAL);
@@ -98,12 +85,11 @@ async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
         }
     });
 
-    let endpoint = listener.local_addr();
-    let listener = match tokio::net::TcpListener::from_std(listener) {
+    let listener = match tokio::net::TcpListener::bind(endpoint).await {
         Ok(listener) => listener,
-        Err(e) => return error!(%e, "admin listener failed to register with its runtime"),
+        Err(e) => return error!(%e, %endpoint, "admin endpoint failed to bind"),
     };
-    info!(endpoint = ?endpoint, "admin endpoint started: /metrics, /livez");
+    info!(%endpoint, "admin endpoint started: /metrics, /livez");
 
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -201,18 +187,12 @@ mod tests {
             metrics::counter!("zaino.test.total").increment(7);
         });
 
-        let listener = bind(
-            "127.0.0.1:0"
-                .parse()
-                .expect("a loopback socket address parses"),
-        )
-        .expect("loopback bind succeeds");
-        let endpoint = listener
-            .local_addr()
-            .expect("a bound listener has an address");
-        tokio::spawn(serve(listener, handle));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        drop(listener);
+        tokio::spawn(serve(endpoint, handle));
 
-        // The accept loop races the connect; retry rather than sleep a fixed guess
+        // Bind races the spawn; retry rather than sleep a fixed guess
         let get = |path: &'static str| async move {
             for _ in 0..50 {
                 if let Ok(mut stream) = tokio::net::TcpStream::connect(endpoint).await {
@@ -240,17 +220,6 @@ mod tests {
         );
         assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
         assert!(get("/readyz").await.starts_with("HTTP/1.1 404"));
-    }
-
-    /// A port held by another socket fails the bind with an error that names the endpoint.
-    #[test]
-    fn a_port_in_use_fails_the_bind() {
-        let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind succeeds");
-        let endpoint = holder
-            .local_addr()
-            .expect("a bound listener has an address");
-        let error = bind(endpoint).expect_err("a second bind on a held port fails");
-        assert!(error.to_string().contains(&endpoint.to_string()), "{error}");
     }
 
     /// - Stale heartbeat = wedged indexer runtime

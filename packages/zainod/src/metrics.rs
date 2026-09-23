@@ -106,9 +106,6 @@ fn buckets(metric: &str) -> Option<&'static [f64]> {
 /// - Call once, before any `metrics::*!()` (earlier calls silently no-op)
 /// - Listener lives in [`crate::admin`]: only it wants a runtime of its own
 pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
-    // Bind first: a recorder installed before its listener exists would record
-    // samples that nothing drains, so a bind failure fails startup instead
-    let listener = crate::admin::bind(endpoint)?;
     let mut builder = PrometheusBuilder::new();
     for (metric, _) in all(HISTOGRAMS) {
         let buckets = buckets(metric).ok_or_else(|| {
@@ -130,7 +127,7 @@ pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
     initialise_counters();
     metrics::gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
-    crate::admin::spawn(listener, handle)
+    crate::admin::spawn(endpoint, handle)
 }
 
 /// - Recorder installed outside the supervisor loop → nothing else separates a
