@@ -48,3 +48,13 @@ an unknown parent above genesis is ParentChainWorkUnknown.
 - chainwork_from_parent_if_known maps that error to None for the zebra-block builder.
 - A missing parent chainwork is StoreError::DataUnavailable on every build path.
 """
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+- The chain-index proptests run against a persistent finalised state and wait for it \
+to finish building; they no longer exercise ephemeral mode.
+- Generated chains are relinked (merkle root and parent hash) so the finalised state's \
+write-path checks accept them, which also re-enables make_chain.
+"""
