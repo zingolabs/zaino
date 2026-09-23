@@ -40,12 +40,7 @@ pub struct BlockchainInfo {
     /// Verification progress relative to the estimated network tip, in `0.0..=1.0`.
     pub verification_progress: f64,
 
-    /// Total work in the best chain.
-    ///
-    /// `None` from Zebra, which does not report chainwork over RPC. Modelled
-    /// because a caller that has it can order competing branches without
-    /// recomputing work from headers; callers must handle its absence rather
-    /// than assume it.
+    /// Total work in the best chain, which is `None` because Zebra does not report it over RPC.
     pub chain_work: Option<AbsoluteChainWork>,
 
     /// Whether the validator has pruned block data.

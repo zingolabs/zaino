@@ -26,12 +26,7 @@ pub struct BlockVerbose {
     /// Difficulty at this block, as a multiple of the network minimum.
     pub difficulty: Difficulty,
 
-    /// Cumulative chainwork at this block.
-    ///
-    /// `None` from Zebra, which does not report chainwork over RPC. Modelled
-    /// because a caller that has it can order competing branches without
-    /// recomputing work from headers; callers must handle its absence rather
-    /// than assume it.
+    /// Cumulative chainwork at this block, which is `None` because Zebra does not report it over RPC.
     pub chainwork: Option<AbsoluteChainWork>,
 
     /// Total chain value as of this block.

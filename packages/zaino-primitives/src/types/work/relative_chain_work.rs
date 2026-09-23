@@ -4,18 +4,7 @@ use core::fmt;
 
 use super::{SingleBlockWork, WorkOverflow};
 
-/// Work accumulated over a run of consecutive blocks.
-///
-/// A sum over a set of blocks, not an offset from a single one. [`ZERO`] is the
-/// empty run, and each block folded in adds its own work. So a value says how
-/// much work the run holds, and nothing about where the run begins.
-///
-/// Ordered, because picking the heaviest of several runs is what the ordering
-/// is for. Two runs are only comparable when they begin at the same block, and
-/// the type does not carry where it began, so it cannot check that. A caller
-/// holding several runs is responsible for their sharing a start.
-///
-/// [`ZERO`]: Self::ZERO
+/// Work accumulated over a run of consecutive blocks, ordered so the heaviest of several runs can be picked, which is meaningful only for runs that begin at the same block since the type does not record where a run begins.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RelativeChainWork(u128);
 

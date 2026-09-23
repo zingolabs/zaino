@@ -5,15 +5,7 @@ use core::num::NonZeroU128;
 
 use super::{SingleBlockWork, WorkOverflow};
 
-/// The total work of a chain up to and including a block.
-///
-/// `Ord`. The `types::work` module documentation states the algebra and why
-/// the three quantities are distinct.
-///
-/// Strictly positive. A validator that does not track the value, or a block
-/// with no parent, is `Option<AbsoluteChainWork>`; absence is never a zero.
-///
-/// Recorded in 128 bits, which real chains do not approach.
+/// The strictly positive total work of a chain up to and including a block, recorded in 128 bits, with an unknown total being `Option::None` rather than a zero.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AbsoluteChainWork(NonZeroU128);
 
@@ -41,6 +33,15 @@ pub enum ChainWorkBytesError {
     Zero,
 }
 
+/// The two 16-byte halves of a 32-byte big-endian value, high half first.
+fn split(bytes: [u8; 32]) -> ([u8; 16], [u8; 16]) {
+    let mut high = [0u8; 16];
+    let mut low = [0u8; 16];
+    high.copy_from_slice(&bytes[..16]);
+    low.copy_from_slice(&bytes[16..]);
+    (high, low)
+}
+
 impl AbsoluteChainWork {
     /// Create a total chain work value.
     ///
@@ -59,13 +60,12 @@ impl AbsoluteChainWork {
 
     /// Reads the 32 big-endian byte form back, the inverse of [`to_be_bytes`](Self::to_be_bytes).
     pub fn from_be_bytes(bytes: [u8; 32]) -> Result<Self, ChainWorkBytesError> {
-        let (high, low) = bytes.split_at(16);
-        let high = u128::from_be_bytes(high.try_into().expect("split_at(16) leaves 16 bytes"));
+        let (high, low) = split(bytes);
+        let high = u128::from_be_bytes(high);
         if high != 0 {
             return Err(ChainWorkBytesError::OverWidth { high });
         }
-        let low = u128::from_be_bytes(low.try_into().expect("split_at(16) leaves 16 bytes"));
-        NonZeroU128::new(low)
+        NonZeroU128::new(u128::from_be_bytes(low))
             .map(Self)
             .ok_or(ChainWorkBytesError::Zero)
     }

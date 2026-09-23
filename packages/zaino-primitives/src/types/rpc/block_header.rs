@@ -66,12 +66,7 @@ pub struct BlockHeaderVerbose {
     /// omit it.
     pub final_sapling_root: Option<TreeRoot>,
 
-    /// Cumulative chainwork at this block.
-    ///
-    /// `None` from Zebra, which does not report chainwork over RPC. Modelled
-    /// because a caller that has it can order competing branches without
-    /// recomputing work from headers; callers must handle its absence rather
-    /// than assume it.
+    /// Cumulative chainwork at this block, which is `None` because Zebra does not report it over RPC.
     pub chainwork: Option<AbsoluteChainWork>,
 
     /// Hash of the previous block.

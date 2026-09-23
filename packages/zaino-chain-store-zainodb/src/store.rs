@@ -375,6 +375,31 @@ pub(crate) fn assemble_indexed_block(
     height_int: u32,
     parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
+    let chainwork = stored_chainwork(
+        fetched.block_work(),
+        fetched.hash(),
+        Height(height_int),
+        parent_chainwork,
+    )?;
+    assemble_indexed_block_with(
+        fetched,
+        sapling_activation_height,
+        nu5_activation_height,
+        nu6_3_activation_height,
+        height_int,
+        chainwork,
+    )
+}
+
+/// [`assemble_indexed_block`] with the chainwork already in the form the caller needs, which is `None` for a block built only to extract rows from.
+pub(crate) fn assemble_indexed_block_with<Work>(
+    fetched: FetchedBlock,
+    sapling_activation_height: zebra_chain::block::Height,
+    nu5_activation_height: Option<zebra_chain::block::Height>,
+    nu6_3_activation_height: Option<zebra_chain::block::Height>,
+    height_int: u32,
+    chainwork: Work,
+) -> Result<IndexedBlock<Work>, StoreError> {
     let _assembling = crate::timer::Timer::start(metrics::histogram!(
         crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS
     ));
@@ -391,7 +416,7 @@ pub(crate) fn assemble_indexed_block(
         block.header.hash,
     )?;
 
-    indexed_block_from_parts(&block, &tree_roots, parent_chainwork)
+    crate::conversion::indexed_block(&block, &tree_roots, chainwork).map_err(conversion_error)
 }
 
 /// Which pools are expected to have a commitment tree at a block.
@@ -466,15 +491,24 @@ pub(crate) fn indexed_block_from_parts(
     tree_roots: &zaino_primitives::types::TreeRoots,
     parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
-    let hash = crate::types::BlockHash(block.header.hash.into());
-    let chainwork = crate::conversion::chainwork_from_parent(
+    let chainwork = stored_chainwork(
         block.header.bits.to_work(),
-        hash,
+        crate::types::BlockHash(block.header.hash.into()),
         Height(u32::from(block.header.height)),
         parent_chainwork,
-    )
-    .map_err(conversion_error)?;
+    )?;
     crate::conversion::indexed_block(block, tree_roots, chainwork).map_err(conversion_error)
+}
+
+/// The chainwork a stored block carries, folded onto its parent's as this store's error.
+fn stored_chainwork(
+    block_work: crate::types::SingleBlockWork,
+    hash: crate::types::BlockHash,
+    height: Height,
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<AbsoluteChainWork, StoreError> {
+    crate::conversion::chainwork_from_parent(block_work, hash, height, parent_chainwork)
+        .map_err(conversion_error)
 }
 
 use zaino_chain_store::ChainStoreSource;

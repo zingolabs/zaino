@@ -830,18 +830,4 @@ impl<T: ChainStoreSource> IndexedBlockExt for EphemeralFinalisedState<T> {
             Err(error) => Err(error),
         }
     }
-
-    /// One validator round trip per height.
-    ///
-    /// No batching to be had: the passthrough has no transaction to hold open
-    /// and no local rows to walk, so a range is exactly its blocks fetched one
-    /// after another. This is why passthrough is a stopgap and not a mode to
-    /// serve a large range from.
-    async fn get_chain_block_range(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<IndexedBlock>, StoreError> {
-        collect_block_range(start, end, |height| self.get_required_chain_block(height)).await
-    }
 }

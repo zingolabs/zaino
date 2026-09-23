@@ -1,0 +1,37 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0d0a4-ddee-74e4-a42c-ca9158994c35"
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "fix"
+description = """
+- The v1.2.1 to v1.3.0 ironwood backfill builds its blocks without chainwork, since it only \
+extracts rows from them; it no longer fails at its first post-activation height.
+- A missing parent chainwork on a build path is StoreError::ParentChainWorkUnknown, no longer \
+DataUnavailable, so it is not read back as an absent row.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+- IndexedBlockExt::get_chain_block_range is removed; StoredBlockRead is the range read.
+- The ephemeral backend answers StoredBlockRead with NotReady.
+- conversion::chainwork_from_parent_if_known is crate-private.
+"""
+migration = "Read block ranges through StoredBlockRead."
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "breaking"
+description = """
+- chainwork is no longer parsed from getblockchaininfo, getblockheader or getblock; \
+the fields are always None.
+- Zebra reports the field as zero or omits it, so no value was ever available.
+"""
+migration = "Derive chainwork from block headers; nothing reads it off the wire."
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "internal"
+description = "AbsoluteChainWork::from_be_bytes splits its input without a panic path; item docs are one sentence each."
