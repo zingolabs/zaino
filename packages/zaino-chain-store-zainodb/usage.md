@@ -126,6 +126,19 @@ it.
 The writer requires `db_tip_height + 1`. It is strictly append-only; `rewind_to`
 is a repair path, not part of following the chain.
 
+Chainwork is typed, not checked:
+
+- `BlockContext`, `BlockHeaderData` and `IndexedBlock` take a `Work` parameter:
+  `AbsoluteChainWork` (known) or `Option<AbsoluteChainWork>` (default).
+- Only the `AbsoluteChainWork` form has a stored encoding.
+- `DbWrite::write_block` takes `IndexedBlock<AbsoluteChainWork>`.
+- `conversion::chainwork_from_parent` errors on an unknown parent above
+  genesis; the finalised build path stops there.
+- `StoredBlockRead` answers from the v1 backend only and yields the known
+  form; `IndexedBlockExt` answers from either backend and yields the `Option`
+  form.
+- `map_chainwork(Some)` widens a known block for a path that serves both.
+
 `ChainStoreFreezeSink::freeze` takes a slice, and the adapter dispatches:
 `write_block_batch_blocking` when it can, and the per-block path when
 `transparent_address_history_experimental` is on, because that feature's
