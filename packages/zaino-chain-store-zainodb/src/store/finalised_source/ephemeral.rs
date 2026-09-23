@@ -14,15 +14,15 @@ use crate::pool::ShieldedPool;
 use crate::store::capability::{DbCore, DbWrite};
 use crate::store::DbMetadata;
 
-use super::super::{indexed_block_from_parts, require_pool_roots, PoolActivation};
-use crate::error::{source_error, StoreError};
+use super::super::{require_pool_roots, PoolActivation};
+use crate::error::{conversion_error, source_error, StoreError};
 use crate::store::capability::{
     BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbRead, IndexedBlockExt,
 };
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    BlockHash, BlockHeaderData, CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx,
-    OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, TransactionHash,
+    AbsoluteChainWork, BlockHash, BlockHeaderData, CommitmentTreeData, Height, IndexedBlock,
+    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, TransactionHash,
     TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };
 use zaino_chain_store::ChainStoreSource;
@@ -327,10 +327,7 @@ impl<T: ChainStoreSource> EphemeralFinalisedState<T> {
             block.header.hash,
         )?;
 
-        // No chainwork: the ephemeral backend has no tip to accumulate from, so
-        // each block carries only its own work. Blocks built here are served,
-        // never written, so the value never reaches disk.
-        indexed_block_from_parts(&block, &tree_roots, None)
+        crate::conversion::indexed_block(&block, &tree_roots, None).map_err(conversion_error)
     }
 }
 
@@ -394,7 +391,7 @@ impl<T: ChainStoreSource> DbWrite for EphemeralFinalisedState<T> {
     /// Write a fully-indexed block into the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn write_block(&self, _block: IndexedBlock) -> Result<(), StoreError> {
+    async fn write_block(&self, _block: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         Ok(())
     }
 
