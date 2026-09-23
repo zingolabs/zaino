@@ -1,0 +1,20 @@
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+Reorg handling and reorg detection no longer recurse once per block. A reorg \
+deeper than roughly 130 blocks, or a validator rollback below the retained \
+window, overflowed the stack and aborted the process; both now walk \
+iteratively and terminate at the retained window.
+"""
+issues = ["#1551"]
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+Every block that crosses the consensus seam is handed off to the freeze \
+stream. Trimming ran before the handoff read the blocks it emits, so an \
+iteration advancing the tip by more than eleven blocks settled blocks it \
+never handed off, and reported nothing.
+"""
