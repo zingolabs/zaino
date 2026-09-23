@@ -441,8 +441,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     // hold is authoritative, so refetch by it.
                     _ => self.tree_roots(block.header.hash).await?,
                 };
-                let chainblock =
-                    extending_chain_head_block(block.clone(), &roots, prev_block.work)?;
+                let chainblock = chain_head_block(block.clone(), &roots, Some(prev_block.work))?;
                 info!(
                     height = u32::from(chainblock.height()),
                     hash = %chainblock.hash(),
@@ -678,7 +677,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         block: &zaino_primitives::types::Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        extending_chain_head_block(block.clone(), &tree_roots, prev_block.work)
+        chain_head_block(block.clone(), &tree_roots, Some(prev_block.work))
     }
 
     /// Get commitment tree roots from the blockchain source.
@@ -708,7 +707,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         })?;
 
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        Ok(anchor_chain_head_block(block, &tree_roots))
+        chain_head_block(block, &tree_roots, None)
     }
 
     /// One coherent height/hash pair from the source.
@@ -836,42 +835,29 @@ fn advance_error<E: fmt::Debug + fmt::Display>(
     }
 }
 
-/// Builds the window's anchor.
+/// Builds a [`ChainHeadBlock`], accumulating its work onto its parent's.
 ///
-/// Work is measured from the anchor, so the anchor has accumulated none of it.
-/// Every block above folds onto this seed.
-fn anchor_chain_head_block(
-    block: zaino_primitives::types::Block,
-    tree_roots: &TreeRoots,
-) -> ChainHeadBlock {
-    chain_head_block(block, tree_roots, RelativeChainWork::ZERO)
-}
-
-/// Builds a block that extends a retained parent, folding its own work onto the
-/// parent's total.
-fn extending_chain_head_block(
-    block: zaino_primitives::types::Block,
-    tree_roots: &TreeRoots,
-    parent_work: RelativeChainWork,
-) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-    let hash = block.header.hash;
-
-    let block_work = block.header.bits.to_work();
-
-    let work = parent_work.accumulate(block_work).map_err(|error| {
-        ChainHeadAdvanceError::ReorgFailure(format!("work overflowed at block {hash}: {error}"))
-    })?;
-
-    Ok(chain_head_block(block, tree_roots, work))
-}
-
-/// Assembles a retained block around a work total the caller has folded.
+/// `parent_work` is `None` only for the anchor. Work is measured from the
+/// anchor, so the anchor has accumulated none of it, and every block above
+/// folds its own work onto its parent's total.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
     tree_roots: &TreeRoots,
-    work: RelativeChainWork,
-) -> ChainHeadBlock {
-    ChainHeadBlock {
+    parent_work: Option<RelativeChainWork>,
+) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
+    let work = match parent_work {
+        Some(parent) => parent
+            .accumulate(block.header.bits.to_work())
+            .map_err(|error| {
+                ChainHeadAdvanceError::ReorgFailure(format!(
+                    "work overflowed at block {}: {error}",
+                    block.header.hash
+                ))
+            })?,
+        None => RelativeChainWork::ZERO,
+    };
+
+    Ok(ChainHeadBlock {
         reference: BlockRef {
             hash: block.header.hash,
             height: block.header.height,
@@ -880,7 +866,7 @@ fn chain_head_block(
         work,
         block,
         tree_roots: tree_roots.clone(),
-    }
+    })
 }
 
 /// Anchors the graph, retrying transient source failures.
@@ -945,9 +931,11 @@ async fn anchor<S: ChainHeadBlockSource>(
             )
         })?;
 
-    Ok(MapBackedSnapshot::from_initial_block(
-        anchor_chain_head_block(block, &tree_roots),
-    ))
+    Ok(MapBackedSnapshot::from_initial_block(chain_head_block(
+        block,
+        &tree_roots,
+        None,
+    )?))
 }
 
 /// Sleeps, unless cancelled first.

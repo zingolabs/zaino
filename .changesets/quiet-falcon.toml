@@ -32,7 +32,7 @@ migration   = """
 [[changes]]
 crate       = "zaino-chain-head-service"
 kind        = "internal"
-description = "Fold a window's work from RelativeChainWork::ZERO at the anchor. The anchor and an extending block are built by separate constructors, so the anchor no longer takes a fallible path it cannot fail on."
+description = "Fold a window's work from RelativeChainWork::ZERO at the anchor."
 
 [[changes]]
 crate       = "zaino-state"
