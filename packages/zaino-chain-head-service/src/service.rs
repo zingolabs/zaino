@@ -887,10 +887,9 @@ fn chain_head_block(
     })
 }
 
-/// Extends `graph` with a block the source served as the tip's child.
+/// A thin wrapper over [`ChainGraph::extend`] that does nothing but map its refusal to [`ChainHeadAdvanceError::InconsistentSource`], because a block the source served that does not attach where it was asked for is inconsistent source data.
 ///
-/// A refusal means the source's answer does not attach where it was asked
-/// for, which makes it inconsistent source data.
+/// [`ChainGraph::extend`]: crate::graph::ChainGraph::extend
 fn extend(
     graph: &mut MapBackedSnapshot,
     block: ChainHeadBlock,
