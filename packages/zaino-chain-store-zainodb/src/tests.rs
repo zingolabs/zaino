@@ -18,6 +18,9 @@ pub(crate) mod fake_validator;
 #[cfg(test)]
 pub(crate) mod finalised_state;
 
+#[cfg(test)]
+mod block_builder;
+
 #[cfg(any(test, feature = "testing"))]
 pub mod fixtures;
 
