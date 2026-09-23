@@ -327,9 +327,10 @@ impl<T: ChainStoreSource> EphemeralFinalisedState<T> {
             block.header.hash,
         )?;
 
-        // No chainwork: the ephemeral backend has no tip to accumulate from, so
-        // each block carries only its own work. Blocks built here are served,
-        // never written, so the value never reaches disk.
+        // No parent chainwork: the ephemeral backend has no tip to accumulate
+        // from, so a block above genesis carries no chainwork at all. Blocks
+        // built here are served, never written, and the persistence boundary
+        // refuses a block without one, so the gap cannot reach disk.
         indexed_block_from_parts(&block, &tree_roots, None)
     }
 }

@@ -338,6 +338,11 @@ impl FetchedBlock {
     pub(crate) fn block_work(&self) -> crate::types::SingleBlockWork {
         self.block.header.bits.to_work()
     }
+
+    /// This block's hash, for naming it in an error.
+    pub(crate) fn hash(&self) -> crate::types::BlockHash {
+        crate::types::BlockHash(self.block.header.hash.into())
+    }
 }
 
 /// Reads one block and its commitment-tree roots from the source.
@@ -445,10 +450,14 @@ pub(crate) fn indexed_block_from_parts(
     parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<IndexedBlock, StoreError> {
     let hash = crate::types::BlockHash(block.header.hash.into());
-    let chainwork =
-        crate::conversion::chainwork_from_parent(block.header.bits, hash, parent_chainwork)
-            .map_err(|error| inconsistent(error.to_string()))?;
-    crate::conversion::indexed_block(block, tree_roots, Some(chainwork))
+    let chainwork = crate::conversion::chainwork_from_parent(
+        block.header.bits.to_work(),
+        hash,
+        Height(u32::from(block.header.height)),
+        parent_chainwork,
+    )
+    .map_err(|error| inconsistent(error.to_string()))?;
+    crate::conversion::indexed_block(block, tree_roots, chainwork)
         .map_err(|error| inconsistent(error.to_string()))
 }
 

@@ -59,10 +59,10 @@ use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
-    AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactDifficulty, CompactOrchardAction,
+    AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
-    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, TransactionHash,
-    TransparentCompactTx, TxInCompact, TxOutCompact,
+    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, SingleBlockWork, TransactionHash,
+    TransparentCompactTx, TxInCompact, TxOutCompact, GENESIS_HEIGHT,
 };
 
 /// A domain block could not be expressed as an [`IndexedBlock`].
@@ -102,30 +102,22 @@ pub enum BlockConversionError {
     },
 }
 
-/// This block's chainwork, accumulated onto its parent's.
-///
-/// Separate from [`indexed_block`] because the two callers arrive with
-/// different work: the store builds forward from its own tip and so has a
-/// parent's absolute chainwork, while a caller replaying an in-memory window
-/// already holds an accumulated value and passes it straight through.
-///
-/// `None` for the parent means genesis, whose chainwork is its own work.
+/// This block's chainwork accumulated onto its parent's, which is the block's own work at [`GENESIS_HEIGHT`] and `None` above it when the parent's chainwork is unknown.
 pub fn chainwork_from_parent(
-    header_bits: CompactDifficulty,
+    block_work: SingleBlockWork,
     hash: BlockHash,
+    height: Height,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<AbsoluteChainWork, BlockConversionError> {
-    let block_work = header_bits.to_work();
+) -> Result<Option<AbsoluteChainWork>, BlockConversionError> {
     match parent_chainwork {
-        Some(parent) => {
-            parent
-                .accumulate(block_work)
-                .map_err(|error| BlockConversionError::ChainWorkOverflow {
-                    hash,
-                    reason: error.to_string(),
-                })
-        }
-        None => Ok(AbsoluteChainWork::genesis(block_work)),
+        Some(parent) => parent.accumulate(block_work).map(Some).map_err(|error| {
+            BlockConversionError::ChainWorkOverflow {
+                hash,
+                reason: error.to_string(),
+            }
+        }),
+        None if height == GENESIS_HEIGHT => Ok(Some(AbsoluteChainWork::genesis(block_work))),
+        None => Ok(None),
     }
 }
 
@@ -355,6 +347,47 @@ fn orchard_shaped(pool: &zaino_primitives::types::OrchardData) -> OrchardCompact
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod chainwork_from_parent {
+    use super::*;
+    use crate::types::CompactDifficulty;
+
+    fn work() -> SingleBlockWork {
+        CompactDifficulty::try_from_bits(0x2007_ffff)
+            .expect("a valid nBits")
+            .to_work()
+    }
+
+    fn hash() -> BlockHash {
+        BlockHash([1u8; 32])
+    }
+
+    /// A block above genesis whose parent's chainwork is unknown has no chainwork, not genesis work.
+    #[test]
+    fn an_unknown_parent_above_genesis_yields_no_chainwork() {
+        let chainwork =
+            chainwork_from_parent(work(), hash(), Height(1), None).expect("nothing to overflow");
+        assert!(chainwork.is_none());
+    }
+
+    /// Genesis has no parent, and its chainwork is its own work.
+    #[test]
+    fn genesis_chainwork_is_its_own_work() {
+        let chainwork = chainwork_from_parent(work(), hash(), GENESIS_HEIGHT, None)
+            .expect("nothing to overflow");
+        assert!(chainwork == Some(AbsoluteChainWork::genesis(work())));
+    }
+
+    /// A block with a known parent accumulates its own work onto the parent's.
+    #[test]
+    fn a_known_parent_accumulates() {
+        let parent = AbsoluteChainWork::genesis(work());
+        let chainwork = chainwork_from_parent(work(), hash(), Height(1), Some(parent))
+            .expect("nothing to overflow");
+        assert!(chainwork == Some(parent.accumulate(work()).expect("no overflow")));
+    }
 }
 
 #[cfg(test)]

@@ -148,13 +148,13 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
         let mut prepared = Vec::with_capacity(fetched.len());
         for (height_int, parts) in heights.into_iter().zip(fetched) {
             let parent_chainwork = cursor.parent_chainwork;
-            let block_work = parts.block_work();
-            cursor.parent_chainwork = Some(match parent_chainwork {
-                Some(parent) => parent
-                    .accumulate(block_work)
-                    .map_err(|e| StoreError::Custom(format!("chainwork overflow: {e}")))?,
-                None => crate::types::AbsoluteChainWork::genesis(block_work),
-            });
+            cursor.parent_chainwork = crate::conversion::chainwork_from_parent(
+                parts.block_work(),
+                parts.hash(),
+                Height(height_int),
+                parent_chainwork,
+            )
+            .map_err(|e| StoreError::Custom(e.to_string()))?;
             prepared.push((height_int, parts, parent_chainwork));
         }
 
