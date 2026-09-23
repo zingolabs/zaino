@@ -94,8 +94,8 @@ Makefile.toml                      cargo-make task definitions
 rust-toolchain.toml                Pinned Rust toolchain
 deny.toml                          cargo-deny policy (licenses, advisories)
 
-Dockerfile                         Production container image
-entrypoint.sh                      Production container entrypoint
+Dockerfile                         Container image
+entrypoint.sh                      Container entrypoint
 .dockerignore                      Docker build context exclusions
 
 README.md                          This file
@@ -108,8 +108,8 @@ LICENSE                            Apache-2.0 license text
 
 ## Server network exposure
 
-Zaino exposes two servers, with different defaults reflecting their transport
-security:
+Zaino exposes two servers and one optional telemetry listener, with different
+defaults reflecting their transport security:
 
 - **gRPC** (`[grpc_settings]`): may bind to a public address only when TLS is
   configured (`[grpc_settings.tls]` with `cert_path` / `key_path`). Binding to a
@@ -125,10 +125,30 @@ security:
   networks where encryption is handled externally (e.g. containers behind a
   service mesh or proxy that terminates TLS).
 
+- **Admin listener** (`metrics_endpoint`, feature `prometheus`): off unless set.
+  `/metrics`, `/livez` (`/readyz`: TODO) on its own thread + runtime — see
+  [`zainod`'s guide](./packages/zainod/usage.md). Unauthenticated + unencrypted, publishes
+  chain tip, sync progress, request volumes, process memory. Non-private bind **warned, not
+  rejected** → restrict to loopback, a private interface, or the scraper's network.
+
 **Security implication:** the JSON-RPC interface transmits unencrypted traffic.
 Do not expose it to untrusted networks, and only enable
 `allow_unencrypted_public_json_rpc_bind` when an external layer secures the
 connection.
+
+## Container image
+
+`Dockerfile`: `rust:<pin>` build → `debian-slim` runtime, non-root `container_user`.
+
+| Build arg        | Values                                    | Default   |
+| ---------------- | ----------------------------------------- | --------- |
+| `CARGO_FEATURES` | comma-separated, e.g. `prometheus`, `no_tls_use_unencrypted_traffic` | empty (default set) |
+| `CARGO_PROFILE`  | `release`, `profiling` (+ line tables & frame pointers, for sampling profilers) | `release` |
+
+```sh
+docker build -t zainod --build-arg CARGO_FEATURES=prometheus .
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod  # local profiling build
+```
 
 ## Running tests
 
@@ -194,10 +214,10 @@ mistakes its design is trying to prevent.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the storage backend port, and why index code never names a concrete store.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
-- [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
+- [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it does not do.
 - [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
 - [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the JSON-RPC adapter and its error classification.
-- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
+- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it cannot answer.
 - [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
 - [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
@@ -209,6 +229,7 @@ mistakes its design is trying to prevent.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
 - [`zaino-chain`](./packages/zaino-chain/usage.md): ChainView's ports, how coverage decides which provider answers, and what a hole between the tiers degrades versus what it refuses.
 - [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
+- [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).
 
 
 ## Security Vulnerability Disclosure

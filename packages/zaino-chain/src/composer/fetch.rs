@@ -145,11 +145,10 @@ impl<Source: ChainViewSource> Fetcher<Source> {
 
     /// A parsed block and its commitment roots.
     ///
-    /// Two requests, and the second genuinely depends on the first: commitment
-    /// roots are addressed by block hash and there is no by-height port, so the
-    /// hash has to come back before they can be asked for. Blocks within a
-    /// range still fill concurrently with one another, so the dependency costs
-    /// latency per block rather than serialising the range.
+    /// Two requests in sequence: the roots are asked for by the hash the block
+    /// read returned, so both describe the same block. Blocks within a range
+    /// still fill concurrently with one another, so this costs latency per
+    /// block rather than serialising the range.
     pub(crate) async fn block_at(&self, height: Height) -> Result<Option<(Block, TreeRoots)>> {
         let Some(block) = miss(self.source.get_block(height).await)? else {
             return Ok(None);

@@ -396,10 +396,17 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         //
         // see https://github.com/ZcashFoundation/zebra/issues/9541
         while u32::from(graph.best_tip().height) < u32::from(chain_height) {
-            let Some(block) = self
-                .block_at_height(next_height(graph.best_tip().height))
-                .await?
-            else {
+            let next = next_height(graph.best_tip().height);
+            // Both reads address the best-chain block at `next`, so they are
+            // independent and run concurrently; the hash check below closes
+            // the reorg race the concurrency opens.
+            let (block, roots) = tokio::join!(
+                self.block_at_height(next),
+                self.source.get_commitment_tree_roots_by_height(next),
+            );
+            let Some(block) = block? else {
+                // Past the tip; the roots result is dropped unexamined, since
+                // its `HeightNotFound` there is expected, not a failure.
                 break;
             };
 
@@ -415,7 +422,15 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                         ))
                     })?
                     .clone();
-                let chainblock = self.block_to_chainblock(&prev_block, &block).await?;
+                let roots = match roots {
+                    Ok((roots_hash, roots)) if roots_hash == block.header.hash => roots,
+                    // A reorg swapped the best-chain block between the two
+                    // reads, or the height-addressed read failed; the hash we
+                    // hold is authoritative, so refetch by it.
+                    _ => self.tree_roots(block.header.hash).await?,
+                };
+                let work = accumulated_work(&prev_block, &block)?;
+                let chainblock = chain_head_block(block.clone(), &roots, work);
                 info!(
                     height = u32::from(chainblock.height()),
                     hash = %chainblock.hash(),
@@ -582,6 +597,15 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             Vec::new()
         };
 
+        // Read from the snapshot being installed: the fork point is the first
+        // ancestor of the old tip that the *new* chain still calls canonical.
+        // Before the trim below: the lookup needs the old tip still in the graph
+        let fork = tip_changed
+            .then(|| next.find_fork_point(&stale_tip.hash))
+            .flatten();
+        // Read beside the fork point, so both describe the same pre-trim graph
+        let retained_floor = next.lowest_retained_height();
+
         // Trim only now. The handoff above reads the blocks it emits out of the
         // graph, so a block has to still be there to be handed off: trimming
         // first bounds one iteration's handoff by the gap between the seam and
@@ -610,8 +634,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
         if tip_changed {
             log_tip_change(stale_tip, new_tip);
-            #[cfg(feature = "prometheus")]
-            record_reorg(stale_tip, new_tip);
+            record_reorg(stale_tip, fork, retained_floor);
 
             self.updates.send_replace(ChainStateEpoch {
                 generation,
@@ -637,15 +660,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         block: &zaino_primitives::types::Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        let work = prev_block
-            .work
-            .checked_add(block_work(block))
-            .ok_or_else(|| {
-                ChainHeadAdvanceError::ReorgFailure(format!(
-                    "accumulated work overflowed at block {}",
-                    block.header.hash
-                ))
-            })?;
+        let work = accumulated_work(prev_block, block)?;
         Ok(chain_head_block(block.clone(), &tree_roots, work))
     }
 
@@ -833,6 +848,22 @@ fn block_work(block: &zaino_primitives::types::Block) -> u128 {
     std::num::NonZeroU128::from(block.header.bits.to_work()).get()
 }
 
+/// `block`'s work, accumulated onto its parent's.
+fn accumulated_work(
+    prev_block: &ChainHeadBlock,
+    block: &zaino_primitives::types::Block,
+) -> Result<ChainHeadWork, ChainHeadAdvanceError> {
+    prev_block
+        .work
+        .checked_add(block_work(block))
+        .ok_or_else(|| {
+            ChainHeadAdvanceError::ReorgFailure(format!(
+                "accumulated work overflowed at block {}",
+                block.header.hash
+            ))
+        })
+}
+
 /// Builds a [`ChainHeadBlock`] carrying `work`.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
@@ -954,23 +985,58 @@ fn log_tip_change(old: BlockRef, new: BlockRef) {
     }
 }
 
-/// Reports a tip change that was not a simple advance.
+/// How a tip change relates to the tip it replaced
 ///
-/// A tip moving forward is the chain working; a tip replaced at the same height
-/// or moving backwards is a reorganisation, and the depth is how far the chain
-/// was rewritten. Only the latter is counted, so the rate reflects reorgs
-/// rather than block production.
-#[cfg(feature = "prometheus")]
-fn record_reorg(old: BlockRef, new: BlockRef) {
+/// - `Reorg` depth = blocks rewritten; `None` = fork point below the retained window
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TipChange {
+    Advance,
+    Reorg(Option<u32>),
+}
+
+/// Classifies a tip change from the fork point the new snapshot reports.
+///
+/// - Reorg = the old tip stopped being canonical, whatever the heights. A branch won
+///   by a *longer* chain is the ordinary case, and comparing heights misses it
+/// - Depth = blocks rewritten (old tip - fork), not height lost: an equal-height swap
+///   rewrites one block, and a longer branch rewrites what it replaced
+/// - No fork point and the old tip below `retained_floor` = the chain advanced past
+///   the window (or the graph re-anchored), so the old tip was dropped, not replaced;
+///   a reorg that deep is beyond the consensus seam the window is sized to
+pub(crate) fn classify_tip_change(
+    old: BlockRef,
+    fork: Option<BlockRef>,
+    retained_floor: Height,
+) -> TipChange {
+    match fork {
+        // The old tip is still canonical, so the new one descends from it
+        Some(fork) if fork == old => TipChange::Advance,
+        Some(fork) => TipChange::Reorg(Some(
+            u32::from(old.height).saturating_sub(u32::from(fork.height)),
+        )),
+        None if old.height < retained_floor => TipChange::Advance,
+        None => TipChange::Reorg(None),
+    }
+}
+
+/// Reports a tip change that rewrote part of the chain.
+fn record_reorg(old: BlockRef, fork: Option<BlockRef>, retained_floor: Height) {
     use crate::metric_names::{CHAIN_HEAD_REORG_DEPTH, CHAIN_HEAD_REORG_TOTAL};
 
-    let (old_height, new_height) = (u32::from(old.height), u32::from(new.height));
-    if new_height > old_height {
-        return;
-    }
+    let depth = match classify_tip_change(old, fork, retained_floor) {
+        TipChange::Advance => return,
+        TipChange::Reorg(depth) => depth,
+    };
 
     metrics::counter!(CHAIN_HEAD_REORG_TOTAL).increment(1);
-    metrics::histogram!(CHAIN_HEAD_REORG_DEPTH).record(f64::from(old_height - new_height));
+    match depth {
+        Some(depth) => metrics::histogram!(CHAIN_HEAD_REORG_DEPTH).record(f64::from(depth)),
+        // Counted but not measured, so `reorg_total` can exceed the histogram's count
+        None => warn!(
+            old_tip = %old.hash,
+            "reorg forked below the retained window; depth unknown"
+        ),
+    }
 }
 
 /// Lets the reorg walk take either a block already in the graph or one just
@@ -1098,5 +1164,90 @@ mod next_status_rule {
                 StatusType::CriticalError
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod reorg_tests {
+    use super::*;
+
+    fn at(height: u32, hash: u8) -> BlockRef {
+        BlockRef {
+            hash: BlockHash::from([hash; 32]),
+            height: Height::try_from(height).expect("height fits"),
+        }
+    }
+
+    /// A retention floor below every old tip these tests use, so it decides nothing.
+    fn floor() -> Height {
+        at(90, 0).height
+    }
+
+    /// - Old tip still canonical → the new tip descends from it, however many blocks
+    ///   arrived at once
+    #[test]
+    fn extending_the_chain_is_not_a_reorg() {
+        let old = at(100, 1);
+        assert_eq!(
+            classify_tip_change(old, Some(old), floor()),
+            TipChange::Advance
+        );
+    }
+
+    /// - The case the old height comparison dropped entirely: a competing branch wins
+    ///   *because* it is longer, so the new tip is higher and 3 blocks were still rewritten
+    #[test]
+    fn a_reorg_won_by_a_longer_chain_is_counted_with_its_true_depth() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), Some(at(97, 9)), floor()),
+            TipChange::Reorg(Some(3)),
+            "100 -> fork at 97 rewrites 3 blocks, whatever height the new tip reached"
+        );
+    }
+
+    /// - One block replaced by another at the same height rewrites one block, not zero
+    #[test]
+    fn an_equal_height_swap_rewrites_one_block() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), Some(at(99, 9)), floor()),
+            TipChange::Reorg(Some(1))
+        );
+    }
+
+    /// - A rollback to a lower canonical tip is a reorg of the distance rolled back
+    #[test]
+    fn a_rollback_reports_the_distance_lost() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), Some(at(95, 9)), floor()),
+            TipChange::Reorg(Some(5))
+        );
+    }
+
+    /// - Counted, not measured: the alternative is inventing a depth the window
+    ///   cannot see
+    #[test]
+    fn a_fork_below_the_window_is_a_reorg_of_unknown_depth() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), None, floor()),
+            TipChange::Reorg(None)
+        );
+    }
+
+    /// An old tip below the retained floor was dropped by the window, not replaced by a branch.
+    #[test]
+    fn an_old_tip_below_the_retained_floor_is_an_advance() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), None, at(101, 0).height),
+            TipChange::Advance
+        );
+    }
+
+    /// An old tip at the floor is still retained, so its absence from the chain is a real reorg.
+    #[test]
+    fn an_old_tip_at_the_retained_floor_is_still_a_reorg() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), None, at(100, 0).height),
+            TipChange::Reorg(None)
+        );
     }
 }

@@ -8,7 +8,6 @@
 use super::error_map::chain_store_error;
 use super::from_domain::stored_script_tag;
 use super::to_domain::{block_tx_position, domain_txid, stored_tx_out};
-use super::ReadTimer;
 use zaino_chain_store::{ChainStoreError, ChainStoreSource};
 use zaino_primitives::types::TransparentAddressKey;
 use zaino_primitives::types::{Outpoint as DomainOutpoint, TransactionId};
@@ -48,7 +47,9 @@ impl<T: ChainStoreSource> zaino_chain_store::TransparentHistoryIndex for DbReade
             return Ok(StoreAddressEffects::default());
         };
 
-        let _timer = ReadTimer::start("address_effects");
+        let _timer = crate::timer::Timer::start(
+            metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "address_effects"),
+        );
 
         let mut effects = StoreAddressEffects::default();
 
