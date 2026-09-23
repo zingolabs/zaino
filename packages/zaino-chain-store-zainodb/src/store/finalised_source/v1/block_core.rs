@@ -56,7 +56,7 @@ impl DbV1 {
             height,
         )
         .await?
-        .map(BlockHeaderData::with_optional_chainwork)
+        .map(|header| header.map_chainwork(Some))
         .ok_or_else(|| StoreError::DataUnavailable("header data missing from db".into()))
     }
 
@@ -72,12 +72,14 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<BlockHeaderData>, StoreError> {
-        let headers: Vec<BlockHeaderData<AbsoluteChainWork>> =
-            self.scan_rows(self.headers, "header", start, end).await?;
-        Ok(headers
-            .into_iter()
-            .map(BlockHeaderData::with_optional_chainwork)
-            .collect())
+        self.scan_rows_mapped(
+            self.headers,
+            "header",
+            start,
+            end,
+            |header: BlockHeaderData<AbsoluteChainWork>| header.map_chainwork(Some),
+        )
+        .await
     }
 
     /// Fetch the txid bytes for a given TxLocation.

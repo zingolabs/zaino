@@ -7,7 +7,10 @@ use super::*;
 /// Exposes reconstructed [`IndexedBlock`] values from stored per-height entries.
 impl IndexedBlockExt for DbV1 {
     async fn get_chain_block(&self, height: Height) -> Result<Option<IndexedBlock>, StoreError> {
-        self.get_chain_block(height).await
+        Ok(self
+            .get_stored_block(height)
+            .await?
+            .map(|block| block.map_chainwork(Some)))
     }
 
     async fn get_chain_block_range(
@@ -15,17 +18,23 @@ impl IndexedBlockExt for DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<IndexedBlock>, StoreError> {
-        self.get_chain_block_range(start, end).await
+        Ok(self
+            .get_stored_block_range(start, end)
+            .await?
+            .into_iter()
+            .map(|block| block.map_chainwork(Some))
+            .collect())
     }
 }
 
 impl DbV1 {
     // *** Public fetcher methods - Used by DbReader ***
 
-    /// Returns the IndexedBlock for the given Height.
-    ///
-    /// TODO: Add separate range fetch method!
-    async fn get_chain_block(&self, height: Height) -> Result<Option<IndexedBlock>, StoreError> {
+    /// Returns the stored block at `height`, if present.
+    async fn get_stored_block(
+        &self,
+        height: Height,
+    ) -> Result<Option<IndexedBlock<AbsoluteChainWork>>, StoreError> {
         let validated_height = match self
             .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
             .await
@@ -41,10 +50,10 @@ impl DbV1 {
         })
     }
 
-    /// Returns every [`IndexedBlock`] in `start..=end`, ascending.
+    /// Returns every stored block in `start..=end`, ascending.
     ///
     /// One read transaction for the whole range, where calling
-    /// [`Self::get_chain_block`] per height opens one each. That is the whole
+    /// [`Self::get_stored_block`] per height opens one each. That is the whole
     /// point: a `GetBlockRange` over a thousand heights used to pay a thousand
     /// `begin_ro_txn` calls and a thousand separate validations, and the reads
     /// were not even coherent with each other — the database could advance
@@ -54,11 +63,11 @@ impl DbV1 {
     /// gaps because its window genuinely has competing branches; the finalised
     /// state does not, and silently returning a short range would truncate a
     /// wallet's sync without telling it.
-    async fn get_chain_block_range(
+    pub(in crate::store::finalised_source) async fn get_stored_block_range(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<IndexedBlock>, StoreError> {
+    ) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
         let (validated_start, validated_end) = self.validate_block_range(start, end).await?;
 
         tokio::task::block_in_place(|| {
@@ -91,7 +100,7 @@ impl DbV1 {
         &self,
         txn: &lmdb::RoTransaction<'_>,
         height: Height,
-    ) -> Result<Option<IndexedBlock>, StoreError> {
+    ) -> Result<Option<IndexedBlock<AbsoluteChainWork>>, StoreError> {
         use lmdb::Transaction as _;
 
         let height_bytes = height.to_bytes()?;
@@ -246,10 +255,12 @@ impl DbV1 {
                     .inner();
 
             // Construct IndexedBlock
-            Ok(Some(
-                IndexedBlock::new(header.context, *header.data(), txs, commitment_tree_data)
-                    .with_optional_chainwork(),
-            ))
+            Ok(Some(IndexedBlock::new(
+                header.context,
+                *header.data(),
+                txs,
+                commitment_tree_data,
+            )))
         }
     }
 

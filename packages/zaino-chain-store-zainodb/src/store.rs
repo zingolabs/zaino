@@ -473,14 +473,13 @@ pub(crate) fn indexed_block_from_parts(
         Height(u32::from(block.header.height)),
         parent_chainwork,
     )
-    .map_err(|error| inconsistent(error.to_string()))?;
-    crate::conversion::indexed_block(block, tree_roots, chainwork)
-        .map_err(|error| inconsistent(error.to_string()))
+    .map_err(conversion_error)?;
+    crate::conversion::indexed_block(block, tree_roots, chainwork).map_err(conversion_error)
 }
 
 use zaino_chain_store::ChainStoreSource;
 
-use crate::error::{inconsistent, source_error};
+use crate::error::{conversion_error, inconsistent, source_error};
 
 // The build-behaviour knobs — how wide a sync runs in the background, how many
 // attempts it makes, and how long it waits between them — were constants here.

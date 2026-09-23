@@ -44,22 +44,20 @@ impl<Work> BlockContext<Work> {
     pub fn height(&self) -> Height {
         self.index.height
     }
+
+    /// The same context with its chainwork re-expressed by `map`.
+    pub fn map_chainwork<Mapped>(self, map: impl FnOnce(Work) -> Mapped) -> BlockContext<Mapped> {
+        BlockContext {
+            index: self.index,
+            parent_hash: self.parent_hash,
+            chainwork: map(self.chainwork),
+        }
+    }
 }
 
 impl<Work: Copy> BlockContext<Work> {
     /// Returns the total chain work up to this block, in whichever form `Work` names.
     pub fn chainwork(&self) -> Work {
         self.chainwork
-    }
-}
-
-impl BlockContext<AbsoluteChainWork> {
-    /// The same context with its known chainwork in the optional slot, for a path that serves stored and unstored blocks alike.
-    pub fn with_optional_chainwork(self) -> BlockContext {
-        BlockContext {
-            index: self.index,
-            parent_hash: self.parent_hash,
-            chainwork: Some(self.chainwork),
-        }
     }
 }

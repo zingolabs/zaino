@@ -138,23 +138,13 @@ pub fn chainwork_from_parent_if_known(
     height: Height,
     parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<Option<AbsoluteChainWork>, BlockConversionError> {
-    if parent_chainwork.is_none() && height != GENESIS_HEIGHT {
-        return Ok(None);
+    match chainwork_from_parent(block_work, hash, height, parent_chainwork) {
+        Err(BlockConversionError::ParentChainWorkUnknown { .. }) => Ok(None),
+        result => result.map(Some),
     }
-    chainwork_from_parent(block_work, hash, height, parent_chainwork).map(Some)
 }
 
-/// Re-expresses a domain block as this backend's [`IndexedBlock`].
-///
-/// `tree_roots` are not taken from `block.chain_metadata`: that carries the
-/// pool *sizes* but not the roots, and the stored form needs both. The caller
-/// asks its source for them — they are cumulative over the chain and so are not
-/// derivable from one block.
-///
-/// `chainwork` is passed in rather than derived, because a block alone does not
-/// determine it. See [`chainwork_from_parent`]. Its form decides the block's:
-/// an [`AbsoluteChainWork`] builds the block the writer takes, and `None`
-/// builds one that can only be served — see [`BlockContext`].
+/// Re-expresses a domain block as this backend's [`IndexedBlock`], taking the cumulative `tree_roots` and the `chainwork` that a block alone does not determine in whichever form the caller holds.
 pub fn indexed_block<Work>(
     block: &Block,
     tree_roots: &TreeRoots,

@@ -127,7 +127,7 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
                     Height(height_int),
                     parent_chainwork,
                 )
-                .map_err(|e| StoreError::Custom(e.to_string()))?,
+                .map_err(crate::error::conversion_error)?,
             );
             prepared.push((height_int, parts, parent_chainwork));
         }

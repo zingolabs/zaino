@@ -388,10 +388,13 @@ async fn try_write_invalid_block() {
     chain_block.context.index.height = crate::types::Height(chain_block.height().0 + 1);
     dbg!(chain_block.context.index.height);
 
+    let height = chain_block.height();
     let db_err = dbg!(zaino_db.write_block(chain_block).await);
 
-    // TODO: Update with concrete err type.
-    assert!(db_err.is_err());
+    assert!(matches!(
+        db_err,
+        Err(StoreError::InvalidBlock { height: rejected, .. }) if rejected == height.0
+    ));
 
     dbg!(zaino_db.db_height().await.unwrap());
 }
@@ -448,10 +451,7 @@ async fn get_chain_blocks() {
     for chain_block in indexed_block_chain(&blocks) {
         let height = chain_block.context.index.height;
         let reader_chain_block = db_reader.get_chain_block_by_height(height).await.unwrap();
-        assert_eq!(
-            Some(chain_block.with_optional_chainwork()),
-            reader_chain_block
-        );
+        assert_eq!(Some(chain_block.map_chainwork(Some)), reader_chain_block);
         println!("IndexedBlock at height {} OK", height.0);
     }
 }

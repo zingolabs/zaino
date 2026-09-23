@@ -1013,12 +1013,7 @@ impl ZainoVersionedSerde for EquihashSolution {
     }
 }
 
-/// Represents the indexing data of a single compact Zcash block used internally by Zaino.
-/// Provides efficient indexing for blockchain state queries and updates.
-///
-/// `Work` is the form of the block's chainwork, as on [`BlockContext`]: the
-/// writer takes only `IndexedBlock<AbsoluteChainWork>`, and a served block may
-/// carry `Option<AbsoluteChainWork>`.
+/// The indexing data of one compact Zcash block, with its chainwork in the form `Work` names as on [`BlockContext`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IndexedBlock<Work = Option<AbsoluteChainWork>> {
     /// The block's `BlockIndex`, parent hash, and cumulative chainwork.
@@ -1039,19 +1034,17 @@ impl<Work: Copy> IndexedBlock<Work> {
     }
 }
 
-impl IndexedBlock<AbsoluteChainWork> {
-    /// The same block with its known chainwork in the optional slot, for a read path that serves stored and unstored blocks alike.
-    pub fn with_optional_chainwork(self) -> IndexedBlock {
+impl<Work> IndexedBlock<Work> {
+    /// The same block with its chainwork re-expressed by `map`.
+    pub fn map_chainwork<Mapped>(self, map: impl FnOnce(Work) -> Mapped) -> IndexedBlock<Mapped> {
         IndexedBlock {
-            context: self.context.with_optional_chainwork(),
+            context: self.context.map_chainwork(map),
             data: self.data,
             transactions: self.transactions,
             commitment_tree_data: self.commitment_tree_data,
         }
     }
-}
 
-impl<Work> IndexedBlock<Work> {
     /// Creates a new `IndexedBlock`.
     pub fn new(
         context: BlockContext<Work>,
@@ -2484,20 +2477,38 @@ impl<Work> BlockHeaderData<Work> {
     pub fn data(&self) -> &BlockData {
         &self.data
     }
-}
 
-impl BlockHeaderData<AbsoluteChainWork> {
-    /// The same header with its known chainwork in the optional slot, for a read path that serves stored and unstored blocks alike.
-    pub fn with_optional_chainwork(self) -> BlockHeaderData {
+    /// The same header with its chainwork re-expressed by `map`.
+    pub fn map_chainwork<Mapped>(
+        self,
+        map: impl FnOnce(Work) -> Mapped,
+    ) -> BlockHeaderData<Mapped> {
         BlockHeaderData {
-            context: self.context.with_optional_chainwork(),
+            context: self.context.map_chainwork(map),
             data: self.data,
         }
     }
 }
 
-/// Only a header whose chainwork is known has a stored form, so the encoder is
-/// total and the decoder yields the same shape.
+/// Only a header whose chainwork is known has a stored form.
+///
+/// ```
+/// use zaino_chain_store_zainodb::types::{AbsoluteChainWork, BlockHeaderData};
+/// use zaino_encoding::ZainoVersionedSerde as _;
+///
+/// fn encode(header: &BlockHeaderData<AbsoluteChainWork>) -> std::io::Result<Vec<u8>> {
+///     header.to_bytes()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use zaino_chain_store_zainodb::types::BlockHeaderData;
+/// use zaino_encoding::ZainoVersionedSerde as _;
+///
+/// fn encode(header: &BlockHeaderData) -> std::io::Result<Vec<u8>> {
+///     header.to_bytes()
+/// }
+/// ```
 impl ZainoVersionedSerde for BlockHeaderData<AbsoluteChainWork> {
     const VERSION: u8 = version::V2;
 

@@ -270,23 +270,6 @@ mod tests {
         assert_eq!(bctx, back);
     }
 
-    /// Encoding a context is total: the only context the encoder accepts carries its chainwork in its type, so no runtime refusal exists to test.
-    #[test]
-    fn the_encoder_takes_only_a_context_whose_chainwork_is_known() {
-        fn encode(context: &BlockContext<AbsoluteChainWork>) -> PersistentBlockContext {
-            PersistentBlockContext::from_business(context)
-        }
-
-        let bctx = BlockContext::new(
-            BlockHash::from([0x11; 32]),
-            BlockHash::from([0x22; 32]),
-            AbsoluteChainWork::new(CHAINWORK),
-            Height(0x0dec_0de0),
-        );
-
-        assert_eq!(encode(&bctx).height, bctx.height());
-    }
-
     /// Regression for the byte-order bug that broke `load_db_backend_from_file`
     /// and every existing v1 DB: the on-disk chainwork format is 32-byte
     /// **big-endian** (the original `AbsoluteChainWork([u8; 32])` via

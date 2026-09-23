@@ -16,7 +16,7 @@ pub(crate) use super::fake_validator::fake_validator_with_tip;
 #[cfg(test)]
 pub(crate) use super::fake_validator::{fake_validator_from_vectors, FakeValidator};
 use crate::types::{
-    AbsoluteChainWork, BlockContext, BlockMetadata, BlockWithMetadata, CompactTxData, IndexedBlock,
+    AbsoluteChainWork, BlockMetadata, BlockWithMetadata, CompactTxData, IndexedBlock,
 };
 
 /// The network the vector chain was mined on.
@@ -72,32 +72,14 @@ pub fn indexed_block_chain(
             parent_chainwork,
             network: network.clone(),
         };
-        let block = with_known_chainwork(
-            IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata))
-                .expect("vector blocks are valid"),
-        );
+        let block = IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata))
+            .expect("vector blocks are valid")
+            .map_chainwork(|chainwork| {
+                chainwork.expect("the oracle threads every parent chainwork, so each block has one")
+            });
         parent_chainwork = Some(block.context.chainwork);
         block
     })
-}
-
-/// The oracle's block in the writer's shape, which the `zebra_chain` builder cannot produce itself because its parent chainwork is optional.
-fn with_known_chainwork(block: IndexedBlock) -> IndexedBlock<AbsoluteChainWork> {
-    let chainwork = block
-        .context
-        .chainwork
-        .expect("the oracle threads every parent chainwork, so each block has one");
-    IndexedBlock::new(
-        BlockContext::new(
-            block.context.index.hash,
-            block.context.parent_hash,
-            chainwork,
-            block.context.index.height,
-        ),
-        block.data,
-        block.transactions,
-        block.commitment_tree_data,
-    )
 }
 
 /// The chain, plus a flat `(height, tx_index)` lookup into its transactions.

@@ -783,6 +783,19 @@ impl<T: ChainStoreSource> CompactBlockExt for FinalisedSource<T> {
     }
 }
 
+impl<T: ChainStoreSource> FinalisedSource<T> {
+    /// Every stored block in `start..=end`, ascending, from the v1 backend that alone has stored blocks.
+    pub(crate) async fn get_stored_block_range(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
+        self.require_v1("stored block range")?
+            .get_stored_block_range(start, end)
+            .await
+    }
+}
+
 impl<T: ChainStoreSource> IndexedBlockExt for FinalisedSource<T> {
     async fn get_chain_block(&self, height: Height) -> Result<Option<IndexedBlock>, StoreError> {
         match self {

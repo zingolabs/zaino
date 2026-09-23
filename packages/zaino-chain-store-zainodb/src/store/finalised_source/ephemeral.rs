@@ -15,8 +15,7 @@ use crate::store::capability::{DbCore, DbWrite};
 use crate::store::DbMetadata;
 
 use super::super::{require_pool_roots, PoolActivation};
-use crate::error::inconsistent;
-use crate::error::{source_error, StoreError};
+use crate::error::{conversion_error, source_error, StoreError};
 use crate::store::capability::{
     BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbRead, IndexedBlockExt,
 };
@@ -328,11 +327,7 @@ impl<T: ChainStoreSource> EphemeralFinalisedState<T> {
             block.header.hash,
         )?;
 
-        // No parent chainwork: the ephemeral backend has no tip to accumulate
-        // from, so a block built here carries none and is of the shape the
-        // writer does not take.
-        crate::conversion::indexed_block(&block, &tree_roots, None)
-            .map_err(|error| inconsistent(error.to_string()))
+        crate::conversion::indexed_block(&block, &tree_roots, None).map_err(conversion_error)
     }
 }
 
