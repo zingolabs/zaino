@@ -618,6 +618,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let fork = tip_changed
             .then(|| next.find_fork_point(&stale_tip.hash))
             .flatten();
+        // Read beside the fork point, so both describe the same pre-trim graph
+        let retained_floor = next.lowest_retained_height();
 
         // Trim only now. The handoff above reads the blocks it emits out of the
         // graph, so a block has to still be there to be handed off: trimming
@@ -647,7 +649,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
         if tip_changed {
             log_tip_change(stale_tip, new_tip);
-            record_reorg(stale_tip, fork);
+            record_reorg(stale_tip, fork, retained_floor);
 
             self.updates.send_replace(ChainStateEpoch {
                 generation,
@@ -983,22 +985,30 @@ pub(crate) enum TipChange {
 ///   by a *longer* chain is the ordinary case, and comparing heights misses it
 /// - Depth = blocks rewritten (old tip - fork), not height lost: an equal-height swap
 ///   rewrites one block, and a longer branch rewrites what it replaced
-pub(crate) fn classify_tip_change(old: BlockRef, fork: Option<BlockRef>) -> TipChange {
+/// - No fork point and the old tip below `retained_floor` = the chain advanced past
+///   the window (or the graph re-anchored), so the old tip was dropped, not replaced;
+///   a reorg that deep is beyond the consensus seam the window is sized to
+pub(crate) fn classify_tip_change(
+    old: BlockRef,
+    fork: Option<BlockRef>,
+    retained_floor: Height,
+) -> TipChange {
     match fork {
         // The old tip is still canonical, so the new one descends from it
         Some(fork) if fork == old => TipChange::Advance,
         Some(fork) => TipChange::Reorg(Some(
             u32::from(old.height).saturating_sub(u32::from(fork.height)),
         )),
+        None if old.height < retained_floor => TipChange::Advance,
         None => TipChange::Reorg(None),
     }
 }
 
 /// Reports a tip change that rewrote part of the chain.
-fn record_reorg(old: BlockRef, fork: Option<BlockRef>) {
+fn record_reorg(old: BlockRef, fork: Option<BlockRef>, retained_floor: Height) {
     use crate::metric_names::{CHAIN_HEAD_REORG_DEPTH, CHAIN_HEAD_REORG_TOTAL};
 
-    let depth = match classify_tip_change(old, fork) {
+    let depth = match classify_tip_change(old, fork, retained_floor) {
         TipChange::Advance => return,
         TipChange::Reorg(depth) => depth,
     };
@@ -1153,12 +1163,20 @@ mod reorg_tests {
         }
     }
 
+    /// A retention floor below every old tip these tests use, so it decides nothing.
+    fn floor() -> Height {
+        at(90, 0).height
+    }
+
     /// - Old tip still canonical → the new tip descends from it, however many blocks
     ///   arrived at once
     #[test]
     fn extending_the_chain_is_not_a_reorg() {
         let old = at(100, 1);
-        assert_eq!(classify_tip_change(old, Some(old)), TipChange::Advance);
+        assert_eq!(
+            classify_tip_change(old, Some(old), floor()),
+            TipChange::Advance
+        );
     }
 
     /// - The case the old height comparison dropped entirely: a competing branch wins
@@ -1166,7 +1184,7 @@ mod reorg_tests {
     #[test]
     fn a_reorg_won_by_a_longer_chain_is_counted_with_its_true_depth() {
         assert_eq!(
-            classify_tip_change(at(100, 1), Some(at(97, 9))),
+            classify_tip_change(at(100, 1), Some(at(97, 9)), floor()),
             TipChange::Reorg(Some(3)),
             "100 -> fork at 97 rewrites 3 blocks, whatever height the new tip reached"
         );
@@ -1176,7 +1194,7 @@ mod reorg_tests {
     #[test]
     fn an_equal_height_swap_rewrites_one_block() {
         assert_eq!(
-            classify_tip_change(at(100, 1), Some(at(99, 9))),
+            classify_tip_change(at(100, 1), Some(at(99, 9)), floor()),
             TipChange::Reorg(Some(1))
         );
     }
@@ -1185,7 +1203,7 @@ mod reorg_tests {
     #[test]
     fn a_rollback_reports_the_distance_lost() {
         assert_eq!(
-            classify_tip_change(at(100, 1), Some(at(95, 9))),
+            classify_tip_change(at(100, 1), Some(at(95, 9)), floor()),
             TipChange::Reorg(Some(5))
         );
     }
@@ -1195,7 +1213,25 @@ mod reorg_tests {
     #[test]
     fn a_fork_below_the_window_is_a_reorg_of_unknown_depth() {
         assert_eq!(
-            classify_tip_change(at(100, 1), None),
+            classify_tip_change(at(100, 1), None, floor()),
+            TipChange::Reorg(None)
+        );
+    }
+
+    /// An old tip below the retained floor was dropped by the window, not replaced by a branch.
+    #[test]
+    fn an_old_tip_below_the_retained_floor_is_an_advance() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), None, at(101, 0).height),
+            TipChange::Advance
+        );
+    }
+
+    /// An old tip at the floor is still retained, so its absence from the chain is a real reorg.
+    #[test]
+    fn an_old_tip_at_the_retained_floor_is_still_a_reorg() {
+        assert_eq!(
+            classify_tip_change(at(100, 1), None, at(100, 0).height),
             TipChange::Reorg(None)
         );
     }

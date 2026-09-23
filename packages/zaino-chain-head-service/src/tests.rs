@@ -839,8 +839,38 @@ async fn a_reorg_won_by_a_longer_chain_reports_the_blocks_it_rewrote() {
         "4, 5 and 6 were replaced, so the last surviving ancestor is 3"
     );
     assert_eq!(
-        crate::service::classify_tip_change(old_tip, fork),
+        crate::service::classify_tip_change(old_tip, fork, snapshot.lowest_retained_height()),
         crate::service::TipChange::Reorg(Some(3)),
         "three blocks rewritten, even though the tip climbed"
+    );
+}
+
+/// The old tip leaves the window on an advance larger than the window, and the walk re-anchors; that is not a reorg.
+#[tokio::test]
+async fn an_advance_past_the_window_is_not_a_reorg() {
+    const WINDOW: u32 = 10;
+    let validator = MockValidator::linear(7);
+    let service = stepped(&validator, WINDOW).await;
+    step_to_tip(&service, &validator).await;
+
+    let old_tip = service.subscriber().current().best_tip();
+    assert_eq!(old_tip.height, height(6));
+
+    for id in 7..=(7 + WINDOW as u16) {
+        validator.extend(id);
+    }
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert_eq!(snapshot.best_tip().height, height(6 + WINDOW + 1));
+    assert_eq!(
+        snapshot.find_fork_point(&old_tip.hash),
+        None,
+        "the old tip is no longer retained, which is the case a reorg counter must not misread"
+    );
+    assert!(snapshot.lowest_retained_height() > old_tip.height);
+    assert_eq!(
+        crate::service::classify_tip_change(old_tip, None, snapshot.lowest_retained_height()),
+        crate::service::TipChange::Advance,
     );
 }
