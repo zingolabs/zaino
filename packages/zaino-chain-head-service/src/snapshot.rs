@@ -79,6 +79,15 @@ impl MapBackedSnapshot {
         self.blocks.len()
     }
 
+    /// The lowest canonical height this snapshot retains, which is its anchor after a re-anchor and its trim floor otherwise.
+    pub(crate) fn lowest_retained_height(&self) -> Height {
+        self.heights_to_hashes
+            .keys()
+            .min()
+            .copied()
+            .unwrap_or(self.best_tip.height)
+    }
+
     /// The block this snapshot names as its own tip, if the graph retains it.
     ///
     /// The tip is stored as a [`BlockRef`] alongside the block set, not within

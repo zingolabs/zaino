@@ -1,0 +1,30 @@
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+`OneShotGetCommitmentTreeRootsByHeight`, with its resilient twin \
+`GetCommitmentTreeRootsByHeight`: tree roots at the best-chain block at a \
+height, answering with the block's hash alongside the roots. The hash names \
+which block answered, so a consumer pairing this query with a concurrent \
+hash-addressed read can detect a reorg between the two.
+"""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+`ChainHeadBlockSource` is a bound alias over six `zaino-source` ports, not \
+five: it now also requires `OneShotGetCommitmentTreeRootsByHeight`. A source \
+that implements the bound by hand must answer the new port.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The catch-up walk fetches each block and its tree roots concurrently, through \
+the height-addressed `OneShotGetCommitmentTreeRootsByHeight` port. The two \
+reads can straddle a reorg, so the walk compares the hash that the roots answer \
+names against the block it fetched, and refetches the roots by hash on a \
+mismatch.
+"""
