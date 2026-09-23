@@ -1075,15 +1075,8 @@ impl ProptestMockchain {
         let block = zebra_chain::block::Block::zcash_deserialize(bytes)
             .map_err(|error| format!("proptest block did not deserialize: {error}"))?;
         // The proptest chains carry no commitment trees, so every pool is empty.
-        zaino_convert_zebra::block_from_zebra(
-            &block,
-            zaino_primitives::types::ChainMetadata {
-                sapling_tree_size: 0,
-                orchard_tree_size: 0,
-                ironwood_tree_size: 0,
-            },
-        )
-        .map_err(|error| format!("proptest block did not convert: {error}"))
+        zaino_convert_zebra::block_from_zebra(&block, zaino_primitives::types::ChainMetadata::ZERO)
+            .map_err(|error| format!("proptest block did not convert: {error}"))
     }
 
     fn serialize(block: &zebra_chain::block::Block) -> Result<Vec<u8>, String> {
@@ -1315,6 +1308,44 @@ impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
     }
 }
 
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ProptestMockchain {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockHash,
+            zaino_primitives::types::TreeRoots,
+        ),
+        PortError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let block = zaino_source::OneShotGetBlock::get_block(self, height)
+            .await
+            .map_err(|error| match error {
+                PortError::Domain(zaino_source::GetBlockError::HeightNotFound(height)) => {
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                    )
+                }
+                PortError::Fetch(fetch) => PortError::Fetch(fetch),
+            })?;
+        let hash = block.header.hash;
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    // The hash-addressed mock answers every hash, known or not.
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(hash),
+                    ) => super::super::source::mockchain_source::port_fault(format!(
+                        "proptest mockchain lost block {hash} it just served"
+                    )),
+                    PortError::Fetch(fetch) => PortError::Fetch(fetch),
+                })?;
+        Ok((hash, roots))
+    }
+}
+
 impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
     async fn get_commitment_tree_roots(
         &self,
@@ -1403,7 +1434,8 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
 
         let info = |root: [u8; 32], size: u64| zaino_primitives::types::TreeRootInfo {
             root: zaino_primitives::types::TreeRoot::from(root),
-            size,
+            size: zaino_primitives::types::TreeSize::try_from(size)
+                .expect("generated trees hold fewer than 2^32 notes"),
         };
 
         // An empty pool reports the empty-tree root, not an absent one. A

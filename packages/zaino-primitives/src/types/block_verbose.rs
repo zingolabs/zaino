@@ -1,6 +1,8 @@
 //! Chain-state facts about a block that are not in the block itself.
 
-use super::{BlockHash, ChainWork, Confirmations, Difficulty, ValuePoolBalance};
+use super::{
+    AbsoluteChainWork, BlockConfirmations, BlockHash, Difficulty, TreeSize, ValuePoolBalance,
+};
 
 /// What a verbose block query adds to the block's own bytes.
 ///
@@ -18,8 +20,8 @@ use super::{BlockHash, ChainWork, Confirmations, Difficulty, ValuePoolBalance};
 /// caller assembling a verbose response combines the raw block with this.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockVerbose {
-    /// Depth of this block in the best chain, or `-1` if it is not on it.
-    pub confirmations: Confirmations,
+    /// This block's confirmation state against the current best chain.
+    pub confirmations: BlockConfirmations,
 
     /// Difficulty at this block, as a multiple of the network minimum.
     pub difficulty: Difficulty,
@@ -28,7 +30,7 @@ pub struct BlockVerbose {
     ///
     /// `None` from validators that do not track it — Zebra does not store
     /// cumulative work per height (ZcashFoundation/zebra#7109).
-    pub chainwork: Option<ChainWork>,
+    pub chainwork: Option<AbsoluteChainWork>,
 
     /// Total chain value as of this block.
     ///
@@ -63,9 +65,9 @@ pub struct BlockVerbose {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockTreeSizes {
     /// Sapling notes committed as of this block.
-    pub sapling: u64,
+    pub sapling: TreeSize,
     /// Orchard notes committed as of this block.
-    pub orchard: u64,
+    pub orchard: TreeSize,
     /// Ironwood notes committed as of this block (NU6.3).
-    pub ironwood: u64,
+    pub ironwood: TreeSize,
 }
