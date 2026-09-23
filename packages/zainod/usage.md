@@ -46,3 +46,5 @@ Per-component detail:
   `HISTOGRAMS` (`# HELP`) tables
 - `zainod` registers them and owns bucket ladders; a histogram without one fails `metrics::init`
   (would scrape as a summary)
+- `metrics::init` binds `metrics_endpoint` before it installs the recorder, and a bind failure
+  fails startup: a recorder with no listener would record samples that nothing drains
