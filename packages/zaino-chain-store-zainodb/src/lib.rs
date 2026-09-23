@@ -46,10 +46,11 @@ pub mod adapter;
 pub mod conversion;
 pub mod entry;
 pub mod error;
-#[cfg(feature = "prometheus")]
+pub(crate) mod ingest;
 pub mod metric_names;
 pub mod pool;
 pub mod store;
 pub mod stream;
 pub(crate) mod support;
+mod timer;
 pub mod types;
