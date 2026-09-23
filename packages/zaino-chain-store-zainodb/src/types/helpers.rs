@@ -118,7 +118,7 @@ pub struct BlockMetadata {
     /// Ironwood commitment tree root and size; `None` when the block has no ironwood
     /// treestate (below NU6.3 activation, or a network with no NU6.3 activation height)
     pub ironwood: Option<(zebra_chain::orchard::tree::Root, u32)>,
-    /// Parent block's chainwork (`None` for genesis).
+    /// Parent block's chainwork, `None` at genesis and wherever the caller cannot know it.
     pub parent_chainwork: Option<AbsoluteChainWork>,
     /// Network for block validation
     pub network: zebra_chain::parameters::Network,
@@ -310,20 +310,15 @@ impl<'a> BlockWithMetadata<'a> {
             .map(|height| Height(height.0))
             .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-        let block_work = block_work(&block.header)?;
-        let chainwork = match self.metadata.parent_chainwork {
-            Some(parent) => parent
-                .accumulate(block_work)
-                .map_err(|e| format!("chainwork overflow: {e}"))?,
-            None => AbsoluteChainWork::genesis(block_work),
-        };
-
-        Ok(BlockContext::new(
+        let chainwork = crate::conversion::chainwork_from_parent(
+            block_work(&block.header)?,
             hash,
-            parent_hash,
-            Some(chainwork),
             height,
-        ))
+            self.metadata.parent_chainwork,
+        )
+        .map_err(|error| error.to_string())?;
+
+        Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }
 }
 

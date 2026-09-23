@@ -27,3 +27,14 @@ description = "Fold a window's work from RelativeChainWork::ZERO at the anchor. 
 crate       = "zaino-state"
 kind        = "internal"
 description = "Chain-head blocks converted for serving now carry no chain work, instead of reinterpreting the window's anchor-relative total as an absolute one."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "fix"
+description = """
+A block whose parent chainwork is unknown no longer receives a fabricated \
+genesis chainwork. `chainwork_from_parent` takes the block's height and \
+yields the block's own work only at `GENESIS_HEIGHT`; above it, an unknown \
+parent yields no chainwork, which the persistence boundary refuses. The \
+bulk-sync fold and the zebra-block builder both go through that one rule.
+"""
