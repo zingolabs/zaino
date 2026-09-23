@@ -12,9 +12,10 @@
 //! own test module and adds one [`graph_contract!`] line.
 
 use std::collections::HashSet;
+use std::num::NonZeroU128;
 
-use zaino_chain_head::{ChainHeadBlock, ChainHeadWork};
-use zaino_primitives::types::{BlockHash, BlockRef, TreeRoots};
+use zaino_chain_head::ChainHeadBlock;
+use zaino_primitives::types::{BlockHash, BlockRef, RelativeChainWork, SingleBlockWork, TreeRoots};
 
 use super::ChainGraph;
 use crate::tests::block;
@@ -53,6 +54,16 @@ pub(crate) trait InspectableGraph: ChainGraph {
     fn check_representation(&self) -> Result<(), String>;
 }
 
+/// The anchor-relative total `work`, as a retained block would carry it after folding.
+fn relative_work(work: u128) -> RelativeChainWork {
+    match NonZeroU128::new(work) {
+        Some(work) => RelativeChainWork::ZERO
+            .accumulate(SingleBlockWork::new(work))
+            .expect("a test total fits"),
+        None => RelativeChainWork::ZERO,
+    }
+}
+
 /// A retained block carrying `work`, independent of its parent's.
 fn chain_head_block(h: u32, id: u16, parent: u16, work: u128) -> ChainHeadBlock {
     let block = block(h, id, parent);
@@ -62,7 +73,7 @@ fn chain_head_block(h: u32, id: u16, parent: u16, work: u128) -> ChainHeadBlock 
             height: block.header.height,
         },
         parent_hash: block.header.prev_hash,
-        work: ChainHeadWork::anchored_at(work),
+        work: relative_work(work),
         block,
         tree_roots: TreeRoots {
             sapling: None,

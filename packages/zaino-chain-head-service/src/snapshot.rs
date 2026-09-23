@@ -80,6 +80,15 @@ impl MapBackedSnapshot {
         std::iter::once(&self.tip).chain(self.others.values())
     }
 
+    /// The lowest canonical height this snapshot retains, which is its anchor after a re-anchor and its trim floor otherwise.
+    pub(crate) fn lowest_retained_height(&self) -> Height {
+        self.heights_to_hashes
+            .keys()
+            .min()
+            .copied()
+            .unwrap_or(self.tip.height())
+    }
+
     /// Makes `block` the tip; the previous tip becomes an ordinary retained
     /// block. `block` may already be retained, in which case it moves out of
     /// `others`.

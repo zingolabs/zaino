@@ -100,7 +100,6 @@ fn report_corrupt_row(error: &ChainStoreError) {
         error = error as &dyn std::error::Error,
         "chain store read a row it cannot decode"
     );
-    #[cfg(feature = "prometheus")]
     metrics::counter!(crate::metric_names::DB_CORRUPT_ROWS_TOTAL).increment(1);
 }
 

@@ -265,7 +265,7 @@ fn check<G: InspectableGraph>(graph: &G, model: &Model) -> Result<(), TestCaseEr
         .max()
         .expect("the model always retains its tip");
     let heaviest = graph.heaviest_block();
-    prop_assert_eq!(heaviest.work.as_u128(), max_work);
+    prop_assert_eq!(u128::from(heaviest.work), max_work);
     if model.entry(tip_id).work == max_work {
         prop_assert_eq!(heaviest.hash(), hash(tip_id));
     }

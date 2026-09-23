@@ -105,7 +105,7 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let header: BlockHeaderData = *StoredEntryVar::from_bytes(raw)
+            let header: BlockHeaderData<AbsoluteChainWork> = *StoredEntryVar::from_bytes(raw)
                 .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
                 .inner();
 
@@ -801,15 +801,16 @@ impl DbV1 {
 
                 loop {
                     // ----- Decode and validate block header -----
-                    let header: BlockHeaderData = match StoredEntryVar::from_bytes(raw_header_bytes)
-                        .map_err(|error| format!("header decode error: {error}"))
-                    {
-                        Ok(entry) => *entry.inner(),
-                        Err(message) => {
-                            send_status(&sender, tonic::Status::internal(message));
-                            return;
-                        }
-                    };
+                    let header: BlockHeaderData<AbsoluteChainWork> =
+                        match StoredEntryVar::from_bytes(raw_header_bytes)
+                            .map_err(|error| format!("header decode error: {error}"))
+                        {
+                            Ok(entry) => *entry.inner(),
+                            Err(message) => {
+                                send_status(&sender, tonic::Status::internal(message));
+                                return;
+                            }
+                        };
 
                     // Contiguous-height check: ensures cursor ordering and storage invariants are intact.
                     let current_height = header.context.height();
@@ -1349,8 +1350,8 @@ impl DbV1 {
 /// building wire messages is the wrong direction — and it forced the read to
 /// commit to one serving format, so the domain port could not be given the
 /// same data without a second conversion.
-fn assemble_compact_block(
-    header: &BlockHeaderData,
+fn assemble_compact_block<Work>(
+    header: &BlockHeaderData<Work>,
     txids: &[TransactionHash],
     transparent: &[Option<TransparentCompactTx>],
     sapling: &[Option<SaplingCompactTx>],
