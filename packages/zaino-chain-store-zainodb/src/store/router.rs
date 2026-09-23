@@ -142,18 +142,19 @@ use tracing::info;
 /// waiting on `Ready` cannot tell whether the finalised state it is about to query is the real
 /// on-disk index or a passthrough standing in for one while sync or a migration runs.
 ///
-/// The two ephemeral cases are kept distinct deliberately. Conflating a deliberate configuration
-/// choice with a transient sync state is the ambiguity this type exists to remove.
+/// The ephemeral cases are kept distinct deliberately. Conflating a deliberate configuration
+/// choice with a transient sync or migration is the ambiguity this type exists to remove.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FinalisedStateMode {
     /// `ephemeral_finalised_state = true`: this process has no persistent finalised-state database
     /// at all, and never will. A permanent property of the run, fixed at startup.
     EphemeralConfigured,
 
-    /// A persistent database exists but is not currently serving reads — an ephemeral passthrough is
-    /// installed while initial sync or a migration runs. Transient: reads become `Persistent` once
-    /// the work completes.
-    EphemeralRouted,
+    /// Passthrough serves reads while initial sync runs; routed writes still append to the database
+    EphemeralSyncing,
+
+    /// Migration holds full routing: reads + routed writes go to the passthrough, database frozen
+    EphemeralMigrating,
 
     /// Reads are served by the persistent on-disk database. This is the steady state, and the only
     /// mode in which a test asserting on finalised-state behaviour is exercising the real index.
@@ -164,7 +165,8 @@ impl std::fmt::Display for FinalisedStateMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
             FinalisedStateMode::EphemeralConfigured => "ephemeral(configured)",
-            FinalisedStateMode::EphemeralRouted => "ephemeral(syncing)",
+            FinalisedStateMode::EphemeralSyncing => "ephemeral(syncing)",
+            FinalisedStateMode::EphemeralMigrating => "ephemeral(migrating)",
             FinalisedStateMode::Persistent => "persistent",
         };
         f.write_str(name)
@@ -191,6 +193,16 @@ pub(crate) enum EphemeralMode {
     /// explicit maintenance accessors, such as [`Router::primary_backend`], when it needs to mutate
     /// the real database.
     Full,
+}
+
+impl EphemeralMode {
+    /// Operator-facing name for routing under this policy — the one mapping every report reads
+    fn reported(self) -> FinalisedStateMode {
+        match self {
+            EphemeralMode::ReadOnly => FinalisedStateMode::EphemeralSyncing,
+            EphemeralMode::Full => FinalisedStateMode::EphemeralMigrating,
+        }
+    }
 }
 
 /// Scope guard for active ephemeral routing.
@@ -437,11 +449,16 @@ impl<T: ChainStoreSource> Router<T> {
     /// with where a read would actually land.
     pub(crate) fn finalised_state_mode(&self) -> FinalisedStateMode {
         if self.primary_is_ephemeral() {
-            FinalisedStateMode::EphemeralConfigured
-        } else if self.ephemeral_mask.load(Ordering::Acquire) != 0 {
-            FinalisedStateMode::EphemeralRouted
-        } else {
-            FinalisedStateMode::Persistent
+            return FinalisedStateMode::EphemeralConfigured;
+        }
+        if self.ephemeral_mask.load(Ordering::Acquire) == 0 {
+            return FinalisedStateMode::Persistent;
+        }
+        // Routed: the policy in force names the transient
+        match self.active_ephemeral_mode() {
+            Some(mode) => mode.reported(),
+            // Last holder mid-release: reads still land on the passthrough until the masks restore
+            None => FinalisedStateMode::EphemeralSyncing,
         }
     }
 
@@ -521,9 +538,9 @@ impl<T: ChainStoreSource> Router<T> {
     pub(crate) fn watermark_provenance(&self) -> Provenance {
         match self.finalised_state_mode() {
             FinalisedStateMode::Persistent => Provenance::Durable,
-            FinalisedStateMode::EphemeralConfigured | FinalisedStateMode::EphemeralRouted => {
-                Provenance::Passthrough
-            }
+            FinalisedStateMode::EphemeralConfigured
+            | FinalisedStateMode::EphemeralSyncing
+            | FinalisedStateMode::EphemeralMigrating => Provenance::Passthrough,
         }
     }
 
@@ -660,7 +677,7 @@ impl<T: ChainStoreSource> Router<T> {
                 info!(
                     requested_mode = ?mode,
                     db_height = db_height.map(|height| height.0),
-                    mode = %FinalisedStateMode::EphemeralRouted,
+                    mode = %mode.reported(),
                     "finalised state switched to the ephemeral passthrough: reads are served from \
                      the backing validator, NOT the persistent database, until sync/migration \
                      completes"
@@ -743,7 +760,7 @@ impl<T: ChainStoreSource> Router<T> {
                     info!(
                         released_mode = ?mode,
                         active_mode = ?active_mode,
-                        mode = %FinalisedStateMode::EphemeralRouted,
+                        mode = %active_mode.reported(),
                         "finalised state ephemeral routing downgraded (still passthrough-backed)"
                     );
                     self.apply_ephemeral_mode(active_ephemeral.as_ref(), active_mode);
