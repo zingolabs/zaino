@@ -429,7 +429,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     // hold is authoritative, so refetch by it.
                     _ => self.tree_roots(block.header.hash).await?,
                 };
-                let chainblock = chain_head_block(block.clone(), &roots, Some(prev_block.work))?;
+                let work = accumulated_work(&prev_block, &block)?;
+                let chainblock = chain_head_block(block.clone(), &roots, work);
                 info!(
                     height = u32::from(chainblock.height()),
                     hash = %chainblock.hash(),
@@ -659,15 +660,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         block: &zaino_primitives::types::Block,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         let tree_roots = self.tree_roots(block.header.hash).await?;
-        let work = prev_block
-            .work
-            .checked_add(block_work(block))
-            .ok_or_else(|| {
-                ChainHeadAdvanceError::ReorgFailure(format!(
-                    "accumulated work overflowed at block {}",
-                    block.header.hash
-                ))
-            })?;
+        let work = accumulated_work(prev_block, block)?;
         Ok(chain_head_block(block.clone(), &tree_roots, work))
     }
 
@@ -853,6 +846,22 @@ fn advance_error<E: fmt::Debug + fmt::Display>(
 /// This block's own work, from its difficulty.
 fn block_work(block: &zaino_primitives::types::Block) -> u128 {
     std::num::NonZeroU128::from(block.header.bits.to_work()).get()
+}
+
+/// `block`'s work, accumulated onto its parent's.
+fn accumulated_work(
+    prev_block: &ChainHeadBlock,
+    block: &zaino_primitives::types::Block,
+) -> Result<ChainHeadWork, ChainHeadAdvanceError> {
+    prev_block
+        .work
+        .checked_add(block_work(block))
+        .ok_or_else(|| {
+            ChainHeadAdvanceError::ReorgFailure(format!(
+                "accumulated work overflowed at block {}",
+                block.header.hash
+            ))
+        })
 }
 
 /// Builds a [`ChainHeadBlock`] carrying `work`.

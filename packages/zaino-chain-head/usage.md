@@ -142,8 +142,8 @@ inside the graph, and rebasing at the edge, is what keeps that comparison exact.
 
 ## The driven port names only what is asked
 
-`ChainHeadBlockSource` is a bound alias over five `zaino-source` ports with a
-blanket impl. Nothing implements it directly: a type answering all five earns
+`ChainHeadBlockSource` is a bound alias over six `zaino-source` ports with a
+blanket impl. Nothing implements it directly: a type answering all six earns
 the bound automatically, so production composites and test mocks qualify the
 same way.
 

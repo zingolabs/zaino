@@ -79,7 +79,8 @@ impl MapBackedSnapshot {
         self.blocks.len()
     }
 
-    /// The lowest canonical height this snapshot retains, which is its anchor after a re-anchor and its trim floor otherwise.
+    /// The lowest canonical height this snapshot retains, which is its window floor
+    /// after a re-anchor and its trim floor otherwise.
     pub(crate) fn lowest_retained_height(&self) -> Height {
         self.heights_to_hashes
             .keys()
