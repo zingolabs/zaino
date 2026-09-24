@@ -1,0 +1,49 @@
+{
+  "in_active_chain": true,
+  "hex": "050000800a27a7265510e7c80000000001000000010000000000000000000000000000000000000000000000000000000000000000ffffffff06517af09fa693000000000140be4025000000001976a91417a95184b6b158dcb8d576fc182d9b7f14377d0488ac000000",
+  "height": 1,
+  "confirmations": 3,
+  "vin": [
+    {
+      "coinbase": "517af09fa693",
+      "sequence": 0
+    }
+  ],
+  "vout": [
+    {
+      "value": 6.25,
+      "valueZat": 625000000,
+      "n": 0,
+      "scriptPubKey": {
+        "asm": "OP_DUP OP_HASH160 17a95184b6b158dcb8d576fc182d9b7f14377d04 OP_EQUALVERIFY OP_CHECKSIG",
+        "hex": "76a91417a95184b6b158dcb8d576fc182d9b7f14377d0488ac",
+        "reqSigs": 1,
+        "type": "pubkeyhash",
+        "addresses": [
+          "tmBsTi2xWTjUdEXnuTceL7fecEQKeWaPDJd"
+        ]
+      }
+    }
+  ],
+  "vShieldedSpend": [],
+  "vShieldedOutput": [],
+  "vjoinsplit": [],
+  "orchard": {
+    "actions": [],
+    "valueBalance": 0.0,
+    "valueBalanceZat": 0
+  },
+  "valueBalance": 0.0,
+  "valueBalanceZat": 0,
+  "size": 106,
+  "time": 1700000000,
+  "txid": "74a24d18167f1b0bb6205c511af465f6be584d694936ddb8348284be9659f4d7",
+  "authdigest": "f0e33cfec824944388eaf56634ca0fd5ab6678072b06a006f584bc60abd6f869",
+  "overwintered": true,
+  "version": 5,
+  "versiongroupid": "26a7270a",
+  "locktime": 0,
+  "expiryheight": 1,
+  "blockhash": "58648a3bb903e9027ed88851de0694bd9d684b25a00420db9dbc4dbc4f851bf7",
+  "blocktime": 1700000000
+}

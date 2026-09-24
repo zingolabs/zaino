@@ -1,0 +1,76 @@
+{
+  "chain": "regtest",
+  "blocks": 100,
+  "headers": 101,
+  "difficulty": 1.25,
+  "verificationprogress": 0.5,
+  "chainwork": 0,
+  "pruned": false,
+  "size_on_disk": 4096,
+  "commitments": 7,
+  "bestblockhash": "01eeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+  "estimatedheight": 102,
+  "chainSupply": {
+    "chainValue": 0.00021,
+    "chainValueZat": 21000,
+    "monitored": true
+  },
+  "valuePools": [
+    {
+      "id": "transparent",
+      "chainValue": 0.00001,
+      "chainValueZat": 1000,
+      "monitored": true,
+      "valueDelta": -1e-8,
+      "valueDeltaZat": -1
+    },
+    {
+      "id": "sprout",
+      "chainValue": 0.0,
+      "chainValueZat": 0,
+      "monitored": false
+    },
+    {
+      "id": "sapling",
+      "chainValue": 0.00003,
+      "chainValueZat": 3000,
+      "monitored": true
+    },
+    {
+      "id": "orchard",
+      "chainValue": 0.00002,
+      "chainValueZat": 2000,
+      "monitored": true,
+      "valueDelta": 2e-8,
+      "valueDeltaZat": 2
+    },
+    {
+      "id": "lockbox",
+      "chainValue": 5e-6,
+      "chainValueZat": 500,
+      "monitored": true
+    },
+    {
+      "id": "ironwood",
+      "chainValue": 0.0,
+      "chainValueZat": 0,
+      "monitored": false
+    }
+  ],
+  "upgrades": {
+    "c2d6d0b4": {
+      "name": "NU5",
+      "activationheight": 1,
+      "status": "active"
+    },
+    "c8e71055": {
+      "name": "NU6",
+      "activationheight": 1,
+      "status": "pending"
+    }
+  },
+  "consensus": {
+    "chaintip": "c2d6d0b4",
+    "nextblock": "c8e71055"
+  }
+}

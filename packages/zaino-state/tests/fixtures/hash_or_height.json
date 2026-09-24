@@ -1,0 +1,452 @@
+[
+  {
+    "input": "ab00000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": false,
+    "resolved": "hash:01000000000000000000000000000000000000000000000000000000000000ab"
+  },
+  {
+    "input": "ab00000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": true,
+    "resolved": "hash:01000000000000000000000000000000000000000000000000000000000000ab"
+  },
+  {
+    "input": "ab00000000000000000000000000000000000000000000000000000000000001",
+    "tip": 100,
+    "relative": true,
+    "resolved": "hash:01000000000000000000000000000000000000000000000000000000000000ab"
+  },
+  {
+    "input": "AB00000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": false,
+    "resolved": "hash:01000000000000000000000000000000000000000000000000000000000000ab"
+  },
+  {
+    "input": "AB00000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": true,
+    "resolved": "hash:01000000000000000000000000000000000000000000000000000000000000ab"
+  },
+  {
+    "input": "AB00000000000000000000000000000000000000000000000000000000000001",
+    "tip": 100,
+    "relative": true,
+    "resolved": "hash:01000000000000000000000000000000000000000000000000000000000000ab"
+  },
+  {
+    "input": "1111111111111111111111111111111111111111111111111111111111111111",
+    "tip": null,
+    "relative": false,
+    "resolved": "hash:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  {
+    "input": "1111111111111111111111111111111111111111111111111111111111111111",
+    "tip": null,
+    "relative": true,
+    "resolved": "hash:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  {
+    "input": "1111111111111111111111111111111111111111111111111111111111111111",
+    "tip": 100,
+    "relative": true,
+    "resolved": "hash:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  {
+    "input": "ab0000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "ab0000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "ab0000000000000000000000000000000000000000000000000000000000001",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "zz00000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "zz00000000000000000000000000000000000000000000000000000000000001",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "zz00000000000000000000000000000000000000000000000000000000000001",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "0",
+    "tip": null,
+    "relative": false,
+    "resolved": "height:0"
+  },
+  {
+    "input": "0",
+    "tip": null,
+    "relative": true,
+    "resolved": "height:0"
+  },
+  {
+    "input": "0",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:0"
+  },
+  {
+    "input": "5",
+    "tip": null,
+    "relative": false,
+    "resolved": "height:5"
+  },
+  {
+    "input": "5",
+    "tip": null,
+    "relative": true,
+    "resolved": "height:5"
+  },
+  {
+    "input": "5",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:5"
+  },
+  {
+    "input": "+5",
+    "tip": null,
+    "relative": false,
+    "resolved": "height:5"
+  },
+  {
+    "input": "+5",
+    "tip": null,
+    "relative": true,
+    "resolved": "height:5"
+  },
+  {
+    "input": "+5",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:5"
+  },
+  {
+    "input": "007",
+    "tip": null,
+    "relative": false,
+    "resolved": "height:7"
+  },
+  {
+    "input": "007",
+    "tip": null,
+    "relative": true,
+    "resolved": "height:7"
+  },
+  {
+    "input": "007",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:7"
+  },
+  {
+    "input": "2147483647",
+    "tip": null,
+    "relative": false,
+    "resolved": "height:2147483647"
+  },
+  {
+    "input": "2147483647",
+    "tip": null,
+    "relative": true,
+    "resolved": "height:2147483647"
+  },
+  {
+    "input": "2147483647",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:2147483647"
+  },
+  {
+    "input": "2147483648",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "2147483648",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "2147483648",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "4294967295",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "4294967295",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "4294967295",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "4294967296",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "4294967296",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "4294967296",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-0",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "-0",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-0",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-1",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "-1",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-1",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:100"
+  },
+  {
+    "input": "-2",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "-2",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-2",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:99"
+  },
+  {
+    "input": "-99",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "-99",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-99",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:2"
+  },
+  {
+    "input": "-100",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "-100",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-100",
+    "tip": 100,
+    "relative": true,
+    "resolved": "height:1"
+  },
+  {
+    "input": "-101",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "-101",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-101",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-9223372036854775808",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "-9223372036854775808",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "-9223372036854775808",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": " 1",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": " 1",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": " 1",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "1 ",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "1 ",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "1 ",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "0x10",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "0x10",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "0x10",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "1.0",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "1.0",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "1.0",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "",
+    "tip": null,
+    "relative": false,
+    "resolved": null
+  },
+  {
+    "input": "",
+    "tip": null,
+    "relative": true,
+    "resolved": null
+  },
+  {
+    "input": "",
+    "tip": 100,
+    "relative": true,
+    "resolved": null
+  }
+]

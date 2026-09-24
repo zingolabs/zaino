@@ -1,0 +1,15 @@
+{
+  "version": 2000000,
+  "build": "v2.0.0",
+  "subversion": "/Zebra:2.0.0/",
+  "protocolversion": 170120,
+  "blocks": 2500000,
+  "connections": 8,
+  "proxy": "127.0.0.1:9050",
+  "difficulty": 1.5,
+  "testnet": true,
+  "paytxfee": 0.00001,
+  "relayfee": 1e-6,
+  "errors": "disk full",
+  "errorstimestamp": 1700000000
+}
