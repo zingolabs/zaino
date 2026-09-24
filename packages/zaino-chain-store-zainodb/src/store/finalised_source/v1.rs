@@ -290,9 +290,8 @@ pub(crate) const ACCUMULATOR_BUILD_MAX_SHARDS: u16 = 256;
 /// budget, and over-counting only adds shards (less memory per shard), it never under-bounds.
 pub(crate) const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 256;
 
-/// Minimum wall-clock interval between successive progress logs emitted by a long-running
-/// finalised-state scan (bulk sync, the txout-set accumulator rebuild, and the startup `spent`
-/// integrity check).
+/// Minimum wall-clock interval between successive progress logs emitted by the txout-set
+/// accumulator's long-running scans of the finalised state.
 ///
 /// Throttling on *time* rather than on a height/entry modulus keeps the output bounded no matter
 /// how the underlying work is partitioned. The accumulator rebuild in particular scans the whole
