@@ -20,6 +20,7 @@
 //! uses `tokio::task::block_in_place` / `spawn_blocking` for LMDB operations to avoid blocking the
 //! async runtime, and configures `max_readers` to support high read concurrency.
 
+use crate::codec::{CompactSize, DbCodec as _, FixedEncodedLen as _};
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::store::capability::TransparentHistExt;
 use crate::store::capability::{
@@ -34,7 +35,6 @@ use crate::types::{
     TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
 };
 use crate::{config::StoreSettings, error::StoreError};
-use crate::codec::{CompactSize, FixedEncodedLen as _, ZainoVersionedSerde as _};
 /// How a caller names a block when asking this backend to resolve it.
 ///
 /// Was `zebra_state::HashOrHeight`. Defined here instead: it is the store's own
@@ -124,8 +124,8 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
 /// This value is compared against the schema hash stored in the metadata record to detect schema
 /// drift without a corresponding version bump.
 pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0xda, 0x34, 0xd4, 0x76, 0x07, 0x4e, 0x8b, 0x96, 0x3b, 0xb4, 0x45, 0xc7, 0x48, 0x09, 0x99, 0x67,
-    0xeb, 0xd6, 0xc8, 0x79, 0xf8, 0x67, 0xde, 0x99, 0x69, 0x2e, 0x8d, 0xf6, 0x94, 0xbf, 0x22, 0xe3,
+    0x99, 0x39, 0x67, 0xdf, 0xca, 0x50, 0xc2, 0x78, 0x5a, 0x1b, 0x8c, 0x87, 0x87, 0x54, 0x65, 0x19,
+    0xb9, 0x8a, 0xca, 0x0a, 0xf8, 0x4c, 0x6b, 0x8d, 0x8b, 0x76, 0xa6, 0xdb, 0x0b, 0xb0, 0x2c, 0x63,
 ];
 
 /// *Current* database V1 version.

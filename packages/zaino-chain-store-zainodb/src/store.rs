@@ -99,10 +99,8 @@
 //! Concretely, values written into LMDB are composed from the database-serializable types in
 //! [`crate::types::db`] (re-exported via [`crate::types`]).
 //!
-//! All persisted types implement [`crate::codec::ZainoVersionedSerde`], which
-//! defines Zaino’s on-disk wire format:
-//! - a **one-byte version tag** (`encoding::version::V1`, `V2`, …),
-//! - followed by a version-specific body (little-endian unless stated otherwise).
+//! All persisted types implement [`crate::codec::DbCodec`], which writes each record's fields
+//! with no version tag (little-endian unless stated otherwise).
 //!
 //! # On-disk layout and schema identity
 //!

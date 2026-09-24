@@ -15,8 +15,7 @@
 #
 #  Conventions
 #  ───────────
-#  • All records are encoded with Zaino’s versioned-serialize framework:
-#       <u8 version_tag>  <body bytes defined below>
+#  • Records carry no version tag; each is its fields, in the order defined below.
 #  • All fixed-width integral fields are little-endian unless explicitly noted.
 #  • Variable-length collections are length-prefixed with Bitcoin/Zcash
 #    CompactSize.
@@ -27,15 +26,8 @@
 #
 # 1. headers  ―  H  ->  BlockHeaderData
 #    Key : BE height
-#    Val : 0x01/0x02 + BlockHeaderData
-#           BlockHeaderData V1 body  =
-#              BlockIndex V1  +  BlockData
-#
-#           BlockHeaderData V2 body  =
-#              BlockIndex V2  +  BlockData
-#
-#              BlockIndex V2 body =  B hash  B parent_hash  U256 chain_work  H height
-#              BlockIndex V1 body =  B hash  B parent_hash  U256 chain_work  Option<H> height
+#    Val : BlockHeaderData  =  BlockIndex  +  BlockData
+#              BlockIndex  =  B hash  B parent_hash  U256 chain_work  H height
 #
 #              BlockData   =  LE(u32) version
 #                             LE(i64) unix_time
@@ -44,15 +36,15 @@
 #
 #
 # 2. txids  ―  H  ->  TxidList
-#    Val : 0x01 + CS count + count × B txid
+#    Val : CS count + count × B txid
 #
 # 3. transparent  ―  H  ->  Vec<TransparentTxList>
-#    Val : 0x01 + CS blk_tx_count + each TransparentTxList
+#    Val : CS blk_tx_count + each TransparentTxList
 #           TransparentTxList = CS tx_count + tx_count × Option<TransparentCompactTx>
 #
 # 4. sapling  ―  H  ->  SaplingTxList
 #    Key : BE height
-#    Val : 0x01 + CS tx_count + tx_count × Option<SaplingCompactTx>
+#    Val : CS tx_count + tx_count × Option<SaplingCompactTx>
 #           SaplingCompactTx =
 #              Option<i64> value_balance
 #              spends  = CS n + n × CompactSaplingSpend
@@ -62,7 +54,7 @@
 #
 # 5. orchard  ―  H  ->  OrchardTxList
 #    Key : BE height
-#    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
+#    Val : CS tx_count + tx_count × Option<OrchardCompactTx>
 #           OrchardCompactTx =
 #              Option<i64> value_balance
 #              actions = CS n + n × CompactOrchardAction
@@ -70,8 +62,8 @@
 #
 # 6. commitment_tree_data  ―  H  ->  CommitmentTreeData
 #    Key : BE height
-#    Val : 0x01 + CommitmentTreeData body
-#           CommitmentTreeData V2 body  =
+#    Val : CommitmentTreeData body
+#           CommitmentTreeData  =
 #              CommitmentTreeRoots  +  CommitmentTreeSizes
 #              CommitmentTreeRoots  = 32-byte sapling_root  32-byte orchard_root
 #                                     Option<32-byte ironwood_root>
@@ -80,7 +72,7 @@
 #
 # 13. ironwood  ―  H  ->  OrchardTxList          
 #    Key : BE height
-#    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
+#    Val : CS tx_count + tx_count × Option<OrchardCompactTx>
 #           OrchardCompactTx =
 #              Option<i64> value_balance
 #              actions = CS n + n × CompactOrchardAction
@@ -91,18 +83,18 @@
 #
 # 7. heights  ―  B (block hash)  ->  Height
 #    Key : 32-byte block hash (internal byte order)
-#    Val : 0x01 + BE height
+#    Val : BE height
 #
 # 8. spent  ―  Outpoint  ->  Vec<TxLocation>
-#    Key : 0x01 + Outpoint
+#    Key : Outpoint
 #           Outpoint = B prev_txid  LE(u32) prev_index
-#    Val : 0x01 + CS n + n × TxLocation
+#    Val : CS n + n × TxLocation
 #           TxLocation = LE(u32) height  LE(u32) tx_index
 #
 # 9. tx_out_set_info_accumulator  ―  "tx_out_set_info_accumulator" (ASCII)
 #       ->  FinalisedTxOutSetInfoAccumulator  (singleton)
-#    Val : 0x01 + FinalisedTxOutSetInfoAccumulator V1 body
-#    FinalisedTxOutSetInfoAccumulator V1 body =
+#    Val : FinalisedTxOutSetInfoAccumulator
+#    FinalisedTxOutSetInfoAccumulator =
 #        LE(u64) transactions
 #        LE(u64) transaction_outputs
 #        LE(u64) bytes_serialized
@@ -117,13 +109,13 @@
 #    bytes_serialized == transaction_outputs * 65.
 #
 # 10. address_history  ―  AddrScript  ->  AddrEventBytes
-#    Key : 0x01 + AddrScript
+#    Key : AddrScript
 #           AddrScript = [20] hash  u8 script_type
-#    Val : 0x01 + CS len + raw event bytes  (multiple entries may share the key)
+#    Val : CS len + raw event bytes  (multiple entries may share the key)
 #
 # 11. metadata  ―  "metadata" (ASCII)  ->  DbMetadata  (singleton)
-#    Val : 0x01 + DbMetadata V1 body
-#    DbMetadata V1 body =
+#    Val : DbMetadata
+#    DbMetadata =
 #        DbVersion version
 #        32-byte schema_hash
 #
@@ -131,7 +123,7 @@
 #
 # 12. txid_location  ―  B (txid)  ->  TxLocation
 #    Key : 32-byte transaction id (internal byte order)
-#    Val : 0x01 + TxLocation
+#    Val : TxLocation
 #           TxLocation = BE(u32) height  BE(u16) tx_index
 #
 #    Reverse index of `txids`: maps a txid to its on-chain location. Provides O(log n)

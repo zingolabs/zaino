@@ -132,10 +132,10 @@ impl DbV1 {
             };
 
             for (key, val) in iter {
-                if key.len() != AddrScript::latest_versioned_len()? {
+                if key.len() != AddrScript::ENCODED_LEN {
                     continue;
                 }
-                if val.len() != AddrEventBytes::latest_versioned_len()? {
+                if val.len() != AddrEventBytes::ENCODED_LEN {
                     continue;
                 }
                 raw_records.push(val.to_vec());
@@ -234,8 +234,7 @@ impl DbV1 {
             };
 
             for (key, val) in iter {
-                if key.len() != AddrScript::latest_versioned_len()?
-                    || val.len() != AddrEventBytes::latest_versioned_len()?
+                if key.len() != AddrScript::ENCODED_LEN || val.len() != AddrEventBytes::ENCODED_LEN
                 {
                     continue;
                 }
@@ -294,8 +293,7 @@ impl DbV1 {
             };
 
             for (key, val) in iter {
-                if key.len() != AddrScript::latest_versioned_len()?
-                    || val.len() != AddrEventBytes::latest_versioned_len()?
+                if key.len() != AddrScript::ENCODED_LEN || val.len() != AddrEventBytes::ENCODED_LEN
                 {
                     continue;
                 }
@@ -364,8 +362,7 @@ impl DbV1 {
             };
 
             for (key, val) in iter {
-                if key.len() != AddrScript::latest_versioned_len()?
-                    || val.len() != AddrEventBytes::latest_versioned_len()?
+                if key.len() != AddrScript::ENCODED_LEN || val.len() != AddrEventBytes::ENCODED_LEN
                 {
                     continue;
                 }
@@ -463,14 +460,12 @@ impl DbV1 {
 
         // Build the SET_RANGE value prefix that matches the stored bytes:
         //
-        //  - 1 byte: record version (AddrEventBytes::VERSION)
         //  - 4 bytes: block_height  (big-endian)
         //  - 2 bytes: tx_index     (big-endian)
         //
         // This prefix is all MDB_SET_RANGE needs to position at the first duplicate whose value
         // is >= (height, tx_index); vout, flags and value follow it in the stored bytes.
-        let mut seek_data = Vec::with_capacity(1 + 4 + 2);
-        seek_data.push(AddrEventBytes::VERSION);
+        let mut seek_data = Vec::with_capacity(4 + 2);
         seek_data.extend_from_slice(&tx_location.block_height().to_be_bytes());
         seek_data.extend_from_slice(&tx_location.tx_index().to_be_bytes());
 
@@ -486,8 +481,8 @@ impl DbV1 {
                 };
 
                 // If the seek landed on a different key, there are no candidates for this addr.
-                if cur_key.len() != AddrScript::latest_versioned_len()?
-                    || &cur_key[..AddrScript::latest_versioned_len()?] != addr_script_bytes
+                if cur_key.len() != AddrScript::ENCODED_LEN
+                    || &cur_key[..AddrScript::ENCODED_LEN] != addr_script_bytes
                 {
                     return Ok(results);
                 }
@@ -497,12 +492,12 @@ impl DbV1 {
 
                 loop {
                     // Validate lengths, same as original function.
-                    if cur_key.len() != AddrScript::latest_versioned_len()? {
+                    if cur_key.len() != AddrScript::ENCODED_LEN {
                         return Err(StoreError::Custom(
                             "address history key length mismatch".into(),
                         ));
                     }
-                    if cur_val.len() != AddrEventBytes::latest_versioned_len()? {
+                    if cur_val.len() != AddrEventBytes::ENCODED_LEN {
                         return Err(StoreError::Custom(
                             "address history value length mismatch".into(),
                         ));
@@ -533,8 +528,8 @@ impl DbV1 {
                                 Some(k) => k,
                                 None => break,
                             };
-                            if k.len() != AddrScript::latest_versioned_len()?
-                                || &k[..AddrScript::latest_versioned_len()?] != addr_script_bytes
+                            if k.len() != AddrScript::ENCODED_LEN
+                                || &k[..AddrScript::ENCODED_LEN] != addr_script_bytes
                             {
                                 break;
                             }
@@ -653,7 +648,7 @@ impl DbV1 {
             .and_then(|_| cur.get(None, None, lmdb_sys::MDB_LAST_DUP))
         {
             Ok((_k, mut val)) => loop {
-                if val.len() != AddrEventBytes::latest_versioned_len()? {
+                if val.len() != AddrEventBytes::ENCODED_LEN {
                     tracing::warn!("bad addrhist dup (len={})", val.len());
                 } else {
                     let record = decode_addr_event(val)?;
@@ -713,12 +708,12 @@ impl DbV1 {
         let mut cur = txn.open_rw_cursor(self.address_history)?;
 
         for (key, val) in cur.iter_dup_of(&addr_bytes)? {
-            if key.len() != AddrScript::latest_versioned_len()? {
+            if key.len() != AddrScript::ENCODED_LEN {
                 return Err(StoreError::Custom(
                     "address history key length mismatch".into(),
                 ));
             }
-            if val.len() != AddrEventBytes::latest_versioned_len()? {
+            if val.len() != AddrEventBytes::ENCODED_LEN {
                 return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
@@ -780,12 +775,12 @@ impl DbV1 {
         let mut cur = txn.open_rw_cursor(self.address_history)?;
 
         for (key, val) in cur.iter_dup_of(&addr_bytes)? {
-            if key.len() != AddrScript::latest_versioned_len()? {
+            if key.len() != AddrScript::ENCODED_LEN {
                 return Err(StoreError::Custom(
                     "address history key length mismatch".into(),
                 ));
             }
-            if val.len() != AddrEventBytes::latest_versioned_len()? {
+            if val.len() != AddrEventBytes::ENCODED_LEN {
                 return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
@@ -876,9 +871,7 @@ impl DbV1 {
         target_tx_idx: usize,
         target_output_idx: usize,
     ) -> Result<Option<TxOutCompact>, StoreError> {
-        let Some((_record_version, mut remaining)) = stored.split_first() else {
-            return Ok(None);
-        };
+        let mut remaining = stored;
         let vec_len = CompactSize::read(&mut remaining)? as usize;
 
         for i in 0..vec_len {
@@ -893,34 +886,29 @@ impl DbV1 {
                     return Ok(None);
                 }
             } else if *option_tag == 1 {
-                let Some((_tx_version, rest)) = remaining.split_first() else {
-                    return Ok(None);
-                };
-                remaining = rest;
-
                 let vin_len = CompactSize::read(&mut remaining)? as usize;
 
                 for _ in 0..vin_len {
-                    if remaining.len() < TxInCompact::latest_versioned_len()? {
+                    if remaining.len() < TxInCompact::ENCODED_LEN {
                         return Ok(None);
                     }
-                    remaining = &remaining[TxInCompact::latest_versioned_len()?..];
+                    remaining = &remaining[TxInCompact::ENCODED_LEN..];
                 }
 
                 let vout_len = CompactSize::read(&mut remaining)? as usize;
 
                 for out_idx in 0..vout_len {
-                    if remaining.len() < TxOutCompact::latest_versioned_len()? {
+                    if remaining.len() < TxOutCompact::ENCODED_LEN {
                         return Ok(None);
                     }
 
-                    let out_bytes = &remaining[..TxOutCompact::latest_versioned_len()?];
+                    let out_bytes = &remaining[..TxOutCompact::ENCODED_LEN];
 
                     if i == target_tx_idx && out_idx == target_output_idx {
                         return Ok(TxOutCompact::from_bytes(out_bytes).ok());
                     }
 
-                    remaining = &remaining[TxOutCompact::latest_versioned_len()?..];
+                    remaining = &remaining[TxOutCompact::ENCODED_LEN..];
                 }
             } else {
                 // Non-canonical Option tag

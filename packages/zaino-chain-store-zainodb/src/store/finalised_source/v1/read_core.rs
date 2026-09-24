@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::codec::ZainoVersionedSerde;
+use crate::codec::DbCodec;
 
 /// [`DbRead`] capability implementation for [`DbV1`].
 ///
@@ -154,7 +154,7 @@ impl DbV1 {
 
 impl DbV1 {
     /// Fetches and decodes one `T` row keyed by `height_bytes`, returning `Ok(None)` when the table has no row there.
-    fn read_row<T: ZainoVersionedSerde>(
+    fn read_row<T: DbCodec>(
         &self,
         table: lmdb::Database,
         label: &str,
@@ -174,7 +174,7 @@ impl DbV1 {
     }
 
     /// [`DbV1::read_row`] at a height that is first confirmed to be stored.
-    pub(super) async fn read_row_at_height<T: ZainoVersionedSerde>(
+    pub(super) async fn read_row_at_height<T: DbCodec>(
         &self,
         table: lmdb::Database,
         label: &str,
@@ -188,7 +188,7 @@ impl DbV1 {
     }
 
     /// Cursor-scans and decodes every `T` row in the inclusive `start..=end` height range.
-    pub(super) async fn scan_rows<T: ZainoVersionedSerde>(
+    pub(super) async fn scan_rows<T: DbCodec>(
         &self,
         table: lmdb::Database,
         label: &str,
@@ -200,7 +200,7 @@ impl DbV1 {
     }
 
     /// [`DbV1::scan_rows`] with each decoded row passed through `map` before it is collected.
-    pub(super) async fn scan_rows_mapped<T: ZainoVersionedSerde, Mapped>(
+    pub(super) async fn scan_rows_mapped<T: DbCodec, Mapped>(
         &self,
         table: lmdb::Database,
         label: &str,

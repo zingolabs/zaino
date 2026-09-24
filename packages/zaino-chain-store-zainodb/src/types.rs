@@ -3,7 +3,7 @@
 //! This module provides types for blockchain indexing, organized into two main categories:
 //!
 //! ## Database Types
-//! Types that implement `ZainoVersionedSerde` for database persistence.
+//! Types that implement `DbCodec` for database persistence.
 //! Any change to their encoding bumps the schema version, which rebuilds existing databases.
 //!
 //! Currently organized in `db/legacy.rs` (pending refactoring into focused modules):
@@ -22,13 +22,12 @@
 //! ## Module Organization Rules
 //!
 //! **Database Types (`db` module):**
-//! 1. Must implement `ZainoVersionedSerde`
+//! 1. Must implement `DbCodec`
 //! 2. Never use external types as fields directly - store fundamental data
 //! 3. Never change an encoding without bumping the schema version
-//! 4. Follow stringent versioning rules for backward compatibility
 //!
 //! **Helper Types (`helpers` module):**
-//! 1. Do NOT implement `ZainoVersionedSerde`
+//! 1. Do NOT implement `DbCodec`
 //! 2. Used for in-memory operations, conversions, and coordination
 //! 3. Can be changed more freely as they're not persisted
 

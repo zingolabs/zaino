@@ -520,6 +520,10 @@ On-disk schema
     wrapper version byte, `StoredEntryVar` length prefix, and 32-byte
     BLAKE2b-256 checksum over `key || value`.
   - Checksums / validation: none; rows are trusted as written.
+  - Records: no record or nested field carries a version tag any more. Every
+    key and value is its fields in order, so fixed-width records shrink by
+    one byte per nested record (for example `AddrHistRecord` is 17 bytes,
+    `DbMetadata` 44).
 - Tables:
   - No changes. The temporary migration progress keys are no longer written.
 

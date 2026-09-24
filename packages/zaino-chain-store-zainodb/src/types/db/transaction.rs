@@ -1,6 +1,6 @@
 //! Transaction-related database-serializable types.
 //!
-//! Contains types for transaction data that implement `ZainoVersionedSerde`:
+//! Contains types for transaction data that implement `DbCodec`:
 //! - TransactionHash
 //! - CompactTxData
 //! - TransparentCompactTx

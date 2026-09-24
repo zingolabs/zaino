@@ -18,8 +18,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 
-use corez::io::{self, Read};
 use crate::codec::{read_u32_le, read_u64_le, CompactSize};
+use corez::io::{self, Read};
 use zebra_chain::serialization::ZcashDeserialize as _;
 
 /// One block of the vector chain, as it was recorded.

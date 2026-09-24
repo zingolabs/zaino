@@ -6,7 +6,7 @@
 //! contract with every database already on disk: change them and a running
 //! node either mis-reads its own history or refuses to open it.
 //!
-//! Nothing in the type system enforces that contract. `ZainoVersionedSerde` is
+//! Nothing in the type system enforces that contract. `DbCodec` is
 //! hand-written per type, so an innocuous-looking edit — reordering two
 //! fields, widening an integer, adding a variant — changes the encoding
 //! silently. These tests are the thing that notices, and they are what makes
@@ -15,12 +15,9 @@
 //!
 //! # What a failure means
 //!
-//! A failure is not a bug in this module. It means the encoding changed. The
-//! correct response is almost never to update the golden: it is to introduce a
-//! new body-format version (see [`crate::codec::version`]) and
-//! leave the old decoder in place, so existing databases keep working.
-//! Updating a golden in place is an explicit statement that no such database
-//! exists.
+//! A failure is not a bug in this module. It means the encoding changed, and
+//! that every deployment will rebuild its database on its next start. Update the
+//! golden only after accepting that cost, and bump the schema version with it.
 //!
 //! # What these goldens are not
 //!
@@ -34,7 +31,7 @@
 //!
 //! # Coverage
 //!
-//! Every type implementing `ZainoVersionedSerde` is pinned here, except the
+//! Every type implementing `DbCodec` is pinned here, except the
 //! three `Persistent*` types in [`crate::types::db::block`],
 //! which are module-private by design and whose bytes appear inside the
 //! `block_header_data` golden — pinning them separately would mean widening
@@ -48,6 +45,7 @@
 use core::num::NonZeroU128;
 use std::fmt::Debug;
 
+use crate::codec::{DbCodec, FixedEncodedLen};
 use crate::store::capability::{DbMetadata, DbVersion};
 use crate::types::db::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 use crate::types::db::legacy::AddrEventBytes;
@@ -60,7 +58,6 @@ use crate::types::{
     SaplingTxList, ScriptType, ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx,
     TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
-use crate::codec::{FixedEncodedLen, ZainoVersionedSerde};
 
 /// The chainwork the golden block context carries.
 const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0dec_0de0).expect("nonzero literal");
@@ -79,16 +76,16 @@ const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 /// persisted types do not implement it — and because it is the stronger
 /// statement anyway: it is the on-disk bytes, not the in-memory value, that
 /// have to survive.
-fn assert_golden<T: ZainoVersionedSerde>(name: &str, value: &T, expected_hex: &str) {
+fn assert_golden<T: DbCodec>(name: &str, value: &T, expected_hex: &str) {
     let encoded = value
         .to_bytes()
         .unwrap_or_else(|e| panic!("{name}: encode failed: {e}"));
     assert_eq!(
         hex::encode(&encoded),
         expected_hex,
-        "{name}: on-disk encoding drifted. If this change is intentional, add a \
-         new body-format version rather than editing the golden — editing it in \
-         place asserts that no database on disk holds the old format."
+        "{name}: on-disk encoding drifted. If this change is intentional, every \
+         deployment will rebuild its database: update the golden and bump the \
+         schema version together."
     );
 
     let decoded = T::from_bytes(&encoded)
@@ -107,20 +104,13 @@ fn assert_golden<T: ZainoVersionedSerde>(name: &str, value: &T, expected_hex: &s
 /// actually produced.
 ///
 /// These two are read separately: the encoder writes rows, and
-/// `versioned_len` is what the readers use to stride across fixed-width
+/// `ENCODED_LEN` is what the readers use to stride across fixed-width
 /// records. A disagreement misaligns every read after the first.
-fn assert_fixed_len<T: ZainoVersionedSerde + FixedEncodedLen + Debug>(name: &str, value: &T) {
+fn assert_fixed_len<T: DbCodec + FixedEncodedLen + Debug>(name: &str, value: &T) {
     let encoded = value
         .to_bytes()
         .unwrap_or_else(|e| panic!("{name}: encode failed: {e}"));
-    let advertised = T::versioned_len(T::VERSION).unwrap_or_else(|| {
-        panic!(
-            "{name}: advertises no fixed length for its own VERSION. If it became \
-             variable-length, assert that deliberately (see \
-             `commitment_tree_lengths_are_fixed_at_v1_and_variable_at_v2`) rather \
-             than adding it here."
-        )
-    });
+    let advertised = T::ENCODED_LEN;
     assert_eq!(
         advertised,
         encoded.len(),
@@ -291,34 +281,34 @@ fn primitive_goldens() {
     assert_golden(
         "BlockHash",
         &block_hash(),
-        "011111111111111111111111111111111111111111111111111111111111111111",
+        "1111111111111111111111111111111111111111111111111111111111111111",
     );
     assert_golden(
         "TransactionHash",
         &transaction_hash(),
-        "012222222222222222222222222222222222222222222222222222222222222222",
+        "2222222222222222222222222222222222222222222222222222222222222222",
     );
     // Height is big-endian on purpose: heights are B-tree keys, and
     // lexicographic key order has to match numeric order.
-    assert_golden("Height", &height(), "010001e240");
+    assert_golden("Height", &height(), "0001e240");
     // ShardIndex, same reason.
-    assert_golden("ShardIndex", &shard_index(), "01000004d2");
+    assert_golden("ShardIndex", &shard_index(), "000004d2");
     assert_golden(
         "AddrScript",
         &addr_script(),
-        "01333333333333333333333333333333333333333301",
+        "333333333333333333333333333333333333333301",
     );
     assert_golden(
         "Outpoint",
         &outpoint(),
-        "01444444444444444444444444444444444444444444444444444444444444444407000000",
+        "444444444444444444444444444444444444444444444444444444444444444407000000",
     );
-    assert_golden("ScriptType", &ScriptType::NonStandard, "01ff");
-    assert_golden("TxLocation", &tx_location(), "010001e2400009");
+    assert_golden("ScriptType", &ScriptType::NonStandard, "ff");
+    assert_golden("TxLocation", &tx_location(), "0001e2400009");
     assert_golden(
         "ShardRoot",
         &shard_root(),
-        "01f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f140e20100",
+        "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f140e20100",
     );
 }
 
@@ -327,12 +317,12 @@ fn block_goldens() {
     assert_golden(
         "EquihashSolution",
         &equihash_solution(),
-        "0101555555555555555555555555555555555555555555555555555555555555555555555555",
+        "01555555555555555555555555555555555555555555555555555555555555555555555555",
     );
     assert_golden(
         "BlockData",
         &block_data(),
-        "0104000000002143650000000066666666666666666666666666666666666666666666666666666666666666667777777777777777777777777777777777777777777777777777777777777777ffff072088888888888888888888888888888888888888888888888888888888888888880101555555555555555555555555555555555555555555555555555555555555555555555555",
+        "04000000002143650000000066666666666666666666666666666666666666666666666666666666666666667777777777777777777777777777777777777777777777777777777777777777ffff0720888888888888888888888888888888888888888888888888888888888888888801555555555555555555555555555555555555555555555555555555555555555555555555",
     );
     // The composite that reaches disk as the `headers` row: an outer V2 tag,
     // then `PersistentBlockContext` V2 (itself two `BlockHash`es, a
@@ -341,7 +331,7 @@ fn block_goldens() {
     assert_golden(
         "BlockHeaderData",
         &block_header_data(),
-        "020201111111111111111111111111111111111111111111111111111111111111111101999999999999999999999999999999999999999999999999999999999999999901000000000000000000000000000000000000000000000000000000000dec0de0010001e2400104000000002143650000000066666666666666666666666666666666666666666666666666666666666666667777777777777777777777777777777777777777777777777777777777777777ffff072088888888888888888888888888888888888888888888888888888888888888880101555555555555555555555555555555555555555555555555555555555555555555555555",
+        "11111111111111111111111111111111111111111111111111111111111111119999999999999999999999999999999999999999999999999999999999999999000000000000000000000000000000000000000000000000000000000dec0de00001e24004000000002143650000000066666666666666666666666666666666666666666666666666666666666666667777777777777777777777777777777777777777777777777777777777777777ffff0720888888888888888888888888888888888888888888888888888888888888888801555555555555555555555555555555555555555555555555555555555555555555555555",
     );
 }
 
@@ -350,42 +340,42 @@ fn transaction_goldens() {
     assert_golden(
         "TxInCompact",
         &tx_in_compact(),
-        "01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa03000000",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa03000000",
     );
     assert_golden(
         "TxOutCompact",
         &tx_out_compact(),
-        "01406f400100000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00",
+        "406f400100000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00",
     );
     assert_golden(
         "TransparentCompactTx",
         &transparent_compact_tx(),
-        "010101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa030000000101406f400100000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00",
+        "01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0300000001406f400100000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00",
     );
     assert_golden(
         "CompactSaplingSpend",
         &compact_sapling_spend(),
-        "01cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     );
     assert_golden(
         "CompactSaplingOutput",
         &compact_sapling_output(),
-        "01dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddededededededededededededededededededededededededededededededededfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddededededededededededededededededededededededededededededededededfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf",
     );
     assert_golden(
         "SaplingCompactTx",
         &sapling_compact_tx(),
-        "010198efffffffffffff0101cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0101dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddededededededededededededededededededededededededededededededededfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf",
+        "0198efffffffffffff01cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc01dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddededededededededededededededededededededededededededededededededfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf",
     );
     assert_golden(
         "CompactOrchardAction",
         &compact_orchard_action(),
-        "01e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
+        "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
     );
     assert_golden(
         "OrchardCompactTx",
         &orchard_compact_tx(),
-        "01018c230000000000000101e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
+        "018c2300000000000001e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3",
     );
 }
 
@@ -394,39 +384,38 @@ fn list_goldens() {
     assert_golden(
         "TxidList",
         &txid_list(),
-        "0102012222222222222222222222222222222222222222222222222222222222222222012323232323232323232323232323232323232323232323232323232323232323",
+        "0222222222222222222222222222222222222222222222222222222222222222222323232323232323232323232323232323232323232323232323232323232323",
     );
     assert_golden(
         "TransparentTxList",
         &transparent_tx_list(),
-        "010201010101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa030000000101406f400100000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000",
+        "020101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0300000001406f400100000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000",
     );
     assert_golden(
         "SaplingTxList",
         &sapling_tx_list(),
-        "010201010198efffffffffffff0101cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0101dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddededededededededededededededededededededededededededededededededfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf00",
+        "02010198efffffffffffff01cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc01dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddededededededededededededededededededededededededededededededededfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdfdf00",
     );
     assert_golden(
         "OrchardTxList",
         &orchard_tx_list(),
-        "01020101018c230000000000000101e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e300",
+        "0201018c2300000000000001e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e300",
     );
 }
 
 #[test]
 fn address_history_goldens() {
-    // `AddrHistRecord` is a version tag wrapping the packed 17-byte
-    // `AddrEventBytes`, which is itself the LMDB `DUP_FIXED` value. The two
-    // goldens differing by exactly one leading tag byte is the invariant.
+    // `AddrHistRecord` and the packed `AddrEventBytes` it becomes, the LMDB
+    // `DUP_FIXED` value, must encode to identical bytes.
     assert_golden(
         "AddrHistRecord",
         &addr_hist_record(),
-        "01010001e2400009000201f877080000000000",
+        "0001e2400009000201f877080000000000",
     );
     assert_golden(
         "AddrEventBytes",
         &AddrEventBytes::from_record(&addr_hist_record()).expect("pack"),
-        "010001e2400009000201f877080000000000",
+        "0001e2400009000201f877080000000000",
     );
 }
 
@@ -435,17 +424,17 @@ fn commitment_tree_goldens() {
     assert_golden(
         "CommitmentTreeRoots",
         &commitment_tree_roots(),
-        "0201010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202010303030303030303030303030303030303030303030303030303030303030303",
+        "01010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202010303030303030303030303030303030303030303030303030303030303030303",
     );
     assert_golden(
         "CommitmentTreeSizes",
         &commitment_tree_sizes(),
-        "020b0000001600000021000000",
+        "0b0000001600000021000000",
     );
     assert_golden(
         "CommitmentTreeData",
         &commitment_tree_data(),
-        "020201010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202010303030303030303030303030303030303030303030303030303030303030303020b0000001600000021000000",
+        "010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020103030303030303030303030303030303030303030303030303030303030303030b0000001600000021000000",
     );
 }
 
@@ -454,13 +443,13 @@ fn metadata_goldens() {
     assert_golden(
         "FinalisedTxOutSetInfoAccumulator",
         &txout_set_accumulator(),
-        "016500000000000000ca000000000000002f010000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a9401000000000000",
+        "6500000000000000ca000000000000002f010000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a9401000000000000",
     );
-    assert_golden("DbVersion", &db_version(), "01010000000300000000000000");
+    assert_golden("DbVersion", &db_version(), "010000000300000000000000");
     assert_golden(
         "DbMetadata",
         &db_metadata(),
-        "01010100000003000000000000007e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
+        "0100000003000000000000007e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
     );
 }
 
@@ -494,43 +483,6 @@ fn fixed_lengths_match_the_encoder() {
     assert_fixed_len("FinalisedTxOutSetInfoAccumulator", &txout_set_accumulator());
     assert_fixed_len("DbVersion", &db_version());
     assert_fixed_len("DbMetadata", &db_metadata());
-}
-
-/// `CommitmentTreeRoots` and `CommitmentTreeData` are fixed-length at v1 and
-/// deliberately variable at v2.
-///
-/// v2 added `ironwood: Option<[u8; 32]>` (NU6.3), so the encoding gained an
-/// option tag and a conditional 32 bytes. `encoded_len` returning `None` is
-/// the trait's way of saying "not fixed-length at this version", and readers
-/// must fall back to the variable-length wrapper. Asserted rather than left
-/// implicit, because the failure mode of getting it wrong — striding a
-/// variable-width table by a fixed width — misreads every row after the first
-/// ironwood-bearing one.
-#[test]
-fn commitment_tree_lengths_are_fixed_at_v1_and_variable_at_v2() {
-    use crate::codec::version;
-
-    assert_eq!(
-        CommitmentTreeRoots::encoded_len(version::V1),
-        Some(64),
-        "v1 roots are two 32-byte digests"
-    );
-    assert_eq!(
-        CommitmentTreeRoots::encoded_len(version::V2),
-        None,
-        "v2 roots carry an optional ironwood root and so are not fixed-length"
-    );
-    assert_eq!(
-        CommitmentTreeData::encoded_len(version::V2),
-        None,
-        "v2 data embeds v2 roots and inherits their variable length"
-    );
-
-    // Sizes stayed fixed across the same upgrade: ironwood added a plain u32,
-    // not an option. The pair diverging here is the whole reason both are
-    // asserted.
-    assert_eq!(CommitmentTreeSizes::encoded_len(version::V1), Some(8));
-    assert_eq!(CommitmentTreeSizes::encoded_len(version::V2), Some(12));
 }
 
 /// `DB_SCHEMA_V1_HASH` must be the BLAKE2b-256 of the schema text it claims

@@ -85,8 +85,6 @@ impl DbV1 {
     /// Fetch the txid bytes for a given TxLocation.
     ///
     /// This uses an optimized lookup without decoding the full TxidList.
-    ///
-    /// NOTE: This method currently ignores the txid version byte for efficiency.
     async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
@@ -108,9 +106,6 @@ impl DbV1 {
             };
             let mut cursor = Cursor::new(raw);
 
-            // Read [0] TxidList Record version (skip 1 byte)
-            cursor.set_position(cursor.position() + 1);
-
             // Read CompactSize: number of txids
             let list_len = CompactSize::read(&mut cursor)
                 .map_err(|e| StoreError::Custom(format!("txid list len error: {e}")))?;
@@ -127,29 +122,11 @@ impl DbV1 {
                 ));
             }
 
-            // Each txid entry is: [0] version tag + [1..32] txid
-
-            // So we skip idx * 33 bytes to reach the start of the correct Hash
-            let transaction_versioned_len = TransactionHash::latest_versioned_len()?;
-            let offset = cursor.position() + (idx as u64) * transaction_versioned_len as u64;
+            // Each txid entry is 32 bytes, so skip the `idx` entries before it
+            let offset = cursor.position() + (idx as u64) * TransactionHash::ENCODED_LEN as u64;
             cursor.set_position(offset);
 
-            // Read [0] Txid Record version (skip 1 byte)
-            cursor.set_position(cursor.position() + 1);
-
-            // Then read 32 bytes for the txid
-            let transaction_encoded_len = TransactionHash::latest_encoded_len()?;
-            if transaction_encoded_len != 32 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "TransactionHash latest encoded length must be 32 bytes, got {}",
-                        transaction_encoded_len
-                    ),
-                ))?;
-            }
-
-            let mut txid_bytes = [0u8; 32];
+            let mut txid_bytes = [0u8; TransactionHash::ENCODED_LEN];
             cursor
                 .read_exact(&mut txid_bytes)
                 .map_err(|e| StoreError::Custom(format!("txid read error: {e}")))?;

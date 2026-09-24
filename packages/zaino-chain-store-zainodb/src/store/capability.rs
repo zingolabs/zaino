@@ -26,8 +26,7 @@
 //!   - `version: DbVersion`
 //!   - `schema_hash: [u8; 32]` (BLAKE2b-256 of schema definition/contract)
 //!
-//! All metadata types in this file implement `ZainoVersionedSerde` and therefore have explicit
-//! on-disk encoding versions.
+//! All metadata types in this file implement `DbCodec`, which encodes them without a version tag.
 //!
 //! ## Trait surface
 //! This file defines:
@@ -68,11 +67,14 @@
 //! 5. Update `DbVersion::capability()` for the version(s) that support it.
 //! 6. Route it through `DbReader` by requesting the new `CapabilityRequest`.
 //!
-//! When changing persisted metadata formats, bump the `ZainoVersionedSerde::VERSION` for that type
-//! and provide a decoding path in `decode_latest()`.
+//! Changing a persisted metadata format is a schema change: bump `DB_VERSION_V1`, and every
+//! existing database rebuilds.
 
 use core::fmt;
 
+use crate::codec::{
+    read_fixed_le, read_u32_le, write_fixed_le, write_u32_le, DbCodec, FixedEncodedLen,
+};
 use crate::error::StoreError;
 use crate::stream::CompactBlockStream;
 use crate::support::SendFut;
@@ -81,10 +83,6 @@ use crate::types::{
     CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
     SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
     TxLocation, TxOutCompact, TxidList,
-};
-use crate::codec::{
-    read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
-    ZainoVersionedSerde,
 };
 use zaino_status::StatusType;
 
@@ -340,8 +338,8 @@ impl From<CapabilityRequest> for Capability {
 /// - and bind the database to an explicit schema contract (`schema_hash`).
 ///
 /// ## Encoding
-/// `DbMetadata` implements [`ZainoVersionedSerde`]. The encoded body is:
-/// - one versioned [`DbVersion`],
+/// `DbMetadata` implements [`DbCodec`]. The encoding is:
+/// - one [`DbVersion`],
 /// - a fixed 32-byte schema hash.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
@@ -381,30 +379,16 @@ impl DbMetadata {
     }
 }
 
-/// Versioned on-disk encoding for the metadata singleton.
-///
-/// Body layout (after the `ZainoVersionedSerde` tag byte):
-/// 1. `DbVersion` (versioned, includes its own tag)
-/// 2. `[u8; 32]` schema hash
-impl ZainoVersionedSerde for DbMetadata {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
+/// On-disk encoding for the metadata singleton: the `DbVersion`, then the 32-byte schema hash.
+impl DbCodec for DbMetadata {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.version.encode(w)?;
+        write_fixed_le::<32, _>(w, &self.schema_hash)
     }
 
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.version.serialize_with_version(&mut *w, 1)?;
-        write_fixed_le::<32, _>(&mut *w, &self.schema_hash)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let version = DbVersion::deserialize(&mut *r)?;
-        let schema_hash = read_fixed_le::<32, _>(&mut *r)?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let version = DbVersion::decode(r)?;
+        let schema_hash = read_fixed_le::<32, _>(r)?;
         Ok(DbMetadata {
             version,
             schema_hash,
@@ -412,17 +396,9 @@ impl ZainoVersionedSerde for DbMetadata {
     }
 }
 
-/// Fixed-length encoding metadata for `DbMetadata`.
-///
-/// v1 consists of:
-/// Body length = `DbVersion::VERSIONED_LEN` (12 + 1) + 32-byte schema hash = 45 bytes.
 impl FixedEncodedLen for DbMetadata {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(45),
-            _ => None,
-        }
-    }
+    /// The record is a `DbVersion` followed by a 32-byte schema hash.
+    const ENCODED_LEN: usize = DbVersion::ENCODED_LEN + 32;
 }
 
 /// Human-readable summary for logs.
@@ -509,31 +485,18 @@ impl DbVersion {
     }
 }
 
-/// Versioned on-disk encoding for database versions.
-///
-/// Body layout (after the tag byte): three little-endian `u32` values:
-/// `major`, `minor`, `patch`.
-impl ZainoVersionedSerde for DbVersion {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+/// On-disk encoding for database versions: `major`, `minor` and `patch` as little-endian `u32`s.
+impl DbCodec for DbVersion {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_u32_le(&mut *w, self.major)?;
         write_u32_le(&mut *w, self.minor)?;
-        write_u32_le(&mut *w, self.patch)
+        write_u32_le(w, self.patch)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let major = read_u32_le(&mut *r)?;
         let minor = read_u32_le(&mut *r)?;
-        let patch = read_u32_le(&mut *r)?;
+        let patch = read_u32_le(r)?;
         Ok(DbVersion {
             major,
             minor,
@@ -542,16 +505,9 @@ impl ZainoVersionedSerde for DbVersion {
     }
 }
 
-/// Fixed-length encoding metadata for `DbVersion`.
-///
-/// v1 consists of *(4-byte u32) = 12 bytes
 impl FixedEncodedLen for DbVersion {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(12),
-            _ => None,
-        }
-    }
+    /// The record is three little-endian `u32` values.
+    const ENCODED_LEN: usize = 12;
 }
 
 /// Formats as `{major}.{minor}.{patch}` for logs and diagnostics.

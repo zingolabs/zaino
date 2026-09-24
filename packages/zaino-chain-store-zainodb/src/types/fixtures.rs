@@ -2,11 +2,11 @@
 
 use core::num::NonZeroU128;
 
+use crate::codec::DbCodec as _;
 use crate::types::{
     AbsoluteChainWork, BlockContext, BlockData, BlockHeaderData, CompactDifficulty,
     EquihashSolution,
 };
-use crate::codec::{version, ZainoVersionedSerde as _};
 
 /// A valid nBits value for test fixtures. Passes zebra's compact difficulty
 /// validation but does not correspond to any specific real-world block.
@@ -42,44 +42,23 @@ pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData<AbsoluteChainWork> 
     BlockHeaderData::new(bctx, bdata)
 }
 
-/// Byte-for-byte expected output of
-/// `canonical_blockheaderdata().to_bytes()` under the current
-/// body-format version (V2).
-///
-/// Assembled from field-labelled pieces so the layout is self-documenting
-/// — each contribution corresponds to exactly one field in the
-/// `BlockHeaderData` -> `PersistentBlockContext` + `BlockData` encoding.
-/// A change in encoder output will be diffed directly against this
-/// reconstruction, and the failing line should point at the offending
-/// field.
-pub(crate) fn expected_v2_bytes() -> Vec<u8> {
-    let mut out = Vec::with_capacity(1565);
-    // Outer BlockHeaderData V2 version tag.
-    out.push(version::V2);
-    // PersistentBlockContext V2 version tag.
-    out.push(version::V2);
-    // BlockHash (hash): V1 tag + 32-byte body.
-    out.push(version::V1);
+/// Byte-for-byte expected output of `canonical_blockheaderdata().to_bytes()`, assembled field by field so a failure points at the offending field.
+pub(crate) fn expected_header_bytes() -> Vec<u8> {
+    let mut out = Vec::with_capacity(1557);
+    // BlockHash (hash): 32 bytes.
     out.extend_from_slice(&[0x01; 32]);
-    // BlockHash (parent_hash): V1 tag + 32-byte body.
-    out.push(version::V1);
+    // BlockHash (parent_hash): 32 bytes.
     out.extend_from_slice(&[0x02; 32]);
-    // AbsoluteChainWork: V1 tag + 32-byte big-endian (value = 0x42, in the low-order 16
-    // bytes). Corrected from little-endian: the established v1 on-disk format is
-    // big-endian (the original `AbsoluteChainWork([u8;32])` via `U256::to_big_endian`,
-    // and the `v1_test_db` fixture) — #1313 wrongly minted this golden LE, which
-    // is exactly a golden enshrining the bug it should have caught.
-    out.push(version::V1);
+    // AbsoluteChainWork: 32-byte big-endian (value = 0x42, in the low-order 16 bytes). The
+    // stored format is big-endian — #1313 once minted this golden little-endian, which is
+    // exactly a golden enshrining the bug it should have caught.
     {
         let mut cw_bytes = [0u8; 32];
         cw_bytes[16..].copy_from_slice(&0x42u128.to_be_bytes());
         out.extend_from_slice(&cw_bytes);
     }
-    // Height: V1 tag + u32 big-endian (value = 42).
-    out.push(version::V1);
+    // Height: u32 big-endian (value = 42).
     out.extend_from_slice(&42u32.to_be_bytes());
-    // BlockData V1 tag.
-    out.push(version::V1);
     // BlockData.version: u32 little-endian (value = 1).
     out.extend_from_slice(&1u32.to_le_bytes());
     // BlockData.time: i64 little-endian (value = 2).
@@ -92,57 +71,29 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
     out.extend_from_slice(&0x2007_ffffu32.to_le_bytes());
     // BlockData.nonce: 32 bytes.
     out.extend_from_slice(&[0x05; 32]);
-    // EquihashSolution: Standard variant tag (0x01) + 0x00 padding byte.
-    out.extend_from_slice(&[0x01, 0x00]);
+    // EquihashSolution: Standard variant tag (0x00).
+    out.push(0x00);
     // EquihashSolution::Standard body: 1344 bytes.
     out.extend_from_slice(&[0x06; 1344]);
     out
 }
 
-/// Golden-bytes guard for the current [`BlockHeaderData`] body-format version.
-///
-/// This is the public observable form of the DB-boundary serde — the V2
-/// `BlockHeaderData` body embeds `PersistentBlockContext` V2 and
-/// `BlockData` V1, preceded by the outer V2 version tag. Failing this test
-/// means a feature-layer change (to `BlockIndex`, `BlockContext`,
-/// `BlockData`, or any nested field type) silently altered the on-disk
-/// encoding.
-///
-/// If such a change is intentional, introduce a new body-format version
-/// (see [`crate::codec::version`]) rather than updating
-/// the expected layout in place — an in-place update is an explicit
-/// compatibility-break acknowledgement.
+/// A failure means a change to `BlockIndex`, `BlockContext`, `BlockData` or a nested field altered the stored header encoding, which forces every database to rebuild.
 #[test]
-fn blockheaderdata_v2_golden_bytes() {
+fn blockheaderdata_golden_bytes() {
     let bheader = canonical_blockheaderdata();
-    let actual = bheader.to_bytes().expect("v2 to_bytes");
+    let actual = bheader.to_bytes().expect("to_bytes");
     assert_eq!(
         actual,
-        expected_v2_bytes(),
-        "BlockHeaderData V2 encoding drifted. \
-         If intentional, introduce a new body-format version rather than \
-         updating `expected_v2_bytes` in place."
+        expected_header_bytes(),
+        "BlockHeaderData encoding drifted; if intentional, bump the schema version"
     );
 }
 
 #[test]
-fn blockheaderdata_v1_v2_serde() {
+fn blockheaderdata_round_trips() {
     let bheader = canonical_blockheaderdata();
-
-    // Produce v1 bytes using the versioned encode API (tag + body).
-    let v1_bytes = bheader
-        .to_bytes_with_version(version::V1)
-        .expect("v1 to_bytes_with_version");
-
-    // Parse v1 bytes — should succeed and round-trip.
-    let parsed_v1 = BlockHeaderData::from_bytes(&v1_bytes).expect("decode v1 BlockHeaderData");
-    assert_eq!(parsed_v1, bheader);
-
-    // Now round-trip v2 (current writer). BlockHeaderData::to_bytes() writes V2.
-    let v2_bytes = bheader.to_bytes().expect("v2 to_bytes");
-    let parsed_v2 = BlockHeaderData::from_bytes(&v2_bytes).expect("decode v2 BlockHeaderData");
-    assert_eq!(parsed_v2, bheader);
-
-    // sanity: v1 and v2 encodings must differ
-    assert_ne!(v1_bytes, v2_bytes, "v1 and v2 encodings should differ");
+    let bytes = bheader.to_bytes().expect("to_bytes");
+    let parsed = BlockHeaderData::from_bytes(&bytes).expect("decode BlockHeaderData");
+    assert_eq!(parsed, bheader);
 }

@@ -959,7 +959,7 @@ impl DbV1 {
     /// a tx's outputs live in one height entry). Sharding bounds the in-memory spent set; partials
     /// recombine exactly.
     ///
-    /// The range-seek matters: `spent` keys are sorted and the version tag is constant, so a shard's
+    /// The range-seek matters: `spent` keys are sorted by their txid's first byte, so a shard's
     /// first-byte range `[lo, hi)` is one contiguous key range. Seeking to it (rather than scanning
     /// the whole table and filtering) makes the total spent-table work O(N) across all shards instead
     /// of O(shards·N) — at maximal sharding (256) that is the difference between one sweep and 256
@@ -1107,10 +1107,10 @@ impl DbV1 {
         let txn = self.env.begin_ro_txn()?;
 
         // (1) Spent outpoints in this shard. The `spent` key is `Outpoint::to_bytes()` =
-        //     `[version tag][32-byte prev_txid][4-byte index]`, so the prev-txid's first byte
-        //     (which equals the creating txid's first byte) is at index 1. Because the keys are
-        //     sorted and the version tag is constant, the shard's keys form one contiguous range;
-        //     seek to its start and stop once we pass `hi` rather than scanning the whole table.
+        //     `[32-byte prev_txid][4-byte index]`, so the prev-txid's first byte (which equals the
+        //     creating txid's first byte) is at index 0. Because the keys are sorted, the shard's
+        //     keys form one contiguous range; seek to its start and stop once we pass `hi` rather
+        //     than scanning the whole table.
         let mut spent_set: HashSet<Box<[u8]>> = HashSet::new();
         {
             let mut shard_start_outpoint = [0u8; 32];
@@ -1133,14 +1133,14 @@ impl DbV1 {
                 Err(error) => return Err(StoreError::LmdbError(error)),
             };
             while let Some(key_bytes) = next {
-                if key_bytes.len() >= 2 {
+                if let Some(&first_byte) = key_bytes.first() {
                     // Sorted keys: once the first byte reaches `hi` we are past this shard.
-                    if key_bytes[1] as u16 >= hi {
+                    if first_byte as u16 >= hi {
                         break;
                     }
                     // The seek guarantees `>= lo` for well-formed keys; re-check defensively so a
-                    // stray shorter/foreign key can never leak into the wrong shard.
-                    if in_shard(key_bytes[1]) {
+                    // stray foreign key can never leak into the wrong shard.
+                    if in_shard(first_byte) {
                         // Hard cap: bail out before the set can exceed the budget; the caller splits
                         // this range and retries the (smaller) halves.
                         if spent_set.len() as u64 >= max_spent_entries {
