@@ -92,6 +92,9 @@ pub trait ZcashService: Sized + Status {
     /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
 
+    /// Returns whether the index has synced far enough to be served.
+    fn is_synced(&self) -> bool;
+
     /// Shuts down the StateService.
     fn close(&mut self);
 }

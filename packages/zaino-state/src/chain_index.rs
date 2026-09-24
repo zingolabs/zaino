@@ -674,6 +674,8 @@ pub struct NodeBackedChainIndex<
     network: ZebraNetwork,
     source: Source,
     sync_timings: SyncTimings,
+    /// Latched the first time the finalised state reaches the finalised floor, after which the index may be served.
+    synced: Arc<std::sync::atomic::AtomicBool>,
     /// Signals the sync worker to exit cooperatively. `shutdown()` fires
     /// `cancel_token.cancel()` *before* tearing down `finalized_db`, so the
     /// worker wakes from any in-flight `tokio::time::sleep` and returns
@@ -850,6 +852,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
             network: config.network.clone(),
             source,
             sync_timings,
+            synced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cancel_token,
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
@@ -924,6 +927,11 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         self.finalized_db.is_building()
     }
 
+    /// Returns whether the finalised state has reached the finalised floor, so the index may be served.
+    pub fn is_synced(&self) -> bool {
+        self.synced.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Displays the status of the chain_index
     pub fn status(&self) -> StatusType {
         combine_component_statuses(
@@ -943,6 +951,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         let block_wake_signal = self.block_wake_signal.clone();
         let coherence = self.coherence.subscriber();
         let timings = self.sync_timings;
+        let synced = Arc::clone(&self.synced);
         let cancel_token = self.cancel_token.clone();
 
         tokio::task::spawn(async move {
@@ -1012,6 +1021,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                     chain_store::build_to(fs.as_ref(), finalised_height)
                         .await
                         .map_err(source_error)?;
+                    if !fs.is_building() && !synced.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                        info!(
+                            finalised_height = finalised_height.0,
+                            "finalised state reached the finalised floor; the index may be served"
+                        );
+                    }
 
                     if last_woken_height != Some(chain_height.0) {
                         last_woken_height = Some(chain_height.0);

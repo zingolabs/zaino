@@ -24,8 +24,22 @@ pub struct Indexer<Service: ZcashService + LightWalletService> {
     json_server: Option<JsonRpcServer>,
     /// GRPC server.
     server: Option<TonicServer>,
+    /// The listener settings held back until the index has synced, or `None` once the listeners are bound.
+    pending_listeners: Option<PendingListeners>,
     /// Chain fetch service state process handler..
     service: Option<IndexerService<Service>>,
+}
+
+/// The gRPC and JSON-RPC listener settings, with any sockets a test harness bound in advance.
+struct PendingListeners {
+    /// The JSON-RPC server settings, or `None` when the JSON-RPC server is disabled.
+    json_server_settings: Option<zaino_serve::server::config::JsonRpcServerConfig>,
+    /// The gRPC server settings.
+    grpc_config: GrpcServerConfig,
+    /// A gRPC socket bound in advance by a test harness.
+    grpc_listener: Option<std::net::TcpListener>,
+    /// A JSON-RPC socket bound in advance by a test harness.
+    json_listener: Option<std::net::TcpListener>,
 }
 
 /// Starts Indexer service.
@@ -133,49 +147,23 @@ where
         let service = IndexerService::<Service>::spawn(service_config).await?;
         let service_subscriber = service.inner_ref().get_subscriber();
 
-        let json_server = match indexer_config.json_server_settings {
-            Some(json_server_config) => Some(match json_listener {
-                #[cfg(feature = "test_dependencies")]
-                Some(listener) => JsonRpcServer::spawn_from_listener(
-                    service.inner_ref().get_subscriber(),
-                    json_server_config,
-                    listener,
-                )
-                .await
-                .unwrap(),
-                _ => JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
-                    .await
-                    .unwrap(),
-            }),
-            None => None,
-        };
-
-        let grpc_config = GrpcServerConfig {
-            listen_address: indexer_config.grpc_settings.listen_address,
-            tls: indexer_config.grpc_settings.tls,
-        };
-        let grpc_server = match grpc_listener {
-            #[cfg(feature = "test_dependencies")]
-            Some(listener) => TonicServer::spawn_from_listener_with_routes(
-                |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
-                grpc_config,
-                listener,
-            )
-            .await
-            .unwrap(),
-            _ => TonicServer::spawn_with_routes(
-                |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
-                grpc_config,
-            )
-            .await
-            .unwrap(),
+        let pending_listeners = PendingListeners {
+            json_server_settings: indexer_config.json_server_settings,
+            grpc_config: GrpcServerConfig {
+                listen_address: indexer_config.grpc_settings.listen_address,
+                tls: indexer_config.grpc_settings.tls,
+            },
+            grpc_listener,
+            json_listener,
         };
 
         let mut indexer = Self {
-            json_server,
-            server: Some(grpc_server),
+            json_server: None,
+            server: None,
+            pending_listeners: Some(pending_listeners),
             service: Some(service),
         };
+        info!("serving nothing until the finalised state reaches the finalised floor");
 
         let mut server_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
         let mut last_log_time = Instant::now();
@@ -188,6 +176,11 @@ where
                 // Every tick (100ms): the heartbeat `/livez` answers from
                 #[cfg(feature = "prometheus")]
                 crate::admin::heartbeat();
+
+                if let Err(error) = indexer.bind_listeners_once_synced().await {
+                    indexer.close().await;
+                    return Err(error);
+                }
 
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
@@ -221,6 +214,62 @@ where
         });
 
         Ok((serve_task, service_subscriber.inner()))
+    }
+
+    /// Binds the gRPC and JSON-RPC listeners once the index has synced, and does nothing before that or after they are bound.
+    async fn bind_listeners_once_synced(&mut self) -> Result<(), IndexerError> {
+        let Some(service) = &self.service else {
+            return Ok(());
+        };
+        if !service.inner_ref().is_synced() {
+            return Ok(());
+        }
+        let Some(pending) = self.pending_listeners.take() else {
+            return Ok(());
+        };
+
+        self.json_server = match pending.json_server_settings {
+            Some(json_server_config) => Some(match pending.json_listener {
+                #[cfg(feature = "test_dependencies")]
+                Some(listener) => {
+                    JsonRpcServer::spawn_from_listener(
+                        service.inner_ref().get_subscriber(),
+                        json_server_config,
+                        listener,
+                    )
+                    .await?
+                }
+                _ => {
+                    JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
+                        .await?
+                }
+            }),
+            None => None,
+        };
+
+        self.server = Some(match pending.grpc_listener {
+            #[cfg(feature = "test_dependencies")]
+            Some(listener) => {
+                TonicServer::spawn_from_listener_with_routes(
+                    |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
+                    pending.grpc_config,
+                    listener,
+                )
+                .await?
+            }
+            _ => {
+                TonicServer::spawn_with_routes(
+                    |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
+                    pending.grpc_config,
+                )
+                .await?
+            }
+        });
+
+        #[cfg(feature = "prometheus")]
+        crate::admin::mark_ready();
+        info!("index synced; gRPC and JSON-RPC listeners bound");
+        Ok(())
     }
 
     /// Checks indexers status and servers internal statuses for either offline of critical error signals.
@@ -286,9 +335,10 @@ where
             .as_ref()
             .map(|json_server| json_server.status());
 
-        let mut server_status = match &self.server {
-            Some(server) => server.status(),
-            None => return 7,
+        let mut server_status = match (&self.server, &self.pending_listeners) {
+            (Some(server), _) => server.status(),
+            (None, Some(_)) => StatusType::Syncing,
+            (None, None) => return 7,
         };
 
         if let Some(json_status) = json_server_status {

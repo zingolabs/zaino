@@ -128,6 +128,10 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>;
     type Config = NodeBackedIndexerServiceConfig;
 
+    fn is_synced(&self) -> bool {
+        self.indexer.is_synced()
+    }
+
     /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.
     #[instrument(name = "NodeBackedIndexerService::spawn", skip(config), fields(network = %config.common.network))]
     async fn spawn(

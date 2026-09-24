@@ -64,6 +64,7 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
                             {
                                 crate::metrics::record_restart();
                                 crate::admin::clear_heartbeat();
+                                crate::admin::clear_ready();
                             }
                             continue;
                         }

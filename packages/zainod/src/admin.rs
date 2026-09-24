@@ -1,13 +1,17 @@
-//! Admin surface: `/metrics`, `/livez`, on a runtime of its own.
+//! Admin surface: `/metrics`, `/livez`, `/readyz`, on a runtime of its own.
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/readyz` TODO: per-component `ComponentStatus` (see `usage.md`)
+//! - `/readyz` answers 200 once the index has synced and the gRPC and JSON-RPC listeners are
+//!   bound, and 503 before that; per-component `ComponentStatus` is still TODO (see `usage.md`)
 
 use std::{
     convert::Infallible,
     net::SocketAddr,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     time::{Duration, Instant},
 };
 
@@ -33,6 +37,19 @@ const MAX_CONNECTIONS: usize = 32;
 const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
 
 static HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Whether the index has synced and its gRPC and JSON-RPC listeners are bound.
+static READY: AtomicBool = AtomicBool::new(false);
+
+/// Called once the index has synced and its listeners are bound.
+pub(crate) fn mark_ready() {
+    READY.store(true, Ordering::Release);
+}
+
+/// Called on a supervisor restart, whose new indexer serves nothing until it syncs again.
+pub(crate) fn clear_ready() {
+    READY.store(false, Ordering::Release);
+}
 
 /// Called by the indexer loop every tick
 pub(crate) fn heartbeat() {
@@ -103,7 +120,7 @@ async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
         Ok(listener) => listener,
         Err(e) => return error!(%e, "admin listener failed to register with its runtime"),
     };
-    info!(endpoint = ?endpoint, "admin endpoint started: /metrics, /livez");
+    info!(endpoint = ?endpoint, "admin endpoint started: /metrics, /livez, /readyz");
 
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -169,6 +186,14 @@ async fn route(
                 "unavailable".to_string(),
             ),
         },
+        "/readyz" => match READY.load(Ordering::Acquire) {
+            true => body(StatusCode::OK, PLAIN_CONTENT_TYPE, "ready".to_string()),
+            false => body(
+                StatusCode::SERVICE_UNAVAILABLE,
+                PLAIN_CONTENT_TYPE,
+                "syncing".to_string(),
+            ),
+        },
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
     }
 }
@@ -194,7 +219,7 @@ mod tests {
 
     /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing
     #[tokio::test]
-    async fn the_admin_surface_answers_metrics_and_livez() {
+    async fn the_admin_surface_answers_metrics_livez_and_readyz() {
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, || {
@@ -239,7 +264,14 @@ mod tests {
             "{metrics}"
         );
         assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
-        assert!(get("/readyz").await.starts_with("HTTP/1.1 404"));
+
+        clear_ready();
+        let syncing = get("/readyz").await;
+        assert!(syncing.starts_with("HTTP/1.1 503"), "{syncing}");
+        mark_ready();
+        let ready = get("/readyz").await;
+        assert!(ready.starts_with("HTTP/1.1 200"), "{ready}");
+        assert!(get("/unknown").await.starts_with("HTTP/1.1 404"));
     }
 
     /// A port held by another socket fails the bind with an error that names the endpoint.

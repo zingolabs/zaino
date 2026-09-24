@@ -199,3 +199,24 @@ async fn tip_converges_after_burst_mine() {
     let indexer_tip = u32::from(index_reader.snapshot_nonfinalized_state().best_tip().height);
     assert_eq!(indexer_tip, expected_tip);
 }
+
+/// The index reports itself synced once the finalised state holds its floor, which is what lets zainod bind its listeners.
+// multi_thread required: the store's reads call `block_in_place`, which panics on current-thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_index_is_synced_once_the_finalised_state_reaches_its_floor() {
+    let (_blocks, indexer, _index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    super::poll::poll_until(
+        "chain index to report itself synced",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async { indexer.is_synced().then_some(()) },
+    )
+    .await;
+
+    assert!(
+        !indexer.finalised_state_is_building(),
+        "a synced index has no finalised build in progress"
+    );
+}
