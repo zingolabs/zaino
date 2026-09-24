@@ -469,6 +469,32 @@ mod hash_schema {
         );
     }
 
+    /// An item moved from one section to another must change the hash, so the stream carries section boundaries and not only item boundaries.
+    #[test]
+    fn moving_an_item_between_sections_changes_the_hash() {
+        let flagged = Table {
+            name: "b",
+            flags: DatabaseFlags::DUP_SORT,
+        };
+        let as_table = hash_schema(&[], &[flagged], &[], &[]);
+        let as_encoding = hash_schema(
+            &[("b", DatabaseFlags::DUP_SORT.bits().to_le_bytes().to_vec())],
+            &[],
+            &[],
+            &[],
+        );
+        assert_ne!(as_table, as_encoding);
+    }
+
+    /// The spendability rule and the accumulator's entry digest are hash inputs, so a change to either rebuilds the database without anyone remembering an epoch.
+    #[test]
+    fn the_spendability_rule_and_the_entry_digest_are_inputs() {
+        let inputs = schema_inputs().expect("every canonical record encodes");
+        let names: Vec<&str> = inputs.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains(&"SpendabilityByScriptType"), "{names:?}");
+        assert!(names.contains(&"TxOutSetEntryDigest"), "{names:?}");
+    }
+
     #[test]
     fn moving_bytes_between_adjacent_items_changes_the_hash() {
         // Without length prefixes, ("ab", "c") and ("a", "bc") would hash the same stream.

@@ -342,6 +342,11 @@ async fn a_database_written_by_another_schema_is_rebuilt_empty() {
         backend.get_metadata().await.unwrap(),
         DbMetadata::new(schema::schema_hash().expect("every canonical record encodes"))
     );
+    assert_eq!(
+        stale_dirs(&db_path),
+        vec!["v1.stale-unreadable".to_string()],
+        "a metadata row this build cannot decode is unreadable, not a database under another hash"
+    );
 }
 
 /// A persistent regtest store rooted in a fresh temporary directory, and that directory.
