@@ -166,7 +166,7 @@ impl DbV1 {
         })
     }
 
-    /// [`DbV1::read_row`] at a height that is first confirmed to be stored.
+    /// [`DbV1::read_row`] keyed by `height`, where an absent row means the caller's table has none there and the caller has established whether the height is stored.
     pub(super) async fn read_row_at_height<T: DbCodec>(
         &self,
         table: lmdb::Database,

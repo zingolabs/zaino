@@ -586,6 +586,11 @@ impl DbV1 {
 
             match txn.get(self.metadata, &METADATA_KEY) {
                 Ok(raw_bytes) => {
+                    // A row of another length is another build's layout, whatever its first
+                    // 32 bytes decode to; the codec reads a prefix and ignores the rest.
+                    if raw_bytes.len() != DbMetadata::ENCODED_LEN {
+                        return Ok(SchemaCheck::Unreadable);
+                    }
                     return Ok(match DbMetadata::from_bytes(raw_bytes) {
                         Ok(stored) if stored == this_build => SchemaCheck::Matches,
                         Ok(stored) => SchemaCheck::Differs {

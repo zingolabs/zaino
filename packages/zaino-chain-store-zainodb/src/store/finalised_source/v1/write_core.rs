@@ -1281,7 +1281,7 @@ impl DbV1 {
         let mut txn = self.env.begin_rw_txn()?;
 
         // Seed the continuity chain from the current on-disk tip (genesis if empty).
-        let (mut prev_height, mut prev_hash): (Option<u32>, Option<BlockHash>) = {
+        let mut prev: Option<(u32, BlockHash)> = {
             let cursor = txn.open_ro_cursor(self.headers)?;
             match cursor.get(None, None, lmdb_sys::MDB_LAST) {
                 Ok((last_height_bytes, last_header_bytes)) => {
@@ -1293,9 +1293,9 @@ impl DbV1 {
                             .map_err(|e| {
                                 StoreError::Custom(format!("tip header decode error: {e}"))
                             })?;
-                    (Some(last_height.0), Some(*tip_header.context.hash()))
+                    Some((last_height.0, *tip_header.context.hash()))
                 }
-                Err(lmdb::Error::NotFound) => (None, None),
+                Err(lmdb::Error::NotFound) => None,
                 Err(e) => return Err(StoreError::LmdbError(e)),
             }
         };
@@ -1311,20 +1311,18 @@ impl DbV1 {
             let block_height_bytes = block_height.to_bytes()?;
 
             // Continuity: height = prev + 1 and parent extends the current tip (genesis if empty).
-            match prev_height {
-                Some(tip) => {
+            match prev {
+                Some((tip, tip_hash)) => {
                     if block_height.0 != tip + 1 {
                         return Err(StoreError::Custom(format!(
                             "cannot write block at height {block_height:?}; current tip is {tip}"
                         )));
                     }
-                    if Some(*block.context.parent_hash()) != prev_hash {
+                    if *block.context.parent_hash() != tip_hash {
                         return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
-                            tip: prev_hash.ok_or_else(|| {
-                                StoreError::Custom("the stored tip has a height but no hash".into())
-                            })?,
+                            tip: tip_hash,
                         });
                     }
                 }
@@ -1419,8 +1417,7 @@ impl DbV1 {
                 &entries.commitment_tree_entry.to_bytes()?,
             )?;
 
-            prev_height = Some(block_height.0);
-            prev_hash = Some(block_hash);
+            prev = Some((block_height.0, block_hash));
         }
 
         // Insert the random-keyed indexes in ascending key order so the B-tree is swept

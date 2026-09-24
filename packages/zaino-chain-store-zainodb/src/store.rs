@@ -46,9 +46,10 @@
 //! # On-disk layout and schema identity
 //!
 //! The database lives in `<path>/<network>/v1/`. Its `metadata` record holds the schema hash of
-//! the build that created it, computed from the canonical encodings, the tables, and the enabled
-//! index features. There are no migrations: when the stored hash differs from this build's,
-//! `spawn` moves the database directory aside and resyncs from the validator.
+//! the build that created it, computed from the canonical encodings, the tables, the enabled
+//! index features, the enum tags, and the write rules. There are no migrations: when the stored
+//! hash is not this build's, `spawn` moves the database directory aside (`v1.stale-*`) and
+//! resyncs from the validator.
 //!
 //! # Core API and invariants
 //!

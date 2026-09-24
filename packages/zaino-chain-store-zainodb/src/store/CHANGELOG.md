@@ -41,8 +41,9 @@ API / capabilities
   - Changed: <semantic changes, error mapping changes>
 
 Rebuild
-- Every schema hash change deletes existing databases on their next start and
-  resyncs them from the validator; there are no migrations.
+- Every schema hash change moves an existing database aside (`v1.stale-*`) on
+  its next start and resyncs from the validator; there are no migrations and
+  nothing is deleted.
 
 Bug Fixes / Optimisations
 
@@ -503,18 +504,22 @@ Behaviour change
   unsupported database version.
 
 --------------------------------------------------------------------------------
-SCHEMA HASH e0757a13, or fccdd24e with address history (from v1.3.0)
+SCHEMA HASH b5c3a7e5, or 8518ecd8 with address history (from v1.3.0)
 Date: 2026-09-23
 --------------------------------------------------------------------------------
 
 Summary
-- Database migrations are removed. A database whose stored metadata differs
-  from the running build's, or cannot be decoded, is deleted and resynced from
-  the validator on start. Upgrades and downgrades take the same path.
+- Database migrations are removed. A database whose stored metadata carries
+  another schema hash is moved aside to `v1.stale-<first four bytes of that
+  hash>`, and one whose metadata this build cannot decode to
+  `v1.stale-unreadable`; the store then resyncs from the validator. Nothing
+  is deleted, and a stale directory that already exists stops the start.
+  Upgrades and downgrades take the same path.
 - The schema version and the hand-maintained schema text are removed. The
   store computes its schema hash from the canonical encoding of every stored
-  type, every table name and its flags, the singleton keys, and the enabled
-  index features.
+  type, every table name and its flags, the singleton keys, the enabled index
+  features, `ScriptType`'s tag list, the spendability verdict per tag, the
+  txout-set entry digest over the canonical output, and a hand-bumped epoch.
 
 On-disk schema
 - Encoding:
