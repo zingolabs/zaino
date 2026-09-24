@@ -48,14 +48,11 @@ use crate::txout_set::TxOutSetAccumulator;
 /// *this* consumer; `zaino-source` should not have to know who its consumers
 /// are, so the list lives here rather than there.
 ///
-/// Four questions, and the list is derived from what the implementation
+/// Three questions, and the list is derived from what the implementation
 /// actually calls rather than from what a store might plausibly want:
 ///
 /// - the chain tip, to know how far there is to build;
 /// - blocks by height, to build from;
-/// - blocks by hash, and transactions, which only the passthrough mode needs —
-///   a store configured to hold nothing answers reads from the validator, and
-///   so asks questions a building store never does;
 /// - commitment tree roots, which are not derivable from a block alone.
 ///
 /// Blocks are asked for parsed rather than raw. A store that took bytes would
@@ -67,9 +64,7 @@ use crate::txout_set::TxOutSetAccumulator;
 pub trait ChainStoreSource:
     zaino_source::OneShotGetBestBlockHeight
     + zaino_source::OneShotGetBlock
-    + zaino_source::OneShotGetBlockByHash
     + zaino_source::OneShotGetCommitmentTreeRoots
-    + zaino_source::OneShotGetTransaction
     + Send
     + Sync
     + 'static
@@ -79,9 +74,7 @@ pub trait ChainStoreSource:
 impl<T> ChainStoreSource for T where
     T: zaino_source::OneShotGetBestBlockHeight
         + zaino_source::OneShotGetBlock
-        + zaino_source::OneShotGetBlockByHash
         + zaino_source::OneShotGetCommitmentTreeRoots
-        + zaino_source::OneShotGetTransaction
         + Send
         + Sync
         + 'static

@@ -225,9 +225,9 @@ pub trait BlockchainSource:
         &self,
     ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::BlockchainInfo>>;
 
-    // ********** Node-passthrough methods **********
+    // ********** Node-forwarding methods **********
     //
-    // These have no local-index equivalent and always proxy to the backing validator's
+    // These have no local-index equivalent and always forward to the backing validator's
     // JSON-RPC interface.
 
     /// Returns the `getinfo` response.
@@ -235,13 +235,6 @@ pub trait BlockchainSource:
 
     /// Returns the `getpeerinfo` response.
     fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<Vec<PeerInfo>>>;
-
-    /// Returns the validator's `getchaintips` response. Serves as the
-    /// `getchaintips` fallback while the local index is still building its
-    /// finalised state and has no non-finalised snapshot to answer from.
-    fn get_chain_tips(
-        &self,
-    ) -> impl SendFut<BlockchainSourceResult<Vec<zaino_primitives::types::rpc::ChainTip>>>;
 
     /// Returns the `getblocksubsidy` response at the given height.
     fn get_block_subsidy(&self, height: u32) -> impl SendFut<BlockchainSourceResult<BlockSubsidy>>;
@@ -276,14 +269,6 @@ pub trait BlockchainSource:
         &self,
         raw_transaction_hex: String,
     ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::TransactionId>>;
-
-    /// Returns the full `z_gettreestate` response for the given hash-or-height string.
-    ///
-    /// Node-passthrough fallback for treestates not locally serviceable by the index.
-    fn get_treestate_by_id(
-        &self,
-        hash_or_height: String,
-    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::Treestate>>;
 
     /// Returns the sapling and orchard treestate by hash
     fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;

@@ -47,8 +47,7 @@ pub trait WithChainStoreSource: BlockchainSource {
 ///
 /// Both bounds are load-bearing and neither implies the other.
 /// `ChainIndexSourcePorts` names what ChainIndex asks — which includes the
-/// *raw* block ports, because it hands bytes to callers — and supplies
-/// `GetTransaction`, which only the store's passthrough mode needs.
+/// *raw* block ports, because it hands bytes to callers.
 /// `ChainHeadBlockSource` supplies the parsed block reads. Naming the second
 /// here is not a chain-head dependency: it is the shortest way to say "this
 /// validator parses blocks", and the store's own requirement is stated by

@@ -868,34 +868,6 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         ))
     }
 
-    async fn get_treestate_by_id(
-        &self,
-        hash_or_height: String,
-    ) -> BlockchainSourceResult<zaino_primitives::types::Treestate> {
-        // The scaffolding takes an unparsed identifier; the port takes one or
-        // the other, so it is resolved here.
-        //
-        // `final_root` stays absent on this path, unlike `get_treestate`: this
-        // is the validator-passthrough fallback and no roots read accompanies
-        // it, matching Zebra, whose own type documents the field as unused.
-        match hash_or_height.parse::<u32>() {
-            Ok(height) => self
-                .validator
-                .get_treestate(domain_height(height)?)
-                .await
-                .map_err(err),
-            Err(_) => {
-                let hash = zaino_primitives::types::BlockHash::from(parse_display_hash32(
-                    &hash_or_height,
-                )?);
-                self.validator
-                    .get_treestate_by_hash(hash)
-                    .await
-                    .map_err(err)
-            }
-        }
-    }
-
     async fn get_subtree_roots(
         &self,
         pool: super::ShieldedPool,
@@ -935,7 +907,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         ))
     }
 
-    // ***** Node passthrough *****
+    // ***** Node forwarding *****
     //
     // These forward validator-local facts that Zaino has no opinion about. The
     // ports model them as typed data rather than opaque JSON, so each method
@@ -949,12 +921,6 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         &self,
     ) -> BlockchainSourceResult<Vec<zaino_primitives::types::rpc::PeerInfo>> {
         self.validator.get_peer_info().await.map_err(err)
-    }
-
-    async fn get_chain_tips(
-        &self,
-    ) -> BlockchainSourceResult<Vec<zaino_primitives::types::rpc::ChainTip>> {
-        self.validator.get_chain_tips().await.map_err(err)
     }
 
     async fn get_mining_info(

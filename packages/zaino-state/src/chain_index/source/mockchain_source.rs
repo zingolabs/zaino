@@ -1449,17 +1449,6 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
 // the vectors would have to be extended to serve these, and the panic names
 // what is missing rather than inventing a plausible value.
 
-impl zaino_source::OneShotGetTreestate for MockchainSource {
-    async fn get_treestate(
-        &self,
-        _height: domain::Height,
-    ) -> Result<domain::Treestate, PortError<zaino_source::GetTreestateError>> {
-        // The `z_get_treestate` local path serves the mock by hash; the
-        // node-passthrough fallback is never reached.
-        unimplemented!("MockchainSource cannot serve the get_treestate_by_id passthrough")
-    }
-}
-
 impl zaino_source::OneShotGetBlockchainInfo for MockchainSource {
     async fn get_blockchain_info(
         &self,
