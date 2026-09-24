@@ -406,6 +406,64 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
     }
 }
 
+/// The env var that activates the mainnet **Rpc** fixture (only with the
+/// `ztest-fixture` feature). Its presence — any value — triggers it.
+///
+/// The Rpc analogue of [`MAINNET_STATE_FIXTURE_ENV`]: it boots the greenfield
+/// daemon against the validator's JSON-RPC alone (no on-disk state DB), so the
+/// RPC source adapter can be exercised under a real deploy. When both this and
+/// [`MAINNET_STATE_FIXTURE_ENV`] are set, the Direct/state fixture wins (see the
+/// boot wiring in `lib.rs`) — set only one.
+#[cfg(feature = "ztest-fixture")]
+pub const MAINNET_RPC_FIXTURE_ENV: &str = "ZAINO_MAINNET_RPC_FIXTURE";
+
+/// TEST/DEPLOY-ONLY: a mainnet **Rpc** [`DaemonConfig`] built entirely from
+/// env-supplied topology, for booting the greenfield daemon against the
+/// validator's JSON-RPC only (no state DB) — the Rpc counterpart of
+/// [`mainnet_direct_state_fixture`]. It keeps the SAME store path so an Rpc-mode
+/// deploy reuses an existing index PVC (the index is source-agnostic) rather than
+/// reindexing.
+///
+/// Topology arrives by env so one image serves any cluster:
+/// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`.
+/// - [`TEST_FIXTURE_STORE_ENV`]: the writable FS-store directory.
+/// - [`TEST_FIXTURE_MAP_SIZE_ENV`]: the LMDB map size in GiB (store ceiling).
+///
+/// The serving policy (mainnet, reorg-margin finalised depth, gRPC on
+/// `0.0.0.0:8137`) is baked. NEVER for production: gated behind BOTH the
+/// `ztest-fixture` build feature and the runtime env var, with a loud warning on
+/// activation.
+#[cfg(feature = "ztest-fixture")]
+pub fn mainnet_rpc_fixture() -> DaemonConfig {
+    let jsonrpc_address = std::env::var(TEST_FIXTURE_JSONRPC_ENV)
+        .unwrap_or_else(|_| "zebra.golden-zebra-state.svc:8232".to_string());
+    let store_path = std::env::var_os(TEST_FIXTURE_STORE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/home/zaino/.cache/zaino/store"));
+    let map_size_gb = std::env::var(TEST_FIXTURE_MAP_SIZE_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(MAINNET_FIXTURE_MAP_SIZE_GB);
+    DaemonConfig {
+        network: Network::Mainnet,
+        metrics_endpoint: None,
+        source: SourceMode::Rpc {
+            jsonrpc_address,
+            cookie_path: None,
+            user: None,
+            password: None,
+        },
+        store: StoreConfig {
+            path: store_path,
+            map_size_gb,
+        },
+        serve: ServeConfig {
+            grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
+        },
+        indexer: IndexerConfig::default(),
+    }
+}
+
 /// Serialize the built-in defaults into a commented example config file.
 pub fn generate_default_config() -> Result<String, IndexerError> {
     let toml = toml::to_string_pretty(&DaemonConfig::default())
@@ -578,5 +636,50 @@ path = "/tmp/zaino-store"
 "#;
         let path = write(&dir, "bogus.toml", toml);
         assert!(load_config(&path).is_err());
+    }
+
+    /// The mainnet Rpc fixture is a mainnet, Rpc-source config with the baked
+    /// serving policy and the default (unset) JSON-RPC endpoint. nextest runs each
+    /// test in its own process, so the endpoint env var does not leak.
+    #[cfg(feature = "ztest-fixture")]
+    #[test]
+    fn mainnet_rpc_fixture_is_a_mainnet_rpc_config() {
+        std::env::remove_var(super::TEST_FIXTURE_JSONRPC_ENV);
+        let config = super::mainnet_rpc_fixture();
+        assert_eq!(config.network, Network::Mainnet);
+        match config.source {
+            SourceMode::Rpc {
+                jsonrpc_address,
+                cookie_path,
+                user,
+                password,
+            } => {
+                assert_eq!(jsonrpc_address, "zebra.golden-zebra-state.svc:8232");
+                assert!(cookie_path.is_none() && user.is_none() && password.is_none());
+            }
+            other => panic!("expected Rpc source, got {other:?}"),
+        }
+        // Serving policy is baked; store path matches the Direct fixture so an
+        // Rpc-mode deploy reuses the same index PVC.
+        assert_eq!(
+            config.serve.grpc_listen_address,
+            "0.0.0.0:8137".parse().expect("valid addr"),
+        );
+        assert_eq!(config.store.path, super::mainnet_direct_state_fixture().store.path);
+    }
+
+    /// The endpoint env override reaches the Rpc fixture.
+    #[cfg(feature = "ztest-fixture")]
+    #[test]
+    fn mainnet_rpc_fixture_takes_the_endpoint_env() {
+        std::env::set_var(super::TEST_FIXTURE_JSONRPC_ENV, "zebra.example.svc:8232");
+        let config = super::mainnet_rpc_fixture();
+        std::env::remove_var(super::TEST_FIXTURE_JSONRPC_ENV);
+        match config.source {
+            SourceMode::Rpc { jsonrpc_address, .. } => {
+                assert_eq!(jsonrpc_address, "zebra.example.svc:8232")
+            }
+            other => panic!("expected Rpc source, got {other:?}"),
+        }
     }
 }
