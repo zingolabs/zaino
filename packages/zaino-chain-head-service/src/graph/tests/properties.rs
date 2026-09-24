@@ -1,12 +1,14 @@
 //! Random move sequences on a [`ChainGraph`](crate::graph::ChainGraph),
 //! checked against a model.
 //!
-//! The model is the plain reading of each move: the canonical chain is a list
-//! that grows by extension and shrinks by rewinding or trimming, and the
-//! retained set grows only by extension and shrinks only by trimming. After
-//! every move the graph must agree with the model and pass both the contract
-//! check and its own representation check. Refused moves must leave the graph
-//! unchanged.
+//! A [`Move`] is one of two kinds, and the type says which. An [`Accepted`]
+//! move is one the graph must take, and the model moves with it: the canonical
+//! chain is a list that grows by extension and shrinks by rewinding or
+//! trimming, and the retained set grows only by extension and shrinks only by
+//! trimming. A [`Refused`] move is one the graph must reject while leaving
+//! itself unchanged, which [`apply`] checks in one place, so no arm can forget
+//! it. After every move the graph must agree with the model and pass both the
+//! contract check and its own representation check.
 
 use std::collections::{HashMap, HashSet};
 
@@ -38,41 +40,65 @@ const TRIM_ABOVE_TIP: u8 = 4;
 /// margin — and is not what this is measuring.
 const TRIM_BELOW_TIP: u8 = 15;
 
-#[derive(Debug, Clone)]
+/// One step of a sequence, named by what the graph must do with it.
+#[derive(Debug, Clone, Copy)]
 pub(super) enum Move {
-    /// A child of the tip carrying `work` more than the tip.
+    /// A move the graph must take.
+    Accept(Accepted),
+    /// A move the graph must reject, leaving itself unchanged.
+    Refuse(Refused),
+}
+
+/// A move the graph must take, after which the model has moved the same way.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Accepted {
+    /// An extension by a child of the tip carrying `work` more than the tip.
     Extend { work: u8 },
-    /// A retained child of the tip off the best chain, as when a reorg returns
-    /// to a branch it displaced. A no-op when there is none.
+    /// An extension by a retained child of the tip off the best chain, as when a reorg returns to a branch it displaced, which does nothing when the tip has no such child.
     ExtendRetained { pick: u8 },
-    /// A block that does not attach: its parent is not retained, or its parent
-    /// is the tip but its height is not the next one.
-    ExtendDetached {
+    /// A rewind to the canonical block `depth` below the tip, wrapping at the bottom.
+    Rewind { depth: u8 },
+    /// A trim at a floor between [`TRIM_ABOVE_TIP`] above the tip and [`TRIM_BELOW_TIP`] below it.
+    Trim { shift: u8 },
+}
+
+/// A move the graph must refuse, after which the graph and the model are as they were.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Refused {
+    /// An extension by a block that does not attach, because its parent is not retained or because its parent is the tip but its height is not the next one.
+    Detached {
         unknown_parent: bool,
         height_choice: u8,
     },
-    /// To the canonical block `depth` below the tip, wrapping at the bottom.
-    Rewind { depth: u8 },
-    /// To a retained block off the best chain, or to one never retained.
-    RewindOffChain { pick: u8 },
-    /// Trims at a floor between [`TRIM_ABOVE_TIP`] above the tip and
-    /// [`TRIM_BELOW_TIP`] below it.
-    Trim { shift: u8 },
+    /// A rewind to a retained block off the best chain, or to a block never retained.
+    OffChainRewind { pick: u8 },
 }
 
 pub(super) fn a_move() -> impl Strategy<Value = Move> {
     prop_oneof![
-        4 => (1u8..=8).prop_map(|work| Move::Extend { work }),
-        2 => any::<u8>().prop_map(|pick| Move::ExtendRetained { pick }),
+        9 => an_accepted_move().prop_map(Move::Accept),
+        2 => a_refused_move().prop_map(Move::Refuse),
+    ]
+}
+
+fn an_accepted_move() -> impl Strategy<Value = Accepted> {
+    prop_oneof![
+        4 => (1u8..=8).prop_map(|work| Accepted::Extend { work }),
+        2 => any::<u8>().prop_map(|pick| Accepted::ExtendRetained { pick }),
+        2 => any::<u8>().prop_map(|depth| Accepted::Rewind { depth }),
+        1 => (0u8..=TRIM_ABOVE_TIP + TRIM_BELOW_TIP).prop_map(|shift| Accepted::Trim { shift }),
+    ]
+}
+
+fn a_refused_move() -> impl Strategy<Value = Refused> {
+    prop_oneof![
         1 => (any::<bool>(), 0u8..4).prop_map(|(unknown_parent, height_choice)| {
-            Move::ExtendDetached {
+            Refused::Detached {
                 unknown_parent,
                 height_choice,
             }
         }),
-        2 => any::<u8>().prop_map(|depth| Move::Rewind { depth }),
-        1 => any::<u8>().prop_map(|pick| Move::RewindOffChain { pick }),
-        1 => (0u8..=TRIM_ABOVE_TIP + TRIM_BELOW_TIP).prop_map(|shift| Move::Trim { shift }),
+        1 => any::<u8>().prop_map(|pick| Refused::OffChainRewind { pick }),
     ]
 }
 
@@ -140,15 +166,33 @@ fn fingerprint<G: InspectableGraph>(graph: &G) -> (BlockRef, Vec<BlockHash>, Has
     )
 }
 
+/// Applies one move, holding a refused move to leaving the graph as it found it.
 fn apply<G: InspectableGraph>(
     graph: &mut G,
     model: &mut Model,
     step: &Move,
 ) -> Result<(), TestCaseError> {
+    match *step {
+        Move::Accept(step) => accept(graph, model, step),
+        Move::Refuse(step) => {
+            let before = fingerprint(graph);
+            refuse(graph, model, step)?;
+            prop_assert_eq!(fingerprint(graph), before);
+            Ok(())
+        }
+    }
+}
+
+/// Applies a move the graph must take, and moves the model with it.
+fn accept<G: InspectableGraph>(
+    graph: &mut G,
+    model: &mut Model,
+    step: Accepted,
+) -> Result<(), TestCaseError> {
     let tip_id = model.tip_id();
     let tip = model.entry(tip_id);
-    match *step {
-        Move::Extend { work } => {
+    match step {
+        Accepted::Extend { work } => {
             let id = model.fresh_id();
             let child = Entry {
                 height: tip.height + 1,
@@ -160,7 +204,7 @@ fn apply<G: InspectableGraph>(
             model.chain.push(id);
             model.retained.insert(id, child);
         }
-        Move::ExtendRetained { pick } => {
+        Accepted::ExtendRetained { pick } => {
             let mut children: Vec<u16> = model
                 .retained
                 .iter()
@@ -177,7 +221,40 @@ fn apply<G: InspectableGraph>(
             prop_assert_eq!(graph.extend(block), Ok(()));
             model.chain.push(id);
         }
-        Move::ExtendDetached {
+        Accepted::Rewind { depth } => {
+            let below_tip = usize::from(depth) % model.chain.len();
+            let index = model.chain.len() - 1 - below_tip;
+            let target = model.reference(model.chain[index]);
+            prop_assert_eq!(graph.rewind_to(target), Ok(()));
+            model.chain.truncate(index + 1);
+        }
+        Accepted::Trim { shift } => {
+            let floor = if shift <= TRIM_ABOVE_TIP {
+                tip.height + u32::from(TRIM_ABOVE_TIP - shift)
+            } else {
+                tip.height.saturating_sub(u32::from(shift - TRIM_ABOVE_TIP))
+            };
+            graph.remove_finalized_blocks(height(floor));
+            model
+                .retained
+                .retain(|id, entry| entry.height >= floor || *id == tip_id);
+            let retained = &model.retained;
+            model.chain.retain(|id| retained.contains_key(id));
+        }
+    }
+    Ok(())
+}
+
+/// Attempts a move the graph must refuse, drawing fresh ids from the model and changing nothing else in it.
+fn refuse<G: InspectableGraph>(
+    graph: &mut G,
+    model: &mut Model,
+    step: Refused,
+) -> Result<(), TestCaseError> {
+    let tip_id = model.tip_id();
+    let tip = model.entry(tip_id);
+    match step {
+        Refused::Detached {
             unknown_parent,
             height_choice,
         } => {
@@ -198,18 +275,9 @@ fn apply<G: InspectableGraph>(
                 tip: model.reference(tip_id),
                 block: block.reference,
             };
-            let before = fingerprint(graph);
             prop_assert_eq!(graph.extend(block), Err(refused));
-            prop_assert_eq!(fingerprint(graph), before);
         }
-        Move::Rewind { depth } => {
-            let below_tip = usize::from(depth) % model.chain.len();
-            let index = model.chain.len() - 1 - below_tip;
-            let target = model.reference(model.chain[index]);
-            prop_assert_eq!(graph.rewind_to(target), Ok(()));
-            model.chain.truncate(index + 1);
-        }
-        Move::RewindOffChain { pick } => {
+        Refused::OffChainRewind { pick } => {
             let canonical: HashSet<u16> = model.chain.iter().copied().collect();
             let mut off_chain: Vec<u16> = model
                 .retained
@@ -225,22 +293,7 @@ fn apply<G: InspectableGraph>(
                 },
                 len => model.reference(off_chain[usize::from(pick) % len]),
             };
-            let before = fingerprint(graph);
             prop_assert_eq!(graph.rewind_to(target), Err(NotOnBestChain));
-            prop_assert_eq!(fingerprint(graph), before);
-        }
-        Move::Trim { shift } => {
-            let floor = if shift <= TRIM_ABOVE_TIP {
-                tip.height + u32::from(TRIM_ABOVE_TIP - shift)
-            } else {
-                tip.height.saturating_sub(u32::from(shift - TRIM_ABOVE_TIP))
-            };
-            graph.remove_finalized_blocks(height(floor));
-            model
-                .retained
-                .retain(|id, entry| entry.height >= floor || *id == tip_id);
-            let retained = &model.retained;
-            model.chain.retain(|id| retained.contains_key(id));
         }
     }
     Ok(())
