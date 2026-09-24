@@ -34,7 +34,7 @@ use crate::types::{
     TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
 };
 use crate::{config::StoreSettings, error::StoreError};
-use zaino_encoding::{CompactSize, FixedEncodedLen as _, ZainoVersionedSerde as _};
+use crate::codec::{CompactSize, FixedEncodedLen as _, ZainoVersionedSerde as _};
 /// How a caller names a block when asking this backend to resolve it.
 ///
 /// Was `zebra_state::HashOrHeight`. Defined here instead: it is the store's own

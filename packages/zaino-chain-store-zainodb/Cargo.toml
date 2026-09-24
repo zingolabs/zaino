@@ -42,9 +42,6 @@ zaino-source = { workspace = true }
 # plan in the modularisation docs).
 zaino-common = { workspace = true }
 
-# The versioned encoding every persisted shape here is written in.
-zaino-encoding = { workspace = true }
-
 # The Read/Write traits the encoders are written against.
 corez = { workspace = true }
 

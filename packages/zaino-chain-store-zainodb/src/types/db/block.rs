@@ -20,7 +20,7 @@ use corez::io::{self, Read, Write};
 use crate::types::{
     AbsoluteChainWork, BlockContext, BlockHash, BlockIndex, CompactDifficulty, Height,
 };
-use zaino_encoding::{
+use crate::codec::{
     read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option, write_u32_le,
     FixedEncodedLen, ZainoVersionedSerde,
 };
@@ -248,7 +248,7 @@ mod tests {
     use crate::types::fixtures::{canonical_blockheaderdata, expected_v2_bytes};
     use crate::types::BlockHeaderData;
     use crate::types::{AbsoluteChainWork, BlockHash, BlockIndex, Height};
-    use zaino_encoding::ZainoVersionedSerde as _;
+    use crate::codec::ZainoVersionedSerde as _;
 
     const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0123_4567).expect("nonzero literal");
 

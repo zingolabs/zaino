@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::pool::ShieldedPool;
-use zaino_encoding::{FixedEncodedLen, ZainoVersionedSerde};
+use crate::codec::{FixedEncodedLen, ZainoVersionedSerde};
 
 /// How a pool point lookup treats a block height with no row in the pool's table.
 enum MissingRow {

@@ -17,7 +17,7 @@
 //!
 //! A failure is not a bug in this module. It means the encoding changed. The
 //! correct response is almost never to update the golden: it is to introduce a
-//! new body-format version (see [`zaino_encoding::version`]) and
+//! new body-format version (see [`crate::codec::version`]) and
 //! leave the old decoder in place, so existing databases keep working.
 //! Updating a golden in place is an explicit statement that no such database
 //! exists.
@@ -60,7 +60,7 @@ use crate::types::{
     SaplingTxList, ScriptType, ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx,
     TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
-use zaino_encoding::{FixedEncodedLen, ZainoVersionedSerde};
+use crate::codec::{FixedEncodedLen, ZainoVersionedSerde};
 
 /// The chainwork the golden block context carries.
 const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0dec_0de0).expect("nonzero literal");
@@ -508,7 +508,7 @@ fn fixed_lengths_match_the_encoder() {
 /// ironwood-bearing one.
 #[test]
 fn commitment_tree_lengths_are_fixed_at_v1_and_variable_at_v2() {
-    use zaino_encoding::version;
+    use crate::codec::version;
 
     assert_eq!(
         CommitmentTreeRoots::encoded_len(version::V1),

@@ -36,7 +36,7 @@ use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
 use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty};
-use zaino_encoding::{
+use crate::codec::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
     write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
@@ -2494,7 +2494,7 @@ impl<Work> BlockHeaderData<Work> {
 ///
 /// ```
 /// use zaino_chain_store_zainodb::types::{AbsoluteChainWork, BlockHeaderData};
-/// use zaino_encoding::ZainoVersionedSerde as _;
+/// use crate::codec::ZainoVersionedSerde as _;
 ///
 /// fn encode(header: &BlockHeaderData<AbsoluteChainWork>) -> std::io::Result<Vec<u8>> {
 ///     header.to_bytes()
@@ -2503,7 +2503,7 @@ impl<Work> BlockHeaderData<Work> {
 ///
 /// ```compile_fail
 /// use zaino_chain_store_zainodb::types::BlockHeaderData;
-/// use zaino_encoding::ZainoVersionedSerde as _;
+/// use crate::codec::ZainoVersionedSerde as _;
 ///
 /// fn encode(header: &BlockHeaderData) -> std::io::Result<Vec<u8>> {
 ///     header.to_bytes()

@@ -2,7 +2,7 @@
 
 use super::*;
 
-use zaino_encoding::ZainoVersionedSerde;
+use crate::codec::ZainoVersionedSerde;
 
 /// [`DbRead`] capability implementation for [`DbV1`].
 ///

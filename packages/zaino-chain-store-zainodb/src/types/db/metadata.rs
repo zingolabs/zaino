@@ -2,7 +2,7 @@
 
 use corez::io::{self, Read, Write};
 
-use zaino_encoding::{
+use crate::codec::{
     read_fixed_le, read_u64_le, version, write_fixed_le, write_u64_le, FixedEncodedLen,
     ZainoVersionedSerde,
 };

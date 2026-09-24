@@ -82,7 +82,7 @@ use crate::types::{
     SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
     TxLocation, TxOutCompact, TxidList,
 };
-use zaino_encoding::{
+use crate::codec::{
     read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
     ZainoVersionedSerde,
 };

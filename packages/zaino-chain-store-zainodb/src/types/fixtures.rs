@@ -6,7 +6,7 @@ use crate::types::{
     AbsoluteChainWork, BlockContext, BlockData, BlockHeaderData, CompactDifficulty,
     EquihashSolution,
 };
-use zaino_encoding::{version, ZainoVersionedSerde as _};
+use crate::codec::{version, ZainoVersionedSerde as _};
 
 /// A valid nBits value for test fixtures. Passes zebra's compact difficulty
 /// validation but does not correspond to any specific real-world block.
@@ -109,7 +109,7 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
 /// encoding.
 ///
 /// If such a change is intentional, introduce a new body-format version
-/// (see [`zaino_encoding::version`]) rather than updating
+/// (see [`crate::codec::version`]) rather than updating
 /// the expected layout in place — an in-place update is an explicit
 /// compatibility-break acknowledgement.
 #[test]
