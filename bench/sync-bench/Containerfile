@@ -26,17 +26,15 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build -p sync-bench --release --bins \
-    && cp target/release/sync-bench /sync-bench \
-    && cp target/release/provision-bench /provision-bench
+    && cp target/release/sync-bench /sync-bench
 
-# Stage 2: runtime. Both bench binaries over glibc + libstdc++ (rocksdb links the
-# C++ runtime dynamically even when the archive is static). The Job's `command`
-# selects which one runs (`sync-bench` for the full pipeline, `provision-bench`
-# for the provisioner-only read path); no ENTRYPOINT so `command` picks freely.
+# Stage 2: runtime. The single bench binary over glibc + libstdc++ (rocksdb links
+# the C++ runtime dynamically even when the archive is static). The Job selects
+# what to measure with `--mode {provision,sync,both}` (and `--adapter`); no
+# ENTRYPOINT so `command` picks freely.
 FROM docker.io/library/debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libstdc++6 \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /sync-bench /usr/local/bin/sync-bench
-COPY --from=builder /provision-bench /usr/local/bin/provision-bench
