@@ -4,6 +4,8 @@ use super::*;
 
 use crate::metric_names::*;
 
+use sha2::{Digest, Sha256};
+
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 use crate::ingest::BlockWork;
 
@@ -265,6 +267,48 @@ fn extract_block_pool_lists<Work>(
 /// Clones `pool` into the list entry unless the transaction has no data in that pool.
 fn present<Pool: Clone>(pool: &Pool, is_empty: bool) -> Option<Pool> {
     (!is_empty).then(|| pool.clone())
+}
+
+/// Rejects a block whose txids do not reproduce its header's merkle root.
+fn verify_header_merkle_root<Work>(
+    txids: &[TransactionHash],
+    block: &IndexedBlock<Work>,
+) -> Result<(), StoreError> {
+    let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
+    let reason = match calculate_block_merkle_root(&txid_bytes) {
+        None => "block has no transactions",
+        Some(root) if &root == block.data().merkle_root() => return Ok(()),
+        Some(_) => "header merkle root does not match block txids",
+    };
+    Err(StoreError::InvalidBlock {
+        height: block.context.index.height.0,
+        hash: block.context.index.hash,
+        reason: reason.to_string(),
+    })
+}
+
+/// Returns the Zcash merkle root of `txids`, taken in block order and internal byte order, or `None` when `txids` is empty.
+fn calculate_block_merkle_root(txids: &[[u8; 32]]) -> Option<[u8; 32]> {
+    let mut layer: Vec<[u8; 32]> = txids.to_vec();
+    while layer.len() > 1 {
+        layer = layer
+            .chunks(2)
+            .map(|pair| {
+                let left = &pair[0];
+                let right = pair.get(1).unwrap_or(left);
+                let mut concatenated = [0u8; 64];
+                concatenated[..32].copy_from_slice(left);
+                concatenated[32..].copy_from_slice(right);
+                sha256d(&concatenated)
+            })
+            .collect();
+    }
+    layer.first().copied()
+}
+
+/// Returns the double SHA-256 of `data`.
+fn sha256d(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(Sha256::digest(data)).into()
 }
 
 /// One block's row entries, ready to put. Everything is keyed by the block height
@@ -843,6 +887,8 @@ impl DbV1 {
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
 
+        verify_header_merkle_root(&txids, &block)?;
+
         // Reverse txid index entries (`txid -> TxLocation`). Built before `txids` is moved into
         // the `TxidList` below, and sorted by txid so the random-keyed `txid_location` B-tree
         // sees locally-ordered inserts.
@@ -1346,6 +1392,8 @@ impl DbV1 {
             } = pool_lists;
             let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
                 transactions.into_iter().unzip();
+
+            verify_header_merkle_root(&txids, block)?;
 
             let entries =
                 build_block_row_entries(block, txids, transparent, sapling, orchard, ironwood);
