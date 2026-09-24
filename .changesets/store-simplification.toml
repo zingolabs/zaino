@@ -32,10 +32,7 @@ startup integrity scans, the background re-validation, and the validation of \
 reads are removed. The write path keeps two checks. Each block must extend \
 the stored tip, and a block that does not fails as \
 StoreError::DoesNotExtendTip. The txids of each block must also reproduce its \
-header's merkle root, which catches a fault in Zaino's own block conversion. \
-The maintenance task also cross-checks the spent index, and the address \
-history when compiled in, against the transparent data of each stored block. \
-A failed cross-check sets the store's status to CriticalError.
+header's merkle root, which catches a fault in Zaino's own block conversion.
 """
 
 [[changes]]
