@@ -8,7 +8,9 @@
 //! carried in the `SendResponse` (see `send_transaction`).
 
 use zaino_core::Capability;
-use zaino_service::error::{BlockReadError, ReadError, Transient, TreestateReadError};
+use zaino_service::error::{
+    AddressReadError, BlockReadError, ReadError, Transient, TreestateReadError, TxReadError,
+};
 
 /// A light-serve handler failure.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +59,26 @@ impl From<TreestateReadError> for ServeError {
             TreestateReadError::NotServiceable(cap) => ServeError::NotServiceable(cap),
             TreestateReadError::Transient(msg) => ServeError::Unavailable(Transient(msg)),
             TreestateReadError::Fatal(msg) => ServeError::Internal(msg),
+        }
+    }
+}
+
+impl From<AddressReadError> for ServeError {
+    fn from(err: AddressReadError) -> Self {
+        match err {
+            AddressReadError::NotServiceable(cap) => ServeError::NotServiceable(cap),
+            AddressReadError::Transient(msg) => ServeError::Unavailable(Transient(msg)),
+            AddressReadError::Fatal(msg) => ServeError::Internal(msg),
+        }
+    }
+}
+
+impl From<TxReadError> for ServeError {
+    fn from(err: TxReadError) -> Self {
+        match err {
+            TxReadError::NotServiceable(cap) => ServeError::NotServiceable(cap),
+            TxReadError::Transient(msg) => ServeError::Unavailable(Transient(msg)),
+            TxReadError::Fatal(msg) => ServeError::Internal(msg),
         }
     }
 }

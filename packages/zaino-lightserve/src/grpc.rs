@@ -1,17 +1,22 @@
 //! The `CompactTxStreamer` gRPC service, backed by the [`LightServe`] handler.
 //!
 //! `CompactTxStreamer` is generated from the lightwalletd proto and is a fixed,
-//! monolithic contract: every method must be implemented. The compact-block
-//! serving path (`GetLatestBlock`, `GetBlock`, `GetBlockRange`,
-//! `GetLightdInfo`, `SendTransaction`) is wired; the rest return
-//! `Status::unimplemented` until their handler methods exist. Implemented on a
-//! wrapper (not `LightServe` itself) so the handler stays a pure profile handler
-//! and there is no inherent/trait method-name clash.
+//! monolithic contract: every method must be implemented. The full light-wallet
+//! read-set is wired — compact blocks (`GetLatestBlock`/`GetBlock`/
+//! `GetBlockRange`), treestate + subtree roots, transactions, transparent
+//! address reads, and the nullifier-populated variants — plus `GetLightdInfo`,
+//! `SendTransaction`, and `Ping`. Only the mempool methods (`GetMempoolTx`,
+//! `GetMempoolStream`) return `Status::unimplemented`: the engine exposes no
+//! mempool bytes to stream. Implemented on a wrapper (not `LightServe` itself) so
+//! the handler stays a pure profile handler and there is no inherent/trait
+//! method-name clash.
 
 use futures::stream::{BoxStream, StreamExt};
 use tonic::{Request, Response, Status};
 
-use zaino_core::{BlockHash, BlockRef, Height, HeightRange, ShieldedPool};
+use zaino_core::{
+    BlockHash, BlockRef, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress,
+};
 
 use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamer;
@@ -26,8 +31,8 @@ use zaino_service::LightServeService;
 use crate::error::ServeError;
 use crate::LightServe;
 
-/// A server-streaming response type. Boxed because the stub methods never
-/// construct it (they return `unimplemented`); real streaming lands per method.
+/// A server-streaming response type. The store composes each range eagerly, so
+/// the items are collected owned and served as a `'static` boxed stream.
 type ServerStream<T> = BoxStream<'static, Result<T, Status>>;
 
 /// The `CompactTxStreamer` service over a light-serve handler.
@@ -140,6 +145,73 @@ fn subtree_roots_query_from_wire(
     Ok((pool, start_index, limit))
 }
 
+/// Wire -> domain for a single transparent address; an empty string is rejected
+/// (`invalid_argument`). Format validation beyond non-emptiness is the
+/// validator's job on the passthrough read.
+fn transparent_address_from_wire(address: String) -> Result<TransparentAddress, Status> {
+    if address.is_empty() {
+        return Err(Status::invalid_argument("transparent address must not be empty"));
+    }
+    Ok(TransparentAddress::new(address))
+}
+
+/// Wire -> domain for a non-empty address list.
+fn addresses_from_wire(addresses: Vec<String>) -> Result<Vec<TransparentAddress>, Status> {
+    if addresses.is_empty() {
+        return Err(Status::invalid_argument("at least one address is required"));
+    }
+    addresses
+        .into_iter()
+        .map(transparent_address_from_wire)
+        .collect()
+}
+
+/// Wire -> domain transaction id from a `TxFilter`. The id is addressed by its
+/// 32-byte hash; a request without it (block + index only) is rejected
+/// (`invalid_argument`) rather than resolved — resolving position -> id is not
+/// this read's job.
+fn tx_id_from_wire(hash: Vec<u8>) -> Result<TransactionId, Status> {
+    let bytes: [u8; 32] = hash
+        .try_into()
+        .map_err(|_| Status::invalid_argument("transaction id must be 32 bytes"))?;
+    Ok(TransactionId::from(bytes))
+}
+
+/// Wire -> domain for a UTXO query: the addresses, the lower height bound
+/// (`start_height`, `0` meaning genesis), and the entry cap (`max_entries`, `0`
+/// meaning unlimited).
+fn utxo_query_from_wire(
+    arg: GetAddressUtxosArg,
+) -> Result<(Vec<TransparentAddress>, Height, usize), Status> {
+    let addrs = addresses_from_wire(arg.addresses)?;
+    let start_height = height_from_wire(arg.start_height)?;
+    let max_entries = usize::try_from(arg.max_entries)
+        .map_err(|_| Status::invalid_argument("max entries out of range"))?;
+    Ok((addrs, start_height, max_entries))
+}
+
+/// Wire -> domain for an address-scoped block filter: the address and the
+/// inclusive height range (required).
+fn taddress_filter_from_wire(
+    filter: TransparentAddressBlockFilter,
+) -> Result<(TransparentAddress, HeightRange), Status> {
+    let addr = transparent_address_from_wire(filter.address)?;
+    let range = filter
+        .range
+        .ok_or_else(|| Status::invalid_argument("address filter requires a block range"))?;
+    Ok((addr, height_range_from_wire(range)?))
+}
+
+/// The current time as microseconds since the Unix epoch, for a `Ping` stamp.
+/// Saturating rather than panicking on the (unreachable) out-of-range clock.
+fn unix_micros() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_micros()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 #[tonic::async_trait]
 impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S> {
     // --- wired ---
@@ -174,31 +246,62 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         }
     }
 
-    // --- not yet served (unary) ---
+    // --- wired: nullifier-populated compact block ---
 
     async fn get_block_nullifiers(
         &self,
-        _r: Request<BlockId>,
+        r: Request<BlockId>,
     ) -> Result<Response<CompactBlock>, Status> {
-        Err(unimplemented("get_block_nullifiers"))
+        let at = block_ref_from_wire(r.into_inner())?;
+        match self
+            .handler
+            .get_block_nullifiers(at)
+            .await
+            .map_err(to_status)?
+        {
+            Some(block) => Ok(Response::new(block)),
+            None => Err(Status::not_found("no block at the requested reference")),
+        }
     }
+
+    // --- wired: passthrough transaction + address reads ---
+
     async fn get_transaction(
         &self,
-        _r: Request<TxFilter>,
+        r: Request<TxFilter>,
     ) -> Result<Response<RawTransaction>, Status> {
-        Err(unimplemented("get_transaction"))
+        let id = tx_id_from_wire(r.into_inner().hash)?;
+        match self.handler.get_transaction(id).await.map_err(to_status)? {
+            Some(tx) => Ok(Response::new(tx)),
+            None => Err(Status::not_found("transaction not found")),
+        }
     }
     async fn get_taddress_balance(
         &self,
-        _r: Request<AddressList>,
+        r: Request<AddressList>,
     ) -> Result<Response<Balance>, Status> {
-        Err(unimplemented("get_taddress_balance"))
+        let addrs = addresses_from_wire(r.into_inner().addresses)?;
+        self.handler
+            .get_taddress_balance(addrs)
+            .await
+            .map(Response::new)
+            .map_err(to_status)
     }
     async fn get_taddress_balance_stream(
         &self,
-        _r: Request<tonic::Streaming<Address>>,
+        r: Request<tonic::Streaming<Address>>,
     ) -> Result<Response<Balance>, Status> {
-        Err(unimplemented("get_taddress_balance_stream"))
+        let mut stream = r.into_inner();
+        let mut addresses = Vec::new();
+        while let Some(address) = stream.message().await? {
+            addresses.push(address.address);
+        }
+        let addrs = addresses_from_wire(addresses)?;
+        self.handler
+            .get_taddress_balance(addrs)
+            .await
+            .map(Response::new)
+            .map_err(to_status)
     }
     async fn get_tree_state(&self, r: Request<BlockId>) -> Result<Response<TreeState>, Status> {
         let height = tree_state_height_from_wire(r.into_inner())?;
@@ -220,9 +323,15 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
     }
     async fn get_address_utxos(
         &self,
-        _r: Request<GetAddressUtxosArg>,
+        r: Request<GetAddressUtxosArg>,
     ) -> Result<Response<GetAddressUtxosReplyList>, Status> {
-        Err(unimplemented("get_address_utxos"))
+        let (addrs, start_height, max_entries) = utxo_query_from_wire(r.into_inner())?;
+        let address_utxos = self
+            .handler
+            .get_address_utxos(addrs, start_height, max_entries)
+            .await
+            .map_err(to_status)?;
+        Ok(Response::new(GetAddressUtxosReplyList { address_utxos }))
     }
     async fn get_lightd_info(&self, _r: Request<Empty>) -> Result<Response<LightdInfo>, Status> {
         self.handler
@@ -232,7 +341,13 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
             .map_err(to_status)
     }
     async fn ping(&self, _r: Request<Duration>) -> Result<Response<PingResponse>, Status> {
-        Err(unimplemented("ping"))
+        // Ping is a diagnostic latency probe with no chain effect; stamp entry
+        // and exit with the current time. The request interval is ignored — the
+        // server does not block on a diagnostic call.
+        Ok(Response::new(PingResponse {
+            entry: unix_micros(),
+            exit: unix_micros(),
+        }))
     }
 
     // --- wired: index-only compact-block streaming ---
@@ -253,31 +368,60 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         ))
     }
 
-    // --- not yet served (server-streaming) ---
+    // --- wired: nullifier-populated compact-block streaming ---
 
     type GetBlockRangeNullifiersStream = ServerStream<CompactBlock>;
     async fn get_block_range_nullifiers(
         &self,
-        _r: Request<BlockRange>,
+        r: Request<BlockRange>,
     ) -> Result<Response<Self::GetBlockRangeNullifiersStream>, Status> {
-        Err(unimplemented("get_block_range_nullifiers"))
+        let range = height_range_from_wire(r.into_inner())?;
+        let blocks = self
+            .handler
+            .get_block_range_nullifiers(range)
+            .await
+            .map_err(to_status)?;
+        let stream = futures::stream::iter(blocks.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
+
+    // --- wired: passthrough address -> raw transactions ---
 
     type GetTaddressTxidsStream = ServerStream<RawTransaction>;
     async fn get_taddress_txids(
         &self,
-        _r: Request<TransparentAddressBlockFilter>,
+        r: Request<TransparentAddressBlockFilter>,
     ) -> Result<Response<Self::GetTaddressTxidsStream>, Status> {
-        Err(unimplemented("get_taddress_txids"))
+        let (addr, range) = taddress_filter_from_wire(r.into_inner())?;
+        let txs = self
+            .handler
+            .get_taddress_txids(addr, range)
+            .await
+            .map_err(to_status)?;
+        let stream = futures::stream::iter(txs.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
 
+    // `GetTaddressTransactions` and `GetTaddressTxids` name the same read — the
+    // raw transactions touching an address in a range — so they share a handler.
     type GetTaddressTransactionsStream = ServerStream<RawTransaction>;
     async fn get_taddress_transactions(
         &self,
-        _r: Request<TransparentAddressBlockFilter>,
+        r: Request<TransparentAddressBlockFilter>,
     ) -> Result<Response<Self::GetTaddressTransactionsStream>, Status> {
-        Err(unimplemented("get_taddress_transactions"))
+        let (addr, range) = taddress_filter_from_wire(r.into_inner())?;
+        let txs = self
+            .handler
+            .get_taddress_txids(addr, range)
+            .await
+            .map_err(to_status)?;
+        let stream = futures::stream::iter(txs.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
+
+    // --- not served: no backing mempool capability (Engine's mempool
+    // subscription is an empty-stream stub, and `MempoolTx` carries only a txid,
+    // not the compact/raw bytes these stream) ---
 
     type GetMempoolTxStream = ServerStream<CompactTx>;
     async fn get_mempool_tx(
@@ -314,8 +458,15 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
     type GetAddressUtxosStreamStream = ServerStream<GetAddressUtxosReply>;
     async fn get_address_utxos_stream(
         &self,
-        _r: Request<GetAddressUtxosArg>,
+        r: Request<GetAddressUtxosArg>,
     ) -> Result<Response<Self::GetAddressUtxosStreamStream>, Status> {
-        Err(unimplemented("get_address_utxos_stream"))
+        let (addrs, start_height, max_entries) = utxo_query_from_wire(r.into_inner())?;
+        let replies = self
+            .handler
+            .get_address_utxos(addrs, start_height, max_entries)
+            .await
+            .map_err(to_status)?;
+        let stream = futures::stream::iter(replies.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
 }

@@ -25,12 +25,15 @@ pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};
 
 use futures::stream::{BoxStream, StreamExt};
-use zaino_core::{BlockRef, Height, HeightRange, ShieldedPool};
+use zaino_core::{BlockRef, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress};
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
-use zaino_service::{ChainSegment, CompactBlockRead, LightServeService, TreestateRead};
+use zaino_service::{
+    AddressRead, ChainSegment, CompactBlockRead, CompactNullifierRead, LightServeService,
+    RawTransactionRead, TreestateRead,
+};
 
-use crate::wire::{to_hex, ToWire};
+use crate::wire::{to_hex, zat_to_i64, ToWire};
 
 /// Lightwalletd-compatible handler over a [`LightServeService`] engine.
 #[derive(Clone)]
@@ -135,6 +138,125 @@ impl<S: LightServeService> LightServe<S> {
         let snapshot = self.engine.snapshot().await?;
         let roots = snapshot.subtree_roots(pool, start_index, limit).await?;
         Ok(roots.into_iter().map(ToWire::to_wire).collect())
+    }
+
+    /// `GetTransaction`: a transaction as raw bytes, or `None` when the
+    /// validator does not know it (the caller maps that to not-found). Passed
+    /// through to the validator's raw-transaction fetch.
+    pub async fn get_transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<proto::RawTransaction>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        Ok(snapshot.raw_transaction(id).await?.map(ToWire::to_wire))
+    }
+
+    /// `GetTaddressBalance`: the total current balance across `addrs`, summed
+    /// over the whole indexed chain (genesis .. tip). `NoBlocks` before any block
+    /// is served. Each address balance is passed through to the validator.
+    pub async fn get_taddress_balance(
+        &self,
+        addrs: Vec<TransparentAddress>,
+    ) -> Result<proto::Balance, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
+        let range = HeightRange {
+            start: Height::GENESIS,
+            end: tip.height,
+        };
+        let mut total: u64 = 0;
+        for addr in &addrs {
+            let balance = snapshot.balance(addr, range).await?;
+            // Saturating: a sum of supply-bounded balances stays below the money
+            // supply, so this never actually saturates.
+            total = total.saturating_add(u64::from(balance.balance));
+        }
+        Ok(proto::Balance {
+            value_zat: zat_to_i64(total),
+        })
+    }
+
+    /// `GetAddressUtxos`: the unspent outputs at or above `start_height` across
+    /// `addrs`, capped at `max_entries` (`0` meaning unlimited). Passed through to
+    /// the validator; collected owned so the gRPC layer can serve the list or a
+    /// `'static` stream.
+    pub async fn get_address_utxos(
+        &self,
+        addrs: Vec<TransparentAddress>,
+        start_height: Height,
+        max_entries: usize,
+    ) -> Result<Vec<proto::GetAddressUtxosReply>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let mut utxos = Vec::new();
+        for addr in &addrs {
+            for utxo in snapshot.unspent_outpoints(addr).await? {
+                if utxo.height >= start_height {
+                    utxos.push(utxo.to_wire());
+                }
+            }
+        }
+        if max_entries != 0 {
+            utxos.truncate(max_entries);
+        }
+        Ok(utxos)
+    }
+
+    /// `GetTaddressTxids`: the transactions touching `addr` within `range`, as
+    /// raw bytes. The txids come from the address index; each transaction's bytes
+    /// are passed through to the validator (a txid the validator has since dropped
+    /// is skipped). Collected owned for a `'static` stream.
+    pub async fn get_taddress_txids(
+        &self,
+        addr: TransparentAddress,
+        range: HeightRange,
+    ) -> Result<Vec<proto::RawTransaction>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let ids = snapshot.tx_ids(&addr, range).await?;
+        let mut txs = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(raw) = snapshot.raw_transaction(id).await? {
+                txs.push(raw.to_wire());
+            }
+        }
+        Ok(txs)
+    }
+
+    /// `GetBlockNullifiers`: the compact block at `at` with spend nullifiers
+    /// populated, or `None` when no block is indexed there.
+    pub async fn get_block_nullifiers(
+        &self,
+        at: BlockRef,
+    ) -> Result<Option<compact::CompactBlock>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        Ok(snapshot
+            .compact_block_nullifiers(at)
+            .await?
+            .map(ToWire::to_wire))
+    }
+
+    /// `GetBlockRangeNullifiers`: the nullifier-populated compact blocks over
+    /// `range`. Composed per height and collected owned for a `'static` stream; a
+    /// height with no block is skipped rather than aborting the range.
+    pub async fn get_block_range_nullifiers(
+        &self,
+        range: HeightRange,
+    ) -> Result<Vec<compact::CompactBlock>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let mut blocks = Vec::new();
+        for raw_height in u32::from(range.start)..=u32::from(range.end) {
+            // The bound is a valid `Height` and `raw_height` stays within it, so
+            // the conversion cannot fail; classify a would-be failure as internal
+            // rather than panic.
+            let height = Height::try_from(raw_height)
+                .map_err(|e| ServeError::Internal(format!("height in range invalid: {e}")))?;
+            if let Some(block) = snapshot
+                .compact_block_nullifiers(BlockRef::Height(height))
+                .await?
+            {
+                blocks.push(block.to_wire());
+            }
+        }
+        Ok(blocks)
     }
 
     /// `SendTransaction`: relay raw bytes. A rejection is a domain answer, so it
@@ -255,6 +377,99 @@ mod tests {
             .await
             .expect("subtree roots served");
         assert!(roots.is_empty());
+    }
+
+    /// `GetTransaction` delegates to the raw-transaction read: the mock answers a
+    /// domain miss (`Ok(None)`), which passes through as not-found, proving the
+    /// handler is wired to the read rather than stubbed at the wire.
+    #[tokio::test]
+    async fn get_transaction_delegates_to_the_snapshot_read() {
+        use zaino_core::TransactionId;
+        let serve = LightServe::new(engine_with_tip(None));
+        let tx = serve
+            .get_transaction(TransactionId::from([0x33u8; 32]))
+            .await
+            .expect("served");
+        assert!(tx.is_none());
+    }
+
+    /// `GetTaddressBalance` needs a tip to bound the range; with one, it delegates
+    /// to the address balance read (the mock reports `NotServiceable`, surfacing
+    /// as the serviceability fact, not the old `unimplemented`).
+    #[tokio::test]
+    async fn taddress_balance_delegates_over_the_indexed_range() {
+        use zaino_core::{BlockHash, BlockId, Height, TransparentAddress};
+        let tip = BlockId {
+            height: Height::try_from(500).expect("valid height"),
+            hash: BlockHash::from([0x44u8; 32]),
+        };
+        let serve = LightServe::new(engine_with_tip(Some(tip)));
+        assert!(matches!(
+            serve
+                .get_taddress_balance(vec![TransparentAddress::new("t1probe".to_string())])
+                .await,
+            Err(ServeError::NotServiceable(_))
+        ));
+    }
+
+    /// An empty chain has no tip to bound the balance range, so it is `NoBlocks`.
+    #[tokio::test]
+    async fn taddress_balance_no_tip_is_no_blocks() {
+        use zaino_core::TransparentAddress;
+        let serve = LightServe::new(engine_with_tip(None));
+        assert!(matches!(
+            serve
+                .get_taddress_balance(vec![TransparentAddress::new("t1probe".to_string())])
+                .await,
+            Err(ServeError::NoBlocks)
+        ));
+    }
+
+    /// `GetAddressUtxos` delegates to the unspent-outpoints read (the mock serves
+    /// an empty set) and returns an empty wire list — a served answer.
+    #[tokio::test]
+    async fn address_utxos_delegates_and_converts() {
+        use zaino_core::{Height, TransparentAddress};
+        let serve = LightServe::new(engine_with_tip(None));
+        let utxos = serve
+            .get_address_utxos(
+                vec![TransparentAddress::new("t1probe".to_string())],
+                Height::GENESIS,
+                0,
+            )
+            .await
+            .expect("served");
+        assert!(utxos.is_empty());
+    }
+
+    /// `GetTaddressTxids` delegates to the address txid read (the mock serves an
+    /// empty run) and returns no transactions — a served answer.
+    #[tokio::test]
+    async fn taddress_txids_delegates_and_converts() {
+        use zaino_core::{Height, HeightRange, TransparentAddress};
+        let serve = LightServe::new(engine_with_tip(None));
+        let range = HeightRange {
+            start: Height::GENESIS,
+            end: Height::try_from(100).expect("valid height"),
+        };
+        let txs = serve
+            .get_taddress_txids(TransparentAddress::new("t1probe".to_string()), range)
+            .await
+            .expect("served");
+        assert!(txs.is_empty());
+    }
+
+    /// `GetBlockNullifiers` delegates to the nullifier read (the mock has no block
+    /// there) and returns `None` — a served answer, not `unimplemented`.
+    #[tokio::test]
+    async fn block_nullifiers_delegates_to_the_snapshot_read() {
+        use zaino_core::{BlockRef, Height};
+        let serve = LightServe::new(engine_with_tip(None));
+        let block = serve
+            .get_block_nullifiers(BlockRef::Height(Height::try_from(10).expect("valid height")))
+            .await
+            .expect("served");
+        assert!(block.is_none());
     }
 
     /// A successful broadcast returns `error_code == 0` with the txid in hex.

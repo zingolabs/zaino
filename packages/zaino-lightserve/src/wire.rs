@@ -6,8 +6,9 @@
 //! local trait).
 
 use zaino_core::{
-    BlockId, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier, OrchardAction,
-    PreIndexCompactTx, SaplingOutput, SubtreeRoot, TransparentInput, TransparentOutput, Treestate,
+    AddressBalance, BlockId, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier,
+    OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot, TransactionLocation,
+    TransparentInput, TransparentOutput, Treestate, Utxo,
 };
 use zaino_proto::proto::compact_formats as cf;
 use zaino_proto::proto::service as proto;
@@ -110,6 +111,61 @@ impl ToWire for SubtreeRoot {
             completing_block_height: u64::from(self.end_height),
         }
     }
+}
+
+impl ToWire for AddressBalance {
+    type Wire = proto::Balance;
+
+    fn to_wire(self) -> proto::Balance {
+        // The wire carries only the current balance (not lifetime receipts).
+        proto::Balance {
+            value_zat: zat_to_i64(u64::from(self.balance)),
+        }
+    }
+}
+
+impl ToWire for Utxo {
+    type Wire = proto::GetAddressUtxosReply;
+
+    fn to_wire(self) -> proto::GetAddressUtxosReply {
+        proto::GetAddressUtxosReply {
+            address: self.address.as_str().to_string(),
+            txid: <[u8; 32]>::from(self.txid).to_vec(),
+            // `OutputIndex` is a `u32`; the wire field is `i32`. A real output
+            // index is tiny, so the saturating fallback is unreachable — it only
+            // keeps the conversion total without an `as` cast.
+            index: i32::try_from(self.output_index).unwrap_or(i32::MAX),
+            script: Vec::<u8>::from(self.script),
+            value_zat: zat_to_i64(u64::from(self.satoshis)),
+            height: u64::from(self.height),
+        }
+    }
+}
+
+impl ToWire for RawTransaction {
+    type Wire = proto::RawTransaction;
+
+    fn to_wire(self) -> proto::RawTransaction {
+        proto::RawTransaction {
+            data: self.data.into(),
+            // The lightwalletd `height` field is overloaded: 0 for a mempool tx,
+            // `u64::MAX` for one mined on a non-best fork, else the mined height.
+            height: match self.location {
+                TransactionLocation::BestChain(height) => u64::from(height),
+                TransactionLocation::NonBestChain => u64::MAX,
+                TransactionLocation::Mempool => 0,
+            },
+        }
+    }
+}
+
+/// A supply-bounded zatoshi amount as the wire's signed `value_zat`. `Zatoshis`
+/// never exceeds the money supply (far below `i64::MAX`), so the saturating
+/// fallback is unreachable — it only keeps the conversion total without an `as`
+/// cast. `pub(crate)` so the balance handler, which sums per-address balances
+/// into one wire `Balance`, shares the one zat -> wire rule.
+pub(crate) fn zat_to_i64(zatoshis: u64) -> i64 {
+    i64::try_from(zatoshis).unwrap_or(i64::MAX)
 }
 
 /// A transaction's position within its block. `usize -> u64` is lossless on
@@ -246,5 +302,63 @@ mod tests {
     fn hex_bytes_is_lowercase_and_padded() {
         assert_eq!(hex_bytes(&[0x00, 0x0f, 0xa0, 0xff]), "000fa0ff");
         assert_eq!(hex_bytes(&[]), "");
+    }
+
+    /// An address balance maps its current balance to the signed wire value.
+    #[test]
+    fn address_balance_maps_to_wire() {
+        use zaino_core::AddressBalance;
+        use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum};
+        let balance = AddressBalance {
+            balance: Zatoshis::new(123_456).expect("valid amount"),
+            received: ZatoshisFlowSum::from_summed(999),
+        };
+        assert_eq!(balance.to_wire().value_zat, 123_456i64);
+    }
+
+    /// A UTXO maps field-for-field: address string, txid bytes, index (u32 ->
+    /// i32), script bytes, value, and height.
+    #[test]
+    fn utxo_maps_to_wire() {
+        use zaino_core::{Height, Script, TransactionId, TransparentAddress, Utxo};
+        use zaino_primitives::types::Zatoshis;
+        let utxo = Utxo {
+            address: TransparentAddress::new("t1example".to_string()),
+            txid: TransactionId::from([0x22u8; 32]),
+            output_index: 3,
+            script: Script::new(vec![0x76, 0xa9]),
+            satoshis: Zatoshis::new(50_000).expect("valid amount"),
+            height: Height::try_from(2_000_000).expect("valid height"),
+        };
+
+        let wire = utxo.to_wire();
+        assert_eq!(wire.address, "t1example");
+        assert_eq!(wire.txid, vec![0x22u8; 32]);
+        assert_eq!(wire.index, 3i32);
+        assert_eq!(wire.script, vec![0x76, 0xa9]);
+        assert_eq!(wire.value_zat, 50_000i64);
+        assert_eq!(wire.height, 2_000_000u64);
+    }
+
+    /// A raw transaction maps its bytes, and its location to the overloaded
+    /// lightwalletd `height`: the mined height on the best chain, `u64::MAX` on a
+    /// non-best fork, and `0` in the mempool.
+    #[test]
+    fn raw_transaction_height_encodes_location() {
+        use zaino_core::{Height, RawTransaction, TransactionLocation};
+        let at = |loc| {
+            RawTransaction {
+                data: vec![0xde, 0xad],
+                location: loc,
+            }
+            .to_wire()
+        };
+        let mined = at(TransactionLocation::BestChain(
+            Height::try_from(1_234_567).expect("valid height"),
+        ));
+        assert_eq!(mined.data.to_vec(), vec![0xde, 0xad]);
+        assert_eq!(mined.height, 1_234_567u64);
+        assert_eq!(at(TransactionLocation::NonBestChain).height, u64::MAX);
+        assert_eq!(at(TransactionLocation::Mempool).height, 0u64);
     }
 }
