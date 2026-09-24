@@ -545,10 +545,16 @@ API / capabilities
 - Removed: `MigrationManager`, `MigrationStatus`, `DbVersion`,
   `DbWrite::update_metadata`, the `db_version` configuration value, and
   `ChainStoreReader::schema`.
-- Removed: the startup integrity scans, the background re-validation loop, the
-  on-demand validation of reads, and the merkle-root check at ingest. Blocks
-  from the validator are not re-verified; the only write-path check left is
-  parent-hash continuity, which now fails as `StoreError::DoesNotExtendTip`.
+- Removed: the startup integrity scans, the background re-validation loop, and
+  the on-demand validation of reads. The write path keeps two checks.
+  Parent-hash continuity now fails as `StoreError::DoesNotExtendTip`. The
+  merkle-root check at ingest stays, because it catches a fault in Zaino's own
+  conversion of the block, which no type or validator guarantee covers.
+- Kept: the cross-checks of the spent index and the address history. The
+  maintenance task now runs them over each stored block, from genesis on each
+  start, and then over each new block. Zaino derives these indexes itself, so
+  only this check detects a fault in their derivation. A failed cross-check
+  logs an error and sets the store's status to `CriticalError`.
 
 Rebuild
 - Every existing v1.0.0 to v1.3.0 database rebuilds once on its first start

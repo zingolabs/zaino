@@ -12,11 +12,14 @@ features whose complexity outweighs their value to either product.
    embedding contract. zainod becomes the only consumer of every library
    crate (zingo-adrs `zaino/0021`).
 2. **Post-ingest integrity checks go.** The per-row BLAKE2b checksums, the
-   startup and background re-validation pass, the read-time validation gate,
-   and the ingest-time merkle-root check are all deleted. The parent-hash and
-   height continuity check stays, because it enforces the append-only rule of
-   the finalised state, not data correctness. Its error is renamed as a
-   continuity violation.
+   startup and background re-validation pass, and the read-time validation
+   gate are all deleted. The parent-hash and height continuity check stays,
+   because it enforces the append-only rule of the finalised state, not data
+   correctness. Its error is renamed as a continuity violation. The
+   ingest-time merkle-root check also stays, because it catches a fault in
+   Zaino's own conversion of the block. The cross-checks of the spent index
+   and the address history stay too, in the maintenance task, because Zaino
+   derives those indexes itself.
 3. **Database migrations go.** The database records one schema identity, its
    schema hash. On a mismatch, zainod logs one line, deletes the index
    directory, and resyncs from zebra. `DbVersion`, `MigrationStatus`,
@@ -57,7 +60,10 @@ This PR needs no evidence and changes no public surface outside the store.
 - Delete `v1/validation.rs` except the continuity check, which moves into
   the write path. Delete `validated_tip`, `validated_set`, the background
   validation loop, and `resolve_validated_hash_or_height`.
-- Delete `verify_header_merkle_root` and `calculate_block_merkle_root`.
+- Keep `verify_header_merkle_root` and `calculate_block_merkle_root` in the
+  write path.
+- Keep the spent-index and address-history cross-checks, in
+  `v1/index_check.rs`, and run them from the maintenance task.
 - Delete `store/migrations.rs`, the migration tests, `DbVersion`,
   `MigrationStatus`, `spawn_with_target_version`, and the `db_version` key.
 - Collapse `ZainoVersionedSerde` and fold `zaino-encoding` into the store

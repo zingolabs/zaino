@@ -78,6 +78,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 zaino-status.workspace = true
 tonic.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 # Difficulty targets, for the accumulator tests' synthetic chains.
