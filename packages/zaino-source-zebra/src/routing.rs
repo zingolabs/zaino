@@ -249,7 +249,14 @@ impl OneShotGetTreestate for ZebraValidator {
         &self,
         height: Height,
     ) -> Result<Treestate, QueryError<GetTreestateError>> {
-        state_or_fetch!(self, get_treestate, height)
+        // Prefer the state path, but the finalized state only reaches its
+        // finalized tip; a height in the volatile top the chain-head serves is a
+        // domain miss (the adapter's presence gate) that must fall through to
+        // JSON-RPC (`z_gettreestate` serves the whole best chain), exactly like
+        // `get_commitment_tree_roots`. `state_or_fetch!` would never consult RPC
+        // while a state exists, turning a non-finalized treestate into a retried
+        // transport failure ("state service unavailable").
+        state_then_fetch!(self, get_treestate, height)
     }
 }
 
@@ -258,7 +265,10 @@ impl OneShotGetTreestateByHash for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<Treestate, QueryError<GetTreestateByHashError>> {
-        state_or_fetch!(self, get_treestate_by_hash, hash)
+        // Same as `get_treestate`: a non-finalized block is a domain miss the
+        // adapter reports (via a `Depth` presence check) and the composite must
+        // retry over JSON-RPC, not a false transport failure.
+        state_then_fetch!(self, get_treestate_by_hash, hash)
     }
 }
 

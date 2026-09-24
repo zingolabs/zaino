@@ -943,6 +943,22 @@ impl zaino_source::OneShotGetTreestateByHash for ZebraReadStateAdapter {
         zaino_primitives::types::Treestate,
         QueryError<zaino_source::GetTreestateByHashError, ReadStateError>,
     > {
+        // A block above the finalized tip (the volatile top the chain-head serves)
+        // is absent here. Unlike the tree reads' `Ok(None)`, zebra's `BlockHeader`
+        // read *errors* for a missing block, which `treestate` would flatten into a
+        // retried transport failure instead of a miss. Gate on a `Depth` presence
+        // check (as `get_commitment_tree_roots` does) so the absence is a domain
+        // miss the composite retries over JSON-RPC, which sees the whole best chain.
+        let zebra_hash = zebra_chain::block::Hash(hash.into());
+        let depth = match self.read(ReadRequest::Depth(zebra_hash)).await? {
+            ReadResponse::Depth(depth) => depth,
+            _ => return Err(unexpected_response("Depth").into()),
+        };
+        if depth.is_none() {
+            return Err(QueryError::Domain(
+                zaino_source::GetTreestateByHashError::BlockNotFound(hash),
+            ));
+        }
         self.treestate(hash_or_height(hash))
             .await
             .map_err(QueryError::from)
@@ -958,6 +974,19 @@ impl zaino_source::OneShotGetTreestate for ZebraReadStateAdapter {
         QueryError<zaino_source::GetTreestateError, ReadStateError>,
     > {
         let id = zebra_chain::block::Height(u32::from(height)).into();
+        // Same absence gate as the by-hash form. `Depth` is hash-only, so for a
+        // height gate on `Block`, whose `Ok(None)` (unlike `BlockHeader`'s error)
+        // cleanly signals a block absent from the finalized chain — a domain miss
+        // the composite retries over JSON-RPC rather than a false transport failure.
+        let present = match self.read(ReadRequest::Block(id)).await? {
+            ReadResponse::Block(block) => block.is_some(),
+            _ => return Err(unexpected_response("Block").into()),
+        };
+        if !present {
+            return Err(QueryError::Domain(
+                zaino_source::GetTreestateError::HeightNotFound(height),
+            ));
+        }
         self.treestate(id).await.map_err(QueryError::from)
     }
 }
