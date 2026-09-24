@@ -20,6 +20,43 @@ fn encode_addr_event(record: &AddrHistRecord) -> Result<Vec<u8>, StoreError> {
     Ok(AddrEventBytes::from_record(record)?.to_bytes()?)
 }
 
+/// Which way a stored output's spent flag moves.
+#[cfg(feature = "transparent_address_history_experimental")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SpentMark {
+    /// The output is spent by an input being written.
+    Spent,
+    /// The output's spend is unwound by a block being deleted.
+    Unspent,
+}
+
+#[cfg(feature = "transparent_address_history_experimental")]
+impl SpentMark {
+    /// The word an error names this mark by.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Spent => "spent",
+            Self::Unspent => "unspent",
+        }
+    }
+
+    /// Whether `record` already carries this mark.
+    fn is_applied(self, record: &AddrHistRecord) -> bool {
+        match self {
+            Self::Spent => record.is_spent(),
+            Self::Unspent => !record.is_spent(),
+        }
+    }
+
+    /// `flags` with this mark applied.
+    fn apply(self, flags: u8) -> u8 {
+        match self {
+            Self::Spent => flags | AddrHistRecord::FLAG_SPENT,
+            Self::Unspent => flags & !AddrHistRecord::FLAG_SPENT,
+        }
+    }
+}
+
 /// [`TransparentHistExt`] capability implementation for [`DbV1`].
 ///
 /// Provides address history queries built over the LMDB `DUP_SORT`/`DUP_FIXED` address-history
@@ -689,19 +726,14 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Mark a specific AddrHistRecord as spent in the addrhist DB.
-    /// Looks up a record by script and tx_location, sets FLAG_SPENT, and updates it in place.
-    ///
-    /// Returns Ok(true) if a record was updated, Ok(false) if not found, or Err on DB error.
-    ///
-    /// WARNING: This operates *inside* an existing RW txn and must **not** commit it.
+    /// Rewrites in place, inside the caller's transaction, the mined output record of `addr_script` whose stored bytes equal `expected_prev_entry_bytes` with `mark` applied, answering whether one was found.
     #[cfg(feature = "transparent_address_history_experimental")]
-    pub(super) fn mark_addr_hist_record_spent_in_txn(
+    pub(super) fn mark_addr_hist_record_in_txn(
         &self,
         txn: &mut lmdb::RwTransaction<'_>,
         addr_script: &AddrScript,
-
         expected_prev_entry_bytes: &[u8],
+        mark: SpentMark,
     ) -> Result<bool, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
@@ -725,99 +757,31 @@ impl DbV1 {
 
             let record = decode_addr_event(val)?;
             if record.is_input() {
-                return Err(StoreError::Custom(
-                    "attempt to mark an input-row as spent".into(),
-                ));
+                return Err(StoreError::Custom(format!(
+                    "attempt to mark an input-row as {}",
+                    mark.name()
+                )));
             }
             // idempotent
-            if record.is_spent() {
+            if mark.is_applied(&record) {
                 return Ok(true);
             }
             if !record.is_mined() {
-                return Err(StoreError::Custom(
-                    "attempt to mark non-mined addrhist record as spent".into(),
-                ));
+                return Err(StoreError::Custom(format!(
+                    "attempt to mark non-mined addrhist record as {}",
+                    mark.name()
+                )));
             }
 
-            let spent = AddrHistRecord::new(
+            let marked = AddrHistRecord::new(
                 record.tx_location(),
                 record.out_index(),
                 record.value(),
-                record.flags() | AddrHistRecord::FLAG_SPENT,
+                mark.apply(record.flags()),
             );
             cur.put(
                 &addr_bytes,
-                &encode_addr_event(&spent)?,
-                WriteFlags::CURRENT,
-            )?;
-            return Ok(true);
-        }
-
-        Ok(false)
-    }
-
-    /// Mark a specific AddrHistRecord as unspent in the addrhist DB.
-    /// Looks up a record by script and tx_location, sets FLAG_SPENT, and updates it in place.
-    ///
-    /// Returns Ok(true) if a record was updated, Ok(false) if not found, or Err on DB error.
-    ///
-    /// WARNING: This operates *inside* an existing RW txn and must **not** commit it.
-    #[cfg(feature = "transparent_address_history_experimental")]
-    pub(super) fn mark_addr_hist_record_unspent_in_txn(
-        &self,
-        txn: &mut lmdb::RwTransaction<'_>,
-        addr_script: &AddrScript,
-
-        expected_prev_entry_bytes: &[u8],
-    ) -> Result<bool, StoreError> {
-        let addr_bytes = addr_script.to_bytes()?;
-
-        let mut cur = txn.open_rw_cursor(self.address_history)?;
-
-        for (key, val) in cur.iter_dup_of(&addr_bytes)? {
-            if key.len() != AddrScript::ENCODED_LEN {
-                return Err(StoreError::Custom(
-                    "address history key length mismatch".into(),
-                ));
-            }
-            if val.len() != AddrEventBytes::ENCODED_LEN {
-                return Err(StoreError::Custom(
-                    "address history value length mismatch".into(),
-                ));
-            }
-
-            if val != expected_prev_entry_bytes {
-                continue;
-            }
-
-            let record = decode_addr_event(val)?;
-            // Sanity: the record we intend to mark should be a mined output (not an input).
-            if record.is_input() {
-                return Err(StoreError::Custom(
-                    "attempt to mark an input-row as unspent".into(),
-                ));
-            }
-            // If it's already unspent, treat as successful (idempotent).
-            if !record.is_spent() {
-                return Ok(true);
-            }
-            // If the record is not marked MINED, that's an invariant failure.
-            if !record.is_mined() {
-                return Err(StoreError::Custom(
-                    "attempt to mark non-mined addrhist record as unspent".into(),
-                ));
-            }
-
-            // Preserve all existing flags (including MINED), and remove SPENT.
-            let unspent = AddrHistRecord::new(
-                record.tx_location(),
-                record.out_index(),
-                record.value(),
-                record.flags() & !AddrHistRecord::FLAG_SPENT,
-            );
-            cur.put(
-                &addr_bytes,
-                &encode_addr_event(&unspent)?,
+                &encode_addr_event(&marked)?,
                 WriteFlags::CURRENT,
             )?;
             return Ok(true);

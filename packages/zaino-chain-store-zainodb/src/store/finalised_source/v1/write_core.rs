@@ -1035,10 +1035,11 @@ impl DbV1 {
                                 StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                             })?;
                         let prev_entry_bytes = packed_prev.to_bytes()?;
-                        let updated = zaino_db.mark_addr_hist_record_spent_in_txn(
+                        let updated = zaino_db.mark_addr_hist_record_in_txn(
                             &mut txn,
                             &prev_output_script,
                             &prev_entry_bytes,
+                            super::transparent_address_history::SpentMark::Spent,
                         )?;
                         if !updated {
                             // Log and treat as invalid block — marking the prev-output must succeed.
@@ -1733,10 +1734,11 @@ impl DbV1 {
                                 })?
                                 .to_bytes()?;
 
-                            let updated = zaino_db.mark_addr_hist_record_unspent_in_txn(
+                            let updated = zaino_db.mark_addr_hist_record_in_txn(
                                 &mut txn,
                                 prev_output_script,
                                 &spent_prev_entry,
+                                super::transparent_address_history::SpentMark::Unspent,
                             )?;
 
                             if !updated {
