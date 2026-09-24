@@ -312,7 +312,7 @@ pub(crate) async fn build_indexed_block_from_source<S: ChainStoreSource + ?Sized
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let fetched = fetch_block_for_indexing(source, height_int).await?;
     assemble_indexed_block(
         fetched,
@@ -346,6 +346,11 @@ impl FetchedBlock {
     pub(crate) fn block_work(&self) -> crate::types::SingleBlockWork {
         self.block.header.bits.to_work()
     }
+
+    /// This block's hash, for naming it in an error.
+    pub(crate) fn hash(&self) -> crate::types::BlockHash {
+        crate::types::BlockHash(self.block.header.hash.into())
+    }
 }
 
 /// Reads one block and its commitment-tree roots from the source.
@@ -370,7 +375,7 @@ pub(crate) fn assemble_indexed_block(
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let _assembling = crate::timer::Timer::start(metrics::histogram!(
         crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS
     ));
@@ -461,18 +466,21 @@ pub(crate) fn indexed_block_from_parts(
     block: &zaino_primitives::types::Block,
     tree_roots: &zaino_primitives::types::TreeRoots,
     parent_chainwork: Option<AbsoluteChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let hash = crate::types::BlockHash(block.header.hash.into());
-    let chainwork =
-        crate::conversion::chainwork_from_parent(block.header.bits, hash, parent_chainwork)
-            .map_err(|error| inconsistent(error.to_string()))?;
-    crate::conversion::indexed_block(block, tree_roots, chainwork)
-        .map_err(|error| inconsistent(error.to_string()))
+    let chainwork = crate::conversion::chainwork_from_parent(
+        block.header.bits.to_work(),
+        hash,
+        Height(u32::from(block.header.height)),
+        parent_chainwork,
+    )
+    .map_err(conversion_error)?;
+    crate::conversion::indexed_block(block, tree_roots, chainwork).map_err(conversion_error)
 }
 
 use zaino_chain_store::ChainStoreSource;
 
-use crate::error::{inconsistent, source_error};
+use crate::error::{conversion_error, inconsistent, source_error};
 
 // The build-behaviour knobs — how wide a sync runs in the background, how many
 // attempts it makes, and how long it waits between them — were constants here.
@@ -1238,7 +1246,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     ///
     /// For reorg handling, callers should delete tip blocks using [`FinalisedState::delete_block_at_height`]
     /// or [`FinalisedState::delete_block`] before re-appending.
-    pub async fn write_block(&self, b: IndexedBlock) -> Result<(), StoreError> {
+    pub async fn write_block(&self, b: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         self.db.write_block(b).await?;
         self.refresh_watermark().await;
         Ok(())

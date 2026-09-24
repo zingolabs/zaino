@@ -59,10 +59,10 @@ use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
-    AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactDifficulty, CompactOrchardAction,
+    AbsoluteChainWork, BlockContext, BlockData, BlockHash, CompactOrchardAction,
     CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
-    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, TransactionHash,
-    TransparentCompactTx, TxInCompact, TxOutCompact,
+    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, SingleBlockWork, TransactionHash,
+    TransparentCompactTx, TxInCompact, TxOutCompact, GENESIS_HEIGHT,
 };
 
 /// A domain block could not be expressed as an [`IndexedBlock`].
@@ -100,22 +100,23 @@ pub enum BlockConversionError {
         /// The position that did not fit.
         position: usize,
     },
+    /// A block above genesis was built without its parent's chainwork, which only genesis may lack.
+    #[error("block {hash} at height {height} has no parent chainwork to accumulate onto")]
+    ParentChainWorkUnknown {
+        /// The block that could not be converted.
+        hash: BlockHash,
+        /// The block's height, which is above genesis.
+        height: Height,
+    },
 }
 
-/// This block's chainwork, accumulated onto its parent's.
-///
-/// Separate from [`indexed_block`] because the two callers arrive with
-/// different work: the store builds forward from its own tip and so has a
-/// parent's absolute chainwork, while a caller replaying an in-memory window
-/// already holds an accumulated value and passes it straight through.
-///
-/// `None` for the parent means genesis, whose chainwork is its own work.
+/// This block's chainwork accumulated onto its parent's, which is the block's own work at [`GENESIS_HEIGHT`] and an error above it when the parent's chainwork is unknown.
 pub fn chainwork_from_parent(
-    header_bits: CompactDifficulty,
+    block_work: SingleBlockWork,
     hash: BlockHash,
+    height: Height,
     parent_chainwork: Option<AbsoluteChainWork>,
 ) -> Result<AbsoluteChainWork, BlockConversionError> {
-    let block_work = header_bits.to_work();
     match parent_chainwork {
         Some(parent) => {
             parent
@@ -125,24 +126,30 @@ pub fn chainwork_from_parent(
                     reason: error.to_string(),
                 })
         }
-        None => Ok(AbsoluteChainWork::genesis(block_work)),
+        None if height == GENESIS_HEIGHT => Ok(AbsoluteChainWork::genesis(block_work)),
+        None => Err(BlockConversionError::ParentChainWorkUnknown { hash, height }),
     }
 }
 
-/// Re-expresses a domain block as this backend's [`IndexedBlock`].
-///
-/// `tree_roots` are not taken from `block.chain_metadata`: that carries the
-/// pool *sizes* but not the roots, and the stored form needs both. The caller
-/// asks its source for them — they are cumulative over the chain and so are not
-/// derivable from one block.
-///
-/// `chainwork` is passed in rather than derived, because a block alone does not
-/// determine it. See [`chainwork_from_parent`].
-pub fn indexed_block(
+/// [`chainwork_from_parent`] for a builder that may not know the parent's chainwork, whose block above genesis then has none.
+pub fn chainwork_from_parent_if_known(
+    block_work: SingleBlockWork,
+    hash: BlockHash,
+    height: Height,
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<Option<AbsoluteChainWork>, BlockConversionError> {
+    match chainwork_from_parent(block_work, hash, height, parent_chainwork) {
+        Err(BlockConversionError::ParentChainWorkUnknown { .. }) => Ok(None),
+        result => result.map(Some),
+    }
+}
+
+/// Re-expresses a domain block as this backend's [`IndexedBlock`], taking the cumulative `tree_roots` and the `chainwork` that a block alone does not determine in whichever form the caller holds.
+pub fn indexed_block<Work>(
     block: &Block,
     tree_roots: &TreeRoots,
-    chainwork: AbsoluteChainWork,
-) -> Result<IndexedBlock, BlockConversionError> {
+    chainwork: Work,
+) -> Result<IndexedBlock<Work>, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
     let data = block_data(&block.header);
@@ -354,6 +361,74 @@ fn orchard_shaped(pool: &zaino_primitives::types::OrchardData) -> OrchardCompact
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod chainwork_from_parent {
+    use super::*;
+    use crate::types::CompactDifficulty;
+
+    fn work() -> SingleBlockWork {
+        CompactDifficulty::try_from_bits(0x2007_ffff)
+            .expect("a valid nBits")
+            .to_work()
+    }
+
+    fn hash() -> BlockHash {
+        BlockHash([1u8; 32])
+    }
+
+    /// A block above genesis whose parent's chainwork is unknown cannot be given one, and is not given genesis work.
+    #[test]
+    fn an_unknown_parent_above_genesis_is_an_error() {
+        let error = chainwork_from_parent(work(), hash(), Height(1), None)
+            .expect_err("no parent to accumulate onto");
+        assert!(matches!(
+            error,
+            BlockConversionError::ParentChainWorkUnknown {
+                height: Height(1),
+                ..
+            }
+        ));
+    }
+
+    /// Genesis has no parent, and its chainwork is its own work.
+    #[test]
+    fn genesis_chainwork_is_its_own_work() {
+        let chainwork = chainwork_from_parent(work(), hash(), GENESIS_HEIGHT, None)
+            .expect("nothing to overflow");
+        assert!(chainwork == AbsoluteChainWork::genesis(work()));
+    }
+
+    /// A block with a known parent accumulates its own work onto the parent's.
+    #[test]
+    fn a_known_parent_accumulates() {
+        let parent = AbsoluteChainWork::genesis(work());
+        let chainwork = chainwork_from_parent(work(), hash(), Height(1), Some(parent))
+            .expect("nothing to overflow");
+        assert!(chainwork == parent.accumulate(work()).expect("no overflow"));
+    }
+
+    /// A block above genesis whose parent's chainwork is unknown has no chainwork, not genesis work.
+    #[test]
+    fn if_known_leaves_an_unknown_parent_above_genesis_without_chainwork() {
+        let chainwork = chainwork_from_parent_if_known(work(), hash(), Height(1), None)
+            .expect("nothing to overflow");
+        assert!(chainwork.is_none());
+    }
+
+    /// The optional form still seeds genesis and still accumulates onto a known parent.
+    #[test]
+    fn if_known_agrees_with_the_total_form_where_that_form_answers() {
+        let genesis = chainwork_from_parent_if_known(work(), hash(), GENESIS_HEIGHT, None)
+            .expect("nothing to overflow");
+        assert!(genesis == Some(AbsoluteChainWork::genesis(work())));
+
+        let parent = AbsoluteChainWork::genesis(work());
+        let next = chainwork_from_parent_if_known(work(), hash(), Height(1), Some(parent))
+            .expect("nothing to overflow");
+        assert!(next == Some(parent.accumulate(work()).expect("no overflow")));
+    }
 }
 
 #[cfg(test)]

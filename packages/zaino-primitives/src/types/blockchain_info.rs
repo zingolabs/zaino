@@ -42,15 +42,10 @@ pub struct BlockchainInfo {
 
     /// Total work in the best chain.
     ///
-    /// `None` when the validator does not track it. Zebra does not store
-    /// cumulative work per height (ZcashFoundation/zebra#7109) and reports zero
-    /// — which is not a possible amount of work for a real chain, so it is
-    /// carried as absence rather than as the number zero, which a consumer
-    /// might otherwise compare against.
-    ///
-    /// Full 256-bit width where it is reported. The wire form is a 64-bit
-    /// integer upstream despite documenting itself as hex-encoded, which would
-    /// truncate every mainnet value; [`AbsoluteChainWork`] avoids that.
+    /// `None` from Zebra, which does not report chainwork over RPC. Modelled
+    /// because a caller that has it can order competing branches without
+    /// recomputing work from headers; callers must handle its absence rather
+    /// than assume it.
     pub chain_work: Option<AbsoluteChainWork>,
 
     /// Whether the validator has pruned block data.
