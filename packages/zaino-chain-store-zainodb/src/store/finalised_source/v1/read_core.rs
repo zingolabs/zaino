@@ -40,6 +40,9 @@ impl DbV1 {
     /// Returns the greatest `Height` stored in `headers`
     /// (`None` if the DB is still empty).
     pub(crate) async fn tip_height(&self) -> Result<Option<Height>, StoreError> {
+        #[cfg(test)]
+        self.tip_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
             let cur = ro.open_ro_cursor(self.headers)?;

@@ -7,8 +7,9 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
-use crate::store::capability::{DbMetadata, DbRead as _};
-use crate::store::finalised_source::v1::schema;
+use crate::codec::DbCodec as _;
+use crate::store::capability::{BlockCoreExt as _, BlockShieldedExt as _, DbMetadata, DbRead as _};
+use crate::store::finalised_source::v1::{schema, DbV1, METADATA_KEY};
 use crate::store::finalised_source::FinalisedSource;
 use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
@@ -340,6 +341,178 @@ async fn a_database_written_by_another_schema_is_rebuilt_empty() {
     assert_eq!(
         backend.get_metadata().await.unwrap(),
         DbMetadata::new(schema::schema_hash().expect("every canonical record encodes"))
+    );
+}
+
+/// A persistent regtest store rooted in a fresh temporary directory, and that directory.
+fn temporary_store_settings() -> (TempDir, StoreSettings) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = StoreSettings::new(
+        ChainStoreConfig::at_path(temp_dir.path().to_path_buf()),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
+    (temp_dir, config)
+}
+
+/// The v1 database directory under `root` for the regtest network.
+fn v1_dir(root: &std::path::Path) -> PathBuf {
+    root.join("regtest").join("v1")
+}
+
+/// Overwrites the metadata singleton at `v1_dir` with `bytes`, as another build would leave it.
+fn overwrite_metadata(v1_dir: &std::path::Path, bytes: &[u8]) {
+    use lmdb::Transaction as _;
+    let env = lmdb::Environment::new()
+        .set_max_dbs(32)
+        .open(v1_dir)
+        .expect("the v1 environment opens");
+    let metadata = env
+        .open_db(Some("metadata"))
+        .expect("the metadata table exists");
+    let mut txn = env.begin_rw_txn().expect("a write transaction opens");
+    txn.put(metadata, &METADATA_KEY, &bytes, lmdb::WriteFlags::empty())
+        .expect("the row writes");
+    txn.commit().expect("the write commits");
+}
+
+/// The names of the stale database directories kept beside `v1` under `root`.
+fn stale_dirs(root: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(root.join("regtest"))
+        .expect("the network directory exists")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("v1.stale-"))
+        .collect()
+}
+
+/// A metadata row this build cannot decode names a database another build wrote, which is moved aside for the operator rather than deleted.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_undecodable_metadata_row_moves_the_database_aside() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    drop(DbV1::spawn(&config).await.expect("a fresh database opens"));
+    overwrite_metadata(&v1_dir(temp_dir.path()), b"torn");
+
+    let reopened = DbV1::spawn(&config)
+        .await
+        .expect("this build rebuilds beside the old database");
+    drop(reopened);
+
+    let stale = stale_dirs(temp_dir.path());
+    assert_eq!(
+        stale.len(),
+        1,
+        "the old database is kept beside the new one: {stale:?}"
+    );
+    assert!(
+        temp_dir
+            .path()
+            .join("regtest")
+            .join(&stale[0])
+            .join("data.mdb")
+            .exists(),
+        "the stale directory keeps the old data file"
+    );
+}
+
+/// A database carrying another schema's hash is moved aside under that hash, so a rollback or a mistaken flag never costs the sync.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_with_another_schema_hash_is_moved_aside_before_the_rebuild() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    drop(DbV1::spawn(&config).await.expect("a fresh database opens"));
+    let other_build = DbMetadata::new([0xab; 32])
+        .to_bytes()
+        .expect("metadata encodes");
+    overwrite_metadata(&v1_dir(temp_dir.path()), &other_build);
+
+    let reopened = DbV1::spawn(&config)
+        .await
+        .expect("this build rebuilds beside the old database");
+    assert_eq!(
+        reopened
+            .get_metadata()
+            .await
+            .expect("the fresh database carries metadata"),
+        DbMetadata::new(schema::schema_hash().expect("every canonical record encodes")),
+    );
+    drop(reopened);
+
+    let stale = stale_dirs(temp_dir.path());
+    assert_eq!(
+        stale.len(),
+        1,
+        "the old database is kept beside the new one: {stale:?}"
+    );
+    assert!(
+        stale[0].contains(&hex::encode(&[0xab; 32][..4])),
+        "the stale directory is named by the schema hash it carries: {}",
+        stale[0]
+    );
+}
+
+/// A dense-table point read costs one transaction: the row's absence already says the height is not stored.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dense_point_read_does_not_look_up_the_tip() {
+    init_tracing();
+    let blocks = load_test_vectors().unwrap().blocks;
+    let (_temp_dir, config) = temporary_store_settings();
+    let db = DbV1::spawn(&config).await.expect("a fresh database opens");
+    crate::tests::fixtures::sync_db_with_blockdata(&db, &blocks, Some(5)).await;
+
+    let before = db.tip_lookups();
+    db.get_block_header(Height(3))
+        .await
+        .expect("a stored header reads");
+
+    assert_eq!(
+        db.tip_lookups() - before,
+        0,
+        "a point read on a dense table must not open a second transaction for the tip"
+    );
+}
+
+/// A sparse-table range read validates the range once, not once per height on top of that.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sparse_range_read_looks_up_the_tip_once() {
+    init_tracing();
+    let blocks = load_test_vectors().unwrap().blocks;
+    let (_temp_dir, config) = temporary_store_settings();
+    let db = DbV1::spawn(&config).await.expect("a fresh database opens");
+    crate::tests::fixtures::sync_db_with_blockdata(&db, &blocks, Some(5)).await;
+
+    let before = db.tip_lookups();
+    let lists = db
+        .get_block_range_ironwood(Height(0), Height(4))
+        .await
+        .expect("a stored range reads");
+
+    assert_eq!(lists.len(), 5, "one entry per requested height");
+    assert_eq!(
+        db.tip_lookups() - before,
+        1,
+        "the range is validated once; each height then reads its own row only"
+    );
+}
+
+/// A range past the tip is the same condition as a height past the tip, and is reported the same way: as data the store does not hold.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_range_past_the_tip_is_reported_as_unavailable() {
+    init_tracing();
+    let (_data, _db_dir, _zaino_db, db_reader) = load_vectors_v1db_and_reader().await;
+    let tip = db_reader
+        .db_height()
+        .await
+        .expect("the store reports its height")
+        .expect("the store is synced");
+
+    let past_tip = db_reader
+        .get_stored_block_range(Height(tip.0 + 1), Height(tip.0 + 2))
+        .await;
+
+    assert!(
+        matches!(past_tip, Err(StoreError::DataUnavailable(_))),
+        "expected DataUnavailable, got {past_tip:?}"
     );
 }
 

@@ -90,6 +90,15 @@ fn blockheaderdata_golden_bytes() {
     );
 }
 
+/// One canonical header pins the encoding for both the goldens here and the schema hash, so the two cannot drift apart.
+#[test]
+fn the_fixture_header_is_the_schema_canonical_header() {
+    assert_eq!(
+        canonical_blockheaderdata(),
+        crate::store::finalised_source::v1::schema::canonical::block_header_data()
+    );
+}
+
 #[test]
 fn blockheaderdata_round_trips() {
     let bheader = canonical_blockheaderdata();

@@ -455,4 +455,20 @@ mod hash_schema {
     fn this_build_computes_a_schema_hash() {
         schema_hash().expect("every canonical record encodes");
     }
+
+    /// The hash covers what the store writes into a layout, not the layout alone, so the record layouts, tables, keys and features by themselves must not reproduce it.
+    #[test]
+    fn the_hash_covers_more_than_the_record_layouts() {
+        let layout_only = hash_schema(
+            &canonical_encodings().expect("every canonical record encodes"),
+            TABLES,
+            SINGLETON_KEYS,
+            ENABLED_INDEX_FEATURES,
+        );
+        assert_ne!(
+            schema_hash().expect("every canonical record encodes"),
+            layout_only,
+            "a rule change that leaves every layout intact would not rebuild the database"
+        );
+    }
 }

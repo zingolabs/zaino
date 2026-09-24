@@ -350,6 +350,10 @@ pub(crate) struct DbV1 {
 
     /// BlockCache config data.
     config: StoreSettings,
+
+    /// How many times this backend has looked up its tip height, so a test can count the transactions a read costs.
+    #[cfg(test)]
+    tip_lookups: std::sync::atomic::AtomicUsize,
 }
 
 /// Inherent implementation for [`DbV1`].
@@ -480,7 +484,15 @@ impl DbV1 {
             cancel_token: CancellationToken::new(),
             status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
             config: config.clone(),
+            #[cfg(test)]
+            tip_lookups: std::sync::atomic::AtomicUsize::new(0),
         })
+    }
+
+    /// How many tip-height lookups this backend has made so far.
+    #[cfg(test)]
+    pub(crate) fn tip_lookups(&self) -> usize {
+        self.tip_lookups.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// A detached handle-copy of this DB for moving into a `spawn` / `spawn_blocking`
@@ -507,6 +519,8 @@ impl DbV1 {
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
+            #[cfg(test)]
+            tip_lookups: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
