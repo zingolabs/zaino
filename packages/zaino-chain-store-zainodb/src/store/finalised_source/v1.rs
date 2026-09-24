@@ -10,10 +10,13 @@
 //! features. The hash is stored in the database metadata; a mismatch on open rebuilds the store.
 //!
 //! ## Trust model
-//! Blocks come from the validator and are not re-verified. The one check on the write path is
-//! continuity: each block's parent must be the stored tip, which keeps the chain append-only.
-//! Heights run from genesis to the tip with no gaps, so a read only needs to confirm that its
-//! heights are stored.
+//! Blocks come from the validator and are trusted. The write path checks two things: each block's
+//! parent must be the stored tip, which keeps the chain append-only, and each block's txids must
+//! reproduce its header's merkle root, which catches a fault in Zaino's own conversion of the
+//! block. The indexes a write derives from a block are covered by unit tests, not by runtime
+//! cross-checks. Silent corruption on disk and mutation of the database from outside Zaino are
+//! not in scope for the store's correctness checks. Heights run from genesis to the tip with no
+//! gaps, so a read only needs to confirm that its heights are stored.
 //!
 //! ## Concurrency model
 //! LMDB supports many concurrent readers and a single writer per environment. This implementation

@@ -17,7 +17,10 @@ features whose complexity outweighs their value to either product.
    because it enforces the append-only rule of the finalised state, not data
    correctness. Its error is renamed as a continuity violation. The
    ingest-time merkle-root check also stays, because it catches a fault in
-   Zaino's own conversion of the block.
+   Zaino's own conversion of the block. The indexes a write derives from a
+   block are covered by unit tests, not by runtime cross-checks. Silent
+   corruption on disk and mutation of the database from outside Zaino are not
+   in scope for the store's correctness checks.
 3. **Database migrations go.** The database records one schema identity, its
    schema hash. On a mismatch, zainod logs one line, deletes the index
    directory, and resyncs from zebra. `DbVersion`, `MigrationStatus`,

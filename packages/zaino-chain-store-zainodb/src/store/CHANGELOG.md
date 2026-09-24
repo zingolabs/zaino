@@ -549,7 +549,10 @@ API / capabilities
   the on-demand validation of reads. The write path keeps two checks.
   Parent-hash continuity now fails as `StoreError::DoesNotExtendTip`. The
   merkle-root check at ingest stays, because it catches a fault in Zaino's own
-  conversion of the block, which no type or validator guarantee covers.
+  conversion of the block, which no type or validator guarantee covers. The
+  indexes a write derives from a block are covered by unit tests, not by
+  runtime cross-checks. Silent corruption on disk and mutation of the database
+  from outside Zaino are not in scope for the store's correctness checks.
 
 Rebuild
 - Every existing v1.0.0 to v1.3.0 database rebuilds once on its first start

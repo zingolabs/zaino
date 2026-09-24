@@ -32,7 +32,10 @@ startup integrity scans, the background re-validation, and the validation of \
 reads are removed. The write path keeps two checks. Each block must extend \
 the stored tip, and a block that does not fails as \
 StoreError::DoesNotExtendTip. The txids of each block must also reproduce its \
-header's merkle root, which catches a fault in Zaino's own block conversion.
+header's merkle root, which catches a fault in Zaino's own block conversion. \
+The indexes a write derives from a block are covered by unit tests, not by \
+runtime cross-checks. Silent corruption on disk and mutation of the database \
+from outside Zaino are not in scope for the store's correctness checks.
 """
 
 [[changes]]

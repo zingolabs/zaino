@@ -68,6 +68,13 @@ storage, or after a hard pod eviction, a crash **can leave torn pages**. Those
 surface as decode errors or LMDB cursor assertions. The recovery is to delete
 the database directory; zainod then resyncs it from the validator.
 
+Two classes of fault are out of scope for the store's correctness checks:
+silent corruption on disk, and mutation of the database from outside Zaino.
+The store checks what Zaino itself derives at the write boundary, the parent
+hash against the stored tip and the header merkle root against the block's
+txids, and covers the indexes it derives from a block with unit tests rather
+than runtime cross-checks.
+
 ## A schema mismatch rebuilds the database
 
 There are no migrations. The `metadata` record holds the schema hash of the

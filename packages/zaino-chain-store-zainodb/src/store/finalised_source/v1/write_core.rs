@@ -4,6 +4,9 @@ use super::*;
 
 use crate::metric_names::*;
 
+#[cfg(test)]
+mod write_block;
+
 use sha2::{Digest, Sha256};
 
 #[cfg(not(feature = "transparent_address_history_experimental"))]
@@ -635,7 +638,8 @@ impl DbV1 {
     ///   When `false`, accumulator maintenance is deferred — the caller is responsible for a bulk
     ///   rebuild (see [`DbV1::rebuild_tx_out_set_accumulator`]).
     ///
-    /// The only check before commit is parent-hash continuity against the stored tip.
+    /// The checks before commit are parent-hash continuity against the stored tip and the header
+    /// merkle root against the block's txids.
     ///
     /// NOTE: This method should never leave a block partially written to the database.
     // `u32::is_multiple_of` is only stable from Rust 1.87; the `% 100 == 0` form below keeps the
