@@ -5,7 +5,7 @@
 //! force it:
 //!
 //! - the finalised state is gone. The old `sync` took an `Arc<FinalisedState>`
-//!   and read `db_height()` for both its window floor and its trim floor; both
+//!   and read `db_height()` for both its anchor floor and its trim floor; both
 //!   now come from the chain tip and the configured depth, which is the arm the
 //!   old code already took whenever the database lagged.
 //! - the source is the `zaino-source` ports rather than the wire-typed
@@ -18,6 +18,10 @@
 //! The block-carrying listener and `add_nonbest_block` are not here: no source
 //! ever implemented `nonfinalized_listener`, so both were unreachable.
 //!
+//! # Who picks the tip
+//!
+//! The source does. Retained work only checks the source's answer; see
+//! [`TipSelection`] and the crate's `usage.md`.
 //!
 //! # Advancing is not an operation
 //!
@@ -42,14 +46,17 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _, ChainHeadWork,
+    ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
-use zaino_primitives::types::{BlockHash, BlockRef, ChainStateEpoch, Height, TreeRoots};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, TreeRoots,
+};
 use zaino_status::{NamedAtomicStatus, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
+    graph::{ChainGraph as _, NotChildOfTip, NotOnBestChain},
     snapshot::MapBackedSnapshot,
     subscriber::ChainHeadSubscriber,
 };
@@ -57,8 +64,38 @@ use crate::{
 /// The name this component reports status under.
 const COMPONENT: &str = "ChainHead";
 
-/// Retention margin below the configured non-finalized depth.
+/// Retention margin below the configured depth.
+///
+/// Trimming stops this far below the seam, so a block stays readable in the
+/// graph for a while after it has been handed off as final. It also bounds the
+/// reorg ancestry walk, which may not step further back than the window the
+/// graph maintains.
+///
+/// It does not guard the handoff. Every block that crosses the seam is handed
+/// off whatever the margin is, because trimming runs after the handoff has read
+/// them. Nor does it widen the reorg-possible range: `MAX_NONFINALISED_DEPTH` is
+/// already the reorg bound plus the fork point, so the window covers the deepest
+/// reorg it is sized for without this.
 const RETENTION_MARGIN: u32 = 10;
+
+/// What decides the best chain when the source's tip and retained work disagree.
+///
+/// A policy, not a capability: both arms run the same comparison after every
+/// advance, and differ only in what they do when a retained block outweighs the
+/// tip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TipSelection {
+    /// The source's tip is the best chain. A heavier retained block is logged
+    /// and left where it is.
+    Source,
+    /// The heaviest retained block is the best chain, even when the source has
+    /// moved its tip elsewhere.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a selectable policy; only tests select it")
+    )]
+    HeaviestRetained,
+}
 
 /// How many frozen blocks the handoff channel buffers before a slow consumer
 /// starts missing them.
@@ -86,6 +123,7 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     cancel: CancellationToken,
     task: Mutex<Option<JoinHandle<()>>>,
     config: ChainHeadConfig,
+    tip_selection: TipSelection,
 }
 
 impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
@@ -100,8 +138,8 @@ impl<S: ChainHeadBlockSource> std::fmt::Debug for ChainHeadService<S> {
 impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// Anchors the graph, then starts the writer task that extends it.
     ///
-    /// Anchoring is the old `initialize` with `resolve_floor_block`: one block
-    /// at the window floor, which the writer task then extends one block at a
+    /// Anchoring is the old `initialize`, through `anchor_block`: one block
+    /// at the anchor height, which the writer task then extends one block at a
     /// time. Doing it before returning is what makes
     /// `ChainHeadSubscriber::current` total — there is no state in which a
     /// ChainHead exists with nothing to answer from.
@@ -126,7 +164,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let service = Self::anchored(source, config, cancel).await?;
+        let service = Self::anchored(source, config, TipSelection::Source, cancel).await?;
 
         let worker = Arc::clone(&service);
         let handle = tokio::spawn(async move { worker.run().await });
@@ -151,7 +189,19 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Self::anchored(source, config, cancel).await
+        Self::anchored(source, config, TipSelection::Source, cancel).await
+    }
+
+    /// [`spawn_without_writer`](Self::spawn_without_writer) under a chosen
+    /// [`TipSelection`].
+    #[cfg(test)]
+    pub(crate) async fn spawn_without_writer_selecting(
+        source: Arc<S>,
+        config: ChainHeadConfig,
+        tip_selection: TipSelection,
+        cancel: CancellationToken,
+    ) -> Result<Arc<Self>, ChainHeadInitError> {
+        Self::anchored(source, config, tip_selection, cancel).await
     }
 
     /// Advances the graph by one iteration and publishes the result.
@@ -168,11 +218,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     async fn anchored(
         source: Arc<S>,
         config: ChainHeadConfig,
+        tip_selection: TipSelection,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
-        let snapshot = floor_with_retry(&source, &config, &cancel).await?;
+        let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
         info!(
             height = u32::from(snapshot.best_tip().height),
             hash = %snapshot.best_tip().hash,
@@ -194,11 +245,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             cancel,
             task: Mutex::new(None),
             config,
+            tip_selection,
         });
-        // Still `Syncing`: the graph starts at the window floor, not at the
-        // tip, so a reader served now would see a head up to `max_depth` below
-        // the chain. `Ready` is published by the first successful advance,
-        // which is the first moment the snapshot matches the validator's tip.
+        // Still `Syncing`: the anchor is the window's floor, not its tip, so a
+        // reader served now would see a head up to `max_depth` below the
+        // chain. `Ready` is published by the first successful advance, which
+        // is the first moment the snapshot matches the validator's tip.
 
         Ok(service)
     }
@@ -380,12 +432,14 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // greater of the finalised database's height and this floor; with the
         // database gone the floor is the whole rule, and it is the arm the old
         // code took whenever the database lagged (#1261).
-        let floor_height = height_below(chain_height, self.config.max_depth());
+        let anchor_height = height_below(chain_height, self.config.max_depth());
 
-        let mut graph = if previous.best_tip().height < floor_height {
+        let mut graph = if previous.best_tip().height < anchor_height {
             // The chain moved further than the window covers. Re-anchor rather
             // than walking the gap one block at a time.
-            MapBackedSnapshot::from_initial_block(self.resolve_floor_block(floor_height).await?)
+            MapBackedSnapshot::from_initial_block(
+                anchor_block(self.source.as_ref(), anchor_height).await?,
+            )
         } else {
             previous.clone()
         };
@@ -413,30 +467,21 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             let parent_hash = block.header.prev_hash;
             if parent_hash == graph.best_tip().hash {
                 // Normal chain progression
-                let prev_block = graph
-                    .tip_block()
-                    .ok_or_else(|| {
-                        ChainHeadAdvanceError::ReorgFailure(format!(
-                            "graph is missing its own tip {:?}",
-                            graph.best_tip()
-                        ))
-                    })?
-                    .clone();
                 let roots = match roots {
                     Ok((roots_hash, roots)) if roots_hash == block.header.hash => roots,
                     // A reorg swapped the best-chain block between the two
                     // reads, or the height-addressed read failed; the hash we
                     // hold is authoritative, so refetch by it.
-                    _ => self.tree_roots(block.header.hash).await?,
+                    _ => tree_roots(self.source.as_ref(), block.header.hash).await?,
                 };
-                let work = accumulated_work(&prev_block, &block)?;
-                let chainblock = chain_head_block(block.clone(), &roots, work);
+                let chainblock =
+                    chain_head_block(block, roots, ParentWork::Retained(graph.tip_block().work))?;
                 info!(
                     height = u32::from(chainblock.height()),
                     hash = %chainblock.hash(),
                     "Syncing block"
                 );
-                graph.add_block_new_chaintip(chainblock);
+                extend(&mut graph, chainblock)?;
             } else {
                 // There's been a reorg. The fresh block is the new chaintip; we
                 // work backwards from it and update heights_to_hashes with it
@@ -447,31 +492,29 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
         self.check_for_nonhigher_reorgs(&mut graph).await?;
 
-        // Trim to a fixed window below the tip.
-        //
-        // Best chain is the most-work branch retained, which a reorg may have
-        // left as something other than the block we just extended to.
-        //
-        // Strictly more work, not merely equal: two blocks at one height with
-        // the same difficulty carry the same accumulated work, and picking
-        // between them by which the map happened to yield last would let a tie
-        // flip the tip away from the block the validator just told us is
-        // canonical. On a tie the validator's answer — which the walk above has
-        // already applied — wins.
-        let tip_work = graph.tip_block().map(|block| block.work).ok_or_else(|| {
-            ChainHeadAdvanceError::ReorgFailure(format!(
-                "graph is missing its own tip {:?}",
-                graph.best_tip()
-            ))
-        })?;
-        let heaviest = graph
-            .blocks
-            .values()
-            .max_by_key(|block| block.work)
-            .cloned()
-            .expect("a graph always retains at least its floor block");
-        if heaviest.work > tip_work {
-            self.handle_reorg(&mut graph, &heaviest).await?;
+        // Trim to a fixed window below the tip. This was the greater of the
+        // finalised database's height and this tip-relative cap; the cap is now
+        // the whole rule, and it is what bounded memory before whenever the
+        // database under-reported or was pinned at zero in ephemeral mode.
+        // Trimming happens in `publish_snapshot`, after the handoff has read
+        // the blocks that crossed the seam this iteration. Trimming first would
+        // remove them before they could be handed off.
+
+        // Check the source's tip against retained work; `tip_selection`
+        // decides what a disagreement does.
+        let heaviest = graph.heaviest_block();
+        if heaviest.hash() != graph.best_tip().hash {
+            match self.tip_selection {
+                TipSelection::Source => warn!(
+                    tip = ?graph.best_tip(),
+                    heavier = ?heaviest.reference,
+                    "a retained block outweighs the source's tip; following the source"
+                ),
+                TipSelection::HeaviestRetained => {
+                    let heaviest = heaviest.clone();
+                    self.handle_reorg(&mut graph, &heaviest).await?;
+                }
+            }
         }
 
         Ok(graph)
@@ -503,14 +546,17 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             }
             descended = descended.saturating_add(1);
 
-            match graph.blocks.get(&parent_hash).cloned() {
-                Some(prev_block) if graph.is_on_best_chain(prev_block.reference) => {
-                    break prev_block
-                }
-                Some(prev_block) => {
-                    parent_hash = prev_block.parent_hash;
-                    branch.push(BranchBlock::Retained(Box::new(prev_block)));
-                }
+            match graph.block_by_hash(&parent_hash).cloned() {
+                // The parent is the fork point exactly when it is canonical, so
+                // the rewind is also the test. A refused rewind leaves the
+                // graph as it was, so the walk can carry on below it.
+                Some(prev_block) => match graph.rewind_to(prev_block.reference) {
+                    Ok(()) => break prev_block,
+                    Err(NotOnBestChain) => {
+                        parent_hash = prev_block.parent_hash;
+                        branch.push(BranchBlock::Retained(Box::new(prev_block)));
+                    }
+                },
                 None => {
                     let fetched = self.block_at_hash(parent_hash).await?.ok_or(
                         ChainHeadAdvanceError::InconsistentSource(format!(
@@ -529,10 +575,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         let mut prev_block = fork_point;
         for pending in branch.into_iter().rev() {
             prev_block = pending.to_chain_head_block(&prev_block, self).await?;
-            graph.add_block_new_chaintip(prev_block.clone());
+            extend(graph, prev_block.clone())?;
         }
         let chainblock = block.to_chain_head_block(&prev_block, self).await?;
-        graph.add_block_new_chaintip(chainblock.clone());
+        extend(graph, chainblock.clone())?;
         Ok(chainblock)
     }
 
@@ -652,48 +698,6 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// How far below the tip blocks are retained.
     fn max_retained_depth(&self) -> u32 {
         self.config.max_depth().saturating_add(RETENTION_MARGIN)
-    }
-
-    async fn block_to_chainblock(
-        &self,
-        prev_block: &ChainHeadBlock,
-        block: &zaino_primitives::types::Block,
-    ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-        let tree_roots = self.tree_roots(block.header.hash).await?;
-        let work = accumulated_work(prev_block, block)?;
-        Ok(chain_head_block(block.clone(), &tree_roots, work))
-    }
-
-    /// Get commitment tree roots from the blockchain source.
-    async fn tree_roots(&self, hash: BlockHash) -> Result<TreeRoots, ChainHeadAdvanceError> {
-        self.source
-            .get_commitment_tree_roots(hash)
-            .await
-            .map_err(|error| advance_error(error, &format!("tree roots for block {hash}")))
-    }
-
-    /// Resolve the window floor — the graph's root block — at `floor_height`.
-    ///
-    /// The finalised-reader arm is gone with the finalised state; what remains
-    /// is the fallback the old code used whenever the reader could not serve
-    /// the height, which was every time the database lagged.
-    ///
-    /// The floor sits below the reorg-possible range, so its work is the base
-    /// of this window's own accumulation rather than an absolute value — see
-    /// `ChainHeadWork`.
-    async fn resolve_floor_block(
-        &self,
-        floor_height: Height,
-    ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-        let block = self.block_at_height(floor_height).await?.ok_or_else(|| {
-            ChainHeadAdvanceError::InconsistentSource(format!(
-                "floor block {floor_height} unavailable from validator"
-            ))
-        })?;
-
-        let tree_roots = self.tree_roots(block.header.hash).await?;
-        let work = ChainHeadWork::anchored_at(block_work(&block));
-        Ok(chain_head_block(block, &tree_roots, work))
     }
 
     /// One coherent height/hash pair from the source.
@@ -843,34 +847,58 @@ fn advance_error<E: fmt::Debug + fmt::Display>(
     }
 }
 
-/// This block's own work, from its difficulty.
-fn block_work(block: &zaino_primitives::types::Block) -> u128 {
-    std::num::NonZeroU128::from(block.header.bits.to_work()).get()
+/// The commitment tree roots after the block `hash`, from the source.
+async fn tree_roots<S: ChainHeadBlockSource>(
+    source: &S,
+    hash: BlockHash,
+) -> Result<TreeRoots, ChainHeadAdvanceError> {
+    source
+        .get_commitment_tree_roots(hash)
+        .await
+        .map_err(|error| advance_error(error, &format!("tree roots for block {hash}")))
 }
 
-/// `block`'s work, accumulated onto its parent's.
-fn accumulated_work(
-    prev_block: &ChainHeadBlock,
-    block: &zaino_primitives::types::Block,
-) -> Result<ChainHeadWork, ChainHeadAdvanceError> {
-    prev_block
-        .work
-        .checked_add(block_work(block))
-        .ok_or_else(|| {
-            ChainHeadAdvanceError::ReorgFailure(format!(
-                "accumulated work overflowed at block {}",
-                block.header.hash
-            ))
-        })
+/// The block at `height` built as the window's anchor, which sits below the reorg-possible range and seeds the fold with `RelativeChainWork::ZERO`.
+async fn anchor_block<S: ChainHeadBlockSource>(
+    source: &S,
+    height: Height,
+) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
+    let block = source
+        .get_block(height)
+        .await
+        .map_err(|error| advance_error(error, &format!("anchor block {height}")))?;
+    let tree_roots = tree_roots(source, block.header.hash).await?;
+    chain_head_block(block, tree_roots, ParentWork::Anchor)
 }
 
-/// Builds a [`ChainHeadBlock`] carrying `work`.
+/// What a block being built folds its own work onto.
+#[derive(Clone, Copy, Debug)]
+enum ParentWork {
+    /// The block is the window's anchor, where work is measured from, so it folds onto nothing.
+    Anchor,
+    /// The block extends a retained parent that has accumulated this much work.
+    Retained(RelativeChainWork),
+}
+
+/// Builds a [`ChainHeadBlock`] whose work is [`RelativeChainWork::ZERO`] for [`ParentWork::Anchor`] and otherwise its parent's total plus its own.
 fn chain_head_block(
     block: zaino_primitives::types::Block,
-    tree_roots: &TreeRoots,
-    work: ChainHeadWork,
-) -> ChainHeadBlock {
-    ChainHeadBlock {
+    tree_roots: TreeRoots,
+    parent: ParentWork,
+) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
+    let work = match parent {
+        ParentWork::Retained(parent_work) => parent_work
+            .accumulate(block.header.bits.to_work())
+            .map_err(|error| {
+                ChainHeadAdvanceError::InconsistentSource(format!(
+                    "work overflowed at block {}: {error}",
+                    block.header.hash
+                ))
+            })?,
+        ParentWork::Anchor => RelativeChainWork::ZERO,
+    };
+
+    Ok(ChainHeadBlock {
         reference: BlockRef {
             hash: block.header.hash,
             height: block.header.height,
@@ -878,12 +906,24 @@ fn chain_head_block(
         parent_hash: block.header.prev_hash,
         work,
         block,
-        tree_roots: tree_roots.clone(),
-    }
+        tree_roots,
+    })
+}
+
+/// A thin wrapper over [`ChainGraph::extend`] that does nothing but map its refusal to [`ChainHeadAdvanceError::InconsistentSource`], because a block the source served that does not attach where it was asked for is inconsistent source data.
+///
+/// [`ChainGraph::extend`]: crate::graph::ChainGraph::extend
+fn extend(
+    graph: &mut MapBackedSnapshot,
+    block: ChainHeadBlock,
+) -> Result<(), ChainHeadAdvanceError> {
+    graph.extend(block).map_err(|refused: NotChildOfTip| {
+        ChainHeadAdvanceError::InconsistentSource(refused.to_string())
+    })
 }
 
 /// Anchors the graph, retrying transient source failures.
-async fn floor_with_retry<S: ChainHeadBlockSource>(
+async fn anchor_with_retry<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
     cancel: &CancellationToken,
@@ -896,7 +936,7 @@ async fn floor_with_retry<S: ChainHeadBlockSource>(
             return Err(ChainHeadInitError::Cancelled);
         }
 
-        match window_floor(source, config).await {
+        match anchor(source, config).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
                 failures += 1;
@@ -916,11 +956,10 @@ async fn floor_with_retry<S: ChainHeadBlockSource>(
     }
 }
 
-/// One attempt at anchoring: the window floor, the block at `tip - depth`,
-/// alone.
+/// One attempt at anchoring: the block at `tip - depth`, alone.
 ///
 /// The writer task extends from here one block at a time, exactly as before.
-async fn window_floor<S: ChainHeadBlockSource>(
+async fn anchor<S: ChainHeadBlockSource>(
     source: &Arc<S>,
     config: &ChainHeadConfig,
 ) -> Result<MapBackedSnapshot, ChainHeadAdvanceError> {
@@ -929,28 +968,11 @@ async fn window_floor<S: ChainHeadBlockSource>(
         .await
         .map_err(|error| advance_error(error, "chain tip"))?;
 
-    let floor_height = height_below(tip_height, config.max_depth());
+    let anchor_height = height_below(tip_height, config.max_depth());
 
-    let block = source
-        .get_block(floor_height)
-        .await
-        .map_err(|error| advance_error(error, &format!("floor block {floor_height}")))?;
-    let tree_roots = source
-        .get_commitment_tree_roots(block.header.hash)
-        .await
-        .map_err(|error| {
-            advance_error(
-                error,
-                &format!("tree roots for block {}", block.header.hash),
-            )
-        })?;
-
-    let work = ChainHeadWork::anchored_at(block_work(&block));
-    Ok(MapBackedSnapshot::from_initial_block(chain_head_block(
-        block,
-        &tree_roots,
-        work,
-    )))
+    Ok(MapBackedSnapshot::from_initial_block(
+        anchor_block(source.as_ref(), anchor_height).await?,
+    ))
 }
 
 /// Sleeps, unless cancelled first.
@@ -1112,7 +1134,12 @@ impl Block for zaino_primitives::types::Block {
         prev_block: &ChainHeadBlock,
         service: &ChainHeadService<S>,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-        service.block_to_chainblock(prev_block, self).await
+        let tree_roots = tree_roots(service.source.as_ref(), self.header.hash).await?;
+        chain_head_block(
+            self.clone(),
+            tree_roots,
+            ParentWork::Retained(prev_block.work),
+        )
     }
 }
 

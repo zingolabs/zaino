@@ -24,6 +24,11 @@ use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
 };
 
+use crate::graph::{ChainGraph, NotChildOfTip, NotOnBestChain};
+
+#[cfg(test)]
+mod tests;
+
 /// A transaction's block-order position, as a [`TxIndex`].
 ///
 /// The slot is a `usize` from iterating the block's transactions; the position
@@ -35,31 +40,24 @@ fn tx_index(position: usize) -> TxIndex {
         .expect("a block's transaction count fits TxIndex; consensus bounds it below u32::MAX")
 }
 
-/// The retained graph, held in hash maps.
+/// The retained graph: its tip, and every other retained block in a hash map.
 ///
-/// `blocks` holds every retained block, canonical and competing alike.
-/// `heights_to_hashes` names which of them is canonical at each height, so a
-/// block is on the best chain exactly when the map's entry for its height is
-/// its own hash.
+/// `retained = {tip} ⊎ others`
 ///
-/// Fields are `pub(crate)` rather than public: the runtime that builds these
-/// needs to write them, and nothing outside this crate should know they exist.
+/// `heights_to_hashes` names the canonical block at each height, so a block is
+/// on the best chain exactly when the entry for its height is its own hash.
+///
+/// The tip is a field rather than a map entry, so the graph is never empty and
+/// `tip_block` always has an answer. The fields are private. Besides the
+/// `ChainGraph` invariants, the methods here keep `others` free of the tip's
+/// hash.
 #[derive(Debug, Clone)]
 pub struct MapBackedSnapshot {
-    pub(crate) blocks: HashMap<BlockHash, ChainHeadBlock>,
-    pub(crate) heights_to_hashes: HashMap<Height, BlockHash>,
-    pub(crate) best_tip: BlockRef,
-    /// The block this graph's work is counted from, exclusive.
-    ///
-    /// Derived once from the floor block in
-    /// [`from_initial_block`](Self::from_initial_block) and carried unchanged
-    /// for the graph's life, because retention deletes the floor block long
-    /// before it stops being what the surviving work is measured from.
-    ///
-    /// Private for the same reason as `generation`: it is a fact about how this
-    /// graph was anchored, and a field the writer could assign is a field the
-    /// writer could assign wrongly.
-    work_anchor: Option<BlockRef>,
+    tip: ChainHeadBlock,
+    others: HashMap<BlockHash, ChainHeadBlock>,
+    heights_to_hashes: HashMap<Height, BlockHash>,
+    /// The block this graph's work is measured from, recorded at anchoring because retention prunes that block while every surviving block's work still counts from it.
+    work_anchor: BlockRef,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
     ///
     /// Private even to the rest of this crate, and written only by
@@ -76,112 +74,32 @@ impl MapBackedSnapshot {
     /// Inherent rather than on the port: it describes what this implementation
     /// is holding, not anything about the chain, so no consumer needs it.
     pub fn retained_block_count(&self) -> usize {
-        self.blocks.len()
+        self.blocks().count()
     }
 
-    /// The lowest canonical height this snapshot retains, which is its window floor
-    /// after a re-anchor and its trim floor otherwise.
+    /// Every retained block, the tip first.
+    fn blocks(&self) -> impl Iterator<Item = &ChainHeadBlock> {
+        std::iter::once(&self.tip).chain(self.others.values())
+    }
+
+    /// The lowest canonical height this snapshot retains, which is its anchor after a re-anchor and its trim floor otherwise.
     pub(crate) fn lowest_retained_height(&self) -> Height {
         self.heights_to_hashes
             .keys()
             .min()
             .copied()
-            .unwrap_or(self.best_tip.height)
+            .unwrap_or(self.tip.height())
     }
 
-    /// The block this snapshot names as its own tip, if the graph retains it.
-    ///
-    /// The tip is stored as a [`BlockRef`] alongside the block set, not within
-    /// it, so nothing at the type level guarantees the referenced block is
-    /// present: "the graph contains its own tip" is an invariant, not a
-    /// structural fact. This accessor is the single home of that lookup — a
-    /// `None` here means the invariant has been violated — so the check lives
-    /// in one place rather than being re-asserted at every call site.
-    pub(crate) fn tip_block(&self) -> Option<&ChainHeadBlock> {
-        self.blocks.get(&self.best_tip.hash)
-    }
-
-    /// Stamp the generation this publication carries.
-    ///
-    /// The rule lives here rather than at the call site because it is an
-    /// invariant of the epoch, not a decision the writer makes: a publication
-    /// whose tip matches `previous` describes the same chain state and inherits
-    /// its generation; one whose tip differs advances past the highest
-    /// generation yet published.
-    ///
-    /// Taking `highest_published` rather than reading `previous.generation` is
-    /// what makes it monotonic across a re-anchor. A re-anchored graph is built
-    /// from a single block and starts at zero, so inheriting from the graph it
-    /// replaces would let a generation repeat — and a consumer holding the
-    /// earlier epoch would be told its view was current.
-    pub(crate) fn stamp_generation(&mut self, previous: &Self, highest_published: u64) {
-        self.generation = if self.best_tip == previous.best_tip {
-            previous.generation
-        } else {
-            highest_published.saturating_add(1)
-        };
-    }
-
-    /// Create initial snapshot from a single block.
-    ///
-    /// The block is the window floor, and its work starts at its own block
-    /// work, so the anchor is its parent by construction. Derived here rather than
-    /// passed in: the two are the same fact, and a caller that could supply one
-    /// independently of the other could contradict it.
-    pub(crate) fn from_initial_block(block: ChainHeadBlock) -> Self {
-        let best_tip = block.reference;
-        let hash = block.hash();
-        let height = block.height();
-        // `None` at genesis: no block below it, so the work is already absolute.
-        let work_anchor = height.checked_sub(1).map(|height| BlockRef {
-            hash: block.parent_hash,
-            height,
-        });
-
-        let mut blocks = HashMap::new();
-        let mut heights_to_hashes = HashMap::new();
-
-        blocks.insert(hash, block);
-        heights_to_hashes.insert(height, hash);
-
-        Self {
-            blocks,
-            heights_to_hashes,
-            best_tip,
-            work_anchor,
-            generation: 0,
+    /// Makes `block` the tip; the previous tip becomes an ordinary retained
+    /// block. `block` may already be retained, in which case it moves out of
+    /// `others`.
+    fn replace_tip(&mut self, block: ChainHeadBlock) {
+        self.others.remove(&block.hash());
+        let previous = std::mem::replace(&mut self.tip, block);
+        if previous.hash() != self.tip.hash() {
+            self.others.insert(previous.hash(), previous);
         }
-    }
-
-    pub(crate) fn add_block_new_chaintip(&mut self, block: ChainHeadBlock) {
-        self.best_tip = block.reference;
-        self.add_block(block)
-    }
-
-    pub(crate) fn remove_finalized_blocks(&mut self, finalized_height: Height) {
-        let top_block_hash = match self
-            .heights_to_hashes
-            .iter()
-            .max_by_key(|(height, _hash)| *height)
-        {
-            Some((_height, hash)) => *hash,
-            // We have no blocks. There's nothing to remove
-            None => return,
-        };
-        // Keep the last finalized block. This means we don't have to check
-        // the finalized state when the entire non-finalized state is reorged away.
-        // If all blocks are below the finalized height, keep the highest anyway,
-        // so we don't need to re-connect the the finalized state to get chainwork, etc.
-        self.blocks.retain(|_hash, block| {
-            block.height() >= finalized_height || block.hash() == top_block_hash
-        });
-        self.heights_to_hashes
-            .retain(|height, hash| height >= &finalized_height || hash == &top_block_hash);
-    }
-
-    fn add_block(&mut self, block: ChainHeadBlock) {
-        self.heights_to_hashes.insert(block.height(), block.hash());
-        self.blocks.insert(block.hash(), block);
     }
 
     /// How many blocks separate this tip from the canonical chain.
@@ -198,7 +116,7 @@ impl MapBackedSnapshot {
                 return branch_len;
             }
             branch_len += 1;
-            let Some(parent) = self.blocks.get(&current.parent_hash) else {
+            let Some(parent) = self.block_by_hash(&current.parent_hash) else {
                 return branch_len;
             };
             current = parent;
@@ -206,30 +124,108 @@ impl MapBackedSnapshot {
     }
 }
 
-impl ChainHeadSnapshot for MapBackedSnapshot {
-    fn best_tip(&self) -> BlockRef {
-        self.best_tip
+impl ChainGraph for MapBackedSnapshot {
+    fn from_initial_block(block: ChainHeadBlock) -> Self {
+        let heights_to_hashes = HashMap::from([(block.height(), block.hash())]);
+        Self {
+            work_anchor: block.reference,
+            tip: block,
+            others: HashMap::new(),
+            heights_to_hashes,
+            generation: 0,
+        }
     }
 
-    fn work_anchor(&self) -> Option<BlockRef> {
+    fn tip_block(&self) -> &ChainHeadBlock {
+        &self.tip
+    }
+
+    /// Folds over `others` from the tip, replacing it only on strictly more
+    /// work.
+    fn heaviest_block(&self) -> &ChainHeadBlock {
+        self.others.values().fold(&self.tip, |heaviest, block| {
+            if block.work > heaviest.work {
+                block
+            } else {
+                heaviest
+            }
+        })
+    }
+
+    fn extend(&mut self, block: ChainHeadBlock) -> Result<(), NotChildOfTip> {
+        let child_height = self.tip.height().checked_add(1);
+        if block.parent_hash != self.tip.hash() || child_height != Some(block.height()) {
+            return Err(NotChildOfTip {
+                tip: self.tip.reference,
+                block: block.reference,
+            });
+        }
+        self.heights_to_hashes.insert(block.height(), block.hash());
+        self.replace_tip(block);
+        Ok(())
+    }
+
+    fn rewind_to(&mut self, block: BlockRef) -> Result<(), NotOnBestChain> {
+        if block == self.tip.reference {
+            return Ok(());
+        }
+        if !self.is_on_best_chain(block) {
+            return Err(NotOnBestChain);
+        }
+        let Some(new_tip) = self.others.remove(&block.hash) else {
+            return Err(NotOnBestChain);
+        };
+        self.heights_to_hashes
+            .retain(|height, _hash| *height <= block.height);
+        self.replace_tip(new_tip);
+        Ok(())
+    }
+
+    /// The tip is not in `others`, so trimming `others` cannot remove it.
+    fn remove_finalized_blocks(&mut self, floor: Height) {
+        let tip_hash = self.tip.hash();
+        self.others.retain(|_hash, block| block.height() >= floor);
+        self.heights_to_hashes
+            .retain(|height, hash| *height >= floor || *hash == tip_hash);
+    }
+
+    fn stamp_generation(&mut self, previous: &Self, highest_published: u64) {
+        self.generation = if self.best_tip() == previous.best_tip() {
+            previous.generation
+        } else {
+            highest_published.saturating_add(1)
+        };
+    }
+}
+
+impl ChainHeadSnapshot for MapBackedSnapshot {
+    fn best_tip(&self) -> BlockRef {
+        self.tip.reference
+    }
+
+    fn work_anchor(&self) -> BlockRef {
         self.work_anchor
     }
 
     fn epoch(&self) -> ChainStateEpoch {
         ChainStateEpoch {
             generation: self.generation,
-            best_tip: self.best_tip,
+            best_tip: self.best_tip(),
         }
     }
 
     fn block_by_hash(&self, hash: &BlockHash) -> Option<&ChainHeadBlock> {
-        self.blocks.get(hash)
+        if *hash == self.tip.hash() {
+            Some(&self.tip)
+        } else {
+            self.others.get(hash)
+        }
     }
 
     fn best_block_by_height(&self, height: Height) -> Option<&ChainHeadBlock> {
         self.heights_to_hashes
             .get(&height)
-            .and_then(|hash| self.blocks.get(hash))
+            .and_then(|hash| self.block_by_hash(hash))
     }
 
     fn is_on_best_chain(&self, block: BlockRef) -> bool {
@@ -237,12 +233,12 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
     }
 
     fn find_fork_point(&self, hash: &BlockHash) -> Option<BlockRef> {
-        let mut current = self.blocks.get(hash)?;
+        let mut current = self.block_by_hash(hash)?;
         loop {
             if self.is_on_best_chain(current.reference) {
                 return Some(current.reference);
             }
-            current = self.blocks.get(&current.parent_hash)?;
+            current = self.block_by_hash(&current.parent_hash)?;
         }
     }
 
@@ -256,24 +252,17 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
     /// ones this can emit.
     fn chain_tips(&self) -> Vec<ChainTip> {
         let parent_hashes = self
-            .blocks
-            .values()
+            .blocks()
             .map(|block| block.parent_hash)
             .collect::<HashSet<_>>();
 
-        let mut tip_hashes = self
-            .blocks
-            .keys()
-            .filter(|hash| !parent_hashes.contains(hash))
-            .copied()
-            .collect::<HashSet<_>>();
-        tip_hashes.insert(self.best_tip.hash);
-
-        let mut tips = tip_hashes
-            .into_iter()
-            .filter_map(|hash| self.blocks.get(&hash))
+        let mut tips = self
+            .blocks()
+            .filter(|block| {
+                block.hash() == self.tip.hash() || !parent_hashes.contains(&block.hash())
+            })
             .map(|block| {
-                let is_active_tip = block.hash() == self.best_tip.hash;
+                let is_active_tip = block.hash() == self.tip.hash();
                 ChainTip {
                     height: block.height(),
                     hash: block.hash(),
@@ -348,7 +337,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
     fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {
         let mut locations = ChainHeadTransactionLocations::default();
 
-        for block in self.blocks.values() {
+        for block in self.blocks() {
             let Some((slot, _transaction)) = block
                 .block
                 .transactions
@@ -385,7 +374,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
 
         let mut spenders: HashMap<Outpoint, SpenderLocation> = HashMap::new();
         for hash in self.heights_to_hashes.values() {
-            let Some(block) = self.blocks.get(hash) else {
+            let Some(block) = self.block_by_hash(hash) else {
                 continue;
             };
             for (slot, transaction) in block.block.transactions.iter().enumerate() {

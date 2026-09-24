@@ -102,22 +102,19 @@ pub trait ChainHeadSnapshot: Send + Sync + 'static {
 
     /// The block every retained block's work is counted from, exclusive.
     ///
-    /// The parent of the window floor. It is not itself retained and
-    /// contributes no work, so for any retained block `B`,
+    /// The block this window was anchored on. Its own work is
+    /// `RelativeChainWork::ZERO`, so for any retained block `B`,
     /// [`work`](ChainHeadBlock::work) sums block work over `(anchor, B]` and
     ///
     /// ```text
     /// absolute(B) = chainwork(anchor) + work(B)
     /// ```
     ///
-    /// `None` when the floor is genesis: there is no block below it, so the
-    /// work is already absolute.
-    ///
-    /// Recorded rather than derived. Retention prunes the floor block itself
+    /// Recorded rather than derived. Retention prunes the anchor block itself
     /// once the tip moves far enough past it, while every surviving block's
     /// work still counts from the same place — so the lowest retained block is
-    /// no substitute, its work being an accumulation rather than its own.
-    fn work_anchor(&self) -> Option<BlockRef>;
+    /// no substitute, its work being an accumulation rather than zero.
+    fn work_anchor(&self) -> BlockRef;
 
     /// Which chain state this view represents.
     ///
@@ -188,7 +185,7 @@ impl<T: ChainHeadSnapshot> ChainHeadSnapshot for std::sync::Arc<T> {
         self.as_ref().best_tip()
     }
 
-    fn work_anchor(&self) -> Option<BlockRef> {
+    fn work_anchor(&self) -> BlockRef {
         self.as_ref().work_anchor()
     }
 

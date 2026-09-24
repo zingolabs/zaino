@@ -443,7 +443,7 @@ impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
             metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => "blocks_chunk"),
         );
 
-        self.get_chain_block_range(start, end)
+        self.get_stored_block_range(start, end)
             .await
             .map_err(chain_store_error)?
             .into_iter()
@@ -464,7 +464,7 @@ impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
             let reader = reader.clone();
             async move {
                 reader
-                    .get_chain_block_range(from, to)
+                    .get_stored_block_range(from, to)
                     .await
                     .map_err(chain_store_error)?
                     .into_iter()
@@ -661,8 +661,9 @@ impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
             }
 
             let chainwork = crate::conversion::chainwork_from_parent(
-                block.header.bits,
+                block.header.bits.to_work(),
                 stored_hash(block.header.hash),
+                crate::types::Height(height),
                 parent_chainwork,
             )
             .map_err(|error| {

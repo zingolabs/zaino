@@ -44,6 +44,7 @@ tracing = { workspace = true }
 metrics = { workspace = true }
 
 [dev-dependencies]
+proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "test-util"] }
 zaino-consensus = { workspace = true }
 
