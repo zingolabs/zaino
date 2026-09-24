@@ -29,8 +29,8 @@ use crate::{
         types::BestChainLocation,
         OPERATIONAL_NFS_DEPTH,
     },
-    ChainIndex, ChainIndexConfig, ChainIndexRpcExt, Height, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber, TransactionHash,
+    ChainIndex, ChainIndexConfig, Height, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    TransactionHash,
 };
 
 use zaino_proto::proto::utils::PoolTypeFilter;
@@ -156,45 +156,6 @@ fn synced_index_test_on(
 
         });
     })
-}
-
-#[test]
-fn synced_index_find_fork_point() {
-    // TODO: synced_index_test handles a good chunck of boilerplate, but there's
-    // still a lot more inside of the closures being passed to synced_index_test.
-    // Can we DRY out more of it?
-    synced_index_test(async |mockchain, index_reader, snapshot| {
-        // We use a futures-unordered instead of only a for loop
-        // as this lets us call all the get_raw_transaction requests
-        // at the same time and wait for them in parallel
-        //
-        // This allows the artificial delays to happen in parallel
-        let mut parallel = FuturesUnordered::new();
-        // As we only have one branch, arbitrary branch order is fine
-        for (height, hash) in mockchain
-            .source()
-            .all_blocks_arb_branch_order()
-            .map(|block| (block.coinbase_height().unwrap(), block.hash()))
-        {
-            let index_reader = index_reader.clone();
-            let snapshot = snapshot.clone();
-            parallel.push(async move {
-                let fork_point = index_reader
-                    .find_fork_point(&snapshot, &hash.into())
-                    .await
-                    .unwrap();
-
-                if height <= crate::Height(u32::from(snapshot.best_tip().height)) {
-                    // a finalised block is its own fork point
-                    assert_eq!(hash, fork_point.unwrap().0);
-                    assert_eq!(height, fork_point.unwrap().1);
-                } else {
-                    assert!(fork_point.is_none());
-                }
-            })
-        }
-        while let Some(_success) = parallel.next().await {}
-    });
 }
 
 #[test]
@@ -335,70 +296,6 @@ fn synced_index_get_block_height() {
                     assert_eq!(height, None);
                 }
             });
-        }
-        while let Some(_success) = parallel.next().await {}
-    })
-}
-
-#[test]
-fn synced_index_get_block_range() {
-    synced_index_test(async |mockchain, index_reader, snapshot| {
-        // We use a futures-unordered instead of only a for loop
-        // as this lets us call all the get_raw_transaction requests
-        // at the same time and wait for them in parallel
-        //
-        // This allows the artificial delays to happen in parallel
-        let mut parallel = FuturesUnordered::new();
-
-        for expected_start_height in mockchain
-            .source()
-            .all_blocks_arb_branch_order()
-            .map(|block| block.coinbase_height().unwrap())
-        {
-            let expected_end_height = (expected_start_height + 9).unwrap();
-            if expected_end_height.0 as usize
-                <= mockchain.source().all_blocks_arb_branch_order().count()
-            {
-                let index_reader = index_reader.clone();
-                let snapshot = snapshot.clone();
-                parallel.push(async move {
-                    let block_range_stream = index_reader.get_block_range(
-                        &snapshot,
-                        expected_start_height.into(),
-                        Some(expected_end_height.into()),
-                    );
-                    if expected_start_height <= crate::Height(u32::from(snapshot.best_tip().height))
-                    {
-                        let mut block_range_stream = Box::pin(block_range_stream.unwrap());
-                        let mut num_blocks_in_stream = 0;
-                        while let Some(block) = block_range_stream.next().await {
-                            let expected_block = mockchain
-                                .source()
-                                .all_blocks_arb_branch_order()
-                                .nth(expected_start_height.0 as usize + num_blocks_in_stream)
-                                .unwrap()
-                                .zcash_serialize_to_vec()
-                                .unwrap();
-                            assert_eq!(block.unwrap(), expected_block);
-                            num_blocks_in_stream += 1;
-                        }
-                        assert_eq!(
-                            num_blocks_in_stream,
-                            // expect 10 blocks
-                            10.min(
-                                // unless the provided range overlaps the finalized boundary.
-                                // in that case, expect all blocks between start height
-                                // and finalized height, (+1 for inclusive range)
-                                u32::from(snapshot.best_tip().height)
-                                    .saturating_sub(expected_start_height.0)
-                                    + 1
-                            ) as usize
-                        );
-                    } else {
-                        assert!(block_range_stream.is_none())
-                    }
-                });
-            }
         }
         while let Some(_success) = parallel.next().await {}
     })
@@ -855,16 +752,10 @@ fn make_chain() {
             // branch is connected to the canonical chain rather than dangling.
             for block in snapshot.best_chain() {
                 assert!(block.work <= best_tip_block.work);
-                let hash = crate::BlockHash(block.hash().into());
-                assert_eq!(
-                    index_reader
-                        .find_fork_point(&snapshot, &hash)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .0,
-                    hash,
-                );
+                let fork = snapshot
+                    .find_fork_point(&block.hash())
+                    .expect("a canonical block is its own fork point");
+                assert_eq!(fork.hash, block.hash());
             }
 
             assert_eq!(snapshot.best_chain().count(), segment_length * 2);

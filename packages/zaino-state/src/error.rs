@@ -437,21 +437,18 @@ pub enum SyncError {
 /// An error occurred while constructing a ChainIndex.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    /// The connected node returned data that could not be used.
-    #[error("validator returned invalid data: {0}")]
-    InvalidNodeData(Box<dyn std::error::Error + Send + Sync + 'static>),
     /// The mempool failed to initialise.
     #[error(transparent)]
-    MempoolInitialzationError(#[from] crate::error::MempoolError),
+    Mempool(#[from] crate::error::MempoolError),
     /// The finalised state failed to initialise.
     #[error(transparent)]
-    FinalisedStateInitialzationError(#[from] FinalisedStateError),
+    FinalisedState(#[from] FinalisedStateError),
     /// The chain head could not build its first window.
     ///
     /// Fatal by design: a chain head with no window has nothing to serve, and
     /// it holds no persistent state to fall back on.
     #[error(transparent)]
-    ChainHeadInitialisationError(#[from] zaino_chain_head_service::ChainHeadInitError),
+    ChainHead(#[from] zaino_chain_head_service::ChainHeadInitError),
 }
 
 impl From<FinalisedStateError> for ChainIndexError {

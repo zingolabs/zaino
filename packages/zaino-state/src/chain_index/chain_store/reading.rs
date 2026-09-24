@@ -58,19 +58,6 @@ fn local_height(height: zaino_primitives::types::Height) -> crate::Height {
     crate::Height(u32::from(height))
 }
 
-/// The main-chain block hash at `height`, or `None` if the store has none.
-pub(crate) async fn block_hash<R: ChainStoreReader>(
-    reader: &R,
-    height: crate::Height,
-) -> Result<Option<crate::BlockHash>, ChainIndexError> {
-    // A height the domain cannot express names no block, which is the same
-    // answer as a height the store does not hold.
-    let Some(domain) = domain_height(height) else {
-        return Ok(None);
-    };
-    Ok(absent(reader.block_hash(domain).await)?.map(|hash| crate::BlockHash(hash.into())))
-}
-
 /// The height of `hash`, or `None` if the store does not hold that block.
 pub(crate) async fn block_height<R: ChainStoreReader>(
     reader: &R,

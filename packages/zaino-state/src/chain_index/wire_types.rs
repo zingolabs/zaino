@@ -3,9 +3,8 @@
 //!
 //! All conversions at this boundary are named functions rather than
 //! `From` / `TryFrom`, for the same reason the storage boundary uses named
-//! methods: the wire → business direction *is* the external-input validation
-//! step, and naming it puts that contract in the API surface instead of
-//! behind a generic trait.
+//! methods: naming the conversion puts its direction and its boundary in the
+//! API surface instead of behind a generic trait.
 //!
 //! Free functions rather than inherent methods, because the types they
 //! convert now live in the storage backend and a crate cannot add inherent
@@ -13,7 +12,7 @@
 //! next to the type is the boundary working: a protocol shape and a stored
 //! shape should not be reachable from one another.
 
-use super::types::{BlockHash, BlockIndex, Height};
+use super::types::BlockIndex;
 use zaino_proto::proto::service::BlockId;
 
 /// Build a wire-format `BlockId` from a business-layer `BlockIndex`.
@@ -30,67 +29,9 @@ pub fn block_index_to_wire(index: &BlockIndex) -> BlockId {
     }
 }
 
-/// Build a `BlockIndex` from a wire-format `BlockId`, validating that
-/// the wire payload fits the narrower business-layer constraints.
-///
-/// This conversion **is** the wire-input validation step. The two
-/// narrowings checked:
-///   1. `BlockId.hash: Vec<u8>` must be exactly 32 bytes.
-///   2. `BlockId.height: u64` must fit in `u32`.
-///
-/// Replaces `impl TryFrom<proto::BlockId> for BlockIndex`. The named
-/// method plus the typed [`WireBlockIdError`] puts the validation
-/// contract in the API surface rather than behind a generic trait.
-pub fn block_index_from_wire(wire: BlockId) -> Result<BlockIndex, WireBlockIdError> {
-    let hash_len = wire.hash.len();
-    let hash_array: [u8; 32] = wire
-        .hash
-        .try_into()
-        .map_err(|_| WireBlockIdError::HashWrongLength { got: hash_len })?;
-    let height_u32 = u32::try_from(wire.height)
-        .map_err(|_| WireBlockIdError::HeightOverflow { got: wire.height })?;
-    Ok(BlockIndex {
-        height: Height(height_u32),
-        hash: BlockHash(hash_array),
-    })
-}
-
-/// Ways in which [`block_index_from_wire`] can reject its input.
-///
-/// Each variant documents one class of wire-payload shape that cannot
-/// be represented by the business-layer [`BlockIndex`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WireBlockIdError {
-    /// The wire `BlockId.hash` bytestring was not exactly 32 bytes long.
-    HashWrongLength {
-        /// The length the wire produced.
-        got: usize,
-    },
-    /// The wire `BlockId.height` value did not fit in `u32`.
-    HeightOverflow {
-        /// The u64 height the wire produced.
-        got: u64,
-    },
-}
-
-impl std::fmt::Display for WireBlockIdError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::HashWrongLength { got } => {
-                write!(f, "wire BlockId.hash has {got} bytes; expected 32")
-            }
-            Self::HeightOverflow { got } => {
-                write!(f, "wire BlockId.height = {got} does not fit in u32")
-            }
-        }
-    }
-}
-
-impl std::error::Error for WireBlockIdError {}
-
 #[cfg(test)]
 mod tests {
-    //! Tests for the `BlockIndex` ↔ wire boundary.
+    //! Tests for the `BlockIndex` → wire boundary.
     //!
     //! The `to_wire` golden pins the field-level mapping — any structural
     //! drift in `BlockIndex` or `proto::BlockId` that would change the
@@ -110,79 +51,5 @@ mod tests {
         let wire = block_index_to_wire(&idx);
         assert_eq!(wire.height, 0x0dec_0de0_u64);
         assert_eq!(wire.hash, vec![0x11u8; 32]);
-    }
-
-    /// Narrow wire round-trip: `BlockIndex → proto::BlockId → BlockIndex`
-    /// is identity for a canonical value.
-    ///
-    /// Paired with the cross-boundary test in `types/db/block.rs`: if this
-    /// narrow test passes but the cross-boundary one fails, the bug is on
-    /// the DB side or at the DB↔business crossing, not in the wire
-    /// conversion itself.
-    #[test]
-    fn block_index_round_trips_through_wire() {
-        let idx = BlockIndex {
-            height: Height(0x0dec_0de0),
-            hash: BlockHash::from([0x11u8; 32]),
-        };
-        let wire = block_index_to_wire(&idx);
-        let recovered = block_index_from_wire(wire).expect("valid wire shape");
-        assert_eq!(idx, recovered);
-    }
-
-    /// Rejection: a wire hash shorter than 32 bytes fails with a precise
-    /// `HashWrongLength` error rather than silently truncating / panicking.
-    #[test]
-    fn try_from_wire_rejects_short_hash() {
-        let wire = BlockId {
-            height: 1,
-            hash: vec![0x00; 31],
-        };
-        assert_eq!(
-            block_index_from_wire(wire),
-            Err(WireBlockIdError::HashWrongLength { got: 31 })
-        );
-    }
-
-    /// Rejection: a wire height that overflows `u32` fails with a precise
-    /// `HeightOverflow` error.
-    #[test]
-    fn try_from_wire_rejects_u32_overflow_height() {
-        let wire = BlockId {
-            height: u64::from(u32::MAX) + 1,
-            hash: vec![0x11; 32],
-        };
-        assert_eq!(
-            block_index_from_wire(wire),
-            Err(WireBlockIdError::HeightOverflow {
-                got: u64::from(u32::MAX) + 1
-            })
-        );
-    }
-}
-
-#[cfg(test)]
-mod boundary_tests {
-    use super::*;
-
-    /// A block reference survives the wire boundary unchanged.
-    ///
-    /// The other half of this — that the same reference survives the *storage*
-    /// boundary — is asserted beside the persisted types, which live in the
-    /// backend crate. The two halves are tested apart because they are apart:
-    /// nothing should be able to carry a protocol type into storage or a
-    /// stored type onto the wire without passing through one of these
-    /// conversions.
-    #[test]
-    fn block_index_round_trips_across_the_wire_boundary() {
-        let index = BlockIndex {
-            height: Height(123_456),
-            hash: BlockHash([0x11; 32]),
-        };
-
-        let recovered = block_index_from_wire(block_index_to_wire(&index))
-            .expect("a value we just produced is valid");
-
-        assert_eq!(index, recovered);
     }
 }

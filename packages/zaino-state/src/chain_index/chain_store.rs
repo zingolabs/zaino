@@ -94,7 +94,7 @@ mod reading;
 
 pub(crate) use driving::{build_to, shutdown};
 pub(crate) use reading::{
-    block_at, block_hash, block_height, compact_block, compact_blocks_ascending,
-    compact_blocks_descending, outpoint_spenders, previous_output, transparent_outputs,
-    tx_position, txout_set, WireCompactBlocks,
+    block_at, block_height, compact_block, compact_blocks_ascending, compact_blocks_descending,
+    outpoint_spenders, previous_output, transparent_outputs, tx_position, txout_set,
+    WireCompactBlocks,
 };

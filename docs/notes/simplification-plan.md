@@ -85,8 +85,11 @@ have been told.
 - Delete every index-miss fallback, starting with the `z_gettreestate`
   retry, and the "passthrough aware" notes and `chain_index_passthrough.mmd`.
 - Merge `ChainIndexRpcExt` into `ChainIndex`, delete the `zaino-state`
-  re-exports, narrow visibility, and mark every crate except zainod
-  `publish = false`.
+  re-exports, and narrow visibility. Delete the embedder-only `ChainIndex`
+  methods (`get_block_hash`, `get_block_range`, `find_fork_point`,
+  `get_outpoint_spenders`) with `ChainScope`. The crates stay publishable:
+  `cargo publish` needs every dependency of zainod on crates.io, so marking
+  them `publish = false` would make zainod unpublishable.
 - Drop the embedder clause from the glossary entry for the preferred
   CryptoProvider.
 - Delete the usage.md section "The ephemeral backend has two jobs".

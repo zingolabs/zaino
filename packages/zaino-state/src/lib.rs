@@ -58,27 +58,11 @@ pub use indexer::node_backed_indexer::{
     ChainTipSubscriber, NodeBackedIndexerService, NodeBackedIndexerServiceSubscriber,
 };
 
-pub mod chain_index;
+pub(crate) mod chain_index;
 
-// Core ChainIndex trait and implementations
-pub use chain_index::{
-    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-};
-// Source types for ChainIndex backends
-pub use chain_index::chain_head::WithChainHeadSource;
-pub use chain_index::chain_store::WithChainStoreSource;
-pub use chain_index::source::BlockchainSource;
-pub use chain_index::source_ports::ChainIndexSourcePorts;
-pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
-// Supporting types
-// Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.
-// Re-exported so a consumer wiring a ChainIndex need not name that crate.
-// The non-finalised chain head is `zaino-chain-head`; its runtime is
-// `zaino-chain-head-service`. Re-exported here so a consumer wiring a
-// ChainIndex does not need to name those crates directly.
-pub use error::{InitError, SyncError};
-pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
-pub use zaino_chain_head_service::MapBackedSnapshot;
+pub(crate) use chain_index::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
+pub(crate) use error::{InitError, SyncError};
+pub(crate) use zaino_chain_head_service::MapBackedSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
 
 /// The finalised store's on-disk types, for this crate's own use only.
@@ -97,17 +81,6 @@ pub use zaino_primitives::types::MempoolInfo;
 /// held a stored output — the cross-seam UTXO fold — folds domain outputs
 /// instead. The rest of this list shrinks the same way.
 pub(crate) use chain_index::types::{BlockHash, Height, IndexedBlock, Outpoint, TransactionHash};
-
-#[cfg(feature = "test_dependencies")]
-/// allow public access to additional APIs, for testing
-pub mod test_dependencies {
-    /// Testing export of chain_index
-    pub mod chain_index {
-        pub use crate::chain_index::*;
-    }
-
-    pub use crate::ChainIndexConfig;
-}
 
 pub(crate) mod config;
 

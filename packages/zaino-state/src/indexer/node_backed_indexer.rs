@@ -39,8 +39,7 @@ use zaino_proto::proto::{
 
 use crate::{
     chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
-    ChainIndex, ChainIndexRpcExt, MapBackedSnapshot, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber,
+    ChainIndex, MapBackedSnapshot, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
 use crate::{

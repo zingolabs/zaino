@@ -493,11 +493,6 @@ impl BlockchainSourceError {
     }
 }
 
-/// Error type returned when invalid data is returned by the validator.
-#[derive(thiserror::Error, Debug)]
-#[error("data from validator invalid: {0}")]
-pub struct InvalidData(String);
-
 pub(crate) type BlockchainSourceResult<T> = Result<T, BlockchainSourceError>;
 
 /// The location of a transaction returned by
