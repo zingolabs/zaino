@@ -8,10 +8,11 @@
 //! rebuild cost.
 //!
 //! A layout can stay the same while what is written into it changes, which no canonical instance
-//! can show: a new tag on an enum, a different spendability rule, a different accumulator digest.
-//! Two more inputs cover that. Every on-disk enum contributes its full tag list, so a new variant
-//! changes the hash before any record carries it, and [`SCHEMA_EPOCH`] is bumped by hand for a rule
-//! change that leaves every layout intact.
+//! can show. Three more inputs cover the cases this store has: `ScriptType` contributes its full
+//! tag list, so a new variant changes the hash before any record carries it; the spendability rule
+//! contributes its verdict on every tag; and the accumulator's entry digest contributes its value
+//! over the canonical output. [`SCHEMA_EPOCH`] remains for a rule the hash cannot reach, such as
+//! which heights a sparse table writes a row for, and is bumped by hand.
 
 use blake2::{
     digest::{Update, VariableOutput},
@@ -22,14 +23,15 @@ use lmdb::DatabaseFlags;
 
 use crate::codec::{CompactSize, DbCodec};
 use crate::error::StoreError;
-use crate::types::ScriptType;
+use crate::types::db::metadata::{is_unspendable_tx_out, tx_out_set_entry_digest};
+use crate::types::{ScriptType, TxOutCompact};
 
-/// Bumped by hand when what the store writes into an unchanged layout changes, such as the spendability rule, the sparse-row rule, or the accumulator digest, so that databases written under the old rule are rebuilt.
+/// Bumped by hand for a change to what the store writes that no hash input reaches, such as the rule for which heights a sparse table writes a row for.
 const SCHEMA_EPOCH: u32 = 1;
 
 /// An LMDB table in the v1 environment, with the flags it is created with.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Table {
+pub(super) struct Table {
     /// The LMDB database name.
     name: &'static str,
     /// The flags the table is created with.
@@ -37,32 +39,32 @@ pub(crate) struct Table {
 }
 
 /// Block headers keyed by height.
-pub(crate) const HEADERS: Table = plain_table("headers");
+pub(super) const HEADERS: Table = plain_table("headers");
 /// Block txid lists keyed by height.
-pub(crate) const TXIDS: Table = plain_table("txids");
+pub(super) const TXIDS: Table = plain_table("txids");
 /// Per-transaction transparent data keyed by height.
-pub(crate) const TRANSPARENT: Table = plain_table("transparent");
+pub(super) const TRANSPARENT: Table = plain_table("transparent");
 /// Per-transaction Sapling data keyed by height.
-pub(crate) const SAPLING: Table = plain_table("sapling");
+pub(super) const SAPLING: Table = plain_table("sapling");
 /// Per-transaction Orchard data keyed by height.
-pub(crate) const ORCHARD: Table = plain_table("orchard");
+pub(super) const ORCHARD: Table = plain_table("orchard");
 /// Per-transaction Ironwood data keyed by height, present only for blocks with Ironwood data.
-pub(crate) const IRONWOOD: Table = plain_table("ironwood");
+pub(super) const IRONWOOD: Table = plain_table("ironwood");
 /// Commitment tree roots and sizes keyed by height.
-pub(crate) const COMMITMENT_TREE_DATA: Table = plain_table("commitment_tree_data");
+pub(super) const COMMITMENT_TREE_DATA: Table = plain_table("commitment_tree_data");
 /// Block heights keyed by block hash.
-pub(crate) const HEIGHTS: Table = plain_table("heights");
+pub(super) const HEIGHTS: Table = plain_table("heights");
 /// Spending transaction locations keyed by outpoint.
-pub(crate) const SPENT: Table = plain_table("spent");
+pub(super) const SPENT: Table = plain_table("spent");
 /// Transaction locations keyed by txid.
-pub(crate) const TXID_LOCATION: Table = plain_table("txid_location");
+pub(super) const TXID_LOCATION: Table = plain_table("txid_location");
 /// The txout-set accumulator singleton.
-pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR: Table = plain_table("tx_out_set_info_accumulator");
+pub(super) const TX_OUT_SET_INFO_ACCUMULATOR: Table = plain_table("tx_out_set_info_accumulator");
 /// The metadata singleton and the accumulator's built-height watermark.
-pub(crate) const METADATA: Table = plain_table("metadata");
+pub(super) const METADATA: Table = plain_table("metadata");
 /// Address history events, as fixed-width duplicate values keyed by address script.
 #[cfg(feature = "transparent_address_history_experimental")]
-pub(crate) const ADDRESS_HISTORY: Table = Table {
+pub(super) const ADDRESS_HISTORY: Table = Table {
     name: "address_history",
     flags: DatabaseFlags::DUP_SORT.union(DatabaseFlags::DUP_FIXED),
 };
@@ -108,7 +110,7 @@ const fn plain_table(name: &'static str) -> Table {
 
 impl Table {
     /// Opens this table in `env`, creating it with its flags when it does not exist yet.
-    pub(crate) async fn open(self, env: &lmdb::Environment) -> Result<lmdb::Database, StoreError> {
+    pub(super) async fn open(self, env: &lmdb::Environment) -> Result<lmdb::Database, StoreError> {
         super::super::open_or_create_db(env, self.name, self.flags).await
     }
 }
@@ -123,10 +125,11 @@ pub(crate) fn schema_hash() -> io::Result<[u8; 32]> {
     ))
 }
 
-/// The named byte strings the hash covers besides the tables, keys and features: the epoch, then every enum's tag bytes, then every canonical record encoding.
+/// The named byte strings the hash covers besides the tables, keys and features: the epoch, the enum tags, the rule verdicts, then every canonical record encoding.
 fn schema_inputs() -> io::Result<Vec<(&'static str, Vec<u8>)>> {
     let mut inputs = vec![("SchemaEpoch", SCHEMA_EPOCH.to_le_bytes().to_vec())];
     inputs.extend(enum_tags());
+    inputs.extend(rule_inputs());
     inputs.extend(canonical_encodings()?);
     Ok(inputs)
 }
@@ -137,6 +140,24 @@ fn enum_tags() -> Vec<(&'static str, Vec<u8>)> {
         "ScriptType",
         ScriptType::ALL.iter().map(|tag| *tag as u8).collect(),
     )]
+}
+
+/// The rules that decide what the store writes without changing any layout, each evaluated over canonical inputs so a change to the rule changes the hash.
+fn rule_inputs() -> Vec<(&'static str, Vec<u8>)> {
+    let verdicts = ScriptType::ALL
+        .iter()
+        .map(|tag| {
+            let out = TxOutCompact::new(1, [0; 20], *tag as u8)
+                .expect("every listed tag is a valid script type");
+            u8::from(is_unspendable_tx_out(&out))
+        })
+        .collect();
+    let digest =
+        tx_out_set_entry_digest(&canonical::outpoint(), &canonical::tx_out_compact()).to_vec();
+    vec![
+        ("SpendabilityByScriptType", verdicts),
+        ("TxOutSetEntryDigest", digest),
+    ]
 }
 
 /// Returns each stored record type's name with the encoding of its canonical instance.
@@ -184,6 +205,18 @@ pub(crate) fn canonical_encodings() -> io::Result<Vec<(&'static str, Vec<u8>)>> 
     Ok(encodings)
 }
 
+/// Appends one length-prefixed item to the hash input.
+fn push(input: &mut Vec<u8>, bytes: &[u8]) {
+    CompactSize::write(&mut *input, bytes.len()).expect("writing to a Vec cannot fail");
+    input.extend_from_slice(bytes);
+}
+
+/// Opens a section of the hash input with its label and item count, so an item moved between sections changes the stream.
+fn section(input: &mut Vec<u8>, label: &[u8], items: usize) {
+    push(input, label);
+    push(input, &(items as u64).to_le_bytes());
+}
+
 /// Hashes the schema inputs with BLAKE2b-256, length-prefixing every item so no two schemas share an input stream.
 fn hash_schema(
     encodings: &[(&str, Vec<u8>)],
@@ -192,25 +225,25 @@ fn hash_schema(
     features: &[&str],
 ) -> [u8; 32] {
     let mut input = Vec::new();
-    let mut push = |bytes: &[u8]| {
-        CompactSize::write(&mut input, bytes.len()).expect("writing to a Vec cannot fail");
-        input.extend_from_slice(bytes);
-    };
 
-    push(b"zaino finalised store schema");
+    section(&mut input, b"zaino finalised store schema", 0);
+    section(&mut input, b"encodings", encodings.len());
     for (name, encoding) in encodings {
-        push(name.as_bytes());
-        push(encoding);
+        push(&mut input, name.as_bytes());
+        push(&mut input, encoding);
     }
+    section(&mut input, b"tables", tables.len());
     for table in tables {
-        push(table.name.as_bytes());
-        push(&table.flags.bits().to_le_bytes());
+        push(&mut input, table.name.as_bytes());
+        push(&mut input, &table.flags.bits().to_le_bytes());
     }
+    section(&mut input, b"singleton keys", singleton_keys.len());
     for key in singleton_keys {
-        push(key);
+        push(&mut input, key);
     }
+    section(&mut input, b"features", features.len());
     for feature in features {
-        push(feature.as_bytes());
+        push(&mut input, feature.as_bytes());
     }
 
     let mut hasher = Blake2bVar::new(32).expect("32 is a valid BLAKE2b output length");

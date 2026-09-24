@@ -762,10 +762,6 @@ impl DbV1 {
                     mark.name()
                 )));
             }
-            // idempotent
-            if mark.is_applied(&record) {
-                return Ok(true);
-            }
             if !record.is_mined() {
                 return Err(StoreError::Custom(format!(
                     "attempt to mark non-mined addrhist record as {}",

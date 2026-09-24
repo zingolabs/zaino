@@ -333,11 +333,11 @@ fn fixed_lengths_match_the_encoder() {
 
 /// The schema hash of a build without the address-history index.
 #[cfg(not(feature = "transparent_address_history_experimental"))]
-const SCHEMA_HASH: &str = "a9319679ef8298cce62a9bf1e47f0005f998150a20625fa6015bf7ec2eb11772";
+const SCHEMA_HASH: &str = "b5c3a7e540c79599b68a99e243f9916426be44d6df69d9c9162350a153ccb581";
 
 /// The schema hash of a build with the address-history index.
 #[cfg(feature = "transparent_address_history_experimental")]
-const SCHEMA_HASH: &str = "3a58ddc4c8d27f42de1c83b739ad49d46f061446b9846094e7289a6b3018817a";
+const SCHEMA_HASH: &str = "8518ecd83b75eb8258ac742016fc925d045acb18e39cd15382dfe11d477df9bd";
 
 /// The computed schema hash changes exactly when a deployment must rebuild, so pinning it makes every rebuild a reviewed decision.
 #[test]

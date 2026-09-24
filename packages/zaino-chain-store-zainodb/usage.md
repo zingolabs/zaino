@@ -82,14 +82,16 @@ is derived data, so the rebuild loses nothing.
 
 The store computes the schema hash; nobody maintains it by hand. The hash
 covers the canonical encoding of every stored type, every table name and its
-flags, the singleton keys, the enabled index features, the full tag list of
-every on-disk enum, and `SCHEMA_EPOCH`. The tag lists mean a new `ScriptType`
-variant rebuilds the database before any record carries it. The epoch is the
-one input a reviewer bumps by hand, for a change to what the store writes into
-an unchanged layout: the spendability rule, the sparse-row rule, the accumulator
-digest. A build with `transparent_address_history_experimental` therefore has a
-different hash from one without it, and switching the feature rebuilds the
-database.
+flags, the singleton keys, the enabled index features, `ScriptType`'s full tag
+list, the spendability verdict on each of those tags, the txout-set entry
+digest over the canonical output, and `SCHEMA_EPOCH`. The tag list means a new
+`ScriptType` variant rebuilds the database before any record carries it, and
+the two rule inputs mean a change to the spendability predicate or the digest
+rebuilds it without anyone remembering to. The epoch is the one input a
+reviewer bumps by hand, for a rule the hash cannot reach, such as which heights
+a sparse table writes a row for. A build with
+`transparent_address_history_experimental` therefore has a different hash from
+one without it, and switching the feature rebuilds the database.
 
 Any change to an on-disk encoding changes the hash, and every deployment pays
 one full rebuild on its next start. `golden.rs` pins both the encodings and the
