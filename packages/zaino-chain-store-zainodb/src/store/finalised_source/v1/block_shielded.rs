@@ -6,6 +6,7 @@ use crate::codec::{DbCodec, FixedEncodedLen};
 use crate::pool::ShieldedPool;
 
 /// How a pool point lookup treats a block height with no row in the pool's table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRow {
     /// Every indexed block has a row in this pool's table; an absent row is an error.
     Error,
@@ -271,13 +272,32 @@ impl DbV1 {
         height: Height,
         empty: impl FnOnce() -> T,
     ) -> Result<T, StoreError> {
+        let missing = MissingRow::for_pool(pool);
+        if missing == MissingRow::NoPoolData {
+            // A sparse table cannot tell a height past the tip from a block
+            // without pool data; only a stored height reads an absent row as
+            // the latter.
+            self.resolve_stored_height(HashOrHeight::Height(height.into()))
+                .await?;
+        }
+        self.pool_row_or_empty(pool, height, missing, empty).await
+    }
+
+    /// The row for `pool` at a height the caller has established is stored, or `empty()` where a sparse pool has none.
+    async fn pool_row_or_empty<T: DbCodec>(
+        &self,
+        pool: ShieldedPool,
+        height: Height,
+        missing: MissingRow,
+        empty: impl FnOnce() -> T,
+    ) -> Result<T, StoreError> {
         let label = pool.pool_string();
         match self
             .read_row_at_height(self.pool_table(pool), &label, height)
             .await?
         {
             Some(list) => Ok(list),
-            None => match MissingRow::for_pool(pool) {
+            None => match missing {
                 MissingRow::Error => Err(StoreError::DataUnavailable(format!(
                     "{label} data missing from db"
                 ))),
@@ -313,7 +333,10 @@ impl DbV1 {
 
                 let mut out = Vec::with_capacity((end.0 - start.0 + 1) as usize);
                 for height in Height::range_inclusive(start, end) {
-                    out.push(self.get_block_pool_tx_list(pool, height, &empty).await?);
+                    out.push(
+                        self.pool_row_or_empty(pool, height, MissingRow::NoPoolData, &empty)
+                            .await?,
+                    );
                 }
                 Ok(out)
             }

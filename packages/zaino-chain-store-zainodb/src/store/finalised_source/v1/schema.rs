@@ -3,8 +3,15 @@
 //! The hash covers the encoding of one canonical instance of every stored record, every table's
 //! name and creation flags, every singleton key, and the enabled index features. Any change to how
 //! this build lays data out therefore changes the hash, and a database carrying a different hash is
-//! rebuilt on open. The goldens in `golden.rs` pin the same canonical encodings, so a layout change
-//! also fails a test that names the record, which is where a reviewer accepts the rebuild cost.
+//! moved aside and rebuilt on open. The goldens in `golden.rs` pin the same canonical encodings, so a
+//! layout change also fails a test that names the record, which is where a reviewer accepts the
+//! rebuild cost.
+//!
+//! A layout can stay the same while what is written into it changes, which no canonical instance
+//! can show: a new tag on an enum, a different spendability rule, a different accumulator digest.
+//! Two more inputs cover that. Every on-disk enum contributes its full tag list, so a new variant
+//! changes the hash before any record carries it, and [`SCHEMA_EPOCH`] is bumped by hand for a rule
+//! change that leaves every layout intact.
 
 use blake2::{
     digest::{Update, VariableOutput},
@@ -15,14 +22,18 @@ use lmdb::DatabaseFlags;
 
 use crate::codec::{CompactSize, DbCodec};
 use crate::error::StoreError;
+use crate::types::ScriptType;
+
+/// Bumped by hand when what the store writes into an unchanged layout changes, such as the spendability rule, the sparse-row rule, or the accumulator digest, so that databases written under the old rule are rebuilt.
+const SCHEMA_EPOCH: u32 = 1;
 
 /// An LMDB table in the v1 environment, with the flags it is created with.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Table {
     /// The LMDB database name.
-    pub(crate) name: &'static str,
+    name: &'static str,
     /// The flags the table is created with.
-    pub(crate) flags: DatabaseFlags,
+    flags: DatabaseFlags,
 }
 
 /// Block headers keyed by height.
@@ -102,14 +113,30 @@ impl Table {
     }
 }
 
-/// Computes this build's schema hash from its record encodings, tables, singleton keys and index features.
+/// Computes this build's schema hash from its epoch, enum tags, record encodings, tables, singleton keys and index features.
 pub(crate) fn schema_hash() -> io::Result<[u8; 32]> {
     Ok(hash_schema(
-        &canonical_encodings()?,
+        &schema_inputs()?,
         TABLES,
         SINGLETON_KEYS,
         ENABLED_INDEX_FEATURES,
     ))
+}
+
+/// The named byte strings the hash covers besides the tables, keys and features: the epoch, then every enum's tag bytes, then every canonical record encoding.
+fn schema_inputs() -> io::Result<Vec<(&'static str, Vec<u8>)>> {
+    let mut inputs = vec![("SchemaEpoch", SCHEMA_EPOCH.to_le_bytes().to_vec())];
+    inputs.extend(enum_tags());
+    inputs.extend(canonical_encodings()?);
+    Ok(inputs)
+}
+
+/// Every enum whose tag byte reaches the disk, with the tags this build can write, so adding a variant changes the hash even where no canonical record carries it.
+fn enum_tags() -> Vec<(&'static str, Vec<u8>)> {
+    vec![(
+        "ScriptType",
+        ScriptType::ALL.iter().map(|tag| *tag as u8).collect(),
+    )]
 }
 
 /// Returns each stored record type's name with the encoding of its canonical instance.
@@ -470,5 +497,23 @@ mod hash_schema {
             layout_only,
             "a rule change that leaves every layout intact would not rebuild the database"
         );
+    }
+
+    /// The epoch and every ScriptType tag are hash inputs, so a rule change or a new tag is a rebuild.
+    #[test]
+    fn the_epoch_and_the_script_type_tags_are_inputs() {
+        let inputs = schema_inputs().expect("every canonical record encodes");
+        assert_eq!(
+            inputs[0],
+            ("SchemaEpoch", SCHEMA_EPOCH.to_le_bytes().to_vec())
+        );
+        assert!(inputs.contains(&(
+            "ScriptType",
+            vec![
+                ScriptType::P2PKH as u8,
+                ScriptType::P2SH as u8,
+                ScriptType::NonStandard as u8,
+            ],
+        )));
     }
 }

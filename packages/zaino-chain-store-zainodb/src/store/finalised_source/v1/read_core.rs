@@ -118,9 +118,7 @@ impl DbV1 {
                 if self.tip_height().await?.is_some_and(|tip| height <= tip) {
                     Ok(height)
                 } else {
-                    Err(StoreError::DataUnavailable(
-                        "height not found in best chain".into(),
-                    ))
+                    Err(not_stored())
                 }
             }
             HashOrHeight::Hash(z_hash) => {
@@ -129,7 +127,7 @@ impl DbV1 {
                     let ro = self.env.begin_ro_txn()?;
                     let bytes = ro.get(self.heights, &hkey).map_err(|e| {
                         if e == lmdb::Error::NotFound {
-                            StoreError::DataUnavailable("height not found in best chain".into())
+                            not_stored()
                         } else {
                             StoreError::LmdbError(e)
                         }
@@ -150,9 +148,14 @@ impl DbV1 {
         if self.tip_height().await?.is_some_and(|tip| highest <= tip) {
             Ok(())
         } else {
-            Err(StoreError::Custom("height not found in best chain".into()))
+            Err(not_stored())
         }
     }
+}
+
+/// The one answer for a height or hash the store does not hold, whichever read asked.
+fn not_stored() -> StoreError {
+    StoreError::DataUnavailable("height not found in best chain".into())
 }
 
 impl DbV1 {
@@ -183,10 +186,7 @@ impl DbV1 {
         label: &str,
         height: Height,
     ) -> Result<Option<T>, StoreError> {
-        let stored_height = self
-            .resolve_stored_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = stored_height.to_bytes()?;
+        let height_bytes = height.to_bytes()?;
         self.read_row(table, label, &height_bytes)
     }
 

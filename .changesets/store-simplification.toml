@@ -3,9 +3,11 @@ crate = "zaino-chain-store-zainodb"
 kind = "breaking"
 description = """
 The finalised store has no migrations. When the stored schema hash differs \
-from the build's, or cannot be decoded, the store deletes its database and \
-resyncs from the validator. Every existing database rebuilds once on its \
-first start under this release.
+from the build's, or cannot be decoded, the store moves its database aside \
+(to v1.stale-<hash prefix>, or v1.stale-unreadable) and resyncs from the \
+validator; it never deletes. A stale directory that already exists stops the \
+start, so the operator decides what to do with it. Every existing database \
+rebuilds once on its first start under this release.
 """
 
 [[changes]]
@@ -13,10 +15,12 @@ crate = "zaino-chain-store-zainodb"
 kind = "breaking"
 description = """
 The store computes its schema hash from the canonical encoding of every \
-stored type, its tables and their flags, and the enabled index features. \
-DbVersion, the schema text, and the version suffixes on table names are gone. \
-Switching transparent_address_history_experimental on or off also rebuilds \
-the database.
+stored type, its tables and their flags, the enabled index features, every \
+on-disk enum's tag list, and a hand-bumped epoch for rule changes that leave \
+every layout intact. DbVersion, the schema text, and the version suffixes on \
+table names are gone. Switching transparent_address_history_experimental on \
+or off also rebuilds the database. A range read past the tip reports \
+DataUnavailable, as a point read does.
 """
 
 [[changes]]

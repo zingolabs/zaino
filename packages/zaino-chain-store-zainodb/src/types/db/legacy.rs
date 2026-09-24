@@ -191,7 +191,7 @@ impl DbCodec for BlockHash {
 
 /// Fixed-length encoding metadata for `BlockHash`.
 ///
-/// The record consists ofa single 32-byte hash.
+/// The record consists of a single 32-byte hash.
 impl FixedEncodedLen for BlockHash {
     const ENCODED_LEN: usize = 32;
 }
@@ -320,7 +320,7 @@ impl DbCodec for TransactionHash {
 
 /// Fixed-length encoding metadata for `TransactionHash`.
 ///
-/// The record consists ofa single 32-byte hash.
+/// The record consists of a single 32-byte hash.
 impl FixedEncodedLen for TransactionHash {
     const ENCODED_LEN: usize = 32;
 }
@@ -470,7 +470,7 @@ impl DbCodec for Height {
 
 /// Fixed-length encoding metadata for `Height`.
 ///
-/// The record consists ofa single 4-byte big-endian u32.
+/// The record consists of a single 4-byte big-endian u32.
 impl FixedEncodedLen for Height {
     const ENCODED_LEN: usize = 4;
 }
@@ -497,7 +497,7 @@ impl DbCodec for ShardIndex {
 
 /// Fixed-length encoding metadata for `ShardIndex`.
 ///
-/// The record consists ofa single 4-byte big-endian u32.
+/// The record consists of a single 4-byte big-endian u32.
 impl FixedEncodedLen for ShardIndex {
     const ENCODED_LEN: usize = 4;
 }
@@ -617,7 +617,7 @@ impl DbCodec for AddrScript {
 
 /// Fixed-length encoding metadata for `AddrScript`.
 ///
-/// The record consists ofa 20 byte script (LE) + 1 byte script type
+/// The record consists of a 20 byte script (LE) + 1 byte script type
 impl FixedEncodedLen for AddrScript {
     const ENCODED_LEN: usize = 21;
 }
@@ -675,7 +675,7 @@ impl DbCodec for Outpoint {
 
 /// Fixed-length encoding metadata for `Outpoint`.
 ///
-/// The record consists ofa 32 byte txid + 4 byte tx index.
+/// The record consists of a 32 byte txid + 4 byte tx index.
 impl FixedEncodedLen for Outpoint {
     const ENCODED_LEN: usize = 36;
 }
@@ -1286,7 +1286,7 @@ impl DbCodec for TxInCompact {
 
 /// Fixed-length encoding metadata for `TxInCompact`.
 ///
-/// The record consists ofa 32-byte txid + 4-byte LE index
+/// The record consists of a 32-byte txid + 4-byte LE index
 impl FixedEncodedLen for TxInCompact {
     const ENCODED_LEN: usize = 36;
 }
@@ -1301,6 +1301,27 @@ pub enum ScriptType {
     P2SH = 0x01,
     /// Non-standard output script (rare).
     NonStandard = 0xFF,
+}
+
+impl ScriptType {
+    /// Every variant, in tag order, which the schema hash covers so a new variant rebuilds the database.
+    pub(crate) const ALL: [Self; 3] = [Self::P2PKH, Self::P2SH, Self::NonStandard];
+}
+
+#[cfg(test)]
+mod script_type_all {
+    use super::ScriptType;
+
+    /// Fails to compile when a variant is added without being listed, which is what keeps `ALL` and the schema hash honest.
+    #[test]
+    fn every_variant_is_listed() {
+        for variant in ScriptType::ALL {
+            match variant {
+                ScriptType::P2PKH | ScriptType::P2SH | ScriptType::NonStandard => {}
+            }
+        }
+        assert_eq!(ScriptType::ALL.len(), 3);
+    }
 }
 
 impl TryFrom<u8> for ScriptType {
@@ -1342,7 +1363,7 @@ impl DbCodec for ScriptType {
 
 /// Fixed-length encoding metadata for `ScriptType`.
 ///
-/// The record consists ofa single byte
+/// The record consists of a single byte
 impl FixedEncodedLen for ScriptType {
     const ENCODED_LEN: usize = 1;
 }
@@ -1511,7 +1532,7 @@ impl DbCodec for TxOutCompact {
 
 /// Fixed-length encoding metadata for `TxOutCompact`.
 ///
-/// The record consists ofa 8-byte LE value + 20-byte script hash + 1-byte type
+/// The record consists of a 8-byte LE value + 20-byte script hash + 1-byte type
 impl FixedEncodedLen for TxOutCompact {
     const ENCODED_LEN: usize = 29;
 }
@@ -1617,7 +1638,7 @@ impl DbCodec for CompactSaplingSpend {
 
 /// Fixed-length encoding metadata for `CompactSaplingSpend`.
 ///
-/// The record consists ofa 32 byte nullifier
+/// The record consists of a 32 byte nullifier
 impl FixedEncodedLen for CompactSaplingSpend {
     const ENCODED_LEN: usize = 32;
 }
@@ -1689,7 +1710,7 @@ impl DbCodec for CompactSaplingOutput {
 
 /// Fixed-length encoding metadata for `CompactSaplingOutput`.
 ///
-/// The record consists ofa 32-byte cmu + 32-byte ephemeral_key + 52-byte ciphertext
+/// The record consists of a 32-byte cmu + 32-byte ephemeral_key + 52-byte ciphertext
 impl FixedEncodedLen for CompactSaplingOutput {
     const ENCODED_LEN: usize = 116;
 }
@@ -1830,7 +1851,7 @@ impl DbCodec for CompactOrchardAction {
 
 /// Fixed-length encoding metadata for `CompactOrchardAction`.
 ///
-/// The record consists ofa:
+/// The record consists of a:
 /// - 32-byte nullifier
 /// - 32-byte cmx
 /// - 32-byte ephemeral_key
@@ -1884,7 +1905,7 @@ impl DbCodec for TxLocation {
 
 /// Fixed-length encoding metadata for `TxLocation`.
 ///
-/// The record consists ofa 4-byte big-endian block_index + 2-byte big-endian tx_index
+/// The record consists of a 4-byte big-endian block_index + 2-byte big-endian tx_index
 impl FixedEncodedLen for TxLocation {
     const ENCODED_LEN: usize = 6;
 }
@@ -1977,15 +1998,7 @@ impl DbCodec for AddrHistRecord {
     }
 }
 
-/// Fixed-length encoding metadata for `AddrHistRecord`.
-///
-/// v1 consists of:
-///  1 byte:  TxLocation tag
-/// +6 bytes: TxLocation body (4 BE block_index + 2 BE tx_index)
-/// +2 bytes: out_index (BE)
-/// +8 bytes: value     (LE)
-/// +1 byte : flags
-/// =18 bytes
+/// The stored record is 17 bytes: the 6-byte transaction location, a 2-byte big-endian output index, a flag byte, and an 8-byte little-endian value.
 impl FixedEncodedLen for AddrHistRecord {
     const ENCODED_LEN: usize = TxLocation::ENCODED_LEN + 2 + 1 + 8;
 }
@@ -2155,7 +2168,7 @@ impl DbCodec for ShardRoot {
 
 /// Fixed-length encoding metadata for `ShardRoot`.
 ///
-/// The record consists ofa 32 byte hash + 32 byte hash + 4 byte block height
+/// The record consists of a 32 byte hash + 32 byte hash + 4 byte block height
 impl FixedEncodedLen for ShardRoot {
     const ENCODED_LEN: usize = 68;
 }

@@ -72,15 +72,24 @@ the database directory; zainod then resyncs it from the validator.
 
 There are no migrations. The `metadata` record holds the schema hash of the
 build that created the database. When `spawn` finds a record that differs from
-its own, or one it cannot decode, it deletes the database directory and resyncs
-from the validator. Upgrades and downgrades take the same path, and the index is
-derived data, so the rebuild loses nothing.
+its own, or one it cannot decode, it moves the database directory aside, to
+`v1.stale-<first four bytes of the stored hash>` or `v1.stale-unreadable`, and
+resyncs from the validator. It never deletes: a rollback, a flag flipped by
+mistake, or a torn metadata row costs a rebuild, not the data. If the stale
+directory already exists, `spawn` refuses to start and names it, so the operator
+decides what to keep. Upgrades and downgrades take the same path, and the index
+is derived data, so the rebuild loses nothing.
 
 The store computes the schema hash; nobody maintains it by hand. The hash
 covers the canonical encoding of every stored type, every table name and its
-flags, the singleton keys, and the enabled index features. A build with
-`transparent_address_history_experimental` therefore has a different hash from
-one without it, and switching the feature rebuilds the database.
+flags, the singleton keys, the enabled index features, the full tag list of
+every on-disk enum, and `SCHEMA_EPOCH`. The tag lists mean a new `ScriptType`
+variant rebuilds the database before any record carries it. The epoch is the
+one input a reviewer bumps by hand, for a change to what the store writes into
+an unchanged layout: the spendability rule, the sparse-row rule, the accumulator
+digest. A build with `transparent_address_history_experimental` therefore has a
+different hash from one without it, and switching the feature rebuilds the
+database.
 
 Any change to an on-disk encoding changes the hash, and every deployment pays
 one full rebuild on its next start. `golden.rs` pins both the encodings and the

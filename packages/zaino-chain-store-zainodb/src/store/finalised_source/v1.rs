@@ -93,8 +93,27 @@ pub(crate) mod schema;
 enum SchemaCheck {
     /// The stored record carries this build's schema hash.
     Matches,
-    /// The stored record cannot be decoded by this build, or it carries another schema hash.
-    Differs,
+    /// The stored record carries another build's schema hash.
+    Differs {
+        /// The schema hash the database was written under.
+        stored: [u8; 32],
+    },
+    /// The stored record cannot be decoded by this build, so the database was written by a build whose metadata layout it does not know.
+    Unreadable,
+}
+
+impl SchemaCheck {
+    /// The directory name a database with this check result is moved to beside `v1`, or `None` when it matches.
+    fn stale_dir_name(self) -> Option<String> {
+        match self {
+            Self::Matches => None,
+            Self::Differs { stored } => Some(format!(
+                "v1.stale-{:02x}{:02x}{:02x}{:02x}",
+                stored[0], stored[1], stored[2], stored[3]
+            )),
+            Self::Unreadable => Some("v1.stale-unreadable".to_string()),
+        }
+    }
 }
 
 /// Singleton key of the metadata record in the metadata table.
@@ -365,26 +384,38 @@ pub(crate) struct DbV1 {
 /// - read fetchers used by the capability trait implementations, and
 /// - internal indexing helpers.
 impl DbV1 {
-    /// Opens the v1 database without starting the maintenance task, deleting and recreating it when its stored schema differs from this build's.
+    /// Opens the v1 database without starting the maintenance task, moving it aside and creating a fresh one when its stored schema is not this build's.
     pub(crate) async fn spawn(config: &StoreSettings) -> Result<Self, StoreError> {
         let zaino_db = Self::open_env_and_dbs(config).await?;
-        if zaino_db.check_schema_version().await? == SchemaCheck::Matches {
+        let check = zaino_db.check_schema_version().await?;
+        let Some(stale_dir_name) = check.stale_dir_name() else {
             return Ok(zaino_db);
-        }
+        };
 
         let db_path = db_path(config)?;
+        let stale_path = db_path.with_file_name(stale_dir_name);
+        if stale_path.exists() {
+            return Err(StoreError::Custom(format!(
+                "the database at {} was written by another build, and {} already holds one \
+                 moved aside for the same reason; remove or move that directory before starting",
+                db_path.display(),
+                stale_path.display()
+            )));
+        }
         warn!(
             path = %db_path.display(),
-            "stored schema differs from this build's; deleting the database to resync it from the validator"
+            stale = %stale_path.display(),
+            ?check,
+            "stored schema is not this build's; moving the database aside and resyncing from the validator"
         );
         drop(zaino_db);
-        fs::remove_dir_all(&db_path)?;
+        fs::rename(&db_path, &stale_path)?;
 
         let zaino_db = Self::open_env_and_dbs(config).await?;
         match zaino_db.check_schema_version().await? {
             SchemaCheck::Matches => Ok(zaino_db),
-            SchemaCheck::Differs => Err(StoreError::Custom(format!(
-                "a freshly created database at {} does not carry this build's schema",
+            other => Err(StoreError::Custom(format!(
+                "a freshly created database at {} does not carry this build's schema: {other:?}",
                 db_path.display()
             ))),
         }
@@ -556,13 +587,12 @@ impl DbV1 {
 
             match txn.get(self.metadata, &METADATA_KEY) {
                 Ok(raw_bytes) => {
-                    // A record this build cannot decode was written by another schema.
-                    let matches =
-                        DbMetadata::from_bytes(raw_bytes).is_ok_and(|stored| stored == this_build);
-                    return Ok(if matches {
-                        SchemaCheck::Matches
-                    } else {
-                        SchemaCheck::Differs
+                    return Ok(match DbMetadata::from_bytes(raw_bytes) {
+                        Ok(stored) if stored == this_build => SchemaCheck::Matches,
+                        Ok(stored) => SchemaCheck::Differs {
+                            stored: stored.schema_hash,
+                        },
+                        Err(_) => SchemaCheck::Unreadable,
                     });
                 }
                 Err(lmdb::Error::NotFound) => {
