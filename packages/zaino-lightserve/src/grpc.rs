@@ -11,15 +11,15 @@
 use futures::stream::{BoxStream, StreamExt};
 use tonic::{Request, Response, Status};
 
-use zaino_core::{BlockHash, BlockRef, Height, HeightRange};
+use zaino_core::{BlockHash, BlockRef, Height, HeightRange, ShieldedPool};
 
 use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamer;
 use zaino_proto::proto::service::{
     Address, AddressList, Balance, BlockId, BlockRange, ChainSpec, Duration, Empty,
     GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList, GetMempoolTxRequest,
-    GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction, SendResponse, SubtreeRoot,
-    TransparentAddressBlockFilter, TreeState, TxFilter,
+    GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction, SendResponse, ShieldedProtocol,
+    SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
 };
 use zaino_service::LightServeService;
 
@@ -99,6 +99,47 @@ fn height_from_wire(height: u64) -> Result<Height, Status> {
     Height::try_from(narrowed).map_err(|_| Status::invalid_argument("height out of range"))
 }
 
+/// Wire -> domain height for a treestate query. The domain treestate read is
+/// height-addressed, so a hash-only request is rejected (`invalid_argument`)
+/// rather than silently resolved — resolving hash -> height is not this read's
+/// job. A request carrying a height (hash empty) takes the common wallet path.
+fn tree_state_height_from_wire(id: BlockId) -> Result<Height, Status> {
+    if id.hash.is_empty() {
+        height_from_wire(id.height)
+    } else {
+        Err(Status::invalid_argument(
+            "get_tree_state by block hash is not supported; request by height",
+        ))
+    }
+}
+
+/// Wire -> domain for a subtree-roots query: the shielded protocol, the start
+/// index, and the entry limit (`0` meaning "all", mapped to `None`). The
+/// external-input validation step — an unknown protocol or an index/limit past
+/// the domain's `u16` bound is `invalid_argument`. Kept here beside the other
+/// wire -> domain input helpers (which return `Status`), so `wire.rs` stays a
+/// pure domain -> wire module with no tonic dependency.
+fn subtree_roots_query_from_wire(
+    arg: GetSubtreeRootsArg,
+) -> Result<(ShieldedPool, u16, Option<u16>), Status> {
+    let pool = match ShieldedProtocol::try_from(arg.shielded_protocol) {
+        Ok(ShieldedProtocol::Sapling) => ShieldedPool::Sapling,
+        Ok(ShieldedProtocol::Orchard) => ShieldedPool::Orchard,
+        Ok(ShieldedProtocol::Ironwood) => ShieldedPool::Ironwood,
+        Err(_) => return Err(Status::invalid_argument("unknown shielded protocol")),
+    };
+    let start_index = u16::try_from(arg.start_index)
+        .map_err(|_| Status::invalid_argument("subtree start index out of range"))?;
+    let limit = match arg.max_entries {
+        0 => None,
+        entries => Some(
+            u16::try_from(entries)
+                .map_err(|_| Status::invalid_argument("subtree max entries out of range"))?,
+        ),
+    };
+    Ok((pool, start_index, limit))
+}
+
 #[tonic::async_trait]
 impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S> {
     // --- wired ---
@@ -159,14 +200,23 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
     ) -> Result<Response<Balance>, Status> {
         Err(unimplemented("get_taddress_balance_stream"))
     }
-    async fn get_tree_state(&self, _r: Request<BlockId>) -> Result<Response<TreeState>, Status> {
-        Err(unimplemented("get_tree_state"))
+    async fn get_tree_state(&self, r: Request<BlockId>) -> Result<Response<TreeState>, Status> {
+        let height = tree_state_height_from_wire(r.into_inner())?;
+        self.handler
+            .get_tree_state(height)
+            .await
+            .map(Response::new)
+            .map_err(to_status)
     }
     async fn get_latest_tree_state(
         &self,
         _r: Request<Empty>,
     ) -> Result<Response<TreeState>, Status> {
-        Err(unimplemented("get_latest_tree_state"))
+        self.handler
+            .get_latest_tree_state()
+            .await
+            .map(Response::new)
+            .map_err(to_status)
     }
     async fn get_address_utxos(
         &self,
@@ -248,9 +298,17 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
     type GetSubtreeRootsStream = ServerStream<SubtreeRoot>;
     async fn get_subtree_roots(
         &self,
-        _r: Request<GetSubtreeRootsArg>,
+        r: Request<GetSubtreeRootsArg>,
     ) -> Result<Response<Self::GetSubtreeRootsStream>, Status> {
-        Err(unimplemented("get_subtree_roots"))
+        let (pool, start_index, limit) = subtree_roots_query_from_wire(r.into_inner())?;
+        let roots = self
+            .handler
+            .get_subtree_roots(pool, start_index, limit)
+            .await
+            .map_err(to_status)?;
+        // The roots are collected owned, so the stream is `'static`.
+        let stream = futures::stream::iter(roots.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
 
     type GetAddressUtxosStreamStream = ServerStream<GetAddressUtxosReply>;

@@ -7,7 +7,7 @@
 
 use zaino_core::{
     BlockId, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier, OrchardAction,
-    PreIndexCompactTx, SaplingOutput, TransparentInput, TransparentOutput,
+    PreIndexCompactTx, SaplingOutput, SubtreeRoot, TransparentInput, TransparentOutput, Treestate,
 };
 use zaino_proto::proto::compact_formats as cf;
 use zaino_proto::proto::service as proto;
@@ -60,6 +60,54 @@ impl ToWire for ChainMetadata {
             sapling_commitment_tree_size: u32::from(self.sapling_tree_size),
             orchard_commitment_tree_size: u32::from(self.orchard_tree_size),
             ironwood_commitment_tree_size: u32::from(self.ironwood_tree_size),
+        }
+    }
+}
+
+impl ToWire for Treestate {
+    type Wire = proto::TreeState;
+
+    fn to_wire(self) -> proto::TreeState {
+        proto::TreeState {
+            // The handler is not parameterised by the network (see
+            // `get_lightd_info`), so `network` rides out empty best-effort — a
+            // wallet reads the height and the serialized trees, not this field.
+            network: String::new(),
+            height: u64::from(self.height),
+            // Display (big-endian) order, as `z_gettreestate` reports the hash.
+            hash: self.block_hash.to_string(),
+            // `BlockTime` is a Unix-epoch `u32`; the wire field is the same.
+            time: self.time,
+            // Each pool's serialized tree rides out as lowercase hex; an inactive
+            // pool at this block is signalled by an empty string, never a
+            // serialized empty tree (which would claim the pool is active).
+            sapling_tree: self
+                .sapling
+                .map(|pool| hex_bytes(&pool.final_state))
+                .unwrap_or_default(),
+            orchard_tree: self
+                .orchard
+                .map(|pool| hex_bytes(&pool.final_state))
+                .unwrap_or_default(),
+            ironwood_tree: self
+                .ironwood
+                .map(|pool| hex_bytes(&pool.final_state))
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl ToWire for SubtreeRoot {
+    type Wire = proto::SubtreeRoot;
+
+    fn to_wire(self) -> proto::SubtreeRoot {
+        proto::SubtreeRoot {
+            root_hash: <[u8; 32]>::from(self.root).to_vec(),
+            // The domain subtree root carries only the root and the completing
+            // height (as `z_getsubtreesbyindex` reports), not the completing
+            // block hash, so that field rides out empty.
+            completing_block_hash: Vec::new(),
+            completing_block_height: u64::from(self.end_height),
         }
     }
 }
@@ -128,8 +176,75 @@ fn txout(output: TransparentOutput) -> cf::TxOut {
     }
 }
 
-/// Lowercase hex, so a domain id can ride out on a wire string field without a
-/// hex dependency.
-pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
+/// Lowercase hex of an arbitrary byte slice, so a domain blob (e.g. a serialized
+/// commitment tree) can ride out on a wire string field without a hex dependency.
+fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Lowercase hex of a 32-byte id, so a domain id can ride out on a wire string
+/// field without a hex dependency.
+pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
+    hex_bytes(&bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hex_bytes, ToWire};
+    use zaino_core::{BlockHash, Height, SubtreeRoot, Treestate};
+    // `PoolTreestate`/`TreeRoot` are domain component types the `zaino-core`
+    // facade does not re-export; the production conversions never name them, only
+    // these tests construct them, so they come straight from primitives here.
+    use zaino_primitives::types::{PoolTreestate, TreeRoot};
+
+    /// A treestate maps field-for-field to the wire shape: height/time straight
+    /// through, the hash in display (big-endian) order, an active pool's tree as
+    /// lowercase hex, and an inactive pool as the empty string (never a
+    /// serialized empty tree).
+    #[test]
+    fn treestate_maps_to_wire() {
+        let treestate = Treestate {
+            block_hash: BlockHash::from([0xABu8; 32]),
+            height: Height::try_from(2_800_000).expect("valid height"),
+            time: 1_700_000_000,
+            sapling: Some(PoolTreestate {
+                final_root: None,
+                final_state: vec![0xde, 0xad, 0xbe, 0xef],
+            }),
+            orchard: None,
+            ironwood: None,
+        };
+
+        let wire = treestate.to_wire();
+        assert_eq!(wire.height, 2_800_000u64);
+        assert_eq!(wire.time, 1_700_000_000u32);
+        // Display order: the all-0xAB hash renders the same forwards, but the
+        // length and casing are the contract wallets read.
+        assert_eq!(wire.hash, "ab".repeat(32));
+        assert_eq!(wire.sapling_tree, "deadbeef");
+        assert_eq!(wire.orchard_tree, "");
+        assert_eq!(wire.ironwood_tree, "");
+        assert_eq!(wire.network, "");
+    }
+
+    /// A subtree root maps its root bytes and completing height; the completing
+    /// block hash the domain does not carry rides out empty.
+    #[test]
+    fn subtree_root_maps_to_wire() {
+        let root = SubtreeRoot {
+            root: TreeRoot::from([0x11u8; 32]),
+            end_height: Height::try_from(1_000_000).expect("valid height"),
+        };
+
+        let wire = root.to_wire();
+        assert_eq!(wire.root_hash, vec![0x11u8; 32]);
+        assert_eq!(wire.completing_block_height, 1_000_000u64);
+        assert!(wire.completing_block_hash.is_empty());
+    }
+
+    #[test]
+    fn hex_bytes_is_lowercase_and_padded() {
+        assert_eq!(hex_bytes(&[0x00, 0x0f, 0xa0, 0xff]), "000fa0ff");
+        assert_eq!(hex_bytes(&[]), "");
+    }
 }

@@ -25,10 +25,10 @@ pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};
 
 use futures::stream::{BoxStream, StreamExt};
-use zaino_core::{BlockRef, HeightRange};
+use zaino_core::{BlockRef, Height, HeightRange, ShieldedPool};
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
-use zaino_service::{ChainSegment, CompactBlockRead, LightServeService};
+use zaino_service::{ChainSegment, CompactBlockRead, LightServeService, TreestateRead};
 
 use crate::wire::{to_hex, ToWire};
 
@@ -104,6 +104,37 @@ impl<S: LightServeService> LightServe<S> {
             .collect()
             .await;
         Ok(Box::pin(futures::stream::iter(blocks)))
+    }
+
+    /// `GetTreeState`: the commitment tree state at `height`. Zaino does not
+    /// index treestate — the engine's remote view passes it through to the
+    /// validator — and the domain answer is converted domain -> wire here.
+    pub async fn get_tree_state(&self, height: Height) -> Result<proto::TreeState, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        Ok(snapshot.treestate(height).await?.to_wire())
+    }
+
+    /// `GetLatestTreeState`: the tree state at the pinned tip. `NoBlocks` before
+    /// any block is served (there is no tip to key the treestate on).
+    pub async fn get_latest_tree_state(&self) -> Result<proto::TreeState, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
+        Ok(snapshot.treestate(tip.height).await?.to_wire())
+    }
+
+    /// `GetSubtreeRoots`: note-commitment subtree roots for `pool`, a run of at
+    /// most `limit` (all when `None`) starting at `start_index`. Passed through to
+    /// the validator; collected owned so the gRPC layer serves them as a `'static`
+    /// stream.
+    pub async fn get_subtree_roots(
+        &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> Result<Vec<proto::SubtreeRoot>, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        let roots = snapshot.subtree_roots(pool, start_index, limit).await?;
+        Ok(roots.into_iter().map(ToWire::to_wire).collect())
     }
 
     /// `SendTransaction`: relay raw bytes. A rejection is a domain answer, so it
@@ -184,6 +215,46 @@ mod tests {
         let serve = LightServe::new(engine_with_tip(None));
         let info = serve.get_lightd_info().await.expect("lightd info");
         assert_eq!(info.block_height, 0u64);
+    }
+
+    /// `GetTreeState` delegates to the snapshot's treestate read: the mock's
+    /// stub answers `NotServiceable`, which passes through as the serviceability
+    /// fact rather than the old `unimplemented` — proving the handler is wired to
+    /// the read, not stubbed at the wire.
+    #[tokio::test]
+    async fn tree_state_delegates_to_the_snapshot_read() {
+        use zaino_core::Height;
+        let serve = LightServe::new(engine_with_tip(None));
+        let height = Height::try_from(2_800_000).expect("valid height");
+        assert!(matches!(
+            serve.get_tree_state(height).await,
+            Err(ServeError::NotServiceable(_))
+        ));
+    }
+
+    /// `GetLatestTreeState` needs a tip to key the treestate on; an empty chain
+    /// is `NoBlocks`, not a transport error.
+    #[tokio::test]
+    async fn latest_tree_state_no_tip_is_no_blocks() {
+        let serve = LightServe::new(engine_with_tip(None));
+        assert!(matches!(
+            serve.get_latest_tree_state().await,
+            Err(ServeError::NoBlocks)
+        ));
+    }
+
+    /// `GetSubtreeRoots` delegates to the snapshot and converts the result to
+    /// wire — the mock serves an empty run, which returns an empty wire vec (a
+    /// served answer, not `unimplemented`).
+    #[tokio::test]
+    async fn subtree_roots_delegates_and_converts() {
+        use zaino_core::ShieldedPool;
+        let serve = LightServe::new(engine_with_tip(None));
+        let roots = serve
+            .get_subtree_roots(ShieldedPool::Sapling, 0, None)
+            .await
+            .expect("subtree roots served");
+        assert!(roots.is_empty());
     }
 
     /// A successful broadcast returns `error_code == 0` with the txid in hex.
