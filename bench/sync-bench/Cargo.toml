@@ -26,9 +26,15 @@ zaino-sync = { workspace = true }
 zaino-backend-lmdb = { workspace = true }
 zaino-persistence = { workspace = true }
 zaino-persistence-codec = { path = "../../packages/zaino-persistence-codec" }
-# The source seam and the ReadState adapter it wraps.
+# The source seam and the adapters it wraps (ReadState opens the on-disk state;
+# RPC takes an endpoint — the two the `--adapter` swap benches against).
 zaino-source = { workspace = true }
 zaino-source-zebra-readstate = { workspace = true }
+zaino-source-zebra-rpc = { workspace = true }
+# The RPC path benches the same composite production runs (rpc_only wraps the RPC
+# adapter with a polled tip), so it exercises the real RPC source, not a bare one.
+zaino-source-zebra = { workspace = true }
+zaino-rpc = { workspace = true }
 # Compose-on-read verification of the served compact blocks.
 zaino-store = { path = "../../packages/zaino-store" }
 zaino-service = { path = "../../packages/zaino-service" }

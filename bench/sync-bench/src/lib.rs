@@ -9,8 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use zaino_indexer::FetchConcurrency;
+use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_source::{RetryPolicy, ValidatorClient};
+use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
+use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zebra_chain::parameters::Network;
 
 /// A boxed error is enough for a benchmark binary — every step already carries a
@@ -18,8 +21,29 @@ use zebra_chain::parameters::Network;
 /// its variant.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// The resilient source both harnesses read compact blocks through.
+/// The resilient ReadState source: reads compact blocks straight off the
+/// on-disk state DB. The default for both harnesses.
 pub type Source = Arc<ValidatorClient<ZebraReadStateAdapter>>;
+
+/// The resilient JSON-RPC source: reads compact blocks over the validator's RPC
+/// endpoint. The alternative `provision-bench` benches against, to isolate the
+/// RocksDB-secondary read cost from the RPC-wire cost on the same full-chain loop.
+///
+/// It is the `ZebraValidator` composite (`rpc_only`), exactly as production RPC
+/// mode composes it — the bare RPC adapter has no tip stream, so the composite
+/// supplies one by polling. Benching the composite therefore measures the real
+/// RPC source path, not a stripped-down one.
+pub type RpcSource = Arc<ValidatorClient<ZebraValidator>>;
+
+/// Which source adapter a harness provisions through — the two ports the same
+/// full-chain provisioning loop can run over.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum AdapterArg {
+    /// Open the on-disk Zebra state DB directly (run on the validator's node).
+    Readstate,
+    /// Reach the validator over its JSON-RPC endpoint.
+    Rpc,
+}
 
 /// The sync engine's default provisioner concurrency — the value a real indexer
 /// runs with, so a bench that does not sweep the knob reflects it rather than a
@@ -64,7 +88,25 @@ pub fn init_logging() {
 /// single-attempt adapter.
 pub fn open_source(cache: &Path, network: &Network) -> Result<Source, BoxError> {
     let adapter = ZebraReadStateAdapter::open(cache, network)?;
-    Ok(Arc::new(ValidatorClient::new(adapter, RetryPolicy::default())))
+    Ok(Arc::new(ValidatorClient::new(
+        adapter,
+        RetryPolicy::default(),
+    )))
+}
+
+/// Connect to the validator's JSON-RPC endpoint at `addr` (`host:port`), wrapped
+/// in the same resilient decorator as [`open_source`], so the two adapters differ
+/// only in transport and the provisioning loop over them is identical.
+pub fn open_rpc_source(addr: &str) -> Result<RpcSource, BoxError> {
+    let rpc = RpcClient::new(RpcClientConfig {
+        url: format!("http://{addr}"),
+        ..RpcClientConfig::default()
+    })?;
+    let validator = ZebraValidator::rpc_only(ZebraRpcAdapter::new(rpc));
+    Ok(Arc::new(ValidatorClient::new(
+        validator,
+        RetryPolicy::default(),
+    )))
 }
 
 /// Report throughput over `blocks` as a human line and a structured event. `kind`
