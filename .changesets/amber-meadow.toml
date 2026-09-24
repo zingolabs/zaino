@@ -1,0 +1,34 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0ab68-4c95-7811-9047-c10c559a1de9"
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+The chain head now follows the validator when its tip moves to a lower block. \
+Previously a retained block with more work pulled the tip back up, so a \
+rollback was never followed. A heavier retained block is now logged as a \
+warning instead."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+After a rollback or a reorg onto a shorter branch, heights above the new tip \
+are no longer reported as part of the best chain. The blocks there stay \
+available as a competing branch."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = """
+The in-memory chain head stores its tip block separately from the other \
+retained blocks, so it can never be empty."""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+A block from the validator that does not attach directly to the chain head's \
+tip (wrong height or wrong parent) now fails the update as inconsistent \
+validator data, instead of being added to the best chain."""
