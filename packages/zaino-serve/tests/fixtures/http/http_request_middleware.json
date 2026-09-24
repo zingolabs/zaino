@@ -1,0 +1,74 @@
+[
+  {
+    "name": "two_point_zero",
+    "status": 200,
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"received\":{\"jsonrpc\":\"2.0\",\"method\":\"echo\",\"params\":[],\"id\":1},\"contentType\":\"application/json\"}}",
+    "error": null
+  },
+  {
+    "name": "lightwalletd",
+    "status": 200,
+    "body": "{\"jsonrpc\":\"1.0\",\"id\":\"lwd\",\"result\":{\"received\":{\"jsonrpc\":\"2.0\",\"method\":\"echo\",\"params\":[],\"id\":\"lwd\"},\"contentType\":\"application/json\"},\"error\":null}",
+    "error": null
+  },
+  {
+    "name": "bitcoind_without_content_type",
+    "status": 200,
+    "body": "{\"id\":7,\"result\":{\"received\":{\"jsonrpc\":\"2.0\",\"method\":\"echo\",\"params\":[1],\"id\":7},\"contentType\":\"application/json\"},\"error\":null}",
+    "error": null
+  },
+  {
+    "name": "text_plain",
+    "status": 200,
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"received\":{\"jsonrpc\":\"2.0\",\"method\":\"echo\",\"params\":[],\"id\":1},\"contentType\":\"application/json\"}}",
+    "error": null
+  },
+  {
+    "name": "form_encoding",
+    "status": 200,
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"received\":{\"jsonrpc\":\"2.0\",\"method\":\"echo\",\"params\":[],\"id\":1},\"contentType\":\"application/x-www-form-urlencoded\"}}",
+    "error": null
+  },
+  {
+    "name": "unparseable",
+    "status": 200,
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{\"received\":\"not json\",\"contentType\":\"application/json\"}}",
+    "error": null
+  },
+  {
+    "name": "bitcoind_null_result",
+    "status": 200,
+    "body": "{\"id\":2,\"result\":null,\"error\":null}",
+    "error": null
+  },
+  {
+    "name": "lightwalletd_error",
+    "status": 200,
+    "body": "{\"jsonrpc\":\"1.0\",\"id\":3,\"result\":null,\"error\":{\"code\":-8,\"message\":\"refused\"}}",
+    "error": null
+  },
+  {
+    "name": "two_point_zero_null_result",
+    "status": 200,
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":null}",
+    "error": null
+  },
+  {
+    "name": "oversized_body",
+    "status": null,
+    "body": null,
+    "error": "length limit exceeded"
+  },
+  {
+    "name": "no_credentials",
+    "status": null,
+    "body": null,
+    "error": "ErrorObject { code: ServerError(401), message: \"unauthenticated method\", data: None }"
+  },
+  {
+    "name": "wrong_credentials",
+    "status": null,
+    "body": null,
+    "error": "ErrorObject { code: ServerError(401), message: \"unauthenticated method\", data: None }"
+  }
+]
