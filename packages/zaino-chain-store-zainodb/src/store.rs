@@ -48,7 +48,7 @@
 //! The database lives in `<path>/<network>/v1/`. Its `metadata` record holds the schema hash of
 //! the build that created it, computed from the canonical encodings, the tables, and the enabled
 //! index features. There are no migrations: when the stored hash differs from this build's,
-//! `spawn` deletes the database directory and resyncs from the validator.
+//! `spawn` moves the database directory aside and resyncs from the validator.
 //!
 //! # Core API and invariants
 //!
@@ -113,7 +113,7 @@ use zebra_chain::parameters::NetworkKind;
 
 use crate::adapter::domain_block_ref;
 use crate::types::{AbsoluteChainWork, BlockHash, Height, IndexedBlock, GENESIS_HEIGHT};
-use zaino_chain_store::{ChainStoreConfig, Provenance, StoreWatermark};
+use zaino_chain_store::{ChainStoreConfig, StoreWatermark};
 
 use crate::config::{StoreSettings, ZainoDbConfig};
 use crate::error::StoreError;
@@ -445,10 +445,7 @@ async fn refresh_watermark(db: &DbV1, watermark: &watch::Sender<StoreWatermark>)
         }
     };
 
-    let refreshed = StoreWatermark {
-        tip,
-        provenance: Provenance::Durable,
-    };
+    let refreshed = StoreWatermark { tip };
     watermark.send_if_modified(|current| {
         if *current == refreshed {
             false

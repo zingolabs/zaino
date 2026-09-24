@@ -502,10 +502,6 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
         use zaino_chain_store::ChainStoreError as Error;
 
         let kind = match &value {
-            // Transient. It resolves once the store finishes opening, so the
-            // caller is told to come back.
-            Error::NotReady => ChainIndexErrorKind::Unavailable,
-
             // The caller handed over a range that runs backwards. Nothing is
             // broken and retrying it unchanged fails identically.
             Error::InvalidRange { .. } => ChainIndexErrorKind::InvalidArgument,
@@ -605,15 +601,6 @@ mod tests {
         );
     }
 
-    /// A store that has not opened yet is retryable.
-    #[test]
-    fn a_store_still_opening_is_retryable() {
-        assert_eq!(
-            kind_of(ChainStoreError::NotReady),
-            ChainIndexErrorKind::Unavailable
-        );
-    }
-
     /// A broken store is a server fault, and so is a routing mistake.
     #[test]
     fn a_broken_store_is_a_server_fault() {
@@ -623,7 +610,7 @@ mod tests {
             ChainStoreError::backend("lmdb"),
             ChainStoreError::AboveWatermark {
                 requested: h(2),
-                watermark: h(1),
+                watermark: Some(h(1)),
             },
         ] {
             assert_eq!(kind_of(error), ChainIndexErrorKind::InternalServerError);
@@ -639,7 +626,6 @@ mod tests {
         use std::error::Error as _;
 
         for error in [
-            ChainStoreError::NotReady,
             ChainStoreError::Unavailable(StoreCapability::TxOutSet),
             ChainStoreError::backend("lmdb"),
         ] {
