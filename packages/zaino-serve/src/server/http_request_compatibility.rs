@@ -577,36 +577,16 @@ mod http_request_middleware {
 
     #[tokio::test]
     async fn rewrites_every_request_form_exactly_as_zebra_did() {
-        let cookie_dir = tempfile::tempdir().expect("a temporary directory is creatable");
-        let zebra_cookie = zebra_rpc::server::cookie::Cookie::default();
-        zebra_rpc::server::cookie::write_to_disk(&zebra_cookie, cookie_dir.path())
-            .expect("zebra's cookie writes");
-        let secret = std::fs::read_to_string(cookie_dir.path().join(".cookie"))
-            .expect("zebra's cookie reads")
-            .strip_prefix("__cookie__:")
-            .expect("zebra's cookie carries the zcash-cli user name")
-            .to_string();
+        let secret = "a secret the test chose";
 
-        let mut ours = Vec::new();
-        let mut zebras = Vec::new();
-        for case in cases(&secret) {
-            ours.push(
+        let mut outcomes = Vec::new();
+        for case in cases(secret) {
+            outcomes.push(
                 outcome(
                     &case,
                     HttpRequestMiddleware::new(
                         echo_service(),
-                        Some(Cookie::from_secret(secret.clone())),
-                        MAX_REQUEST_BODY_SIZE,
-                    ),
-                )
-                .await,
-            );
-            zebras.push(
-                outcome(
-                    &case,
-                    zebra_rpc::server::http_request_compatibility::HttpRequestMiddleware::new(
-                        echo_service(),
-                        Some(zebra_cookie.clone()),
+                        Some(Cookie::from_secret(secret.to_string())),
                         MAX_REQUEST_BODY_SIZE,
                     ),
                 )
@@ -614,14 +594,13 @@ mod http_request_middleware {
             );
         }
 
-        assert_eq!(ours, zebras);
         golden::assert_golden(
             &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("tests")
                 .join("fixtures")
                 .join("http"),
             "http_request_middleware",
-            &zebras,
+            &outcomes,
         );
     }
 }

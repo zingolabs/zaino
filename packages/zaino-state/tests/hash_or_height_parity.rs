@@ -2,8 +2,8 @@
 //!
 //! RPC callers write block identifiers in zebra's syntax, so a string zebra
 //! accepts and Zaino refuses, or the reverse, is a behaviour change on the wire.
-//! The goldens in `zaino-primitives` pin the contract on their own; this test
-//! pins it to zebra's parser for as long as zebra-state is in the build.
+//! The golden file holds zebra-state's parse outcomes for every input, captured
+//! while zebra-state was still in the build.
 
 #![forbid(unsafe_code)]
 
@@ -12,7 +12,7 @@ mod golden;
 
 use std::path::PathBuf;
 
-use zaino_primitives::types::{BlockHash, HashOrHeight, Height};
+use zaino_primitives::types::{HashOrHeight, Height};
 
 /// Inputs covering hashes, heights, u32-parse quirks, the protocol maximum, and negative heights.
 const INPUTS: &[&str] = &[
@@ -103,41 +103,13 @@ fn zaino_outcomes() -> Vec<Outcome> {
     )
 }
 
-/// Zebra's identifier, in Zaino's type so the two compare directly.
-fn translate(zebra: zebra_state::HashOrHeight) -> HashOrHeight {
-    match zebra {
-        zebra_state::HashOrHeight::Hash(hash) => HashOrHeight::Hash(BlockHash::from(hash.0)),
-        zebra_state::HashOrHeight::Height(height) => HashOrHeight::Height(
-            Height::try_from(height.0).expect("zebra only yields heights in range"),
-        ),
-    }
-}
-
-/// Zebra's parser's outcomes.
-fn zebra_outcomes() -> Vec<Outcome> {
-    outcomes(
-        |input| {
-            input
-                .parse::<zebra_state::HashOrHeight>()
-                .ok()
-                .map(translate)
-        },
-        |input, tip| {
-            zebra_state::HashOrHeight::new(input, tip.map(zebra_chain::block::Height))
-                .ok()
-                .map(translate)
-        },
-    )
-}
-
 #[test]
 fn zaino_parses_block_identifiers_exactly_as_zebra_does() {
-    assert_eq!(zaino_outcomes(), zebra_outcomes());
     golden::assert_golden(
         &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures"),
         "hash_or_height",
-        &zebra_outcomes(),
+        &zaino_outcomes(),
     );
 }

@@ -6,9 +6,6 @@
 ### Running ZainoD
 - To run a Zaino server, backed locally by Zebrad first build Zaino.
 
-Recently the newest GCC version on Arch has broken a build script in the `rocksdb` dependency. A workaround is:
-`export CXXFLAGS="$CXXFLAGS -include cstdint"`
-
 1) Run `$ cargo build --release`
 2) Add compiled binary held at `#PATH_TO/zaino/target/release/zainod` to PATH.
 

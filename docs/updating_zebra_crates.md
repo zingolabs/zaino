@@ -55,10 +55,9 @@ The reunification removed that footgun.)
 ## Pinning to an unreleased zebra (git rev)
 
 Sometimes Zaino needs a zebra change that has not yet been published to
-crates.io (for example, a new field on a `ReadRequest` variant). In that
-case the `[patch.crates-io]` entries point `zebra-chain` / `zebra-rpc` /
-`zebra-state` at a specific `ZcashFoundation/zebra.git` rev instead of a
-published version.
+crates.io (for example, a new field on a `zebra-chain` type). In that
+case the `[patch.crates-io]` entry points `zebra-chain` at a specific
+`ZcashFoundation/zebra.git` rev instead of a published version.
 
 When you do this:
 
@@ -81,7 +80,7 @@ you notice that there are significant issues consult with Zebra and
 
 ### Prost
 Prost is used in conjunction with `tonic` to build gRPC .rs files from `.proto` files
-it is also used accross many crates like `zaino-proto` and `zebra-rpc`. Zaino can't build
+it is also used across many crates like `zaino-proto`. Zaino can't build
 without reliably generating the files so it's
 important to figure this dependency graph out.
 

@@ -103,7 +103,6 @@ proptest.workspace = true
 incrementalmerkletree = "0.8.2"
 rand = "0.10.1"
 zaino-consensus = { workspace = true }
-zebra-state.workspace = true
 
 [build-dependencies]
 whoami = { workspace = true }

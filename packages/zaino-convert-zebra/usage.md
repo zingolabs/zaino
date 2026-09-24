@@ -39,9 +39,10 @@ other.
 ## One direction, deliberately
 
 There is no `zebra_from_block`. Nothing needs it: the domain is what Zaino
-serves from, and the places that still emit `zebra-rpc` shapes
-(`z_getblock`, `getrawtransaction`) build them from block bytes plus chain
-facts using zebra's own builders, so the formatting stays zebra's business.
+serves from, and the places that still emit zcashd-shaped JSON
+(`z_getblock`, `getrawtransaction`) build it from block bytes plus chain facts
+using the builders in `zaino_state::jsonrpc_types`, which are pinned to
+zebra's formatting by golden files.
 
 If you find yourself wanting the reverse direction, check whether the caller
 should be using the domain type instead.
