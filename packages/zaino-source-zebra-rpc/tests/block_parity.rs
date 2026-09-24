@@ -225,7 +225,7 @@ async fn block_parity_with_explorer_offline() {
             expected.height,
         );
         assert_eq!(
-            block.transactions.len(),
+            block.transactions().len(),
             expected.tx_count,
             "tx count mismatch at height {}",
             expected.height,
@@ -236,7 +236,7 @@ async fn block_parity_with_explorer_offline() {
         let mut s_spends = 0usize;
         let mut s_outputs = 0usize;
         let mut o_actions = 0usize;
-        for tx in &block.transactions {
+        for tx in block.transactions() {
             t_in += tx.transparent.inputs.len();
             t_out += tx.transparent.outputs.len();
             s_spends += tx.sapling.spends.len();

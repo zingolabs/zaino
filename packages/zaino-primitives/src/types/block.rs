@@ -54,8 +54,8 @@ pub struct BlockHeader {
 pub struct Block {
     /// Block header.
     pub header: BlockHeader,
-    /// Transactions in block order.
-    pub transactions: Vec<Transaction>,
+    /// Transactions in block order, fixed at construction.
+    transactions: Vec<Transaction>,
     /// Commitment tree metadata after this block.
     pub chain_metadata: ChainMetadata,
 }
@@ -89,6 +89,11 @@ impl Block {
             transactions,
             chain_metadata,
         })
+    }
+
+    /// The transactions in block order.
+    pub fn transactions(&self) -> &[Transaction] {
+        &self.transactions
     }
 
     /// The coinbase transaction — the first in block order.
