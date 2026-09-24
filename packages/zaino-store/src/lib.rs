@@ -43,6 +43,7 @@ use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
 use zaino_indexes::indexes::hash_to_height::{self, HashToHeightIndex};
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
+use zaino_indexes::indexes::ironwood::{self, IronwoodIndex};
 use zaino_indexes::indexes::orchard::{self, OrchardIndex};
 use zaino_indexes::indexes::sapling::{self, SaplingIndex};
 use zaino_indexes::indexes::transparent_data::{self, TransparentDataIndex};
@@ -318,8 +319,7 @@ fn resolve_hash<B: Backend>(
 /// corruption (`Fatal`), not as an empty default — the alternative silently
 /// serves a wrong compact block (zero tree sizes, dropped transactions).
 ///
-/// EXPLORATORY: synchronous reads on the async path; ironwood is empty until
-/// that pool is captured in the index set.
+/// EXPLORATORY: synchronous reads on the async path.
 fn read_compact_block<B: Backend>(
     reader: &B::Reader,
     height: Height,
@@ -345,6 +345,8 @@ fn read_compact_block<B: Backend>(
     .0;
     let sapling = require::<SaplingIndex, B>(reader, sapling::ID.into(), height, "sapling")?.0;
     let orchard = require::<OrchardIndex, B>(reader, orchard::ID.into(), height, "orchard")?.0;
+    let ironwood =
+        require::<IronwoodIndex, B>(reader, ironwood::ID.into(), height, "ironwood")?.0;
 
     // Per-tx alignment is granted (same tx list): all pools have `txids.len()`.
     let count = txids.len();
@@ -352,6 +354,7 @@ fn read_compact_block<B: Backend>(
         ("transparent", transparent.len()),
         ("sapling", sapling.len()),
         ("orchard", orchard.len()),
+        ("ironwood", ironwood.len()),
     ] {
         if len != count {
             return Err(BlockReadError::Fatal(format!(
@@ -367,8 +370,9 @@ fn read_compact_block<B: Backend>(
         .zip(transparent)
         .zip(sapling)
         .zip(orchard)
+        .zip(ironwood)
         .map(
-            |(((txid, transparent), sapling), orchard)| PreIndexCompactTx {
+            |((((txid, transparent), sapling), orchard), ironwood)| PreIndexCompactTx {
                 txid,
                 transparent_inputs: transparent
                     .inputs
@@ -408,10 +412,18 @@ fn read_compact_block<B: Backend>(
                         },
                     )
                     .collect(),
-                // The ironwood *tree size* is served (via chain-metadata), but
-                // there is no ironwood pool index yet, so the per-tx ironwood
-                // actions are not composed back into the served block.
-                ironwood_actions: Vec::new(),
+                ironwood_actions: ironwood
+                    .actions
+                    .iter()
+                    .map(
+                        |(nullifier, cmx, ephemeral_key, enc_ciphertext)| OrchardAction {
+                            nullifier: *nullifier,
+                            cmx: *cmx,
+                            ephemeral_key: *ephemeral_key,
+                            enc_ciphertext: *enc_ciphertext,
+                        },
+                    )
+                    .collect(),
             },
         )
         .collect();

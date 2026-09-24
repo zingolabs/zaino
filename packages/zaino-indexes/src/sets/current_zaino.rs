@@ -15,6 +15,7 @@ use zaino_sync::traits::ProvideContext;
 use crate::indexes::chain_metadata::{ChainMetadataCtx, ChainMetadataIndex};
 use crate::indexes::hash_to_height::{HashToHeightCtx, HashToHeightIndex};
 use crate::indexes::headers::{HeaderCtx, HeadersIndex};
+use crate::indexes::ironwood::{IronwoodCtx, IronwoodIndex};
 use crate::indexes::orchard::{OrchardCtx, OrchardIndex, OrchardTxCompact};
 use crate::indexes::sapling::{SaplingCtx, SaplingIndex, SaplingTxCompact};
 use crate::indexes::transparent_data::{
@@ -50,8 +51,8 @@ pub struct CurrentZainoContext {
     /// Per-tx orchard data.
     pub orchard_txs: Vec<OrchardTxCompact>,
     /// Per-tx ironwood data (NU6.3). Structurally identical to orchard, so it
-    /// reuses [`OrchardTxCompact`]; a separate pool. Feeds the chain-metadata
-    /// index's ironwood tree size (there is no ironwood serving index yet).
+    /// reuses [`OrchardTxCompact`]; a separate pool. Feeds both the chain-metadata
+    /// index's ironwood tree size and the [`IronwoodIndex`] serving index.
     pub ironwood_txs: Vec<OrchardTxCompact>,
 }
 
@@ -324,6 +325,15 @@ impl ProvideContext<OrchardCtx> for CurrentZainoContext {
     }
 }
 
+impl ProvideContext<IronwoodCtx> for CurrentZainoContext {
+    fn context(&self) -> IronwoodCtx {
+        IronwoodCtx {
+            height: self.height,
+            txs: self.ironwood_txs.clone(),
+        }
+    }
+}
+
 impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
     fn context(&self) -> ChainMetadataCtx {
         // The note commitments this block adds to each pool: one per sapling
@@ -359,7 +369,7 @@ impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
 // Index set builder
 // ---------------------------------------------------------------------------
 
-/// Build the full current-zaino index set (9 indexes).
+/// Build the full current-zaino index set (10 indexes).
 pub fn index_set() -> IndexSet<CurrentZainoContext> {
     IndexSet::new()
         .with::<HeadersIndex>()
@@ -370,5 +380,6 @@ pub fn index_set() -> IndexSet<CurrentZainoContext> {
         .with::<TransparentDataIndex>()
         .with::<SaplingIndex>()
         .with::<OrchardIndex>()
+        .with::<IronwoodIndex>()
         .with::<ChainMetadataIndex>()
 }
