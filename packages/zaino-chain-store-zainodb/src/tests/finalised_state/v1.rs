@@ -344,7 +344,7 @@ async fn a_database_written_by_another_schema_is_rebuilt_empty() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn try_write_invalid_block() {
+async fn a_block_that_does_not_extend_the_tip_is_refused() {
     init_tracing();
 
     let (TestVectorData { blocks, .. }, _db_dir, zaino_db) =
@@ -366,7 +366,7 @@ async fn try_write_invalid_block() {
 
     assert!(matches!(
         db_err,
-        Err(StoreError::InvalidBlock { height: rejected, .. }) if rejected == height.0
+        Err(StoreError::DoesNotExtendTip { height: rejected, .. }) if rejected == height.0
     ));
 
     dbg!(zaino_db.db_height().await.unwrap());
@@ -974,30 +974,4 @@ async fn check_recipient_spent_map() {
             }
         }
     }
-}
-
-/// The write path must advance the validated tip itself (via the cheap in-memory parent + merkle
-/// checks), so reads never fall back to the expensive read-back validation. This must hold right
-/// after a sync completes, independent of the background validator.
-#[tokio::test(flavor = "multi_thread")]
-async fn write_path_advances_validated_tip() {
-    init_tracing();
-
-    let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
-
-    // Intentionally do NOT call `wait_until_ready` (which would let the background validator run):
-    // the bulk write path should have marked every synced height validated by the time
-    // `sync_to_height` returned.
-    let backend = zaino_db
-        .backend_for_cap(crate::store::capability::CapabilityRequest::WriteCore)
-        .unwrap();
-
-    use crate::store::capability::DbRead;
-    let db_tip = backend.db_height().await.unwrap().unwrap();
-
-    assert_eq!(
-        backend.validated_tip_height(),
-        db_tip.0,
-        "write path must advance validated_tip to the synced tip"
-    );
 }

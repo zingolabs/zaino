@@ -202,8 +202,8 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
 
 /// [`DbWrite`] capability implementation for [`DbV1`].
 ///
-/// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
-/// performed via LMDB write transactions and validated before becoming visible as “known-good”.
+/// This trait represents the mutating surface (append / delete tip). Each block is written in one
+/// LMDB write transaction.
 /// Per-transaction pool lists for one block's row entries, with the duplicate-txid
 /// guard applied.
 struct BlockPoolLists {
@@ -285,24 +285,6 @@ fn extract_block_pool_lists<Work>(
     })
 }
 
-/// Cheap in-memory correctness check: the block's txids must reproduce the header's
-/// merkle root.
-fn verify_header_merkle_root<Work>(
-    txids: &[TransactionHash],
-    block: &IndexedBlock<Work>,
-) -> Result<(), StoreError> {
-    let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
-    let computed_merkle_root = DbV1::calculate_block_merkle_root(&txid_bytes);
-    if &computed_merkle_root != block.data().merkle_root() {
-        return Err(StoreError::InvalidBlock {
-            height: block.context.index.height.0,
-            hash: block.context.index.hash,
-            reason: "header merkle root does not match block txids".to_string(),
-        });
-    }
-    Ok(())
-}
-
 /// One block's row entries, ready to put. Everything is keyed by the block height
 /// except `height_entry` (the hash-keyed height index). `ironwood_entry` is `None`
 /// when the block has no ironwood data — the ironwood table is sparse; readers treat
@@ -372,8 +354,7 @@ impl DbWrite for DbV1 {
 
     /// Bulk catch-up: ingests `tip+1..=height` from `source`, deferring txout-set accumulator
     /// maintenance across the run and rebuilding it once at the end. Each block is written with
-    /// `update_tx_out_set = false` (deferred) and `validate = false` (the height is marked
-    /// validated directly, since we built the block from the source this session).
+    /// `update_tx_out_set = false` (deferred).
     async fn write_blocks_to_height<S: zaino_chain_store::ChainStoreSource>(
         &self,
         height: Height,
@@ -392,10 +373,7 @@ impl DbWrite for DbV1 {
         let nu6_3_activation_height = pool_activations.nu6_3;
 
         // Seed `parent_chainwork` from the current tip header (the block before the first one we
-        // write). On an empty database this is genesis with zero chainwork. Read raw rather than via
-        // `get_block_header`, which routes through `resolve_validated_hash_or_height` →
-        // `validate_block_blocking` (a full re-validation for any height above `validated_tip`); the
-        // tip is already on disk and trusted here.
+        // write). On an empty database this is genesis with zero chainwork.
         // `mut` only under the address-history path, which advances it per block; the pipelined
         // path moves it into the batch cursor, which owns it from there on.
         #[cfg_attr(
@@ -594,7 +572,7 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Advances the validated tip and reports progress, once a batch is durably committed.
+    /// Marks the database ready and reports progress, once a batch is durably committed.
     ///
     /// Only ever called after [`Self::commit_sync_batch_blocking`] has returned `Ok`, so the
     /// on-disk `headers` tip never runs ahead of the indexes and resume stays gap-free.
@@ -603,9 +581,6 @@ impl DbV1 {
     /// the same walk that bounds its size
     #[cfg(not(feature = "transparent_address_history_experimental"))]
     fn note_sync_batch_committed<Work>(&self, batch: &[IndexedBlock<Work>]) {
-        for block in batch {
-            self.mark_validated(block.context.index.height.0);
-        }
         self.status.store(StatusType::Ready);
 
         let Some(last) = batch.last() else {
@@ -637,8 +612,7 @@ impl DbV1 {
 
     /// Writes a given (finalised) [`IndexedBlock`] to FinalisedState.
     ///
-    /// Single-block append: the txout-set accumulator is maintained incrementally and the written
-    /// block is validated before the height advances. Bulk catch-up uses
+    /// Single-block append: the txout-set accumulator is maintained incrementally. Bulk catch-up uses
     /// [`DbV1::write_blocks_to_height`], which defers the accumulator (see
     /// [`DbV1::write_block_with_options`]) and rebuilds it once at the tip.
     ///
@@ -657,11 +631,7 @@ impl DbV1 {
     ///   When `false`, accumulator maintenance is deferred — the caller is responsible for a bulk
     ///   rebuild (see [`DbV1::rebuild_tx_out_set_accumulator`]).
     ///
-    /// Validation is *not* a read-back pass on this path. Two cheap in-memory correctness checks run
-    /// before commit — parent-hash continuity (tip-check) and the header merkle root (vs. the
-    /// block's txids) — after which the height is marked validated directly. The expensive
-    /// [`DbV1::validate_block_blocking`] re-read is reserved for startup, where on-disk data is
-    /// untrusted.
+    /// The only check before commit is parent-hash continuity against the stored tip.
     ///
     /// NOTE: This method should never leave a block partially written to the database.
     // `u32::is_multiple_of` is only stable from Rust 1.87; the `% 100 == 0` form below keeps the
@@ -732,10 +702,8 @@ impl DbV1 {
                         )));
                     }
 
-                    // Parent-hash continuity: the new block must extend the current tip. This is
-                    // one of the two cheap, in-memory correctness checks (the other is the merkle
-                    // root below) that justify marking the block validated after a successful write
-                    // without the expensive post-commit re-read.
+                    // Parent-hash continuity: the new block must extend the current tip, or the
+                    // append-only finalised chain would fork.
                     let last_entry =
                         StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
                             last_header_bytes,
@@ -746,14 +714,10 @@ impl DbV1 {
                             ))
                         })?;
                     if last_entry.inner().context.hash() != block.context.parent_hash() {
-                        return Err(StoreError::InvalidBlock {
+                        return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
-                            reason: format!(
-                                "parent hash does not extend current tip (tip: {:?}, parent: {:?})",
-                                last_entry.inner().context.hash(),
-                                block.context.parent_hash()
-                            ),
+                            tip: *last_entry.inner().context.hash(),
                         });
                     }
                 }
@@ -925,13 +889,6 @@ impl DbV1 {
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
 
-        // Cheap, in-memory correctness check: the block's txids must reproduce the header's merkle
-        // root. Together with the parent-hash continuity check in the tip-check above, this is what
-        // lets us mark the block validated after a successful write without the expensive
-        // post-commit re-read + spent-index cross-check (which only re-verifies on-disk integrity of
-        // bytes we just wrote from memory, and is redundant for our own writes).
-        verify_header_merkle_root(&txids, &block)?;
-
         // Reverse txid index entries (`txid -> TxLocation`). Built before `txids` is moved into
         // the `TxidList` below, and sorted by txid so the random-keyed `txid_location` B-tree
         // sees locally-ordered inserts.
@@ -959,7 +916,7 @@ impl DbV1 {
             ironwood,
         );
 
-        // if any database writes fail, or block validation fails, remove block from database and return err.
+        // if any database writes fail, remove block from database and return err.
         let zaino_db = self.detached_handle();
         let join_handle = tokio::task::spawn_blocking(move || {
             // Write block to FinalisedState
@@ -1149,14 +1106,6 @@ impl DbV1 {
             // `SYNC_CHECKPOINT_INTERVAL` boundaries below and on graceful shutdown.
             txn.commit()?;
 
-            // Advance the validated tip directly. The block was built from a trusted source this
-            // session and passed the cheap in-memory correctness checks (parent-hash continuity and
-            // merkle root) before commit, so the expensive read-back validation pass is redundant
-            // here — it only re-verifies on-disk integrity of bytes we just wrote. Startup remains
-            // the integrity gate for untrusted on-disk data (`validate_block_blocking` via
-            // `initial_block_scan`). Marking validated keeps reads on the `is_validated` fast path.
-            zaino_db.mark_validated(block_height.0);
-
             Ok::<_, StoreError>(())
         });
 
@@ -1234,16 +1183,9 @@ impl DbV1 {
                                 })?;
                             let stored_header = stored_entry.inner();
                             if stored_header.context.index.hash == block_hash {
-                                // Block hash exists, verify block was fully written.
-                                self.validate_block_blocking(block_height, block_hash)
-                                    .map(|()| true)
-                                    .map_err(|e| {
-                                        StoreError::Custom(format!(
-                                            "Block write fail at height {}, with hash {:?}, \
-                                            validation error: {}",
-                                            block_height.0, block_hash, e
-                                        ))
-                                    })
+                                // A block's rows commit in one transaction, so a stored header
+                                // with this hash means the whole block is already written.
+                                Ok(true)
                             } else {
                                 Err(StoreError::Custom(format!(
                                     "KeyExist race: different block at height {} \
@@ -1426,10 +1368,12 @@ impl DbV1 {
                         )));
                     }
                     if Some(*block.context.parent_hash()) != prev_hash {
-                        return Err(StoreError::InvalidBlock {
+                        return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
-                            reason: "parent hash does not extend current tip".to_string(),
+                            tip: prev_hash.ok_or_else(|| {
+                                StoreError::Custom("the stored tip has a height but no hash".into())
+                            })?,
                         });
                     }
                 }
@@ -1468,9 +1412,6 @@ impl DbV1 {
             } = pool_lists;
             let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
                 transactions.into_iter().unzip();
-
-            // Cheap in-memory correctness check: txids must reproduce the header merkle root.
-            verify_header_merkle_root(&txids, block)?;
 
             let entries = build_block_row_entries(
                 block,
@@ -1595,15 +1536,6 @@ impl DbV1 {
             )));
         };
         self.delete_block(&chain_block).await?;
-
-        // update validated_tip / validated_set
-        let validated_tip = self.validated_tip.load(Ordering::Acquire);
-        if height.0 > validated_tip {
-            self.validated_set.remove(&height.0);
-        } else if height.0 == validated_tip {
-            self.validated_tip
-                .store(validated_tip.saturating_sub(1), Ordering::Release);
-        }
 
         tokio::task::block_in_place(|| {
             self.env
@@ -1969,16 +1901,6 @@ impl DbV1 {
         .await
         .map_err(|e| StoreError::Custom(format!("Tokio task error: {e}")))??;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-impl DbV1 {
-    /// Returns the current contiguous validated-tip height. Test hook for asserting that the write
-    /// path advances the validated tip without relying on the background validator.
-    pub(crate) fn validated_tip_height(&self) -> u32 {
-        self.validated_tip
-            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

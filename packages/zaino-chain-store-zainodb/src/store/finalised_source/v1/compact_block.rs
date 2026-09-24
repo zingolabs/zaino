@@ -46,13 +46,13 @@ impl DbV1 {
         height: Height,
         pool_types: PoolFilter,
     ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+        let stored_height = self
+            .resolve_stored_height(HashOrHeight::Height(height.into()))
             .await?;
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            self.read_compact_block_in_txn(&txn, validated_height, pool_types)
+            self.read_compact_block_in_txn(&txn, stored_height, pool_types)
         })
     }
 
@@ -69,11 +69,11 @@ impl DbV1 {
         end: Height,
         pool_types: PoolFilter,
     ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
-        let (validated_start, validated_end) = self.validate_block_range(start, end).await?;
+        self.require_stored_range(start, end).await?;
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            Height::range_inclusive(validated_start, validated_end)
+            Height::range_inclusive(start, end)
                 .map(|height| self.read_compact_block_in_txn(&txn, height, pool_types))
                 .collect()
         })
@@ -282,19 +282,10 @@ impl DbV1 {
         end_height: Height,
         pool_types: PoolTypeFilter,
     ) -> Result<CompactBlockStream, StoreError> {
-        // Do NOT validate the whole requested range up-front here.
-        // Validate heights on-demand inside the blocking task so we can return
-        // the stream handle immediately and start sending blocks as they become ready.
-        //
+        let start_key_bytes = start_height.to_bytes()?;
+
         // Preserve caller ordering: direction is derived from the caller-supplied heights.
-        let validated_start_height = start_height;
-        let validated_end_height = end_height;
-
-        let start_key_bytes = validated_start_height.to_bytes()?;
-
-        // Direction is derived from the validated heights. This relies on `validate_block_range`
-        // preserving input ordering (i.e. not normalising to (min, max)).
-        let is_ascending = validated_start_height <= validated_end_height;
+        let is_ascending = start_height <= end_height;
 
         // Bounded channel provides backpressure so the blocking task cannot run unbounded ahead of
         // the gRPC consumer.
@@ -619,7 +610,7 @@ impl DbV1 {
 
             // Contiguous-height enforcement: we expect every emitted block to have exactly this height.
             // This catches missing heights and cursor ordering/key-encoding problems early.
-            let mut expected_height = validated_start_height;
+            let mut expected_height = start_height;
 
             // Key used to re-seek at the start of each transaction chunk.
             // This begins at the start height and advances by exactly one height per emitted block.
@@ -628,10 +619,10 @@ impl DbV1 {
             loop {
                 // Stop once we have emitted the inclusive end height.
                 if is_ascending {
-                    if expected_height > validated_end_height {
+                    if expected_height > end_height {
                         return;
                     }
-                } else if expected_height < validated_end_height {
+                } else if expected_height < end_height {
                     return;
                 }
 
@@ -800,7 +791,7 @@ impl DbV1 {
                 let mut blocks_streamed_in_transaction: usize = 0;
 
                 loop {
-                    // ----- Decode and validate block header -----
+                    // ----- Decode block header -----
                     let header: BlockHeaderData<AbsoluteChainWork> =
                         match StoredEntryVar::from_bytes(raw_header_bytes)
                             .map_err(|error| format!("header decode error: {error}"))
@@ -823,40 +814,6 @@ impl DbV1 {
                             )),
                         );
                         return;
-                    }
-
-                    // ----- Ensure the block is validated (on-demand) -----
-                    // We are in a blocking task; call validate_block_blocking directly but only when needed.
-                    if !zaino_db.is_validated(current_height.into()) {
-                        // header.context.hash() is the block hash we just read from DB; call validator.
-                        let block_hash = *header.context.hash();
-
-                        match zaino_db.validate_block_blocking(current_height, block_hash) {
-                            Ok(()) => {
-                                // validation succeeded and mark_validated has been called inside the validator.
-                            }
-                            Err(StoreError::LmdbError(lmdb::Error::NotFound)) => {
-                                // missing data that was expected: emit DataUnavailable -> translate to not_found
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "block data unavailable during validation at height {}",
-                                        current_height.0
-                                    )),
-                                );
-                                return;
-                            }
-                            Err(e) => {
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "validation failed for height {}: {e:?}",
-                                        current_height.0
-                                    )),
-                                );
-                                return;
-                            }
-                        }
                     }
 
                     // ----- Decode txids and optional pool data -----
@@ -1160,7 +1117,7 @@ impl DbV1 {
                     }
 
                     // If we just emitted the inclusive end height, stop without stepping cursors further.
-                    if current_height == validated_end_height {
+                    if current_height == end_height {
                         return;
                     }
 
@@ -1230,12 +1187,12 @@ impl DbV1 {
                         None => {
                             // Headers ended early; if we have not reached the requested end height, the
                             // database no longer satisfies the contiguous-height invariant for this range.
-                            if current_height != validated_end_height {
+                            if current_height != end_height {
                                 send_status(
                                     &sender,
                                     tonic::Status::internal(format!(
                                     "headers cursor ended early at height {}; expected to reach {}",
-                                    current_height.0, validated_end_height.0
+                                    current_height.0, end_height.0
                                 )),
                                 );
                             }

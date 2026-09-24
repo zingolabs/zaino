@@ -309,7 +309,7 @@ impl DbV1 {
                         "invalid block range: end < start".to_string(),
                     ));
                 }
-                self.validate_block_range(start, end).await?;
+                self.require_stored_range(start, end).await?;
 
                 let mut out = Vec::with_capacity((end.0 - start.0 + 1) as usize);
                 for height in Height::range_inclusive(start, end) {

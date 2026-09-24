@@ -523,6 +523,10 @@ API / capabilities
   the `db_version` configuration value, and `ChainStoreReader::schema`.
 - Changed: `DbVersion::capability` grants capabilities only to this build's own
   version.
+- Removed: the startup integrity scans, the background re-validation loop, the
+  on-demand validation of reads, and the merkle-root check at ingest. Blocks
+  from the validator are not re-verified; the only write-path check left is
+  parent-hash continuity, which now fails as `StoreError::DoesNotExtendTip`.
 
 Rebuild
 - Every existing v1.0.0 to v1.3.0 database rebuilds once on its first start

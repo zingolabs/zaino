@@ -469,6 +469,9 @@ impl From<FinalisedStateError> for ChainIndexError {
                 hash: _,
                 reason,
             } => format!("invalid block at height {height}: {reason}"),
+            FinalisedStateError::DoesNotExtendTip { height, .. } => {
+                format!("block at height {height} does not extend the stored tip")
+            }
             FinalisedStateError::Custom(err) | FinalisedStateError::Critical(err) => err.clone(),
             FinalisedStateError::LmdbError(error) => error.to_string(),
             FinalisedStateError::SerdeJsonError(error) => error.to_string(),

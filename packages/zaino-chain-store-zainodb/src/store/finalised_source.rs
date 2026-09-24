@@ -264,10 +264,10 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
         }
     }
 
-    /// Starts the background validator on a v1 backend, and does nothing for the ephemeral passthrough.
-    pub(super) fn start_validator(&self) {
+    /// Starts the background maintenance task on a v1 backend, and does nothing for the ephemeral passthrough.
+    pub(super) fn start_maintenance(&self) {
         match self {
-            Self::V1(db) => db.start_validator(),
+            Self::V1(db) => db.start_maintenance(),
             Self::Ephemeral(_) => {}
         }
     }
@@ -829,17 +829,6 @@ impl<T: ChainStoreSource> TxOutSetExt for FinalisedSource<T> {
             _ => Err(StoreError::FeatureUnavailable(
                 CapabilityRequest::TxOutSetIndex,
             )),
-        }
-    }
-}
-
-#[cfg(test)]
-impl<T: ChainStoreSource> FinalisedSource<T> {
-    /// Current contiguous validated-tip height (v1 only; 0 for ephemeral). Test hook.
-    pub(crate) fn validated_tip_height(&self) -> u32 {
-        match self {
-            Self::V1(db) => db.validated_tip_height(),
-            Self::Ephemeral(_) => 0,
         }
     }
 }

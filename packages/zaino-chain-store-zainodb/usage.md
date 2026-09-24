@@ -68,16 +68,13 @@ pages**. Per-row BLAKE2b-256 over `encoded_key ‖ encoded_value` is what turns
 that into `"checksum mismatch"` plus a hex dump and a "wipe and re-index"
 instruction, rather than a wrong answer served with confidence.
 
-Three properties to preserve when touching any of it:
+Two properties to preserve when touching any of it:
 
 - **The key binding.** The checksum covers the key as well as the value, which
   is what defeats relocating or splicing a row that is individually valid.
 - **The version-searching `verify`.** It is what makes mixed-version rows in one
   table safe, which is the exact bug the v1.0.0→v1.1.0 migration exists to
   record as fixed.
-- **The log-before-scan ordering** in the startup spent-table sweep. If LMDB
-  aborts natively on a torn B-tree, the line that names what was being scanned
-  has already been written.
 
 ## A schema mismatch rebuilds the database
 

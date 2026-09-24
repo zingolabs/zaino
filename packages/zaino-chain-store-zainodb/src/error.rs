@@ -33,11 +33,7 @@ pub enum StoreError {
     #[error("Missing data: {0}")]
     DataUnavailable(String),
 
-    /// A block is present on disk but failed internal validation.
-    ///
-    /// *Typically means: checksum mismatch, corrupt CBOR, Merkle check
-    /// failed, etc.*  The caller should fetch the correct data and
-    /// overwrite the faulty block.
+    /// A block's data is internally inconsistent, so it cannot be written or read back.
     #[error("invalid block @ height {height} (hash {hash}): {reason}")]
     InvalidBlock {
         /// The height the bad block was read from.
@@ -46,6 +42,17 @@ pub enum StoreError {
         hash: BlockHash,
         /// What failed to validate.
         reason: String,
+    },
+
+    /// A block offered for writing does not have the stored tip as its parent, so appending it would fork the finalised chain.
+    #[error("block @ height {height} (hash {hash}) does not extend the stored tip {tip}")]
+    DoesNotExtendTip {
+        /// The height the block was offered at.
+        height: u32,
+        /// The offered block's hash.
+        hash: BlockHash,
+        /// The hash of the stored tip the block should have extended.
+        tip: BlockHash,
     },
 
     /// Returned when a caller asks for a feature that the

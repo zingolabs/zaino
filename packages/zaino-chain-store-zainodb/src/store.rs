@@ -566,7 +566,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             let router = Arc::new(Router::new(Arc::new(
                 FinalisedSource::spawn_v1(&cfg).await?,
             )));
-            router.primary_backend().start_validator();
+            router.primary_backend().start_maintenance();
 
             let state = Self {
                 source,
