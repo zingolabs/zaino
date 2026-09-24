@@ -64,10 +64,7 @@ pub fn init_logging() {
 /// single-attempt adapter.
 pub fn open_source(cache: &Path, network: &Network) -> Result<Source, BoxError> {
     let adapter = ZebraReadStateAdapter::open(cache, network)?;
-    Ok(Arc::new(ValidatorClient::new(
-        adapter,
-        RetryPolicy::default(),
-    )))
+    Ok(Arc::new(ValidatorClient::new(adapter, RetryPolicy::default())))
 }
 
 /// Report throughput over `blocks` as a human line and a structured event. `kind`

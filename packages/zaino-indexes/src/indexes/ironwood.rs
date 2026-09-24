@@ -233,10 +233,7 @@ mod tests {
     fn round_trips() {
         let value = sample();
         let bytes = encode_value::<IronwoodIndex>(&value);
-        assert_eq!(
-            decode_value::<IronwoodIndex>(&bytes).expect("decode"),
-            value
-        );
+        assert_eq!(decode_value::<IronwoodIndex>(&bytes).expect("decode"), value);
     }
 
     #[test]
@@ -272,9 +269,6 @@ mod tests {
 
         let bytes = encode_value::<IronwoodIndex>(&value);
         assert_eq!(bytes, expected);
-        assert_eq!(
-            decode_value::<IronwoodIndex>(&bytes).expect("decode"),
-            value
-        );
+        assert_eq!(decode_value::<IronwoodIndex>(&bytes).expect("decode"), value);
     }
 }
