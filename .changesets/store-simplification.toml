@@ -1,0 +1,54 @@
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+The finalised store has no migrations. When the stored schema hash differs \
+from the build's, or cannot be decoded, the store deletes its database and \
+resyncs from the validator. Every existing database rebuilds once on its \
+first start under this release.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+The store computes its schema hash from the canonical encoding of every \
+stored type, its tables and their flags, and the enabled index features. \
+DbVersion, the schema text, and the version suffixes on table names are gone. \
+Switching transparent_address_history_experimental on or off also rebuilds \
+the database.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+Rows are stored as bare encodings, without checksums or version tags. The \
+startup integrity scans, the background re-validation, the validation of \
+reads, and the merkle-root check at ingest are removed. The write path keeps \
+one check: each block must extend the stored tip, and a block that does not \
+fails as StoreError::DoesNotExtendTip.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "internal"
+description = """
+The versioned codec from zaino-encoding is now the store's private codec \
+module, and the ZainoVersionedSerde trait is collapsed into DbCodec.
+"""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+SchemaVersion, StoreSchema, MigrationState, ChainStoreReader::schema, and \
+the target_schema_major setting are removed.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+ChainIndexConfig.db_version and the zaino-encoding re-exports are removed.
+"""
