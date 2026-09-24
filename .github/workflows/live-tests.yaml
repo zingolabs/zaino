@@ -10,9 +10,16 @@ on:
         required: false
         type: string
   pull_request:
+    # `closed` is here only to cancel: a merged or closed PR's run enters the
+    # per-PR group below and supersedes the run still holding the cluster, then
+    # every job skips. Without it an orphaned run holds its reservation for the
+    # whole job timeout.
+    types: [opened, synchronize, reopened, closed]
 
 # Per-PR — a push supersedes its own run, never another PR's
-# - ztest queues on contention (`qos/scheduler.rs::decide`), so the cluster arbitrates, not this
+# - the cluster-wide queue is on the `run` job, not here: ztest waits at most
+#   600 s for capacity (`qos/ledger.rs::ACQUIRE_WAIT_TIMEOUT`), shorter than any
+#   suite, so two PRs contending at the cluster means the second one fails
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -24,6 +31,7 @@ jobs:
   # Cluster-free: compiles the live suite without standing up a cluster.
   compile:
     name: Compile check
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -53,8 +61,16 @@ jobs:
     # Fork PRs skip rather than fail: read-only token = no OIDC = no tailnet. Run them by hand
     # via workflow_dispatch, which GitHub already restricts to write access.
     if: >
-      github.event_name == 'workflow_dispatch'
-      || github.event.pull_request.head.repo.full_name == github.repository
+      github.event.action != 'closed'
+      && (github.event_name == 'workflow_dispatch'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+    # One run on the cluster at a time. Runs from other PRs wait in GitHub's
+    # queue instead of at ztest's 600 s capacity wait. GitHub keeps one pending
+    # run per group: a third arrival cancels the second, which then needs a
+    # re-run, where before it failed ten minutes in.
+    concurrency:
+      group: ${{ github.workflow }}-cluster
+      cancel-in-progress: false
     # Unconditional, and load-bearing beyond any protection rules: the tailnet trust credential
     # matches subject `repo:zingolabs/zaino:environment:ztest-cluster`, and a job without an
     # `environment:` mints `…:pull_request` instead → 403 at the join.
