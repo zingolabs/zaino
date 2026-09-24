@@ -91,7 +91,7 @@ impl FakeValidator {
                 let height = entry.block.header.height;
                 entry
                     .block
-                    .transactions
+                    .transactions()
                     .iter()
                     .map(move |tx| (tx.txid, height))
             })

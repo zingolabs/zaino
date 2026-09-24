@@ -469,7 +469,7 @@ impl<T: ChainStoreSource> BlockCoreExt for EphemeralFinalisedState<T> {
         let block = self.get_required_block_by_height(height).await?;
 
         let txids = block
-            .transactions
+            .transactions()
             .iter()
             .map(|transaction| TransactionHash(transaction.txid.into()))
             .collect();

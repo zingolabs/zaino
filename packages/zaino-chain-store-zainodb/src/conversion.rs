@@ -155,7 +155,7 @@ pub fn indexed_block<Work>(
     let data = block_data(&block.header);
 
     let transactions = block
-        .transactions
+        .transactions()
         .iter()
         .enumerate()
         .map(|(position, transaction)| compact_transaction(position, transaction, hash))

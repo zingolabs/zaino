@@ -338,23 +338,25 @@ mod tests {
         }
 
         fn test_block(h: u32, hash_byte: u8) -> Block {
-            Block {
-                header: BlockHeader {
-                    hash: hash(hash_byte),
-                    version: 4,
-                    prev_hash: BlockHash::ZERO,
-                    height: height(h),
-                    time: 0,
-                    merkle_root: [0; 32].into(),
-                    block_commitments: [0; 32].into(),
-                    bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
-                        .expect("valid nBits"),
-                    nonce: [0; 32],
-                    solution: EquihashSolution::Regtest([0; 36]),
-                },
-                transactions: vec![],
-                chain_metadata: ChainMetadata::ZERO,
-            }
+            let header = BlockHeader {
+                hash: hash(hash_byte),
+                version: 4,
+                prev_hash: BlockHash::ZERO,
+                height: height(h),
+                time: 0,
+                merkle_root: [0; 32].into(),
+                block_commitments: [0; 32].into(),
+                bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
+                    .expect("valid nBits"),
+                nonce: [0; 32],
+                solution: EquihashSolution::Regtest([0; 36]),
+            };
+            Block::try_new(
+                header,
+                vec![crate::mock::coinbase(hash(hash_byte))],
+                ChainMetadata::ZERO,
+            )
+            .expect("a test block carries its coinbase")
         }
 
         fn fast_policy(max_attempts: u32) -> RetryPolicy {
