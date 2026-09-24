@@ -61,14 +61,7 @@ impl DbV1 {
             };
             let mut cursor = Cursor::new(raw);
 
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            let _body_len = CompactSize::read(&mut cursor)
-                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
-
-            // Read [1] TransparentTxList Record version (skip 1 byte)
+            // Read [0] TransparentTxList Record version (skip 1 byte)
             cursor.set_position(cursor.position() + 1);
 
             // Read CompactSize: number of records
@@ -147,7 +140,7 @@ impl DbV1 {
     /// Skips one `Option<TransparentCompactTx>` entry from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
-    /// - `StoredEntryVar<TransparentTxList>`
+    /// - stored `TransparentTxList`
     ///
     /// Advances the cursor past either:
     /// - 1 byte (`0x00`) if `None`, or

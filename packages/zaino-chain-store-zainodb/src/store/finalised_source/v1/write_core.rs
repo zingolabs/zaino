@@ -290,21 +290,18 @@ fn extract_block_pool_lists<Work>(
 /// when the block has no ironwood data — the ironwood table is sparse; readers treat
 /// an absent row as "no ironwood data".
 struct BlockRowEntries {
-    height_entry: StoredEntryFixed<Height>,
-    header_entry: StoredEntryVar<BlockHeaderData<AbsoluteChainWork>>,
-    commitment_tree_entry: StoredEntryVar<CommitmentTreeData>,
-    txid_entry: StoredEntryVar<TxidList>,
-    transparent_entry: StoredEntryVar<TransparentTxList>,
-    sapling_entry: StoredEntryVar<SaplingTxList>,
-    orchard_entry: StoredEntryVar<OrchardTxList>,
-    ironwood_entry: Option<StoredEntryVar<OrchardTxList>>,
+    height_entry: Height,
+    header_entry: BlockHeaderData<AbsoluteChainWork>,
+    commitment_tree_entry: CommitmentTreeData,
+    txid_entry: TxidList,
+    transparent_entry: TransparentTxList,
+    sapling_entry: SaplingTxList,
+    orchard_entry: OrchardTxList,
+    ironwood_entry: Option<OrchardTxList>,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_block_row_entries(
     block: &IndexedBlock<AbsoluteChainWork>,
-    block_hash_bytes: &[u8],
-    block_height_bytes: &[u8],
     txids: Vec<TransactionHash>,
     transparent: Vec<Option<TransparentCompactTx>>,
     sapling: Vec<Option<SaplingCompactTx>>,
@@ -312,39 +309,23 @@ fn build_block_row_entries(
     ironwood: Vec<Option<OrchardCompactTx>>,
 ) -> BlockRowEntries {
     BlockRowEntries {
-        height_entry: StoredEntryFixed::new(block_hash_bytes, block.context.index.height),
-        header_entry: StoredEntryVar::new(
-            block_height_bytes,
-            BlockHeaderData::new(block.context, *block.data()),
-        ),
-        // Stored as a `StoredEntryVar` because `CommitmentTreeData` V2 is
-        // variable-length (optional Ironwood root).
-        commitment_tree_entry: StoredEntryVar::new(
-            block_height_bytes,
-            *block.commitment_tree_data(),
-        ),
-        txid_entry: StoredEntryVar::new(block_height_bytes, TxidList::new(txids)),
-        transparent_entry: StoredEntryVar::new(
-            block_height_bytes,
-            TransparentTxList::new(transparent),
-        ),
-        sapling_entry: StoredEntryVar::new(block_height_bytes, SaplingTxList::new(sapling)),
-        orchard_entry: StoredEntryVar::new(block_height_bytes, OrchardTxList::new(orchard)),
-        ironwood_entry: ironwood_entry(ironwood, block_height_bytes),
+        height_entry: block.context.index.height,
+        header_entry: BlockHeaderData::new(block.context, *block.data()),
+        commitment_tree_entry: *block.commitment_tree_data(),
+        txid_entry: TxidList::new(txids),
+        transparent_entry: TransparentTxList::new(transparent),
+        sapling_entry: SaplingTxList::new(sapling),
+        orchard_entry: OrchardTxList::new(orchard),
+        ironwood_entry: ironwood_entry(ironwood),
     }
 }
 
-/// Builds the sparse ironwood row entry for a block's per-transaction ironwood list: `Some` only
-/// when at least one transaction carries ironwood data, so a block with none stores no ironwood row
-/// (readers treat an absent row as "no ironwood data").
-fn ironwood_entry(
-    ironwood: Vec<Option<OrchardCompactTx>>,
-    block_height_bytes: &[u8],
-) -> Option<StoredEntryVar<OrchardTxList>> {
+/// Builds the sparse ironwood row for a block, `Some` only when at least one transaction carries ironwood data.
+fn ironwood_entry(ironwood: Vec<Option<OrchardCompactTx>>) -> Option<OrchardTxList> {
     ironwood
         .iter()
         .any(Option::is_some)
-        .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood)))
+        .then(|| OrchardTxList::new(ironwood))
 }
 
 impl DbWrite for DbV1 {
@@ -391,14 +372,11 @@ impl DbWrite for DbV1 {
                     let ro = self.env.begin_ro_txn()?;
                     match ro.get(self.headers, &tip_bytes) {
                         Ok(raw) => {
-                            let entry =
-                                StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                                    raw,
-                                )
+                            let header = BlockHeaderData::<AbsoluteChainWork>::from_bytes(raw)
                                 .map_err(|e| {
                                     StoreError::Custom(format!("tip header decode error: {e}"))
                                 })?;
-                            Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
+                            Ok::<_, StoreError>(Some(header.context.chainwork))
                         }
                         Err(lmdb::Error::NotFound) => Ok(None),
                         Err(e) => Err(StoreError::LmdbError(e)),
@@ -657,17 +635,13 @@ impl DbV1 {
             match ro.get(self.headers, &block_height_bytes) {
                 Ok(stored_header_bytes) => {
                     // Block exists at this height - verify it's the same block
-                    // Data is stored as StoredEntryVar<BlockHeaderData>, so deserialize properly
-                    let stored_entry =
-                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                            stored_header_bytes,
-                        )
-                        .map_err(|e| {
-                            StoreError::Custom(format!(
-                                "header decode error during idempotency check: {e}"
-                            ))
-                        })?;
-                    let stored_header = stored_entry.inner();
+                    let stored_header =
+                        BlockHeaderData::<AbsoluteChainWork>::from_bytes(stored_header_bytes)
+                            .map_err(|e| {
+                                StoreError::Custom(format!(
+                                    "header decode error during idempotency check: {e}"
+                                ))
+                            })?;
                     if stored_header.context.index.hash == block_hash {
                         // Same block already written, this is a no-op success
                         return Ok(true);
@@ -704,20 +678,18 @@ impl DbV1 {
 
                     // Parent-hash continuity: the new block must extend the current tip, or the
                     // append-only finalised chain would fork.
-                    let last_entry =
-                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                            last_header_bytes,
-                        )
-                        .map_err(|e| {
-                            StoreError::Custom(format!(
-                                "tip header decode error during continuity check: {e}"
-                            ))
-                        })?;
-                    if last_entry.inner().context.hash() != block.context.parent_hash() {
+                    let tip_header =
+                        BlockHeaderData::<AbsoluteChainWork>::from_bytes(last_header_bytes)
+                            .map_err(|e| {
+                                StoreError::Custom(format!(
+                                    "tip header decode error during continuity check: {e}"
+                                ))
+                            })?;
+                    if tip_header.context.hash() != block.context.parent_hash() {
                         return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
-                            tip: *last_entry.inner().context.hash(),
+                            tip: *tip_header.context.hash(),
                         });
                     }
                 }
@@ -905,16 +877,8 @@ impl DbV1 {
         }
         txid_location_entries.sort_by_key(|entry| entry.0);
 
-        let entries = build_block_row_entries(
-            &block,
-            &block_hash_bytes,
-            &block_height_bytes,
-            txids,
-            transparent,
-            sapling,
-            orchard,
-            ironwood,
-        );
+        let entries =
+            build_block_row_entries(&block, txids, transparent, sapling, orchard, ironwood);
 
         // if any database writes fail, remove block from database and return err.
         let zaino_db = self.detached_handle();
@@ -945,7 +909,7 @@ impl DbV1 {
 
             // Reverse txid index: `txid -> TxLocation`.
             for (txid_bytes, tx_location) in &txid_location_entries {
-                let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+                let entry_bytes = tx_location.to_bytes()?;
                 txn.put(
                     zaino_db.txid_location,
                     txid_bytes,
@@ -994,8 +958,7 @@ impl DbV1 {
             // Write spent to FinalisedState
             for (outpoint, tx_location) in spent_map {
                 let outpoint_bytes = &outpoint.to_bytes()?;
-                let tx_location_entry_bytes =
-                    StoredEntryFixed::new(outpoint_bytes, tx_location).to_bytes()?;
+                let tx_location_entry_bytes = tx_location.to_bytes()?;
                 txn.put(
                     zaino_db.spent,
                     &outpoint_bytes,
@@ -1019,14 +982,13 @@ impl DbV1 {
                 for (addr_script, records) in addrhist_outputs_map {
                     let addr_bytes = addr_script.to_bytes()?;
 
-                    // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
+                    // Convert all records to their stored encoding for ordering.
                     let mut stored_entries = Vec::with_capacity(records.len());
                     for record in records {
                         let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
                             StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                         })?;
-                        let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                        let entry_bytes = entry.to_bytes()?;
+                        let entry_bytes = packed_record.to_bytes()?;
                         stored_entries.push((record, entry_bytes));
                     }
 
@@ -1047,14 +1009,13 @@ impl DbV1 {
                 for (addr_script, records) in addrhist_inputs_map {
                     let addr_bytes = addr_script.to_bytes()?;
 
-                    // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
+                    // Convert all records to their stored encoding for ordering.
                     let mut stored_entries = Vec::with_capacity(records.len());
                     for (record, prev_output) in records {
                         let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
                             StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                         })?;
-                        let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                        let entry_bytes = entry.to_bytes()?;
+                        let entry_bytes = packed_record.to_bytes()?;
                         stored_entries.push((record, entry_bytes, prev_output));
                     }
 
@@ -1072,13 +1033,11 @@ impl DbV1 {
                         )?;
 
                         // mark corresponding output as spent
-                        let prev_addr_bytes = prev_output_script.to_bytes()?;
                         let packed_prev = AddrEventBytes::from_record(&prev_output_record)
                             .map_err(|e| {
                                 StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                             })?;
-                        let prev_entry_bytes =
-                            StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
+                        let prev_entry_bytes = packed_prev.to_bytes()?;
                         let updated = zaino_db.mark_addr_hist_record_spent_in_txn(
                             &mut txn,
                             &prev_output_script,
@@ -1171,17 +1130,14 @@ impl DbV1 {
                     let ro = self.env.begin_ro_txn()?;
                     match ro.get(self.headers, &height_bytes) {
                         Ok(stored_header_bytes) => {
-                            // Data is stored as StoredEntryVar<BlockHeaderData>
-                            let stored_entry =
-                                StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                                    stored_header_bytes,
-                                )
-                                .map_err(|e| {
-                                    StoreError::Custom(format!(
-                                        "header decode error in KeyExist handler: {e}"
-                                    ))
-                                })?;
-                            let stored_header = stored_entry.inner();
+                            let stored_header = BlockHeaderData::<AbsoluteChainWork>::from_bytes(
+                                stored_header_bytes,
+                            )
+                            .map_err(|e| {
+                                StoreError::Custom(format!(
+                                    "header decode error in KeyExist handler: {e}"
+                                ))
+                            })?;
                             if stored_header.context.index.hash == block_hash {
                                 // A block's rows commit in one transaction, so a stored header
                                 // with this hash means the whole block is already written.
@@ -1334,15 +1290,12 @@ impl DbV1 {
                     let last_height = Height::from_bytes(
                         last_height_bytes.expect("Height is always some in the finalised state"),
                     )?;
-                    let last_entry =
-                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                            last_header_bytes,
-                        )
-                        .map_err(|e| StoreError::Custom(format!("tip header decode error: {e}")))?;
-                    (
-                        Some(last_height.0),
-                        Some(*last_entry.inner().context.hash()),
-                    )
+                    let tip_header =
+                        BlockHeaderData::<AbsoluteChainWork>::from_bytes(last_header_bytes)
+                            .map_err(|e| {
+                                StoreError::Custom(format!("tip header decode error: {e}"))
+                            })?;
+                    (Some(last_height.0), Some(*tip_header.context.hash()))
                 }
                 Err(lmdb::Error::NotFound) => (None, None),
                 Err(e) => return Err(StoreError::LmdbError(e)),
@@ -1413,16 +1366,8 @@ impl DbV1 {
             let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
                 transactions.into_iter().unzip();
 
-            let entries = build_block_row_entries(
-                block,
-                &block_hash_bytes,
-                &block_height_bytes,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                ironwood,
-            );
+            let entries =
+                build_block_row_entries(block, txids, transparent, sapling, orchard, ironwood);
 
             // Height-keyed tables (+ the hash-keyed `heights`, one entry/block) written per block.
             put_idempotent(
@@ -1485,13 +1430,13 @@ impl DbV1 {
         // conflicting value (a double-spend / inconsistency) is rejected by `put_idempotent`.
         spent_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, tx_location) in &spent_batch {
-            let entry_bytes = StoredEntryFixed::new(key, *tx_location).to_bytes()?;
+            let entry_bytes = tx_location.to_bytes()?;
             put_idempotent(&mut txn, self.spent, key, &entry_bytes)?;
         }
 
         txid_location_batch.sort_by_key(|entry| entry.0);
         for (key, tx_location) in &txid_location_batch {
-            let entry_bytes = StoredEntryFixed::new(key, *tx_location).to_bytes()?;
+            let entry_bytes = tx_location.to_bytes()?;
             put_idempotent(&mut txn, self.txid_location, key, &entry_bytes)?;
         }
 
@@ -1777,28 +1722,19 @@ impl DbV1 {
                     // Mark outputs spent in this block as unspent
                     for (_record, (prev_output_script, prev_output_record)) in records {
                         {
-                            let prev_addr_bytes = prev_output_script.to_bytes()?;
-                            let packed_prev = AddrEventBytes::from_record(prev_output_record)
+                            // The DB holds the *spent* form of the previous output, so build that
+                            // form to match it.
+                            let spent_prev_record = AddrHistRecord::new(
+                                prev_output_record.tx_location(),
+                                prev_output_record.out_index(),
+                                prev_output_record.value(),
+                                prev_output_record.flags() | AddrHistRecord::FLAG_SPENT,
+                            );
+                            let spent_prev_entry = AddrEventBytes::from_record(&spent_prev_record)
                                 .map_err(|e| {
                                     StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
-                                })?;
-
-                            // Build the *spent* form of the stored entry so it matches the DB
-                            // (mark_addr_hist_record_spent_blocking sets FLAG_SPENT and
-                            // recomputes the checksum).  We must pass the spent bytes here
-                            // because the DB currently contains the spent version.
-                            let prev_entry_bytes =
-                                StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
-
-                            // Turn the mined-entry into the spent-entry (mutate flags + checksum)
-                            let mut spent_prev_entry = prev_entry_bytes.clone();
-                            // Set SPENT flag (flags byte is at index 10 in StoredEntry layout)
-                            spent_prev_entry[10] |= AddrHistRecord::FLAG_SPENT;
-                            // Recompute checksum over bytes 1..19 as StoredEntryFixed expects.
-                            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                                &[&prev_addr_bytes, &spent_prev_entry[1..19]].concat(),
-                            );
-                            spent_prev_entry[19..51].copy_from_slice(&checksum);
+                                })?
+                                .to_bytes()?;
 
                             let updated = zaino_db.mark_addr_hist_record_unspent_in_txn(
                                 &mut txn,

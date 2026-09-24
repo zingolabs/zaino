@@ -48,7 +48,6 @@
 use core::num::NonZeroU128;
 use std::fmt::Debug;
 
-use crate::entry::{StoredEntryFixed, StoredEntryVar};
 use crate::store::capability::{DbMetadata, DbVersion};
 use crate::types::db::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 use crate::types::db::legacy::AddrEventBytes;
@@ -69,12 +68,6 @@ const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0dec_0de0).expect("nonzero lit
 /// A valid nBits value. Passes zebra's compact-difficulty validation without
 /// corresponding to any real block.
 const TEST_VALID_NBITS: u32 = 0x2007_ffff;
-
-/// The key the `StoredEntry*` goldens are bound to.
-///
-/// Not incidental: the checksum covers `key ‖ body`, so the key is part of
-/// what those two goldens pin. Changing it changes them.
-const GOLDEN_KEY: &[u8] = b"golden-key";
 
 /* ─────────────────────────────── assertions ─────────────────────────────── */
 
@@ -468,36 +461,6 @@ fn metadata_goldens() {
         "DbMetadata",
         &db_metadata(),
         "01010100000003000000000000007e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
-    );
-}
-
-/// The checksummed envelopes every row is written inside.
-///
-/// The digest covers `key ‖ body`, which is what stops a row being relocated
-/// to a different key undetected. Pinning these bytes pins that construction:
-/// a change to the hash input, the hash function, or the field order shows up
-/// here rather than as a database that silently accepts moved rows.
-#[test]
-fn stored_entry_goldens() {
-    assert_golden(
-        "StoredEntryFixed<Height>",
-        &StoredEntryFixed::new(GOLDEN_KEY, height()),
-        "01010001e2402b45416787c256f240d3a125b4857b9690e74c0b8c0e97fbfe1b8903166ebb9c",
-    );
-    assert_golden(
-        "StoredEntryVar<TxidList>",
-        &StoredEntryVar::new(GOLDEN_KEY, txid_list()),
-        "01440102012222222222222222222222222222222222222222222222222222222222222222012323232323232323232323232323232323232323232323232323232323232323568b87237c63abe1df80feae7869ff5e0fb08000ef8f9f99055d1277ca76f780",
-    );
-
-    // The key is load-bearing, not decoration: the same value under a
-    // different key must produce different bytes.
-    let other = StoredEntryFixed::new(b"different-key", height());
-    assert_ne!(
-        hex::encode(other.to_bytes().expect("encode")),
-        "01010001e2402b45416787c256f240d3a125b4857b9690e74c0b8c0e97fbfe1b8903166ebb9c",
-        "StoredEntryFixed checksum does not depend on the key — a row could be \
-         relocated to another key without detection"
     );
 }
 

@@ -21,14 +21,11 @@
 #  • Variable-length collections are length-prefixed with Bitcoin/Zcash
 #    CompactSize.
 #  • `Option<T>` is encoded as: 0x00 (None) | 0x01 (Some) <encoded T>.
-#  • `StoredEntryFixed<T>`  -> fixed length metadata wrapper around `T`
-#       V1 body = <u8 version_tag> <encoded T> < [u8; 32] check_hash>
-#  • `StoredEntryVar<T>`  -> variable metadata wrapper around `T`
-#       V1 body = <u8 version_tag> <CS encoded T len> <encoded T> < [u8; 32] check_hash>
+#  • Each value is the record itself, with no wrapper, length prefix or checksum.
 #
 # ─────────────────────────── Logical databases ────────────────────────────────
 #
-# 1. headers  ―  H  ->  StoredEntryVar<BlockHeaderData>
+# 1. headers  ―  H  ->  BlockHeaderData
 #    Key : BE height
 #    Val : 0x01/0x02 + BlockHeaderData
 #           BlockHeaderData V1 body  =
@@ -46,14 +43,14 @@
 #                             [32] nonce
 #
 #
-# 2. txids  ―  H  ->  StoredEntryVar<TxidList>
+# 2. txids  ―  H  ->  TxidList
 #    Val : 0x01 + CS count + count × B txid
 #
-# 3. transparent  ―  H  ->  StoredEntryVar<Vec<TransparentTxList>>
+# 3. transparent  ―  H  ->  Vec<TransparentTxList>
 #    Val : 0x01 + CS blk_tx_count + each TransparentTxList
 #           TransparentTxList = CS tx_count + tx_count × Option<TransparentCompactTx>
 #
-# 4. sapling  ―  H  ->  StoredEntryVar<SaplingTxList>
+# 4. sapling  ―  H  ->  SaplingTxList
 #    Key : BE height
 #    Val : 0x01 + CS tx_count + tx_count × Option<SaplingCompactTx>
 #           SaplingCompactTx =
@@ -63,7 +60,7 @@
 #              outputs = CS m + m × CompactSaplingOutput
 #                         CompactSaplingOutput = 32-byte cmu  32-byte epk  52-byte ciphertext
 #
-# 5. orchard  ―  H  ->  StoredEntryVar<OrchardTxList>
+# 5. orchard  ―  H  ->  OrchardTxList
 #    Key : BE height
 #    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
 #           OrchardCompactTx =
@@ -71,9 +68,9 @@
 #              actions = CS n + n × CompactOrchardAction
 #                         CompactOrchardAction = 32-byte nullifier  32-byte cmx  32-byte epk  52-byte ciphertext
 #
-# 6. commitment_tree_data  ―  H  ->  StoredEntryVar<CommitmentTreeData>
+# 6. commitment_tree_data  ―  H  ->  CommitmentTreeData
 #    Key : BE height
-#    Val : 0x01 + CS len + CommitmentTreeData + [32] check_hash
+#    Val : 0x01 + CommitmentTreeData body
 #           CommitmentTreeData V2 body  =
 #              CommitmentTreeRoots  +  CommitmentTreeSizes
 #              CommitmentTreeRoots  = 32-byte sapling_root  32-byte orchard_root
@@ -81,7 +78,7 @@
 #              CommitmentTreeSizes  = LE(u32) sapling_total  LE(u32) orchard_total
 #                                     LE(u32) ironwood_total
 #
-# 13. ironwood  ―  H  ->  StoredEntryVar<OrchardTxList>          (schema v1.3.0)
+# 13. ironwood  ―  H  ->  OrchardTxList          
 #    Key : BE height
 #    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
 #           OrchardCompactTx =
@@ -92,19 +89,19 @@
 #           Ironwood (NU6.3) actions reuse the Orchard compact types. Readers treat a
 #           missing ironwood row as "no ironwood data".
 #
-# 7. heights  ―  B (block hash)  ->  StoredEntryFixed<Height>
+# 7. heights  ―  B (block hash)  ->  Height
 #    Key : 32-byte block hash (internal byte order)
 #    Val : 0x01 + BE height
 #
-# 8. spent  ―  Outpoint  ->  StoredEntryFixed<Vec<TxLocation>>
+# 8. spent  ―  Outpoint  ->  Vec<TxLocation>
 #    Key : 0x01 + Outpoint
 #           Outpoint = B prev_txid  LE(u32) prev_index
 #    Val : 0x01 + CS n + n × TxLocation
 #           TxLocation = LE(u32) height  LE(u32) tx_index
 #
 # 9. tx_out_set_info_accumulator  ―  "tx_out_set_info_accumulator" (ASCII)
-#       ->  StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>  (singleton)
-#    Val : 0x01 + FinalisedTxOutSetInfoAccumulator V1 body + [32] checksum
+#       ->  FinalisedTxOutSetInfoAccumulator  (singleton)
+#    Val : 0x01 + FinalisedTxOutSetInfoAccumulator V1 body
 #    FinalisedTxOutSetInfoAccumulator V1 body =
 #        LE(u64) transactions
 #        LE(u64) transaction_outputs
@@ -119,22 +116,22 @@
 #    The 65-byte canonical entry is also what `bytes_serialized` counts:
 #    bytes_serialized == transaction_outputs * 65.
 #
-# 10. address_history  ―  AddrScript  ->  StoredEntryFixed<AddrEventBytes>
+# 10. address_history  ―  AddrScript  ->  AddrEventBytes
 #    Key : 0x01 + AddrScript
 #           AddrScript = [20] hash  u8 script_type
 #    Val : 0x01 + CS len + raw event bytes  (multiple entries may share the key)
 #
-# 11. metadata  ―  "metadata" (ASCII)  ->  StoredEntryFixed<DbMetadata>  (singleton)
-#    Val : 0x01 + DbMetadata V1 body + [32] checksum
+# 11. metadata  ―  "metadata" (ASCII)  ->  DbMetadata  (singleton)
+#    Val : 0x01 + DbMetadata V1 body
 #    DbMetadata V1 body =
 #        DbVersion version
 #        32-byte schema_hash
 #
 #    DbVersion = LE(u32) major  LE(u32) minor  LE(u32) patch
 #
-# 12. txid_location  ―  B (txid)  ->  StoredEntryFixed<TxLocation>
+# 12. txid_location  ―  B (txid)  ->  TxLocation
 #    Key : 32-byte transaction id (internal byte order)
-#    Val : 0x01 + TxLocation + [32] checksum
+#    Val : 0x01 + TxLocation
 #           TxLocation = BE(u32) height  BE(u16) tx_index
 #
 #    Reverse index of `txids`: maps a txid to its on-chain location. Provides O(log n)

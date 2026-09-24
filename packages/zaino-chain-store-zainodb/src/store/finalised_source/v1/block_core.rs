@@ -108,16 +108,7 @@ impl DbV1 {
             };
             let mut cursor = Cursor::new(raw);
 
-            // Parse StoredEntryVar<TxidList>:
-
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            let _body_len = CompactSize::read(&mut cursor)
-                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
-
-            // Read [1] TxidList Record version (skip 1 byte)
+            // Read [0] TxidList Record version (skip 1 byte)
             cursor.set_position(cursor.position() + 1);
 
             // Read CompactSize: number of txids
@@ -219,14 +210,9 @@ impl DbV1 {
 
         match ro.get(self.txid_location, &key) {
             Ok(stored_bytes) => {
-                let entry = StoredEntryFixed::<TxLocation>::from_bytes(stored_bytes)
+                let location = TxLocation::from_bytes(stored_bytes)
                     .map_err(|e| StoreError::Custom(format!("corrupt txid_location entry: {e}")))?;
-                if !entry.verify(key) {
-                    return Err(StoreError::Custom(
-                        "txid_location entry checksum mismatch".to_string(),
-                    ));
-                }
-                Ok(Some(*entry.inner()))
+                Ok(Some(location))
             }
             Err(lmdb::Error::NotFound) => Ok(None),
             Err(e) => Err(StoreError::LmdbError(e)),

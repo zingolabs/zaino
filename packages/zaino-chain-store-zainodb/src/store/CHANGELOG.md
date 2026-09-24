@@ -515,6 +515,11 @@ On-disk schema
 - Encoding:
   - Values: `DbMetadata` drops its `MigrationStatus` field; the body is now
     `DbVersion` followed by the 32-byte schema hash (45 bytes, was 47).
+  - Values: every row is stored as its record's own encoding. The
+    `StoredEntryFixed` / `StoredEntryVar` wrappers are gone, with their
+    wrapper version byte, `StoredEntryVar` length prefix, and 32-byte
+    BLAKE2b-256 checksum over `key || value`.
+  - Checksums / validation: none; rows are trusted as written.
 - Tables:
   - No changes. The temporary migration progress keys are no longer written.
 

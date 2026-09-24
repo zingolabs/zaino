@@ -488,19 +488,9 @@ impl DbV1 {
                 Err(error) => return Err(StoreError::LmdbError(error)),
             };
 
-            let accumulator_entry =
-                StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw_accumulator)
-                    .map_err(|error| {
-                    StoreError::Custom(format!("txout-set accumulator decode error: {error}"))
-                })?;
-
-            if !accumulator_entry.verify(TX_OUT_SET_INFO_ACCUMULATOR_KEY) {
-                return Err(StoreError::Custom(
-                    "txout-set accumulator checksum mismatch".to_string(),
-                ));
-            }
-
-            Ok(accumulator_entry.into_inner())
+            FinalisedTxOutSetInfoAccumulator::from_bytes(raw_accumulator).map_err(|error| {
+                StoreError::Custom(format!("txout-set accumulator decode error: {error}"))
+            })
         })
     }
 
@@ -690,11 +680,10 @@ impl DbV1 {
         txn: &mut lmdb::RwTransaction,
         accumulator: FinalisedTxOutSetInfoAccumulator,
     ) -> Result<(), StoreError> {
-        let entry = StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, accumulator);
         txn.put(
             self.tx_out_set_info_accumulator,
             &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            &entry.to_bytes()?,
+            &accumulator.to_bytes()?,
             WriteFlags::empty(),
         )?;
         Ok(())
@@ -706,11 +695,10 @@ impl DbV1 {
         txn: &mut lmdb::RwTransaction,
         height: Height,
     ) -> Result<(), StoreError> {
-        let watermark = StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, height);
         txn.put(
             self.metadata,
             &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-            &watermark.to_bytes()?,
+            &height.to_bytes()?,
             WriteFlags::empty(),
         )?;
         Ok(())
@@ -1194,28 +1182,19 @@ impl DbV1 {
                 let raw = txn
                     .get(self.transparent, &height_bytes)
                     .map_err(StoreError::LmdbError)?;
-                let entry =
-                    StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
-                        StoreError::Custom(format!("transparent corrupt data: {error}"))
-                    })?;
-                if !entry.verify(&height_bytes) {
-                    return Err(StoreError::Custom(
-                        "transparent checksum mismatch".to_string(),
-                    ));
-                }
-                entry.inner().clone()
+                TransparentTxList::from_bytes(raw).map_err(|error| {
+                    StoreError::Custom(format!("transparent corrupt data: {error}"))
+                })?
             };
 
             let txids = {
                 let raw = txn
                     .get(self.txids, &height_bytes)
                     .map_err(StoreError::LmdbError)?;
-                let entry = StoredEntryVar::<TxidList>::from_bytes(raw)
-                    .map_err(|error| StoreError::Custom(format!("txids corrupt data: {error}")))?;
-                if !entry.verify(&height_bytes) {
-                    return Err(StoreError::Custom("txids checksum mismatch".to_string()));
-                }
-                entry.inner().txids().to_vec()
+                TxidList::from_bytes(raw)
+                    .map_err(|error| StoreError::Custom(format!("txids corrupt data: {error}")))?
+                    .txids()
+                    .to_vec()
             };
 
             for (tx_index, tx_opt) in transparent_tx_list.tx().iter().enumerate() {
@@ -1291,19 +1270,9 @@ impl DbV1 {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
             match txn.get(self.metadata, &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY) {
-                Ok(bytes) => {
-                    let entry = StoredEntryFixed::<Height>::from_bytes(bytes).map_err(|error| {
-                        StoreError::Custom(format!(
-                            "accumulator built-height decode error: {error}"
-                        ))
-                    })?;
-                    if !entry.verify(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY) {
-                        return Err(StoreError::Custom(
-                            "accumulator built-height checksum mismatch".to_string(),
-                        ));
-                    }
-                    Ok(Some(*entry.inner()))
-                }
+                Ok(bytes) => Height::from_bytes(bytes).map(Some).map_err(|error| {
+                    StoreError::Custom(format!("accumulator built-height decode error: {error}"))
+                }),
                 Err(lmdb::Error::NotFound) => Ok(None),
                 Err(error) => Err(StoreError::LmdbError(error)),
             }
@@ -1356,16 +1325,9 @@ impl DbV1 {
                     }
                     Err(error) => return Err(StoreError::LmdbError(error)),
                 };
-                let entry = StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw)
-                    .map_err(|error| {
+                FinalisedTxOutSetInfoAccumulator::from_bytes(raw).map_err(|error| {
                     StoreError::Custom(format!("txout-set accumulator decode error: {error}"))
-                })?;
-                if !entry.verify(TX_OUT_SET_INFO_ACCUMULATOR_KEY) {
-                    return Err(StoreError::Custom(
-                        "txout-set accumulator checksum mismatch".to_string(),
-                    ));
-                }
-                entry.into_inner()
+                })?
             };
 
             // ---- Pass 1: scan the range blocks `(built, tip]`. ----
@@ -1391,29 +1353,21 @@ impl DbV1 {
                     let raw = txn
                         .get(self.transparent, &height_bytes)
                         .map_err(StoreError::LmdbError)?;
-                    let entry =
-                        StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
-                            StoreError::Custom(format!("transparent corrupt data: {error}"))
-                        })?;
-                    if !entry.verify(&height_bytes) {
-                        return Err(StoreError::Custom(
-                            "transparent checksum mismatch".to_string(),
-                        ));
-                    }
-                    entry.inner().clone()
+                    TransparentTxList::from_bytes(raw).map_err(|error| {
+                        StoreError::Custom(format!("transparent corrupt data: {error}"))
+                    })?
                 };
 
                 let txids = {
                     let raw = txn
                         .get(self.txids, &height_bytes)
                         .map_err(StoreError::LmdbError)?;
-                    let entry = StoredEntryVar::<TxidList>::from_bytes(raw).map_err(|error| {
-                        StoreError::Custom(format!("txids corrupt data: {error}"))
-                    })?;
-                    if !entry.verify(&height_bytes) {
-                        return Err(StoreError::Custom("txids checksum mismatch".to_string()));
-                    }
-                    entry.inner().txids().to_vec()
+                    TxidList::from_bytes(raw)
+                        .map_err(|error| {
+                            StoreError::Custom(format!("txids corrupt data: {error}"))
+                        })?
+                        .txids()
+                        .to_vec()
                 };
 
                 for (tx_index, tx_opt) in transparent_tx_list.tx().iter().enumerate() {
@@ -1590,17 +1544,9 @@ impl DbV1 {
     ) -> Result<Option<TxLocation>, StoreError> {
         let key: [u8; 32] = (*txid).into();
         match txn.get(self.txid_location, &key) {
-            Ok(bytes) => {
-                let entry = StoredEntryFixed::<TxLocation>::from_bytes(bytes).map_err(|error| {
-                    StoreError::Custom(format!("corrupt txid_location entry: {error}"))
-                })?;
-                if !entry.verify(key) {
-                    return Err(StoreError::Custom(
-                        "txid_location entry checksum mismatch".to_string(),
-                    ));
-                }
-                Ok(Some(*entry.inner()))
-            }
+            Ok(bytes) => TxLocation::from_bytes(bytes).map(Some).map_err(|error| {
+                StoreError::Custom(format!("corrupt txid_location entry: {error}"))
+            }),
             Err(lmdb::Error::NotFound) => Ok(None),
             Err(error) => Err(StoreError::LmdbError(error)),
         }
@@ -1644,15 +1590,9 @@ impl DbV1 {
             Err(lmdb::Error::NotFound) => return Ok(None),
             Err(error) => return Err(StoreError::LmdbError(error)),
         };
-        let entry = StoredEntryVar::<TransparentTxList>::from_bytes(raw)
+        let transparent = TransparentTxList::from_bytes(raw)
             .map_err(|error| StoreError::Custom(format!("transparent corrupt data: {error}")))?;
-        if !entry.verify(&height_bytes) {
-            return Err(StoreError::Custom(
-                "transparent checksum mismatch".to_string(),
-            ));
-        }
-        Ok(entry
-            .inner()
+        Ok(transparent
             .tx()
             .get(location.tx_index() as usize)
             .cloned()

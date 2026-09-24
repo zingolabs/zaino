@@ -50,10 +50,6 @@
 //!   - Defines `reader::DbReader`, a read-only view that routes each query through the router
 //!     using the appropriate capability request.
 //!
-//! - `entry`
-//!   - Defines integrity-preserving wrappers (`StoredEntryFixed`, `StoredEntryVar`) used by
-//!     versioned database implementations for checksummed key/value storage.
-//!
 //! # Architecture overview
 //!
 //! At runtime the layering is:
@@ -107,10 +103,6 @@
 //! defines Zaino’s on-disk wire format:
 //! - a **one-byte version tag** (`encoding::version::V1`, `V2`, …),
 //! - followed by a version-specific body (little-endian unless stated otherwise).
-//!
-//! Database implementations additionally use the integrity wrappers in `entry` to store values
-//! with a BLAKE2b-256 checksum bound to the encoded key (`key || encoded_value`), providing early
-//! detection of corruption or key/value mismatches.
 //!
 //! # On-disk layout and schema identity
 //!

@@ -115,9 +115,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let header: BlockHeaderData<AbsoluteChainWork> = *StoredEntryVar::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
-                .inner();
+            let header = BlockHeaderData::<AbsoluteChainWork>::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?;
 
             // fetch transaction data
             let raw = match txn.get(self.txids, &height_bytes) {
@@ -129,10 +128,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let txids_list = StoredEntryVar::<TxidList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("txids decode error: {e}")))?
-                .inner()
-                .clone();
+            let txids_list = TxidList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("txids decode error: {e}")))?;
             let txids = txids_list.txids();
 
             let raw = match txn.get(self.transparent, &height_bytes) {
@@ -144,10 +141,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let transparent_list = StoredEntryVar::<TransparentTxList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("transparent decode error: {e}")))?
-                .inner()
-                .clone();
+            let transparent_list = TransparentTxList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("transparent decode error: {e}")))?;
             let transparent = transparent_list.tx();
 
             let raw = match txn.get(self.sapling, &height_bytes) {
@@ -159,10 +154,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let sapling_list = StoredEntryVar::<SaplingTxList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("sapling decode error: {e}")))?
-                .inner()
-                .clone();
+            let sapling_list = SaplingTxList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("sapling decode error: {e}")))?;
             let sapling = sapling_list.tx();
 
             let raw = match txn.get(self.orchard, &height_bytes) {
@@ -174,10 +167,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let orchard_list = StoredEntryVar::<OrchardTxList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("orchard decode error: {e}")))?
-                .inner()
-                .clone();
+            let orchard_list = OrchardTxList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("orchard decode error: {e}")))?;
             let orchard = orchard_list.tx();
 
             // Ironwood (NU6.3): rows only exist from schema v1.3.0 onward, and only for blocks at or
@@ -185,10 +176,8 @@ impl DbV1 {
             // transaction has an empty ironwood component.
             let ironwood_list = match txn.get(self.ironwood, &height_bytes) {
                 Ok(raw) => Some(
-                    StoredEntryVar::<OrchardTxList>::from_bytes(raw)
-                        .map_err(|e| StoreError::Custom(format!("ironwood decode error: {e}")))?
-                        .inner()
-                        .clone(),
+                    OrchardTxList::from_bytes(raw)
+                        .map_err(|e| StoreError::Custom(format!("ironwood decode error: {e}")))?,
                 ),
                 Err(lmdb::Error::NotFound) => None,
                 Err(e) => return Err(StoreError::LmdbError(e)),
@@ -248,10 +237,8 @@ impl DbV1 {
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
-            let commitment_tree_data: CommitmentTreeData =
-                *StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
-                    .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?
-                    .inner();
+            let commitment_tree_data = CommitmentTreeData::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?;
 
             // Construct IndexedBlock
             Ok(Some(IndexedBlock::new(

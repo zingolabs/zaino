@@ -55,7 +55,6 @@ pub(crate) enum HashOrHeight {
     Height(zebra_chain::block::Height),
 }
 
-use crate::entry::{StoredEntryFixed, StoredEntryVar};
 use zaino_status::{NamedAtomicStatus, StatusType};
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -125,8 +124,8 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
 /// This value is compared against the schema hash stored in the metadata record to detect schema
 /// drift without a corresponding version bump.
 pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0xff, 0x9c, 0xf5, 0x4a, 0xe5, 0x9b, 0x81, 0xa9, 0x98, 0x94, 0x95, 0x1d, 0x0d, 0x2a, 0x27, 0x5e,
-    0x4b, 0xc0, 0x3b, 0xd8, 0xa1, 0x65, 0xff, 0x91, 0x90, 0xf3, 0xc3, 0xc7, 0x63, 0x7a, 0xfc, 0xc7,
+    0xda, 0x34, 0xd4, 0x76, 0x07, 0x4e, 0x8b, 0x96, 0x3b, 0xb4, 0x45, 0xc7, 0x48, 0x09, 0x99, 0x67,
+    0xeb, 0xd6, 0xc8, 0x79, 0xf8, 0x67, 0xde, 0x99, 0x69, 0x2e, 0x8d, 0xf6, 0x94, 0xbf, 0x22, 0xe3,
 ];
 
 /// *Current* database V1 version.
@@ -154,7 +153,7 @@ pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_KEY: &[u8] = b"tx_out_set_info_accu
 
 /// Metadata key recording the height the finalised txout-set accumulator currently reflects.
 ///
-/// Stored in the `metadata` table as `StoredEntryFixed<Height>`. The accumulator is not maintained
+/// Stored in the `metadata` table as a `Height`. The accumulator is not maintained
 /// per block on the bulk-sync write path. After a catch-up run it is brought up to the tip either by
 /// a full from-genesis rebuild ([`DbV1::rebuild_tx_out_set_accumulator`], used for the first build /
 /// an unusually large gap) or, in steady state, by applying just the delta for the newly-written
@@ -234,7 +233,7 @@ pub(super) const PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duratio
 /// CAVEAT: that integrity guarantee relies on the filesystem preserving write order. On networked
 /// storage (NFS), overlay filesystems, or a container/pod hard-eviction that drops the unflushed
 /// page cache, write order is *not* guaranteed and a crash under `MDB_NOSYNC` **can** leave torn
-/// pages — surfacing later as an LMDB cursor assertion or a checksum/decode failure on the affected
+/// pages — surfacing later as an LMDB cursor assertion or a decode failure on the affected
 /// table. The recovery is to wipe the finalised-state DB and re-index (its tables are all
 /// re-derivable from the validator). A shorter checkpoint interval shrinks, but does not eliminate,
 /// this window.
@@ -311,78 +310,74 @@ pub(crate) struct DbV1 {
     /// Shared LMDB environment.
     env: Arc<Environment>,
 
-    /// Block headers: `Height` -> `StoredEntryVar<BlockHeaderData>`
+    /// Block headers: `Height` -> `BlockHeaderData`
     ///
     /// Stored per-block, in order.
     headers: Database,
 
-    /// Txids: `Height` -> `StoredEntryVar<TxidList>`
+    /// Txids: `Height` -> `TxidList`
     ///
     /// Stored per-block, in order.
     txids: Database,
 
-    /// Transparent: `Height` -> `StoredEntryVar<Vec<TransparentTxList>>`
+    /// Transparent: `Height` -> `TransparentTxList`
     ///
     /// Stored per-block, in order.
     transparent: Database,
 
-    /// Sapling: `Height` -> `StoredEntryVar<Vec<TxData>>`
+    /// Sapling: `Height` -> `SaplingTxList`
     ///
     /// Stored per-block, in order.
     sapling: Database,
 
-    /// Orchard: `Height` -> `StoredEntryVar<Vec<TxData>>`
+    /// Orchard: `Height` -> `OrchardTxList`
     ///
     /// Stored per-block, in order.
     orchard: Database,
 
-    /// Ironwood: `Height` -> `StoredEntryVar<OrchardTxList>`
+    /// Ironwood: `Height` -> `OrchardTxList`
     ///
     /// Ironwood (NU6.3) shielded-pool actions, modelled with the Orchard compact types. Stored
     /// per-block, in order. Introduced in schema v1.3.0.
     ironwood: Database,
 
-    /// Block commitment tree data: `Height` -> `StoredEntryVar<CommitmentTreeData>`
-    ///
-    /// Stored per-block, in order. The value is a `StoredEntryVar` (not `StoredEntryFixed`) from
-    /// schema v1.3.0 onward, because `CommitmentTreeData` V2 carries an optional Ironwood root and
-    /// is therefore variable-length.
+    /// Block commitment tree data: `Height` -> `CommitmentTreeData`, variable-length because it carries an optional Ironwood root.
     commitment_tree_data: Database,
 
-    /// Heights: `Hash` -> `StoredEntryFixed<Height>`
+    /// Heights: `Hash` -> `Height`
     ///
     /// Used for hash based fetch of the best chain (and random access).
     heights: Database,
 
-    /// Spent outpoints: `Outpoint` -> `StoredEntryFixed<Vec<TxLocation>>`
+    /// Spent outpoints: `Outpoint` -> spending `TxLocation`
     ///
     /// Used to check spent status of given outpoints, retuning spending tx.
     spent: Database,
 
-    /// Reverse txid index: `TransactionHash` -> `StoredEntryFixed<TxLocation>`
+    /// Reverse txid index: `TransactionHash` -> `TxLocation`
     ///
     /// Maps a transaction id to its on-chain `TxLocation`, giving O(log n) previous-output
     /// resolution instead of a full scan of the height-keyed `txids` table.
     txid_location: Database,
 
     /// Finalised txout-set accumulator:
-    /// `"tx_out_set_info_accumulator"` -> `StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>`.
+    /// `"tx_out_set_info_accumulator"` -> `FinalisedTxOutSetInfoAccumulator`.
     ///
     /// Stores the finalised-state portion of `gettxoutsetinfo` that can be maintained cheaply
     /// without adding per-UTXO storage.
     tx_out_set_info_accumulator: Database,
 
-    /// Transparent address history: `AddrScript` -> duplicate values of `StoredEntryFixed<AddrEventBytes>`.
+    /// Transparent address history: `AddrScript` -> duplicate values of `AddrEventBytes`.
     ///
     /// Stored as an LMDB `DUP_SORT | DUP_FIXED` database keyed by address script bytes. Each duplicate
     /// value is a fixed-size entry encoding one address event (mined output or spending input),
-    /// including flags and checksum.
+    /// including flags.
     ///
     /// Used to search all transparent address indexes (txids, utxos, balances, deltas)
     #[cfg(feature = "transparent_address_history_experimental")]
     address_history: Database,
 
-    /// Metadata: singleton entry "metadata" -> `StoredEntryFixed<DbMetadata>`
+    /// Metadata: singleton entry "metadata" -> `DbMetadata`
     metadata: Database,
 
     /// Background maintenance task handle.
@@ -620,9 +615,7 @@ impl DbV1 {
                 Ok(raw_bytes) => {
                     // A record this build cannot decode was written by another schema.
                     let matches =
-                        StoredEntryFixed::<DbMetadata>::from_bytes(raw_bytes).is_ok_and(|stored| {
-                            stored.verify(b"metadata") && stored.into_inner() == this_build
-                        });
+                        DbMetadata::from_bytes(raw_bytes).is_ok_and(|stored| stored == this_build);
                     return Ok(if matches {
                         SchemaCheck::Matches
                     } else {
@@ -630,11 +623,10 @@ impl DbV1 {
                     });
                 }
                 Err(lmdb::Error::NotFound) => {
-                    let entry = StoredEntryFixed::new(b"metadata", this_build);
                     txn.put(
                         self.metadata,
                         b"metadata",
-                        &entry.to_bytes()?,
+                        &this_build.to_bytes()?,
                         WriteFlags::NO_OVERWRITE,
                     )?;
                 }

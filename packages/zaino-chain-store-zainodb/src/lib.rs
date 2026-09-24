@@ -44,7 +44,6 @@ pub mod config;
 pub use config::ZainoDbConfig;
 pub mod adapter;
 pub mod conversion;
-pub mod entry;
 pub mod error;
 pub(crate) mod ingest;
 pub mod metric_names;

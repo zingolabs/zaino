@@ -60,21 +60,13 @@ These are also *this backend's* shapes, not the domain's. What is currently
 re-exported for `zaino-state` is a migration measure with an end date. Do not
 add consumers.
 
-## The checksums are load-bearing
+## Rows carry no checksum
 
-The environment is opened `MDB_NOSYNC`. The documented consequence is that on
-networked or overlay storage, or a hard pod eviction, a crash **can leave torn
-pages**. Per-row BLAKE2b-256 over `encoded_key ‖ encoded_value` is what turns
-that into `"checksum mismatch"` plus a hex dump and a "wipe and re-index"
-instruction, rather than a wrong answer served with confidence.
-
-Two properties to preserve when touching any of it:
-
-- **The key binding.** The checksum covers the key as well as the value, which
-  is what defeats relocating or splicing a row that is individually valid.
-- **The version-searching `verify`.** It is what makes mixed-version rows in one
-  table safe, which is the exact bug the v1.0.0→v1.1.0 migration exists to
-  record as fixed.
+Each value is the record's own encoding, with no wrapper, length prefix, or
+checksum. The environment is opened `MDB_NOSYNC`, so on networked or overlay
+storage, or after a hard pod eviction, a crash **can leave torn pages**. Those
+surface as decode errors or LMDB cursor assertions. The recovery is to delete
+the database directory; zainod then resyncs it from the validator.
 
 ## A schema mismatch rebuilds the database
 

@@ -6,6 +6,20 @@ use super::*;
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::store::capability::AddrUtxo;
 
+/// Decodes one stored address-history value into its record.
+#[cfg(feature = "transparent_address_history_experimental")]
+fn decode_addr_event(val: &[u8]) -> Result<AddrHistRecord, StoreError> {
+    AddrEventBytes::from_bytes(val)
+        .and_then(|event| event.as_record())
+        .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))
+}
+
+/// Encodes one address-history record as its stored value.
+#[cfg(feature = "transparent_address_history_experimental")]
+fn encode_addr_event(record: &AddrHistRecord) -> Result<Vec<u8>, StoreError> {
+    Ok(AddrEventBytes::from_record(record)?.to_bytes()?)
+}
+
 /// [`TransparentHistExt`] capability implementation for [`DbV1`].
 ///
 /// Provides address history queries built over the LMDB `DUP_SORT`/`DUP_FIXED` address-history
@@ -121,7 +135,7 @@ impl DbV1 {
                 if key.len() != AddrScript::latest_versioned_len()? {
                     continue;
                 }
-                if val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()? {
+                if val.len() != AddrEventBytes::latest_versioned_len()? {
                     continue;
                 }
                 raw_records.push(val.to_vec());
@@ -133,9 +147,10 @@ impl DbV1 {
 
             let mut records = Vec::with_capacity(raw_records.len());
             for val in raw_records {
-                let entry = StoredEntryFixed::<AddrEventBytes>::from_bytes(&val)
-                    .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?;
-                records.push(entry.into_inner());
+                records.push(
+                    AddrEventBytes::from_bytes(&val)
+                        .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?,
+                );
             }
 
             Ok(Some(records))
@@ -177,9 +192,10 @@ impl DbV1 {
         let mut records = Vec::with_capacity(raw_records.len());
 
         for val in raw_records {
-            let entry = StoredEntryFixed::<AddrEventBytes>::from_bytes(&val)
-                .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?;
-            records.push(entry.into_inner());
+            records.push(
+                AddrEventBytes::from_bytes(&val)
+                    .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?,
+            );
         }
 
         Ok(Some(records))
@@ -219,28 +235,18 @@ impl DbV1 {
 
             for (key, val) in iter {
                 if key.len() != AddrScript::latest_versioned_len()?
-                    || val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?
+                    || val.len() != AddrEventBytes::latest_versioned_len()?
                 {
                     continue;
                 }
 
-                // Parse the tx_location out of val:
-                // - [0] StoredEntry tag
-                // - [1] record tag
-                // - [2..=5] height
-                // - [6..=7] tx_index
-                // - [8..=9] vout
-                // - [10] flags
-                // - [11..=18] value
-                // - [19..=50] checksum
-
-                let block_height = u32::from_be_bytes([val[2], val[3], val[4], val[5]]);
+                let record = decode_addr_event(val)?;
+                let block_height = record.tx_location().block_height();
                 if block_height < start_height.0 || block_height > end_height.0 {
                     continue;
                 }
 
-                let tx_index = u16::from_be_bytes([val[6], val[7]]);
-                set.insert(TxLocation::new(block_height, tx_index));
+                set.insert(record.tx_location());
             }
             let mut indices: Vec<_> = set.into_iter().collect();
             indices.sort_by_key(|txi| (txi.block_height(), txi.tx_index()));
@@ -289,40 +295,22 @@ impl DbV1 {
 
             for (key, val) in iter {
                 if key.len() != AddrScript::latest_versioned_len()?
-                    || val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?
+                    || val.len() != AddrEventBytes::latest_versioned_len()?
                 {
                     continue;
                 }
 
-                // Parse the tx_location out of val:
-                // - [0] StoredEntry tag
-                // - [1] record tag
-                // - [2..=5] height
-                // - [6..=7] tx_index
-                // - [8..=9] vout
-                // - [10] flags
-                // - [11..=18] value
-                // - [19..=50] checksum
-
-                let block_height = u32::from_be_bytes([val[2], val[3], val[4], val[5]]);
+                let record = decode_addr_event(val)?;
+                let block_height = record.tx_location().block_height();
                 if block_height < start_height.0 || block_height > end_height.0 {
                     continue;
                 }
 
-                let flags = val[10];
-                if (flags & AddrEventBytes::FLAG_MINED == 0)
-                    || (flags & AddrEventBytes::FLAG_SPENT != 0)
-                {
+                if !record.is_mined() || record.is_spent() {
                     continue;
                 }
 
-                let tx_index = u16::from_be_bytes([val[6], val[7]]);
-                let vout = u16::from_be_bytes([val[8], val[9]]);
-                let value = u64::from_le_bytes([
-                    val[11], val[12], val[13], val[14], val[15], val[16], val[17], val[18],
-                ]);
-
-                utxos.push((TxLocation::new(block_height, tx_index), vout, value));
+                utxos.push((record.tx_location(), record.out_index(), record.value()));
             }
 
             if utxos.is_empty() {
@@ -377,34 +365,21 @@ impl DbV1 {
 
             for (key, val) in iter {
                 if key.len() != AddrScript::latest_versioned_len()?
-                    || val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?
+                    || val.len() != AddrEventBytes::latest_versioned_len()?
                 {
                     continue;
                 }
 
-                // Parse the tx_location out of val:
-                // - [0] StoredEntry tag
-                // - [1] record tag
-                // - [2..=5] height
-                // - [6..=7] tx_index
-                // - [8..=9] vout
-                // - [10] flags
-                // - [11..=18] value
-                // - [19..=50] checksum
-
-                let height = u32::from_be_bytes([val[2], val[3], val[4], val[5]]);
+                let record = decode_addr_event(val)?;
+                let height = record.tx_location().block_height();
                 if height < start_height.0 || height > end_height.0 {
                     continue;
                 }
 
-                let flags = val[10];
-                let value = u64::from_le_bytes([
-                    val[11], val[12], val[13], val[14], val[15], val[16], val[17], val[18],
-                ]) as i64;
-
-                if flags & AddrEventBytes::FLAG_IS_INPUT != 0 {
+                let value = record.value() as i64;
+                if record.is_input() {
                     balance -= value;
-                } else if flags & AddrEventBytes::FLAG_MINED != 0 {
+                } else if record.is_mined() {
                     balance += value;
                 }
             }
@@ -427,11 +402,9 @@ impl DbV1 {
         let txn = self.env.begin_ro_txn()?;
 
         tokio::task::block_in_place(|| match txn.get(self.spent, &key) {
-            Ok(bytes) => {
-                let entry = StoredEntryFixed::<TxLocation>::from_bytes(bytes)
-                    .map_err(|e| StoreError::Custom(format!("spent entry decode error: {e}")))?;
-                Ok(Some(entry.into_inner()))
-            }
+            Ok(bytes) => TxLocation::from_bytes(bytes)
+                .map(Some)
+                .map_err(|e| StoreError::Custom(format!("spent entry decode error: {e}"))),
             Err(lmdb::Error::NotFound) => Ok(None),
             Err(e) => Err(StoreError::LmdbError(e)),
         })
@@ -455,15 +428,11 @@ impl DbV1 {
                 .map(|outpoint| {
                     let key = outpoint.to_bytes()?;
                     match txn.get(self.spent, &key) {
-                        Ok(bytes) => {
-                            let entry =
-                                StoredEntryFixed::<TxLocation>::from_bytes(bytes).map_err(|e| {
-                                    StoreError::Custom(format!(
-                                        "spent entry decode error for {outpoint:?}: {e}"
-                                    ))
-                                })?;
-                            Ok(Some(entry.into_inner()))
-                        }
+                        Ok(bytes) => TxLocation::from_bytes(bytes).map(Some).map_err(|e| {
+                            StoreError::Custom(format!(
+                                "spent entry decode error for {outpoint:?}: {e}"
+                            ))
+                        }),
                         Err(lmdb::Error::NotFound) => Ok(None),
                         Err(e) => Err(StoreError::LmdbError(e)),
                     }
@@ -492,26 +461,16 @@ impl DbV1 {
         let cursor = txn.open_ro_cursor(self.address_history)?;
         let mut results: Vec<Vec<u8>> = Vec::new();
 
-        // Build the seek data prefix that matches the stored bytes:
-        // [StoredEntry version, record version, height_be(4), tx_index_be(2)]
-        let stored_entry_tag = StoredEntryFixed::<AddrEventBytes>::VERSION;
-        let record_tag = AddrEventBytes::VERSION;
-
-        // Reserve the exact number of bytes we need for the SET_RANGE value prefix:
+        // Build the SET_RANGE value prefix that matches the stored bytes:
         //
-        //  - 1 byte: outer StoredEntry version (StoredEntryFixed::<AddrEventBytes>::VERSION)
-        //  - 1 byte: inner record version (AddrEventBytes::VERSION)
+        //  - 1 byte: record version (AddrEventBytes::VERSION)
         //  - 4 bytes: block_height  (big-endian)
         //  - 2 bytes: tx_index     (big-endian)
         //
-        // This minimal prefix (2 + 4 + 2 = 8 bytes) is all we need for MDB_SET_RANGE to
-        // position at the first duplicate whose value >= (height, tx_index). Using
-        // `with_capacity` avoids reallocations while we build the prefix.  We do *not*
-        // append vout/flags/value/checksum here because we only need the leading bytes
-        // to seek into the dup-sorted data.
-        let mut seek_data = Vec::with_capacity(2 + 4 + 2);
-        seek_data.push(stored_entry_tag);
-        seek_data.push(record_tag);
+        // This prefix is all MDB_SET_RANGE needs to position at the first duplicate whose value
+        // is >= (height, tx_index); vout, flags and value follow it in the stored bytes.
+        let mut seek_data = Vec::with_capacity(1 + 4 + 2);
+        seek_data.push(AddrEventBytes::VERSION);
         seek_data.extend_from_slice(&tx_location.block_height().to_be_bytes());
         seek_data.extend_from_slice(&tx_location.tx_index().to_be_bytes());
 
@@ -543,28 +502,15 @@ impl DbV1 {
                             "address history key length mismatch".into(),
                         ));
                     }
-                    if cur_val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?
-                    {
+                    if cur_val.len() != AddrEventBytes::latest_versioned_len()? {
                         return Err(StoreError::Custom(
                             "address history value length mismatch".into(),
                         ));
                     }
-                    if cur_val[0] != StoredEntryFixed::<AddrEventBytes>::VERSION
-                        || cur_val[1] != AddrEventBytes::VERSION
-                    {
-                        return Err(StoreError::Custom(
-                            "address history value version tag mismatch".into(),
-                        ));
-                    }
 
-                    // Read height and tx_index *in-place* from the value bytes:
-                    // - [0] stored entry tag
-                    // - [1] record tag
-                    // - [2..=5] height (BE)
-                    // - [6..=7] tx_index (BE)
-                    let block_index =
-                        u32::from_be_bytes([cur_val[2], cur_val[3], cur_val[4], cur_val[5]]);
-                    let tx_idx = u16::from_be_bytes([cur_val[6], cur_val[7]]);
+                    let record_location = decode_addr_event(cur_val)?.tx_location();
+                    let block_index = record_location.block_height();
+                    let tx_idx = record_location.tx_index();
 
                     if block_index == tx_location.block_height() && tx_idx == tx_location.tx_index()
                     {
@@ -699,7 +645,6 @@ impl DbV1 {
         }
 
         let mut remaining = expected;
-        let height_be = block_height.0.to_be_bytes();
 
         let mut cur = txn.open_rw_cursor(self.address_history)?;
 
@@ -708,31 +653,20 @@ impl DbV1 {
             .and_then(|_| cur.get(None, None, lmdb_sys::MDB_LAST_DUP))
         {
             Ok((_k, mut val)) => loop {
-                // Parse AddrEventBytes:
-                // - [0] StoredEntry tag
-                // - [1] record tag
-                // - [2..=5] height
-                // - [6..=7] tx_index
-                // - [8..=9] vout
-                // - [10] flags
-                // - [11..=18] value
-                // - [19..=50] checksum
-                if val.len() == StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?
-                    && val[2..6] == height_be
-                {
-                    let flags = val[10];
-                    let is_input = flags & AddrEventBytes::FLAG_IS_INPUT != 0;
-                    let is_output = flags & AddrEventBytes::FLAG_MINED != 0;
-
-                    if (delete_inputs && is_input) || (delete_outputs && is_output) {
+                if val.len() != AddrEventBytes::latest_versioned_len()? {
+                    tracing::warn!("bad addrhist dup (len={})", val.len());
+                } else {
+                    let record = decode_addr_event(val)?;
+                    if record.tx_location().block_height() == block_height.0
+                        && ((delete_inputs && record.is_input())
+                            || (delete_outputs && record.is_mined()))
+                    {
                         cur.del(WriteFlags::empty())?;
                         remaining -= 1;
                         if remaining == 0 {
                             break;
                         }
                     }
-                } else if val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()? {
-                    tracing::warn!("bad addrhist dup (len={})", val.len());
                 }
 
                 // step backwards through duplicates
@@ -784,7 +718,7 @@ impl DbV1 {
                     "address history key length mismatch".into(),
                 ));
             }
-            if val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()? {
+            if val.len() != AddrEventBytes::latest_versioned_len()? {
                 return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
@@ -794,40 +728,33 @@ impl DbV1 {
                 continue;
             }
 
-            let stored_entry_len = StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?;
-            if stored_entry_len != val.len() || stored_entry_len != 51 {
-                return Err(StoreError::Custom(
-                    "address history value length mismatch".into(),
-                ));
-            }
-            let mut hist_record = [0u8; 51];
-            hist_record.copy_from_slice(val);
-
-            let flags = hist_record[10];
-            if (flags & AddrHistRecord::FLAG_IS_INPUT) != 0 {
+            let record = decode_addr_event(val)?;
+            if record.is_input() {
                 return Err(StoreError::Custom(
                     "attempt to mark an input-row as spent".into(),
                 ));
             }
             // idempotent
-            if (flags & AddrHistRecord::FLAG_SPENT) != 0 {
+            if record.is_spent() {
                 return Ok(true);
             }
-
-            if (flags & AddrHistRecord::FLAG_MINED) == 0 {
+            if !record.is_mined() {
                 return Err(StoreError::Custom(
                     "attempt to mark non-mined addrhist record as spent".into(),
                 ));
             }
 
-            hist_record[10] |= AddrHistRecord::FLAG_SPENT;
-
-            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                &[&addr_bytes, &hist_record[1..19]].concat(),
+            let spent = AddrHistRecord::new(
+                record.tx_location(),
+                record.out_index(),
+                record.value(),
+                record.flags() | AddrHistRecord::FLAG_SPENT,
             );
-            hist_record[19..51].copy_from_slice(&checksum);
-
-            cur.put(&addr_bytes, &hist_record, WriteFlags::CURRENT)?;
+            cur.put(
+                &addr_bytes,
+                &encode_addr_event(&spent)?,
+                WriteFlags::CURRENT,
+            )?;
             return Ok(true);
         }
 
@@ -858,7 +785,7 @@ impl DbV1 {
                     "address history key length mismatch".into(),
                 ));
             }
-            if val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()? {
+            if val.len() != AddrEventBytes::latest_versioned_len()? {
                 return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
@@ -868,52 +795,36 @@ impl DbV1 {
                 continue;
             }
 
-            let stored_entry_len = StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?;
-            if stored_entry_len != val.len() || stored_entry_len != 51 {
-                return Err(StoreError::Custom(
-                    "address history value length mismatch".into(),
-                ));
-            }
-            let mut hist_record = [0u8; 51];
-            hist_record.copy_from_slice(val);
-
-            // parse flags (located at byte index 10 in the StoredEntry layout)
-            let flags = hist_record[10];
-
+            let record = decode_addr_event(val)?;
             // Sanity: the record we intend to mark should be a mined output (not an input).
-            if (flags & AddrHistRecord::FLAG_IS_INPUT) != 0 {
+            if record.is_input() {
                 return Err(StoreError::Custom(
                     "attempt to mark an input-row as unspent".into(),
                 ));
             }
-
             // If it's already unspent, treat as successful (idempotent).
-            if (flags & AddrHistRecord::FLAG_SPENT) == 0 {
-                drop(cur);
+            if !record.is_spent() {
                 return Ok(true);
             }
-
             // If the record is not marked MINED, that's an invariant failure.
-            // We surface it rather than producing a non-mined record.
-            if (flags & AddrHistRecord::FLAG_MINED) == 0 {
+            if !record.is_mined() {
                 return Err(StoreError::Custom(
                     "attempt to mark non-mined addrhist record as unspent".into(),
                 ));
             }
 
             // Preserve all existing flags (including MINED), and remove SPENT.
-            hist_record[10] &= !AddrHistRecord::FLAG_SPENT;
-
-            // Recompute checksum over entry header + payload (bytes 1..19).
-            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                &[&addr_bytes, &hist_record[1..19]].concat(),
+            let unspent = AddrHistRecord::new(
+                record.tx_location(),
+                record.out_index(),
+                record.value(),
+                record.flags() & !AddrHistRecord::FLAG_SPENT,
             );
-            hist_record[19..51].copy_from_slice(&checksum);
-
-            // Write back in place for the exact duplicate we matched.
-            cur.put(&addr_bytes, &hist_record, WriteFlags::CURRENT)?;
-            drop(cur);
-
+            cur.put(
+                &addr_bytes,
+                &encode_addr_event(&unspent)?,
+                WriteFlags::CURRENT,
+            )?;
             return Ok(true);
         }
 
@@ -949,7 +860,7 @@ impl DbV1 {
             .ok_or_else(|| StoreError::Custom("Previous output not found at given index".into()))
     }
 
-    /// Efficiently scans a raw `StoredEntryVar<TransparentTxList>` buffer to locate the
+    /// Efficiently scans a raw stored `TransparentTxList` buffer to locate the
     /// specific output at [tx_idx, output_idx] without full deserialization.
     ///
     /// # Arguments
@@ -965,19 +876,7 @@ impl DbV1 {
         target_tx_idx: usize,
         target_output_idx: usize,
     ) -> Result<Option<TxOutCompact>, StoreError> {
-        const CHECKSUM_LEN: usize = 32;
-
-        if stored.len() < TransactionHash::VERSION_TAG_LEN + 8 + CHECKSUM_LEN {
-            return Ok(None);
-        }
-
-        let mut cursor = &stored[TransactionHash::VERSION_TAG_LEN..];
-        let item_len = CompactSize::read(&mut cursor)? as usize;
-        if cursor.len() < item_len + CHECKSUM_LEN {
-            return Ok(None);
-        }
-
-        let Some((_record_version, mut remaining)) = cursor.split_first() else {
+        let Some((_record_version, mut remaining)) = stored.split_first() else {
             return Ok(None);
         };
         let vec_len = CompactSize::read(&mut remaining)? as usize;

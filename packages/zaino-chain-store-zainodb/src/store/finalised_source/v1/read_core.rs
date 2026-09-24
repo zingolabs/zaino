@@ -98,10 +98,8 @@ impl DbV1 {
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
-            let entry = StoredEntryFixed::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("metadata decode error: {e}")))?;
-
-            Ok(entry.into_inner())
+            DbMetadata::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("metadata decode error: {e}")))
         })
     }
 
@@ -133,7 +131,7 @@ impl DbV1 {
                             StoreError::LmdbError(e)
                         }
                     })?;
-                    Ok(*StoredEntryFixed::<Height>::deserialize(bytes)?.inner())
+                    Ok(Height::from_bytes(bytes)?)
                 })
             }
         }
@@ -155,9 +153,7 @@ impl DbV1 {
 }
 
 impl DbV1 {
-    /// Fetches and decodes one `StoredEntryVar<T>` row keyed by an already-validated
-    /// height. Returns `Ok(None)` when the table has no row for the height; `label`
-    /// names the table in decode errors.
+    /// Fetches and decodes one `T` row keyed by `height_bytes`, returning `Ok(None)` when the table has no row there.
     fn read_row<T: ZainoVersionedSerde>(
         &self,
         table: lmdb::Database,
@@ -171,9 +167,9 @@ impl DbV1 {
                 Err(lmdb::Error::NotFound) => return Ok(None),
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let entry: StoredEntryVar<T> = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))?;
-            Ok(Some(entry.into_inner()))
+            T::from_bytes(raw)
+                .map(Some)
+                .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))
         })
     }
 
@@ -191,8 +187,7 @@ impl DbV1 {
         self.read_row(table, label, &height_bytes)
     }
 
-    /// Cursor-scans and decodes every `StoredEntryVar<T>` row in the validated
-    /// inclusive `start..=end` height range.
+    /// Cursor-scans and decodes every `T` row in the inclusive `start..=end` height range.
     pub(super) async fn scan_rows<T: ZainoVersionedSerde>(
         &self,
         table: lmdb::Database,
@@ -248,8 +243,8 @@ impl DbV1 {
         raw_entries
             .into_iter()
             .map(|bytes| {
-                StoredEntryVar::<T>::from_bytes(&bytes)
-                    .map(|e| map(e.into_inner()))
+                T::from_bytes(&bytes)
+                    .map(&mut map)
                     .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))
             })
             .collect()

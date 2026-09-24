@@ -323,7 +323,7 @@ impl DbV1 {
     /// Point lookup for one transaction's compact data in `pool`'s per-block table,
     /// without decoding the whole block row.
     ///
-    /// Walks the `StoredEntryVar` tx-list bytes entry-by-entry with the pool's skip
+    /// Walks the stored tx-list bytes entry-by-entry with the pool's skip
     /// function, then decodes only the requested entry.
     fn get_pool_tx<T: ZainoVersionedSerde>(
         &self,
@@ -358,13 +358,6 @@ impl DbV1 {
             };
 
             let mut cursor = Cursor::new(raw);
-
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            CompactSize::read(&mut cursor)
-                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
 
             // Skip the tx-list version byte
             cursor.set_position(cursor.position() + 1);
@@ -467,7 +460,7 @@ impl DbV1 {
     /// Skips one `Option<SaplingCompactTx>` from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
-    /// - `StoredEntryVar<SaplingTxList>`
+    /// - stored `SaplingTxList`
     ///
     /// Advances past:
     /// - 1 byte `0x00` if None, or
@@ -486,7 +479,7 @@ impl DbV1 {
     /// Skips one `Option<OrchardCompactTx>` from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
-    /// - `StoredEntryVar<OrchardTxList>` (the orchard and ironwood tables share this
+    /// - stored `OrchardTxList` (the orchard and ironwood tables share this
     ///   layout)
     ///
     /// Advances past:
