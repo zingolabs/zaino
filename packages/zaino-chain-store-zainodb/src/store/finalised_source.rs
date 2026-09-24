@@ -28,18 +28,15 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::{
-    task::JoinHandle,
-    time::{interval, sleep, MissedTickBehavior},
-};
+use tokio::{task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 /// Lifecycle scaffolding shared by every `DbVx` finalised-state backend.
 ///
 /// Implementors expose the four shared struct fields via required getters;
-/// provided methods cover the duplicated `status()`, `wait_until_ready()`,
-/// `shutdown()`, `clean_trailing()`, and the background task's per-iteration
+/// provided methods cover the duplicated `status()`, `shutdown()`,
+/// `clean_trailing()`, and the background task's per-iteration
 /// `zaino_db_handler_sleep()`.
 ///
 /// Note: This trait ties any DB version that uses it to Lmdb.
@@ -53,19 +50,6 @@ pub(super) trait LmdbLifecycle: Sync {
 
     fn status(&self) -> StatusType {
         self.status_atomic().load()
-    }
-
-    fn wait_until_ready(&self) -> impl SendFut<()> {
-        async move {
-            let mut ticker = interval(Duration::from_millis(100));
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-            loop {
-                ticker.tick().await;
-                if self.status_atomic().load() == StatusType::Ready {
-                    break;
-                }
-            }
-        }
     }
 
     fn clean_trailing(&self) -> impl SendFut<Result<(), StoreError>> {

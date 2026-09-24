@@ -6,28 +6,9 @@ use super::*;
 ///
 /// Provides access to block headers, txid lists, and transaction location mapping.
 impl BlockCoreExt for DbV1 {
+    #[cfg(test)]
     async fn get_block_header(&self, height: Height) -> Result<BlockHeaderData, StoreError> {
         self.get_block_header_data(height).await
-    }
-
-    async fn get_block_range_headers(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<BlockHeaderData>, StoreError> {
-        self.get_block_range_headers(start, end).await
-    }
-
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
-        self.get_block_txids(height).await
-    }
-
-    async fn get_block_range_txids(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<TxidList>, StoreError> {
-        self.get_block_range_txids(start, end).await
     }
 
     async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
@@ -58,28 +39,6 @@ impl DbV1 {
         .await?
         .map(|header| header.map_chainwork(Some))
         .ok_or_else(|| StoreError::DataUnavailable("header data missing from db".into()))
-    }
-
-    /// Fetches block headers for the given height range.
-    ///
-    /// Uses cursor based fetch.
-    ///
-    /// NOTE: Currently this method only fetches ranges where start_height <= end_height,
-    ///       This could be updated by following the cursor step example in
-    ///       get_compact_block_streamer.
-    async fn get_block_range_headers(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<BlockHeaderData>, StoreError> {
-        self.scan_rows_mapped(
-            self.headers,
-            "header",
-            start,
-            end,
-            |header: BlockHeaderData<AbsoluteChainWork>| header.map_chainwork(Some),
-        )
-        .await
     }
 
     /// Fetch the txid bytes for a given TxLocation.
@@ -133,28 +92,6 @@ impl DbV1 {
 
             Ok(TransactionHash::from(txid_bytes))
         })
-    }
-
-    /// Fetch block txids by height.
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
-        self.read_row_at_height(self.txids, "txids", height)
-            .await?
-            .ok_or_else(|| StoreError::DataUnavailable("txid data missing from db".into()))
-    }
-
-    /// Fetches block txids for the given height range.
-    ///
-    /// Uses cursor based fetch.
-    ///
-    /// NOTE: Currently this method only fetches ranges where start_height <= end_height,
-    ///       This could be updated by following the cursor step example in
-    ///       get_compact_block_streamer.
-    async fn get_block_range_txids(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<TxidList>, StoreError> {
-        self.scan_rows(self.txids, "txids", start, end).await
     }
 
     // Fetch the TxLocation for the given txid, transaction data is indexed by TxLocation internally.

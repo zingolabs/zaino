@@ -3,7 +3,7 @@
 use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 
 use super::*;
-#[cfg(feature = "transparent_address_history_experimental")]
+#[cfg(all(test, feature = "transparent_address_history_experimental"))]
 use crate::store::capability::AddrUtxo;
 
 /// Decodes one stored address-history value into its record.
@@ -40,14 +40,6 @@ impl SpentMark {
         }
     }
 
-    /// Whether `record` already carries this mark.
-    fn is_applied(self, record: &AddrHistRecord) -> bool {
-        match self {
-            Self::Spent => record.is_spent(),
-            Self::Unspent => !record.is_spent(),
-        }
-    }
-
     /// `flags` with this mark applied.
     fn apply(self, flags: u8) -> u8 {
         match self {
@@ -63,21 +55,6 @@ impl SpentMark {
 /// database.
 #[cfg(feature = "transparent_address_history_experimental")]
 impl TransparentHistExt for DbV1 {
-    async fn addr_records(
-        &self,
-        addr_script: AddrScript,
-    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        self.addr_records(addr_script).await
-    }
-
-    async fn addr_and_index_records(
-        &self,
-        addr_script: AddrScript,
-        tx_location: TxLocation,
-    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        self.addr_and_index_records(addr_script, tx_location).await
-    }
-
     async fn addr_tx_locations_by_range(
         &self,
         addr_script: AddrScript,
@@ -88,6 +65,7 @@ impl TransparentHistExt for DbV1 {
             .await
     }
 
+    #[cfg(test)]
     async fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
@@ -98,6 +76,7 @@ impl TransparentHistExt for DbV1 {
             .await
     }
 
+    #[cfg(test)]
     async fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,
@@ -137,106 +116,6 @@ impl TxOutSetExt for DbV1 {
 
 impl DbV1 {
     // *** Public fetcher methods - Used by DbReader ***
-
-    /// Fetch all address history records for a given transparent address.
-    ///
-    /// Returns:
-    /// - `Ok(Some(records))` if one or more valid records exist,
-    /// - `Ok(None)` if no records exist (not an error),
-    /// - `Err(...)` if any decoding or DB error occurs.
-    #[cfg(feature = "transparent_address_history_experimental")]
-    async fn addr_records(
-        &self,
-        addr_script: AddrScript,
-    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        let addr_bytes = addr_script.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-
-            let mut cursor = match txn.open_ro_cursor(self.address_history) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(StoreError::LmdbError(e)),
-            };
-
-            let mut raw_records = Vec::new();
-
-            let iter = match cursor.iter_dup_of(&addr_bytes) {
-                Ok(iter) => iter,
-                Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(StoreError::LmdbError(e)),
-            };
-
-            for (key, val) in iter {
-                if key.len() != AddrScript::ENCODED_LEN {
-                    continue;
-                }
-                if val.len() != AddrEventBytes::ENCODED_LEN {
-                    continue;
-                }
-                raw_records.push(val.to_vec());
-            }
-
-            if raw_records.is_empty() {
-                return Ok(None);
-            }
-
-            let mut records = Vec::with_capacity(raw_records.len());
-            for val in raw_records {
-                records.push(
-                    AddrEventBytes::from_bytes(&val)
-                        .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?,
-                );
-            }
-
-            Ok(Some(records))
-        })
-    }
-
-    /// Fetch all address history records for a given address and TxLocation.
-    ///
-    /// Returns:
-    /// - `Ok(Some(records))` if one or more matching records are found at that index,
-    /// - `Ok(None)` if no matching records exist (not an error),
-    /// - `Err(...)` on decode or DB failure.
-    #[cfg(feature = "transparent_address_history_experimental")]
-    async fn addr_and_index_records(
-        &self,
-        addr_script: AddrScript,
-        tx_location: TxLocation,
-    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        let addr_bytes = addr_script.to_bytes()?;
-
-        let rec_results = tokio::task::block_in_place(|| {
-            let ro = self.env.begin_ro_txn()?;
-            let fetch_records_result =
-                self.addr_hist_records_by_addr_and_index_in_txn(&ro, &addr_bytes, tx_location);
-            ro.commit()?;
-            fetch_records_result
-        });
-
-        let raw_records = match rec_results {
-            Ok(records) => records,
-            Err(StoreError::LmdbError(lmdb::Error::NotFound)) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-
-        if raw_records.is_empty() {
-            return Ok(None);
-        }
-
-        let mut records = Vec::with_capacity(raw_records.len());
-
-        for val in raw_records {
-            records.push(
-                AddrEventBytes::from_bytes(&val)
-                    .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?,
-            );
-        }
-
-        Ok(Some(records))
-    }
 
     /// Fetch all distinct `TxLocation` values for `addr_script` within the
     /// height range `[start_height, end_height]` (inclusive).
@@ -304,7 +183,7 @@ impl DbV1 {
     /// - `Ok(Some(vec))` if one or more UTXOs are found,
     /// - `Ok(None)` if none found (not an error),
     /// - `Err(...)` on decode or DB failure.
-    #[cfg(feature = "transparent_address_history_experimental")]
+    #[cfg(all(test, feature = "transparent_address_history_experimental"))]
     async fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
@@ -364,7 +243,7 @@ impl DbV1 {
     /// - `−value` for spent inputs
     ///
     /// Returns the signed net value as `i64`, or error on failure.
-    #[cfg(feature = "transparent_address_history_experimental")]
+    #[cfg(all(test, feature = "transparent_address_history_experimental"))]
     async fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,

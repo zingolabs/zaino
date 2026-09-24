@@ -1,0 +1,25 @@
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+The ShardIndex and ShardRoot types are removed. No table ever stored them, \
+so no database changes and the schema hash is unchanged.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "internal"
+description = """
+The store no longer allows dead code crate-wide. The reads, write wrappers \
+and helpers that the allowance hid are deleted, and reads that only tests \
+use are compiled for tests only. Every index the store builds is still \
+built.
+"""
+
+[[changes]]
+crate = "zaino-rpc"
+kind = "internal"
+description = """
+The JSON-RPC response envelope no longer deserializes the unused id field, \
+so a response without an id is accepted.
+"""

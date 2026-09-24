@@ -99,9 +99,6 @@
 //!   rebuilds on its next start.
 //!
 
-// TODO / FIX - REMOVE THIS ONCE CHAININDEX LANDS!
-#![allow(dead_code)]
-
 pub(crate) mod capability;
 pub(crate) mod finalised_source;
 pub mod reader;
@@ -172,6 +169,7 @@ impl PoolActivationHeights {
 /// No network parameter. The old path took one to recompute the header's block-commitments
 /// field per network upgrade; the domain block carries that field as it was mined, and the two
 /// agree for every block that parses. See [`crate::conversion`].
+#[cfg(feature = "transparent_address_history_experimental")]
 pub(crate) async fn build_indexed_block_from_source<S: ChainStoreSource + ?Sized>(
     source: &S,
     sapling_activation_height: zebra_chain::block::Height,
@@ -204,6 +202,7 @@ pub(crate) struct FetchedBlock {
     tree_roots: zaino_primitives::types::TreeRoots,
 }
 
+#[cfg(not(feature = "transparent_address_history_experimental"))]
 impl FetchedBlock {
     /// This block's own proof-of-work contribution.
     ///
@@ -724,7 +723,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     /// consistency.
     ///
     /// For reorg handling, callers should delete tip blocks using [`FinalisedState::delete_block_at_height`]
-    /// or [`FinalisedState::delete_block`] before re-appending.
+    /// before re-appending.
     pub async fn write_block(&self, b: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         self.db.write_block(b).await?;
         self.refresh_watermark().await;
@@ -735,26 +734,8 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     ///
     /// This **must** be the current database tip. Deleting non-tip blocks is not supported because
     /// it would require re-writing dependent indices for all higher blocks.
-    ///
-    /// This method delegates to the backend’s `delete_block_at_height` implementation. If that
-    /// deletion cannot be completed correctly (for example, if the backend cannot reconstruct all
-    /// derived index entries needed for deletion), callers must fall back to [`FinalisedState::delete_block`]
-    /// using an [`IndexedBlock`] fetched from the validator/source to ensure a complete wipe.
     pub async fn delete_block_at_height(&self, h: Height) -> Result<(), StoreError> {
         self.db.delete_block_at_height(h).await?;
-        self.refresh_watermark().await;
-        Ok(())
-    }
-
-    /// Deletes the provided block from the database.
-    ///
-    /// This **must** be the current database tip. The provided [`IndexedBlock`] is used to ensure
-    /// all derived indices created by that block can be removed deterministically.
-    ///
-    /// Prefer [`FinalisedState::delete_block_at_height`] when possible; use this method when the backend
-    /// requires full block contents to correctly reverse all indices.
-    pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), StoreError> {
-        self.db.delete_block(b).await?;
         self.refresh_watermark().await;
         Ok(())
     }
@@ -797,12 +778,5 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         height: Height,
     ) -> Result<Option<BlockHash>, StoreError> {
         self.db.get_block_hash(height).await
-    }
-
-    /// Returns the persisted database metadata.
-    ///
-    /// See `capability::DbMetadata` for the precise fields and on-disk encoding.
-    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
-        self.db.get_metadata().await
     }
 }

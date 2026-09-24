@@ -25,15 +25,15 @@ use crate::codec::{CompactSize, DbCodec as _, FixedEncodedLen as _};
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::store::capability::TransparentHistExt;
 use crate::store::capability::{
-    BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore, DbMetadata,
-    DbRead, DbWrite, IndexedBlockExt, SpentOutputExt, TxOutSetExt,
+    BlockCoreExt, BlockTransparentExt, CompactBlockExt, DbCore, DbMetadata, DbRead, DbWrite,
+    IndexedBlockExt, SpentOutputExt, TxOutSetExt,
 };
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    AbsoluteChainWork, BlockHash, BlockHeaderData, CommitmentTreeData, CompactOrchardAction,
-    CompactSaplingSpend, CompactTxData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList,
-    Outpoint, SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx,
-    TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
+    AbsoluteChainWork, BlockHash, BlockHeaderData, CommitmentTreeData, CompactTxData, Height,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    TransactionHash, TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation,
+    TxOutCompact, TxidList, GENESIS_HEIGHT,
 };
 use crate::{config::StoreSettings, error::StoreError};
 /// How a caller names a block when asking this backend to resolve it.
@@ -77,7 +77,8 @@ pub(crate) mod read_core;
 pub(crate) mod write_core;
 
 pub(crate) mod block_core;
-pub(crate) mod block_shielded;
+#[cfg(test)]
+mod block_shielded;
 pub(crate) mod block_transparent;
 
 pub(crate) mod compact_block;
@@ -190,7 +191,7 @@ pub(super) const PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duratio
 /// `env.sync(true)` durability checkpoints.
 ///
 /// This governs the durability-sync cadence of the **per-block steady-state append**
-/// ([`DbWrite::write_block`]): it commits frequently but, under
+/// ([`DbV1::write_block`]): it commits frequently but, under
 /// `MDB_NOSYNC`, force an `env.sync(true)` only every `SYNC_CHECKPOINT_INTERVAL` committed
 /// writes/heights. (The separate **bulk catch-up** path batches differently — by the
 /// `sync_write_batch_size` byte budget, a block-count cap, and the wall-clock

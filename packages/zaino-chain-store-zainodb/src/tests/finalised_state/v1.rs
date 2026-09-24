@@ -8,7 +8,7 @@ use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 use crate::codec::DbCodec as _;
-use crate::store::capability::{BlockCoreExt as _, BlockShieldedExt as _, DbMetadata, DbRead as _};
+use crate::store::capability::{BlockCoreExt as _, DbMetadata, DbRead as _};
 use crate::store::finalised_source::v1::{schema, DbV1, METADATA_KEY};
 use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
@@ -473,29 +473,6 @@ async fn a_dense_point_read_does_not_look_up_the_tip() {
         db.tip_lookups() - before,
         0,
         "a point read on a dense table must not open a second transaction for the tip"
-    );
-}
-
-/// A sparse-table range read validates the range once, not once per height on top of that.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_sparse_range_read_looks_up_the_tip_once() {
-    init_tracing();
-    let blocks = load_test_vectors().unwrap().blocks;
-    let (_temp_dir, config) = temporary_store_settings();
-    let db = DbV1::spawn(&config).await.expect("a fresh database opens");
-    crate::tests::fixtures::sync_db_with_blockdata(&db, &blocks, Some(5)).await;
-
-    let before = db.tip_lookups();
-    let lists = db
-        .get_block_range_ironwood(Height(0), Height(4))
-        .await
-        .expect("a stored range reads");
-
-    assert_eq!(lists.len(), 5, "one entry per requested height");
-    assert_eq!(
-        db.tip_lookups() - before,
-        1,
-        "the range is validated once; each height then reads its own row only"
     );
 }
 

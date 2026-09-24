@@ -11,7 +11,7 @@
 //! - Transaction types: TransactionHash, CompactTxData, TransparentCompactTx, etc.
 //! - Address types: AddrScript, Outpoint, AddrHistRecord, etc.
 //! - Shielded types: SaplingCompactTx, OrchardCompactTx, etc.
-//! - Primitives: Height, AbsoluteChainWork, ShardIndex, etc.
+//! - Primitives: Height, AbsoluteChainWork, etc.
 //!
 //! ## Helper Types
 //! Non-database types for in-memory operations and conversions:

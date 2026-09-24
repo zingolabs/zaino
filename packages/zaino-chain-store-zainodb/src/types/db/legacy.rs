@@ -475,33 +475,6 @@ impl FixedEncodedLen for Height {
     const ENCODED_LEN: usize = 4;
 }
 
-/// Numerical index of subtree / shard roots.
-///
-/// NOTE: Encoded as 4-byte big-endian byte-string to ensure height ordering
-/// for keys in Lexicographically sorted B-Tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct ShardIndex(pub u32);
-
-impl DbCodec for ShardIndex {
-    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        // Index must sort lexicographically - write **big-endian**
-        write_u32_be(w, self.0)
-    }
-
-    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
-        let raw = read_u32_be(r)?;
-        Ok(ShardIndex(raw))
-    }
-}
-
-/// Fixed-length encoding metadata for `ShardIndex`.
-///
-/// The record consists of a single 4-byte big-endian u32.
-impl FixedEncodedLen for ShardIndex {
-    const ENCODED_LEN: usize = 4;
-}
-
 /// A 20-byte hash160 *plus* a 1-byte ScriptType tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
@@ -2016,10 +1989,8 @@ impl FixedEncodedLen for AddrHistRecord {
 ///
 /// Note when flag is set to IS_INPUT, vout is actually the index of the input event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct AddrEventBytes([u8; 17]);
 
-#[allow(dead_code)]
 impl AddrEventBytes {
     const LEN: usize = 17;
 
@@ -2034,7 +2005,6 @@ impl AddrEventBytes {
 
     /// Create an [`AddrEventBytes`] from an [`AddrHistRecord`],
     /// returning an I/O error if any write fails.
-    #[allow(dead_code)]
     pub fn from_record(rec: &AddrHistRecord) -> io::Result<Self> {
         let mut buf = [0u8; Self::LEN];
         let mut c = Cursor::new(&mut buf[..]);
@@ -2050,7 +2020,7 @@ impl AddrEventBytes {
 
     /// Create an [`AddrHistRecord`] from an [`AddrEventBytes`],
     /// returning an I/O error if any read fails or data is invalid.
-    #[allow(dead_code)]
+    #[cfg(feature = "transparent_address_history_experimental")]
     pub(crate) fn as_record(&self) -> io::Result<AddrHistRecord> {
         let mut c = Cursor::new(&self.0[..]);
 
@@ -2094,83 +2064,6 @@ impl DbCodec for AddrEventBytes {
 /// ```
 impl FixedEncodedLen for AddrEventBytes {
     const ENCODED_LEN: usize = 17;
-}
-
-// *** Sharding ***
-//
-// # Dead schema
-//
-// `ShardIndex` and `ShardRoot` have encoders, fixed-length metadata and pinned
-// golden vectors, and nothing else. There is no LMDB table for them, no reader
-// and no writer, and neither appears in `schema::canonical_encodings` — so no database has
-// ever held one, and deleting them would not change the schema hash.
-//
-// They were groundwork for serving subtree roots (`GetSubtreeRoots`) from a
-// local index instead of passing the query to the validator, which is what
-// happens today. Kept rather than deleted because removing a persisted type is
-// a one-way door for anyone part-way through building that; if the intent has
-// been abandoned, they should go.
-
-/// Root commitment for a state shard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct ShardRoot {
-    /// Shard commitment tree root (256-bit digest)
-    hash: [u8; 32],
-    /// Hash of the final block in this shard
-    final_block_hash: [u8; 32],
-    /// Height of the final block in this shard
-    final_block_height: u32,
-}
-
-impl ShardRoot {
-    /// Creates a new ShardRoot instance.
-    pub fn new(hash: [u8; 32], final_block_hash: [u8; 32], final_block_height: u32) -> Self {
-        Self {
-            hash,
-            final_block_hash,
-            final_block_height,
-        }
-    }
-
-    /// Returns commitment tree root.
-    pub fn hash(&self) -> &[u8; 32] {
-        &self.hash
-    }
-
-    /// Returns the hash of the final block in this shard.
-    pub fn final_block_hash(&self) -> &[u8; 32] {
-        &self.final_block_hash
-    }
-
-    /// Returns the Height of the final block in this shard.
-    pub fn final_block_height(&self) -> u32 {
-        self.final_block_height
-    }
-}
-
-impl DbCodec for ShardRoot {
-    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_fixed_le::<32, _>(&mut w, &self.hash)?;
-        write_fixed_le::<32, _>(&mut w, &self.final_block_hash)?;
-        write_u32_le(&mut w, self.final_block_height)
-    }
-
-    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let hash = read_fixed_le::<32, _>(&mut r)?;
-        let final_block_hash = read_fixed_le::<32, _>(&mut r)?;
-        let final_block_height = read_u32_le(&mut r)?;
-        Ok(ShardRoot::new(hash, final_block_hash, final_block_height))
-    }
-}
-
-/// Fixed-length encoding metadata for `ShardRoot`.
-///
-/// The record consists of a 32 byte hash + 32 byte hash + 4 byte block height
-impl FixedEncodedLen for ShardRoot {
-    const ENCODED_LEN: usize = 68;
 }
 
 // *** Wrapper Objects ***

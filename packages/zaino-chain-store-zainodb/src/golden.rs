@@ -48,7 +48,7 @@ use std::fmt::Debug;
 use crate::codec::{DbCodec, FixedEncodedLen};
 use crate::store::finalised_source::v1::schema;
 use crate::store::finalised_source::v1::schema::canonical;
-use crate::types::{ScriptType, ShardIndex, ShardRoot};
+use crate::types::ScriptType;
 
 /* ─────────────────────────────── assertions ─────────────────────────────── */
 
@@ -103,22 +103,6 @@ fn assert_fixed_len<T: DbCodec + FixedEncodedLen + Debug>(name: &str, value: &T)
     );
 }
 
-/* ────────────────────────── out-of-schema fixtures ────────────────────────── */
-//
-// Every type the finalised store persists takes its fixture from
-// `schema::canonical`, which also feeds the schema hash. The shard types have
-// an encoding but no table, so their fixtures live here.
-
-/// A shard index fixture.
-fn shard_index() -> ShardIndex {
-    ShardIndex(1_234)
-}
-
-/// A shard root fixture with a distinct repeated byte per hash field.
-fn shard_root() -> ShardRoot {
-    ShardRoot::new([0xf0; 32], [0xf1; 32], 123_456)
-}
-
 /* ──────────────────────────────── goldens ──────────────────────────────── */
 
 #[test]
@@ -136,8 +120,6 @@ fn primitive_goldens() {
     // Height is big-endian on purpose: heights are B-tree keys, and
     // lexicographic key order has to match numeric order.
     assert_golden("Height", &canonical::height(), "0001e240");
-    // ShardIndex, same reason.
-    assert_golden("ShardIndex", &shard_index(), "000004d2");
     assert_golden(
         "AddrScript",
         &canonical::addr_script(),
@@ -150,11 +132,6 @@ fn primitive_goldens() {
     );
     assert_golden("ScriptType", &ScriptType::NonStandard, "ff");
     assert_golden("TxLocation", &canonical::tx_location(), "0001e2400009");
-    assert_golden(
-        "ShardRoot",
-        &shard_root(),
-        "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f140e20100",
-    );
 }
 
 #[test]
@@ -307,7 +284,6 @@ fn fixed_lengths_match_the_encoder() {
     assert_fixed_len("BlockHash", &canonical::block_hash());
     assert_fixed_len("TransactionHash", &canonical::transaction_hash());
     assert_fixed_len("Height", &canonical::height());
-    assert_fixed_len("ShardIndex", &shard_index());
     assert_fixed_len("AddrScript", &canonical::addr_script());
     assert_fixed_len("Outpoint", &canonical::outpoint());
     assert_fixed_len("ScriptType", &ScriptType::NonStandard);
@@ -322,7 +298,6 @@ fn fixed_lengths_match_the_encoder() {
         "AddrEventBytes",
         &canonical::addr_event_bytes().expect("pack"),
     );
-    assert_fixed_len("ShardRoot", &shard_root());
     assert_fixed_len("CommitmentTreeSizes", &canonical::commitment_tree_sizes());
     assert_fixed_len(
         "FinalisedTxOutSetInfoAccumulator",

@@ -14,18 +14,6 @@ impl BlockTransparentExt for DbV1 {
         self.get_transparent(tx_location).await
     }
 
-    async fn get_block_transparent(&self, height: Height) -> Result<TransparentTxList, StoreError> {
-        self.get_block_transparent(height).await
-    }
-
-    async fn get_block_range_transparent(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<TransparentTxList>, StoreError> {
-        self.get_block_range_transparent(start, end).await
-    }
-
     async fn get_previous_output(&self, outpoint: Outpoint) -> Result<TxOutCompact, StoreError> {
         tokio::task::block_in_place(|| self.get_previous_output_blocking(outpoint))
     }
@@ -107,29 +95,6 @@ impl DbV1 {
 
             Ok(Some(TransparentCompactTx::from_bytes(slice)?))
         })
-    }
-
-    /// Fetch block transparent transaction data by height.
-    async fn get_block_transparent(&self, height: Height) -> Result<TransparentTxList, StoreError> {
-        self.read_row_at_height(self.transparent, "transparent", height)
-            .await?
-            .ok_or_else(|| StoreError::DataUnavailable("transparent data missing from db".into()))
-    }
-
-    /// Fetches block transparent tx data for the given height range.
-    ///
-    /// Uses cursor based fetch.
-    ///
-    ///  NOTE: Currently this method only fetches ranges where start_height <= end_height,
-    ///       This could be updated by following the cursor step example in
-    ///       get_compact_block_streamer.
-    async fn get_block_range_transparent(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<TransparentTxList>, StoreError> {
-        self.scan_rows(self.transparent, "transparent", start, end)
-            .await
     }
 
     // *** Internal DB methods ***
