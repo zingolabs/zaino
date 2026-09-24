@@ -6181,8 +6181,6 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "which",
- "zebra-chain",
- "zebra-state",
 ]
 
 [[package]]

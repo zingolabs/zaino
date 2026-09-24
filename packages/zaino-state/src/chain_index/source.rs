@@ -71,8 +71,8 @@ use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
 };
+use zaino_primitives::types::HashOrHeight;
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
-use zebra_state::HashOrHeight;
 
 #[cfg(test)]
 pub(crate) mod mockchain_source;

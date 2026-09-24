@@ -21,6 +21,7 @@ use zaino_chain_store::{
 use zaino_primitives::types::BlockTxPosition;
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 
+use crate::chain_index::chain_head::local_height;
 use crate::chain_index::types::{IndexedBlock, Outpoint, TransactionHash};
 use crate::error::ChainIndexError;
 
@@ -51,11 +52,6 @@ fn absent<T>(result: Result<Option<T>, ChainStoreError>) -> Result<Option<T>, Ch
 /// a second thing to keep in step.
 pub(super) fn domain_height(height: crate::Height) -> Option<zaino_primitives::types::Height> {
     crate::chain_index::chain_head::domain_height(height)
-}
-
-/// The domain's height, as this crate names it.
-fn local_height(height: zaino_primitives::types::Height) -> crate::Height {
-    crate::Height(u32::from(height))
 }
 
 /// The height of `hash`, or `None` if the store does not hold that block.

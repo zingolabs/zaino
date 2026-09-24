@@ -13,10 +13,10 @@ use tokio::time::Duration;
 use tokio_stream::StreamExt as _;
 use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
+use zaino_primitives::types::HashOrHeight;
 use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_rpc::methods::GetBlock;
-use zebra_state::HashOrHeight;
 
 /// Polls the indexer's nonfinalized-state snapshot until its best-tip height
 /// equals `expected`, or panics after a 10 s budget.
@@ -1029,7 +1029,9 @@ async fn z_get_block() {
     let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let id = HashOrHeight::Height(
+            zaino_primitives::types::Height::try_from(height).expect("a vector height is in range"),
+        );
         let expected_block = mockchain.get_block(id).await.unwrap().unwrap();
 
         // Verbosity 0: the raw serialized block round-trips to the stored block.
@@ -1075,7 +1077,9 @@ async fn get_block_header() {
     let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let id = HashOrHeight::Height(
+            zaino_primitives::types::Height::try_from(height).expect("a vector height is in range"),
+        );
         let block = mockchain.get_block(id).await.unwrap().unwrap();
         let hash = block.hash().to_string();
 
@@ -1112,7 +1116,9 @@ async fn get_block_deltas() {
 
     let mut saw_delta_entries = false;
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let id = HashOrHeight::Height(
+            zaino_primitives::types::Height::try_from(height).expect("a vector height is in range"),
+        );
         let block = mockchain.get_block(id).await.unwrap().unwrap();
         let hash = block.hash().to_string();
 

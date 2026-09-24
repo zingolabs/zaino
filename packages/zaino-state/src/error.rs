@@ -84,6 +84,10 @@ pub enum NodeBackedIndexerServiceError {
     #[error("Serialization error: {0}")]
     SerializationError(#[from] zebra_chain::serialization::SerializationError),
 
+    /// A block hash or height string that names no block.
+    #[error("Serialization error: {0}")]
+    HashOrHeightParseError(#[from] zaino_primitives::types::HashOrHeightParseError),
+
     /// Integer conversion error.
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
@@ -177,6 +181,9 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
             }
             NodeBackedIndexerServiceError::TonicStatusError(err) => err,
             NodeBackedIndexerServiceError::SerializationError(err) => {
+                tonic::Status::internal(format!("Serialization error: {err}"))
+            }
+            NodeBackedIndexerServiceError::HashOrHeightParseError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
             }
             NodeBackedIndexerServiceError::TryFromIntError(err) => {

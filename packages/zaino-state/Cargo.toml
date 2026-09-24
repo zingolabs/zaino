@@ -43,7 +43,6 @@ sapling-crypto = "0.7"
 
 # Zebra
 zebra-chain = { workspace = true }
-zebra-state = { workspace = true }
 zebra-rpc = { workspace = true }
 
 # Tracing
@@ -101,6 +100,7 @@ proptest.workspace = true
 incrementalmerkletree = "0.8.2"
 rand = "0.10.1"
 zaino-consensus = { workspace = true }
+zebra-state.workspace = true
 
 [build-dependencies]
 whoami = { workspace = true }

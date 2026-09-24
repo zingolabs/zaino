@@ -7,7 +7,7 @@ use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, instrument, warn};
 use zaino_chain_head::ChainHeadSnapshot as _;
-use zebra_state::HashOrHeight;
+use zaino_primitives::types::HashOrHeight;
 
 use zebra_chain::{
     block::Height, serialization::ZcashDeserialize as _, subtree::NoteCommitmentSubtreeIndex,
@@ -31,14 +31,12 @@ use zaino_proto::proto::{
         PingResponse, RawTransaction, SendResponse, TransparentAddressBlockFilter, TreeState,
         TxFilter,
     },
-    utils::{
-        blockid_to_hashorheight, compact_block_to_nullifiers, PoolTypeFilter,
-        ValidatedBlockRangeRequest,
-    },
+    utils::{compact_block_to_nullifiers, PoolTypeFilter, ValidatedBlockRangeRequest},
 };
 
 use crate::{
-    chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
+    chain_index::chain_head::{self, WithChainHeadSource},
+    chain_index::chain_store::WithChainStoreSource,
     ChainIndex, MapBackedSnapshot, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
@@ -335,6 +333,19 @@ fn compact_tx_to_proto(
 /// The tips it reports are the branches the chain head itself retains, which
 /// is what makes the answer consistent with every other query served from the
 /// same snapshot.
+/// The block a lightwalletd `BlockId` names: its hash when it carries 32 bytes, else its height, or `None` when neither is valid.
+fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
+    match <[u8; 32]>::try_from(block_id.hash) {
+        Ok(hash) => Some(HashOrHeight::Hash(
+            zaino_primitives::types::BlockHash::from(hash),
+        )),
+        Err(_) => u32::try_from(block_id.height)
+            .ok()
+            .and_then(|height| zaino_primitives::types::Height::try_from(height).ok())
+            .map(HashOrHeight::Height),
+    }
+}
+
 pub(crate) fn chain_tips_for_snapshot(
     snapshot: &Arc<MapBackedSnapshot>,
 ) -> Vec<zaino_primitives::types::rpc::ChainTip> {
@@ -862,7 +873,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         let block_data = match hash_or_height_struct {
             HashOrHeight::Hash(hash) => self
                 .indexer
-                .get_indexed_block_by_hash(&snapshot, &hash.into())
+                .get_indexed_block_by_hash(&snapshot, &chain_head::local_hash(hash))
                 .await?
                 .ok_or(
                     #[allow(deprecated)]
@@ -873,7 +884,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
                 )?,
             HashOrHeight::Height(height) => self
                 .indexer
-                .get_indexed_block_by_height(&snapshot, &height.into())
+                .get_indexed_block_by_height(&snapshot, &chain_head::local_height(height))
                 .await?
                 .ok_or(
                     #[allow(deprecated)]
@@ -1225,9 +1236,13 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
 
         let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
-            HashOrHeight::Height(height) => height.0,
+            HashOrHeight::Height(height) => u32::from(height),
             HashOrHeight::Hash(hash) => {
-                match self.indexer.get_block_height(&snapshot, hash.into()).await {
+                match self
+                    .indexer
+                    .get_block_height(&snapshot, chain_head::local_hash(hash))
+                    .await
+                {
                     Ok(Some(height)) => height.0,
                     Ok(None) => {
                         return Err(NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
@@ -1261,7 +1276,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             Ok(None) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1277,7 +1292,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             Err(e) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1310,9 +1325,13 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
         )?;
         let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
-            HashOrHeight::Height(height) => height.0,
+            HashOrHeight::Height(height) => u32::from(height),
             HashOrHeight::Hash(hash) => {
-                match self.indexer.get_block_height(&snapshot, hash.into()).await {
+                match self
+                    .indexer
+                    .get_block_height(&snapshot, chain_head::local_hash(hash))
+                    .await
+                {
                     Ok(Some(height)) => height.0,
                     Ok(None) => {
                         return Err(NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
@@ -1343,7 +1362,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             Ok(None) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1352,7 +1371,8 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
                         ))
                     }
                     HashOrHeight::Height(height)
-                        if height > self.data.network().sapling_activation_height() =>
+                        if u32::from(height)
+                            > self.data.network().sapling_activation_height().0 =>
                     {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
@@ -1369,7 +1389,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             Err(e) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1378,7 +1398,8 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
                         ))
                     }
                     HashOrHeight::Height(height)
-                        if height > self.data.network().sapling_activation_height() =>
+                        if u32::from(height)
+                            > self.data.network().sapling_activation_height().0 =>
                     {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(

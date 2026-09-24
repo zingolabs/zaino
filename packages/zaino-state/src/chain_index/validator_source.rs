@@ -30,10 +30,10 @@
 
 use std::sync::Arc;
 
+use zaino_primitives::types::HashOrHeight;
 use zaino_source::QueryError;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zebra_rpc::methods::ValidateAddresses as _;
-use zebra_state::HashOrHeight;
 
 use super::source::{BlockchainSource, BlockchainSourceError, BlockchainSourceResult};
 use super::source_ports::ChainIndexSourcePorts;
@@ -200,14 +200,6 @@ fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> Blockch
 /// Not a legacy full-node legacy code: the legacy full node implements every method Zaino forwards, so
 /// this only arises when the backing validator is not the legacy full node.
 const METHOD_NOT_FOUND: i64 = -32601;
-
-/// A domain height from a zebra one, rejecting values the protocol disallows.
-fn height(
-    h: zebra_chain::block::Height,
-) -> Result<zaino_primitives::types::Height, BlockchainSourceError> {
-    zaino_primitives::types::Height::try_from(h.0)
-        .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))
-}
 
 /// A domain block hash from a zebra one. Same internal byte order on both
 /// sides; the display-order reversal happens in the adapters, below this layer.
@@ -467,12 +459,12 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         // A missing block is `None` here, not an error: that is what the
         // scaffolding's callers expect.
         let bytes = match id {
-            HashOrHeight::Height(h) => match self.validator.get_raw_block(height(h)?).await {
+            HashOrHeight::Height(h) => match self.validator.get_raw_block(h).await {
                 Ok(bytes) => bytes,
                 Err(QueryError::Domain(_)) => return Ok(None),
                 Err(e) => return Err(err(e)),
             },
-            HashOrHeight::Hash(h) => match self.validator.get_raw_block_by_hash(hash(h)).await {
+            HashOrHeight::Hash(h) => match self.validator.get_raw_block_by_hash(h).await {
                 Ok(bytes) => bytes,
                 Err(QueryError::Domain(_)) => return Ok(None),
                 Err(e) => return Err(err(e)),
@@ -651,16 +643,8 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         // Verbosity 0 is the serialized block and nothing else, which is what
         // the raw port already serves.
         let raw = match hash_or_height {
-            HashOrHeight::Height(h) => self
-                .validator
-                .get_raw_block(height(h)?)
-                .await
-                .map_err(err)?,
-            HashOrHeight::Hash(h) => self
-                .validator
-                .get_raw_block_by_hash(hash(h))
-                .await
-                .map_err(err)?,
+            HashOrHeight::Height(h) => self.validator.get_raw_block(h).await.map_err(err)?,
+            HashOrHeight::Hash(h) => self.validator.get_raw_block_by_hash(h).await.map_err(err)?,
         };
 
         if verbosity == 0 {
@@ -1119,19 +1103,16 @@ mod tests {
         assert_eq!(<[u8; 32]>::from(hash(zebra)), ASYMMETRIC);
     }
 
-    /// The domain height type enforces the protocol maximum; this crate's zebra
-    /// heights do not. The boundary is where an impossible height has to be
-    /// caught rather than silently truncated.
+    /// A height above the protocol maximum is caught at the boundary rather than silently truncated.
     #[test]
     fn heights_cross_the_boundary_and_reject_impossible_values() {
-        let ok = height(zebra_chain::block::Height(1_234_567)).expect("within range");
+        let ok = domain_height(1_234_567).expect("within range");
         assert_eq!(u32::from(ok), 1_234_567);
 
         assert!(
-            height(zebra_chain::block::Height(u32::MAX)).is_err(),
+            domain_height(u32::MAX).is_err(),
             "a height above the protocol maximum must not cross silently"
         );
-        assert!(domain_height(u32::MAX).is_err());
     }
 
     /// A domain rejection and a transport fault are different facts. The
