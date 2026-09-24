@@ -7,12 +7,12 @@ use std::future::Future;
 use futures::stream::BoxStream;
 
 use zaino_core::{
-    MempoolTx, PassthroughAnswer, PassthroughQuery, ReportedUpgrade, ServiceabilityManifest,
-    TipEvent, TransactionId,
+    MempoolTx, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, ReportedUpgrade,
+    ServiceabilityManifest, TipEvent, TransactionId,
 };
 
 use crate::bundle::ChainSegment;
-use crate::error::{BroadcastRejection, ReadError, Transient};
+use crate::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 
 /// Pin the current view into a [`ChainSegment`].
 ///
@@ -36,6 +36,31 @@ pub trait TipSubscribe: Send + Sync {
 /// Tip-tagged mempool stream, independent of chain-tip changes (ADR-0001).
 pub trait MempoolSubscribe: Send + Sync {
     fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx>;
+}
+
+/// Live reads of individual mempool transactions, keyed by the txids a
+/// [`MempoolSubscribe`] listing yields.
+///
+/// Separate from the snapshot's confirmed transaction read: the mempool is not
+/// part of any pinned chain view, so these are answered live (unpinned) from the
+/// same source that supplies the listing — never from a finalised secondary,
+/// which holds no mempool. A transaction that left the mempool between listing
+/// and fetch is a race, reported as `Ok(None)`, not a failure.
+pub trait MempoolContent: Send + Sync {
+    /// The raw bytes of one mempool transaction, or `None` if it is no longer in
+    /// the mempool.
+    fn mempool_raw_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, MempoolReadError>> + Send;
+
+    /// The compact projection of one mempool transaction, or `None` if it is no
+    /// longer in the mempool. The projection is the source's concern (it needs
+    /// the validator's chain library); the serving layer only forwards it.
+    fn mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<Output = Result<Option<PreIndexCompactTx>, MempoolReadError>> + Send;
 }
 
 /// Submit a transaction. Bytes in: a tx to relay is opaque to the engine — the

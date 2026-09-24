@@ -5,9 +5,9 @@
 //! read-set is wired — compact blocks (`GetLatestBlock`/`GetBlock`/
 //! `GetBlockRange`), treestate + subtree roots, transactions, transparent
 //! address reads, and the nullifier-populated variants — plus `GetLightdInfo`,
-//! `SendTransaction`, and `Ping`. Only the mempool methods (`GetMempoolTx`,
-//! `GetMempoolStream`) return `Status::unimplemented`: the engine exposes no
-//! mempool bytes to stream. Implemented on a wrapper (not `LightServe` itself) so
+//! `SendTransaction`, `Ping`, and the mempool passthrough (`GetMempoolTx` /
+//! `GetMempoolStream`). Every method of the generated (fixed lightwalletd)
+//! contract is now served. Implemented on a wrapper (not `LightServe` itself) so
 //! the handler stays a pure profile handler and there is no inherent/trait
 //! method-name clash.
 
@@ -61,11 +61,6 @@ fn to_status(err: ServeError) -> Status {
         ServeError::Unavailable(t) => Status::unavailable(t.to_string()),
         ServeError::Internal(msg) => Status::internal(msg),
     }
-}
-
-/// The single message for a method whose handler is not built yet.
-fn unimplemented(method: &str) -> Status {
-    Status::unimplemented(format!("{method} not served yet"))
 }
 
 /// Wire -> domain for a block reference: a 32-byte hash if present, else the
@@ -150,7 +145,9 @@ fn subtree_roots_query_from_wire(
 /// validator's job on the passthrough read.
 fn transparent_address_from_wire(address: String) -> Result<TransparentAddress, Status> {
     if address.is_empty() {
-        return Err(Status::invalid_argument("transparent address must not be empty"));
+        return Err(Status::invalid_argument(
+            "transparent address must not be empty",
+        ));
     }
     Ok(TransparentAddress::new(address))
 }
@@ -419,16 +416,21 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         Ok(Response::new(stream.boxed()))
     }
 
-    // --- not served: no backing mempool capability (Engine's mempool
-    // subscription is an empty-stream stub, and `MempoolTx` carries only a txid,
-    // not the compact/raw bytes these stream) ---
+    // --- wired: mempool passthrough ---
 
     type GetMempoolTxStream = ServerStream<CompactTx>;
     async fn get_mempool_tx(
         &self,
-        _r: Request<GetMempoolTxRequest>,
+        r: Request<GetMempoolTxRequest>,
     ) -> Result<Response<Self::GetMempoolTxStream>, Status> {
-        Err(unimplemented("get_mempool_tx"))
+        let exclude = r.into_inner().exclude_txid_suffixes;
+        let txs = self
+            .handler
+            .get_mempool_tx(exclude)
+            .await
+            .map_err(to_status)?;
+        let stream = futures::stream::iter(txs.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
 
     type GetMempoolStreamStream = ServerStream<RawTransaction>;
@@ -436,7 +438,9 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         &self,
         _r: Request<Empty>,
     ) -> Result<Response<Self::GetMempoolStreamStream>, Status> {
-        Err(unimplemented("get_mempool_stream"))
+        let txs = self.handler.get_mempool_stream().await.map_err(to_status)?;
+        let stream = futures::stream::iter(txs.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
 
     type GetSubtreeRootsStream = ServerStream<SubtreeRoot>;

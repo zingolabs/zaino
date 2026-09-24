@@ -7,8 +7,8 @@
 
 use zaino_core::{
     AddressBalance, BlockId, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier,
-    OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot, TransactionLocation,
-    TransparentInput, TransparentOutput, Treestate, Utxo,
+    OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot,
+    TransactionLocation, TransparentInput, TransparentOutput, Treestate, Utxo,
 };
 use zaino_proto::proto::compact_formats as cf;
 use zaino_proto::proto::service as proto;
@@ -174,10 +174,11 @@ fn index_as_u64(index: usize) -> u64 {
     u64::try_from(index).expect("a block's tx count fits u64")
 }
 
-/// One compact transaction. `index` is its position within the block. The
-/// transparent, shielded, and ironwood components each map to their wire shape;
-/// `fee` is left unset (0) — a stateless index cannot compute it.
-fn compact_tx_to_wire(index: u64, tx: PreIndexCompactTx) -> cf::CompactTx {
+/// One compact transaction. `index` is its position within the block (or, for a
+/// mempool listing, within the stream). The transparent, shielded, and ironwood
+/// components each map to their wire shape; `fee` is left unset (0) — a stateless
+/// index cannot compute it.
+pub(crate) fn compact_tx_to_wire(index: u64, tx: PreIndexCompactTx) -> cf::CompactTx {
     cf::CompactTx {
         index,
         txid: <[u8; 32]>::from(tx.txid).to_vec(),

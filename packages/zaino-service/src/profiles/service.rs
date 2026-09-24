@@ -6,7 +6,8 @@
 //! depends only on the one it needs.
 
 use crate::controls::{
-    Broadcast, MempoolSubscribe, Passthrough, ReportedUpgrades, TakeSnapshot, TipSubscribe,
+    Broadcast, MempoolContent, MempoolSubscribe, Passthrough, ReportedUpgrades, TakeSnapshot,
+    TipSubscribe,
 };
 use crate::profiles::read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads};
 
@@ -32,11 +33,19 @@ impl<T> WalletLibService for T where
 /// Lightwalletd-compatible serving. `GetLightdInfo` / `Ping` are serving
 /// metadata and belong to the gRPC adapter, not this port.
 pub trait LightServeService:
-    TakeSnapshot<Snapshot: LightWalletReads> + Broadcast + MempoolSubscribe + TipSubscribe
+    TakeSnapshot<Snapshot: LightWalletReads>
+    + Broadcast
+    + MempoolSubscribe
+    + MempoolContent
+    + TipSubscribe
 {
 }
 impl<T> LightServeService for T where
-    T: TakeSnapshot<Snapshot: LightWalletReads> + Broadcast + MempoolSubscribe + TipSubscribe
+    T: TakeSnapshot<Snapshot: LightWalletReads>
+        + Broadcast
+        + MempoolSubscribe
+        + MempoolContent
+        + TipSubscribe
 {
 }
 

@@ -5,8 +5,8 @@ use std::time::Duration;
 use tokio::sync::watch;
 use zaino_primitives::types::{
     rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, Difficulty,
-    Height, OutputIndex, PreIndexCompactBlock, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots,
-    Treestate, Utxo,
+    Height, OutputIndex, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot,
+    TransactionId, TreeRoots, Treestate, Utxo,
 };
 use zaino_source::*;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
@@ -405,6 +405,17 @@ impl OneShotGetRawMempoolTransaction for ZebraValidator {
         txid: TransactionId,
     ) -> Result<Vec<u8>, QueryError<GetRawMempoolTransactionError>> {
         self.rpc.get_raw_mempool_transaction(txid).await
+    }
+}
+
+impl OneShotGetMempoolCompactTransaction for ZebraValidator {
+    async fn get_mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<PreIndexCompactTx, QueryError<GetRawMempoolTransactionError>> {
+        // Mempool-only, like the raw read it projects from: routed to RPC, never
+        // the finalised state, which holds no mempool.
+        self.rpc.get_mempool_compact_transaction(txid).await
     }
 }
 

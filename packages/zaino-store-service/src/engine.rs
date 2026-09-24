@@ -9,16 +9,19 @@
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::ChainView;
-use zaino_source::{GetTreestate, SendRawTransaction};
+use zaino_source::{
+    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction,
+    GetTreestate, SendRawTransaction,
+};
 
 use zaino_core::{
-    MempoolTx, PassthroughAnswer, PassthroughQuery, ReportedUpgrade, ServiceabilityManifest,
-    TipEvent, TransactionId,
+    MempoolTx, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, ReportedUpgrade,
+    ServiceabilityManifest, TipEvent, TransactionId,
 };
-use zaino_service::error::{BroadcastRejection, ReadError, Transient};
+use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::{
-    Broadcast, ChainSegment, CompactBlockRead, IndexerService, MempoolSubscribe, Passthrough,
-    ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
+    Broadcast, ChainSegment, CompactBlockRead, IndexerService, MempoolContent, MempoolSubscribe,
+    Passthrough, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
 };
 
 use crate::remote::RemoteChainView;
@@ -90,12 +93,61 @@ impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static, Src: Send + Sync + '
     }
 }
 
-impl<Fs: Send + Sync + 'static, Nfs: Send + Sync + 'static, Src: Send + Sync + 'static>
-    MempoolSubscribe for Engine<Fs, Nfs, Src>
+impl<Fs, Nfs, Src> MempoolSubscribe for Engine<Fs, Nfs, Src>
+where
+    Fs: Send + Sync + 'static,
+    Nfs: Send + Sync + 'static,
+    Src: GetMempoolTxids + GetMempoolSourceTip + Clone + Send + Sync + 'static,
 {
     fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx> {
-        // Follow-up: wire the mempool handle.
-        stream::empty().boxed()
+        let remote = self.remote.clone();
+        // A snapshot of the mempool delivered as a finite stream: read the
+        // coherence tip and the listing from the one source and tag each txid
+        // with the tip. Passthrough has no live push — the dedicated mempool
+        // component provides continuous updates later, behind this same port. On
+        // any read failure the stream yields nothing rather than an error, per the
+        // infallible `MempoolTx` stream contract.
+        stream::once(async move {
+            match (
+                remote.mempool_source_tip().await,
+                remote.mempool_txids().await,
+            ) {
+                (Ok(tip), Ok(txids)) => {
+                    stream::iter(txids.into_iter().map(move |txid| MempoolTx {
+                        txid,
+                        validated_against: tip,
+                    }))
+                    .left_stream()
+                }
+                _ => stream::empty().right_stream(),
+            }
+        })
+        .flatten()
+        .boxed()
+    }
+}
+
+impl<Fs, Nfs, Src> MempoolContent for Engine<Fs, Nfs, Src>
+where
+    Fs: Send + Sync + 'static,
+    Nfs: Send + Sync + 'static,
+    Src: GetRawMempoolTransaction + GetMempoolCompactTransaction + Send + Sync + 'static,
+{
+    async fn mempool_raw_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Option<Vec<u8>>, MempoolReadError> {
+        // Live passthrough to the mempool's own source — never the finalised
+        // secondary, which holds no mempool. Routing lives in the source adapter.
+        self.remote.raw_mempool_transaction(txid).await
+    }
+
+    async fn mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
+        // Same live passthrough; the compact projection is done in the adapter.
+        self.remote.mempool_compact_transaction(txid).await
     }
 }
 
@@ -143,6 +195,13 @@ impl<Fs, Nfs, Src> IndexerService for Engine<Fs, Nfs, Src>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,
-    Src: GetTreestate + SendRawTransaction + Clone + 'static,
+    Src: GetTreestate
+        + SendRawTransaction
+        + GetMempoolTxids
+        + GetRawMempoolTransaction
+        + GetMempoolCompactTransaction
+        + GetMempoolSourceTip
+        + Clone
+        + 'static,
 {
 }

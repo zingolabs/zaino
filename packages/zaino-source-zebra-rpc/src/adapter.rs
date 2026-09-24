@@ -665,6 +665,41 @@ impl zaino_source::OneShotGetRawMempoolTransaction for ZebraRpcAdapter {
     }
 }
 
+impl zaino_source::OneShotGetMempoolCompactTransaction for ZebraRpcAdapter {
+    async fn get_mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<
+        zaino_primitives::types::PreIndexCompactTx,
+        QueryError<zaino_source::GetRawMempoolTransactionError>,
+    > {
+        // The node exposes no compact-mempool RPC, so fetch the raw bytes
+        // (verbosity 0, exactly as the raw read) and project locally, reusing the
+        // vetted block-transaction converters — never a hand-rolled compact
+        // parser.
+        let params = vec![
+            serde_json::Value::String(txid_to_display_hex(txid)),
+            serde_json::Value::Number(0.into()),
+        ];
+        let raw_bytes: Vec<u8> = self
+            .call_parsed_or_absent(
+                "getrawtransaction",
+                params,
+                parse::parse_raw_transaction,
+                || zaino_source::GetRawMempoolTransactionError::NotFound(txid),
+            )
+            .await?;
+        let zebra_tx: zebra_chain::transaction::Transaction = raw_bytes
+            .zcash_deserialize_into()
+            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+        let transaction = zaino_convert_zebra::transaction_from_zebra(&zebra_tx)
+            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+        Ok(zaino_primitives::types::PreIndexCompactTx::from(
+            &transaction,
+        ))
+    }
+}
+
 impl zaino_source::OneShotGetMempoolSourceTip for ZebraRpcAdapter {
     async fn get_mempool_source_tip(
         &self,

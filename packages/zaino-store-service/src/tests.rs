@@ -6,9 +6,13 @@
 //! [`ValidatorClient`] decorator exactly as the root injects it. No cluster, no
 //! validator; the routing is deterministic.
 
+use futures::stream::StreamExt;
 use zaino_chainview::testing::StubNonFinalised;
 use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
-use zaino_service::{AddressRead, Broadcast, RawTransactionRead, TakeSnapshot, TreestateRead};
+use zaino_service::{
+    AddressRead, Broadcast, MempoolContent, MempoolSubscribe, RawTransactionRead, TakeSnapshot,
+    TreestateRead,
+};
 use zaino_source::mock::MockChain;
 use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
 
@@ -90,6 +94,39 @@ async fn broadcast_maps_malformed_bytes_to_malformed() {
         Err(BroadcastRejection::Malformed(reason)) => assert_eq!(reason, "not a tx"),
         other => panic!("expected a Malformed rejection, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn mempool_raw_transaction_maps_a_missing_txid_to_none() {
+    // The mock reports the txid absent (the listing/fetch race); the passthrough
+    // maps that domain miss to `Ok(None)`, never a failure.
+    let engine = engine_with(MockChain::new());
+    let answer = engine
+        .mempool_raw_transaction(TransactionId::from([9u8; 32]))
+        .await
+        .expect("a domain miss is a served None, not an error");
+    assert!(answer.is_none());
+}
+
+#[tokio::test]
+async fn subscribe_mempool_over_an_empty_mempool_yields_nothing() {
+    // The mock exposes an empty mempool; the subscription completes with no items
+    // rather than erroring or hanging.
+    let engine = engine_with(MockChain::new());
+    let listing: Vec<_> = engine.subscribe_mempool().collect().await;
+    assert!(listing.is_empty());
+}
+
+#[tokio::test]
+async fn mempool_compact_transaction_maps_a_missing_txid_to_none() {
+    // The mock reports the txid absent; the compact passthrough maps that domain
+    // miss to `Ok(None)`, the same race the raw read handles.
+    let engine = engine_with(MockChain::new());
+    let answer = engine
+        .mempool_compact_transaction(TransactionId::from([9u8; 32]))
+        .await
+        .expect("a domain miss is a served None, not an error");
+    assert!(answer.is_none());
 }
 
 // The acceptance gate for the full light-wallet read-set (#10): the composed

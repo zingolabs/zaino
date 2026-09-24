@@ -7,12 +7,12 @@
 //! not-yet-serviceable chain, and a domain broadcast rejection are three
 //! different wire outcomes, not one fused transport error.
 //!
-//! The handler covers the compact-block serving path (`GetLatestBlock`,
-//! `GetBlock`, `GetBlockRange`, `GetLightdInfo`, `SendTransaction`);
-//! [`GrpcServer`] stands up a real tonic `CompactTxStreamer` server over it
-//! ([`RunLoop`](zaino_component::RunLoop)), serving those and returning
-//! `Status::unimplemented` for the rest of the generated (fixed lightwalletd)
-//! contract until their handler methods exist.
+//! The handler covers the full light-wallet read-set — compact blocks, treestate
+//! and subtree roots, transactions, transparent-address reads, the
+//! nullifier-populated variants — plus `GetLightdInfo`, `SendTransaction`, and the
+//! mempool passthrough (`GetMempoolTx` / `GetMempoolStream`). [`GrpcServer`]
+//! stands up a real tonic `CompactTxStreamer` server over it
+//! ([`RunLoop`](zaino_component::RunLoop)).
 #![forbid(unsafe_code)]
 
 mod error;
@@ -25,7 +25,10 @@ pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};
 
 use futures::stream::{BoxStream, StreamExt};
-use zaino_core::{BlockRef, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress};
+use zaino_core::{
+    BlockRef, Height, HeightRange, MempoolTx, RawTransaction, ShieldedPool, TransactionId,
+    TransactionLocation, TransparentAddress,
+};
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
 use zaino_service::{
@@ -33,7 +36,19 @@ use zaino_service::{
     RawTransactionRead, TreestateRead,
 };
 
-use crate::wire::{to_hex, zat_to_i64, ToWire};
+use crate::wire::{compact_tx_to_wire, to_hex, zat_to_i64, ToWire};
+
+/// Whether a mempool txid should be excluded, given the request's suffix list.
+/// A suffix matches when it is a (non-empty) suffix of the txid's 32 bytes — the
+/// same byte order the served `CompactTx.txid` carries, so the caller's exclude
+/// set and our output agree. An empty suffix is ignored (it would match every
+/// transaction, which is never the intent).
+fn txid_matches_a_suffix(txid: TransactionId, suffixes: &[Vec<u8>]) -> bool {
+    let bytes = <[u8; 32]>::from(txid);
+    suffixes
+        .iter()
+        .any(|suffix| !suffix.is_empty() && bytes.ends_with(suffix))
+}
 
 /// Lightwalletd-compatible handler over a [`LightServeService`] engine.
 #[derive(Clone)]
@@ -259,6 +274,57 @@ impl<S: LightServeService> LightServe<S> {
         Ok(blocks)
     }
 
+    /// `GetMempoolTx`: the compact projections of the mempool transactions the
+    /// caller does not already hold. Live passthrough: the txids come from the
+    /// mempool subscription, each projected to compact by the same source; a txid
+    /// the caller lists in `exclude_txid_suffixes` (matched against the txid's
+    /// bytes) is skipped, as is one dropped between listing and fetch. The stream
+    /// index is the transaction's position in the mempool listing. Pool-type
+    /// pruning (the request's `shielded_protocol` filter) is a later refinement —
+    /// the compact projection already carries only the shielded (and transparent)
+    /// components a wallet scans.
+    pub async fn get_mempool_tx(
+        &self,
+        exclude_txid_suffixes: Vec<Vec<u8>>,
+    ) -> Result<Vec<compact::CompactTx>, ServeError> {
+        let listing: Vec<MempoolTx> = self.engine.subscribe_mempool().collect().await;
+        let mut txs = Vec::new();
+        for (position, entry) in listing.into_iter().enumerate() {
+            if txid_matches_a_suffix(entry.txid, &exclude_txid_suffixes) {
+                continue;
+            }
+            if let Some(compact) = self.engine.mempool_compact_transaction(entry.txid).await? {
+                let index = u64::try_from(position)
+                    .map_err(|e| ServeError::Internal(format!("mempool index overflow: {e}")))?;
+                txs.push(compact_tx_to_wire(index, compact));
+            }
+        }
+        Ok(txs)
+    }
+
+    /// `GetMempoolStream`: the raw transactions currently in the mempool. Live
+    /// passthrough — not pinned to a snapshot, because the mempool is not part of
+    /// any chain view. The txids come from the mempool subscription and each is
+    /// hydrated to raw bytes from the same source; a txid dropped between listing
+    /// and fetch (a race) is skipped. Collected owned so the gRPC layer serves a
+    /// `'static` stream.
+    pub async fn get_mempool_stream(&self) -> Result<Vec<proto::RawTransaction>, ServeError> {
+        let listing: Vec<MempoolTx> = self.engine.subscribe_mempool().collect().await;
+        let mut txs = Vec::with_capacity(listing.len());
+        for entry in listing {
+            if let Some(data) = self.engine.mempool_raw_transaction(entry.txid).await? {
+                txs.push(
+                    RawTransaction {
+                        data,
+                        location: TransactionLocation::Mempool,
+                    }
+                    .to_wire(),
+                );
+            }
+        }
+        Ok(txs)
+    }
+
     /// `SendTransaction`: relay raw bytes. A rejection is a domain answer, so it
     /// rides out in the `SendResponse` (non-zero `error_code`), not as an error.
     pub async fn send_transaction(&self, raw: proto::RawTransaction) -> proto::SendResponse {
@@ -466,10 +532,51 @@ mod tests {
         use zaino_core::{BlockRef, Height};
         let serve = LightServe::new(engine_with_tip(None));
         let block = serve
-            .get_block_nullifiers(BlockRef::Height(Height::try_from(10).expect("valid height")))
+            .get_block_nullifiers(BlockRef::Height(
+                Height::try_from(10).expect("valid height"),
+            ))
             .await
             .expect("served");
         assert!(block.is_none());
+    }
+
+    /// `GetMempoolStream` delegates to the mempool subscription and per-txid
+    /// hydration (the mock serves an empty mempool) and returns no transactions —
+    /// a served answer, not `unimplemented`.
+    #[tokio::test]
+    async fn mempool_stream_delegates_and_serves() {
+        let serve = LightServe::new(engine_with_tip(None));
+        let txs = serve.get_mempool_stream().await.expect("served");
+        assert!(txs.is_empty());
+    }
+
+    /// `GetMempoolTx` delegates to the subscription and the compact hydration (the
+    /// mock serves an empty mempool) and returns no transactions — a served
+    /// answer, not `unimplemented`. The exclude set is accepted.
+    #[tokio::test]
+    async fn mempool_tx_delegates_and_serves() {
+        let serve = LightServe::new(engine_with_tip(None));
+        let txs = serve
+            .get_mempool_tx(vec![vec![0xAAu8; 4]])
+            .await
+            .expect("served");
+        assert!(txs.is_empty());
+    }
+
+    /// The exclude matcher: a non-empty suffix of the txid's bytes excludes it; a
+    /// non-matching suffix does not; an empty suffix never excludes.
+    #[test]
+    fn exclude_matches_a_txid_suffix() {
+        use super::txid_matches_a_suffix;
+        use zaino_core::TransactionId;
+        let mut bytes = [0u8; 32];
+        bytes[30] = 0xBE;
+        bytes[31] = 0xEF;
+        let txid = TransactionId::from(bytes);
+        assert!(txid_matches_a_suffix(txid, &[vec![0xBE, 0xEF]]));
+        assert!(!txid_matches_a_suffix(txid, &[vec![0xDE, 0xAD]]));
+        assert!(!txid_matches_a_suffix(txid, &[Vec::new()]));
+        assert!(!txid_matches_a_suffix(txid, &[]));
     }
 
     /// A successful broadcast returns `error_code == 0` with the txid in hex.
