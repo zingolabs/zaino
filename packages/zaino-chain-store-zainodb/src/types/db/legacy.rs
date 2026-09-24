@@ -7,8 +7,8 @@
 //!
 //! - structs in this module must implement `DbCodec`.
 //!
-//! - structs in this module must never change their encoding without a bump of the
-//!   database schema version.
+//! - structs in this module must never change their encoding without updating their
+//!   golden and the schema hash golden.
 //!
 //! This module is currently in transition from a large monolithic file to well-organized
 //! submodules. The organized types have been moved to focused modules:
@@ -2089,7 +2089,7 @@ impl FixedEncodedLen for AddrEventBytes {
 //
 // `ShardIndex` and `ShardRoot` have encoders, fixed-length metadata and pinned
 // golden vectors, and nothing else. There is no LMDB table for them, no reader
-// and no writer, and neither appears in `db_schema_v1.txt` — so no database has
+// and no writer, and neither appears in `schema::canonical_encodings` — so no database has
 // ever held one, and deleting them would not change the schema hash.
 //
 // They were groundwork for serving subtree roots (`GetSubtreeRoots`) from a

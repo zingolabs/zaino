@@ -3,12 +3,13 @@ Zaino Finalised-State Database Changelog
 
 Format
 ------
-One entry per database version bump (major / minor / patch). Keep entries concise and factual.
+One entry per schema hash change. Keep entries concise and factual. Entries up to
+v1.3.0 predate the computed hash and name a hand-maintained version instead.
 
 Entry template:
 
 --------------------------------------------------------------------------------
-DB VERSION vX.Y.Z (from vA.B.C)
+SCHEMA HASH <first 8 hex digits> (from <previous>)
 Date: YYYY-MM-DD
 --------------------------------------------------------------------------------
 
@@ -40,7 +41,7 @@ API / capabilities
   - Changed: <semantic changes, error mapping changes>
 
 Rebuild
-- Every version bump deletes existing databases on their next start and
+- Every schema hash change deletes existing databases on their next start and
   resyncs them from the validator; there are no migrations.
 
 Bug Fixes / Optimisations
@@ -502,7 +503,7 @@ Behaviour change
   unsupported database version.
 
 --------------------------------------------------------------------------------
-DB VERSION v1.4.0 (from v1.3.0)
+SCHEMA HASH e0757a13, or fccdd24e with address history (from v1.3.0)
 Date: 2026-09-23
 --------------------------------------------------------------------------------
 
@@ -510,11 +511,15 @@ Summary
 - Database migrations are removed. A database whose stored metadata differs
   from the running build's, or cannot be decoded, is deleted and resynced from
   the validator on start. Upgrades and downgrades take the same path.
+- The schema version and the hand-maintained schema text are removed. The
+  store computes its schema hash from the canonical encoding of every stored
+  type, every table name and its flags, the singleton keys, and the enabled
+  index features.
 
 On-disk schema
 - Encoding:
-  - Values: `DbMetadata` drops its `MigrationStatus` field; the body is now
-    `DbVersion` followed by the 32-byte schema hash (45 bytes, was 47).
+  - Values: `DbMetadata` holds only the 32-byte schema hash (32 bytes, was
+    47); `MigrationStatus` and `DbVersion` are gone.
   - Values: every row is stored as its record's own encoding. The
     `StoredEntryFixed` / `StoredEntryVar` wrappers are gone, with their
     wrapper version byte, `StoredEntryVar` length prefix, and 32-byte
@@ -522,16 +527,19 @@ On-disk schema
   - Checksums / validation: none; rows are trusted as written.
   - Records: no record or nested field carries a version tag any more. Every
     key and value is its fields in order, so fixed-width records shrink by
-    one byte per nested record (for example `AddrHistRecord` is 17 bytes,
-    `DbMetadata` 44).
+    one byte per nested record (for example `AddrHistRecord` is 17 bytes).
 - Tables:
-  - No changes. The temporary migration progress keys are no longer written.
+  - Renamed: every table drops its version suffix (`headers_1_0_0` ->
+    `headers`, `ironwood_1_3_0` -> `ironwood`,
+    `tx_out_set_info_accumulator_1_2_0` -> `tx_out_set_info_accumulator`), and
+    `hashes_1_0_0` becomes `heights`, after what it stores.
+  - Removed: the v1.0.0 `commitment_tree_data_1_0_0` table.
+  - The temporary migration progress keys are no longer written.
 
 API / capabilities
-- Removed: `MigrationManager`, `MigrationStatus`, `DbWrite::update_metadata`,
-  the `db_version` configuration value, and `ChainStoreReader::schema`.
-- Changed: `DbVersion::capability` grants capabilities only to this build's own
-  version.
+- Removed: `MigrationManager`, `MigrationStatus`, `DbVersion`,
+  `DbWrite::update_metadata`, the `db_version` configuration value, and
+  `ChainStoreReader::schema`.
 - Removed: the startup integrity scans, the background re-validation loop, the
   on-demand validation of reads, and the merkle-root check at ingest. Blocks
   from the validator are not re-verified; the only write-path check left is

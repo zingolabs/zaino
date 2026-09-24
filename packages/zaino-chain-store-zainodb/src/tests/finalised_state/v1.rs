@@ -8,7 +8,7 @@ use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 use crate::store::capability::{DbMetadata, DbRead as _};
-use crate::store::finalised_source::v1::{DB_SCHEMA_V1_HASH, DB_VERSION_V1};
+use crate::store::finalised_source::v1::schema;
 use crate::store::finalised_source::FinalisedSource;
 use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
@@ -339,7 +339,7 @@ async fn a_database_written_by_another_schema_is_rebuilt_empty() {
     assert_eq!(backend.db_height().await.unwrap(), None);
     assert_eq!(
         backend.get_metadata().await.unwrap(),
-        DbMetadata::new(DB_VERSION_V1, DB_SCHEMA_V1_HASH)
+        DbMetadata::new(schema::schema_hash().expect("every canonical record encodes"))
     );
 }
 

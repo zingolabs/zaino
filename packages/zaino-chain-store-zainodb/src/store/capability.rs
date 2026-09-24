@@ -19,14 +19,10 @@
 //! - [`Capability`]: bitflags describing what an *open* database instance can serve.
 //! - [`CapabilityRequest`]: a single-feature request (non-composite) used for routing.
 //!
-//! ## Versioned metadata
-//! - [`DbVersion`]: schema version triple (major/minor/patch) plus a mapping to supported capabilities.
+//! ## Metadata
 //! - [`DbMetadata`]: persisted singleton stored under the fixed key `"metadata"` in the LMDB
-//!   metadata database; includes:
-//!   - `version: DbVersion`
-//!   - `schema_hash: [u8; 32]` (BLAKE2b-256 of schema definition/contract)
-//!
-//! All metadata types in this file implement `DbCodec`, which encodes them without a version tag.
+//!   metadata database. It holds the 32-byte schema hash that the store computes from its
+//!   canonical encodings, tables, and enabled features.
 //!
 //! ## Trait surface
 //! This file defines:
@@ -43,17 +39,6 @@
 //! Extension traits must be capability-gated: if a DB does not advertise the corresponding capability
 //! bit, routing must not hand that backend out for that request.
 //!
-//! # Versioning strategy (practical guidance)
-//!
-//! - `DbVersion::major` is the primary compatibility boundary:
-//!   - v1 is the current schema (chain block data + transparent history).
-//!
-//! - `minor`/`patch` can be used for additive or compatible changes, but only if on-disk encodings
-//!   remain readable and all invariants remain satisfied.
-//!
-//! - `DbVersion::capability()` must remain conservative:
-//!   - only advertise capabilities that are fully correct for that on-disk schema.
-//!
 //! # Development: adding or changing features safely
 //!
 //! When adding a new feature/query that requires new persistent data:
@@ -64,17 +49,15 @@
 //!    - `name()`
 //! 3. Add a new extension trait (or extend an existing one) that expresses the required operations.
 //! 4. Implement the extension trait for the latest DB version(s).
-//! 5. Update `DbVersion::capability()` for the version(s) that support it.
+//! 5. Add the new capability to [`Capability::LATEST`].
 //! 6. Route it through `DbReader` by requesting the new `CapabilityRequest`.
 //!
-//! Changing a persisted metadata format is a schema change: bump `DB_VERSION_V1`, and every
-//! existing database rebuilds.
+//! Changing a persisted format changes the computed schema hash, and every existing database
+//! rebuilds.
 
 use core::fmt;
 
-use crate::codec::{
-    read_fixed_le, read_u32_le, write_fixed_le, write_u32_le, DbCodec, FixedEncodedLen,
-};
+use crate::codec::{read_fixed_le, write_fixed_le, DbCodec, FixedEncodedLen};
 use crate::error::StoreError;
 use crate::stream::CompactBlockStream;
 use crate::support::SendFut;
@@ -103,7 +86,6 @@ bitflags! {
     /// on-disk schema.
     ///
     /// ## How capabilities are used
-    /// - [`DbVersion::capability`] maps a persisted schema version to a conservative capability set.
     /// - [`crate::store::router::Router`] holds a primary and optional ephemeral
     ///   backend and uses masks to decide which backend may serve a given feature.
     /// - [`crate::store::reader::DbReader`] requests capabilities via
@@ -202,8 +184,7 @@ impl Capability {
     /// supported by this build.
     ///
     /// The expected modern baseline for new database instances. It must remain in sync
-    /// with the latest on-disk schema (`DbV1` today, `DbV2` in the future) and with
-    /// [`DbVersion::capability`] for that schema; a test asserts the two agree.
+    /// with the latest on-disk schema (`DbV1` today).
     ///
     /// This arm: address history is compiled in, so a fresh database serves it.
     #[cfg(feature = "transparent_address_history_experimental")]
@@ -331,16 +312,7 @@ impl From<CapabilityRequest> for Capability {
 
 // ***** Database metadata structs *****
 
-/// Persisted database metadata singleton.
-///
-/// This record is stored under the fixed key `"metadata"` in the LMDB metadata database and is used to:
-/// - identify the schema version currently on disk,
-/// - and bind the database to an explicit schema contract (`schema_hash`).
-///
-/// ## Encoding
-/// `DbMetadata` implements [`DbCodec`]. The encoding is:
-/// - one [`DbVersion`],
-/// - a fixed 32-byte schema hash.
+/// The metadata singleton, which records the schema hash of the build that created the database.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 // `pub` (not `pub(crate)`) so it matches the visibility of the `pub` capability
@@ -349,172 +321,32 @@ impl From<CapabilityRequest> for Capability {
 // beyond the crate; it only resolves the rustc-1.96 E0446 private-in-public
 // check on `DbRead::get_metadata`'s signature.
 pub struct DbMetadata {
-    /// Schema version triple for the on-disk database.
-    pub(crate) version: DbVersion,
-
-    /// BLAKE2b-256 hash of the schema definition/contract.
-    ///
-    /// This hash is intended to detect accidental schema drift (layout/type changes) across builds.
-    /// It is not a security boundary; it is a correctness and operator-safety signal.
+    /// The schema hash of the build that created the database.
     pub(crate) schema_hash: [u8; 32],
 }
 
 impl DbMetadata {
-    /// Constructs a metadata record whose `schema_hash` must match the schema contract for `version`.
-    pub(crate) fn new(version: DbVersion, schema_hash: [u8; 32]) -> Self {
-        Self {
-            version,
-            schema_hash,
-        }
-    }
-
-    /// Returns the persisted schema version.
-    pub(crate) fn version(&self) -> DbVersion {
-        self.version
-    }
-
-    /// Returns the schema contract hash.
-    pub(crate) fn schema(&self) -> [u8; 32] {
-        self.schema_hash
+    /// Constructs a metadata record carrying `schema_hash`.
+    pub(crate) fn new(schema_hash: [u8; 32]) -> Self {
+        Self { schema_hash }
     }
 }
 
-/// On-disk encoding for the metadata singleton: the `DbVersion`, then the 32-byte schema hash.
+/// On-disk encoding for the metadata singleton: the 32-byte schema hash.
 impl DbCodec for DbMetadata {
     fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.version.encode(w)?;
         write_fixed_le::<32, _>(w, &self.schema_hash)
     }
 
     fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
-        let version = DbVersion::decode(r)?;
         let schema_hash = read_fixed_le::<32, _>(r)?;
-        Ok(DbMetadata {
-            version,
-            schema_hash,
-        })
+        Ok(DbMetadata { schema_hash })
     }
 }
 
 impl FixedEncodedLen for DbMetadata {
-    /// The record is a `DbVersion` followed by a 32-byte schema hash.
-    const ENCODED_LEN: usize = DbVersion::ENCODED_LEN + 32;
-}
-
-/// Human-readable summary for logs.
-///
-/// The schema hash is abbreviated to the first 4 bytes for readability.
-impl core::fmt::Display for DbMetadata {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "DbMetadata {{ version: {}.{}.{} , schema_hash: 0x",
-            self.version.major(),
-            self.version.minor(),
-            self.version.patch()
-        )?;
-
-        for byte in &self.schema_hash[..4] {
-            write!(f, "{byte:02x}")?;
-        }
-
-        write!(f, "… }}")
-    }
-}
-
-/// Database schema version triple, where any difference from this build's version makes `spawn` rebuild the database.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct DbVersion {
-    /// Major version tag.
-    pub(crate) major: u32,
-    /// Minor version tag.
-    pub(crate) minor: u32,
-    /// Patch tag.
-    pub(crate) patch: u32,
-}
-
-impl DbVersion {
-    /// Construct a new DbVersion.
-    pub(crate) fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
-    }
-
-    /// Returns the major version tag.
-    pub(crate) fn major(&self) -> u32 {
-        self.major
-    }
-
-    /// Returns the minor version tag.
-    pub(crate) fn minor(&self) -> u32 {
-        self.minor
-    }
-
-    /// Returns the patch tag.
-    pub(crate) fn patch(&self) -> u32 {
-        self.patch
-    }
-
-    /// Returns every capability this build serves for its own schema version, and nothing for any other version.
-    pub(crate) fn capability(&self) -> Capability {
-        if *self != super::finalised_source::v1::DB_VERSION_V1 {
-            return Capability::empty();
-        }
-
-        // Address history exists only when compiled in: the reads are behind
-        // the feature, so a build without it cannot serve them.
-        #[cfg(feature = "transparent_address_history_experimental")]
-        let address_history = Capability::TRANSPARENT_HIST_INDEX;
-        #[cfg(not(feature = "transparent_address_history_experimental"))]
-        let address_history = Capability::empty();
-
-        Capability::READ_CORE
-            | Capability::WRITE_CORE
-            | Capability::BLOCK_CORE_EXT
-            | Capability::BLOCK_TRANSPARENT_EXT
-            | Capability::BLOCK_SHIELDED_EXT
-            | Capability::COMPACT_BLOCK_EXT
-            | Capability::CHAIN_BLOCK_EXT
-            | Capability::SPENT_OUTPUT_INDEX
-            | Capability::TXOUT_SET_INDEX
-            | address_history
-    }
-}
-
-/// On-disk encoding for database versions: `major`, `minor` and `patch` as little-endian `u32`s.
-impl DbCodec for DbVersion {
-    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_u32_le(&mut *w, self.major)?;
-        write_u32_le(&mut *w, self.minor)?;
-        write_u32_le(w, self.patch)
-    }
-
-    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
-        let major = read_u32_le(&mut *r)?;
-        let minor = read_u32_le(&mut *r)?;
-        let patch = read_u32_le(r)?;
-        Ok(DbVersion {
-            major,
-            minor,
-            patch,
-        })
-    }
-}
-
-impl FixedEncodedLen for DbVersion {
-    /// The record is three little-endian `u32` values.
-    const ENCODED_LEN: usize = 12;
-}
-
-/// Formats as `{major}.{minor}.{patch}` for logs and diagnostics.
-impl core::fmt::Display for DbVersion {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
+    /// The record is the 32-byte schema hash.
+    const ENCODED_LEN: usize = 32;
 }
 
 // ***** Core Database functionality *****
@@ -1024,59 +856,4 @@ pub trait TxOutSetExt: Send + Sync {
     fn get_tx_out_set_info_accumulator(
         &self,
     ) -> impl SendFut<Result<FinalisedTxOutSetInfoAccumulator, StoreError>>;
-}
-
-#[cfg(test)]
-mod tests {
-    //! Tests for the schema-version → capability mapping.
-
-    use super::{Capability, DbVersion};
-    use crate::store::finalised_source::v1::DB_VERSION_V1;
-
-    /// The current schema version must map to a capability set, not fall
-    /// through to `empty()`.
-    ///
-    /// This is the guard the mapping was missing. `DB_VERSION_V1` was bumped to
-    /// 1.3.0 for Ironwood without a matching arm here, so the current schema
-    /// answered `Capability::empty()` — "this build understands nothing about
-    /// this database". Nothing calls [`DbVersion::capability`] today, which is
-    /// the only reason that was harmless; the moment routing consults it, an
-    /// unmapped current version refuses every read against a perfectly good
-    /// database.
-    ///
-    /// Bumping `DB_VERSION_V1` without extending the mapping fails here.
-    #[test]
-    fn the_current_schema_version_is_mapped() {
-        assert_ne!(
-            DB_VERSION_V1.capability(),
-            Capability::empty(),
-            "DB_VERSION_V1 is {DB_VERSION_V1} but `DbVersion::capability` grants it nothing"
-        );
-        assert_eq!(
-            DB_VERSION_V1.capability(),
-            Capability::LATEST,
-            "the current schema backs every capability this build knows about, so its mapping and \
-             `Capability::LATEST` must agree. If a new version genuinely adds a capability, add the \
-             bit to both."
-        );
-    }
-
-    /// A version this build has never heard of must yield nothing.
-    ///
-    /// Failing closed is the whole safety property of the mapping: a database
-    /// written by a newer Zaino must be refused rather than read with this
-    /// build's assumptions about its layout.
-    #[test]
-    fn an_unknown_schema_version_grants_nothing() {
-        assert_eq!(
-            DbVersion::new(2, 0, 0).capability(),
-            Capability::empty(),
-            "a future major version must fail closed"
-        );
-        assert_eq!(
-            DbVersion::new(1, 99, 0).capability(),
-            Capability::empty(),
-            "an unrecognised minor version must fail closed"
-        );
-    }
 }

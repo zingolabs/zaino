@@ -11,7 +11,7 @@
 //!
 //! 2. **Must implement `DbCodec`**
 //!
-//! 3. **Never change a struct's encoding without bumping the schema version**
+//! 3. **Never change a struct's encoding without updating its golden and the schema hash golden**
 //!    - Every existing database then rebuilds on its next start
 
 pub mod address;

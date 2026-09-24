@@ -70,15 +70,21 @@ the database directory; zainod then resyncs it from the validator.
 
 ## A schema mismatch rebuilds the database
 
-There are no migrations. The `metadata` record holds the schema version and
-schema hash of the build that created the database. When `spawn` finds a record
-that differs from its own, or one it cannot decode, it deletes the database
-directory and resyncs from the validator. Upgrades and downgrades take the same
-path, and the index is derived data, so the rebuild loses nothing.
+There are no migrations. The `metadata` record holds the schema hash of the
+build that created the database. When `spawn` finds a record that differs from
+its own, or one it cannot decode, it deletes the database directory and resyncs
+from the validator. Upgrades and downgrades take the same path, and the index is
+derived data, so the rebuild loses nothing.
 
-Any change to an on-disk encoding therefore bumps `DB_VERSION_V1`, and every
-deployment pays one full rebuild on its next start. A failing golden in
-`golden.rs` is the signal that a change carries that cost.
+The store computes the schema hash; nobody maintains it by hand. The hash
+covers the canonical encoding of every stored type, every table name and its
+flags, the singleton keys, and the enabled index features. A build with
+`transparent_address_history_experimental` therefore has a different hash from
+one without it, and switching the feature rebuilds the database.
+
+Any change to an on-disk encoding changes the hash, and every deployment pays
+one full rebuild on its next start. `golden.rs` pins both the encodings and the
+hash, so a failing golden is the signal that a change carries that cost.
 
 ## The ephemeral backend has two jobs, not one
 

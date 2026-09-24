@@ -16,9 +16,8 @@
 //! # Capability model integration
 //!
 //! Each `FinalisedSource` instance declares its supported [`Capability`] set via `FinalisedSource::capability()`.
-//! This must remain consistent with:
-//! - [`capability::DbVersion::capability()`] (schema version → capability mapping), and
-//! - the extension trait impls in this file (unsupported methods must return `FeatureUnavailable`).
+//! This must remain consistent with the extension trait impls in this file (unsupported methods
+//! must return `FeatureUnavailable`).
 //!
 //! In particular:
 //! - v1 supports the full current capability set (`Capability::LATEST`), including:
@@ -38,8 +37,8 @@
 //! - a capability bit + extension trait in `capability.rs`,
 //! - and routing via `DbReader` and `Router`.
 //!
-//! A new index changes the schema, so it bumps `DB_VERSION_V1` and every existing database
-//! rebuilds on its next start.
+//! A new index adds a table, so it changes the computed schema hash, and every existing
+//! database rebuilds on its next start.
 //!
 //! Keep unsupported methods explicit: if a DB version does not provide a feature, return
 //! `StoreError::FeatureUnavailable(...)` rather than silently degrading semantics.

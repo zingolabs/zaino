@@ -88,7 +88,7 @@ impl DbV1 {
     async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.metadata, b"metadata") {
+            let raw = match txn.get(self.metadata, &METADATA_KEY) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
                     return Err(StoreError::DataUnavailable(

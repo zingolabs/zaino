@@ -5,9 +5,9 @@
 //! (read, write, metadata, block-range fetchers, compact-block generation, and transparent history).
 //!
 //! ## On-disk layout
-//! The V1 on-disk layout is described by an ASCII schema file that is embedded into the binary at
-//! compile time (`db_schema_v1.txt`). A fixed 32-byte BLAKE2b checksum of that schema description
-//! is stored in / compared against the database metadata to detect accidental schema drift.
+//! The `schema` module lists every table and its flags, and computes a 32-byte BLAKE2b schema
+//! hash from those tables, the canonical encoding of each stored type, and the enabled index
+//! features. The hash is stored in the database metadata; a mismatch on open rebuilds the store.
 //!
 //! ## Trust model
 //! Blocks come from the validator and are not re-verified. The one check on the write path is
@@ -25,7 +25,7 @@ use crate::codec::{CompactSize, DbCodec as _, FixedEncodedLen as _};
 use crate::store::capability::TransparentHistExt;
 use crate::store::capability::{
     BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore, DbMetadata,
-    DbRead, DbVersion, DbWrite, IndexedBlockExt, SpentOutputExt, TxOutSetExt,
+    DbRead, DbWrite, IndexedBlockExt, SpentOutputExt, TxOutSetExt,
 };
 use crate::stream::CompactBlockStream;
 use crate::types::{
@@ -65,9 +65,7 @@ use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 use super::LmdbLifecycle;
 
 use corez::io::{self, Read};
-use lmdb::{
-    Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags,
-};
+use lmdb::{Cursor, Database, Environment, EnvironmentFlags, Transaction as _, WriteFlags};
 use std::collections::HashMap;
 use std::{collections::HashSet, fs, sync::Arc, time::Duration};
 use tokio::time::interval;
@@ -88,65 +86,19 @@ pub(crate) mod transparent_address_history;
 
 pub(crate) mod tx_out_set_accumulator;
 
-// ───────────────────────── Schema v1 constants ─────────────────────────
-
-/// Full V1 schema text file.
-///
-/// This is the exact ASCII description of the V1 on-disk layout embedded into the binary at
-/// compile-time. The path is relative to this source file.
-///
-/// 1. Bring the *exact* ASCII description of the on-disk layout into the binary at compile-time.
-pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
-
-/*
-2. Compute the checksum once, outside the code:
-
-       $ cd packages/zaino-state/src/chain_index/finalised_state/db
-       $ b2sum -l 256 db_schema_v1.txt
-       => [HASH]  db_schema_v1.txt
-
-   Optional helper if you don’t have `b2sum`:
-
-       $ python - <<'PY'
-       > import hashlib, pathlib, binascii
-       > data = pathlib.Path("db_schema_v1.txt").read_bytes()
-       > print(hashlib.blake2b(data, digest_size=32).hexdigest())
-       > PY
-
-3. Turn those 64 hex digits into a Rust `[u8; 32]` literal:
-
-       $ echo [HASH] | sed 's/../0x&, /g' | fold -s -w48
-
-*/
-
-/// *Current* database V1 schema hash, compared with the stored one on open.
-///
-/// This value is compared against the schema hash stored in the metadata record to detect schema
-/// drift without a corresponding version bump.
-pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0x99, 0x39, 0x67, 0xdf, 0xca, 0x50, 0xc2, 0x78, 0x5a, 0x1b, 0x8c, 0x87, 0x87, 0x54, 0x65, 0x19,
-    0xb9, 0x8a, 0xca, 0x0a, 0xf8, 0x4c, 0x6b, 0x8d, 0x8b, 0x76, 0xa6, 0xdb, 0x0b, 0xb0, 0x2c, 0x63,
-];
-
-/// *Current* database V1 version.
-pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
-    major: 1,
-    minor: 4,
-    patch: 0,
-};
+pub(crate) mod schema;
 
 /// Whether a database's stored `metadata` record matches this build's schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SchemaCheck {
-    /// The stored record equals this build's version and schema hash.
+    /// The stored record carries this build's schema hash.
     Matches,
-    /// The stored record cannot be decoded by this build, or it names another schema.
+    /// The stored record cannot be decoded by this build, or it carries another schema hash.
     Differs,
 }
 
-/// LMDB table name for the finalised txout-set accumulator.
-pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME: &str =
-    "tx_out_set_info_accumulator_1_2_0";
+/// Singleton key of the metadata record in the metadata table.
+pub(crate) const METADATA_KEY: &[u8] = b"metadata";
 
 /// Singleton key for the finalised txout-set accumulator table.
 pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_KEY: &[u8] = b"tx_out_set_info_accumulator";
@@ -493,46 +445,23 @@ impl DbV1 {
             .open(&db_path)?;
 
         // Open individual LMDB DBs.
-        let headers =
-            super::open_or_create_db(&env, "headers_1_0_0", DatabaseFlags::empty()).await?;
-        let txids = super::open_or_create_db(&env, "txids_1_0_0", DatabaseFlags::empty()).await?;
-        let transparent =
-            super::open_or_create_db(&env, "transparent_1_0_0", DatabaseFlags::empty()).await?;
-        let sapling =
-            super::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
-        let orchard =
-            super::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
-        let ironwood =
-            super::open_or_create_db(&env, "ironwood_1_3_0", DatabaseFlags::empty()).await?;
-        let commitment_tree_data =
-            super::open_or_create_db(&env, "commitment_tree_data_1_3_0", DatabaseFlags::empty())
-                .await?;
-        let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
-
-        let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
-
-        let txid_location =
-            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
-
-        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
-
+        let headers = schema::HEADERS.open(&env).await?;
+        let txids = schema::TXIDS.open(&env).await?;
+        let transparent = schema::TRANSPARENT.open(&env).await?;
+        let sapling = schema::SAPLING.open(&env).await?;
+        let orchard = schema::ORCHARD.open(&env).await?;
+        let ironwood = schema::IRONWOOD.open(&env).await?;
+        let commitment_tree_data = schema::COMMITMENT_TREE_DATA.open(&env).await?;
+        let heights = schema::HEIGHTS.open(&env).await?;
+        let spent = schema::SPENT.open(&env).await?;
+        let txid_location = schema::TXID_LOCATION.open(&env).await?;
+        let tx_out_set_info_accumulator = schema::TX_OUT_SET_INFO_ACCUMULATOR.open(&env).await?;
+        let metadata = schema::METADATA.open(&env).await?;
         #[cfg(feature = "transparent_address_history_experimental")]
-        let address_history = super::open_or_create_db(
-            &env,
-            "address_history_1_0_0",
-            DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
-        )
-        .await?;
+        let address_history = schema::ADDRESS_HISTORY.open(&env).await?;
 
         Ok(Self {
-            // Opened inline here, before `env` is moved into its `Arc` below (struct fields are
-            // evaluated top-to-bottom).
-            tx_out_set_info_accumulator: super::open_or_create_db(
-                &env,
-                TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
-                DatabaseFlags::empty(),
-            )
-            .await?,
+            tx_out_set_info_accumulator,
             env: Arc::new(env),
             headers,
             txids,
@@ -541,7 +470,7 @@ impl DbV1 {
             orchard,
             ironwood,
             commitment_tree_data,
-            heights: hashes,
+            heights,
             spent,
             txid_location,
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -607,11 +536,11 @@ impl DbV1 {
 
     /// Compares the stored `metadata` record with this build's schema, writing it first when the database is fresh.
     async fn check_schema_version(&self) -> Result<SchemaCheck, StoreError> {
-        let this_build = DbMetadata::new(DB_VERSION_V1, DB_SCHEMA_V1_HASH);
+        let this_build = DbMetadata::new(schema::schema_hash()?);
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
-            match txn.get(self.metadata, b"metadata") {
+            match txn.get(self.metadata, &METADATA_KEY) {
                 Ok(raw_bytes) => {
                     // A record this build cannot decode was written by another schema.
                     let matches =
@@ -625,7 +554,7 @@ impl DbV1 {
                 Err(lmdb::Error::NotFound) => {
                     txn.put(
                         self.metadata,
-                        b"metadata",
+                        &METADATA_KEY,
                         &this_build.to_bytes()?,
                         WriteFlags::NO_OVERWRITE,
                     )?;

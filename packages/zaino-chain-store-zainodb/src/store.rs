@@ -33,7 +33,7 @@
 //!   - Defines the *capability model* used to represent which features a given backing source supports.
 //!   - Defines the core traits (`DbRead`, `DbWrite`, `DbCore`) and extension traits
 //!     (`BlockCoreExt`, `TransparentHistExt`, etc.).
-//!   - Defines versioned metadata (`DbMetadata`, `DbVersion`) persisted on disk.
+//!   - Defines the metadata record (`DbMetadata`) persisted on disk.
 //!
 //! - `finalised_source`
 //!   - Houses the concrete backing implementations: persistent databases by **major** version
@@ -104,10 +104,10 @@
 //!
 //! # On-disk layout and schema identity
 //!
-//! The database lives in `<path>/<network>/v1/`. Its `metadata` record holds the schema version
-//! and schema hash of the build that created it. There are no migrations: when the stored
-//! metadata differs from this build's, `spawn` deletes the database directory and resyncs from
-//! the validator, whether the stored schema is older or newer.
+//! The database lives in `<path>/<network>/v1/`. Its `metadata` record holds the schema hash of
+//! the build that created it, computed from the canonical encodings, the tables, and the enabled
+//! index features. There are no migrations: when the stored hash differs from this build's,
+//! `spawn` deletes the database directory and resyncs from the validator.
 //!
 //! # Core API and invariants
 //!
@@ -150,10 +150,11 @@
 //!
 //! - **Add a new query/index:** implement it in the latest DB version (e.g. `finalised_source::v1`), then expose it
 //!   via a capability extension trait in `capability`, route it via `reader`, and gate it via
-//!   `Capability` / `DbVersion::capability`.
+//!   `Capability`.
 //!
-//! - **Change an on-disk encoding:** treat it as a schema change. Bump the schema version, and
-//!   every existing database rebuilds on its next start.
+//! - **Change an on-disk encoding:** treat it as a schema change. The computed schema hash
+//!   changes, the schema hash golden fails until it is updated, and every existing database
+//!   rebuilds on its next start.
 //!
 
 // TODO / FIX - REMOVE THIS ONCE CHAININDEX LANDS!

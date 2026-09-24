@@ -4,7 +4,7 @@
 //!
 //! ## Database Types
 //! Types that implement `DbCodec` for database persistence.
-//! Any change to their encoding bumps the schema version, which rebuilds existing databases.
+//! Any change to their encoding changes the computed schema hash, which rebuilds existing databases.
 //!
 //! Currently organized in `db/legacy.rs` (pending refactoring into focused modules):
 //! - Block types: BlockHash, BlockIndex, BlockData, IndexedBlock, etc.
@@ -24,7 +24,7 @@
 //! **Database Types (`db` module):**
 //! 1. Must implement `DbCodec`
 //! 2. Never use external types as fields directly - store fundamental data
-//! 3. Never change an encoding without bumping the schema version
+//! 3. Never change an encoding without updating its golden and accepting a rebuild
 //!
 //! **Helper Types (`helpers` module):**
 //! 1. Do NOT implement `DbCodec`

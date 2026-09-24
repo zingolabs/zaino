@@ -86,7 +86,7 @@ fn blockheaderdata_golden_bytes() {
     assert_eq!(
         actual,
         expected_header_bytes(),
-        "BlockHeaderData encoding drifted; if intentional, bump the schema version"
+        "BlockHeaderData encoding drifted; if intentional, update this golden and the schema hash golden"
     );
 }
 
