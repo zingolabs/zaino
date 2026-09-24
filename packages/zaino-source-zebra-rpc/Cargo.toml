@@ -28,6 +28,9 @@ tracing = ["dep:tracing"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
+# The source-port conformance kit lives behind `testing`; the live conformance
+# test (tests/conformance.rs) runs the RPC adapter through it.
+zaino-source = { workspace = true, features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"
