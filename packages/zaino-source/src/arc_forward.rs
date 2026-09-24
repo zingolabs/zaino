@@ -17,6 +17,7 @@
 //! [`OneShotGetTransaction`], [`OneShotGetSubtreeRoots`], and the
 //! transparent-address reads). Each is a mechanical `Deref`-forward.
 
+use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -29,12 +30,13 @@ use zaino_primitives::types::{
 
 use crate::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockError, GetChainTipError, GetSubtreeRootsError, GetTransactionError, GetTreestateError,
-    OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
-    OneShotGetAddressUtxos, OneShotGetChainTip, OneShotGetPreIndexCompactBlock,
-    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate, OneShotSendRawTransaction,
-    QueryError, SendRawTransactionError, SubscribeChainTip, TipObservation, TransactionResponse,
-    ValidatorSource,
+    GetBlockError, GetChainTipError, GetMempoolTxidsError, GetRawMempoolTransactionError,
+    GetSubtreeRootsError, GetTransactionError, GetTreestateError, OneShotGetAddressBalance,
+    OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetChainTip,
+    OneShotGetMempoolSourceTip, OneShotGetMempoolTxids, OneShotGetPreIndexCompactBlock,
+    OneShotGetRawMempoolTransaction, OneShotGetSubtreeRoots, OneShotGetTransaction,
+    OneShotGetTreestate, OneShotSendRawTransaction, QueryError, SendRawTransactionError,
+    SubscribeChainTip, TipObservation, TransactionResponse, ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -165,5 +167,38 @@ impl<V: OneShotGetSubtreeRoots + ?Sized> OneShotGetSubtreeRoots for Arc<V> {
         Output = Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError, Self::NonDomain>>,
     > + Send {
         (**self).get_subtree_roots(pool, start_index, limit)
+    }
+}
+
+// The serving path's mempool passthrough reaches the validator through the same
+// `Arc<V>`: the listing, each transaction's bytes, and the coherence tip, all
+// from the one source the ports require.
+impl<V: OneShotGetMempoolTxids + ?Sized> OneShotGetMempoolTxids for Arc<V> {
+    fn get_mempool_txids(
+        &self,
+    ) -> impl Future<
+        Output = Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_mempool_txids()
+    }
+}
+
+impl<V: OneShotGetRawMempoolTransaction + ?Sized> OneShotGetRawMempoolTransaction for Arc<V> {
+    fn get_raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<
+        Output = Result<Vec<u8>, QueryError<GetRawMempoolTransactionError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_raw_mempool_transaction(txid)
+    }
+}
+
+impl<V: OneShotGetMempoolSourceTip + ?Sized> OneShotGetMempoolSourceTip for Arc<V> {
+    fn get_mempool_source_tip(
+        &self,
+    ) -> impl Future<Output = Result<(BlockHash, Height), QueryError<Infallible, Self::NonDomain>>> + Send
+    {
+        (**self).get_mempool_source_tip()
     }
 }

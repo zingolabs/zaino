@@ -9,7 +9,8 @@
 
 use zaino_core::Capability;
 use zaino_service::error::{
-    AddressReadError, BlockReadError, ReadError, Transient, TreestateReadError, TxReadError,
+    AddressReadError, BlockReadError, MempoolReadError, ReadError, Transient, TreestateReadError,
+    TxReadError,
 };
 
 /// A light-serve handler failure.
@@ -79,6 +80,16 @@ impl From<TxReadError> for ServeError {
             TxReadError::NotServiceable(cap) => ServeError::NotServiceable(cap),
             TxReadError::Transient(msg) => ServeError::Unavailable(Transient(msg)),
             TxReadError::Fatal(msg) => ServeError::Internal(msg),
+        }
+    }
+}
+
+impl From<MempoolReadError> for ServeError {
+    fn from(err: MempoolReadError) -> Self {
+        match err {
+            MempoolReadError::NotServiceable(cap) => ServeError::NotServiceable(cap),
+            MempoolReadError::Transient(msg) => ServeError::Unavailable(Transient(msg)),
+            MempoolReadError::Fatal(msg) => ServeError::Internal(msg),
         }
     }
 }

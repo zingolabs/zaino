@@ -5,10 +5,11 @@
 //! read-set is wired — compact blocks (`GetLatestBlock`/`GetBlock`/
 //! `GetBlockRange`), treestate + subtree roots, transactions, transparent
 //! address reads, and the nullifier-populated variants — plus `GetLightdInfo`,
-//! `SendTransaction`, and `Ping`. Only the mempool methods (`GetMempoolTx`,
-//! `GetMempoolStream`) return `Status::unimplemented`: the engine exposes no
-//! mempool bytes to stream. Implemented on a wrapper (not `LightServe` itself) so
-//! the handler stays a pure profile handler and there is no inherent/trait
+//! `SendTransaction`, and `Ping`. The mempool passthrough serves
+//! `GetMempoolStream` (raw transactions); only `GetMempoolTx` (the *compact*
+//! projection) still returns `Status::unimplemented`, pending the source-adapter
+//! projection port. Implemented on a wrapper (not `LightServe` itself) so the
+//! handler stays a pure profile handler and there is no inherent/trait
 //! method-name clash.
 
 use futures::stream::{BoxStream, StreamExt};
@@ -150,7 +151,9 @@ fn subtree_roots_query_from_wire(
 /// validator's job on the passthrough read.
 fn transparent_address_from_wire(address: String) -> Result<TransparentAddress, Status> {
     if address.is_empty() {
-        return Err(Status::invalid_argument("transparent address must not be empty"));
+        return Err(Status::invalid_argument(
+            "transparent address must not be empty",
+        ));
     }
     Ok(TransparentAddress::new(address))
 }
@@ -419,10 +422,12 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         Ok(Response::new(stream.boxed()))
     }
 
-    // --- not served: no backing mempool capability (Engine's mempool
-    // subscription is an empty-stream stub, and `MempoolTx` carries only a txid,
-    // not the compact/raw bytes these stream) ---
+    // --- wired: mempool passthrough ---
 
+    // `GetMempoolTx` streams the *compact* projection of each mempool tx, which
+    // requires deserialising and projecting raw bytes — a source-adapter concern
+    // (the serve layer holds no chain library). Wired once that projection port
+    // lands; `GetMempoolStream` (raw bytes) needs no projection and is served.
     type GetMempoolTxStream = ServerStream<CompactTx>;
     async fn get_mempool_tx(
         &self,
@@ -436,7 +441,9 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
         &self,
         _r: Request<Empty>,
     ) -> Result<Response<Self::GetMempoolStreamStream>, Status> {
-        Err(unimplemented("get_mempool_stream"))
+        let txs = self.handler.get_mempool_stream().await.map_err(to_status)?;
+        let stream = futures::stream::iter(txs.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
 
     type GetSubtreeRootsStream = ServerStream<SubtreeRoot>;

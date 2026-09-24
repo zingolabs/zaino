@@ -7,8 +7,8 @@
 
 use zaino_core::{
     AddressBalance, BlockId, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier,
-    OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot, TransactionLocation,
-    TransparentInput, TransparentOutput, Treestate, Utxo,
+    OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot,
+    TransactionLocation, TransparentInput, TransparentOutput, Treestate, Utxo,
 };
 use zaino_proto::proto::compact_formats as cf;
 use zaino_proto::proto::service as proto;

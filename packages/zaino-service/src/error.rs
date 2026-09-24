@@ -50,6 +50,8 @@ read_error!(/// Errors from [`crate::AddressRead`].
     AddressReadError);
 read_error!(/// Errors from [`crate::SpendRead`].
     SpendReadError);
+read_error!(/// Errors from [`crate::MempoolContent`].
+    MempoolReadError);
 read_error!(/// Generic read error for streamed surfaces and [`crate::ForkReconcile`].
     ReadError);
 

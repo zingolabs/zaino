@@ -665,7 +665,10 @@ path = "/tmp/zaino-store"
             config.serve.grpc_listen_address,
             "0.0.0.0:8137".parse().expect("valid addr"),
         );
-        assert_eq!(config.store.path, super::mainnet_direct_state_fixture().store.path);
+        assert_eq!(
+            config.store.path,
+            super::mainnet_direct_state_fixture().store.path
+        );
     }
 
     /// The endpoint env override reaches the Rpc fixture.
@@ -676,7 +679,9 @@ path = "/tmp/zaino-store"
         let config = super::mainnet_rpc_fixture();
         std::env::remove_var(super::TEST_FIXTURE_JSONRPC_ENV);
         match config.source {
-            SourceMode::Rpc { jsonrpc_address, .. } => {
+            SourceMode::Rpc {
+                jsonrpc_address, ..
+            } => {
                 assert_eq!(jsonrpc_address, "zebra.example.svc:8232")
             }
             other => panic!("expected Rpc source, got {other:?}"),

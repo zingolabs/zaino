@@ -57,13 +57,13 @@ use zaino_primitives::types::{
     TransparentOutput,
 };
 use zaino_service::error::{
-    AddressReadError, BlockReadError, BroadcastRejection, ReadError, Transient, TreestateReadError,
-    TxReadError,
+    AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError, Transient,
+    TreestateReadError, TxReadError,
 };
 use zaino_service::{
-    AddressRead, Broadcast, ChainSegment, CompactBlockRead, CompactNullifierRead, MempoolSubscribe,
-    RawTransactionRead, Serviceable, Snapshot, TakeSnapshot, TipSubscribe, TransactionRead,
-    TreestateRead,
+    AddressRead, Broadcast, ChainSegment, CompactBlockRead, CompactNullifierRead, MempoolContent,
+    MempoolSubscribe, RawTransactionRead, Serviceable, Snapshot, TakeSnapshot, TipSubscribe,
+    TransactionRead, TreestateRead,
 };
 use zaino_sync::primitives::BlockHeight;
 
@@ -345,8 +345,7 @@ fn read_compact_block<B: Backend>(
     .0;
     let sapling = require::<SaplingIndex, B>(reader, sapling::ID.into(), height, "sapling")?.0;
     let orchard = require::<OrchardIndex, B>(reader, orchard::ID.into(), height, "orchard")?.0;
-    let ironwood =
-        require::<IronwoodIndex, B>(reader, ironwood::ID.into(), height, "ironwood")?.0;
+    let ironwood = require::<IronwoodIndex, B>(reader, ironwood::ID.into(), height, "ironwood")?.0;
 
     // Per-tx alignment is granted (same tx list): all pools have `txids.len()`.
     let count = txids.len();
@@ -588,6 +587,16 @@ impl<B: Backend + 'static> MempoolSubscribe for StoreReader<B> {
     fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx> {
         // No mempool at the finalised store; the composed runtime supplies it.
         stream::empty().boxed()
+    }
+}
+
+impl<B: Backend + 'static> MempoolContent for StoreReader<B> {
+    async fn mempool_raw_transaction(
+        &self,
+        _txid: TransactionId,
+    ) -> Result<Option<Vec<u8>>, MempoolReadError> {
+        // No mempool at the finalised store; the composed runtime supplies it.
+        Ok(None)
     }
 }
 

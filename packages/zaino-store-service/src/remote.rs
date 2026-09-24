@@ -19,15 +19,19 @@
 //! sound for the immutable, historical data light clients query.
 
 use zaino_core::{
-    AddressBalance, AddressDelta, Height, HeightRange, RawTransaction, ShieldedPool, SubtreeRoot,
-    TransactionId, TransparentAddress, Treestate, Utxo,
+    AddressBalance, AddressDelta, BlockId, Height, HeightRange, RawTransaction, ShieldedPool,
+    SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
 };
-use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError, TxReadError};
+use zaino_service::error::{
+    AddressReadError, BroadcastRejection, MempoolReadError, TreestateReadError, TxReadError,
+};
 use zaino_source::{
     GetAddressBalance, GetAddressBalanceError, GetAddressDeltas, GetAddressDeltasError,
-    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError, GetSubtreeRoots,
-    GetSubtreeRootsError, GetTransaction, GetTransactionError, GetTreestate, GetTreestateError,
-    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
+    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError,
+    GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction,
+    GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError, GetTransaction,
+    GetTransactionError, GetTreestate, GetTreestateError, SendRawTransaction,
+    SendRawTransactionError, SourceError, TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -293,6 +297,76 @@ where
                 "validator unavailable: {cause}"
             ))),
             Err(SourceError::Unavailable(cause)) => Err(TreestateReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+// The three mempool reads bind separately (each to its own port) but share the
+// single-source rule: a listing, its bytes, and its coherence tip must all come
+// from the one source that serves the mempool — never a finalised secondary,
+// which holds none. The routing that enforces that lives in the source adapter.
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetMempoolTxids,
+{
+    /// The txids currently in the validator's mempool, live. A validator that
+    /// exposes no mempool is served as an *empty* mempool (an honest answer, not
+    /// a failure); a transport failure is transient.
+    pub(crate) async fn mempool_txids(&self) -> Result<Vec<TransactionId>, MempoolReadError> {
+        match self.source.get_mempool_txids().await {
+            Ok(txids) => Ok(txids),
+            Err(SourceError::Domain(GetMempoolTxidsError::Unavailable)) => Ok(Vec::new()),
+            Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetRawMempoolTransaction,
+{
+    /// The raw bytes of one mempool transaction, live. A txid the validator has
+    /// since dropped — the listing/fetch race — is a domain miss (`Ok(None)`); a
+    /// transport failure is transient.
+    pub(crate) async fn raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Option<Vec<u8>>, MempoolReadError> {
+        match self.source.get_raw_mempool_transaction(txid).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(SourceError::Domain(GetRawMempoolTransactionError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetMempoolSourceTip,
+{
+    /// The chain tip the mempool listing is coherent against, live. The port
+    /// carries no domain error (typed `Infallible`) — only a transport failure,
+    /// reported transient.
+    pub(crate) async fn mempool_source_tip(&self) -> Result<BlockId, MempoolReadError> {
+        match self.source.get_mempool_source_tip().await {
+            Ok((hash, height)) => Ok(BlockId { height, hash }),
+            Err(SourceError::Domain(never)) => match never {},
+            Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(MempoolReadError::Transient(format!(
                 "validator unavailable: {cause}"
             ))),
         }

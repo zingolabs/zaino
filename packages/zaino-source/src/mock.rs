@@ -243,6 +243,51 @@ impl crate::OneShotSendRawTransaction for MockChain {
     }
 }
 
+impl crate::OneShotGetMempoolTxids for MockChain {
+    async fn get_mempool_txids(
+        &self,
+    ) -> Result<Vec<TransactionId>, QueryError<crate::GetMempoolTxidsError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        // The static mock carries no mempool: an empty listing is the honest
+        // answer, not "unavailable" (which would tell a consumer to stop asking).
+        Ok(Vec::new())
+    }
+}
+
+impl crate::OneShotGetRawMempoolTransaction for MockChain {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Vec<u8>, QueryError<crate::GetRawMempoolTransactionError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        Err(QueryError::Domain(
+            crate::GetRawMempoolTransactionError::NotFound(txid),
+        ))
+    }
+}
+
+impl crate::OneShotGetMempoolSourceTip for MockChain {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        // This port carries no domain error, so a mock with no tip reports a
+        // transport failure — the only non-success it can return.
+        self.tip.ok_or_else(|| {
+            QueryError::NonDomain(NonDomainError::new(
+                FailureMode::Connection,
+                "mock has no tip".to_string(),
+            ))
+        })
+    }
+}
+
 impl crate::OneShotGetAddressBalance for MockChain {
     async fn get_address_balance(
         &self,

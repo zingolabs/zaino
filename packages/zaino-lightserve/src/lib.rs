@@ -25,7 +25,10 @@ pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};
 
 use futures::stream::{BoxStream, StreamExt};
-use zaino_core::{BlockRef, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress};
+use zaino_core::{
+    BlockRef, Height, HeightRange, MempoolTx, RawTransaction, ShieldedPool, TransactionId,
+    TransactionLocation, TransparentAddress,
+};
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
 use zaino_service::{
@@ -259,6 +262,29 @@ impl<S: LightServeService> LightServe<S> {
         Ok(blocks)
     }
 
+    /// `GetMempoolStream`: the raw transactions currently in the mempool. Live
+    /// passthrough — not pinned to a snapshot, because the mempool is not part of
+    /// any chain view. The txids come from the mempool subscription and each is
+    /// hydrated to raw bytes from the same source; a txid dropped between listing
+    /// and fetch (a race) is skipped. Collected owned so the gRPC layer serves a
+    /// `'static` stream.
+    pub async fn get_mempool_stream(&self) -> Result<Vec<proto::RawTransaction>, ServeError> {
+        let listing: Vec<MempoolTx> = self.engine.subscribe_mempool().collect().await;
+        let mut txs = Vec::with_capacity(listing.len());
+        for entry in listing {
+            if let Some(data) = self.engine.mempool_raw_transaction(entry.txid).await? {
+                txs.push(
+                    RawTransaction {
+                        data,
+                        location: TransactionLocation::Mempool,
+                    }
+                    .to_wire(),
+                );
+            }
+        }
+        Ok(txs)
+    }
+
     /// `SendTransaction`: relay raw bytes. A rejection is a domain answer, so it
     /// rides out in the `SendResponse` (non-zero `error_code`), not as an error.
     pub async fn send_transaction(&self, raw: proto::RawTransaction) -> proto::SendResponse {
@@ -466,10 +492,22 @@ mod tests {
         use zaino_core::{BlockRef, Height};
         let serve = LightServe::new(engine_with_tip(None));
         let block = serve
-            .get_block_nullifiers(BlockRef::Height(Height::try_from(10).expect("valid height")))
+            .get_block_nullifiers(BlockRef::Height(
+                Height::try_from(10).expect("valid height"),
+            ))
             .await
             .expect("served");
         assert!(block.is_none());
+    }
+
+    /// `GetMempoolStream` delegates to the mempool subscription and per-txid
+    /// hydration (the mock serves an empty mempool) and returns no transactions —
+    /// a served answer, not `unimplemented`.
+    #[tokio::test]
+    async fn mempool_stream_delegates_and_serves() {
+        let serve = LightServe::new(engine_with_tip(None));
+        let txs = serve.get_mempool_stream().await.expect("served");
+        assert!(txs.is_empty());
     }
 
     /// A successful broadcast returns `error_code == 0` with the txid in hex.

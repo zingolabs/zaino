@@ -29,8 +29,8 @@ pub mod testing;
 
 pub use bundle::{ChainSegment, IndexerService, Snapshot};
 pub use controls::{
-    Broadcast, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable, TakeSnapshot,
-    TipSubscribe,
+    Broadcast, MempoolContent, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable,
+    TakeSnapshot, TipSubscribe,
 };
 pub use profiles::{
     FullWalletReads, LightServeService, LightWalletReads, NodeRpcReads, NodeRpcService,
