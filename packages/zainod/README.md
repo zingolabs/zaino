@@ -12,8 +12,9 @@ applications, serving:
   block explorers.
 
 This crate ships the `zainod` binary. The library half of the crate,
-`zainodlib`, exposes the `run` entrypoint and configuration types for embedding
-the daemon in other Rust programs.
+`zainodlib`, exposes the `run` entrypoint and configuration types that the
+binary and the test harness use. Embedding Zaino in another program is not
+supported.
 
 For project background and architecture, see the
 [Zaino repository](https://github.com/zingolabs/zaino).

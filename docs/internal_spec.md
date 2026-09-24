@@ -195,7 +195,7 @@ and each crate's `usage.md` for practical guidance.
 ### Functionality
 - Domain vocabulary (`zaino-primitives`):
   - The chain in Zaino's own terms: blocks, transactions, hashes, heights,
-    treestates, amounts, and the passthrough RPC response shapes.
+    treestates, amounts, and the node-forwarding RPC response shapes.
   - Depends on `thiserror` and nothing else. No serde: serialization belongs to
     whichever boundary owns the format.
 
@@ -220,7 +220,7 @@ and each crate's `usage.md` for practical guidance.
     classification.
   - The read-state adapter reads Zebra's state database directly where Zaino
     and Zebra share a host. It is an accelerator, not an alternative, and
-    deliberately does not implement the mempool or passthrough ports.
+    deliberately does not implement the mempool or node-forwarding ports.
 
 - Composite (`zaino-source-zebra`):
   - `ZebraValidator` holds an RPC adapter and an optional read-state adapter,

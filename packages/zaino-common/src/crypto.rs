@@ -23,10 +23,10 @@
 /// offered and accepted, but are deprecated (see the ADR).
 ///
 /// The process default is first-install-wins and is not constrained by
-/// our crates' rustls features, so an embedder (e.g. zallet) that has
-/// already installed a provider keeps it: zaino then handshakes through
-/// that provider instead of aws-lc-rs, which is fine for any provider
-/// implementing the standard TLS suites (ring and aws-lc-rs both do).
+/// our crates' rustls features, so a provider already installed in the
+/// process keeps its place: zaino then handshakes through that provider
+/// instead of aws-lc-rs, which is fine for any provider implementing the
+/// standard TLS suites (ring and aws-lc-rs both do).
 pub fn ensure_default_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         // A racing concurrent install is the only error case; either

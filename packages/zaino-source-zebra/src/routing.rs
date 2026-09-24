@@ -16,7 +16,7 @@ use crate::fallback::retry_on_slow_path;
 
 /// A Zebra validator reached over one or both of its transports.
 pub struct ZebraValidator {
-    /// Always present: the mempool and the passthrough RPCs are reachable no
+    /// Always present: the mempool and the node-forwarding RPCs are reachable no
     /// other way.
     rpc: ZebraRpcAdapter,
     /// The accelerator, when this deployment has direct database access.
@@ -38,7 +38,7 @@ impl ZebraValidator {
     /// A validator whose state database is also readable directly.
     ///
     /// The JSON-RPC adapter is still required: it serves the mempool and the
-    /// passthrough RPCs, which the state database cannot answer at all.
+    /// node-forwarding RPCs, which the state database cannot answer at all.
     pub fn with_read_state(rpc: ZebraRpcAdapter, readstate: ZebraReadStateAdapter) -> Self {
         Self {
             rpc,

@@ -83,15 +83,30 @@ entering the pool. Source:
 _Avoid_: "exit-only" (overclaims — same-receiver change still lands in
 the pool and its commitment tree still grows)
 
+### Serving
+
+**Node forwarding**:
+Answering an RPC by asking the backing validator, because the RPC reports
+node state that zaino never indexes (peers, difficulty, mining,
+transaction submission). Each such RPC has forwarding as its only
+answering path.
+_Avoid_: passthrough, proxying
+
+**Index-miss fallback**:
+Asking the backing validator for data zaino indexes, after the local read
+fails. Zaino does not do this: once synced, the index is authoritative for
+its own data, and a local miss is a not-found answer.
+_Avoid_: passthrough, validator fallback
+
 ### TLS and cryptography
 
 **Preferred CryptoProvider**:
 The TLS cryptography provider zaino installs as the process-wide default
-when no provider is installed yet. A preference, not a mandate: an
-embedder (e.g. zallet) that installs a provider before zaino keeps its
-choice, and zaino handshakes through it.
-_Avoid_: "enforced provider" (implies zaino overrides an embedder's
-already-installed provider; it never does)
+when no provider is installed yet. A preference, not a mandate: a provider
+already installed in the process keeps its place, and zaino handshakes
+through it.
+_Avoid_: "enforced provider" (implies zaino overrides an already-installed
+provider; it never does)
 
 **Hybrid key exchange**:
 A TLS 1.3 key-exchange group combining a classical curve with a

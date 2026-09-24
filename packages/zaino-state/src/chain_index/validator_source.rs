@@ -1028,8 +1028,7 @@ impl ZebraValidatorSource {
     ///
     /// Skips the startup handshake that [`spawn_rpc`](Self::spawn_rpc) performs
     /// — no first-block wait, no network adoption — so the caller must already
-    /// know the network and that the validator is serving. Intended for tests
-    /// and for embedders that have done both themselves.
+    /// know the network and that the validator is serving. Intended for tests.
     pub fn rpc_only(
         rpc_address: &str,
         auth: Option<(String, String)>,

@@ -176,7 +176,7 @@ mod chain_query_interface {
     #[case::zebra(Validator::zebrad("6.2.3"))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn zallet_like_steady_state_loop<B: ValidatorConfig>(
+    async fn steady_state_tip_following_loop<B: ValidatorConfig>(
         #[case] validator: Validator<B>,
     ) -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);

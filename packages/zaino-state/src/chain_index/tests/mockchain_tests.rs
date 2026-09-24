@@ -271,7 +271,7 @@ async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing()
 ///
 /// The mempool subsystem's own totals arithmetic is covered by mocks in
 /// `zaino-mempool-service`, and the live suite checks it against the validator's
-/// `getmempoolinfo`. What is only checkable here is the passthrough: that the
+/// `getmempoolinfo`. What is only checkable here is the hand-off: that the
 /// `MempoolInfo` the ChainIndex hands back describes the same transactions
 /// `get_mempool_transactions` returns, rather than a stale or unrelated set.
 #[tokio::test(flavor = "multi_thread")]
@@ -1315,7 +1315,7 @@ async fn service_drop_survives_current_thread_runtime() {
 /// chain-tip subscriber over such a source must yield `None` rather than
 /// panic. Before this method returned `Option`, it existed only in a
 /// panicking form (`.expect("chaintip_update_subscriber requires the Direct
-/// connection")`) reachable by any embedder configured with `backend = "rpc"`;
+/// connection")`) reachable by any deployment configured with `backend = "rpc"`;
 /// pre-merge the misuse was a compile error because only the State-backed
 /// subscriber type had the method.
 #[tokio::test(flavor = "multi_thread")]

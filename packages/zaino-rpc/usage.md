@@ -59,8 +59,8 @@ let info = probe_node(&addr, auth).await?;   // 6 attempts, 3s apart
 ```
 
 `probe_node` **returns an error**. Its predecessor in `zaino-fetch` called
-`std::process::exit(1)`, which made the startup path untestable and gave an
-embedding process no say in its own shutdown.
+`std::process::exit(1)`, which made the startup path untestable and gave
+zainod's own shutdown path no chance to run.
 
 ## Metrics
 

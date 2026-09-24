@@ -11,7 +11,7 @@
 //! mechanisms:
 //!
 //! - **Capability is structural.** `ZebraReadStateAdapter` simply does not
-//!   implement the traits it cannot serve — the node passthroughs, the mempool,
+//!   implement the traits it cannot serve — the node-forwarding RPCs, the mempool,
 //!   the derived delta queries. There is no arm to get wrong, and a
 //!   deployment's transport mix cannot silently change what a query means.
 //! - **Preference is this routing table.** Each trait below delegates: to the
@@ -20,7 +20,7 @@
 //!   absent — to the state service first and JSON-RPC after.
 //!
 //! The JSON-RPC adapter is not optional. Every deployment has one, because the
-//! mempool and the passthrough RPCs are reachable no other way. The state
+//! mempool and the node-forwarding RPCs are reachable no other way. The state
 //! adapter is the accelerator layered over it, which is why it is the `Option`.
 
 mod fallback;

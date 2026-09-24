@@ -19,10 +19,7 @@ let
       (craneLib.fileset.commonCargoSources ../.)
       # commonCargoSources only includes .rs & cargo files
       #   .proto — read by tonic-build (zaino-proto/build.rs)
-      #   .txt   — embedded via include_str! (db schema)
-      #   .mmd   — embedded via simple_mermaid::mermaid! (doc diagrams)
       (lib.fileset.fileFilter (f: f.hasExt "proto") ../packages/zaino-proto)
-      (lib.fileset.fileFilter (f: f.hasExt "txt" || f.hasExt "mmd") ../packages/zaino-state/src)
     ];
   };
 

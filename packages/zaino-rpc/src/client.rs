@@ -88,8 +88,8 @@ impl RpcClient {
         // `CryptoProvider` before building the client. The workspace enables
         // reqwest's `rustls-no-provider` feature, which never auto-selects one,
         // so a client built without this panics with "No provider set" the
-        // moment it is constructed. First-install-wins, so an embedder that
-        // installed its own provider keeps it (ADR-0006).
+        // moment it is constructed. First-install-wins, so a provider
+        // installed earlier in the process keeps its place (ADR-0006).
         zaino_common::crypto::ensure_default_crypto_provider();
 
         let client = reqwest::Client::builder()

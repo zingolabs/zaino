@@ -19,7 +19,7 @@ It implements 22 ports: block and header reads, chain tip, address queries,
 treestate and commitment trees, subtree roots, transactions, block deltas,
 blockchain info, and the block/tip subscriptions.
 
-It does **not** implement the mempool ports, the passthrough ports
+It does **not** implement the mempool ports, the node-forwarding ports
 (`getpeerinfo`, `getmininginfo`, `getnetworksolps`, …), `GetAddressDeltas`, or
 `SubscribeChainTip`. That is the capability model working, not a gap to fill:
 
