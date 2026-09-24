@@ -6052,8 +6052,6 @@ dependencies = [
 name = "zaino-chain-store-zainodb"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
- "bitflags 2.13.2",
  "blake2",
  "corez",
  "futures",

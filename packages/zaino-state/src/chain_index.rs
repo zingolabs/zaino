@@ -24,7 +24,6 @@ use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
-use zaino_chain_store_zainodb::store::FinalisedStateMode;
 use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
@@ -919,12 +918,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         self.coherence.subscriber().frozen_for()
     }
 
-    /// Returns which backend is currently answering finalised-state reads.
-    ///
-    /// Companion to [`NodeBackedChainIndex::status`], which cannot express this: an ephemeral
-    /// passthrough reports [`StatusType::Ready`] identically to a synced persistent database.
-    pub fn finalised_state_mode(&self) -> FinalisedStateMode {
-        self.finalized_db.finalised_state_mode()
+    /// Returns whether the finalised state is still building in the background.
+    #[cfg(test)]
+    pub(crate) fn finalised_state_is_building(&self) -> bool {
+        self.finalized_db.is_building()
     }
 
     /// Displays the status of the chain_index

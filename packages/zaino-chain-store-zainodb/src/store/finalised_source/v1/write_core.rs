@@ -579,12 +579,9 @@ impl DbV1 {
     ///   safe [`lmdb::Stat`] covers only the main tree, missing 16 sub-dbs
     /// - On the maintenance timer, not per commit (which froze while idle)
     pub(super) fn record_db_used_bytes(&self) {
-        // Pathless config cannot reach a v1 backend; shares the unreadable-file
-        // outcome either way — no sample, no noise
-        if let Ok(path) = super::db_path(&self.config) {
-            if let Ok(meta) = std::fs::metadata(path.join("data.mdb")) {
-                metrics::gauge!(DB_USED_BYTES).set(meta.len() as f64);
-            }
+        let path = super::db_path(&self.config);
+        if let Ok(meta) = std::fs::metadata(path.join("data.mdb")) {
+            metrics::gauge!(DB_USED_BYTES).set(meta.len() as f64);
         }
     }
 

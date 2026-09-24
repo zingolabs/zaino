@@ -80,7 +80,7 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
     }
 
     fn capabilities(&self) -> StoreCapabilities {
-        store_capabilities::<Self>(self.inner.capability())
+        store_capabilities::<Self>()
     }
 
     #[tracing::instrument(skip(self), fields(height = %height))]

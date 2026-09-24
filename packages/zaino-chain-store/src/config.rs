@@ -19,11 +19,7 @@ use std::path::{Path, PathBuf};
 ///
 /// # Fields are private, and the illegal states are unrepresentable
 ///
-/// Where a store lives and whether it holds anything are **one** field, not a
-/// path beside a boolean: a store configured both to hold nothing and to hold
-/// it somewhere is a contradiction an operator should not be able to express,
-/// and it is not one a runtime check catches well — the two orderings disagree
-/// about which wins.
+/// Every store persists, so the path is required and there is no default.
 ///
 /// Zero is meaningless for two of the three remaining knobs, so it is made
 /// unrepresentable rather than checked at startup:
@@ -40,7 +36,7 @@ use std::path::{Path, PathBuf};
 /// uniformity would have removed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainStoreConfig {
-    path: Option<PathBuf>,
+    path: PathBuf,
     background_build_threshold: u32,
     retry_backoff_ms: NonZeroU64,
     max_consecutive_failures: NonZeroU32,
@@ -56,48 +52,23 @@ fn nz64(value: u64) -> NonZeroU64 {
     NonZeroU64::new(value).expect("a literal default is not zero")
 }
 
-impl Default for ChainStoreConfig {
-    /// A store that holds nothing and answers by passing reads through.
-    ///
-    /// Passthrough rather than a path, because there is no path a default could
-    /// pick that would be right for a deployment — and a store that holds
-    /// nothing is the one state that needs no answer to "where".
-    fn default() -> Self {
+impl ChainStoreConfig {
+    /// A store persisting at `path`, with production defaults otherwise.
+    pub fn at_path(path: impl Into<PathBuf>) -> Self {
         Self {
-            path: None,
+            path: path.into(),
             background_build_threshold: 10,
             retry_backoff_ms: nz64(5_000),
             max_consecutive_failures: nz32(5),
         }
     }
-}
 
-impl ChainStoreConfig {
-    /// A store persisting at `path`, with production defaults otherwise.
-    pub fn at_path(path: impl Into<PathBuf>) -> Self {
-        Self {
-            path: Some(path.into()),
-            ..Self::default()
-        }
+    /// Where the store lives.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
-    /// Where the store lives, or `None` for one that holds nothing.
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
-    }
-
-    /// Whether this configures a store that holds nothing.
-    pub fn is_passthrough_only(&self) -> bool {
-        self.path.is_none()
-    }
-
-    /// How far behind the target the store may be before it builds in the
-    /// background rather than blocking the caller.
-    ///
-    /// Below this a caller waits and gets a store that is ready, which is what
-    /// lets a caller read straight back after asking for a short build. Above
-    /// it, waiting would mean an unavailable node for hours, so the store comes
-    /// up serving passthrough reads and catches up behind them.
+    /// How far behind the target the store may be before it builds in the background rather than blocking the caller.
     pub fn background_build_threshold(&self) -> u32 {
         self.background_build_threshold
     }
@@ -137,16 +108,11 @@ impl ChainStoreConfig {
 mod tests {
     use super::*;
 
-    /// Holding nothing and holding it somewhere are mutually exclusive by
-    /// construction, not by validation.
+    /// A store configured at a path reports that path.
     #[test]
-    fn a_path_and_passthrough_only_cannot_both_be_configured() {
-        assert!(ChainStoreConfig::default().is_passthrough_only());
-        assert!(ChainStoreConfig::default().path().is_none());
-
+    fn a_store_reports_its_path() {
         let persistent = ChainStoreConfig::at_path("/tmp/store");
-        assert!(!persistent.is_passthrough_only());
-        assert_eq!(persistent.path(), Some(Path::new("/tmp/store")));
+        assert_eq!(persistent.path(), Path::new("/tmp/store"));
     }
 
     /// The defaults are the values the only implementation runs on.
@@ -156,7 +122,7 @@ mod tests {
     /// store builds without anything saying so.
     #[test]
     fn the_defaults_match_what_the_backend_ran_on() {
-        let config = ChainStoreConfig::default();
+        let config = ChainStoreConfig::at_path("/tmp/store");
         assert_eq!(config.background_build_threshold(), 10);
         assert_eq!(config.retry_backoff(), Duration::from_secs(5));
         assert_eq!(config.max_consecutive_failures(), 5);

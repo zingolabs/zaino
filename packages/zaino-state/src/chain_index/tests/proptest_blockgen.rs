@@ -118,7 +118,6 @@ fn synced_index_test_on(
                     },
                     ..Default::default()
                 },
-                ephemeral: false,
                 mempool: Default::default(),
                 network: network.clone(),
 
@@ -132,9 +131,8 @@ fn synced_index_test_on(
             // one branch), so its tip height is `2 * segment_length - 1`.
             //
             // Both halves must be in place before the assertions run: the chain
-            // head at the source's tip, and the finalised state built and
-            // serving in place of the syncing passthrough, which answers a
-            // finalised read with `NotReady` that the index reports as absence.
+            // head at the source's tip, and the finalised state done building,
+            // because a finalised read above its tip reports absence.
             let tip_height = (2 * segment_length - 1) as u32;
             poll_until(
                 "chain head to reach the source's tip and the finalised state to finish building",
@@ -143,7 +141,7 @@ fn synced_index_test_on(
                 || async {
                     let snapshot = index_reader.snapshot_nonfinalized_state();
                     (u32::from(snapshot.best_tip().height) == tip_height
-                        && indexer.finalised_state_mode() == crate::FinalisedStateMode::Persistent)
+                        && !indexer.finalised_state_is_building())
                         .then_some(())
                 },
             )
@@ -822,7 +820,6 @@ fn make_chain() {
                     },
                     ..Default::default()
                 },
-                ephemeral: false,
                 mempool: Default::default(),
                 network: network.clone(),
 
@@ -843,7 +840,7 @@ fn make_chain() {
                 || async {
                     let snapshot = index_reader.snapshot_nonfinalized_state();
                     (snapshot.best_chain().count() == best_chain_length
-                        && indexer.finalised_state_mode() == crate::FinalisedStateMode::Persistent)
+                        && !indexer.finalised_state_is_building())
                         .then_some(snapshot)
                 },
             )

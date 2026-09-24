@@ -128,10 +128,6 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>;
     type Config = NodeBackedIndexerServiceConfig;
 
-    fn finalised_state_mode(&self) -> crate::FinalisedStateMode {
-        self.indexer.finalised_state_mode()
-    }
-
     /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.
     #[instrument(name = "NodeBackedIndexerService::spawn", skip(config), fields(network = %config.common.network))]
     async fn spawn(
@@ -376,7 +372,6 @@ fn test_service_parts(
             None,
             zaino_common::ServiceConfig::default(),
             zaino_common::StorageConfig::default(),
-            true,
             network_kind,
             None,
         ),

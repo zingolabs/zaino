@@ -1,23 +1,10 @@
-//! Capability model, versioned metadata, and DB trait surface
+//! Metadata record and DB trait surface
 //!
-//! This file defines the **capability- and version-aware interface** that all `FinalisedState` database
-//! implementations must conform to.
-//!
-//! The core idea is:
-//! - Each concrete DB major version (e.g. `DbV1`) implements a common set of traits.
-//! - A `Capability` bitmap declares which parts of that trait surface are actually supported.
-//! - The router (`Router`) and reader (`DbReader`) use *single-feature* requests
-//!   (`CapabilityRequest`) to route a call to a backend that is guaranteed to support it.
-//!
-//! This design enables:
-//! - serving reads from the ephemeral passthrough while the database builds,
-//! - and gating API features cleanly when a backend does not support an extension.
+//! This file defines the interface that the `FinalisedState` database implements. Which optional
+//! indexes exist is a build-time choice: an optional index's extension trait is gated by a cargo
+//! feature, so a build without the feature has no such trait to call.
 //!
 //! # What’s in this file
-//!
-//! ## Capability / routing types
-//! - [`Capability`]: bitflags describing what an *open* database instance can serve.
-//! - [`CapabilityRequest`]: a single-feature request (non-composite) used for routing.
 //!
 //! ## Metadata
 //! - [`DbMetadata`]: persisted singleton stored under the fixed key `"metadata"` in the LMDB
@@ -30,32 +17,24 @@
 //! - **Core traits** implemented by every DB version:
 //!   - [`DbRead`], [`DbWrite`], and [`DbCore`]
 //!
-//! - **Extension traits** implemented by *some* versions:
+//! - **Extension traits**:
 //!   - [`BlockCoreExt`], [`BlockTransparentExt`], [`BlockShieldedExt`]
 //!   - [`CompactBlockExt`]
 //!   - [`IndexedBlockExt`]
-//!   - [`TransparentHistExt`]
-//!
-//! Extension traits must be capability-gated: if a DB does not advertise the corresponding capability
-//! bit, routing must not hand that backend out for that request.
+//!   - [`SpentOutputExt`], [`TxOutSetExt`]
+//!   - `TransparentHistExt`, behind `transparent_address_history_experimental`
 //!
 //! # Development: adding or changing features safely
 //!
 //! When adding a new feature/query that requires new persistent data:
 //!
-//! 1. Add a new capability bit to [`Capability`].
-//! 2. Add a corresponding variant to [`CapabilityRequest`] and map it in:
-//!    - `as_capability()`
-//!    - `name()`
-//! 3. Add a new extension trait (or extend an existing one) that expresses the required operations.
-//! 4. Implement the extension trait for the latest DB version(s).
-//! 5. Add the new capability to [`Capability::LATEST`].
-//! 6. Route it through `DbReader` by requesting the new `CapabilityRequest`.
+//! 1. Add a new extension trait (or extend an existing one) that expresses the required operations.
+//! 2. Gate the trait by a cargo feature if the index is optional.
+//! 3. Implement the extension trait for `DbV1`.
+//! 4. Expose it through a `DbReader` method.
 //!
 //! Changing a persisted format changes the computed schema hash, and every existing database
 //! rebuilds.
-
-use core::fmt;
 
 use crate::codec::{read_fixed_le, write_fixed_le, DbCodec, FixedEncodedLen};
 use crate::error::StoreError;
@@ -72,243 +51,8 @@ use zaino_status::StatusType;
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::types::{AddrEventBytes, AddrScript};
 
-use bitflags::bitflags;
 use corez::io::{self, Read, Write};
 use zaino_proto::proto::utils::PoolTypeFilter;
-
-// ***** Capability definition structs *****
-
-bitflags! {
-    /// Capability bitmap describing what an **open** database instance can serve.
-    ///
-    /// A capability is an *implementation promise*: if a backend advertises a capability bit, then
-    /// the corresponding trait surface must be fully and correctly implemented for that backend’s
-    /// on-disk schema.
-    ///
-    /// ## How capabilities are used
-    /// - [`crate::store::router::Router`] holds a primary and optional ephemeral
-    ///   backend and uses masks to decide which backend may serve a given feature.
-    /// - [`crate::store::reader::DbReader`] requests capabilities via
-    ///   [`CapabilityRequest`] (single-feature requests) and therefore obtains a backend that is
-    ///   guaranteed to support the requested operation.
-    ///
-    /// ## Extension trait mapping
-    /// Each bit corresponds 1-for-1 with a trait surface:
-    /// - `READ_CORE` / `WRITE_CORE` correspond to [`DbRead`] / [`DbWrite`]
-    /// - all other bits correspond to extension traits (e.g. [`BlockCoreExt`], [`TransparentHistExt`])
-    #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
-    pub(crate) struct Capability: u32 {
-        /* ------ core database functionality ------ */
-
-        /// Backend advertises no supported capability bits.
-        const NONE                  = 0;
-
-        /// Backend implements [`DbRead`].
-        ///
-        /// This includes:
-        /// - tip height (`db_height`)
-        /// - hash↔height lookups
-        /// - reading the persisted metadata singleton.
-        const READ_CORE             = 0b0000_0001;
-
-        /// Backend implements [`DbWrite`].
-        ///
-        /// This includes:
-        /// - appending tip blocks,
-        /// - deleting tip blocks,
-        /// - and updating the metadata singleton.
-        const WRITE_CORE            = 0b0000_0010;
-
-        /* ---------- database extensions ---------- */
-
-        /// Backend implements [`BlockCoreExt`] (header/txid and tx-index lookups).
-        const BLOCK_CORE_EXT        = 0b0000_0100;
-
-        /// Backend implements [`BlockTransparentExt`] (transparent per-block/per-tx data).
-        const BLOCK_TRANSPARENT_EXT = 0b0000_1000;
-
-        /// Backend implements [`BlockShieldedExt`] (sapling/orchard per-block/per-tx data).
-        const BLOCK_SHIELDED_EXT    = 0b0001_0000;
-
-        /// Backend implements [`CompactBlockExt`] (CompactBlock materialization).
-        const COMPACT_BLOCK_EXT     = 0b0010_0000;
-
-        /// Backend implements [`IndexedBlockExt`] (full `IndexedBlock` materialization).
-        const CHAIN_BLOCK_EXT       = 0b0100_0000;
-
-        /// Backend implements [`TransparentHistExt`] (transparent address history indices).
-        ///
-        /// Address history only. It used to also stand for the spent-output
-        /// index and the txout-set accumulator, which are neither address
-        /// history nor experimental — see [`Capability::SPENT_OUTPUT_INDEX`].
-        const TRANSPARENT_HIST_INDEX = 0b1000_0000;
-
-        /// Backend implements [`SpentOutputExt`] (which transaction spent an outpoint).
-        ///
-        /// Split out of `TRANSPARENT_HIST_EXT`, which conflated three things.
-        /// The spent index is built unconditionally from schema v1.2 onward and
-        /// has nothing to do with address history; routing it through a bit
-        /// named after an experimental feature meant a build without that
-        /// feature advertised a capability under a name that implied otherwise.
-        const SPENT_OUTPUT_INDEX    = 0b0001_0000_0000;
-
-        /// Backend implements [`TxOutSetExt`] (the UTXO-set accumulator).
-        ///
-        /// Separate from [`Capability::SPENT_OUTPUT_INDEX`] because it is a
-        /// separate persisted row that a backend could maintain without the
-        /// other, and because its correctness condition is different: the
-        /// accumulator is a running fold, so a backend that has one is claiming
-        /// it has been maintained across every write, not merely that a table
-        /// exists.
-        const TXOUT_SET_INDEX       = 0b0010_0000_0000;
-    }
-}
-
-impl Capability {
-    /// Every capability a fresh database at the latest schema serves, except
-    /// address history.
-    ///
-    /// Split from [`Capability::LATEST`] so the address-history bit is added in
-    /// exactly one place rather than being repeated in two `cfg` arms.
-    const LATEST_WITHOUT_ADDRESS_HISTORY: Capability = Capability::READ_CORE
-        .union(Capability::WRITE_CORE)
-        .union(Capability::BLOCK_CORE_EXT)
-        .union(Capability::BLOCK_TRANSPARENT_EXT)
-        .union(Capability::BLOCK_SHIELDED_EXT)
-        .union(Capability::COMPACT_BLOCK_EXT)
-        .union(Capability::CHAIN_BLOCK_EXT)
-        .union(Capability::SPENT_OUTPUT_INDEX)
-        .union(Capability::TXOUT_SET_INDEX);
-
-    /// Capability set supported by a **fresh** database at the latest major schema
-    /// supported by this build.
-    ///
-    /// The expected modern baseline for new database instances. It must remain in sync
-    /// with the latest on-disk schema (`DbV1` today).
-    ///
-    /// This arm: address history is compiled in, so a fresh database serves it.
-    #[cfg(feature = "transparent_address_history_experimental")]
-    pub(crate) const LATEST: Capability =
-        Capability::LATEST_WITHOUT_ADDRESS_HISTORY.union(Capability::TRANSPARENT_HIST_INDEX);
-
-    /// As above, but address history is not compiled in, so no database can
-    /// serve it — the reads do not exist in this build.
-    #[cfg(not(feature = "transparent_address_history_experimental"))]
-    pub(crate) const LATEST: Capability = Capability::LATEST_WITHOUT_ADDRESS_HISTORY;
-
-    /// Returns `true` if `self` includes **all** bits from `other`.
-    ///
-    /// This is primarily used for feature gating and routing assertions.
-    #[inline]
-    pub(crate) const fn has(self, other: Capability) -> bool {
-        self.contains(other)
-    }
-}
-
-/// A *single-feature* capability request used for routing.
-///
-/// `CapabilityRequest` values are intentionally non-composite: each variant maps to exactly one
-/// [`Capability`] bit. This keeps routing and error reporting unambiguous.
-///
-/// The router uses the request to select a backend that advertises the requested capability.
-/// If no backend advertises the capability, the call must fail with
-/// [`StoreError::FeatureUnavailable`].
-// `pub` (not `pub(crate)`) for the same reason as [`DbMetadata`]: it is carried
-// by [`StoreError::FeatureUnavailable`], and `error` is a `pub` module, so the
-// rustc `private_interfaces` check requires the variant's type to be at least as
-// visible as the variant. The `capability` module is itself `pub(crate)`, so
-// this does not widen the type beyond the crate; it only satisfies that check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CapabilityRequest {
-    /// Request the [`DbRead`] core surface.
-    ReadCore,
-
-    /// Request the [`DbWrite`] core surface.
-    WriteCore,
-
-    /// Request the [`BlockCoreExt`] extension surface.
-    BlockCoreExt,
-
-    /// Request the [`BlockTransparentExt`] extension surface.
-    BlockTransparentExt,
-
-    /// Request the [`BlockShieldedExt`] extension surface.
-    BlockShieldedExt,
-
-    /// Request the [`CompactBlockExt`] extension surface.
-    CompactBlockExt,
-
-    /// Request the [`IndexedBlockExt`] extension surface.
-    IndexedBlockExt,
-
-    /// Request the [`TransparentHistExt`] extension surface.
-    TransparentHistIndex,
-
-    /// Request the [`SpentOutputExt`] extension surface.
-    SpentOutputIndex,
-
-    /// Request the [`TxOutSetExt`] extension surface.
-    TxOutSetIndex,
-}
-
-impl CapabilityRequest {
-    /// Maps this request to the corresponding single-bit [`Capability`].
-    ///
-    /// This mapping must remain 1-for-1 with:
-    /// - the definitions in [`Capability`], and
-    /// - the human-readable names returned by [`CapabilityRequest::name`].
-    #[inline]
-    pub(crate) const fn as_capability(self) -> Capability {
-        match self {
-            CapabilityRequest::ReadCore => Capability::READ_CORE,
-            CapabilityRequest::WriteCore => Capability::WRITE_CORE,
-            CapabilityRequest::BlockCoreExt => Capability::BLOCK_CORE_EXT,
-            CapabilityRequest::BlockTransparentExt => Capability::BLOCK_TRANSPARENT_EXT,
-            CapabilityRequest::BlockShieldedExt => Capability::BLOCK_SHIELDED_EXT,
-            CapabilityRequest::CompactBlockExt => Capability::COMPACT_BLOCK_EXT,
-            CapabilityRequest::IndexedBlockExt => Capability::CHAIN_BLOCK_EXT,
-            CapabilityRequest::TransparentHistIndex => Capability::TRANSPARENT_HIST_INDEX,
-            CapabilityRequest::SpentOutputIndex => Capability::SPENT_OUTPUT_INDEX,
-            CapabilityRequest::TxOutSetIndex => Capability::TXOUT_SET_INDEX,
-        }
-    }
-
-    /// Returns a stable human-friendly feature name for errors and logs.
-    ///
-    /// This value is used in [`StoreError::FeatureUnavailable`] and must remain stable
-    /// across refactors to avoid confusing diagnostics.
-    #[inline]
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            CapabilityRequest::ReadCore => "READ_CORE",
-            CapabilityRequest::WriteCore => "WRITE_CORE",
-            CapabilityRequest::BlockCoreExt => "BLOCK_CORE_EXT",
-            CapabilityRequest::BlockTransparentExt => "BLOCK_TRANSPARENT_EXT",
-            CapabilityRequest::BlockShieldedExt => "BLOCK_SHIELDED_EXT",
-            CapabilityRequest::CompactBlockExt => "COMPACT_BLOCK_EXT",
-            CapabilityRequest::IndexedBlockExt => "CHAIN_BLOCK_EXT",
-            CapabilityRequest::TransparentHistIndex => "TRANSPARENT_HIST_INDEX",
-            CapabilityRequest::SpentOutputIndex => "SPENT_OUTPUT_INDEX",
-            CapabilityRequest::TxOutSetIndex => "TXOUT_SET_INDEX",
-        }
-    }
-}
-
-/// Renders the stable feature name, so [`StoreError::FeatureUnavailable`] and
-/// logs share the vocabulary routing uses.
-impl fmt::Display for CapabilityRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-/// Convenience conversion from a routing request to its single-bit capability.
-impl From<CapabilityRequest> for Capability {
-    #[inline]
-    fn from(req: CapabilityRequest) -> Self {
-        req.as_capability()
-    }
-}
 
 // ***** Database metadata structs *****
 
@@ -433,14 +177,7 @@ pub trait DbWrite: Send + Sync {
     fn delete_block(&self, block: &IndexedBlock) -> impl SendFut<Result<(), StoreError>>;
 }
 
-/// Core runtime surface implemented by every backend instance.
-///
-/// This trait binds together:
-/// - the core read/write operations, and
-/// - lifecycle and status reporting for background tasks.
-///
-/// In practice, [`crate::store::router::Router`] implements this by
-/// delegating to the currently routed core backend(s).
+/// Core runtime surface that binds the core read/write operations to lifecycle and status reporting.
 pub trait DbCore: DbRead + DbWrite + Send + Sync {
     /// Returns the current runtime status (`Starting`, `Syncing`, `Ready`, …).
     fn status(&self) -> StatusType;

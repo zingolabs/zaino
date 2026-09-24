@@ -163,11 +163,6 @@ pub struct ZainodConfig {
     ///
     /// Required when using the `state` backend.
     pub zebra_db_path: PathBuf,
-    /// Run the finalised-state database in ephemeral/stateless mode.
-    ///
-    /// When enabled, Zaino does not use a persistent on-disk finalised-state database. Finalised
-    /// state reads are served from the configured validator/source instead.
-    pub ephemeral_finalised_state: bool,
     /// Network to connect to (Mainnet, PubTestnet — The Public Testnet — or Regtest;
     /// `"Testnet"` is accepted as a legacy spelling of PubTestnet).
     pub network: Network,
@@ -379,7 +374,6 @@ impl Default for ZainodConfig {
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
             mempool: MempoolSettings::default(),
-            ephemeral_finalised_state: false,
             zebra_db_path: default_zebra_db_path(),
             network: Network::PubTestnet,
             donation_address: None,
@@ -562,7 +556,6 @@ fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
             .unwrap_or_else(|| "xxxxxx".to_string()),
         service: cfg.service,
         storage: cfg.storage,
-        ephemeral_finalised_state: cfg.ephemeral_finalised_state,
         network: cfg.network,
         donation_address: cfg.donation_address,
         mempool: cfg.mempool.to_mempool_config(),
@@ -1040,14 +1033,12 @@ listen_address = "127.0.0.1:8137"
         );
         guard.set_var("ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR", "/env/cookie/path");
         guard.set_var("ZAINO_STORAGE__CACHE__CAPACITY", "12345");
-        guard.set_var("ZAINO_EPHEMERAL_FINALISED_STATE", "true");
 
         let config_path = create_test_config_file(&temp_dir, toml_content, "test_config.toml");
         let config = load_config(&config_path).expect("load_config should succeed");
 
         assert_eq!(config.network, Network::Mainnet);
         assert_eq!(config.storage.cache.capacity, 12345);
-        assert!(config.ephemeral_finalised_state);
         assert!(config.json_server_settings.is_some());
         assert_eq!(
             config.json_server_settings.as_ref().unwrap().cookie_dir,
@@ -1409,13 +1400,6 @@ listen_address = "127.0.0.1:8137"
             format!("{:#?}", rpc_cfg.common),
             format!("{:#?}", direct_cfg.common),
         );
-
-        let ephemeral_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
-            ephemeral_finalised_state: true,
-            ..ZainodConfig::default()
-        })
-        .expect("conversion should succeed for ephemeral finalised state");
-        assert!(ephemeral_cfg.common.ephemeral_finalised_state);
     }
 
     /// Builds a default config with the JSON-RPC server bound to `addr`.
@@ -1546,8 +1530,9 @@ listen_address = "127.0.0.1:8137"
             .expect("public JSON-RPC bind must be accepted under the override feature");
     }
 
+    /// A config that still sets the removed `ephemeral_finalised_state` key fails to load rather than silently running with a persistent database.
     #[test]
-    fn test_ephemeral_finalised_state_config_is_deserialized() {
+    fn stale_ephemeral_finalised_state_key_is_rejected() {
         let _guard = EnvGuard::new();
         let temp_dir = TempDir::new().unwrap();
 
@@ -1568,13 +1553,9 @@ listen_address = "127.0.0.1:8137"
 
         let config_path =
             create_test_config_file(&temp_dir, toml_content, "ephemeral_finalised_state.toml");
-        let config = load_config(&config_path).expect("load_config failed");
-
-        assert!(config.ephemeral_finalised_state);
-
-        let service_config = NodeBackedIndexerServiceConfig::try_from(config)
-            .expect("service config conversion should succeed");
-
-        assert!(service_config.common.ephemeral_finalised_state);
+        assert!(
+            load_config(&config_path).is_err(),
+            "stale `ephemeral_finalised_state` key must be rejected by deny_unknown_fields"
+        );
     }
 }

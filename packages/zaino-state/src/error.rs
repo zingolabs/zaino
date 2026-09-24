@@ -458,12 +458,6 @@ impl From<FinalisedStateError> for ChainIndexError {
     fn from(value: FinalisedStateError) -> Self {
         let message = match &value {
             FinalisedStateError::DataUnavailable(err) => format!("unhandled missing data: {err}"),
-            FinalisedStateError::FeatureUnavailable(err) => {
-                format!("unhandled missing feature: {err}")
-            }
-            FinalisedStateError::V1BackendUnavailable(handle) => {
-                format!("v1 backend unavailable: {handle}")
-            }
             FinalisedStateError::InvalidBlock {
                 height,
                 hash: _,

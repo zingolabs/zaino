@@ -6,8 +6,6 @@ use serde_json::{json, Value};
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
-/// One `/metrics` round trip, not a readiness budget
-const SCRAPE: Duration = Duration::from_secs(10);
 
 mod chain_query_interface {
     use super::*;
@@ -42,108 +40,6 @@ mod chain_query_interface {
             );
             assert_eq!(block.hash.len(), 32, "block hash must be 32 bytes");
         }
-        Ok(())
-    }
-
-    /// Ephemeral mode opens no persistent finalised-state database: every read that
-    /// would need one is passed through to the validator instead.
-    ///
-    /// `db_height` is pinned at `0` in ephemeral mode, so the non-finalised cache
-    /// retains only `tip - MAX_NFS_DEPTH` (= seam + 10) upward. The chain is mined
-    /// past that so the reads below the floor are genuinely served by the passthrough
-    /// and not by the cache — at the operational seam of 1001 the whole chain fits in
-    /// the cache and the passthrough is never reached, hence the `fast-test-seam` image.
-    #[ztest::qos::integration]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ephemeral_serves_finalised_blocks_zebrad() -> Result<()> {
-        const CHAIN_LEN: u32 = 160;
-        // seam (100) + the 10-block margin MAX_NFS_DEPTH adds
-        const CACHE_FLOOR: u32 = 160 - 110;
-
-        let mut env = TestEnv::builder().ready_timeout(Duration::from_secs(180));
-        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-        let indexer = env.add_indexer(
-            dev!(
-                Indexer::Zainod,
-                "../../Dockerfile",
-                features = [
-                    "no_tls_use_unencrypted_traffic",
-                    "allow_unencrypted_public_json_rpc_bind",
-                    "prometheus",
-                    "fast-test-seam",
-                ]
-            )
-            .regtest()
-            .tuning(ZainoTuning::Ephemeral),
-        );
-        env.build().await?;
-
-        let tip = validator.generate_blocks(CHAIN_LEN).await?;
-        indexer.wait_for_block_num(tip, READY).await?;
-        let tip = u32::from(tip);
-
-        // Nothing persisted: `zaino_sync_finalized_height` comes only from the v1 write path,
-        // which ephemeral mode never spawns (family never appears)
-        assert_eq!(
-            indexer
-                .read(SCRAPE)
-                .await
-                .map_err(anyhow::Error::msg)?
-                .height(zaino_testutils::finalised::FINALIZED_HEIGHT),
-            None,
-            "ephemeral mode must open no finalised database, but the finalised writer \
-             reported a committed tip"
-        );
-
-        let range = indexer
-            .get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip))
-            .await?;
-        assert_eq!(
-            range.len(),
-            tip as usize,
-            "ephemeral index must serve every block over [1, {tip}]"
-        );
-        for (offset, block) in range.iter().enumerate() {
-            assert_eq!(
-                block.height,
-                (offset + 1) as u64,
-                "served blocks must be contiguous from height 1"
-            );
-        }
-        for pair in range.windows(2) {
-            assert_eq!(
-                pair[1].prev_hash, pair[0].hash,
-                "block {} does not link to block {} — the passthrough and the cache                  served two different chains",
-                pair[1].height, pair[0].height
-            );
-        }
-
-        let below_floor = BlockHeight::from(CACHE_FLOOR / 2);
-        let by_height = indexer.get_block(below_floor).await?;
-        let hash_bytes: [u8; 32] = by_height
-            .hash
-            .clone()
-            .try_into()
-            .ok()
-            .context("served block hash must be 32 bytes")?;
-        let by_hash = indexer.get_block_by_hash(BlockHash(hash_bytes)).await?;
-        assert_eq!(
-            by_hash, by_height,
-            "a block below the cache floor must be the same fetched by height and by hash"
-        );
-
-        let vrpc = validator.json_rpc().await?;
-        let hash = vrpc
-            .call_value("getblockhash", json!([by_height.height]))
-            .await?;
-        let mut served = by_height.hash.clone();
-        served.reverse();
-        assert_eq!(
-            zaino_testutils::hex::encode(&served),
-            hash.as_str().context("getblockhash returns a hex string")?,
-            "the passthrough served a different block than the validator holds at {}",
-            by_height.height
-        );
         Ok(())
     }
 

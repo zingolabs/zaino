@@ -11,13 +11,9 @@
 //!   at a height, and which is a `zebra-chain` type the domain crate must not
 //!   name.
 //!
-//! Everything else — where the store lives, which schema to target, how it
-//! behaves when a build fails — is the same question for any store, and lives
-//! in [`ChainStoreConfig`].
-//!
-//! This replaces a `StoreSettings` that was `zaino-state`'s struct moved
-//! wholesale, carrying `path` beside an `ephemeral` flag that could contradict
-//! it. Those two are now one `Option<PathBuf>` on the neutral half.
+//! Everything else — where the store lives and how it behaves when a build
+//! fails — is the same question for any store, and lives in
+//! [`ChainStoreConfig`].
 
 use zaino_chain_store::ChainStoreConfig;
 use zaino_common::{AccumulatorRebuildMemorySize, DatabaseSize, StorageConfig, SyncWriteBatchSize};
@@ -30,8 +26,8 @@ use zaino_common::{AccumulatorRebuildMemorySize, DatabaseSize, StorageConfig, Sy
 /// then has to defend against.
 ///
 /// Deliberately carries **no path**. Where the store lives is
-/// [`ChainStoreConfig::path`], and a second copy here is a second answer to one
-/// question — which is exactly the shape the `ephemeral`-beside-`path` pair had.
+/// [`ChainStoreConfig::path`], and a second copy here would be a second answer
+/// to one question.
 #[derive(Debug, Clone)]
 pub struct ZainoDbConfig {
     size: DatabaseSize,
@@ -55,9 +51,8 @@ impl ZainoDbConfig {
     ///
     /// Takes the whole [`StorageConfig`] and reads the four budgets out of it,
     /// ignoring its `path`: the path an operator configures reaches the store
-    /// through [`ChainStoreConfig::at_path`], so that the passthrough case is
-    /// the absence of a path rather than a flag beside one. The cache settings
-    /// are not read here either — nothing in this crate consults them.
+    /// through [`ChainStoreConfig::at_path`]. The cache settings are not read
+    /// here either — nothing in this crate consults them.
     pub fn from_storage(
         storage: &StorageConfig,
         network: zebra_chain::parameters::Network,

@@ -16,7 +16,7 @@ impl DbRead for DbV1 {
     async fn get_block_height(&self, hash: BlockHash) -> Result<Option<Height>, StoreError> {
         match self.get_block_height_by_hash(hash).await {
             Ok(height) => Ok(Some(height)),
-            Err(StoreError::DataUnavailable(_) | StoreError::FeatureUnavailable(_)) => Ok(None),
+            Err(StoreError::DataUnavailable(_)) => Ok(None),
             Err(other) => Err(other),
         }
     }
@@ -24,7 +24,7 @@ impl DbRead for DbV1 {
     async fn get_block_hash(&self, height: Height) -> Result<Option<BlockHash>, StoreError> {
         match self.get_block_header_data(height).await {
             Ok(header) => Ok(Some(header.context.index.hash)),
-            Err(StoreError::DataUnavailable(_) | StoreError::FeatureUnavailable(_)) => Ok(None),
+            Err(StoreError::DataUnavailable(_)) => Ok(None),
             Err(other) => Err(other),
         }
     }

@@ -31,7 +31,7 @@ Per-component detail:
 
 | Component       | Detail                                                                                          |
 | --------------- | ----------------------------------------------------------------------------------------------- |
-| finalised state | mode: `persistent`, `ephemeral(configured)`, `ephemeral(syncing)`, `ephemeral(migrating)`; accumulator rebuild running |
+| finalised state | building or synced; accumulator rebuild running                                                  |
 | mempool         | completeness: `complete`, `incomplete(capacity_limited / pending_metadata / source_error)`      |
 
 ## Quantities on `/metrics`, modes on `/readyz`

@@ -13,7 +13,7 @@
 use super::error_map::{corrupt_row, corrupt_row_because};
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability,
-    SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoredAddress, StoredBlock,
+    SpentOutputIndexCapability, StoreCapabilities, StoredAddress, StoredBlock,
     StoredBlockReadCapability, StoredTx, StoredTxOut, TransactionIndexCapability,
     TxOutSetIndexCapability,
 };
@@ -24,7 +24,6 @@ use zaino_primitives::types::{
     TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
 };
 
-use crate::store::capability::Capability;
 use crate::types::{
     AbsoluteChainWork, BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock,
     Outpoint, TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
@@ -345,33 +344,8 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     }
 }
 
-/// This backend's capability bits, as the domain's capability set.
-///
-/// Not one-for-one: the domain names indexes a consumer can ask about, where
-/// the bits name trait surfaces this crate routes on. Several bits collapse —
-/// a store either answers block reads or it does not, and which of the three
-/// per-pool surfaces it used to get there is not a distinction a consumer can
-/// act on.
-///
-/// # Why this is generic over the reader
-///
-/// Every capability is named as `<R as SomePortCapability>::CAPABILITY` rather
-/// than as a [`StoreCapability`] variant, so the advertisement is tied to the
-/// port that answers it. Choosing variants by hand let the two drift in both
-/// directions: a store could advertise an index it does not serve, or serve one
-/// it never advertises, and both compile. Now a capability can only be
-/// advertised for a port `R` actually implements — drop one of these impls and
-/// this stops compiling instead of quietly over-promising.
-///
-/// The `CAPABILITY` comes from the sealed carrier trait, not the port, so the
-/// pairing cannot be restated by an implementor even by accident; see
-/// [`sealed_capability`](zaino_chain_store::ChainStoreReaderCapability).
-///
-/// It does not make the runtime bits agree with the compile-time impls; that
-/// is what the bits are for, since this backend implements every port and
-/// decides at runtime which it can serve. What it fixes is the mapping between
-/// the two being restated here rather than read from the port.
-pub(super) fn store_capabilities<R>(capability: Capability) -> StoreCapabilities
+/// The domain capabilities of every read port `R` implements in this build, so an advertisement cannot name a port that is not compiled in.
+pub(super) fn store_capabilities<R>() -> StoreCapabilities
 where
     R: ChainStoreReaderCapability
         + StoredBlockReadCapability
@@ -380,40 +354,20 @@ where
         + SpentOutputIndexCapability
         + TxOutSetIndexCapability,
 {
-    let mut capabilities = vec![<R as ChainStoreReaderCapability>::CAPABILITY];
-
-    // Stored blocks need the header, the txids and every per-pool surface: a
-    // block missing one of them is not a block this store can hand over.
-    if capability.has(
-        Capability::CHAIN_BLOCK_EXT
-            .union(Capability::BLOCK_CORE_EXT)
-            .union(Capability::BLOCK_TRANSPARENT_EXT)
-            .union(Capability::BLOCK_SHIELDED_EXT),
-    ) {
-        capabilities.push(<R as StoredBlockReadCapability>::CAPABILITY);
-    }
-    if capability.has(Capability::COMPACT_BLOCK_EXT) {
-        capabilities.push(<R as CompactBlockReadCapability>::CAPABILITY);
-    }
-    if capability.has(Capability::BLOCK_CORE_EXT) {
-        capabilities.push(<R as TransactionIndexCapability>::CAPABILITY);
-    }
-    // Both halves: the domain's spent-output surface answers "what did this
-    // outpoint hold" from the transparent rows as well as "who spent it" from
-    // the spent index, and a store with only one of them cannot serve it.
-    if capability.has(Capability::SPENT_OUTPUT_INDEX.union(Capability::BLOCK_TRANSPARENT_EXT)) {
-        capabilities.push(<R as SpentOutputIndexCapability>::CAPABILITY);
-    }
-    if capability.has(Capability::TXOUT_SET_INDEX) {
-        capabilities.push(<R as TxOutSetIndexCapability>::CAPABILITY);
-    }
-    // The one capability still named directly rather than read off its port.
-    // `TransparentHistoryIndex` is implemented behind a feature, so it cannot
-    // be a bound on this function in a build without it, and the advertisement
-    // has to stand on its own. It is gated on the same bit either way.
-    if capability.has(Capability::TRANSPARENT_HIST_INDEX) {
-        capabilities.push(StoreCapability::TransparentHistory);
-    }
+    let capabilities = vec![
+        <R as ChainStoreReaderCapability>::CAPABILITY,
+        <R as StoredBlockReadCapability>::CAPABILITY,
+        <R as CompactBlockReadCapability>::CAPABILITY,
+        <R as TransactionIndexCapability>::CAPABILITY,
+        <R as SpentOutputIndexCapability>::CAPABILITY,
+        <R as TxOutSetIndexCapability>::CAPABILITY,
+    ];
+    #[cfg(feature = "transparent_address_history_experimental")]
+    let capabilities = {
+        let mut capabilities = capabilities;
+        capabilities.push(zaino_chain_store::StoreCapability::TransparentHistory);
+        capabilities
+    };
 
     StoreCapabilities::new(capabilities)
 }
@@ -429,11 +383,6 @@ mod tests {
 
     /// The concrete reader whose ports the capability mapping is read from.
     type Reader = DbReader<zaino_source_zebra::ZebraValidator>;
-
-    /// The capabilities a store on these bits advertises.
-    fn advertised(capability: Capability) -> StoreCapabilities {
-        store_capabilities::<Reader>(capability)
-    }
 
     /// A stored value the domain cannot express is corruption, not absence.
     ///
@@ -484,44 +433,10 @@ mod tests {
         }
     }
 
-    /// The capability mapping reports what a consumer can actually ask for.
-    ///
-    /// The domain names indexes; the bits name trait surfaces. Several bits
-    /// collapse into one domain capability, and two of them collapse into
-    /// `SpentOutputs` together — a store with the spent index but no
-    /// transparent rows cannot answer "what did this outpoint hold", so
-    /// claiming the capability would be a lie a caller only discovers by
-    /// asking.
-    #[test]
-    fn a_store_missing_transparent_rows_does_not_claim_spent_outputs() {
-        let without_rows = Capability::SPENT_OUTPUT_INDEX;
-        assert!(!advertised(without_rows).contains(StoreCapability::SpentOutputs));
-
-        let with_rows = Capability::SPENT_OUTPUT_INDEX | Capability::BLOCK_TRANSPARENT_EXT;
-        assert!(advertised(with_rows).contains(StoreCapability::SpentOutputs));
-    }
-
-    /// Core is always claimed, even by a store that advertises nothing.
-    ///
-    /// Not a convenience: the domain's contract is that a store which cannot
-    /// answer the core reads is not a store, so a consumer is entitled to
-    /// assume the capability is present rather than check for it.
-    #[test]
-    fn core_is_always_claimed() {
-        assert!(advertised(Capability::empty()).contains(StoreCapability::Core));
-    }
-
-    /// What a store advertises is exactly what its ports say it can answer.
-    ///
-    /// Every capability the mapping can produce is one of the ports' own
-    /// `CAPABILITY` values, and every read port this backend implements is
-    /// reachable through the mapping. The set is closed, so both directions can
-    /// be checked rather than assumed: a port added to the domain without a bit
-    /// to advertise it, or a bit advertising a capability no port answers,
-    /// fails here.
+    /// Every advertised capability belongs to a port this backend implements, and every read port is advertised.
     #[test]
     fn every_advertised_capability_belongs_to_a_port_this_backend_implements() {
-        let everything = advertised(Capability::all());
+        let everything = store_capabilities::<Reader>();
 
         let ports = [
             <Reader as ChainStoreReaderCapability>::CAPABILITY,
@@ -535,7 +450,7 @@ mod tests {
         for capability in everything.iter() {
             #[cfg(not(feature = "transparent_address_history_experimental"))]
             assert!(
-                ports.contains(&capability) || capability == StoreCapability::TransparentHistory,
+                ports.contains(&capability),
                 "{capability} is advertised but answered by no port"
             );
             #[cfg(feature = "transparent_address_history_experimental")]

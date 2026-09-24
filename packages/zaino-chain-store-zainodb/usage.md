@@ -38,10 +38,10 @@ write-cadence budgets, and the network whose activation schedule decides which
 commitment-tree roots a block should have.
 
 It deliberately carries **no path**. Where the store lives is
-`ChainStoreConfig::path`, and passing no path is what selects the ephemeral
-passthrough — so the two cannot contradict each other, because there is only one
-field. `ZainoDbConfig::from_storage` reads the budgets out of an operator's
-`StorageConfig` and ignores its `path` for exactly that reason.
+`ChainStoreConfig::path`, which is required: every store persists.
+`ZainoDbConfig::from_storage` reads the budgets out of an operator's
+`StorageConfig` and ignores its `path`, so there is one answer to where the
+store lives.
 
 ## The on-disk types are a compatibility contract
 
@@ -95,21 +95,13 @@ Any change to an on-disk encoding changes the hash, and every deployment pays
 one full rebuild on its next start. `golden.rs` pins both the encodings and the
 hash, so a failing golden is the signal that a change carries that cost.
 
-## The ephemeral backend has two jobs, not one
+## Reads during a build see only what is written
 
-It is the passthrough for a deployment configured with no database. It is *also*
-the read shim `init_or_take_ephemeral` installs while a long build or migration
-is in progress. Removing the second role means a store 100k blocks behind
-returns `None` for every read, which is worse than being slow.
-
-Both roles report `Provenance::Passthrough`, and that is load-bearing rather
-than cosmetic: the watermark bound is skipped for a passthrough read, because
-the answer comes from the validator and the store's own durable tip is not its
-limit. `watermark_provenance` derives from `finalised_state_mode`, which derives
-from what `Router::backend` routes on — so it cannot disagree with where a read
-actually lands. Anything that decides provenance from the primary backend alone
-gets the *routed*-ephemeral case wrong, and a persistent store part-way through
-a build then describes its passthrough answers as durable and refuses them.
+The store has one backend, the LMDB database, and nothing answers in its place
+while it builds. A read during a long build sees the blocks written so far and
+reports anything above the watermark as absent. `FinalisedState::is_building`
+says whether a background build is running, and
+`FinalisedState::wait_until_synced` waits for it to finish.
 
 ## The watermark is published by whatever moves the tip
 
@@ -120,8 +112,8 @@ built a hundred thousand blocks and never published would report no tip and
 refuse every bounded read, while the database filled up behind it.
 
 If you add a path that writes blocks, publish from it. `refresh_watermark` is a
-free function taking the router precisely so the static build path can reach
-it.
+free function taking the database and the watermark precisely so the static
+build path can reach it.
 
 ## Writing: append-only, contiguous, and batched where it can be
 
@@ -264,9 +256,8 @@ Recorded because they are mechanical and none is a trait today:
 - `DbWrite::write_blocks_to_height` is generic per method, and the backend
   surface is RPITIT throughout. Neither is `dyn`-safe, so a second backend is a
   generic parameter threaded through, or an object-safe façade.
-- `FinalisedSource<T>` is a closed `V1 | Ephemeral` enum, matched exhaustively
-  in `init_or_take_ephemeral`, `update_ephemeral_db_height` and
-  `primary_is_ephemeral`. That enum is the real second-adapter seam.
+- `FinalisedState` holds `DbV1` directly. A second backend needs a seam there,
+  as a generic parameter or an enum over the known backends.
 - Every read goes through `tokio::task::block_in_place`, which converts a
   runtime worker into a blocking thread for the duration and gives no bound on
   how many are converted at once. `spawn_blocking` has a bounded pool and

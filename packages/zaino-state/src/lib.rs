@@ -60,8 +60,6 @@ pub use indexer::node_backed_indexer::{
 
 pub mod chain_index;
 
-pub use zaino_chain_store_zainodb::store::FinalisedStateMode;
-
 // Core ChainIndex trait and implementations
 pub use chain_index::{
     ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
