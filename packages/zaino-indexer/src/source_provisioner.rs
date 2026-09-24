@@ -508,6 +508,7 @@ where
             let backend = self.backend.clone();
             let tip_source = Arc::clone(&self.provisioner);
             let reporter = reporter.clone();
+            let finalised_depth = self.finalised_depth;
             let _poller = Task::spawn(TaskName("indexer-progress"), move |_unused| async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
                 loop {
@@ -524,11 +525,18 @@ where
                                 })
                                 .map(|height| u64::from(u32::from(height)))
                                 .unwrap_or(0);
+                            // The indexer only builds the append-only finalised
+                            // range, so its progress target is the finalised
+                            // boundary (tip − reorg margin), mirroring `finalised`
+                            // — not the live tip. Reporting the live tip would peg
+                            // it at a chronic 99.9%, never reaching its own
+                            // caught-up height; the chain-head (NFS) is what tracks
+                            // the live tip.
                             let target = tip_source
                                 .current_tip()
                                 .await
                                 .ok()
-                                .map(|height| u64::from(u32::from(height)));
+                                .map(|tip| u64::from(u32::from(tip.saturating_sub(finalised_depth))));
                             reporter.progress(committed, target);
                         }
                     }
