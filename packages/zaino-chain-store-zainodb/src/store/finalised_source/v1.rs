@@ -10,10 +10,11 @@
 //! features. The hash is stored in the database metadata; a mismatch on open rebuilds the store.
 //!
 //! ## Trust model
-//! Blocks come from the validator and are not re-verified. The one check on the write path is
-//! continuity: each block's parent must be the stored tip, which keeps the chain append-only.
-//! Heights run from genesis to the tip with no gaps, so a read only needs to confirm that its
-//! heights are stored.
+//! Blocks come from the validator and are trusted. The write path checks what Zaino itself
+//! derives: each block's parent must be the stored tip, which keeps the chain append-only, and
+//! its txids must reproduce its header's merkle root. The maintenance task cross-checks the spent
+//! index and the address history against each stored block. Heights run from genesis to the tip
+//! with no gaps, so a read only needs to confirm that its heights are stored.
 //!
 //! ## Concurrency model
 //! LMDB supports many concurrent readers and a single writer per environment. This implementation
@@ -70,7 +71,7 @@ use std::collections::HashMap;
 use std::{collections::HashSet, fs, sync::Arc, time::Duration};
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 pub(crate) mod read_core;
 pub(crate) mod write_core;
@@ -87,6 +88,8 @@ pub(crate) mod transparent_address_history;
 pub(crate) mod tx_out_set_accumulator;
 
 pub(crate) mod schema;
+
+mod index_check;
 
 /// Whether a database's stored `metadata` record matches this build's schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -556,13 +559,14 @@ impl DbV1 {
         self.status.store(status);
     }
 
-    /// Marks the database ready and spawns the maintenance task that refreshes gauges and releases trailing readers until shutdown.
+    /// Marks the database ready and spawns the maintenance task that refreshes gauges, cross-checks the indexes of each stored block, and releases trailing readers until shutdown.
     pub(in crate::store) fn start_maintenance(&self) {
         let zaino_db = self.detached_handle();
         zaino_db.status.store(StatusType::Ready);
 
         let handle = tokio::spawn(async move {
             let mut maintenance = interval(Duration::from_secs(60));
+            let mut next_to_check = GENESIS_HEIGHT;
             while zaino_db.status.load() != StatusType::Closing {
                 // Sampled here because a quiet chain writes no blocks to publish them.
                 zaino_db.record_db_used_bytes();
@@ -571,11 +575,32 @@ impl DbV1 {
                         .set(built.0 as f64);
                 }
 
+                if let Err(error) = zaino_db.check_indexes_to_tip(&mut next_to_check).await {
+                    error!(%error, height = next_to_check.0, "finalised index cross-check failed");
+                    zaino_db.status.store(StatusType::CriticalError);
+                    return;
+                }
+
                 zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
             }
         });
 
         *self.db_handler.lock().expect("db_handler mutex poisoned") = Some(handle);
+    }
+
+    /// Cross-checks the indexes of every stored block from `next` to the tip, advancing `next` past each block that passes.
+    async fn check_indexes_to_tip(&self, next: &mut Height) -> Result<(), StoreError> {
+        let Some(tip) = self.tip_height().await? else {
+            return Ok(());
+        };
+        while *next <= tip && self.status.load() != StatusType::Closing {
+            tokio::task::block_in_place(|| self.check_block_indexes_blocking(*next))?;
+            let Some(following) = next.0.checked_add(1) else {
+                break;
+            };
+            *next = Height(following);
+        }
+        Ok(())
     }
 
     /// Compares the stored `metadata` record with this build's schema, writing it first when the database is fresh.
