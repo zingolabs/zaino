@@ -598,6 +598,14 @@ impl<B: Backend + 'static> MempoolContent for StoreReader<B> {
         // No mempool at the finalised store; the composed runtime supplies it.
         Ok(None)
     }
+
+    async fn mempool_compact_transaction(
+        &self,
+        _txid: TransactionId,
+    ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
+        // No mempool at the finalised store; the composed runtime supplies it.
+        Ok(None)
+    }
 }
 
 impl<B: Backend + 'static> TipSubscribe for StoreReader<B> {

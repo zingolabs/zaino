@@ -14,8 +14,10 @@
 //! compact-indexer path ([`OneShotGetPreIndexCompactBlock`],
 //! [`OneShotGetChainTip`], [`SubscribeChainTip`]) and the serving path's
 //! passthrough ports ([`OneShotGetTreestate`], [`OneShotSendRawTransaction`],
-//! [`OneShotGetTransaction`], [`OneShotGetSubtreeRoots`], and the
-//! transparent-address reads). Each is a mechanical `Deref`-forward.
+//! [`OneShotGetTransaction`], [`OneShotGetSubtreeRoots`], the transparent-address
+//! reads, and the mempool reads ([`OneShotGetMempoolTxids`],
+//! [`OneShotGetRawMempoolTransaction`], [`OneShotGetMempoolCompactTransaction`],
+//! [`OneShotGetMempoolSourceTip`])). Each is a mechanical `Deref`-forward.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -24,8 +26,8 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, BlockHash, Height, PreIndexCompactBlock, ShieldedPool,
-    SubtreeRoot, TransactionId, Treestate, Utxo,
+    AddressBalance, AddressDelta, BlockHash, Height, PreIndexCompactBlock, PreIndexCompactTx,
+    ShieldedPool, SubtreeRoot, TransactionId, Treestate, Utxo,
 };
 
 use crate::{
@@ -33,10 +35,11 @@ use crate::{
     GetBlockError, GetChainTipError, GetMempoolTxidsError, GetRawMempoolTransactionError,
     GetSubtreeRootsError, GetTransactionError, GetTreestateError, OneShotGetAddressBalance,
     OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetChainTip,
-    OneShotGetMempoolSourceTip, OneShotGetMempoolTxids, OneShotGetPreIndexCompactBlock,
-    OneShotGetRawMempoolTransaction, OneShotGetSubtreeRoots, OneShotGetTransaction,
-    OneShotGetTreestate, OneShotSendRawTransaction, QueryError, SendRawTransactionError,
-    SubscribeChainTip, TipObservation, TransactionResponse, ValidatorSource,
+    OneShotGetMempoolCompactTransaction, OneShotGetMempoolSourceTip, OneShotGetMempoolTxids,
+    OneShotGetPreIndexCompactBlock, OneShotGetRawMempoolTransaction, OneShotGetSubtreeRoots,
+    OneShotGetTransaction, OneShotGetTreestate, OneShotSendRawTransaction, QueryError,
+    SendRawTransactionError, SubscribeChainTip, TipObservation, TransactionResponse,
+    ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -200,5 +203,21 @@ impl<V: OneShotGetMempoolSourceTip + ?Sized> OneShotGetMempoolSourceTip for Arc<
     ) -> impl Future<Output = Result<(BlockHash, Height), QueryError<Infallible, Self::NonDomain>>> + Send
     {
         (**self).get_mempool_source_tip()
+    }
+}
+
+impl<V: OneShotGetMempoolCompactTransaction + ?Sized> OneShotGetMempoolCompactTransaction
+    for Arc<V>
+{
+    fn get_mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<
+        Output = Result<
+            PreIndexCompactTx,
+            QueryError<GetRawMempoolTransactionError, Self::NonDomain>,
+        >,
+    > + Send {
+        (**self).get_mempool_compact_transaction(txid)
     }
 }

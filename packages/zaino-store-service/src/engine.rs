@@ -10,13 +10,13 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::ChainView;
 use zaino_source::{
-    GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction, GetTreestate,
-    SendRawTransaction,
+    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction,
+    GetTreestate, SendRawTransaction,
 };
 
 use zaino_core::{
-    MempoolTx, PassthroughAnswer, PassthroughQuery, ReportedUpgrade, ServiceabilityManifest,
-    TipEvent, TransactionId,
+    MempoolTx, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, ReportedUpgrade,
+    ServiceabilityManifest, TipEvent, TransactionId,
 };
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::{
@@ -131,7 +131,7 @@ impl<Fs, Nfs, Src> MempoolContent for Engine<Fs, Nfs, Src>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
-    Src: GetRawMempoolTransaction + Send + Sync + 'static,
+    Src: GetRawMempoolTransaction + GetMempoolCompactTransaction + Send + Sync + 'static,
 {
     async fn mempool_raw_transaction(
         &self,
@@ -140,6 +140,14 @@ where
         // Live passthrough to the mempool's own source — never the finalised
         // secondary, which holds no mempool. Routing lives in the source adapter.
         self.remote.raw_mempool_transaction(txid).await
+    }
+
+    async fn mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
+        // Same live passthrough; the compact projection is done in the adapter.
+        self.remote.mempool_compact_transaction(txid).await
     }
 }
 
@@ -191,6 +199,7 @@ where
         + SendRawTransaction
         + GetMempoolTxids
         + GetRawMempoolTransaction
+        + GetMempoolCompactTransaction
         + GetMempoolSourceTip
         + Clone
         + 'static,

@@ -270,6 +270,24 @@ impl crate::OneShotGetRawMempoolTransaction for MockChain {
     }
 }
 
+impl crate::OneShotGetMempoolCompactTransaction for MockChain {
+    async fn get_mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<
+        zaino_primitives::types::PreIndexCompactTx,
+        QueryError<crate::GetRawMempoolTransactionError>,
+    > {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        // The static mock carries no mempool transactions.
+        Err(QueryError::Domain(
+            crate::GetRawMempoolTransactionError::NotFound(txid),
+        ))
+    }
+}
+
 impl crate::OneShotGetMempoolSourceTip for MockChain {
     async fn get_mempool_source_tip(
         &self,

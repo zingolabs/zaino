@@ -5,11 +5,10 @@
 //! read-set is wired — compact blocks (`GetLatestBlock`/`GetBlock`/
 //! `GetBlockRange`), treestate + subtree roots, transactions, transparent
 //! address reads, and the nullifier-populated variants — plus `GetLightdInfo`,
-//! `SendTransaction`, and `Ping`. The mempool passthrough serves
-//! `GetMempoolStream` (raw transactions); only `GetMempoolTx` (the *compact*
-//! projection) still returns `Status::unimplemented`, pending the source-adapter
-//! projection port. Implemented on a wrapper (not `LightServe` itself) so the
-//! handler stays a pure profile handler and there is no inherent/trait
+//! `SendTransaction`, `Ping`, and the mempool passthrough (`GetMempoolTx` /
+//! `GetMempoolStream`). Every method of the generated (fixed lightwalletd)
+//! contract is now served. Implemented on a wrapper (not `LightServe` itself) so
+//! the handler stays a pure profile handler and there is no inherent/trait
 //! method-name clash.
 
 use futures::stream::{BoxStream, StreamExt};
@@ -62,11 +61,6 @@ fn to_status(err: ServeError) -> Status {
         ServeError::Unavailable(t) => Status::unavailable(t.to_string()),
         ServeError::Internal(msg) => Status::internal(msg),
     }
-}
-
-/// The single message for a method whose handler is not built yet.
-fn unimplemented(method: &str) -> Status {
-    Status::unimplemented(format!("{method} not served yet"))
 }
 
 /// Wire -> domain for a block reference: a 32-byte hash if present, else the
@@ -424,16 +418,19 @@ impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S
 
     // --- wired: mempool passthrough ---
 
-    // `GetMempoolTx` streams the *compact* projection of each mempool tx, which
-    // requires deserialising and projecting raw bytes — a source-adapter concern
-    // (the serve layer holds no chain library). Wired once that projection port
-    // lands; `GetMempoolStream` (raw bytes) needs no projection and is served.
     type GetMempoolTxStream = ServerStream<CompactTx>;
     async fn get_mempool_tx(
         &self,
-        _r: Request<GetMempoolTxRequest>,
+        r: Request<GetMempoolTxRequest>,
     ) -> Result<Response<Self::GetMempoolTxStream>, Status> {
-        Err(unimplemented("get_mempool_tx"))
+        let exclude = r.into_inner().exclude_txid_suffixes;
+        let txs = self
+            .handler
+            .get_mempool_tx(exclude)
+            .await
+            .map_err(to_status)?;
+        let stream = futures::stream::iter(txs.into_iter().map(Ok));
+        Ok(Response::new(stream.boxed()))
     }
 
     type GetMempoolStreamStream = ServerStream<RawTransaction>;

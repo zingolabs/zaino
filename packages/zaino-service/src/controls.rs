@@ -7,8 +7,8 @@ use std::future::Future;
 use futures::stream::BoxStream;
 
 use zaino_core::{
-    MempoolTx, PassthroughAnswer, PassthroughQuery, ReportedUpgrade, ServiceabilityManifest,
-    TipEvent, TransactionId,
+    MempoolTx, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, ReportedUpgrade,
+    ServiceabilityManifest, TipEvent, TransactionId,
 };
 
 use crate::bundle::ChainSegment;
@@ -53,6 +53,14 @@ pub trait MempoolContent: Send + Sync {
         &self,
         txid: TransactionId,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, MempoolReadError>> + Send;
+
+    /// The compact projection of one mempool transaction, or `None` if it is no
+    /// longer in the mempool. The projection is the source's concern (it needs
+    /// the validator's chain library); the serving layer only forwards it.
+    fn mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<Output = Result<Option<PreIndexCompactTx>, MempoolReadError>> + Send;
 }
 
 /// Submit a transaction. Bytes in: a tx to relay is opaque to the engine — the

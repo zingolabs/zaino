@@ -117,6 +117,18 @@ async fn subscribe_mempool_over_an_empty_mempool_yields_nothing() {
     assert!(listing.is_empty());
 }
 
+#[tokio::test]
+async fn mempool_compact_transaction_maps_a_missing_txid_to_none() {
+    // The mock reports the txid absent; the compact passthrough maps that domain
+    // miss to `Ok(None)`, the same race the raw read handles.
+    let engine = engine_with(MockChain::new());
+    let answer = engine
+        .mempool_compact_transaction(TransactionId::from([9u8; 32]))
+        .await
+        .expect("a domain miss is a served None, not an error");
+    assert!(answer.is_none());
+}
+
 // The acceptance gate for the full light-wallet read-set (#10): the composed
 // engine serves every read `LightServeService` demands — none reporting itself
 // `NotServiceable`. Green now that the whole read-set is wired (compact blocks

@@ -19,8 +19,8 @@
 //! sound for the immutable, historical data light clients query.
 
 use zaino_core::{
-    AddressBalance, AddressDelta, BlockId, Height, HeightRange, RawTransaction, ShieldedPool,
-    SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
+    AddressBalance, AddressDelta, BlockId, Height, HeightRange, PreIndexCompactTx, RawTransaction,
+    ShieldedPool, SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 use zaino_service::error::{
     AddressReadError, BroadcastRejection, MempoolReadError, TreestateReadError, TxReadError,
@@ -28,9 +28,9 @@ use zaino_service::error::{
 use zaino_source::{
     GetAddressBalance, GetAddressBalanceError, GetAddressDeltas, GetAddressDeltasError,
     GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError,
-    GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction,
-    GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError, GetTransaction,
-    GetTransactionError, GetTreestate, GetTreestateError, SendRawTransaction,
+    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
+    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
+    GetTransaction, GetTransactionError, GetTreestate, GetTreestateError, SendRawTransaction,
     SendRawTransactionError, SourceError, TransactionResponse,
 };
 
@@ -341,6 +341,31 @@ where
     ) -> Result<Option<Vec<u8>>, MempoolReadError> {
         match self.source.get_raw_mempool_transaction(txid).await {
             Ok(bytes) => Ok(Some(bytes)),
+            Err(SourceError::Domain(GetRawMempoolTransactionError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> RemoteChainView<Src>
+where
+    Src: GetMempoolCompactTransaction,
+{
+    /// The compact projection of one mempool transaction, live. A txid the
+    /// validator has since dropped is a domain miss (`Ok(None)`); a transport
+    /// failure is transient. Shares [`GetRawMempoolTransactionError`] with the raw
+    /// read it projects from.
+    pub(crate) async fn mempool_compact_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
+        match self.source.get_mempool_compact_transaction(txid).await {
+            Ok(tx) => Ok(Some(tx)),
             Err(SourceError::Domain(GetRawMempoolTransactionError::NotFound(_))) => Ok(None),
             Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
                 "validator unavailable: {cause}"

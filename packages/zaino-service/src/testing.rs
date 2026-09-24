@@ -21,9 +21,9 @@ use futures::stream::{self, BoxStream, StreamExt};
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
     ChainInfo, CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint,
-    PassthroughAnswer, PassthroughQuery, RawTransaction, ReportedUpgrade, ServiceabilityManifest,
-    ServiceableRange, ShieldedPool, SpendStatus, SubtreeRoot, Transaction, TransactionId,
-    TransparentAddress, Treestate, TxStatus, Utxo,
+    PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, RawTransaction, ReportedUpgrade,
+    ServiceabilityManifest, ServiceableRange, ShieldedPool, SpendStatus, SubtreeRoot, Transaction,
+    TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
 };
 
 use crate::error::{
@@ -113,6 +113,13 @@ impl MempoolContent for MockIndexerService {
     ) -> Result<Option<Vec<u8>>, MempoolReadError> {
         // The mock carries only a mempool listing, not transaction bytes, so it
         // answers the served "no such tx" (a listing/fetch race), never a stub.
+        Ok(None)
+    }
+
+    async fn mempool_compact_transaction(
+        &self,
+        _txid: TransactionId,
+    ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
         Ok(None)
     }
 }
