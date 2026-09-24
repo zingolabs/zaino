@@ -8,15 +8,19 @@ use crate::rpc::jsonrpc::wire::peer_info::GetPeerInfo;
 use zaino_address::DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION;
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
+use zaino_state::jsonrpc_types::{
+    self, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
+    GetBlockHash, GetRawTransaction,
+};
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
-use zebra_rpc::client::{
-    GetBlockchainInfoResponse, GetSubtreesByIndexResponse, GetTreestateResponse,
-    ValidateAddressResponse,
-};
-use zebra_rpc::methods::{
-    AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-    GetBlockHash, GetInfo, GetRawTransaction, SentTransactionHash,
-};
+
+use crate::rpc::jsonrpc::wire::address::ValidateAddressResponse;
+use crate::rpc::jsonrpc::wire::address_queries::AddressBalance;
+use crate::rpc::jsonrpc::wire::blockchain_info::GetBlockchainInfoResponse;
+use crate::rpc::jsonrpc::wire::hashes::SentTransactionHash;
+use crate::rpc::jsonrpc::wire::node_info::GetInfo;
+use crate::rpc::jsonrpc::wire::subtrees::GetSubtreesByIndexResponse;
+use crate::rpc::jsonrpc::wire::treestate::GetTreestateResponse;
 
 use jsonrpsee::types::ErrorObjectOwned;
 use jsonrpsee::{proc_macros::rpc, types::ErrorCode};
@@ -593,7 +597,7 @@ where
         }) = error_source.downcast_ref::<zaino_source::FetchError>()
         {
             return Some(ErrorObjectOwned::owned(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter as i32,
+                jsonrpc_types::LegacyCode::InvalidParameter as i32,
                 "block not found",
                 None::<()>,
             ));
@@ -984,14 +988,14 @@ mod legacy_code_recovery {
     #[test]
     fn zainos_own_rejection_is_recovered_from_a_legacy_rpc_error() {
         let error = zaino_state::LegacyRpcError::new(
-            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+            jsonrpc_types::LegacyCode::InvalidParameter,
             "block identifier is not hex",
         );
 
         assert_eq!(
             legacy_code_from_error_source(&error),
             Some((
-                zebra_rpc::server::error::LegacyCode::InvalidParameter as i32,
+                jsonrpc_types::LegacyCode::InvalidParameter as i32,
                 "block identifier is not hex".to_string()
             ))
         );

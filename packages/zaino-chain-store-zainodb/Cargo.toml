@@ -90,7 +90,6 @@ serde_arrays = "0.2"
 tempfile.workspace = true
 zaino-convert-zebra.workspace = true
 tracing-subscriber.workspace = true
-zebra-rpc.workspace = true
 zaino-source-zebra-rpc.workspace = true
 
 [lints.rust]

@@ -1,14 +1,96 @@
-//! The `getblockchaininfo` response.
-//!
-//! Reuses Zebra's `GetBlockchainInfoResponse`, so this module holds only the
-//! conversion from the domain — but that conversion is the largest in the wire
-//! layer, because this response reshapes value pools into a fixed array and
-//! renames network upgrades by consensus branch id.
+//! The `getblockchaininfo` response and its conversion from the domain — the
+//! largest conversion in the wire layer, because this response reshapes value
+//! pools into a fixed array and renames network upgrades by consensus branch id.
 
 use crate::rpc::jsonrpc::wire::common::amount;
 use zaino_primitives::types::{BlockchainInfo, ValuePoolBalance};
-use zebra_chain::parameters::Network;
-use zebra_rpc::methods::GetBlockchainInfoResponse;
+use zaino_state::jsonrpc_types::{BlockchainValuePoolBalances, GetBlockchainInfoBalance};
+use zebra_chain::{
+    block,
+    parameters::{ConsensusBranchId, Network, NetworkUpgrade},
+};
+
+/// The `getblockchaininfo` response.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct GetBlockchainInfoResponse {
+    /// The network name as BIP70 defines it: main, test or regtest.
+    chain: String,
+    /// The number of blocks the server has processed.
+    blocks: block::Height,
+    /// The number of headers validated in the best chain.
+    headers: block::Height,
+    /// The estimated network solution rate in Sol/s.
+    difficulty: f64,
+    /// The verification progress relative to the estimated network chain tip.
+    #[serde(rename = "verificationprogress")]
+    verification_progress: f64,
+    /// The total amount of work in the best chain.
+    #[serde(rename = "chainwork")]
+    chain_work: u64,
+    /// Whether this node is pruned.
+    pruned: bool,
+    /// The estimated size of the block and undo files on disk.
+    size_on_disk: u64,
+    /// The current number of note commitments in the commitment tree.
+    commitments: u64,
+    /// The hash of the best block, as display-order hex.
+    #[serde(rename = "bestblockhash", with = "hex")]
+    best_block_hash: block::Hash,
+    /// The estimated height of the chain when syncing, else the best height.
+    #[serde(rename = "estimatedheight")]
+    estimated_height: block::Height,
+    /// The chain supply balance.
+    #[serde(rename = "chainSupply")]
+    chain_supply: GetBlockchainInfoBalance,
+    /// The value pool balances.
+    #[serde(rename = "valuePools")]
+    value_pools: BlockchainValuePoolBalances,
+    /// The status of each network upgrade, keyed by consensus branch id.
+    upgrades: indexmap::IndexMap<ConsensusBranchIdHex, NetworkUpgradeInfo>,
+    /// The branch ids of the current and upcoming consensus rules.
+    consensus: TipConsensusBranch,
+}
+
+/// A consensus branch id that serializes as big-endian hex.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, serde::Serialize)]
+pub struct ConsensusBranchIdHex(#[serde(with = "hex")] ConsensusBranchId);
+
+/// The activation of one network upgrade.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct NetworkUpgradeInfo {
+    /// The upgrade's name.
+    name: NetworkUpgrade,
+    /// The upgrade's activation height.
+    #[serde(rename = "activationheight")]
+    activation_height: block::Height,
+    /// The upgrade's activation status.
+    status: NetworkUpgradeStatus,
+}
+
+/// The activation status of a network upgrade.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub enum NetworkUpgradeStatus {
+    /// The upgrade has activated, whether or not it is the most recent one.
+    #[serde(rename = "active")]
+    Active,
+    /// The upgrade has no activation height.
+    #[serde(rename = "disabled")]
+    Disabled,
+    /// The upgrade has an activation height the chain has not reached.
+    #[serde(rename = "pending")]
+    Pending,
+}
+
+/// The consensus branch ids for the tip and for the next block.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct TipConsensusBranch {
+    /// The branch id that validates the current chain tip.
+    #[serde(rename = "chaintip")]
+    chain_tip: ConsensusBranchIdHex,
+    /// The branch id that validates the next block.
+    #[serde(rename = "nextblock")]
+    next_block: ConsensusBranchIdHex,
+}
 
 /// A `getblockchaininfo` field the wire type cannot represent.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -32,9 +114,7 @@ pub enum BlockchainInfoWireError {
 /// rejected rather than silently filed under the wrong pool.
 fn pool_balance(
     balance: &ValuePoolBalance,
-) -> Result<zebra_rpc::client::GetBlockchainInfoBalance, BlockchainInfoWireError> {
-    use zebra_rpc::client::GetBlockchainInfoBalance;
-
+) -> Result<GetBlockchainInfoBalance, BlockchainInfoWireError> {
     let value = amount::non_negative(balance.chain_value);
     let delta = balance.value_delta.map(amount::negative_allowed);
 
@@ -64,8 +144,8 @@ fn pool_balance(
 /// there is no slot for "unknown".
 fn value_pool_array(
     pools: &[ValuePoolBalance],
-) -> Result<zebra_rpc::methods::BlockchainValuePoolBalances, BlockchainInfoWireError> {
-    let mut slots = zebra_rpc::client::GetBlockchainInfoBalance::zero_pools();
+) -> Result<BlockchainValuePoolBalances, BlockchainInfoWireError> {
+    let mut slots = GetBlockchainInfoBalance::zero_pools();
     for pool in pools {
         let built = pool_balance(pool)?;
         let slot = match pool.id.as_str() {
@@ -92,16 +172,11 @@ pub fn from_domain(
     info: BlockchainInfo,
     network: &Network,
 ) -> Result<GetBlockchainInfoResponse, BlockchainInfoWireError> {
-    use zebra_rpc::methods::{
-        ConsensusBranchIdHex, NetworkUpgradeInfo, NetworkUpgradeStatus, TipConsensusBranch,
-    };
-
     let upgrades: indexmap::IndexMap<_, _> = info
         .upgrades
         .into_iter()
         .map(|upgrade| {
-            let branch =
-                zebra_chain::parameters::ConsensusBranchId::from(u32::from(upgrade.branch_id));
+            let branch = ConsensusBranchId::from(u32::from(upgrade.branch_id));
             let status = match upgrade.status {
                 zaino_primitives::types::NetworkUpgradeStatus::Active => {
                     NetworkUpgradeStatus::Active
@@ -123,40 +198,40 @@ pub fn from_domain(
                     BlockchainInfoWireError::UnrecognisedConsensusBranch(format!("{branch:?}"))
                 })?;
             Ok((
-                ConsensusBranchIdHex::new(branch.into()),
-                NetworkUpgradeInfo::from_parts(
-                    named,
-                    zebra_chain::block::Height(upgrade.activation_height.into()),
+                ConsensusBranchIdHex(branch),
+                NetworkUpgradeInfo {
+                    name: named,
+                    activation_height: block::Height(upgrade.activation_height.into()),
                     status,
-                ),
+                },
             ))
         })
         .collect::<Result<_, BlockchainInfoWireError>>()?;
 
-    Ok(GetBlockchainInfoResponse::new(
-        info.chain,
-        zebra_chain::block::Height(info.blocks.into()),
-        zebra_chain::block::Hash(info.best_block_hash.into()),
-        zebra_chain::block::Height(info.estimated_height.into()),
-        pool_balance(&info.chain_supply)?,
-        value_pool_array(&info.value_pools)?,
+    Ok(GetBlockchainInfoResponse {
+        chain: info.chain,
+        blocks: block::Height(info.blocks.into()),
+        best_block_hash: block::Hash(info.best_block_hash.into()),
+        estimated_height: block::Height(info.estimated_height.into()),
+        chain_supply: pool_balance(&info.chain_supply)?,
+        value_pools: value_pool_array(&info.value_pools)?,
         upgrades,
-        TipConsensusBranch::from_parts(
-            ConsensusBranchIdHex::new(u32::from(info.consensus.chain_tip)).inner(),
-            ConsensusBranchIdHex::new(u32::from(info.consensus.next_block)).inner(),
-        ),
-        zebra_chain::block::Height(info.headers.into()),
-        info.difficulty,
-        info.verification_progress,
+        consensus: TipConsensusBranch {
+            chain_tip: ConsensusBranchIdHex(u32::from(info.consensus.chain_tip).into()),
+            next_block: ConsensusBranchIdHex(u32::from(info.consensus.next_block).into()),
+        },
+        headers: block::Height(info.headers.into()),
+        difficulty: info.difficulty,
+        verification_progress: info.verification_progress,
         // The interface types cumulative work as a 64-bit integer, which cannot
         // hold a real mainnet value. The domain reports `None` where the
         // validator does not track it; zero is what this field has always
         // carried in that case.
-        0,
-        info.pruned,
-        info.size_on_disk,
-        info.commitments,
-    ))
+        chain_work: 0,
+        pruned: info.pruned,
+        size_on_disk: info.size_on_disk,
+        commitments: info.commitments,
+    })
 }
 
 #[cfg(test)]

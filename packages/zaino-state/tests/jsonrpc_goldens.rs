@@ -19,14 +19,11 @@ use zebra_chain::serialization::ZcashSerialize as _;
 use zebra_chain::transaction::{SerializedTransaction, Transaction};
 use zebra_chain::value_balance::ValueBalance;
 
-use zebra_rpc::client::{
-    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlockchainInfoBalance, TransactionObject,
+use zaino_state::jsonrpc_types::{
+    BlockObject, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
+    GetBlockHash, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoBalance, GetRawTransaction,
+    LegacyCode, TransactionObject,
 };
-use zebra_rpc::methods::{
-    BlockObject, GetAddressUtxos, GetBlock, GetBlockHash, GetBlockTransaction, GetBlockTrees,
-    GetRawTransaction,
-};
-use zebra_rpc::server::error::LegacyCode;
 
 /// The directory holding this suite's golden files.
 fn golden_dir() -> PathBuf {

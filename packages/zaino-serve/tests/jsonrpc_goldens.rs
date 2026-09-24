@@ -16,7 +16,7 @@ use zaino_primitives::types::{
     ZatoshisFlowSum,
 };
 use zaino_serve::rpc::jsonrpc::wire::{
-    address_queries, blockchain_info, hashes, node_info, subtrees, treestate,
+    address, address_queries, blockchain_info, hashes, node_info, subtrees, treestate,
 };
 
 /// Asymmetric under reversal, so a missing or doubled byte-reversal changes the golden.
@@ -214,15 +214,18 @@ fn address_queries_render_in_zatoshis() {
 
 #[test]
 fn validateaddress_renders_valid_and_invalid_addresses() {
-    use zebra_rpc::client::ValidateAddressResponse;
+    use zaino_address::ValidatedAddress;
 
     assert_golden(
         "validateaddress_invalid",
-        &ValidateAddressResponse::invalid(),
+        &address::validate_address_from_domain(ValidatedAddress::Invalid),
     );
     assert_golden(
         "validateaddress_valid",
-        &ValidateAddressResponse::new(true, Some(ADDRESS.to_string()), Some(false)),
+        &address::validate_address_from_domain(ValidatedAddress::Transparent {
+            address: ADDRESS.to_string(),
+            is_script: false,
+        }),
     );
 }
 

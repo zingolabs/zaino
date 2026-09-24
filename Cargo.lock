@@ -6079,7 +6079,6 @@ dependencies = [
  "zcash_primitives",
  "zcash_protocol",
  "zebra-chain",
- "zebra-rpc",
 ]
 
 [[package]]
@@ -6275,6 +6274,8 @@ dependencies = [
  "chrono",
  "corez",
  "dashmap",
+ "derive-getters",
+ "derive-new",
  "futures",
  "hex",
  "incrementalmerkletree",
@@ -6287,6 +6288,7 @@ dependencies = [
  "sapling-crypto",
  "serde",
  "serde_json",
+ "serde_with",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
@@ -6317,9 +6319,9 @@ dependencies = [
  "zcash_address",
  "zcash_keys",
  "zcash_protocol",
+ "zcash_script",
  "zcash_transparent",
  "zebra-chain",
- "zebra-rpc",
  "zebra-state",
 ]
 

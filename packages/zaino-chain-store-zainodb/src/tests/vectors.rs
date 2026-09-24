@@ -43,12 +43,7 @@ pub struct VectorBlock {
     pub orchard_tree_state: Vec<u8>,
 }
 
-/// The directory holding the checked-in vector files.
-///
-/// Exposed so a consumer in another crate can read the parts this one does not
-/// parse — the two wallet JSON files need `zebra-rpc` types, which a storage
-/// crate has no reason to depend on. One function crossing the boundary rather
-/// than a path literal repeated in both places.
+/// The directory holding the checked-in vector files, shared so another crate reads them from one path.
 pub fn vectors_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src")

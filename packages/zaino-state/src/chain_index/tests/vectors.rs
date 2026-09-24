@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io;
 use std::sync::Arc;
 
-use zebra_rpc::methods::GetAddressUtxos;
+use crate::jsonrpc_types::GetAddressUtxos;
 
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::types::BlockHash;
@@ -49,8 +49,8 @@ pub(crate) use zaino_chain_store_zainodb::tests::fixtures::{
 ///
 /// The chain itself is read by `zaino-chain-store-zainodb`, which is where the
 /// files live: its finalised-state and migration suites are their heaviest
-/// consumers. This adds the two wallet JSON files, which need `zebra-rpc` types
-/// that a storage crate has no reason to depend on.
+/// consumers. This adds the two wallet JSON files, parsed into this crate's
+/// `getaddressutxos` type.
 pub(crate) fn read_vectors_from_file() -> io::Result<TestVectorData> {
     let base = zaino_chain_store_zainodb::tests::vectors::vectors_dir();
 

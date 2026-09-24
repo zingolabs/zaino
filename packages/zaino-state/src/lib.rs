@@ -99,4 +99,7 @@ pub use stream::{
 
 pub(crate) mod utils;
 
+/// The zcashd-compatible JSON-RPC request and response types that Zaino serves.
+pub mod jsonrpc_types;
+
 pub mod source_caps;

@@ -1,11 +1,17 @@
-//! The transparent-address query responses: `getaddressbalance`,
-//! `getaddressutxos`.
-//!
-//! Both reuse Zebra's own types, so this module holds only the conversions from
-//! the domain.
+//! The transparent-address query responses, `getaddressbalance` and
+//! `getaddressutxos`, and their conversions from the domain.
 
 use zaino_primitives::types::{AddressBalance as DomainAddressBalance, Utxo};
-use zebra_rpc::methods::{AddressBalance, GetAddressUtxos};
+use zaino_state::jsonrpc_types::GetAddressUtxos;
+
+/// The `getaddressbalance` response: the transparent balance of a set of addresses, in zatoshis.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, serde::Serialize)]
+pub struct AddressBalance {
+    /// The total transparent balance.
+    balance: u64,
+    /// The total received balance, including change.
+    received: u64,
+}
 
 /// A UTXO whose address the wire type cannot represent.
 ///
@@ -39,7 +45,10 @@ pub fn address_balance_from_domain(
 ) -> Result<AddressBalance, UnrenderableReceivedTotal> {
     let received = u128::from(balance.received);
     let received = u64::try_from(received).map_err(|_| UnrenderableReceivedTotal(received))?;
-    Ok(AddressBalance::new(u64::from(balance.balance), received))
+    Ok(AddressBalance {
+        balance: u64::from(balance.balance),
+        received,
+    })
 }
 
 /// Renders the domain UTXOs as the `getaddressutxos` response.

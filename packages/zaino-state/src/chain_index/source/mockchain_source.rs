@@ -1,6 +1,7 @@
 //! Mock BlockchainSourceResult implementation.
 
 use super::*;
+use crate::jsonrpc_types::ValidateAddresses as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -14,7 +15,6 @@ use zebra_chain::{
     serialization::ZcashSerialize as _,
     transparent::{Address, OutPoint, Output},
 };
-use zebra_rpc::methods::ValidateAddresses as _;
 
 /// Build the txid → (height, tx) lookup map used by
 /// [`MockchainSource::get_transaction`].

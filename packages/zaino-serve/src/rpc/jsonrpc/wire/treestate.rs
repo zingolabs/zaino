@@ -1,10 +1,56 @@
-//! The `z_gettreestate` response.
-//!
-//! Reuses Zebra's `GetTreestateResponse`, so this module holds only the
-//! conversion from the domain.
+//! The `z_gettreestate` response, in zcashd's shape, and its conversion from
+//! the domain.
 
 use zaino_primitives::types::{PoolTreestate, Treestate};
-use zebra_rpc::client::{Commitments, GetTreestateResponse, Treestate as WireTreestate};
+use zaino_state::jsonrpc_types::opthex;
+
+/// The `z_gettreestate` response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct GetTreestateResponse {
+    /// The hash of the block the treestate belongs to, as display-order hex.
+    #[serde(with = "hex")]
+    hash: zebra_chain::block::Hash,
+    /// The height of the block the treestate belongs to.
+    height: zebra_chain::block::Height,
+    /// The block's time, in seconds since the Unix epoch.
+    time: u32,
+    /// The Sprout treestate, which Zaino never serves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sprout: Option<WireTreestate>,
+    /// The Sapling treestate.
+    sapling: WireTreestate,
+    /// The Orchard treestate.
+    orchard: WireTreestate,
+    /// The Ironwood treestate, present only from NU6.3.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ironwood: Option<WireTreestate>,
+}
+
+/// One pool's treestate in the `z_gettreestate` response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct WireTreestate {
+    /// The pool's serialized note commitment tree and root.
+    commitments: Commitments,
+}
+
+/// One pool's serialized note commitment tree and its root, each hex-encoded when present.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct Commitments {
+    /// The tree's root.
+    #[serde(
+        rename = "finalRoot",
+        with = "opthex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    final_root: Option<Vec<u8>>,
+    /// The serialized tree.
+    #[serde(
+        rename = "finalState",
+        with = "opthex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    final_state: Option<Vec<u8>>,
+}
 
 /// Display order for a pool's `finalRoot`, relative to the domain's internal order.
 ///
@@ -41,7 +87,12 @@ fn pool(pool: Option<PoolTreestate>, order: RootOrder) -> WireTreestate {
         None => (None, None),
     };
 
-    WireTreestate::new(Commitments::new(final_root, final_state))
+    WireTreestate {
+        commitments: Commitments {
+            final_root,
+            final_state,
+        },
+    }
 }
 
 /// Renders the domain type as the `z_gettreestate` response.
@@ -49,19 +100,19 @@ fn pool(pool: Option<PoolTreestate>, order: RootOrder) -> WireTreestate {
 /// Sprout is never served: Zaino does not index it, and reporting an empty tree
 /// would claim knowledge it does not have.
 pub fn from_domain(trees: Treestate) -> GetTreestateResponse {
-    GetTreestateResponse::new(
-        zebra_chain::block::Hash(trees.block_hash.into()),
-        zebra_chain::block::Height(trees.height.into()),
-        trees.time,
-        None,
-        pool(trees.sapling, RootOrder::Reversed),
-        pool(trees.orchard, RootOrder::AsIs),
+    GetTreestateResponse {
+        hash: zebra_chain::block::Hash(trees.block_hash.into()),
+        height: zebra_chain::block::Height(trees.height.into()),
+        time: trees.time,
+        sprout: None,
+        sapling: pool(trees.sapling, RootOrder::Reversed),
+        orchard: pool(trees.orchard, RootOrder::AsIs),
         // The ironwood field is `Some` only from NU6.3, so pre-NU6.3 responses
         // omit it exactly as zebrad does.
-        trees
+        ironwood: trees
             .ironwood
             .map(|tree| self::pool(Some(tree), RootOrder::AsIs)),
-    )
+    }
 }
 
 #[cfg(test)]

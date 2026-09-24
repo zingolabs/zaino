@@ -9,7 +9,7 @@
 //!
 //! Translating *back*, for what is left of it. The port's signatures now carry
 //! domain types almost throughout; the exceptions are `z_getblock` and
-//! `getrawtransaction`, which are still assembled into `zebra-rpc` shapes here
+//! `getrawtransaction`, which are still assembled into JSON-RPC shapes here
 //! because those presentation forms are built from a block's own bytes plus a
 //! few chain facts, and the ports deliberately do not model them.
 //!
@@ -33,7 +33,8 @@ use std::sync::Arc;
 use zaino_primitives::types::HashOrHeight;
 use zaino_source::QueryError;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
-use zebra_rpc::methods::ValidateAddresses as _;
+
+use crate::jsonrpc_types::{self, ValidateAddresses as _};
 
 use super::source::{BlockchainSource, BlockchainSourceError, BlockchainSourceResult};
 use super::source_ports::ChainIndexSourcePorts;
@@ -144,7 +145,7 @@ where
         QueryError::Domain(e) => BlockchainSourceError::unrecoverable_context(
             "validator rejected the query",
             crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                jsonrpc_types::LegacyCode::InvalidParameter,
                 e.to_string(),
             ),
         ),
@@ -178,7 +179,7 @@ fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> Blockch
 
     let (code, message) = match error {
         QueryError::Domain(rejection @ GetSpentInfoError::NotSpent) => (
-            zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64,
+            jsonrpc_types::LegacyCode::InvalidAddressOrKey as i64,
             rejection.to_string(),
         ),
         QueryError::Domain(rejection @ GetSpentInfoError::Unsupported) => {
@@ -228,7 +229,7 @@ fn block_from_bytes(
 /// Validated here rather than passed through, so a malformed request fails
 /// before it reaches the validator, as it does today.
 fn address_strings_to_vec(
-    request: &zebra_rpc::client::GetAddressBalanceRequest,
+    request: &jsonrpc_types::GetAddressBalanceRequest,
 ) -> Result<Vec<String>, BlockchainSourceError> {
     Ok(request
         .valid_addresses()
@@ -323,8 +324,8 @@ fn amount<C: zebra_chain::amount::Constraint>(
 /// rejected rather than silently filed under the wrong pool.
 fn pool_balance(
     balance: Option<&zaino_primitives::types::ValuePoolBalance>,
-) -> Result<zebra_rpc::client::GetBlockchainInfoBalance, BlockchainSourceError> {
-    use zebra_rpc::client::GetBlockchainInfoBalance;
+) -> Result<jsonrpc_types::GetBlockchainInfoBalance, BlockchainSourceError> {
+    use jsonrpc_types::GetBlockchainInfoBalance;
 
     let Some(balance) = balance else {
         return Ok(GetBlockchainInfoBalance::chain_supply(Default::default()));
@@ -364,8 +365,8 @@ fn pool_balance(
 /// there is no slot for "unknown".
 fn value_pool_array(
     pools: &[zaino_primitives::types::ValuePoolBalance],
-) -> Result<zebra_rpc::methods::BlockchainValuePoolBalances, BlockchainSourceError> {
-    let mut slots = zebra_rpc::client::GetBlockchainInfoBalance::zero_pools();
+) -> Result<jsonrpc_types::BlockchainValuePoolBalances, BlockchainSourceError> {
+    let mut slots = jsonrpc_types::GetBlockchainInfoBalance::zero_pools();
     for pool in pools {
         let built = pool_balance(Some(pool))?;
         let slot = match pool.id.as_str() {
@@ -498,7 +499,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_address_balance(
         &self,
-        address_strings: zebra_rpc::client::GetAddressBalanceRequest,
+        address_strings: jsonrpc_types::GetAddressBalanceRequest,
     ) -> BlockchainSourceResult<zaino_primitives::types::AddressBalance> {
         self.validator
             .get_address_balance(address_strings_to_vec(&address_strings)?)
@@ -508,7 +509,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_address_txids(
         &self,
-        request: zebra_rpc::client::GetAddressTxIdsRequest,
+        request: jsonrpc_types::GetAddressTxIdsRequest,
     ) -> BlockchainSourceResult<Vec<super::types::TransactionHash>> {
         let (addresses, start, end) = request.into_parts();
 
@@ -526,7 +527,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_address_utxos(
         &self,
-        address_strings: zebra_rpc::client::GetAddressBalanceRequest,
+        address_strings: jsonrpc_types::GetAddressBalanceRequest,
     ) -> BlockchainSourceResult<Vec<zaino_primitives::types::Utxo>> {
         self.validator
             .get_address_utxos(address_strings_to_vec(&address_strings)?)
@@ -635,8 +636,8 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         &self,
         hash_or_height: HashOrHeight,
         verbosity: Option<u8>,
-    ) -> BlockchainSourceResult<zebra_rpc::methods::GetBlock> {
-        use zebra_rpc::methods::{GetBlock, GetBlockTransaction, GetBlockTrees};
+    ) -> BlockchainSourceResult<jsonrpc_types::GetBlock> {
+        use jsonrpc_types::{GetBlock, GetBlockTransaction, GetBlockTrees};
 
         let verbosity = verbosity.unwrap_or(1);
 
@@ -684,7 +685,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                 .iter()
                 .map(|transaction| {
                     GetBlockTransaction::Object(Box::new(
-                        zebra_rpc::client::TransactionObject::from_transaction(
+                        jsonrpc_types::TransactionObject::from_transaction(
                             transaction.clone(),
                             Some(block_height),
                             Some(verbose.confirmations.to_rpc_i64()),
@@ -705,44 +706,42 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                 .collect()
         };
 
-        Ok(GetBlock::Object(Box::new(
-            zebra_rpc::methods::BlockObject::new(
-                block_hash,
-                verbose.confirmations.to_rpc_i64(),
-                Some(raw.len() as i64),
-                Some(block_height),
-                Some(block.header.version),
-                Some(block.header.merkle_root),
-                Some(*block.header.commitment_bytes),
-                roots.sapling.map(|info| <[u8; 32]>::from(info.root)),
-                roots.orchard.map(|info| <[u8; 32]>::from(info.root)),
-                block.transactions.len(),
-                tx,
-                Some(block_time.timestamp()),
-                Some(*block.header.nonce),
-                Some(block.header.solution),
-                Some(block.header.difficulty_threshold),
-                Some(verbose.difficulty),
-                match verbose.chain_supply.as_ref() {
-                    Some(supply) => Some(pool_balance(Some(supply))?),
-                    None => None,
-                },
-                if verbose.value_pools.is_empty() {
-                    None
-                } else {
-                    Some(value_pool_array(&verbose.value_pools)?)
-                },
-                GetBlockTrees::new(
-                    u64::from(verbose.tree_sizes.sapling),
-                    u64::from(verbose.tree_sizes.orchard),
-                    u64::from(verbose.tree_sizes.ironwood),
-                ),
-                Some(block.header.previous_block_hash),
-                verbose
-                    .next_block_hash
-                    .map(|h| zebra_chain::block::Hash(h.into())),
+        Ok(GetBlock::Object(Box::new(jsonrpc_types::BlockObject::new(
+            block_hash,
+            verbose.confirmations.to_rpc_i64(),
+            Some(raw.len() as i64),
+            Some(block_height),
+            Some(block.header.version),
+            Some(block.header.merkle_root),
+            Some(*block.header.commitment_bytes),
+            roots.sapling.map(|info| <[u8; 32]>::from(info.root)),
+            roots.orchard.map(|info| <[u8; 32]>::from(info.root)),
+            block.transactions.len(),
+            tx,
+            Some(block_time.timestamp()),
+            Some(*block.header.nonce),
+            Some(block.header.solution),
+            Some(block.header.difficulty_threshold),
+            Some(verbose.difficulty),
+            match verbose.chain_supply.as_ref() {
+                Some(supply) => Some(pool_balance(Some(supply))?),
+                None => None,
+            },
+            if verbose.value_pools.is_empty() {
+                None
+            } else {
+                Some(value_pool_array(&verbose.value_pools)?)
+            },
+            GetBlockTrees::new(
+                u64::from(verbose.tree_sizes.sapling),
+                u64::from(verbose.tree_sizes.orchard),
+                u64::from(verbose.tree_sizes.ironwood),
             ),
-        )))
+            Some(block.header.previous_block_hash),
+            verbose
+                .next_block_hash
+                .map(|h| zebra_chain::block::Hash(h.into())),
+        ))))
     }
 
     // ***** Headers, deltas, chain info *****
@@ -1437,7 +1436,7 @@ mod error_source_chain {
 
         assert_eq!(
             code,
-            Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
+            Some(jsonrpc_types::LegacyCode::InvalidParameter as i64),
             "a domain rejection must stay downcastable to its legacy code"
         );
     }
@@ -1468,7 +1467,7 @@ mod error_source_chain {
 
         assert_eq!(
             recovered_code(&rejected),
-            Some(zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64)
+            Some(jsonrpc_types::LegacyCode::InvalidAddressOrKey as i64)
         );
         assert!(
             rejected.to_string().contains("Unable to get spent info"),
@@ -1489,7 +1488,7 @@ mod error_source_chain {
         assert_eq!(recovered_code(&rejected), Some(METHOD_NOT_FOUND));
         assert_ne!(
             recovered_code(&rejected),
-            Some(zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64)
+            Some(jsonrpc_types::LegacyCode::InvalidAddressOrKey as i64)
         );
     }
 

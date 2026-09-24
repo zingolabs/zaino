@@ -145,9 +145,48 @@ pub struct TestVectorClientData {
     /// Transaction ids touching this wallet, hex-encoded, in chain order.
     pub txids: Vec<String>,
     /// The wallet's unspent outputs.
-    pub utxos: Vec<zebra_rpc::methods::GetAddressUtxos>,
+    pub utxos: Vec<VectorUtxo>,
     /// The wallet's transparent balance.
     pub balance: u64,
+}
+
+/// One unspent output as a wallet vector file records it, in the `getaddressutxos` shape.
+#[cfg(test)]
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct VectorUtxo {
+    address: zebra_chain::transparent::Address,
+    #[serde(with = "hex")]
+    txid: zebra_chain::transaction::Hash,
+    #[serde(rename = "outputIndex")]
+    output_index: zebra_chain::transparent::OutputIndex,
+    #[serde(with = "hex")]
+    script: zebra_chain::transparent::Script,
+    satoshis: u64,
+    height: zebra_chain::block::Height,
+}
+
+#[cfg(test)]
+impl VectorUtxo {
+    /// Returns the output's fields in the order the vector file records them.
+    pub fn into_parts(
+        &self,
+    ) -> (
+        zebra_chain::transparent::Address,
+        zebra_chain::transaction::Hash,
+        zebra_chain::transparent::OutputIndex,
+        zebra_chain::transparent::Script,
+        u64,
+        zebra_chain::block::Height,
+    ) {
+        (
+            self.address,
+            self.txid,
+            self.output_index,
+            self.script.clone(),
+            self.satoshis,
+            self.height,
+        )
+    }
 }
 
 /// Loads the chain and both wallets' recorded results.

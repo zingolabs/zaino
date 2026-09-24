@@ -6,6 +6,9 @@
 
 pub(crate) mod node_backed_indexer;
 
+use crate::jsonrpc_types::{
+    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
+};
 use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
@@ -25,9 +28,6 @@ use zaino_proto::proto::{
 };
 use zebra_chain::{
     block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
-};
-use zebra_rpc::methods::{
-    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
 
 use crate::stream::{

@@ -1,10 +1,43 @@
-//! The `getinfo` response.
-//!
-//! Reuses Zebra's `GetInfo`, so this module holds only the conversion from the
+//! The `getinfo` response, in zcashd's shape, and its conversion from the
 //! domain type.
 
 use zaino_primitives::types::rpc::NodeInfo;
-use zebra_rpc::methods::GetInfo;
+
+/// The `getinfo` response.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct GetInfo {
+    /// The node version.
+    version: u64,
+    /// The node version build number.
+    build: String,
+    /// The server sub-version identifier, used as the network protocol user-agent.
+    subversion: String,
+    /// The protocol version.
+    #[serde(rename = "protocolversion")]
+    protocol_version: u32,
+    /// The current number of blocks processed in the server.
+    blocks: u32,
+    /// The total number of inbound and outbound connections the node has.
+    connections: usize,
+    /// The proxy the server uses, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy: Option<String>,
+    /// The current network difficulty.
+    difficulty: f64,
+    /// Whether the server is running in testnet mode.
+    testnet: bool,
+    /// The minimum transaction fee in ZEC per kB.
+    #[serde(rename = "paytxfee")]
+    pay_tx_fee: f64,
+    /// The minimum relay fee for non-free transactions in ZEC per kB.
+    #[serde(rename = "relayfee")]
+    relay_fee: f64,
+    /// The last error or warning message, or "no errors" when there is none.
+    errors: String,
+    /// The time of the last error or warning message.
+    #[serde(rename = "errorstimestamp")]
+    errors_timestamp: i64,
+}
 
 /// Renders the domain type as the `getinfo` response.
 ///
@@ -17,21 +50,21 @@ use zebra_rpc::methods::GetInfo;
 ///   type normalises the sentinel to `None` so a consumer can test `is_some()`
 ///   without knowing each method's spelling; this puts `"no errors"` back.
 pub fn from_domain(info: NodeInfo) -> GetInfo {
-    GetInfo::new(
-        info.version,
-        info.build,
-        info.subversion,
-        info.protocol_version,
-        info.blocks.into(),
-        info.connections as usize,
-        info.proxy,
-        info.difficulty,
-        info.testnet,
-        super::zats_to_zec(info.pay_tx_fee),
-        super::zats_to_zec(info.relay_fee),
-        info.errors.unwrap_or_else(|| "no errors".to_string()),
-        info.errors_timestamp.unwrap_or_default(),
-    )
+    GetInfo {
+        version: info.version,
+        build: info.build,
+        subversion: info.subversion,
+        protocol_version: info.protocol_version,
+        blocks: info.blocks.into(),
+        connections: info.connections as usize,
+        proxy: info.proxy,
+        difficulty: info.difficulty,
+        testnet: info.testnet,
+        pay_tx_fee: super::zats_to_zec(info.pay_tx_fee),
+        relay_fee: super::zats_to_zec(info.relay_fee),
+        errors: info.errors.unwrap_or_else(|| "no errors".to_string()),
+        errors_timestamp: info.errors_timestamp.unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]

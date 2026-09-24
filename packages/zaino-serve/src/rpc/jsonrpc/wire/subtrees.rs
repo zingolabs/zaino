@@ -1,11 +1,22 @@
-//! The `z_getsubtreesbyindex` response.
-//!
-//! Reuses Zebra's `GetSubtreesByIndexResponse`, so this module holds the
-//! conversion from the domain plus the pool-name parsing that selects which
-//! pool was asked about.
+//! The `z_getsubtreesbyindex` response, its conversion from the domain, and
+//! the pool-name parsing that selects which pool was asked about.
 
 use zaino_primitives::types::{rpc::SubtreeRoots, ShieldedPool};
-use zebra_rpc::client::{GetSubtreesByIndexResponse, SubtreeRpcData};
+use zebra_chain::subtree::{NoteCommitmentSubtreeData, NoteCommitmentSubtreeIndex};
+
+/// One subtree in the response: its root as hex and its end height.
+pub type SubtreeRpcData = NoteCommitmentSubtreeData<String>;
+
+/// The `z_getsubtreesbyindex` response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct GetSubtreesByIndexResponse {
+    /// The shielded pool the subtrees belong to.
+    pool: String,
+    /// The index of the first subtree.
+    start_index: NoteCommitmentSubtreeIndex,
+    /// The complete subtrees, in index order.
+    subtrees: Vec<SubtreeRpcData>,
+}
 
 /// A pool name this interface does not accept.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -40,10 +51,10 @@ pub fn from_domain(roots: SubtreeRoots) -> GetSubtreesByIndexResponse {
         ShieldedPool::Ironwood => "ironwood",
     };
 
-    GetSubtreesByIndexResponse::new(
-        pool.to_string(),
-        zebra_chain::subtree::NoteCommitmentSubtreeIndex(roots.start_index),
-        roots
+    GetSubtreesByIndexResponse {
+        pool: pool.to_string(),
+        start_index: NoteCommitmentSubtreeIndex(roots.start_index),
+        subtrees: roots
             .subtrees
             .into_iter()
             .map(|subtree| SubtreeRpcData {
@@ -51,7 +62,7 @@ pub fn from_domain(roots: SubtreeRoots) -> GetSubtreesByIndexResponse {
                 end_height: zebra_chain::block::Height(subtree.end_height.into()),
             })
             .collect(),
-    )
+    }
 }
 
 #[cfg(test)]
