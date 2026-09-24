@@ -661,8 +661,9 @@ impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
             }
 
             let chainwork = crate::conversion::chainwork_from_parent(
-                block.header.bits,
+                block.header.bits.to_work(),
                 stored_hash(block.header.hash),
+                crate::types::Height(height),
                 parent_chainwork,
             )
             .map_err(|error| {
