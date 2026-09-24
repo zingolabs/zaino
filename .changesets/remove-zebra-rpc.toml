@@ -30,6 +30,15 @@ golden files pin both. zaino-serve no longer depends on zebra-rpc.
 crate = "zainod"
 kind = "internal"
 description = """
-Building zainod no longer compiles RocksDB, so the build needs neither clang \
-nor the GCC workaround for RocksDB's C++ code.
+Building zainod no longer compiles RocksDB or runs bindgen, so the build needs \
+neither clang nor the GCC workaround for RocksDB's C++ code.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The Prometheus process metrics are now read from /proc directly instead of \
+through metrics-process, so zainod builds only on Linux. The metric names, \
+units and descriptions are unchanged.
 """

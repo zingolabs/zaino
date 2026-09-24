@@ -75,7 +75,6 @@
             protobuf
             pkg-config
             cmake
-            rustPlatform.bindgenHook
             cargo-nextest
             cargo-deny
             cargo-make
