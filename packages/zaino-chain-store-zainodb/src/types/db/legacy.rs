@@ -8,8 +8,8 @@
 //! - structs in this module must implement ZainoVersionedSerialize and abide by
 //!   the stringent version rules outlined in that trait.
 //!
-//! - structs in this module must never be changed without implementing a new version
-//!   and implementing the necessary FinalisedState updates and migrations.
+//! - structs in this module must never change their encoding without a bump of the
+//!   database schema version.
 //!
 //! This module is currently in transition from a large monolithic file to well-organized
 //! submodules. The organized types have been moved to focused modules:

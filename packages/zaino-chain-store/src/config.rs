@@ -25,11 +25,9 @@ use std::path::{Path, PathBuf};
 /// and it is not one a runtime check catches well — the two orderings disagree
 /// about which wins.
 ///
-/// Zero is meaningless for three of the four remaining knobs, so it is made
+/// Zero is meaningless for two of the three remaining knobs, so it is made
 /// unrepresentable rather than checked at startup:
 ///
-/// - `target_schema_major` of zero names no schema, so a store could not decide
-///   what to open.
 /// - `retry_backoff` of zero retries a failing validator in a tight loop, which
 ///   damages the node being polled rather than this one.
 /// - `max_consecutive_failures` of zero and of one are the same thing — the
@@ -43,7 +41,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainStoreConfig {
     path: Option<PathBuf>,
-    target_schema_major: NonZeroU32,
     background_build_threshold: u32,
     retry_backoff_ms: NonZeroU64,
     max_consecutive_failures: NonZeroU32,
@@ -68,7 +65,6 @@ impl Default for ChainStoreConfig {
     fn default() -> Self {
         Self {
             path: None,
-            target_schema_major: nz32(1),
             background_build_threshold: 10,
             retry_backoff_ms: nz64(5_000),
             max_consecutive_failures: nz32(5),
@@ -95,14 +91,6 @@ impl ChainStoreConfig {
         self.path.is_none()
     }
 
-    /// The schema version to bring the store to on open.
-    ///
-    /// A store on an older schema migrates up to this; one on a newer schema is
-    /// refused, because this build does not know what it would be reading.
-    pub fn target_schema_major(&self) -> u32 {
-        self.target_schema_major.get()
-    }
-
     /// How far behind the target the store may be before it builds in the
     /// background rather than blocking the caller.
     ///
@@ -127,11 +115,6 @@ impl ChainStoreConfig {
     /// is a condition an operator has to hear about.
     pub fn max_consecutive_failures(&self) -> u32 {
         self.max_consecutive_failures.get()
-    }
-
-    /// Set the schema version to target.
-    pub fn set_target_schema_major(&mut self, major: NonZeroU32) {
-        self.target_schema_major = major;
     }
 
     /// Set how far behind the target a build may be before it backgrounds.
@@ -174,7 +157,6 @@ mod tests {
     #[test]
     fn the_defaults_match_what_the_backend_ran_on() {
         let config = ChainStoreConfig::default();
-        assert_eq!(config.target_schema_major(), 1);
         assert_eq!(config.background_build_threshold(), 10);
         assert_eq!(config.retry_backoff(), Duration::from_secs(5));
         assert_eq!(config.max_consecutive_failures(), 5);

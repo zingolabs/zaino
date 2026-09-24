@@ -49,7 +49,7 @@ use core::num::NonZeroU128;
 use std::fmt::Debug;
 
 use crate::entry::{StoredEntryFixed, StoredEntryVar};
-use crate::store::capability::{DbMetadata, DbVersion, MigrationStatus};
+use crate::store::capability::{DbMetadata, DbVersion};
 use crate::types::db::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 use crate::types::db::legacy::AddrEventBytes;
 use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
@@ -288,7 +288,7 @@ fn db_version() -> DbVersion {
 }
 
 fn db_metadata() -> DbMetadata {
-    DbMetadata::new(db_version(), [0x7e; 32], MigrationStatus::Empty)
+    DbMetadata::new(db_version(), [0x7e; 32])
 }
 
 /* ──────────────────────────────── goldens ──────────────────────────────── */
@@ -467,13 +467,7 @@ fn metadata_goldens() {
     assert_golden(
         "DbMetadata",
         &db_metadata(),
-        "01010100000003000000000000007e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e0100",
-    );
-    assert_golden("MigrationStatus", &MigrationStatus::Empty, "0100");
-    assert_golden(
-        "MigrationStatus::Complete",
-        &MigrationStatus::Complete,
-        "0104",
+        "01010100000003000000000000007e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e",
     );
 }
 
@@ -537,7 +531,6 @@ fn fixed_lengths_match_the_encoder() {
     assert_fixed_len("FinalisedTxOutSetInfoAccumulator", &txout_set_accumulator());
     assert_fixed_len("DbVersion", &db_version());
     assert_fixed_len("DbMetadata", &db_metadata());
-    assert_fixed_len("MigrationStatus", &MigrationStatus::Empty);
 }
 
 /// `CommitmentTreeRoots` and `CommitmentTreeData` are fixed-length at v1 and

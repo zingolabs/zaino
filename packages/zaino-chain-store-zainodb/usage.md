@@ -79,19 +79,17 @@ Three properties to preserve when touching any of it:
   aborts natively on a torn B-tree, the line that names what was being scanned
   has already been written.
 
-## Migrations advance the version last
+## A schema mismatch rebuilds the database
 
-`put_idempotent` byte-compares on conflict, progress is a checksummed
-`StoredEntryFixed<Height>`, and completion **advances the version durably before
-deleting the progress key**. That order is what makes an interrupted migration
-resumable rather than ambiguous. Reversing it produces a database that claims to
-be migrated and is not.
+There are no migrations. The `metadata` record holds the schema version and
+schema hash of the build that created the database. When `spawn` finds a record
+that differs from its own, or one it cannot decode, it deletes the database
+directory and resyncs from the validator. Upgrades and downgrades take the same
+path, and the index is derived data, so the rebuild loses nothing.
 
-`MigrationType::Major` exists but nothing returns it, and it shares a match arm
-with `Minor`. There is no shadow-build/promote path — `set_shadow`,
-`extend_shadow_caps` and `promote_shadow` were deleted, and the prose describing
-them was deleted with them rather than ported. A rebuild-style migration would
-have to be *built*, on `replace_primary` plus the ephemeral refcounting.
+Any change to an on-disk encoding therefore bumps `DB_VERSION_V1`, and every
+deployment pays one full rebuild on its next start. A failing golden in
+`golden.rs` is the signal that a change carries that cost.
 
 ## The ephemeral backend has two jobs, not one
 

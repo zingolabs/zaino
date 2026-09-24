@@ -10,8 +10,7 @@
 //!   (`CapabilityRequest`) to route a call to a backend that is guaranteed to support it.
 //!
 //! This design enables:
-//! - reporting reduced capability while a migration is under way,
-//! - serving old data while building new indices,
+//! - serving reads from the ephemeral passthrough while the database builds,
 //! - and gating API features cleanly when a backend does not support an extension.
 //!
 //! # What’s in this file
@@ -26,8 +25,6 @@
 //!   metadata database; includes:
 //!   - `version: DbVersion`
 //!   - `schema_hash: [u8; 32]` (BLAKE2b-256 of schema definition/contract)
-//!   - `migration_status: MigrationStatus`
-//! - [`MigrationStatus`]: persisted migration progress marker to support resuming after shutdown.
 //!
 //! All metadata types in this file implement `ZainoVersionedSerde` and therefore have explicit
 //! on-disk encoding versions.
@@ -86,8 +83,8 @@ use crate::types::{
     TxLocation, TxOutCompact, TxidList,
 };
 use zaino_encoding::{
-    read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
-    FixedEncodedLen, ZainoVersionedSerde,
+    read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
+    ZainoVersionedSerde,
 };
 use zaino_status::StatusType;
 
@@ -340,14 +337,12 @@ impl From<CapabilityRequest> for Capability {
 ///
 /// This record is stored under the fixed key `"metadata"` in the LMDB metadata database and is used to:
 /// - identify the schema version currently on disk,
-/// - bind the database to an explicit schema contract (`schema_hash`),
-/// - and persist migration progress (`migration_status`) for crash-safe resumption.
+/// - and bind the database to an explicit schema contract (`schema_hash`).
 ///
 /// ## Encoding
 /// `DbMetadata` implements [`ZainoVersionedSerde`]. The encoded body is:
 /// - one versioned [`DbVersion`],
-/// - a fixed 32-byte schema hash,
-/// - one versioned [`MigrationStatus`].
+/// - a fixed 32-byte schema hash.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 // `pub` (not `pub(crate)`) so it matches the visibility of the `pub` capability
@@ -364,27 +359,14 @@ pub struct DbMetadata {
     /// This hash is intended to detect accidental schema drift (layout/type changes) across builds.
     /// It is not a security boundary; it is a correctness and operator-safety signal.
     pub(crate) schema_hash: [u8; 32],
-
-    /// Persisted migration state, used to resume safely after shutdown/crash.
-    ///
-    /// Outside of migrations this should be [`MigrationStatus::Empty`].
-    pub(crate) migration_status: MigrationStatus,
 }
 
 impl DbMetadata {
-    /// Constructs a new metadata record.
-    ///
-    /// Callers should ensure `schema_hash` matches the schema contract for `version`, and that
-    /// `migration_status` is set conservatively (typically `Empty` unless actively migrating).
-    pub(crate) fn new(
-        version: DbVersion,
-        schema_hash: [u8; 32],
-        migration_status: MigrationStatus,
-    ) -> Self {
+    /// Constructs a metadata record whose `schema_hash` must match the schema contract for `version`.
+    pub(crate) fn new(version: DbVersion, schema_hash: [u8; 32]) -> Self {
         Self {
             version,
             schema_hash,
-            migration_status,
         }
     }
 
@@ -397,11 +379,6 @@ impl DbMetadata {
     pub(crate) fn schema(&self) -> [u8; 32] {
         self.schema_hash
     }
-
-    /// Returns the persisted migration status.
-    pub(crate) fn migration_status(&self) -> MigrationStatus {
-        self.migration_status
-    }
 }
 
 /// Versioned on-disk encoding for the metadata singleton.
@@ -409,7 +386,6 @@ impl DbMetadata {
 /// Body layout (after the `ZainoVersionedSerde` tag byte):
 /// 1. `DbVersion` (versioned, includes its own tag)
 /// 2. `[u8; 32]` schema hash
-/// 3. `MigrationStatus` (versioned, includes its own tag)
 impl ZainoVersionedSerde for DbMetadata {
     const VERSION: u8 = version::V1;
 
@@ -423,18 +399,15 @@ impl ZainoVersionedSerde for DbMetadata {
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         self.version.serialize_with_version(&mut *w, 1)?;
-        write_fixed_le::<32, _>(&mut *w, &self.schema_hash)?;
-        self.migration_status.serialize_with_version(&mut *w, 1)
+        write_fixed_le::<32, _>(&mut *w, &self.schema_hash)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let version = DbVersion::deserialize(&mut *r)?;
         let schema_hash = read_fixed_le::<32, _>(&mut *r)?;
-        let migration_status = MigrationStatus::deserialize(&mut *r)?;
         Ok(DbMetadata {
             version,
             schema_hash,
-            migration_status,
         })
     }
 }
@@ -442,12 +415,11 @@ impl ZainoVersionedSerde for DbMetadata {
 /// Fixed-length encoding metadata for `DbMetadata`.
 ///
 /// v1 consists of:
-/// Body length = `DbVersion::VERSIONED_LEN` (12 + 1) + 32-byte schema hash
-/// + `MigrationStatus::VERSIONED_LEN` (1 + 1) = 47 bytes.
+/// Body length = `DbVersion::VERSIONED_LEN` (12 + 1) + 32-byte schema hash = 45 bytes.
 impl FixedEncodedLen for DbMetadata {
     fn encoded_len(version: u8) -> Option<usize> {
         match version {
-            version::V1 => Some(47),
+            version::V1 => Some(45),
             _ => None,
         }
     }
@@ -474,20 +446,7 @@ impl core::fmt::Display for DbMetadata {
     }
 }
 
-/// Database schema version triple.
-///
-/// The version is interpreted as `{major}.{minor}.{patch}` and is used to:
-/// - select a database backend implementation,
-/// - determine supported capabilities for routing,
-/// - and enforce safe upgrades via migrations.
-///
-/// ## Compatibility model
-/// - `major` is the primary compatibility boundary (schema family).
-/// - `minor` and `patch` may be used for compatible changes, but only if all persisted record
-///   encodings remain readable and correctness invariants are preserved.
-///
-/// The authoritative capability mapping is provided by [`DbVersion::capability`], and must remain
-/// conservative: only advertise features that are correct for the given on-disk schema.
+/// Database schema version triple, where any difference from this build's version makes `spawn` rebuild the database.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct DbVersion {
@@ -524,54 +483,29 @@ impl DbVersion {
         self.patch
     }
 
-    /// Returns the conservative capability set for this schema version.
-    ///
-    /// Routing relies on this mapping for safety: if a capability is not included here, callers
-    /// must not assume the corresponding trait surface is available.
-    ///
-    /// If a schema version is unknown to this build, this returns [`Capability::empty`], ensuring
-    /// the router will reject feature requests rather than serving incorrect data.
+    /// Returns every capability this build serves for its own schema version, and nothing for any other version.
     pub(crate) fn capability(&self) -> Capability {
-        // Everything every known v1 schema serves. The versions differ only in
-        // the transparent indexes below, so the shared part is named once.
-        let block_surfaces = Capability::READ_CORE
-            | Capability::WRITE_CORE
-            | Capability::BLOCK_CORE_EXT
-            | Capability::BLOCK_TRANSPARENT_EXT
-            | Capability::BLOCK_SHIELDED_EXT
-            | Capability::COMPACT_BLOCK_EXT
-            | Capability::CHAIN_BLOCK_EXT;
+        if *self != super::finalised_source::v1::DB_VERSION_V1 {
+            return Capability::empty();
+        }
 
         // Address history exists only when compiled in: the reads are behind
-        // the feature, so a build without it cannot serve them from any schema.
+        // the feature, so a build without it cannot serve them.
         #[cfg(feature = "transparent_address_history_experimental")]
         let address_history = Capability::TRANSPARENT_HIST_INDEX;
         #[cfg(not(feature = "transparent_address_history_experimental"))]
         let address_history = Capability::empty();
 
-        let transparent_indexes = Capability::SPENT_OUTPUT_INDEX | Capability::TXOUT_SET_INDEX;
-
-        match (self.major, self.minor) {
-            // v1.0 / v1.1: the spent index and the txout-set accumulator were
-            // built only when the address-history feature was on, so without it
-            // a database of this vintage genuinely does not have them.
-            (1, 0) | (1, 1) if address_history.is_empty() => block_surfaces,
-            (1, 0) | (1, 1) => block_surfaces | transparent_indexes | address_history,
-
-            // v1.2 moved the spent index out of the address-history feature, so
-            // it and the accumulator are present regardless of the build.
-            //
-            // v1.3 (Ironwood / NU6.3) adds an ironwood commitment root, size and
-            // tx row. All three are read through `BlockShieldedExt`, which v1.2
-            // already advertises, so the version gained no capability and shares
-            // this arm rather than duplicating it.
-            (1, 2) | (1, 3) => block_surfaces | transparent_indexes | address_history,
-
-            // Unknown / unsupported. Fails closed: the router rejects every
-            // feature request rather than serving from a schema this build
-            // cannot reason about.
-            _ => Capability::empty(),
-        }
+        Capability::READ_CORE
+            | Capability::WRITE_CORE
+            | Capability::BLOCK_CORE_EXT
+            | Capability::BLOCK_TRANSPARENT_EXT
+            | Capability::BLOCK_SHIELDED_EXT
+            | Capability::COMPACT_BLOCK_EXT
+            | Capability::CHAIN_BLOCK_EXT
+            | Capability::SPENT_OUTPUT_INDEX
+            | Capability::TXOUT_SET_INDEX
+            | address_history
     }
 }
 
@@ -624,108 +558,6 @@ impl FixedEncodedLen for DbVersion {
 impl core::fmt::Display for DbVersion {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
-
-/// Persisted migration progress marker.
-///
-/// This value exists to make migrations crash-resumable, which they must be:
-/// they run in place on the one database, so a process that dies part-way
-/// through has no untouched copy to fall back to. A migration may:
-/// - rebuild the affected tables in place,
-/// - optionally split that into phases to limit disk amplification.
-///
-/// Database implementations and the migration manager must treat this value conservatively:
-/// if the process is interrupted, the next startup should be able to determine the correct
-/// resumption behavior from this status and the on-disk state.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-#[derive(Default)]
-pub(crate) enum MigrationStatus {
-    /// No migration is in progress.
-    #[default]
-    Empty,
-
-    /// A partial build phase is currently in progress.
-    ///
-    /// Some migrations split work into phases to limit disk usage (for example, deleting the old
-    /// database before rebuilding the new one in full).
-    PartialBuildInProgress,
-
-    /// The partial build phase completed successfully.
-    PartialBuildComplete,
-
-    /// The final build phase is currently in progress.
-    FinalBuildInProgress,
-
-    /// Migration work is complete and the database is ready for promotion/steady-state operation.
-    Complete,
-}
-
-/// Human-readable migration status for logs and diagnostics.
-impl fmt::Display for MigrationStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let status_str = match self {
-            MigrationStatus::Empty => "Empty",
-            MigrationStatus::PartialBuildInProgress => "Partial build in progress",
-            MigrationStatus::PartialBuildComplete => "Partial build complete",
-            MigrationStatus::FinalBuildInProgress => "Final build in progress",
-            MigrationStatus::Complete => "Complete",
-        };
-        write!(f, "{status_str}")
-    }
-}
-
-/// Versioned on-disk encoding for migration status.
-///
-/// Body layout (after the tag byte): one `u8` discriminator.
-/// Unknown tags must fail decoding.
-impl ZainoVersionedSerde for MigrationStatus {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let tag = match self {
-            MigrationStatus::Empty => 0,
-            MigrationStatus::PartialBuildInProgress => 1,
-            MigrationStatus::PartialBuildComplete => 2,
-            MigrationStatus::FinalBuildInProgress => 3,
-            MigrationStatus::Complete => 4,
-        };
-        write_u8(w, tag)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        match read_u8(r)? {
-            0 => Ok(MigrationStatus::Empty),
-            1 => Ok(MigrationStatus::PartialBuildInProgress),
-            2 => Ok(MigrationStatus::PartialBuildComplete),
-            3 => Ok(MigrationStatus::FinalBuildInProgress),
-            4 => Ok(MigrationStatus::Complete),
-            other => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid MigrationStatus tag: {other}"),
-            )),
-        }
-    }
-}
-
-/// Fixed-length encoding metadata for `MigrationStatus`.
-///
-/// v1 consists of a single byte
-impl FixedEncodedLen for MigrationStatus {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(1),
-            _ => None,
-        }
     }
 }
 
@@ -811,12 +643,6 @@ pub trait DbWrite: Send + Sync {
     ///
     /// Invariant: `block` must be the current database tip block.
     fn delete_block(&self, block: &IndexedBlock) -> impl SendFut<Result<(), StoreError>>;
-
-    /// Replaces the persisted metadata singleton with `metadata`.
-    ///
-    /// Implementations must ensure this update is atomic with respect to readers (within the
-    /// backend’s concurrency model).
-    fn update_metadata(&self, metadata: DbMetadata) -> impl SendFut<Result<(), StoreError>>;
 }
 
 /// Core runtime surface implemented by every backend instance.
@@ -1268,8 +1094,7 @@ mod tests {
         assert_ne!(
             DB_VERSION_V1.capability(),
             Capability::empty(),
-            "DB_VERSION_V1 is {DB_VERSION_V1} but `DbVersion::capability` has no arm for it, so it \
-             falls through to the unknown-version case. Add an arm for this version."
+            "DB_VERSION_V1 is {DB_VERSION_V1} but `DbVersion::capability` grants it nothing"
         );
         assert_eq!(
             DB_VERSION_V1.capability(),
@@ -1296,73 +1121,6 @@ mod tests {
             DbVersion::new(1, 99, 0).capability(),
             Capability::empty(),
             "an unrecognised minor version must fail closed"
-        );
-    }
-
-    /// The spent index and the txout-set accumulator are not address history.
-    ///
-    /// This is the split's whole point. Both were reached through
-    /// `TRANSPARENT_HIST_EXT`, so a production build — which does not enable
-    /// `transparent_address_history_experimental` — had to advertise an
-    /// address-history capability in order to answer `getspentinfo` or
-    /// `gettxoutsetinfo`. The bit said "this database indexes addresses", the
-    /// build could not do that, and it was true anyway for the thing actually
-    /// being asked.
-    #[test]
-    fn v1_2_serves_the_transparent_indexes_whatever_the_build() {
-        let capability = DbVersion::new(1, 2, 0).capability();
-
-        assert!(capability.has(Capability::SPENT_OUTPUT_INDEX));
-        assert!(capability.has(Capability::TXOUT_SET_INDEX));
-
-        // Address history tracks the feature, and only the feature.
-        assert_eq!(
-            capability.has(Capability::TRANSPARENT_HIST_INDEX),
-            cfg!(feature = "transparent_address_history_experimental"),
-        );
-    }
-
-    /// A v1.0 or v1.1 database built without address history has no spent index.
-    ///
-    /// The behaviour change the split makes visible, and the reason it needs its
-    /// own test. Before v1.2 the spent index was built *only* under the
-    /// address-history feature, so a database of that vintage from a production
-    /// build genuinely does not have those rows. The old mapping advertised
-    /// `TRANSPARENT_HIST_EXT` for it regardless, which meant routing would send
-    /// a spend lookup to a backend with nothing to look up in.
-    ///
-    /// This is a partial-migration hazard, not a theoretical one: a v1.0
-    /// database is exactly what a node that has not yet migrated is holding.
-    #[test]
-    fn a_pre_v1_2_database_has_the_transparent_indexes_only_with_the_feature() {
-        let with_feature = cfg!(feature = "transparent_address_history_experimental");
-
-        for version in [DbVersion::new(1, 0, 0), DbVersion::new(1, 1, 0)] {
-            let capability = version.capability();
-
-            assert_eq!(capability.has(Capability::SPENT_OUTPUT_INDEX), with_feature);
-            assert_eq!(capability.has(Capability::TXOUT_SET_INDEX), with_feature);
-            assert_eq!(
-                capability.has(Capability::TRANSPARENT_HIST_INDEX),
-                with_feature,
-            );
-
-            // The block surfaces are there either way — the split changed
-            // nothing about what a pre-v1.2 database can say about blocks.
-            assert!(capability.has(Capability::READ_CORE));
-            assert!(capability.has(Capability::BLOCK_TRANSPARENT_EXT));
-            assert!(capability.has(Capability::CHAIN_BLOCK_EXT));
-        }
-    }
-
-    /// v1.3 shares v1.2's mapping deliberately — Ironwood added rows, not a
-    /// capability. Pinned so a future edit cannot silently give one of them a
-    /// different set.
-    #[test]
-    fn ironwood_did_not_change_the_capability_set() {
-        assert_eq!(
-            DbVersion::new(1, 3, 0).capability(),
-            DbVersion::new(1, 2, 0).capability(),
         );
     }
 }

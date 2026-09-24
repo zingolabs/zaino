@@ -4,7 +4,7 @@
 //!
 //! ## Database Types
 //! Types that implement `ZainoVersionedSerde` for database persistence.
-//! These types follow strict versioning rules and require migrations for any changes.
+//! Any change to their encoding bumps the schema version, which rebuilds existing databases.
 //!
 //! Currently organized in `db/legacy.rs` (pending refactoring into focused modules):
 //! - Block types: BlockHash, BlockIndex, BlockData, IndexedBlock, etc.
@@ -24,7 +24,7 @@
 //! **Database Types (`db` module):**
 //! 1. Must implement `ZainoVersionedSerde`
 //! 2. Never use external types as fields directly - store fundamental data
-//! 3. Never change without implementing a new version and database migration
+//! 3. Never change an encoding without bumping the schema version
 //! 4. Follow stringent versioning rules for backward compatibility
 //!
 //! **Helper Types (`helpers` module):**

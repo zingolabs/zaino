@@ -209,15 +209,7 @@ fn solution(solution: &zaino_primitives::types::EquihashSolution) -> EquihashSol
     }
 }
 
-/// The stored treestate for a block.
-///
-/// An absent sapling or orchard root stores as the all-zero root with size
-/// zero, where an absent ironwood root stores as `None`. That asymmetry is on
-/// disk already — it is what the v1.2.1 to v1.3.0 migration writes for
-/// pre-activation heights — so it is preserved rather than tidied.
-///
-/// Public so the port layer converts a treestate through this rather than
-/// through a second copy of the mapping.
+/// The stored treestate for a block, where an absent sapling or orchard root stores as a zero root with size zero and an absent ironwood root stores as `None`.
 pub fn commitment_tree_data(roots: &TreeRoots) -> CommitmentTreeData {
     let root_bytes = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
         root.as_ref().map(|info| <[u8; 32]>::from(info.root))

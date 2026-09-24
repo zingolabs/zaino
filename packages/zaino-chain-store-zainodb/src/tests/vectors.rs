@@ -5,7 +5,7 @@
 //!
 //! These vectors are a regtest chain: blocks, the commitment tree roots after
 //! each, the treestates, and two wallets' expected balances. Their heaviest
-//! consumers are this crate's finalised-state and migration suites, which build
+//! consumers are this crate's finalised-state suites, which build
 //! a database from them and assert on what comes back — so the data sits with
 //! the code it exercises.
 //!

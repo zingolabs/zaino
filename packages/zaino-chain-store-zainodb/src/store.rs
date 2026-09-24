@@ -14,9 +14,8 @@
 //!   (selected by `StoreSettings::ephemeral`).
 //!
 //! `FinalisedState` is responsible for:
-//! - opening or creating the correct backing source (persistent version or ephemeral),
-//! - coordinating **database version migrations** when an on-disk version is older than the
-//!   configured target — in the **background**, while continuing to serve,
+//! - opening or creating the correct backing source (persistent or ephemeral), and rebuilding a
+//!   persistent database whose stored metadata does not match this build,
 //! - syncing the persistent database up to a target height — in the **background** for large
 //!   ranges, while continuing to serve from a ephemeral passthrough,
 //! - exposing a small set of core read/write operations to the rest of `chain_index`,
@@ -34,7 +33,7 @@
 //!   - Defines the *capability model* used to represent which features a given backing source supports.
 //!   - Defines the core traits (`DbRead`, `DbWrite`, `DbCore`) and extension traits
 //!     (`BlockCoreExt`, `TransparentHistExt`, etc.).
-//!   - Defines versioned metadata (`DbMetadata`, `DbVersion`, `MigrationStatus`) persisted on disk.
+//!   - Defines versioned metadata (`DbMetadata`, `DbVersion`) persisted on disk.
 //!
 //! - `finalised_source`
 //!   - Houses the concrete backing implementations: persistent databases by **major** version
@@ -46,9 +45,6 @@
 //!   - Implements `router::Router`, a capability router that can direct calls to the primary backing
 //!     source, or an ephemeral passthrough during
 //!     background sync.
-//!
-//! - `migrations`
-//!   - Implements migration orchestration (`MigrationManager`) and concrete migration steps.
 //!
 //! - `reader`
 //!   - Defines `reader::DbReader`, a read-only view that routes each query through the router
@@ -74,7 +70,7 @@
 //! which automatically routes each read to a backing source that actually supports the requested
 //! feature.
 //!
-//! # Ephemeral mode and background sync / migration
+//! # Ephemeral mode and background sync
 //!
 //! `FinalisedState` never blocks serving on persistence work:
 //!
@@ -88,15 +84,13 @@
 //!   so reads are served from the source; the spawned task retries transient failures and escalates
 //!   to `StatusType::CriticalError` after `ChainStoreConfig::max_consecutive_failures`
 //!   attempts.
-//! - **Background migration**: a version migration likewise runs in a spawned task while a ephemeral
-//!   passthrough serves reads; on failure it sets `StatusType::CriticalError`.
 //!
 //! Readiness has two distinct waits: `FinalisedState::wait_until_ready` reflects *serving*
 //! readiness (returns once reads can be served, including from a passthrough), whereas
-//! `FinalisedState::wait_until_synced` waits for in-progress background sync/migration to actually
+//! `FinalisedState::wait_until_synced` waits for an in-progress background sync to actually
 //! finish (the persistent database reaching its target, or a terminal error).
 //!
-//! Caveat during a large background sync/migration: blocks served by the ephemeral passthrough carry
+//! Caveat during a large background sync: blocks served by the ephemeral passthrough carry
 //! a chainwork of `0`. This is consistent for the non-finalised state's *relative* fork-choice (every
 //! block shares the same baseline) but means absolute chainwork is offset-low until the persistent
 //! database catches up. The chain head is independent of this: it derives its
@@ -114,54 +108,16 @@
 //! - a **one-byte version tag** (`encoding::version::V1`, `V2`, …),
 //! - followed by a version-specific body (little-endian unless stated otherwise).
 //!
-//! This “version-tagged value” model allows individual record layouts to evolve while keeping
-//! backward compatibility via `decode_vN` implementations. Any incompatible change to persisted
-//! types must be coordinated with the database schema versioning in this module (see
-//! `capability::DbVersion`) and, where required, accompanied by a migration (see `migrations`).
-//!
 //! Database implementations additionally use the integrity wrappers in `entry` to store values
 //! with a BLAKE2b-256 checksum bound to the encoded key (`key || encoded_value`), providing early
 //! detection of corruption or key/value mismatches.
 //!
-//! # On-disk layout and version detection
+//! # On-disk layout and schema identity
 //!
-//! Database discovery is intentionally conservative: `try_find_current_db_version` returns the
-//! **oldest** detected version, because the process may have been terminated mid-migration, leaving
-//! multiple version directories on disk.
-//!
-//! The current logic recognises two layouts:
-//!
-//! - **Legacy v0 layout:** network directories `live/`, `test/`, `local/` containing LMDB
-//!   `data.mdb` + `lock.mdb`. This layout is still *detected* so that `spawn` can return a clear
-//!   error — v0 is no longer supported, so an on-disk v0 database is rejected rather than opened or
-//!   migrated. The operator must remove the directory and resync a v1 database.
-//! - **Versioned v1+ layout:** network directories `mainnet/`, `testnet/`, `regtest/` containing
-//!   version subdirectories enumerated by `finalised_source::VERSION_DIRS` (e.g. `v1/`).
-//!
-//! # Versioning and migration strategy
-//!
-//! `FinalisedState::spawn` selects a **target version** from `BlockCacheConfig::db_version` and compares it
-//! against the **current on-disk version** read from `DbMetadata`.
-//!
-//! - If no database exists, a new DB is created at the configured target version.
-//! - If a database exists and `current_version < target_version`, the `migrations::MigrationManager`
-//!   is invoked to migrate the database.
-//!
-//! Major migrations are designed to be low-downtime and disk-conscious:
-//! - the migration runs in place on the one database,
-//! - the router installs the ephemeral passthrough so reads keep being answered
-//!   from the validator while it does,
-//! - and the passthrough is released once the work is committed.
-//!
-//! There is no second database built in parallel and nothing is promoted; see
-//! [`migrations`] for why that description used to be here.
-//!
-//! Migration progress is tracked via `DbMetadata::migration_status` (see `capability::MigrationStatus`)
-//! to support resumption after crashes.
-//!
-//! **Downgrades are not supported.** If a higher version exists on disk than the configured target,
-//! the code currently opens the on-disk DB as-is; do not rely on “forcing” an older version via
-//! config.
+//! The database lives in `<path>/<network>/v1/`. Its `metadata` record holds the schema version
+//! and schema hash of the build that created it. There are no migrations: when the stored
+//! metadata differs from this build's, `spawn` deletes the database directory and resyncs from
+//! the validator, whether the stored schema is older or newer.
 //!
 //! # Core API and invariants
 //!
@@ -206,16 +162,8 @@
 //!   via a capability extension trait in `capability`, route it via `reader`, and gate it via
 //!   `Capability` / `DbVersion::capability`.
 //!
-//! - **Add a new DB major version (v2):**
-//!   1. Add `db::v2` module and `DbV2` implementation.
-//!   2. Extend `finalised_source::FinalisedSource` with a `V2(DbV2)` variant and delegate trait impls.
-//!   3. Append `"v2"` to `finalised_source::VERSION_DIRS` (no gaps; order matters for discovery).
-//!   4. Extend `FinalisedState::spawn` config mapping to accept `cfg.db_version == 2`.
-//!   5. Update `capability::DbVersion::capability` for `(2, 0)`.
-//!   6. Add a migration step in `migrations` and register it in `MigrationManager::get_migration`.
-//!
-//! - **Change an on-disk encoding:** treat it as a schema change. Either implement a migration or
-//!   bump the DB major version and rebuild.
+//! - **Change an on-disk encoding:** treat it as a schema change. Bump the schema version, and
+//!   every existing database rebuilds on its next start.
 //!
 
 // TODO / FIX - REMOVE THIS ONCE CHAININDEX LANDS!
@@ -223,7 +171,6 @@
 
 pub(crate) mod capability;
 pub(crate) mod finalised_source;
-pub(crate) mod migrations;
 pub mod reader;
 pub(crate) mod router;
 
@@ -237,15 +184,14 @@ pub(crate) mod router;
 pub use router::FinalisedStateMode;
 
 use capability::*;
-use finalised_source::{FinalisedSource, VERSION_DIRS};
-use migrations::MigrationManager;
+use finalised_source::FinalisedSource;
 use reader::*;
 use router::Router;
 use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
 use crate::adapter::domain_block_ref;
-use crate::store::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode};
+use crate::store::router::EphemeralMode;
 use crate::types::{AbsoluteChainWork, BlockHash, Height, IndexedBlock, GENESIS_HEIGHT};
 use zaino_chain_store::ChainStoreConfig;
 
@@ -256,13 +202,7 @@ use zaino_status::StatusType;
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, MissedTickBehavior};
 
-/// The activation heights of the three shielded pools whose data
-/// [`build_indexed_block_from_source`] assembles, resolved once per run.
-///
-/// Both the ingestion loop ([`capability::DbWrite::write_blocks_to_height`]) and the v1.2.1 →
-/// v1.3.0 migration backfill need exactly this set of heights; resolving them in one place keeps
-/// the two call sites from drifting apart. A `None` height means the pool's network upgrade has no
-/// activation height on the given network.
+/// The activation heights of the three shielded pools whose data [`build_indexed_block_from_source`] assembles, with `None` for a pool the network never activates.
 struct PoolActivationHeights {
     sapling: Option<zebra_chain::block::Height>,
     nu5: Option<zebra_chain::block::Height>,
@@ -489,26 +429,7 @@ use crate::error::{conversion_error, inconsistent, source_error};
 // constants held, so nothing moves by adopting them.
 
 #[derive(Debug)]
-/// Handle to the finalised on-disk chain index.
-///
-/// `FinalisedState` is the owner-facing facade for the finalised portion of the ChainIndex:
-/// - it opens or creates the appropriate on-disk database version,
-/// - it coordinates migrations when `current_version < target_version`,
-/// - and it exposes a small set of lifecycle, write, and core read methods.
-///
-/// ## Concurrency model
-/// Internally, `FinalisedState` holds an [`Arc`] to a [`Router`]. The router provides lock-free routing
-/// between a primary database and, during migrations, the ephemeral passthrough.
-///
-/// Query paths should not call `FinalisedState` methods directly. Instead, construct a [`DbReader`] using
-/// [`FinalisedState::to_reader`] and perform all reads via that read-only API. This ensures capability-
-/// correct routing (especially during migrations).
-///
-/// ## Configuration
-/// `FinalisedState` stores the [`StoreSettings`] used to:
-/// - determine network-specific on-disk paths,
-/// - select a target database version (`cfg.db_version`),
-/// - and compute per-block metadata (e.g., network selection for `BlockMetadata`).
+/// Owner-facing handle to the finalised portion of the chain index, whose reads go through [`FinalisedState::to_reader`].
 pub struct FinalisedState<T: ChainStoreSource> {
     /// The validator this store builds itself from.
     ///
@@ -518,11 +439,7 @@ pub struct FinalisedState<T: ChainStoreSource> {
     /// target height and nothing else.
     source: Arc<T>,
 
-    /// Capability router for the active database backend(s).
-    ///
-    /// - In steady state, all requests route to the primary backend.
-    /// - During a migration or a long sync, some or all capabilities route to
-    ///   the ephemeral passthrough so reads keep being answered.
+    /// Capability router that sends requests to the primary backend, or to the ephemeral passthrough during a long sync.
     db: Arc<Router<T>>,
 
     /// Immutable configuration snapshot used for sync and metadata construction.
@@ -596,47 +513,17 @@ async fn refresh_watermark<T: ChainStoreSource>(router: &Arc<Router<T>>) {
     });
 }
 
-/// Lifecycle, migration control, and core read/write API for the finalised database.
+/// Lifecycle and core read/write API for the finalised database.
 ///
 /// This `impl` intentionally stays small and policy heavy:
-/// - version selection and migration orchestration lives in [`FinalisedState::spawn`],
+/// - opening, and rebuilding on a schema mismatch, lives in [`FinalisedState::spawn`],
 /// - the storage engine details are encapsulated behind [`FinalisedSource`] and the capability traits,
 /// - higher-level query routing is provided by [`DbReader`].
 impl<T: ChainStoreSource> FinalisedState<T> {
     // ***** DB control *****
 
-    /// Spawns a `FinalisedState` instance.
-    ///
-    /// This method:
-    /// 1. Detects the on-disk database version (if any) using [`FinalisedState::try_find_current_db_version`].
-    /// 2. Selects a target schema version from `cfg.db_version`.
-    /// 3. Opens the existing database at the detected version, or creates a new database at the
-    ///    target version.
-    /// 4. If an existing database is older than the target (`current_version < target_version`),
-    ///    runs migrations using `migrations::MigrationManager`.
-    ///
-    /// ## Version selection rules
-    /// - `cfg.db_version == 1` targets the latest v1 DB version (`DB_VERSION_V1`)..
-    /// - Any other value (including the legacy `0`) returns an error.
-    ///
-    /// ## Migrations
-    /// Migrations are invoked only when a database already exists on disk and the opened database
-    /// reports a lower version than the configured target.
-    ///
-    /// Migrations may require access to chain data to rebuild indices. For that reason, a
-    /// [`ChainStoreSource`] is provided here and passed into the migration manager.
-    ///
-    /// ## Errors
-    /// Returns [`StoreError`] if:
-    /// - the configured target version is unsupported,
-    /// - the on-disk database version is unsupported,
-    /// - opening or creating the database fails,
-    /// - or any migration step fails.
-    #[instrument(
-        name = "FinalisedState::spawn",
-        skip(store, db, source),
-        fields(db_version = store.target_schema_major())
-    )]
+    /// Opens the finalised state, creating the database or rebuilding it when its stored schema differs from this build's.
+    #[instrument(name = "FinalisedState::spawn", skip(store, db, source))]
     pub async fn spawn(
         store: ChainStoreConfig,
         db: ZainoDbConfig,
@@ -676,106 +563,10 @@ impl<T: ChainStoreSource> FinalisedState<T> {
                 path = %db_root.display(),
                 "finalised state running in PERSISTENT mode"
             );
-            let version_opt = Self::try_find_current_db_version(&cfg).await;
-
-            let target_version = match cfg.store.target_schema_major() {
-                1 => DB_VERSION_V1,
-                x => {
-                    return Err(StoreError::Custom(format!(
-                        "unsupported database version: DbV{x}"
-                    )));
-                }
-            };
-
-            let backend = match version_opt {
-                Some(version) => {
-                    info!(version, "Opening FinalisedState from file");
-                    match version {
-                        0 => {
-                            return Err(StoreError::Custom(format!(
-                                "legacy v0 database detected at {}; v0 is no longer supported. \
-                                 Remove the directory and restart to resync a v1 database from genesis.",
-                                db_root.display()
-                            )));
-                        }
-                        1 => FinalisedSource::spawn_v1(&cfg).await?,
-                        _ => {
-                            return Err(StoreError::Custom(format!(
-                                "unsupported database version: DbV{version}"
-                            )));
-                        }
-                    }
-                }
-                None => {
-                    info!(version = %target_version, "Creating new FinalisedState");
-                    match target_version.major() {
-                        1 => FinalisedSource::spawn_v1(&cfg).await?,
-                        _ => {
-                            return Err(StoreError::Custom(format!(
-                                "unsupported database version: DbV{target_version}"
-                            )));
-                        }
-                    }
-                }
-            };
-            let current_version = backend.get_metadata().await?.version();
-
-            let router = Arc::new(Router::new(Arc::new(backend)));
-
-            if version_opt.is_some() && current_version < target_version {
-                info!(
-                    from_version = %current_version,
-                    to_version = %target_version,
-                    "Starting FinalisedState migration in background"
-                );
-
-                let migration_router = Arc::clone(&router);
-                let migration_cfg = cfg.clone();
-                let migration_source = source.clone();
-
-                // Register the migration in the foreground, before spawning, so `wait_until_synced`
-                // blocks until the background migration completes (or fails). The guard is moved into
-                // the task and drops when it finishes, on either path.
-                let op_guard = router.begin_background_op();
-
-                tokio::spawn(async move {
-                    let _op_guard = op_guard;
-
-                    let mut migration_manager = MigrationManager {
-                        router: migration_router.clone(),
-                        cfg: migration_cfg,
-                        current_version,
-                        target_version,
-                        source: migration_source,
-                    };
-
-                    match migration_manager.migrate().await {
-                        Ok(()) => {
-                            // Previously only the failure path logged, so a successful migration was
-                            // indistinguishable from one still running.
-                            info!(
-                                from_version = %current_version,
-                                to_version = %target_version,
-                                "FinalisedState migration complete"
-                            );
-                            // Start the background validator only now that every migration has
-                            // finished: its initial scan reads tables a migration populates (e.g.
-                            // `commitment_tree_data_1_3_0`), so starting it earlier would race the
-                            // migration and fail on a not-yet-written row.
-                            migration_router.primary_backend().start_validator();
-                        }
-                        Err(error) => {
-                            tracing::error!("FinalisedState migration failed: {error}");
-
-                            migration_router.store_primary_status(StatusType::CriticalError);
-                        }
-                    }
-                });
-            } else {
-                // No migration to run, so the on-disk tables the validator scans are already at the
-                // current schema: start it immediately.
-                router.primary_backend().start_validator();
-            }
+            let router = Arc::new(Router::new(Arc::new(
+                FinalisedSource::spawn_v1(&cfg).await?,
+            )));
+            router.primary_backend().start_validator();
 
             let state = Self {
                 source,
@@ -791,24 +582,20 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     ///
     /// This delegates to the router, which shuts down:
     /// - the primary backend, and
-    /// - any ephemeral passthrough currently present (during migrations).
+    /// - any ephemeral passthrough currently present.
     ///
-    /// After this call returns `Ok(())`, database files may still remain on disk; shutdown does not
-    /// delete data. (Deletion of old versions is handled by migrations when applicable.)
+    /// After this call returns `Ok(())`, database files remain on disk; shutdown does not
+    /// delete data.
     pub async fn shutdown(&self) -> Result<(), StoreError> {
         self.db.shutdown().await
     }
 
-    /// Returns the runtime status of the serving database.
-    ///
-    /// This status is provided by the backend implementing `capability::DbCore::status`. During
-    /// migrations, the router determines which backend serves `READ_CORE`, and the status reflects
-    /// that routing decision.
+    /// Returns the runtime status of whichever backend the router currently sends `READ_CORE` to.
     pub fn status(&self) -> StatusType {
         let status = self.db.status();
 
         // The reliable production hook for the one-shot "online" announcement. The ephemeral-release
-        // edge in `Router::release_ephemeral_reference` covers a first sync or a migration, but a
+        // edge in `Router::release_ephemeral_reference` covers a first sync, but a
         // restart against an already-current database never installs a passthrough at all
         // (`sync_is_long_running` is false), so that edge never fires and nothing would mark the
         // finalised state as live. `Indexer::log_status` polls this every ~10s, and
@@ -852,18 +639,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         }
     }
 
-    /// Waits until all in-progress background sync/migration work has finished.
-    ///
-    /// Unlike `FinalisedState::wait_until_ready`, which reflects serving-readiness (the database serves
-    /// reads from the source while it syncs/migrates in the background), this waits for the
-    /// persistent database to actually reach its sync/migration target. It returns once no background
-    /// operation is in progress *and* the database has settled into a terminal serving state.
-    ///
-    /// Breaking on `StatusType::CriticalError` (as well as [`StatusType::Ready`]) ensures this does
-    /// not hang if a background migration fails.
-    ///
-    /// This polls the router at a fixed interval (100ms) using the same `MissedTickBehavior::Delay`
-    /// timer as `FinalisedState::wait_until_ready`.
+    /// Waits until no background sync is running and the database is `Ready` or `CriticalError`.
     pub async fn wait_until_synced(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -892,12 +668,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         self.db.subscribe_watermark()
     }
 
-    /// What the router will currently serve.
-    ///
-    /// The union of the primary and ephemeral masks rather than the primary
-    /// backend's own set: during a migration some capabilities route to the
-    /// passthrough backend, and what a consumer can ask for is what is routed,
-    /// not what the primary happens to hold.
+    /// What the router will currently serve, as the union of the primary and ephemeral routing masks.
     pub(crate) fn capability(&self) -> crate::store::capability::Capability {
         self.db.service_capability()
     }
@@ -949,74 +720,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         }
     }
 
-    /// Attempts to detect the current on-disk database version from the filesystem layout.
-    ///
-    /// The detection is intentionally conservative: it returns the **oldest** detected version,
-    /// because the process may have been terminated mid-migration, leaving both an older primary
-    /// and a newer partially-migrated directory on disk.
-    ///
-    /// ## Recognised layouts
-    ///
-    /// - **Legacy v0 layout**
-    ///   - Network directories: `live/`, `test/`, `local/`
-    ///   - Presence check: both `data.mdb` and `lock.mdb` exist
-    ///   - Reported version: `Some(0)`. v0 is no longer supported, so `spawn` rejects this with a
-    ///     clear error rather than opening or migrating it; detection exists only to produce that
-    ///     error.
-    ///
-    /// - **Versioned v1+ layout**
-    ///   - Network directories: `mainnet/`, `testnet/`, `regtest/`
-    ///   - Version subdirectories: enumerated by `finalised_source::VERSION_DIRS` (e.g. `"v1"`)
-    ///   - Presence check: both `data.mdb` and `lock.mdb` exist within a version directory
-    ///   - Reported version: `Some(i + 1)` where `i` is the index in `VERSION_DIRS`
-    ///
-    /// Returns:
-    /// - `Some(version)` if a compatible database directory is found,
-    /// - `None` if no database is detected (fresh DB creation case), and for a
-    ///   store that holds nothing: there is no directory to look in, and so no
-    ///   version to find.
-    async fn try_find_current_db_version(cfg: &StoreSettings) -> Option<u32> {
-        let db_root = cfg.store.path()?;
-        let legacy_dir = match cfg.db.network().kind() {
-            NetworkKind::Mainnet => "live",
-            NetworkKind::Testnet => "test",
-            NetworkKind::Regtest => "local",
-        };
-        let legacy_path = db_root.join(legacy_dir);
-        if legacy_path.join("data.mdb").exists() && legacy_path.join("lock.mdb").exists() {
-            return Some(0);
-        }
-
-        let net_dir = match cfg.db.network().kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
-        };
-        let net_path = db_root.join(net_dir);
-        if net_path.exists() && net_path.is_dir() {
-            for (i, version_dir) in VERSION_DIRS.iter().enumerate() {
-                let db_path = net_path.join(version_dir);
-                let data_file = db_path.join("data.mdb");
-                let lock_file = db_path.join("lock.mdb");
-                if data_file.exists() && lock_file.exists() {
-                    let version = (i + 1) as u32;
-                    return Some(version);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Returns the database backend that should serve the requested capability.
-    ///
-    /// This is used by [`DbReader`] to route calls to the correct database during major migrations.
-    /// The router may return either the primary or the ephemeral backend depending on the current routing
-    /// masks.
-    ///
-    /// ## Errors
-    /// Returns [`StoreError::FeatureUnavailable`] if neither backend currently serves the
-    /// requested capability.
+    /// Returns the backend that serves the requested capability, or [`StoreError::FeatureUnavailable`] when none does.
     #[inline]
     pub(crate) fn backend_for_cap(
         &self,
@@ -1031,7 +735,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     ///
     /// Sync is skipped when:
     /// - the primary backend is ephemeral, meaning there is no persistent database to sync, or
-    /// - a full-mode ephemeral reference is active, meaning migration/maintenance currently owns the
+    /// - a full-mode ephemeral reference is active, meaning maintenance currently owns the
     ///   persistent database path, or
     /// - the database is non-empty and already at or above `height`.
     ///
@@ -1059,15 +763,13 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             return Ok(());
         }
 
-        // Single-flight: if a background sync (or migration) is already in progress, this poll is a
+        // Single-flight: if a background sync is already in progress, this poll is a
         // no-op. The indexer worker calls this method on every poll, so without this guard a
         // long-running background sync would be re-spawned on each iteration, piling up concurrent
         // `write_blocks_to_height` runs that contend on the single LMDB writer and multiply memory
         // until the process is OOM-killed before any batch commits durably — leaving restarts to
         // resume from the snapshot baseline rather than the last synced height (see issue #1261).
-        // `has_background_ops` is the union of sync and migration; migrations are already excluded
-        // above via `has_full_ephemeral_reference`, so the only thing this observes here is an
-        // in-flight sync. The running task syncs to the height it was spawned with; if the chain has
+        // `has_background_ops` observes an in-flight sync. The running task syncs to the height it was spawned with; if the chain has
         // advanced past it, the next poll after it completes spawns a fresh sync to the new target.
         if self.db.has_background_ops() {
             return Ok(());
@@ -1255,14 +957,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         Ok(())
     }
 
-    /// Re-reads the tip and publishes it as the watermark.
-    ///
-    /// Called after every operation that could move the tip, rather than having
-    /// each of them compute the new value: the operations that change a height
-    /// are spread across the writer, the migration path and the ephemeral
-    /// lifecycle, and a publish site that has to be remembered at each one is a
-    /// publish site that gets forgotten. Re-reading costs two indexed lookups
-    /// and happens per batch, not per block.
+    /// Re-reads the tip and publishes it as the watermark, after any operation that could move the tip.
     pub(crate) async fn refresh_watermark(&self) {
         refresh_watermark(&self.db).await;
     }
@@ -1312,14 +1007,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
 
 #[cfg(test)]
 impl<T: ChainStoreSource> FinalisedState<T> {
-    /// Returns the internal router.
-    ///
-    /// This is a test-only escape hatch for unit and integration tests that need direct access to
-    /// the routed backend, usually to inspect metadata, validate migration results, or exercise
-    /// backend-specific capability methods after a test database has been constructed.
-    ///
-    /// Production code should use the public `FinalisedState` API instead of depending on the router
-    /// directly.
+    /// Returns the internal router, so tests can reach backend-specific methods directly.
     pub(crate) fn router(&self) -> &Router<T> {
         &self.db
     }
@@ -1332,198 +1020,5 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     #[cfg(test)]
     pub(crate) fn router_arc(&self) -> &Arc<Router<T>> {
         &self.db
-    }
-
-    /// Opens an existing test database and migrates it to `target_version`.
-    ///
-    /// This helper is intended to be called after a historical fixture database has already been
-    /// created on disk, for example by [`FinalisedState::build_clean_v1_0_0`]. It does not create a new
-    /// database if none exists. A missing database is treated as a test setup error.
-    ///
-    /// The method:
-    /// - rejects target versions newer than the current compiled [`DB_VERSION_V1`],
-    /// - discovers the existing on-disk major database version,
-    /// - opens the matching backend implementation,
-    /// - reads the precise metadata version stored on disk,
-    /// - runs migrations when the stored version is older than `target_version`, and
-    /// - verifies that the final metadata version exactly matches `target_version`.
-    ///
-    /// This is useful when a test needs to start from a known old database version and assert that
-    /// migrations stop at a specific target version rather than always migrating to the latest
-    /// supported version.
-    pub(crate) async fn spawn_with_target_version(
-        cfg: StoreSettings,
-        source: Arc<T>,
-        target_version: DbVersion,
-    ) -> Result<Self, StoreError> {
-        if target_version.major() > DB_VERSION_V1.major() {
-            return Err(StoreError::Custom(format!(
-                "unsupported database version: {target_version}"
-            )));
-        }
-        if target_version.major() == DB_VERSION_V1.major() && target_version > DB_VERSION_V1 {
-            return Err(StoreError::Custom(format!(
-                "unsupported database version: {target_version}"
-            )));
-        }
-
-        let version_opt = Self::try_find_current_db_version(&cfg).await;
-
-        let backend = match version_opt {
-            Some(version) => {
-                info!(version, "Opening FinalisedState from file");
-                match version {
-                    1 => FinalisedSource::spawn_v1(&cfg).await?,
-                    _ => {
-                        return Err(StoreError::Custom(format!(
-                            "unsupported database version: DbV{version}"
-                        )));
-                    }
-                }
-            }
-            None => {
-                return Err(StoreError::Custom(
-                    "expected existing v1.0.0 migration-test database, found no database"
-                        .to_string(),
-                ));
-            }
-        };
-        let current_version = backend.get_metadata().await?.version();
-
-        let router = Arc::new(Router::new(Arc::new(backend)));
-
-        if current_version < target_version {
-            info!(
-                from_version = %current_version,
-                to_version = %target_version,
-                "Starting FinalisedState migration"
-            );
-            let mut migration_manager = MigrationManager {
-                router: Arc::clone(&router),
-                cfg: cfg.clone(),
-                current_version,
-                target_version,
-                source: Arc::clone(&source),
-            };
-            migration_manager.migrate().await?;
-        }
-
-        // This test helper builds a fixture at an arbitrary (often intermediate) version for
-        // inspection, so it deliberately does NOT start the validator: the validator only validates
-        // against the current schema and would fail on an intermediate-version database. The
-        // foreground migration is already complete, so mark the primary `Ready` directly (as
-        // `spawn_v1_0_0` does) to give callers a settled backend. Validation is exercised through
-        // the production `FinalisedState::spawn` path, which always targets the current schema.
-        router.store_primary_status(StatusType::Ready);
-
-        let metadata = router.get_metadata().await?;
-        if metadata.version() != target_version {
-            return Err(StoreError::Custom(format!(
-                "database version mismatch after test spawn: expected {}, found {}",
-                target_version,
-                metadata.version()
-            )));
-        }
-
-        let state = Self {
-            source,
-            db: router,
-            cfg,
-        };
-        state.refresh_watermark().await;
-        Ok(state)
-    }
-
-    /// Builds a clean v1.0.0 database fixture from `source`.
-    ///
-    /// This helper creates a test-only v1 backend initialized with v1.0.0 metadata, fetches every
-    /// block from genesis through the source's best height, converts each block into an
-    /// [`IndexedBlock`], and writes it using the v1.0.0 block writer.
-    ///
-    /// The resulting database is intended to represent a pre-migration v1.0.0 database. Tests should
-    /// usually shut it down and reopen it through [`FinalisedState::spawn_with_target_version`] or
-    /// [`FinalisedState::build_db_to_version`] to exercise migration behavior.
-    ///
-    /// The supplied source must provide:
-    /// - a best block height,
-    /// - every block from genesis through that height, and
-    /// - Sapling and Orchard commitment tree roots for each block.
-    pub(crate) async fn build_clean_v1_0_0(
-        cfg: &StoreSettings,
-        source: Arc<T>,
-    ) -> Result<FinalisedSource<T>, StoreError> {
-        let db = FinalisedSource::spawn_v1_0_0(cfg).await?;
-
-        let tip = source
-            .get_best_block_height()
-            .await
-            .map_err(|error| StoreError::Source(source_error(error)))?;
-        let tip = Height(u32::from(tip));
-
-        // Ironwood (NU6.3) commitment tree data is only expected from activation. Below activation
-        // (or on a network with no NU6.3 activation height) the source has no ironwood root, so it
-        // defaults — mirroring `build_indexed_block_from_source`.
-        let nu6_3_activation_height = crate::pool::ShieldedPool::Ironwood
-            .activation_upgrade()
-            .activation_height(cfg.db.network());
-
-        let mut parent_chainwork: Option<AbsoluteChainWork> = None;
-
-        for height in crate::types::GENESIS_HEIGHT.0..=tip.0 {
-            let block = fetch_block(source.as_ref(), height).await?;
-            let tree_roots = fetch_tree_roots(source.as_ref(), &block).await?;
-
-            // Per this builder's contract, the fixture source provides Sapling and Orchard
-            // roots for every block, so those pools are unconditionally required.
-            require_pool_roots(
-                &tree_roots,
-                PoolActivation {
-                    sapling: true,
-                    orchard: true,
-                    ironwood: nu6_3_activation_height
-                        .is_some_and(|activation| height >= activation.0),
-                },
-                block.header.hash,
-            )?;
-
-            let chain_block = indexed_block_from_parts(&block, &tree_roots, parent_chainwork)?;
-            parent_chainwork = Some(chain_block.context.chainwork);
-
-            db.write_block_v1_0_0(chain_block).await?;
-        }
-
-        Ok(db)
-    }
-
-    /// Builds a v1.0.0 fixture database and migrates it to `target_version`.
-    ///
-    /// This is the high-level migration-test constructor. It first creates a clean v1.0.0 database
-    /// using [`FinalisedState::build_clean_v1_0_0`], shuts that backend down so all LMDB state is flushed
-    /// and released, then reopens the same database through [`FinalisedState::spawn_with_target_version`].
-    ///
-    /// During the reopen step, the stored v1.0.0 metadata is used as the migration starting point
-    /// and `target_version` is used as the explicit migration target.
-    ///
-    /// Use this helper when a test wants a fully initialized [`FinalisedState`] at a specific version after
-    /// exercising the migration path from v1.0.0. The target version must be at least v1.0.0 and no
-    /// newer than the current compiled [`DB_VERSION_V1`].
-    pub(crate) async fn build_db_to_version(
-        cfg: StoreSettings,
-        source: Arc<T>,
-        target_version: DbVersion,
-    ) -> Result<Self, StoreError> {
-        let v1_0_0 = DbVersion::new(1, 0, 0);
-        if target_version < v1_0_0 {
-            return Err(StoreError::Custom(format!(
-                "target version {} is older than v1.0.0",
-                target_version
-            )));
-        }
-
-        let db = Self::build_clean_v1_0_0(&cfg, source.clone()).await?;
-        db.shutdown().await?;
-        drop(db);
-
-        Self::spawn_with_target_version(cfg, source, target_version).await
     }
 }

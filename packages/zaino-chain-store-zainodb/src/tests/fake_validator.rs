@@ -110,32 +110,9 @@ impl FakeValidator {
         }
     }
 
-    /// The highest block this validator holds, whatever tip it reports.
-    ///
-    /// Only the migration suites move a validator's tip, and those compile out
-    /// when the experimental address history is on (see `migrations.rs`).
-    #[cfg(not(feature = "transparent_address_history_experimental"))]
-    pub(crate) fn loaded_height(&self) -> Height {
-        self.blocks
-            .last()
-            .map(|last| last.block.header.height)
-            .unwrap_or_else(|| Height::try_from(0).expect("zero is a valid height"))
-    }
-
     /// The tip this validator currently reports.
     pub(crate) fn reported_tip(&self) -> Height {
         Height::try_from(self.tip.load(Ordering::Acquire)).expect("tip is a held height")
-    }
-
-    /// Advances the reported tip by `blocks`, up to what is held.
-    ///
-    /// How a test moves the finalised seam: the store syncs to a floor derived
-    /// from the tip, so raising the tip is what gives it more to do.
-    #[cfg(not(feature = "transparent_address_history_experimental"))]
-    pub(crate) fn advance_tip(&self, blocks: u32) {
-        let raised = self.tip.load(Ordering::Acquire).saturating_add(blocks);
-        let capped = raised.min(u32::from(self.loaded_height()));
-        self.tip.store(capped, Ordering::Release);
     }
 
     fn at(&self, height: Height) -> Option<&FakeBlock> {
@@ -219,21 +196,6 @@ pub(crate) fn fake_validator_from_vectors(
     blocks: &[super::vectors::VectorBlock],
 ) -> Arc<FakeValidator> {
     Arc::new(FakeValidator::new(fake_blocks_from_vectors(blocks)))
-}
-
-/// As [`fake_validator_from_vectors`], but reporting `tip` as the chain tip.
-///
-/// For suites that need the validator's chain to extend past what the store has
-/// built, which is what makes the finalised seam move.
-#[cfg(not(feature = "transparent_address_history_experimental"))]
-pub(crate) fn fake_validator_with_tip(
-    blocks: &[super::vectors::VectorBlock],
-    tip: u32,
-) -> Arc<FakeValidator> {
-    Arc::new(FakeValidator::with_tip(
-        fake_blocks_from_vectors(blocks),
-        Height::try_from(tip).expect("test tip is a valid height"),
-    ))
 }
 
 /// A vector's `u64` tree size, as the domain carries it.

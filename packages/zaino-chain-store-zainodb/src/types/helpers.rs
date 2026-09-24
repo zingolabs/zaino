@@ -375,13 +375,7 @@ impl TryFrom<BlockWithMetadata<'_>> for IndexedBlock {
 mod create_commitment_tree_data {
     use super::*;
 
-    /// Regression test: a block whose source reported no ironwood treestate (pre-NU6.3,
-    /// or a network with no NU6.3 activation height) must store its ironwood root as
-    /// `None` — the encoding the v1.2.1->v1.3.0 migration and the CommitmentTreeRoots V1
-    /// decode produce for the same state. The write path instead erased the `Option` via
-    /// `extract_with_defaults` and stored `Some([0; 32])`, so a freshly synced database
-    /// and a migrated database encoded identical pre-activation heights differently.
-    ///
+    /// A block whose source reported no ironwood treestate must store its ironwood root as `None`, not `Some([0; 32])`.
     #[test]
     fn absent_ironwood_root_is_stored_as_none() {
         let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =

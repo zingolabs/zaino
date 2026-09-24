@@ -120,7 +120,6 @@ fn synced_index_test_on(
                 },
                 ephemeral: false,
                 mempool: Default::default(),
-                db_version: 1,
                 network: network.clone(),
 
             };
@@ -825,7 +824,6 @@ fn make_chain() {
                 },
                 ephemeral: false,
                 mempool: Default::default(),
-                db_version: 1,
                 network: network.clone(),
 
             };

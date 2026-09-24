@@ -131,13 +131,7 @@ impl CommitmentTreeRoots {
         &self.orchard
     }
 
-    /// Returns the ironwood commitment tree root, if the block has one.
-    ///
-    /// `None` for a block below NU6.3 activation, or on a network with no
-    /// activation height. That distinction is real and is why this pool stores
-    /// an `Option` where sapling and orchard store a zero root: the v1.2.1 to
-    /// v1.3.0 migration writes `None` for pre-activation heights, and a fresh
-    /// sync must write the same bytes for the same block.
+    /// Returns the ironwood commitment tree root, which is `None` below NU6.3 activation or on a network that never activates it.
     pub(crate) fn ironwood(&self) -> &Option<[u8; 32]> {
         &self.ironwood
     }

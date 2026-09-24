@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────────────
-#  Zaino – Finalised State Database, on-disk layout (Schema v1.3, 2026-07-03)
+#  Zaino – Finalised State Database, on-disk layout (Schema v1.4, 2026-09-23)
 # ────────────────────────────────────────────────────────────────────────────────
 #
 #  Any change to this file is a **breaking** change.  Bump the schema version,
@@ -81,12 +81,6 @@
 #              CommitmentTreeSizes  = LE(u32) sapling_total  LE(u32) orchard_total
 #                                     LE(u32) ironwood_total
 #
-#           (Legacy CommitmentTreeData V1 body  =
-#              32-byte sapling_root  32-byte orchard_root
-#              LE(u32) sapling_total  LE(u32) orchard_total ;
-#            fixed-length, previously wrapped in StoredEntryFixed. Rebuilt into the V2
-#            StoredEntryVar layout above by the v1.2.1 → v1.3.0 migration, then dropped.)
-#
 # 13. ironwood  ―  H  ->  StoredEntryVar<OrchardTxList>          (schema v1.3.0)
 #    Key : BE height
 #    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
@@ -95,9 +89,8 @@
 #              actions = CS n + n × CompactOrchardAction
 #                         CompactOrchardAction = 32-byte nullifier  32-byte cmx  32-byte epk  52-byte ciphertext
 #
-#           Ironwood (NU6.3) actions reuse the Orchard compact types. Rows are written for
-#           every block from schema v1.3.0 onward; blocks written before v1.3.0 (all below
-#           NU6.3 activation) have no ironwood row, which readers treat as "no ironwood data".
+#           Ironwood (NU6.3) actions reuse the Orchard compact types. Readers treat a
+#           missing ironwood row as "no ironwood data".
 #
 # 7. heights  ―  B (block hash)  ->  StoredEntryFixed<Height>
 #    Key : 32-byte block hash (internal byte order)
@@ -136,10 +129,8 @@
 #    DbMetadata V1 body =
 #        DbVersion version
 #        32-byte schema_hash
-#        MigrationStatus migration_status
 #
 #    DbVersion = LE(u32) major  LE(u32) minor  LE(u32) patch
-#    MigrationStatus = u8 enum (0 = Empty, 1 = InProgress, 2 = Completed, 3 = Failed)
 #
 # 12. txid_location  ―  B (txid)  ->  StoredEntryFixed<TxLocation>
 #    Key : 32-byte transaction id (internal byte order)

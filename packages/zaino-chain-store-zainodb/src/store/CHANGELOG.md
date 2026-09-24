@@ -39,11 +39,9 @@ API / capabilities
   - Removed: <methods / behaviors>
   - Changed: <semantic changes, error mapping changes>
 
-Migration
-- Strategy: <in-place | shadow build | rebuild>
-- Backfill: <what gets rebuilt and how broadly>
-- Completion criteria: <how we decide migration is done>
-- Failure handling: <rollback / retry behavior>
+Rebuild
+- Every version bump deletes existing databases on their next start and
+  resyncs them from the validator; there are no migrations.
 
 Bug Fixes / Optimisations
 
@@ -502,3 +500,30 @@ Behaviour change
   so no chain data is lost.
 - Requesting database version 0 (`cfg.db_version == 0`) is rejected as an
   unsupported database version.
+
+--------------------------------------------------------------------------------
+DB VERSION v1.4.0 (from v1.3.0)
+Date: 2026-09-23
+--------------------------------------------------------------------------------
+
+Summary
+- Database migrations are removed. A database whose stored metadata differs
+  from the running build's, or cannot be decoded, is deleted and resynced from
+  the validator on start. Upgrades and downgrades take the same path.
+
+On-disk schema
+- Encoding:
+  - Values: `DbMetadata` drops its `MigrationStatus` field; the body is now
+    `DbVersion` followed by the 32-byte schema hash (45 bytes, was 47).
+- Tables:
+  - No changes. The temporary migration progress keys are no longer written.
+
+API / capabilities
+- Removed: `MigrationManager`, `MigrationStatus`, `DbWrite::update_metadata`,
+  the `db_version` configuration value, and `ChainStoreReader::schema`.
+- Changed: `DbVersion::capability` grants capabilities only to this build's own
+  version.
+
+Rebuild
+- Every existing v1.0.0 to v1.3.0 database rebuilds once on its first start
+  under this version.

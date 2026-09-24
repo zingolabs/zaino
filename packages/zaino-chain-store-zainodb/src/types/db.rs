@@ -14,9 +14,8 @@
 //!    - Follow stringent versioning rules outlined in the trait
 //!    - Ensure backward compatibility
 //!
-//! 3. **Never change structs without proper migration**
-//!    - Implement a new version when changes are needed
-//!    - Update FinalisedState and implement necessary migrations
+//! 3. **Never change a struct's encoding without bumping the schema version**
+//!    - Every existing database then rebuilds on its next start
 
 pub mod address;
 pub mod block;

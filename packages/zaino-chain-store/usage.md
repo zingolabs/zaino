@@ -31,8 +31,9 @@ implementation to stub what it cannot do, and stubs are where
 `Err(Unsupported)` at 3am comes from.
 
 Where absence *cannot* be a compile-time fact it is a runtime one:
-`capabilities()` exists because a store on an older schema genuinely lacks an
-index until it has migrated. That is a fact about a database, not a type.
+`capabilities()` exists because whether a store holds an optional index, such
+as address history, depends on how it was built. That is a fact about a
+database, not a type.
 
 The two are tied together by a per-port capability *carrier* trait. Each read
 port `X` has a sibling `XCapability: X` — `TxOutSetIndexCapability`,

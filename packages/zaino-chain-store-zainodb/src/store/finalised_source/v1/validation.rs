@@ -735,60 +735,27 @@ impl DbV1 {
         }
     }
 
-    /// Ensure the `metadata` table contains **exactly** our `DB_SCHEMA_V1`.
-    ///
-    /// * Brand-new DB → insert the entry.
-    /// * Existing DB  → verify checksum, version, and schema hash.
-    pub(super) async fn check_schema_version(&self) -> Result<(), StoreError> {
+    /// Compares the stored `metadata` record with this build's schema, writing it first when the database is fresh.
+    pub(super) async fn check_schema_version(&self) -> Result<SchemaCheck, StoreError> {
+        let this_build = DbMetadata::new(DB_VERSION_V1, DB_SCHEMA_V1_HASH);
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
             match txn.get(self.metadata, b"metadata") {
-                // ***** Existing DB *****
                 Ok(raw_bytes) => {
-                    let stored: StoredEntryFixed<DbMetadata> =
-                        StoredEntryFixed::from_bytes(raw_bytes).map_err(|e| {
-                            StoreError::Custom(format!("corrupt metadata CBOR: {e}"))
-                        })?;
-                    if !stored.verify(b"metadata") {
-                        return Err(StoreError::Custom(
-                            "metadata checksum mismatch – DB corruption suspected".into(),
-                        ));
-                    }
-
-                    let meta = stored.into_inner();
-
-                    // Error if major version differs
-                    if meta.version.major != DB_VERSION_V1.major {
-                        return Err(StoreError::Custom(format!(
-                            "unsupported schema major version {} (expected {})",
-                            meta.version.major, DB_VERSION_V1.major
-                        )));
-                    }
-
-                    // Warn if schema hash mismatches
-                    // NOTE: There could be a schema mismatch at launch during minor migrations,
-                    //       so we do not return an error here. Maybe we can improve this?
-                    if meta.schema_hash != DB_SCHEMA_V1_HASH {
-                        warn!(
-                            expected = ?&DB_SCHEMA_V1_HASH[..4],
-                            found = ?&meta.schema_hash[..4],
-                            "schema hash mismatch: db_schema_v1.txt likely changed without version bump"
-                        );
-                    }
+                    // A record this build cannot decode was written by another schema.
+                    let matches =
+                        StoredEntryFixed::<DbMetadata>::from_bytes(raw_bytes).is_ok_and(|stored| {
+                            stored.verify(b"metadata") && stored.into_inner() == this_build
+                        });
+                    return Ok(if matches {
+                        SchemaCheck::Matches
+                    } else {
+                        SchemaCheck::Differs
+                    });
                 }
-
-                // ***** Fresh DB (key not found) *****
                 Err(lmdb::Error::NotFound) => {
-                    let entry = StoredEntryFixed::new(
-                        b"metadata",
-                        DbMetadata {
-                            version: DB_VERSION_V1,
-                            schema_hash: DB_SCHEMA_V1_HASH,
-                            // Fresh database, no migration required.
-                            migration_status: MigrationStatus::Empty,
-                        },
-                    );
+                    let entry = StoredEntryFixed::new(b"metadata", this_build);
                     txn.put(
                         self.metadata,
                         b"metadata",
@@ -796,13 +763,11 @@ impl DbV1 {
                         WriteFlags::NO_OVERWRITE,
                     )?;
                 }
-
-                // ***** Any other LMDB error *****
                 Err(e) => return Err(StoreError::LmdbError(e)),
             }
 
             txn.commit()?;
-            Ok(())
+            Ok(SchemaCheck::Matches)
         })
     }
 }

@@ -37,7 +37,7 @@ use zaino_primitives::types::{
 use zaino_status::StatusType;
 
 use crate::block::{PoolFilter, StoredBlock};
-use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
+use crate::capability::{StoreCapabilities, StoreCapability, StoreWatermark};
 use crate::error::{ChainStoreError, ChainStoreSourceError};
 use crate::output::{SpenderRef, StoredTxOut};
 use crate::txout_set::TxOutSetAccumulator;
@@ -132,14 +132,8 @@ pub trait ChainStoreReader: Clone + Send + Sync + core::fmt::Debug + 'static {
     /// question about two different chains.
     fn watermark(&self) -> StoreWatermark;
 
-    /// What this store currently offers.
-    ///
-    /// Runtime state, not a type-level fact: a store on an older schema lacks
-    /// indexes a newer one has, and gains them during a migration.
+    /// What this store offers, which depends on the optional indexes it was built with.
     fn capabilities(&self) -> StoreCapabilities;
-
-    /// The schema on disk, and whether it is migrating.
-    fn schema(&self) -> impl Future<Output = Result<StoreSchema, ChainStoreError>> + Send;
 
     /// The canonical hash at `height`.
     ///

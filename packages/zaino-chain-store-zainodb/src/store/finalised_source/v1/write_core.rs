@@ -200,9 +200,6 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
     Ok(batch)
 }
 
-#[cfg(test)]
-use zaino_encoding::version;
-
 /// [`DbWrite`] capability implementation for [`DbV1`].
 ///
 /// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
@@ -368,18 +365,6 @@ fn ironwood_entry(
         .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood)))
 }
 
-/// Builds the sparse ironwood row entry for `block` (the same value the write path stores). Used by
-/// the v1.2.1 → v1.3.0 migration to backfill the ironwood table from validator-fetched blocks.
-pub(crate) fn build_block_ironwood_entry<Work>(
-    block: &IndexedBlock<Work>,
-    block_height_bytes: &[u8],
-) -> Result<Option<StoredEntryVar<OrchardTxList>>, StoreError> {
-    Ok(ironwood_entry(
-        extract_block_pool_lists(block)?.ironwood,
-        block_height_bytes,
-    ))
-}
-
 impl DbWrite for DbV1 {
     async fn write_block(&self, block: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         self.write_block(block).await
@@ -410,7 +395,7 @@ impl DbWrite for DbV1 {
         // write). On an empty database this is genesis with zero chainwork. Read raw rather than via
         // `get_block_header`, which routes through `resolve_validated_hash_or_height` →
         // `validate_block_blocking` (a full re-validation for any height above `validated_tip`); the
-        // tip is already on disk and trusted here, exactly as the v1.2 migration reads block data.
+        // tip is already on disk and trusted here.
         // `mut` only under the address-history path, which advances it per block; the pipelined
         // path moves it into the batch cursor, which owns it from there on.
         #[cfg_attr(
@@ -581,10 +566,6 @@ impl DbWrite for DbV1 {
 
     async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
         self.delete_block(block).await
-    }
-
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
-        self.update_metadata(metadata).await
     }
 }
 
@@ -1989,24 +1970,6 @@ impl DbV1 {
         .map_err(|e| StoreError::Custom(format!("Tokio task error: {e}")))??;
         Ok(())
     }
-
-    /// Updates the metadata hed by the database.
-    pub(crate) async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
-        tokio::task::block_in_place(|| {
-            let mut txn = self.env.begin_rw_txn()?;
-
-            let entry = StoredEntryFixed::new(b"metadata", metadata);
-            txn.put(
-                self.metadata,
-                b"metadata",
-                &entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
-
-            txn.commit()?;
-            Ok(())
-        })
-    }
 }
 
 #[cfg(test)]
@@ -2016,168 +1979,6 @@ impl DbV1 {
     pub(crate) fn validated_tip_height(&self) -> u32 {
         self.validated_tip
             .load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Writes a block using the v1.0.0 format.
-    ///
-    /// This intentionally writes only the core v1 tables and uses v1 item encodings.
-    ///
-    /// This method does not perform safety checks and must not be used in production code.
-    ///
-    /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(
-        &self,
-        block: IndexedBlock<AbsoluteChainWork>,
-    ) -> Result<(), StoreError> {
-        self.status.store(StatusType::Syncing);
-
-        let block_hash = block.context.index.hash;
-        let block_hash_bytes = block_hash.to_bytes()?;
-        let block_height = block.context.index.height;
-        let block_height_bytes = block_height.to_bytes()?;
-
-        let height_entry_bytes = StoredEntryFixed::<Height>::to_bytes_with_item_version(
-            &block_hash_bytes,
-            &block.context.index.height,
-            version::V1,
-        )?;
-
-        let header = BlockHeaderData::new(block.context, *block.data());
-        let header_entry_bytes =
-            StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::to_bytes_with_item_version(
-                &block_height_bytes,
-                &header,
-                version::V1,
-            )?;
-
-        let commitment_tree_entry_bytes =
-            StoredEntryFixed::<CommitmentTreeData>::to_bytes_with_item_version(
-                &block_height_bytes,
-                block.commitment_tree_data(),
-                version::V1,
-            )?;
-
-        let tx_len = block.transactions().len();
-        let mut txids = Vec::with_capacity(tx_len);
-        let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
-        let mut transparent = Vec::with_capacity(tx_len);
-        let mut sapling = Vec::with_capacity(tx_len);
-        let mut orchard = Vec::with_capacity(tx_len);
-
-        for tx in block.transactions() {
-            let hash = tx.txid();
-
-            if txid_set.insert(*hash) {
-                txids.push(*hash);
-            }
-
-            let transparent_data =
-                if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.transparent().clone())
-                };
-            transparent.push(transparent_data);
-
-            let sapling_data =
-                if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.sapling().clone())
-                };
-            sapling.push(sapling_data);
-
-            let orchard_data = if tx.orchard().actions().is_empty() {
-                None
-            } else {
-                Some(tx.orchard().clone())
-            };
-            orchard.push(orchard_data);
-        }
-
-        let txid_list = TxidList::new(txids);
-        let txid_entry_bytes = StoredEntryVar::<TxidList>::to_bytes_with_item_version(
-            &block_height_bytes,
-            &txid_list,
-            version::V1,
-        )?;
-
-        let transparent_tx_list = TransparentTxList::new(transparent);
-        let transparent_entry_bytes =
-            StoredEntryVar::<TransparentTxList>::to_bytes_with_item_version(
-                &block_height_bytes,
-                &transparent_tx_list,
-                version::V1,
-            )?;
-
-        let sapling_tx_list = SaplingTxList::new(sapling);
-        let sapling_entry_bytes = StoredEntryVar::<SaplingTxList>::to_bytes_with_item_version(
-            &block_height_bytes,
-            &sapling_tx_list,
-            version::V1,
-        )?;
-
-        let orchard_tx_list = OrchardTxList::new(orchard);
-        let orchard_entry_bytes = StoredEntryVar::<OrchardTxList>::to_bytes_with_item_version(
-            &block_height_bytes,
-            &orchard_tx_list,
-            version::V1,
-        )?;
-
-        tokio::task::block_in_place(|| {
-            let mut txn = self.env.begin_rw_txn()?;
-
-            txn.put(
-                self.headers,
-                &block_height_bytes,
-                &header_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.heights,
-                &block_hash_bytes,
-                &height_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.txids,
-                &block_height_bytes,
-                &txid_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.transparent,
-                &block_height_bytes,
-                &transparent_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.sapling,
-                &block_height_bytes,
-                &sapling_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.orchard,
-                &block_height_bytes,
-                &orchard_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.commitment_tree_data,
-                &block_height_bytes,
-                &commitment_tree_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            txn.commit()?;
-            self.env.sync(true)?;
-
-            Ok::<_, StoreError>(())
-        })?;
-
-        self.status.store(StatusType::Ready);
-        Ok(())
     }
 }
 
