@@ -89,21 +89,8 @@ impl DbV1 {
 
     /// Fetch database metadata.
     async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.metadata, &METADATA_KEY) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(StoreError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(StoreError::LmdbError(e)),
-            };
-
-            DbMetadata::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("metadata decode error: {e}")))
-        })
+        self.read_row(self.metadata, "metadata", METADATA_KEY)?
+            .ok_or_else(|| StoreError::DataUnavailable("metadata missing from db".into()))
     }
 
     /// Resolves `hash_or_height` to a stored height, or `DataUnavailable` when the store does not hold it.
@@ -159,16 +146,16 @@ fn not_stored() -> StoreError {
 }
 
 impl DbV1 {
-    /// Fetches and decodes one `T` row keyed by `height_bytes`, returning `Ok(None)` when the table has no row there.
-    fn read_row<T: DbCodec>(
+    /// Fetches and decodes one `T` row keyed by `key`, returning `Ok(None)` when the table has no row there.
+    pub(super) fn read_row<T: DbCodec>(
         &self,
         table: lmdb::Database,
         label: &str,
-        height_bytes: &[u8],
+        key: &[u8],
     ) -> Result<Option<T>, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(table, &height_bytes) {
+            let raw = match txn.get(table, &key) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => return Ok(None),
                 Err(e) => return Err(StoreError::LmdbError(e)),

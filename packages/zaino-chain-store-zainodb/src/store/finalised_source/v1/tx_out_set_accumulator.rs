@@ -472,25 +472,15 @@ impl DbV1 {
     pub(super) async fn get_tx_out_set_info_accumulator(
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
-        tokio::task::block_in_place(|| {
-            let transaction = self.env.begin_ro_txn()?;
-
-            let raw_accumulator = match transaction.get(
-                self.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            ) {
-                Ok(value) => value,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(StoreError::DataUnavailable(
-                        "finalised txout-set accumulator missing from database".to_string(),
-                    ));
-                }
-                Err(error) => return Err(StoreError::LmdbError(error)),
-            };
-
-            FinalisedTxOutSetInfoAccumulator::from_bytes(raw_accumulator).map_err(|error| {
-                StoreError::Custom(format!("txout-set accumulator decode error: {error}"))
-            })
+        self.read_row(
+            self.tx_out_set_info_accumulator,
+            "txout-set accumulator",
+            TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+        )?
+        .ok_or_else(|| {
+            StoreError::DataUnavailable(
+                "finalised txout-set accumulator missing from database".to_string(),
+            )
         })
     }
 
