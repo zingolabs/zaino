@@ -37,7 +37,7 @@ use tokio::sync::{broadcast, watch};
 use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockIter, ChainHeadBlockService, ChainHeadError,
     ChainHeadFreezeEvents, ChainHeadSnapshot, ChainHeadTransactionLocations,
-    ChainHeadTransactionService, ChainHeadTxPosition, ChainHeadWork, SpenderLocation,
+    ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
 };
 use zaino_chain_store::{
     ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
@@ -52,8 +52,9 @@ use zaino_primitives::types::{
     AbsoluteChainWork, AddressBalance, AddressDelta, Block, BlockConfirmations, BlockHash,
     BlockHeader, BlockRef, BlockTreeSizes, BlockTxPosition, BlockVerbose, ChainMetadata,
     ChainStateEpoch, CompactDifficulty, EquihashNonce, EquihashSolution, Height, MerkleRoot,
-    Outpoint, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId,
-    TransactionLocation, TreeRoots, TreeSize, Treestate, Utxo,
+    Outpoint, PreIndexCompactBlock, PreIndexCompactTx, RelativeChainWork, ShieldedPool,
+    SingleBlockWork, SubtreeRoot, TransactionId, TransactionLocation, TreeRoots, TreeSize,
+    Treestate, Utxo,
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
@@ -207,7 +208,7 @@ fn head_from_block(block: &Block) -> ChainHeadBlock {
         // Placeholder. Work is anchor-relative, so it depends on where the
         // window floor is, which a single block does not know — `FakeHead`
         // assigns it once the window is known.
-        work: ChainHeadWork::anchored_at(1),
+        work: RelativeChainWork::ZERO,
         block: block.clone(),
         tree_roots: empty_tree_roots(),
     }
@@ -794,30 +795,38 @@ pub struct FakeHeadSnapshot {
     blocks: Vec<ChainHeadBlock>,
     /// Blocks retained on competing branches. Never canonical.
     branches: Vec<ChainHeadBlock>,
-    /// The parent of the window floor: what every block's work counts from.
-    work_anchor: Option<BlockRef>,
+    /// The window floor: what every block's work counts from, its own work being zero.
+    work_anchor: BlockRef,
     generation: u64,
     spenders: HashMap<Outpoint, SpenderLocation>,
+}
+
+/// The anchor-relative total `units` blocks above the anchor, one unit of work each.
+fn relative_work(units: u128) -> RelativeChainWork {
+    match core::num::NonZeroU128::new(units) {
+        Some(units) => RelativeChainWork::ZERO
+            .accumulate(SingleBlockWork::new(units))
+            .expect("a test total fits"),
+        None => RelativeChainWork::ZERO,
+    }
 }
 
 impl FakeHeadSnapshot {
     /// A view over these blocks, taken as the canonical chain in order.
     ///
     /// Assigns each block its anchor-relative work rather than trusting what
-    /// the caller put there. Work is measured from the parent of the window
-    /// floor, so it is a fact about the window and not about a block in
-    /// isolation — and one unit per block makes the rebase check exact against
-    /// [`FakeStore`], whose chainwork at `h` is `h + 1`.
+    /// the caller put there. Work is measured from the window floor, whose own
+    /// work is zero, so it is a fact about the window and not about a block in
+    /// isolation — and one unit per block above the floor makes the rebase
+    /// check exact against [`FakeStore`], whose chainwork at `h` is `h + 1`.
     pub fn new(mut blocks: Vec<ChainHeadBlock>) -> Self {
-        let work_anchor = blocks.first().and_then(|floor| {
-            floor.height().checked_sub(1).map(|height| BlockRef {
-                hash: floor.parent_hash,
-                height,
-            })
-        });
+        let work_anchor = blocks
+            .first()
+            .map(|floor| floor.reference)
+            .expect("a fake head window holds at least its floor");
 
         for (index, block) in blocks.iter_mut().enumerate() {
-            block.work = ChainHeadWork::anchored_at(index as u128 + 1);
+            block.work = relative_work(index as u128);
         }
 
         Self {
@@ -845,13 +854,9 @@ impl FakeHeadSnapshot {
     /// [`new`](Self::new) assigns along the canonical chain, so a competing
     /// block at a height weighs the same as the canonical one it competes
     /// with.
-    fn work_at(&self, height: Height) -> ChainHeadWork {
-        let above_anchor = match self.work_anchor {
-            Some(anchor) => u32::from(height).saturating_sub(u32::from(anchor.height)),
-            // No anchor: the floor is genesis, so height is already the count.
-            None => u32::from(height).saturating_add(1),
-        };
-        ChainHeadWork::anchored_at(u128::from(above_anchor))
+    fn work_at(&self, height: Height) -> RelativeChainWork {
+        let above_anchor = u32::from(height).saturating_sub(u32::from(self.work_anchor.height));
+        relative_work(u128::from(above_anchor))
     }
 
     /// A block on a competing branch at `h`, distinguished by `tag`.
@@ -866,7 +871,7 @@ impl FakeHeadSnapshot {
             parent_hash: hash_of(h.saturating_sub(1)),
             // Placeholder, as in `head_from_block`: `with_branch_block`
             // assigns the work once the window it joins is known.
-            work: ChainHeadWork::anchored_at(1),
+            work: RelativeChainWork::ZERO,
             block,
             tree_roots: empty_tree_roots(),
         }
@@ -895,7 +900,7 @@ impl FakeHeadSnapshot {
 }
 
 impl ChainHeadSnapshot for FakeHeadSnapshot {
-    fn work_anchor(&self) -> Option<BlockRef> {
+    fn work_anchor(&self) -> BlockRef {
         self.work_anchor
     }
 

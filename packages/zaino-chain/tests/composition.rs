@@ -759,7 +759,9 @@ async fn chainwork_is_continuous_across_the_finalised_seam() {
     assert_eq!(
         recent,
         finalised
-            .accumulate(SingleBlockWork::try_new(1).expect("non-zero"))
+            .accumulate(SingleBlockWork::new(
+                core::num::NonZeroU128::new(1).expect("non-zero"),
+            ))
             .expect("one unit cannot overflow"),
         "one block of work apart, with no step at the seam",
     );

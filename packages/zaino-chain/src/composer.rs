@@ -500,9 +500,8 @@ pub(crate) fn store_err(error: ChainStoreError) -> ChainViewError {
 /// no real chain reaches, and which is reported absent rather than wrong for
 /// the same reason every other unknown is.
 fn rebase(anchor: AnchorChainWork, block: &ChainHeadBlock) -> Option<AbsoluteChainWork> {
-    let relative = block.work.as_u128();
+    let relative = u128::from(block.work);
     let absolute = match anchor {
-        AnchorChainWork::FromGenesis => relative,
         AnchorChainWork::Known(anchor) => core::num::NonZeroU128::from(anchor)
             .get()
             .checked_add(relative)?,
@@ -514,8 +513,6 @@ fn rebase(anchor: AnchorChainWork, block: &ChainHeadBlock) -> Option<AbsoluteCha
 /// The absolute chainwork of the chain head's anchor.
 #[derive(Debug, Clone, Copy)]
 enum AnchorChainWork {
-    /// The window floor is genesis, so the head's work is already absolute.
-    FromGenesis,
     /// The anchor's absolute chainwork, read from the store.
     Known(AbsoluteChainWork),
     /// The store has not built up to the anchor yet.
@@ -608,11 +605,7 @@ where
     async fn chainwork_offset(&self) -> Result<AnchorChainWork> {
         self.chainwork_offset
             .get_or_try_init(|| async {
-                let Some(anchor) = self.coverage.work_anchor else {
-                    // The floor is genesis: no block below it, so the head's
-                    // work is already absolute.
-                    return Ok(AnchorChainWork::FromGenesis);
-                };
+                let anchor = self.coverage.work_anchor;
 
                 if self
                     .coverage

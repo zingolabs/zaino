@@ -52,13 +52,13 @@ pub(crate) struct Coverage {
     pub(crate) store_top: Option<Height>,
     /// The recent window's retained range.
     pub(crate) head: Option<(Height, Height)>,
-    /// The block the chain head's work is counted from, exclusive.
+    /// The block the chain head's work is counted from, exclusive: the block
+    /// the window was anchored on, whose own work is zero.
     ///
-    /// `None` when the window floor is genesis, which is the same statement
-    /// with the anchor's chainwork at zero. Carried here so the rebase to
-    /// absolute chainwork is pinned with everything else: a re-anchor changes
-    /// it, and a snapshot must answer for the window it was taken over.
-    pub(crate) work_anchor: Option<BlockRef>,
+    /// Carried here so the rebase to absolute chainwork is pinned with
+    /// everything else: a re-anchor changes it, and a snapshot must answer for
+    /// the window it was taken over.
+    pub(crate) work_anchor: BlockRef,
     /// Whether the validator may fill what neither covers.
     pub(crate) source_fills: bool,
 }
@@ -188,13 +188,16 @@ mod tests {
 
     /// Coverage with the validator filling whatever the two tiers leave.
     ///
-    /// `work_anchor` is `None` throughout: it says where chainwork is measured
-    /// from, which no routing decision consults.
+    /// `work_anchor` is the head's floor throughout: it says where chainwork is
+    /// measured from, which no routing decision consults.
     fn covering(store_top: u32, head_floor: u32, head_tip: u32) -> Coverage {
         Coverage {
             store_top: Some(height(store_top)),
             head: Some((height(head_floor), height(head_tip))),
-            work_anchor: None,
+            work_anchor: BlockRef {
+                hash: zaino_primitives::types::BlockHash::from([0; 32]),
+                height: height(head_floor),
+            },
             source_fills: true,
         }
     }
