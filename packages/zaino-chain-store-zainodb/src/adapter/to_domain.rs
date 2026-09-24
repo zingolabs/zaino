@@ -28,8 +28,8 @@ use zaino_primitives::types::{
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
 use crate::store::finalised_source::v1::DB_VERSION_V1;
 use crate::types::{
-    BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock, Outpoint, TransactionHash,
-    TransparentCompactTx, TxLocation, TxOutCompact,
+    AbsoluteChainWork, BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock,
+    Outpoint, TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
 };
 
 /// This crate's height, as the domain names it.
@@ -135,7 +135,9 @@ pub(super) fn stored_tx_outs(
 /// the identity an index reads (hash, parent, height), and the data, which
 /// carries the consensus fields. They are separate on disk because they are
 /// written to separate tables; nothing above this cares.
-pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStoreError> {
+pub(super) fn stored_block(
+    block: IndexedBlock<AbsoluteChainWork>,
+) -> Result<StoredBlock, ChainStoreError> {
     let context = &block.context;
     let data = &block.data;
 
@@ -172,7 +174,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
             .map(stored_compact_tx)
             .collect::<Result<Vec<_>, _>>()?,
         tree_roots: tree_roots(&block.commitment_tree_data),
-        chainwork: context.chainwork(),
+        chainwork: context.chainwork,
     })
 }
 

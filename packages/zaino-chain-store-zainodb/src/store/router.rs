@@ -121,7 +121,7 @@ use super::{
 
 use crate::error::StoreError;
 use crate::store::capability::{Capability, CapabilityRequest};
-use crate::types::{BlockHash, Height, IndexedBlock};
+use crate::types::{AbsoluteChainWork, BlockHash, Height, IndexedBlock};
 use tokio::sync::watch;
 use zaino_chain_store::ChainStoreSource;
 use zaino_chain_store::{Provenance, StoreWatermark};
@@ -1100,7 +1100,7 @@ impl<T: ChainStoreSource> DbCore for Router<T> {
 /// replacement backend.
 impl<T: ChainStoreSource> DbWrite for Router<T> {
     /// Writes a block via the backend currently serving `WRITE_CORE`.
-    async fn write_block(&self, blk: IndexedBlock) -> Result<(), StoreError> {
+    async fn write_block(&self, blk: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         self.backend(CapabilityRequest::WriteCore)?
             .write_block(blk)
             .await

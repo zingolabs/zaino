@@ -31,10 +31,9 @@
 //! Two consequences follow from the decoupling, and both are visible in the
 //! types:
 //!
-//! - Chainwork is measured from ChainHead's own anchor, not from genesis. It
-//!   orders competing branches correctly and is not the absolute value a
-//!   validator reports. Hence [`ChainHeadWork`] rather than
-//!   `zaino_primitives::types::AbsoluteChainWork`.
+//! - Work is measured from ChainHead's own anchor, not from genesis. It orders
+//!   competing branches correctly and is not the absolute value a validator
+//!   reports. Hence `RelativeChainWork` rather than `AbsoluteChainWork`.
 //! - A retained block is a parsed projection, not the consensus bytes. Serving
 //!   a raw transaction or raw block from ChainHead is not yet possible; those
 //!   queries stay on their existing path.
@@ -47,7 +46,7 @@ pub mod snapshot;
 #[cfg(feature = "transparent_address_history_experimental")]
 pub mod transparent;
 
-pub use block::{ChainHeadBlock, ChainHeadWork};
+pub use block::ChainHeadBlock;
 pub use config::ChainHeadConfig;
 pub use error::ChainHeadError;
 pub use ports::{ChainHeadBlockService, ChainHeadBlockSource, ChainHeadFreezeEvents};
