@@ -215,74 +215,56 @@ struct BlockPoolLists {
     ironwood: Vec<Option<OrchardCompactTx>>,
 }
 
-/// Builds the per-transaction pool lists for one block: each pool records
-/// `Some(compact data)` for a transaction with data in that pool, `None` otherwise,
-/// keeping every list index-aligned with the block's txids.
+/// Builds the per-transaction pool lists for one block by a one-to-one map over its transactions, so every list is index-aligned with the block's txids by construction.
 fn extract_block_pool_lists<Work>(
     block: &IndexedBlock<Work>,
 ) -> Result<BlockPoolLists, StoreError> {
-    let block_height = block.context.index.height;
-    let block_hash = block.context.index.hash;
+    let transactions = block.transactions();
 
-    let tx_len = block.transactions().len();
-    let mut transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
-        Vec::with_capacity(tx_len);
-    let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
-    let mut sapling = Vec::with_capacity(tx_len);
-    let mut orchard = Vec::with_capacity(tx_len);
-    let mut ironwood = Vec::with_capacity(tx_len);
-
-    for tx in block.transactions() {
-        let hash = tx.txid();
-        if !txid_set.insert(*hash) {
-            return Err(StoreError::InvalidBlock {
-                height: block_height.0,
-                hash: block_hash,
-                reason: format!("duplicate transaction hash in block: {hash:?}"),
-            });
-        }
-
-        // Transparent transactions — paired with the txid at the source binding.
-        let transparent_data =
-            if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
-                None
-            } else {
-                Some(tx.transparent().clone())
-            };
-        transactions.push((*hash, transparent_data));
-
-        // Sapling transactions
-        let sapling_data = if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty()
-        {
-            None
-        } else {
-            Some(tx.sapling().clone())
-        };
-        sapling.push(sapling_data);
-
-        // Orchard transactions
-        let orchard_data = if tx.orchard().actions().is_empty() {
-            None
-        } else {
-            Some(tx.orchard().clone())
-        };
-        orchard.push(orchard_data);
-
-        // Ironwood transactions (NU6.3; modelled with the Orchard compact types).
-        let ironwood_data = if tx.ironwood().actions().is_empty() {
-            None
-        } else {
-            Some(tx.ironwood().clone())
-        };
-        ironwood.push(ironwood_data);
+    let mut seen: HashSet<TransactionHash> = HashSet::with_capacity(transactions.len());
+    if let Some(duplicate) = transactions
+        .iter()
+        .map(|tx| tx.txid())
+        .find(|hash| !seen.insert(**hash))
+    {
+        return Err(StoreError::InvalidBlock {
+            height: block.context.index.height.0,
+            hash: block.context.index.hash,
+            reason: format!("duplicate transaction hash in block: {duplicate:?}"),
+        });
     }
 
     Ok(BlockPoolLists {
-        transactions,
-        sapling,
-        orchard,
-        ironwood,
+        transactions: transactions
+            .iter()
+            .map(|tx| {
+                let transparent = tx.transparent();
+                let is_empty = transparent.inputs().is_empty() && transparent.outputs().is_empty();
+                (*tx.txid(), present(transparent, is_empty))
+            })
+            .collect(),
+        sapling: transactions
+            .iter()
+            .map(|tx| {
+                let sapling = tx.sapling();
+                let is_empty = sapling.spends().is_empty() && sapling.outputs().is_empty();
+                present(sapling, is_empty)
+            })
+            .collect(),
+        orchard: transactions
+            .iter()
+            .map(|tx| present(tx.orchard(), tx.orchard().actions().is_empty()))
+            .collect(),
+        ironwood: transactions
+            .iter()
+            .map(|tx| present(tx.ironwood(), tx.ironwood().actions().is_empty()))
+            .collect(),
     })
+}
+
+/// Clones `pool` into the list entry unless the transaction has no data in that pool.
+fn present<Pool: Clone>(pool: &Pool, is_empty: bool) -> Option<Pool> {
+    (!is_empty).then(|| pool.clone())
 }
 
 /// One block's row entries, ready to put. Everything is keyed by the block height
