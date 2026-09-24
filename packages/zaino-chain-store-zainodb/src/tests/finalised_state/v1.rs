@@ -364,20 +364,73 @@ fn v1_dir(root: &std::path::Path) -> PathBuf {
     root.join("regtest").join("v1")
 }
 
-/// Overwrites the metadata singleton at `v1_dir` with `bytes`, as another build would leave it.
-fn overwrite_metadata(v1_dir: &std::path::Path, bytes: &[u8]) {
-    use lmdb::Transaction as _;
-    let env = lmdb::Environment::new()
+/// Opens the environment at `v1_dir` as another process would, creating the directory when a test fabricates a database there.
+fn open_v1_env(v1_dir: &std::path::Path) -> lmdb::Environment {
+    std::fs::create_dir_all(v1_dir).expect("the v1 directory exists");
+    lmdb::Environment::new()
         .set_max_dbs(32)
         .open(v1_dir)
-        .expect("the v1 environment opens");
+        .expect("the v1 environment opens")
+}
+
+/// Applies `edit` to the metadata table at `v1_dir` in one committed write transaction.
+fn edit_metadata(
+    v1_dir: &std::path::Path,
+    edit: impl FnOnce(&mut lmdb::RwTransaction<'_>, lmdb::Database),
+) {
+    use lmdb::Transaction as _;
+    let env = open_v1_env(v1_dir);
     let metadata = env
         .open_db(Some("metadata"))
         .expect("the metadata table exists");
     let mut txn = env.begin_rw_txn().expect("a write transaction opens");
-    txn.put(metadata, &METADATA_KEY, &bytes, lmdb::WriteFlags::empty())
+    edit(&mut txn, metadata);
+    txn.commit().expect("the write commits");
+}
+
+/// Overwrites the metadata singleton at `v1_dir` with `bytes`, as another build would leave it.
+fn overwrite_metadata(v1_dir: &std::path::Path, bytes: &[u8]) {
+    edit_metadata(v1_dir, |txn, metadata| {
+        txn.put(metadata, &METADATA_KEY, &bytes, lmdb::WriteFlags::empty())
+            .expect("the row writes");
+    });
+}
+
+/// Removes the metadata singleton at `v1_dir`, as a crash before the first record, or a hand restore, would leave it.
+fn delete_metadata(v1_dir: &std::path::Path) {
+    edit_metadata(v1_dir, |txn, metadata| {
+        txn.del(metadata, &METADATA_KEY, None)
+            .expect("the row deletes");
+    });
+}
+
+/// Fabricates a database at `v1_dir` with a populated `headers` table and no `metadata` table, as a build with another layout would leave it.
+fn foreign_database(v1_dir: &std::path::Path) {
+    use lmdb::Transaction as _;
+    let env = open_v1_env(v1_dir);
+    let headers = env
+        .create_db(Some("headers"), lmdb::DatabaseFlags::empty())
+        .expect("the headers table is created");
+    let mut txn = env.begin_rw_txn().expect("a write transaction opens");
+    txn.put(headers, b"0", b"not a header", lmdb::WriteFlags::empty())
         .expect("the row writes");
     txn.commit().expect("the write commits");
+}
+
+/// The names of the tables in the environment at `dir`.
+fn table_names(dir: &std::path::Path) -> Vec<String> {
+    use lmdb::{Cursor as _, Transaction as _};
+    let env = open_v1_env(dir);
+    let main = env.open_db(None).expect("the main table opens");
+    let txn = env.begin_ro_txn().expect("a read transaction opens");
+    let mut names: Vec<String> = txn
+        .open_ro_cursor(main)
+        .expect("a cursor opens on the main table")
+        .iter_start()
+        .map(|(name, _)| String::from_utf8_lossy(name).into_owned())
+        .collect();
+    names.sort();
+    names
 }
 
 /// The names of the stale database directories kept beside `v1` under `root`.
@@ -453,6 +506,87 @@ async fn a_database_with_another_schema_hash_is_moved_aside_before_the_rebuild()
         stale[0].contains(&hex::encode(&[0xab; 32][..4])),
         "the stale directory is named by the schema hash it carries: {}",
         stale[0]
+    );
+}
+
+/// Blocks stored without a metadata record were written by a build this one cannot vouch for, so they are moved aside rather than adopted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_holding_blocks_without_a_metadata_row_is_moved_aside() {
+    init_tracing();
+    let blocks = load_test_vectors().unwrap().blocks;
+    let (temp_dir, config) = temporary_store_settings();
+    let db = DbV1::spawn(&config).await.expect("a fresh database opens");
+    crate::tests::fixtures::sync_db_with_blockdata(&db, &blocks, Some(2)).await;
+    drop(db);
+    delete_metadata(&v1_dir(temp_dir.path()));
+
+    let reopened = DbV1::spawn(&config)
+        .await
+        .expect("this build rebuilds beside the old database");
+
+    assert_eq!(
+        reopened.db_height().await.unwrap(),
+        None,
+        "the blocks without a record are not adopted"
+    );
+    assert_eq!(
+        stale_dirs(temp_dir.path()),
+        vec!["v1.stale-unreadable".to_string()]
+    );
+}
+
+/// The schema check reads the metadata record alone, so a database of another layout is moved aside with no table of this build created in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_of_another_layout_is_moved_aside_before_any_table_is_created() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    foreign_database(&v1_dir(temp_dir.path()));
+
+    drop(
+        DbV1::spawn(&config)
+            .await
+            .expect("this build rebuilds beside the foreign database"),
+    );
+
+    assert_eq!(
+        stale_dirs(temp_dir.path()),
+        vec!["v1.stale-unreadable".to_string()]
+    );
+    let stale = temp_dir.path().join("regtest").join("v1.stale-unreadable");
+    assert_eq!(
+        table_names(&stale),
+        vec!["headers".to_string()],
+        "the foreign database keeps only the tables it had"
+    );
+}
+
+/// A stale name that is already taken gets the next free numbered suffix, so a rollback and a second upgrade never displace an earlier copy or stop the start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_database_under_a_taken_stale_name_gets_a_numbered_directory() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    let other_build = DbMetadata::new([0xab; 32])
+        .to_bytes()
+        .expect("metadata encodes");
+    for _ in 0..2 {
+        drop(DbV1::spawn(&config).await.expect("a database opens"));
+        overwrite_metadata(&v1_dir(temp_dir.path()), &other_build);
+    }
+
+    drop(
+        DbV1::spawn(&config)
+            .await
+            .expect("this build rebuilds beside both stale copies"),
+    );
+
+    let mut stale = stale_dirs(temp_dir.path());
+    stale.sort();
+    assert_eq!(
+        stale,
+        vec![
+            "v1.stale-abababab".to_string(),
+            "v1.stale-abababab-2".to_string()
+        ]
     );
 }
 

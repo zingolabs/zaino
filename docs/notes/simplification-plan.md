@@ -22,8 +22,8 @@ features whose complexity outweighs their value to either product.
    corruption on disk and mutation of the database from outside Zaino are not
    in scope for the store's correctness checks.
 3. **Database migrations go.** The database records one schema identity, its
-   schema hash. On a mismatch, zainod logs one line, deletes the index
-   directory, and resyncs from zebra. `DbVersion`, `MigrationStatus`,
+   schema hash. On a mismatch, zainod logs one line, moves the index
+   directory aside under a stale name, and resyncs from zebra. `DbVersion`, `MigrationStatus`,
    `MigrationManager`, and the `db_version` config key are deleted.
 4. **The versioned codec collapses.** `ZainoVersionedSerde` becomes one
    encode method and one decode method, with no version byte and no historical

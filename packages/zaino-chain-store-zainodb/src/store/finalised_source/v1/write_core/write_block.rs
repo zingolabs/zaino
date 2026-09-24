@@ -180,3 +180,68 @@ async fn deleting_the_tip_removes_its_spent_rows_and_no_others() {
 
     assert_spent_index_is(&db, &expected_spent_index(below_tip));
 }
+
+/// The vector tip re-addressed to sit two heights above itself while still naming the tip as its parent, so only the height gap can refuse it.
+fn block_two_above(tip: &IndexedBlock<AbsoluteChainWork>) -> IndexedBlock<AbsoluteChainWork> {
+    let mut gapped = tip.clone();
+    gapped.context = crate::types::BlockContext::new(
+        *tip.context.hash(),
+        *tip.context.hash(),
+        tip.context.chainwork(),
+        Height(tip.context.index.height.0 + 2),
+    );
+    gapped
+}
+
+// multi_thread required: the write path runs LMDB work through `block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_block_two_above_the_tip_is_refused_as_not_extending_it() {
+    let (_temp_dir, db) = empty_store().await;
+    let blocks = vector_chain();
+    for block in blocks.iter().cloned() {
+        db.write_block(block).await.expect("a vector block writes");
+    }
+    let tip = blocks.last().expect("the vector chain is not empty");
+    let gapped = block_two_above(tip);
+    let offered = gapped.context.index.height.0;
+
+    let refused = db.write_block(gapped).await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(StoreError::DoesNotExtendTip { height, tip: stored, .. })
+                if height == offered && stored == *tip.context.hash()
+        ),
+        "expected DoesNotExtendTip at {offered}, got {refused:?}"
+    );
+    assert_eq!(
+        db.tip_height().await.expect("the tip reads"),
+        Some(tip.context.index.height),
+        "the refused block leaves the tip where it was"
+    );
+}
+
+// multi_thread required: the batch write runs LMDB work through `block_in_place`.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_batch_write_refuses_a_block_two_above_the_tip() {
+    let (_temp_dir, db) = empty_store().await;
+    let blocks = vector_chain();
+    tokio::task::block_in_place(|| db.write_block_batch_blocking(&blocks))
+        .expect("the vector chain writes as one batch");
+    let tip = blocks.last().expect("the vector chain is not empty");
+    let gapped = block_two_above(tip);
+    let offered = gapped.context.index.height.0;
+
+    let refused = tokio::task::block_in_place(|| db.write_block_batch_blocking(&[gapped]));
+
+    assert!(
+        matches!(
+            refused,
+            Err(StoreError::DoesNotExtendTip { height, tip: stored, .. })
+                if height == offered && stored == *tip.context.hash()
+        ),
+        "expected DoesNotExtendTip at {offered}, got {refused:?}"
+    );
+}

@@ -513,8 +513,10 @@ Summary
   another schema hash is moved aside to `v1.stale-<first four bytes of that
   hash>`, and one whose metadata this build cannot decode to
   `v1.stale-unreadable`; the store then resyncs from the validator. Nothing
-  is deleted, and a stale directory that already exists stops the start.
-  Upgrades and downgrades take the same path.
+  is deleted, and a stale name that is already taken gets a numbered suffix.
+  The check reads the metadata record alone, creates no table in a database
+  it moves aside, and also moves aside a database that holds blocks without
+  a metadata record. Upgrades and downgrades take the same path.
 - The schema version and the hand-maintained schema text are removed. The
   store computes its schema hash from the canonical encoding of every stored
   type, every table name and its flags, the singleton keys, the enabled index
@@ -547,7 +549,8 @@ API / capabilities
   `ChainStoreReader::schema`.
 - Removed: the startup integrity scans, the background re-validation loop, and
   the on-demand validation of reads. The write path keeps two checks.
-  Parent-hash continuity now fails as `StoreError::DoesNotExtendTip`. The
+  Continuity, one height above the tip with the tip as parent, now fails as
+  `StoreError::DoesNotExtendTip` on both the single-block and batch paths. The
   merkle-root check at ingest stays, because it catches a fault in Zaino's own
   conversion of the block, which no type or validator guarantee covers. The
   indexes a write derives from a block are covered by unit tests, not by

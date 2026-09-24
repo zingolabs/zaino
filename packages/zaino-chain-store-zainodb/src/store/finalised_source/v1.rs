@@ -91,9 +91,11 @@ pub(crate) mod tx_out_set_accumulator;
 
 pub(crate) mod schema;
 
-/// Whether a database's stored `metadata` record matches this build's schema.
+/// Whether a database directory holds this build's schema, decided before this build creates any table in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SchemaCheck {
+    /// The directory holds no data file, no tables, or no blocks and no metadata record, so this build claims it.
+    Fresh,
     /// The stored record carries this build's schema hash.
     Matches,
     /// The stored record carries another build's schema hash.
@@ -101,15 +103,15 @@ enum SchemaCheck {
         /// The schema hash the database was written under.
         stored: [u8; 32],
     },
-    /// The stored record cannot be decoded by this build, so the database was written by a build whose metadata layout it does not know.
+    /// The stored record cannot be decoded by this build, or blocks are stored without one, so the database was written by a build whose layout this one does not know.
     Unreadable,
 }
 
 impl SchemaCheck {
-    /// The directory name a database with this check result is moved to beside `v1`, or `None` when it matches.
+    /// The base directory name a database with this check result is moved to beside `v1`, or `None` when this build keeps it.
     fn stale_dir_name(self) -> Option<String> {
         match self {
-            Self::Matches => None,
+            Self::Fresh | Self::Matches => None,
             Self::Differs { stored } => Some(format!(
                 "v1.stale-{:02x}{:02x}{:02x}{:02x}",
                 stored[0], stored[1], stored[2], stored[3]
@@ -117,6 +119,119 @@ impl SchemaCheck {
             Self::Unreadable => Some("v1.stale-unreadable".to_string()),
         }
     }
+}
+
+/// The file LMDB keeps an environment's data in, whose absence means the directory holds no database.
+const LMDB_DATA_FILE: &str = "data.mdb";
+
+/// Decides what `db_path` holds by reading its `metadata` record, creating nothing.
+fn stored_schema_check(
+    db_path: &std::path::Path,
+    db_size_bytes: usize,
+) -> Result<SchemaCheck, StoreError> {
+    if !db_path.join(LMDB_DATA_FILE).exists() {
+        return Ok(SchemaCheck::Fresh);
+    }
+    let env = open_environment(db_path, db_size_bytes)?;
+    let Some(metadata) = schema::METADATA.open_existing(&env)? else {
+        // An environment with tables but no metadata table follows a layout this build does
+        // not know; one with no tables at all was created and never written.
+        return Ok(if env.stat()?.entries() == 0 {
+            SchemaCheck::Fresh
+        } else {
+            SchemaCheck::Unreadable
+        });
+    };
+    // Both tables are opened before the read transaction: LMDB refuses `mdb_dbi_open` while
+    // another transaction of this process is active.
+    let headers = schema::HEADERS.open_existing(&env)?;
+    let this_build = DbMetadata::new(schema::schema_hash()?);
+    let txn = env.begin_ro_txn()?;
+    match txn.get(metadata, &METADATA_KEY) {
+        // A row of another length is another build's layout, whatever its first 32 bytes
+        // decode to; the codec reads a prefix and ignores the rest.
+        Ok(raw_bytes) if raw_bytes.len() != DbMetadata::ENCODED_LEN => Ok(SchemaCheck::Unreadable),
+        Ok(raw_bytes) => Ok(match DbMetadata::from_bytes(raw_bytes) {
+            Ok(stored) if stored == this_build => SchemaCheck::Matches,
+            Ok(stored) => SchemaCheck::Differs {
+                stored: stored.schema_hash,
+            },
+            Err(_) => SchemaCheck::Unreadable,
+        }),
+        Err(lmdb::Error::NotFound) => {
+            // Blocks without a metadata record were written by a build this one cannot
+            // vouch for; a database with neither is one that never got past creation.
+            let has_blocks = match headers {
+                Some(headers) => txn.open_ro_cursor(headers)?.iter_start().next().is_some(),
+                None => false,
+            };
+            Ok(if has_blocks {
+                SchemaCheck::Unreadable
+            } else {
+                SchemaCheck::Fresh
+            })
+        }
+        Err(error) => Err(StoreError::LmdbError(error)),
+    }
+}
+
+/// The first of `base`, `base-2`, `base-3`, ... beside `db_path` that no directory occupies yet, so a database moved aside never displaces an earlier one.
+fn free_stale_path(db_path: &std::path::Path, base: &str) -> std::path::PathBuf {
+    let first = db_path.with_file_name(base);
+    if !first.exists() {
+        return first;
+    }
+    (2u32..)
+        .map(|ordinal| db_path.with_file_name(format!("{base}-{ordinal}")))
+        .find(|candidate| !candidate.exists())
+        .expect("the ordinals are unbounded, so a free stale path exists")
+}
+
+/// Opens the LMDB environment at `db_path` with the store's flags and reader table, creating no table.
+fn open_environment(
+    db_path: &std::path::Path,
+    db_size_bytes: usize,
+) -> Result<Environment, StoreError> {
+    // LMDB reader slots, from CPU count, clamped to [MIN_LMDB_READERS, MAX_LMDB_READERS].
+    //
+    // A slot is one cache line: the measured `lock.mdb` is 32,896 bytes at 512 readers, so
+    // 64B per slot plus a small header. 8192 readers costs ~512 KiB of shared memory, which
+    // is why the ceiling is set by how many concurrent clients we intend to serve rather
+    // than by memory.
+    //
+    // The bound is a real serving limit, not a tuning hint. `NO_TLS` is set below, so a slot
+    // belongs to a read *transaction* rather than a thread: every concurrent read holds one,
+    // and exhausting the table fails reads with `MDB_READERS_FULL`. The old ceiling of 4096
+    // with a floor of 512 gave exactly 512 on any host with 16 cores or fewer — low enough
+    // that ordinary concurrent load exhausted it.
+    //
+    // Raising this does not make exhaustion safe to hit. A client can still open more
+    // concurrent reads than there are slots.
+    let cpu_cnt = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+
+    let max_readers = u32::try_from((cpu_cnt * 32).clamp(MIN_LMDB_READERS, MAX_LMDB_READERS))
+        .expect("max_readers was clamped to fit in u32");
+
+    // `NO_SYNC`: commits are not fsynced. The core write path now does many random-key
+    // inserts per block (the `spent` and `txid_location` B-trees are keyed by 32-byte
+    // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
+    // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
+    // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
+    // `WRITE_MAP` is unset, so on a write-order-preserving local filesystem a crash does not
+    // corrupt the database — it only discards the unflushed tail of recent commits, which clean
+    // sync safely re-does. (On NFS / overlay filesystems or a hard pod eviction that
+    // drops the unflushed page cache, write order is not guaranteed and a crash *can* leave torn
+    // pages; the recovery there is to wipe and re-index. See `SYNC_CHECKPOINT_INTERVAL`.)
+    Ok(Environment::new()
+        .set_max_dbs(16)
+        .set_map_size(db_size_bytes)
+        .set_max_readers(max_readers)
+        .set_flags(
+            EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD | EnvironmentFlags::NO_SYNC,
+        )
+        .open(db_path)?)
 }
 
 /// Singleton key of the metadata record in the metadata table.
@@ -387,44 +502,28 @@ pub(crate) struct DbV1 {
 /// - read fetchers used by the capability trait implementations, and
 /// - internal indexing helpers.
 impl DbV1 {
-    /// Opens the v1 database without starting the maintenance task, moving it aside and creating a fresh one when its stored schema is not this build's.
+    /// Opens the v1 database without starting the maintenance task, moving it aside untouched and creating a fresh one when its stored schema is not this build's.
     pub(crate) async fn spawn(config: &StoreSettings) -> Result<Self, StoreError> {
-        let zaino_db = Self::open_env_and_dbs(config).await?;
-        let check = zaino_db.check_schema_version().await?;
-        let Some(stale_dir_name) = check.stale_dir_name() else {
-            return Ok(zaino_db);
-        };
-
         let db_path = db_path(config)?;
-        let stale_path = db_path.with_file_name(stale_dir_name);
-        if stale_path.exists() {
-            return Err(StoreError::Custom(format!(
-                "the database at {} was written by another build, and {} already holds one \
-                 moved aside for the same reason; remove or move that directory before starting",
-                db_path.display(),
-                stale_path.display()
-            )));
+        let db_size_bytes = config.db.size().to_byte_count();
+        let check = tokio::task::block_in_place(|| stored_schema_check(&db_path, db_size_bytes))?;
+        if let Some(stale_dir_name) = check.stale_dir_name() {
+            let stale_path = free_stale_path(&db_path, &stale_dir_name);
+            warn!(
+                path = %db_path.display(),
+                stale = %stale_path.display(),
+                ?check,
+                "stored schema is not this build's; moving the database aside and resyncing from the validator"
+            );
+            fs::rename(&db_path, &stale_path)?;
         }
-        warn!(
-            path = %db_path.display(),
-            stale = %stale_path.display(),
-            ?check,
-            "stored schema is not this build's; moving the database aside and resyncing from the validator"
-        );
-        drop(zaino_db);
-        fs::rename(&db_path, &stale_path)?;
 
         let zaino_db = Self::open_env_and_dbs(config).await?;
-        match zaino_db.check_schema_version().await? {
-            SchemaCheck::Matches => Ok(zaino_db),
-            other => Err(StoreError::Custom(format!(
-                "a freshly created database at {} does not carry this build's schema: {other:?}",
-                db_path.display()
-            ))),
-        }
+        zaino_db.record_schema().await?;
+        Ok(zaino_db)
     }
 
-    /// Opens the LMDB environment and every V1 named database as an unstarted, unvalidated [`DbV1`].
+    /// Opens the LMDB environment and creates every V1 named database that is missing, as an unstarted [`DbV1`].
     async fn open_env_and_dbs(config: &StoreSettings) -> Result<Self, StoreError> {
         info!("Launching FinalisedState");
 
@@ -437,50 +536,7 @@ impl DbV1 {
         // Fixed for the env's lifetime → published here, not per commit
         metrics::gauge!(crate::metric_names::DB_MAP_SIZE_BYTES).set(db_size_bytes as f64);
 
-        // LMDB reader slots, from CPU count, clamped to [MIN_LMDB_READERS, MAX_LMDB_READERS].
-        //
-        // A slot is one cache line: the measured `lock.mdb` is 32,896 bytes at 512 readers, so
-        // 64B per slot plus a small header. 8192 readers costs ~512 KiB of shared memory, which
-        // is why the ceiling is set by how many concurrent clients we intend to serve rather
-        // than by memory.
-        //
-        // The bound is a real serving limit, not a tuning hint. `NO_TLS` is set below, so a slot
-        // belongs to a read *transaction* rather than a thread: every concurrent read holds one,
-        // and exhausting the table fails reads with `MDB_READERS_FULL`. The old ceiling of 4096
-        // with a floor of 512 gave exactly 512 on any host with 16 cores or fewer — low enough
-        // that ordinary concurrent load exhausted it.
-        //
-        // Raising this does not make exhaustion safe to hit. A client can still open more
-        // concurrent reads than there are slots.
-        let cpu_cnt = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-
-        let max_readers = u32::try_from((cpu_cnt * 32).clamp(MIN_LMDB_READERS, MAX_LMDB_READERS))
-            .expect("max_readers was clamped to fit in u32");
-
-        // Open LMDB environment and set environmental details.
-        //
-        // `NO_SYNC`: commits are not fsynced. The core write path now does many random-key
-        // inserts per block (the `spent` and `txid_location` B-trees are keyed by 32-byte
-        // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
-        // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
-        // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
-        // `WRITE_MAP` is unset, so on a write-order-preserving local filesystem a crash does not
-        // corrupt the database — it only discards the unflushed tail of recent commits, which clean
-        // sync safely re-does. (On NFS / overlay filesystems or a hard pod eviction that
-        // drops the unflushed page cache, write order is not guaranteed and a crash *can* leave torn
-        // pages; the recovery there is to wipe and re-index. See `SYNC_CHECKPOINT_INTERVAL`.)
-        let env = Environment::new()
-            .set_max_dbs(16)
-            .set_map_size(db_size_bytes)
-            .set_max_readers(max_readers)
-            .set_flags(
-                EnvironmentFlags::NO_TLS
-                    | EnvironmentFlags::NO_READAHEAD
-                    | EnvironmentFlags::NO_SYNC,
-            )
-            .open(&db_path)?;
+        let env = open_environment(&db_path, db_size_bytes)?;
 
         // Open individual LMDB DBs.
         let headers = schema::HEADERS.open(&env).await?;
@@ -582,40 +638,23 @@ impl DbV1 {
         *self.db_handler.lock().expect("db_handler mutex poisoned") = Some(handle);
     }
 
-    /// Compares the stored `metadata` record with this build's schema, writing it first when the database is fresh.
-    async fn check_schema_version(&self) -> Result<SchemaCheck, StoreError> {
+    /// Writes this build's schema hash as the `metadata` record when the database has none yet.
+    async fn record_schema(&self) -> Result<(), StoreError> {
         let this_build = DbMetadata::new(schema::schema_hash()?);
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
-
             match txn.get(self.metadata, &METADATA_KEY) {
-                Ok(raw_bytes) => {
-                    // A row of another length is another build's layout, whatever its first
-                    // 32 bytes decode to; the codec reads a prefix and ignores the rest.
-                    if raw_bytes.len() != DbMetadata::ENCODED_LEN {
-                        return Ok(SchemaCheck::Unreadable);
-                    }
-                    return Ok(match DbMetadata::from_bytes(raw_bytes) {
-                        Ok(stored) if stored == this_build => SchemaCheck::Matches,
-                        Ok(stored) => SchemaCheck::Differs {
-                            stored: stored.schema_hash,
-                        },
-                        Err(_) => SchemaCheck::Unreadable,
-                    });
-                }
-                Err(lmdb::Error::NotFound) => {
-                    txn.put(
-                        self.metadata,
-                        &METADATA_KEY,
-                        &this_build.to_bytes()?,
-                        WriteFlags::NO_OVERWRITE,
-                    )?;
-                }
-                Err(e) => return Err(StoreError::LmdbError(e)),
+                Ok(_) => return Ok(()),
+                Err(lmdb::Error::NotFound) => txn.put(
+                    self.metadata,
+                    &METADATA_KEY,
+                    &this_build.to_bytes()?,
+                    WriteFlags::NO_OVERWRITE,
+                )?,
+                Err(error) => return Err(StoreError::LmdbError(error)),
             }
-
             txn.commit()?;
-            Ok(SchemaCheck::Matches)
+            Ok(())
         })
     }
 }

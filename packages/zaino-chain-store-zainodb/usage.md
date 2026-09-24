@@ -82,10 +82,13 @@ build that created the database. When `spawn` finds a record that differs from
 its own, or one it cannot decode, it moves the database directory aside, to
 `v1.stale-<first four bytes of the stored hash>` or `v1.stale-unreadable`, and
 resyncs from the validator. It never deletes: a rollback, a flag flipped by
-mistake, or a torn metadata row costs a rebuild, not the data. If the stale
-directory already exists, `spawn` refuses to start and names it, so the operator
-decides what to keep. Upgrades and downgrades take the same path, and the index
-is derived data, so the rebuild loses nothing.
+mistake, or a torn metadata row costs a rebuild, not the data. If that name is
+already taken, the database goes to the next free `-2`, `-3`, ... suffix, so
+nothing moved aside earlier is displaced. `spawn` decides all of this by reading
+the `metadata` record alone: it creates no table in a database it is about to
+move aside, and it also moves aside a database that holds blocks but no
+`metadata` record, since it cannot vouch for them. Upgrades and downgrades take
+the same path, and the index is derived data, so the rebuild loses nothing.
 
 The store computes the schema hash; nobody maintains it by hand. The hash
 covers the canonical encoding of every stored type, every table name and its

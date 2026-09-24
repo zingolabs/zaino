@@ -698,16 +698,8 @@ impl DbV1 {
                         last_height_bytes.expect("Height is always some in the finalised state"),
                     )?;
 
-                    // Height must be exactly +1 over the current tip
-                    if block_height.0 != last_height.0 + 1 {
-                        return Err(StoreError::Custom(format!(
-                            "cannot write block at height {block_height:?}; \
-                     current tip is {last_height:?}"
-                        )));
-                    }
-
-                    // Parent-hash continuity: the new block must extend the current tip, or the
-                    // append-only finalised chain would fork.
+                    // Continuity: the new block must sit one above the current tip and name it
+                    // as its parent, or the append-only finalised chain would gap or fork.
                     let tip_header =
                         BlockHeaderData::<AbsoluteChainWork>::from_bytes(last_header_bytes)
                             .map_err(|e| {
@@ -715,7 +707,9 @@ impl DbV1 {
                                     "tip header decode error during continuity check: {e}"
                                 ))
                             })?;
-                    if tip_header.context.hash() != block.context.parent_hash() {
+                    if block_height.0 != last_height.0 + 1
+                        || tip_header.context.hash() != block.context.parent_hash()
+                    {
                         return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
@@ -1348,12 +1342,7 @@ impl DbV1 {
             // Continuity: height = prev + 1 and parent extends the current tip (genesis if empty).
             match prev {
                 Some((tip, tip_hash)) => {
-                    if block_height.0 != tip + 1 {
-                        return Err(StoreError::Custom(format!(
-                            "cannot write block at height {block_height:?}; current tip is {tip}"
-                        )));
-                    }
-                    if *block.context.parent_hash() != tip_hash {
+                    if block_height.0 != tip + 1 || *block.context.parent_hash() != tip_hash {
                         return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
