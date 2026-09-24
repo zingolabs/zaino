@@ -873,14 +873,35 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
         use zaino_primitives::types::TreeRoots;
 
         let id = hash_or_height(block);
+        let zebra_hash = zebra_chain::block::Hash(block.into());
 
-        // Read the three pools concurrently: they are independent reads and the
-        // caller waits for all of them regardless.
-        let (sapling, orchard, ironwood) = tokio::join!(
+        // Read presence and the three pools concurrently: they are independent
+        // reads and the caller waits for all of them regardless.
+        let (depth, sapling, orchard, ironwood) = tokio::join!(
+            self.read(ReadRequest::Depth(zebra_hash)),
             self.read(ReadRequest::SaplingTree(id)),
             self.read(ReadRequest::OrchardTree(id)),
             self.read(ReadRequest::IronwoodTree(id)),
         );
+
+        // The finalized state holds only the finalized chain. A block above its
+        // tip (the volatile top the chain-head serves) is absent here, and
+        // reading its trees would return all-`None` — indistinguishable from a
+        // genuine pre-activation block whose pools are legitimately empty. That
+        // conflation is a lifecycle fact ("not in my finalized view") posing as a
+        // domain answer ("no commitments"). Resolve it with a `Depth` presence
+        // check and signal a domain miss, which the composite retries over
+        // JSON-RPC (which sees the whole best chain), rather than serving a false
+        // zero-size tree.
+        let depth = match depth? {
+            ReadResponse::Depth(depth) => depth,
+            _ => return Err(unexpected_response("Depth").into()),
+        };
+        if depth.is_none() {
+            return Err(QueryError::Domain(
+                zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block),
+            ));
+        }
 
         // Unlike the RPC path, the state service hands back a live tree, so the
         // root and count are read from it directly rather than deserialised.

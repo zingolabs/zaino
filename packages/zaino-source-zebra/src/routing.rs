@@ -267,10 +267,16 @@ impl OneShotGetCommitmentTreeRoots for ZebraValidator {
         &self,
         block: BlockHash,
     ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
-        // Strongly worth taking the state path: over JSON-RPC the roots are not
-        // reported at all and have to be recovered by deserialising each pool's
-        // commitment tree, whereas the state service hands back a live tree.
-        state_or_fetch!(self, get_commitment_tree_roots, block)
+        // Prefer the state path: over JSON-RPC the roots are not reported at all
+        // and have to be recovered by deserialising each pool's commitment tree,
+        // whereas the state service hands back a live tree. But the finalized
+        // state only reaches its finalized tip; the volatile top the chain-head
+        // serves sits above it, where the state answers a domain miss (`Depth`
+        // presence check). That miss falls through to JSON-RPC — which assembles
+        // the roots over the whole best chain — exactly as the block reads do.
+        // `state_or_fetch!` would never consult RPC while a state exists, so a
+        // non-finalized block's roots came back as a false zero-size tree.
+        state_then_fetch!(self, get_commitment_tree_roots, block)
     }
 }
 

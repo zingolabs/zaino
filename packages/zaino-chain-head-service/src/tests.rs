@@ -80,6 +80,28 @@ fn block(h: u32, id: u16, parent: u16) -> Block {
     }
 }
 
+/// One pool's root paired with a cumulative `size`.
+fn tree_root_info(size: u32) -> zaino_primitives::types::TreeRootInfo {
+    zaino_primitives::types::TreeRootInfo {
+        root: zaino_primitives::types::TreeRoot::new([0; 32]),
+        size: zaino_primitives::types::TreeSize::from(size),
+    }
+}
+
+/// The cumulative tree roots the mock validator reports at height `h`.
+///
+/// Distinct, non-zero per-pool sizes so a test can tell a genuine served size
+/// from a false zero, plus a per-pool activation boundary: ironwood is absent
+/// (`None`) below height 3, exercising the "below activation ⇒ size 0" invariant
+/// the seam must preserve.
+fn tree_roots_for(h: u32) -> TreeRoots {
+    TreeRoots {
+        sapling: Some(tree_root_info(h * 7)),
+        orchard: Some(tree_root_info(h * 3)),
+        ironwood: (h >= 3).then(|| tree_root_info(h - 2)),
+    }
+}
+
 #[derive(Default)]
 struct MockState {
     /// Every block the validator knows, canonical or not.
@@ -209,13 +231,23 @@ impl OneShotGetBlockByHash for MockValidator {
 impl OneShotGetCommitmentTreeRoots for MockValidator {
     async fn get_commitment_tree_roots(
         &self,
-        _block: BlockHash,
+        block: BlockHash,
     ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
-        Ok(TreeRoots {
-            sapling: None,
-            orchard: None,
-            ironwood: None,
-        })
+        // Report per-height cumulative sizes, as a real validator does, so a test
+        // can prove the non-finalised head serves them rather than a false zero.
+        // A hash the mock does not know is a domain miss, matching the real
+        // adapter's "not in my view" answer.
+        let height = self
+            .lock()
+            .blocks
+            .get(&block)
+            .map(|block| u32::from(block.header.height));
+        match height {
+            Some(h) => Ok(tree_roots_for(h)),
+            None => Err(QueryError::Domain(
+                GetCommitmentTreeRootsError::BlockNotFound(block),
+            )),
+        }
     }
 }
 
@@ -785,4 +817,58 @@ async fn the_subscriber_observes_status_transitions() {
 
     assert_eq!(subscriber.status(), StatusType::Closing);
     assert_eq!(subscriber.status(), service.status());
+}
+
+// ---------------------------------------------------- served tree-size coherence
+
+/// The non-finalised head serves the validator's reported cumulative tree sizes
+/// for each block, not a false zero.
+///
+/// Regression guard for the seam bug where the head served `tree_size = 0` for
+/// every non-finalised block: the source's commitment-tree roots were never
+/// carried into the composed `ChainMetadata`, so a syncing wallet saw a
+/// `TreeSizeMismatch` at the finalised/non-finalised boundary and livelocked.
+/// Here the mock validator reports non-zero per-height sizes; the served compact
+/// block must carry exactly those (`served == validator`). Also pins the
+/// below-activation invariant: ironwood is absent below height 3, so its served
+/// size there is `0`, and non-zero above.
+#[tokio::test]
+async fn head_serves_the_validators_tree_sizes_not_a_false_zero() {
+    use zaino_core::BlockRef;
+    use zaino_primitives::types::TreeSize;
+    use zaino_service::{CompactBlockRead, TakeSnapshot};
+
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service
+        .subscriber()
+        .snapshot()
+        .await
+        .expect("head snapshot is infallible");
+
+    for h in 0..5u32 {
+        let compact = snapshot
+            .compact_block(BlockRef::Height(height(h)))
+            .await
+            .expect("in-window read is infallible")
+            .expect("block is present in the window");
+        let meta = compact.chain_metadata;
+
+        // Served metadata is exactly what the validator's roots project to — the
+        // source's sizes reached the composed block (validator == NFS).
+        assert_eq!(
+            meta,
+            ChainMetadata::from_tree_roots(&tree_roots_for(h)),
+            "served ChainMetadata must carry the validator's roots at height {h}",
+        );
+        // And the concrete non-zero sizes, so a regression to a blanket zero
+        // fails here rather than passing a vacuous self-comparison.
+        assert_eq!(meta.sapling_tree_size, TreeSize::from(h * 7));
+        assert_eq!(meta.orchard_tree_size, TreeSize::from(h * 3));
+        // Ironwood is absent below its activation (height 3) → 0; present above.
+        let expected_ironwood = if h >= 3 { h - 2 } else { 0 };
+        assert_eq!(meta.ironwood_tree_size, TreeSize::from(expected_ironwood));
+    }
 }
