@@ -82,10 +82,6 @@ tonic.workspace = true
 [dev-dependencies]
 # Difficulty targets, for the accumulator tests' synthetic chains.
 zaino-consensus = { workspace = true }
-
-# A real validator, so the port bound check is against something that ships
-# rather than against a mock written to satisfy it.
-zaino-source-zebra = { workspace = true }
 primitive-types.workspace = true
 proptest.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -94,6 +90,7 @@ tempfile.workspace = true
 zaino-convert-zebra.workspace = true
 tracing-subscriber.workspace = true
 zebra-rpc.workspace = true
+zaino-source-zebra-rpc.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

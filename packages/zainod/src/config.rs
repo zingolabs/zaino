@@ -22,31 +22,7 @@ use zaino_common::{
     try_resolve_address, AddressResolution, Network, ServiceConfig, StorageConfig, ValidatorConfig,
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
-use zaino_state::{
-    CommonBackendConfig, DirectConnectionConfig, DonationAddress, NodeBackedIndexerServiceConfig,
-    ValidatorConnectionType,
-};
-
-/// On-disk selector for the validator connection (`backend = "direct" | "rpc"` in the
-/// config file), mapped to [`zaino_state::ValidatorConnectionType`] at spawn.
-///
-/// The legacy values `"state"` / `"fetch"` remain accepted as aliases for backward
-/// compatibility with existing `zainod.toml` files.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BackendType {
-    /// Direct Zebra `ReadStateService` access (formerly `state`).
-    ///
-    /// More efficient but requires running on the same machine as Zebra.
-    #[serde(alias = "state")]
-    Direct,
-    /// JSON-RPC access (formerly `fetch`).
-    ///
-    /// Compatible with Zebra or another Zaino instance.
-    #[default]
-    #[serde(alias = "fetch")]
-    Rpc,
-}
+use zaino_state::{CommonBackendConfig, DonationAddress};
 
 /// Operator-facing mempool bounds, as they appear in `[mempool]`.
 ///
@@ -157,12 +133,6 @@ fn is_sensitive_leaf_key(leaf_key: &str) -> bool {
 #[serde(deny_unknown_fields, default)]
 pub struct ZainodConfig {
     // Simple values first (TOML requirement)
-    /// Backend type for fetching blockchain data.
-    pub backend: BackendType,
-    /// Path to Zebra's state database.
-    ///
-    /// Required when using the `state` backend.
-    pub zebra_db_path: PathBuf,
     /// Network to connect to (Mainnet, PubTestnet — The Public Testnet — or Regtest;
     /// `"Testnet"` is accepted as a legacy spelling of PubTestnet).
     pub network: Network,
@@ -357,7 +327,6 @@ impl ZainodConfig {
 impl Default for ZainodConfig {
     fn default() -> Self {
         Self {
-            backend: BackendType::default(),
             metrics_endpoint: None,
             json_server_settings: None,
             grpc_settings: GrpcServerConfig {
@@ -365,7 +334,6 @@ impl Default for ZainodConfig {
                 tls: None,
             },
             validator_settings: ValidatorConfig {
-                validator_grpc_listen_address: Some("127.0.0.1:18230".to_string()),
                 validator_jsonrpc_listen_address: "127.0.0.1:18232".to_string(),
                 validator_cookie_path: None,
                 validator_user: Some("xxxxxx".to_string()),
@@ -374,7 +342,6 @@ impl Default for ZainodConfig {
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
             mempool: MempoolSettings::default(),
-            zebra_db_path: default_zebra_db_path(),
             network: Network::PubTestnet,
             donation_address: None,
         }
@@ -384,11 +351,6 @@ impl Default for ZainodConfig {
 /// Returns the default path for Zaino's ephemeral authentication cookie.
 pub fn default_ephemeral_cookie_path() -> PathBuf {
     zaino_common::xdg::resolve_path_with_xdg_runtime_defaults("zaino/.cookie")
-}
-
-/// Loads the default file path for zebra's local db.
-pub fn default_zebra_db_path() -> PathBuf {
-    zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zebra")
 }
 
 /// Resolves a hostname to a SocketAddr.
@@ -436,9 +398,7 @@ pub fn load_config_with_env(
         }
     }
 
-    let mut builder = config::Config::builder()
-        .set_default("backend", "fetch")
-        .map_err(|e| IndexerError::ConfigError(e.to_string()))?;
+    let mut builder = config::Config::builder();
 
     // Add TOML file source
     builder = builder.add_source(
@@ -488,61 +448,8 @@ pub fn load_config_with_env(
     Ok(parsed_config)
 }
 
-impl TryFrom<ZainodConfig> for NodeBackedIndexerServiceConfig {
-    type Error = IndexerError;
-
-    fn try_from(cfg: ZainodConfig) -> Result<Self, Self::Error> {
-        let connection = match cfg.backend {
-            BackendType::Rpc => ValidatorConnectionType::Rpc,
-            BackendType::Direct => {
-                let grpc_listen_address = cfg
-                    .validator_settings
-                    .validator_grpc_listen_address
-                    .as_ref()
-                    .ok_or_else(|| {
-                        IndexerError::ConfigError(
-                            "Missing validator_grpc_listen_address in configuration".to_string(),
-                        )
-                    })?;
-
-                let validator_grpc_address = fetch_socket_addr_from_hostname(grpc_listen_address)
-                    .map_err(|e| {
-                    let msg = match e {
-                        IndexerError::ConfigError(msg) => msg,
-                        other => other.to_string(),
-                    };
-                    IndexerError::ConfigError(format!(
-                        "Invalid validator_grpc_listen_address '{grpc_listen_address}': {msg}"
-                    ))
-                })?;
-
-                let validator_state_config = zebra_state::Config {
-                    cache_dir: cfg.zebra_db_path.clone(),
-                    ephemeral: false,
-                    delete_old_database: true,
-                    debug_stop_at_height: None,
-                    debug_validity_check_interval: None,
-                    should_backup_non_finalized_state: true,
-                    debug_skip_non_finalized_state_backup_task: false,
-                };
-                let validator_cookie_auth = cfg.validator_settings.validator_cookie_path.is_some();
-
-                ValidatorConnectionType::Direct(DirectConnectionConfig {
-                    validator_state_config,
-                    validator_grpc_address,
-                    validator_cookie_auth,
-                })
-            }
-        };
-
-        Ok(NodeBackedIndexerServiceConfig {
-            common: build_common(cfg),
-            connection,
-        })
-    }
-}
-
-fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
+/// The indexer service's configuration, taken from the daemon's.
+pub fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
     CommonBackendConfig {
         validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
         validator_cookie_path: cfg.validator_settings.validator_cookie_path,
@@ -631,19 +538,15 @@ mod tests {
         let validator_cookie_file = temp_dir.path().join("validator.cookie");
         let zaino_cookie_dir = temp_dir.path().join("zaino_cookies_dir");
         let zaino_db_dir = temp_dir.path().join("zaino_db_dir");
-        let zebra_db_dir = temp_dir.path().join("zebra_db_dir");
 
         std::fs::write(&cert_file, "mock cert content").unwrap();
         std::fs::write(&key_file, "mock key content").unwrap();
         std::fs::write(&validator_cookie_file, "mock validator cookie content").unwrap();
         std::fs::create_dir_all(&zaino_cookie_dir).unwrap();
         std::fs::create_dir_all(&zaino_db_dir).unwrap();
-        std::fs::create_dir_all(&zebra_db_dir).unwrap();
 
         let toml_content = format!(
             r#"
-backend = "fetch"
-zebra_db_path = "{}"
 network = "Mainnet"
 
 [storage.database]
@@ -666,7 +569,6 @@ listen_address = "0.0.0.0:9000"
 cert_path = "{}"
 key_path = "{}"
 "#,
-            zebra_db_dir.display(),
             zaino_db_dir.display(),
             validator_cookie_file.display(),
             zaino_cookie_dir.display(),
@@ -677,8 +579,6 @@ key_path = "{}"
         let config_path = create_test_config_file(&temp_dir, &toml_content, "full_config.toml");
         let config = load_config(&config_path).expect("load_config failed");
 
-        // legacy `backend = "fetch"` still parses via the serde alias
-        assert_eq!(config.backend, BackendType::Rpc);
         assert!(config.json_server_settings.is_some());
         assert_eq!(
             config
@@ -710,9 +610,7 @@ key_path = "{}"
         let temp_dir = TempDir::new().unwrap();
 
         let toml_content = r#"
-backend = "state"
 network = "PubTestnet"
-zebra_db_path = "/opt/zebra/data"
 
 [storage.database]
 path = "/opt/zaino/data"
@@ -728,8 +626,6 @@ listen_address = "127.0.0.1:8137"
         let config = load_config(&config_path).expect("load_config failed");
         let default_values = ZainodConfig::default();
 
-        // legacy `backend = "state"` still parses via the serde alias
-        assert_eq!(config.backend, BackendType::Direct);
         assert_eq!(config.network, Network::PubTestnet);
         assert!(config.json_server_settings.is_none());
         assert_eq!(
@@ -750,9 +646,7 @@ listen_address = "127.0.0.1:8137"
         let temp_dir = TempDir::new().unwrap();
 
         let toml_content = r#"
-backend = "state"
 network = "Testnet"
-zebra_db_path = "/opt/zebra/data"
 
 [storage.database]
 path = "/opt/zaino/data"
@@ -776,9 +670,7 @@ listen_address = "127.0.0.1:8137"
 
         // Scenario 1: auth enabled, cookie_dir empty (should use default ephemeral path)
         let toml_content = r#"
-backend = "fetch"
 network = "PubTestnet"
-zebra_db_path = "/zebra/db"
 
 [storage.database]
 path = "/zaino/db"
@@ -806,9 +698,7 @@ listen_address = "127.0.0.1:8137"
 
         // Scenario 2: auth enabled, cookie_dir specified
         let toml_content2 = r#"
-backend = "fetch"
 network = "PubTestnet"
-zebra_db_path = "/zebra/db"
 
 [storage.database]
 path = "/zaino/db"
@@ -833,9 +723,7 @@ listen_address = "127.0.0.1:8137"
 
         // Scenario 3: cookie_dir not specified (should be None)
         let toml_content3 = r#"
-backend = "fetch"
 network = "PubTestnet"
-zebra_db_path = "/zebra/db"
 
 [storage.database]
 path = "/zaino/db"
@@ -946,39 +834,45 @@ listen_address = "127.0.0.1:8137"
         let default_config = ZainodConfig::default();
 
         assert_eq!(config.network, default_config.network);
-        assert_eq!(config.backend, default_config.backend);
         assert_eq!(
             config.storage.cache.capacity,
             default_config.storage.cache.capacity
         );
     }
 
+    /// A config that still sets a removed read-state key fails to load rather than silently running over JSON-RPC.
     #[test]
-    fn test_deserialize_invalid_backend_type() {
+    fn stale_read_state_keys_are_rejected() {
         let _guard = EnvGuard::new();
         let temp_dir = TempDir::new().unwrap();
 
-        let toml_content = r#"
-backend = "invalid_type"
-
+        for (name, top_level, validator_extra) in [
+            ("backend", "backend = \"state\"\n", ""),
+            ("zebra_db_path", "zebra_db_path = \"/opt/zebra/data\"\n", ""),
+            (
+                "validator_grpc_listen_address",
+                "",
+                "validator_grpc_listen_address = \"127.0.0.1:18230\"\n",
+            ),
+        ] {
+            let toml_content = format!(
+                r#"{top_level}
 [validator_settings]
 validator_jsonrpc_listen_address = "127.0.0.1:18232"
-
+{validator_extra}
 [storage.database]
 path = "/zaino/db"
 
 [grpc_settings]
 listen_address = "127.0.0.1:8137"
-"#;
+"#
+            );
 
-        let config_path = create_test_config_file(&temp_dir, toml_content, "invalid_backend.toml");
-        let result = load_config(&config_path);
-        assert!(result.is_err());
-        if let Err(IndexerError::ConfigError(msg)) = result {
+            let config_path =
+                create_test_config_file(&temp_dir, &toml_content, &format!("stale_{name}.toml"));
             assert!(
-                msg.contains("unknown variant") || msg.contains("invalid_type"),
-                "Unexpected error message: {}",
-                msg
+                load_config(&config_path).is_err(),
+                "stale `{name}` key must be rejected by deny_unknown_fields"
             );
         }
     }
@@ -1102,7 +996,6 @@ listen_address = "127.0.0.1:8137"
         let temp_dir = TempDir::new().unwrap();
 
         let toml_content = r#"
-backend = "fetch"
 network = "PubTestnet"
 
 [validator_settings]
@@ -1133,7 +1026,6 @@ listen_address = "127.0.0.1:8137"
         let temp_dir = TempDir::new().unwrap();
 
         let toml_content = r#"
-backend = "fetch"
 network = "PubTestnet"
 
 [validator_settings]
@@ -1360,46 +1252,8 @@ listen_address = "127.0.0.1:8137"
     fn indexer_version_is_zainod_pkg_version() {
         let _guard = EnvGuard::new();
 
-        let service_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig::default())
-            .expect("service config conversion should succeed for default ZainodConfig");
-        assert_eq!(
-            service_cfg.common.indexer_version,
-            env!("CARGO_PKG_VERSION")
-        );
-    }
-
-    /// The `Rpc` and `Direct` connections share a single `build_common` helper, so the
-    /// common payload handed to the service is connection-independent. Locks that in
-    /// across every field: a future divergence (e.g. one path stops applying the
-    /// missing-credentials sentinel, or a new common field gets populated on only one
-    /// side) makes this fail. Pretty-Debug equality is used because not every constituent
-    /// of `CommonBackendConfig` derives `PartialEq`, and a single stringified compare
-    /// future-proofs the test against fields added later.
-    #[test]
-    fn common_payload_is_connection_independent() {
-        let _guard = EnvGuard::new();
-
-        let rpc_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
-            backend: BackendType::Rpc,
-            ..ZainodConfig::default()
-        })
-        .expect("Rpc conversion should succeed for default ZainodConfig");
-        let direct_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
-            backend: BackendType::Direct,
-            ..ZainodConfig::default()
-        })
-        .expect("Direct conversion should succeed for default ZainodConfig");
-
-        assert!(matches!(rpc_cfg.connection, ValidatorConnectionType::Rpc));
-        assert!(matches!(
-            direct_cfg.connection,
-            ValidatorConnectionType::Direct(_)
-        ));
-
-        assert_eq!(
-            format!("{:#?}", rpc_cfg.common),
-            format!("{:#?}", direct_cfg.common),
-        );
+        let service_cfg = build_common(ZainodConfig::default());
+        assert_eq!(service_cfg.indexer_version, env!("CARGO_PKG_VERSION"));
     }
 
     /// Builds a default config with the JSON-RPC server bound to `addr`.
@@ -1537,7 +1391,6 @@ listen_address = "127.0.0.1:8137"
         let temp_dir = TempDir::new().unwrap();
 
         let toml_content = r#"
-backend = "fetch"
 network = "PubTestnet"
 ephemeral_finalised_state = true
 

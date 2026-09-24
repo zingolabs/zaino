@@ -55,7 +55,7 @@ pub use indexer::{
 pub use stream::IndexedTipStream;
 
 pub use indexer::node_backed_indexer::{
-    ChainTipSubscriber, NodeBackedIndexerService, NodeBackedIndexerServiceSubscriber,
+    NodeBackedIndexerService, NodeBackedIndexerServiceSubscriber,
 };
 
 pub(crate) mod chain_index;
@@ -84,10 +84,7 @@ pub(crate) use chain_index::types::{BlockHash, Height, IndexedBlock, Outpoint, T
 
 pub(crate) mod config;
 
-pub use config::{
-    ChainIndexConfig, CommonBackendConfig, DirectConnectionConfig, DonationAddress,
-    NodeBackedIndexerServiceConfig, ValidatorConnectionType,
-};
+pub use config::{ChainIndexConfig, CommonBackendConfig, DonationAddress};
 
 pub(crate) mod error;
 

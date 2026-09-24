@@ -495,8 +495,8 @@ mod tests {
     /// adapter can actually answer all of them — a port naming a capability no
     /// source provides would compile perfectly well and fail at wiring time.
     #[test]
-    fn the_zebra_validator_satisfies_the_source_bound() {
+    fn the_zebra_rpc_adapter_satisfies_the_source_bound() {
         fn assert_satisfied<T: ChainStoreSource>() {}
-        assert_satisfied::<zaino_source_zebra::ZebraValidator>();
+        assert_satisfied::<zaino_source_zebra_rpc::ZebraRpcAdapter>();
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! [`ZebraValidatorSource`] implements [`BlockchainSource`] — the temporary
 //! port described in [`super::source`] — by delegating to
-//! [`ZebraValidator`], the composite that routes each question to whichever
-//! transport can answer it.
+//! [`ZebraRpcAdapter`], which answers every question over the validator's
+//! JSON-RPC interface.
 //!
 //! # What this file is doing
 //!
@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use zaino_source::QueryError;
-use zaino_source_zebra::ZebraValidator;
+use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zebra_rpc::methods::ValidateAddresses as _;
 use zebra_state::HashOrHeight;
 
@@ -58,31 +58,17 @@ pub struct ValidatorSource<V> {
     /// network's consensus branch schedule, which zebra's builder takes as an
     /// argument.
     network: zebra_chain::parameters::Network,
-
-    /// Zebra's own tip-change stream, when this deployment reads the state
-    /// database directly.
-    ///
-    /// Held rather than synthesised: the port hands out
-    /// `zebra_state::ChainTipChange`, which cannot be built from the domain
-    /// tip subscription. Keeping the real one preserves today's behaviour
-    /// exactly, including that RPC-only deployments have none.
-    chain_tip_change: Option<zebra_state::ChainTipChange>,
 }
 
 /// ChainIndex's source as deployed against a Zebra validator.
-pub type ZebraValidatorSource = ValidatorSource<ZebraValidator>;
+pub type ZebraValidatorSource = ValidatorSource<ZebraRpcAdapter>;
 
 impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     /// Wrap anything answering ChainIndex's questions as its source.
-    pub fn new(
-        validator: V,
-        network: zebra_chain::parameters::Network,
-        chain_tip_change: Option<zebra_state::ChainTipChange>,
-    ) -> Self {
+    pub fn new(validator: V, network: zebra_chain::parameters::Network) -> Self {
         Self {
             validator: Arc::new(validator),
             network,
-            chain_tip_change,
         }
     }
 
@@ -107,19 +93,6 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     }
 }
 
-#[cfg(feature = "test_dependencies")]
-impl ZebraValidatorSource {
-    /// The backing state service, when this deployment reads the database.
-    ///
-    /// Test-only escape hatch, carried over from the deleted connector: live
-    /// tests recompute expected chain data straight off the service.
-    pub fn read_state_service(&self) -> Option<&zebra_state::ReadStateService> {
-        self.validator
-            .read_state()
-            .map(|adapter| adapter.read_state_service())
-    }
-}
-
 /// Written out rather than derived: `derive(Clone)` would demand `V: Clone`,
 /// but the source is held behind an `Arc` precisely so it need not be — it owns
 /// connections and a database handle that must not be duplicated.
@@ -128,7 +101,6 @@ impl<V> Clone for ValidatorSource<V> {
         Self {
             validator: Arc::clone(&self.validator),
             network: self.network.clone(),
-            chain_tip_change: self.chain_tip_change.clone(),
         }
     }
 }
@@ -137,7 +109,6 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ValidatorSource")
             .field("network", &self.network)
-            .field("has_tip_stream", &self.chain_tip_change.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -529,10 +500,6 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_difficulty(&self) -> BlockchainSourceResult<f64> {
         self.validator.get_difficulty().await.map_err(err)
-    }
-
-    fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
-        self.chain_tip_change.clone()
     }
 
     // ***** Transparent addresses *****
@@ -1041,13 +1008,7 @@ impl ZebraValidatorSource {
         })
         .map_err(|e| invalid(format!("cannot build the validator RPC client: {e}")))?;
 
-        Ok(Self::new(
-            zaino_source_zebra::ZebraValidator::rpc_only(
-                zaino_source_zebra_rpc::ZebraRpcAdapter::new(client),
-            ),
-            network,
-            None,
-        ))
+        Ok(Self::new(ZebraRpcAdapter::new(client), network))
     }
 
     /// Connect to a validator over JSON-RPC alone.
@@ -1098,121 +1059,7 @@ impl ZebraValidatorSource {
         );
         let network = super::network_adoption::adopt_network(common, &source).await?;
 
-        let validator = zaino_source_zebra::ZebraValidator::rpc_only(adapter);
-
-        Ok((Self::new(validator, network.clone(), None), info, network))
-    }
-
-    /// Connect to a validator and additionally read its state database directly.
-    ///
-    /// Launches the chain syncer and waits for it to catch up before returning.
-    /// The wait compares tip **hash** as well as height: the same height can
-    /// name different blocks during a reorg, so height alone would report a
-    /// false match and hand back a service that disagrees with the validator.
-    pub async fn spawn_direct(
-        common: &crate::config::CommonBackendConfig,
-        direct: &crate::config::DirectConnectionConfig,
-    ) -> Result<
-        (
-            Self,
-            zaino_primitives::types::rpc::NodeInfo,
-            zebra_chain::parameters::Network,
-        ),
-        BlockchainSourceError,
-    > {
-        use futures::TryFutureExt as _;
-        use tower::{Service as _, ServiceExt as _};
-        use zebra_state::{ReadRequest, ReadResponse};
-
-        let adapter = rpc_adapter(common)?;
-        let info = zaino_source::OneShotGetNodeInfo::get_node_info(&adapter)
-            .await
-            .map_err(err)?;
-
-        // As in `spawn_rpc`: `adopt_network` needs the sealed resilient port,
-        // so wrap the adapter in a `ValidatorClient`. The `OneShotGet*` call
-        // above stays on the bare adapter for now (see the note there).
-        let source = zaino_source::ValidatorClient::new(
-            rpc_adapter(common)?,
-            zaino_source::RetryPolicy::default(),
-        );
-        let network = super::network_adoption::adopt_network(common, &source).await?;
-
-        tracing::info!(
-            grpc_address = %direct.validator_grpc_address,
-            "Launching Chain Syncer"
-        );
-        let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
-            zebra_rpc::sync::init_read_state_with_syncer(
-                direct.validator_state_config.clone(),
-                &network,
-                direct.validator_grpc_address,
-            )
-            .await
-            .map_err(|e| invalid(e.to_string()))?
-            .map_err(|e| invalid(e.to_string()))?;
-
-        tracing::info!("Chain syncer launched");
-
-        loop {
-            let (validator_hash, validator_height) =
-                zaino_source::OneShotGetChainTip::get_chain_tip(&adapter)
-                    .await
-                    .map_err(err)?;
-
-            let response = read_state_service
-                .ready()
-                .and_then(|service| service.call(ReadRequest::Tip))
-                .await
-                .map_err(BlockchainSourceError::unrecoverable)?;
-
-            let ReadResponse::Tip(tip) = response else {
-                return Err(invalid("unexpected response to a Tip request".to_string()));
-            };
-
-            // As above: the syncer has no tip until genesis arrives, so this is
-            // a wait rather than a failure.
-            let Some((syncer_height, syncer_tip_hash)) = tip else {
-                tracing::info!("Waiting for validator to serve its first block");
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                continue;
-            };
-
-            if u32::from(validator_height) == syncer_height.0
-                && <[u8; 32]>::from(validator_hash) == syncer_tip_hash.0
-            {
-                tracing::info!(
-                    height = syncer_height.0,
-                    tip_hash = %syncer_tip_hash,
-                    "ReadStateService synced with Zebra"
-                );
-                break;
-            }
-
-            tracing::info!(
-                syncer_height = syncer_height.0,
-                validator_height = u32::from(validator_height),
-                syncer_tip_hash = %syncer_tip_hash,
-                validator_tip_hash = ?validator_hash,
-                "ReadStateService syncing with Zebra"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        }
-
-        let validator = zaino_source_zebra::ZebraValidator::with_read_state(
-            adapter,
-            zaino_source_zebra_readstate::ZebraReadStateAdapter::from_service(
-                read_state_service,
-                &network,
-                Some(Arc::new(sync_task_handle)),
-            ),
-        );
-
-        Ok((
-            Self::new(validator, network.clone(), Some(chain_tip_change)),
-            info,
-            network,
-        ))
+        Ok((Self::new(adapter, network.clone()), info, network))
     }
 }
 

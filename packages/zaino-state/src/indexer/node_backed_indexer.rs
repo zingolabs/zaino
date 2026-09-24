@@ -44,10 +44,7 @@ use crate::{
 #[allow(deprecated)]
 use crate::{
     chain_index::{source::BlockchainSource, types, validator_source::ZebraValidatorSource},
-    config::{
-        CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
-        ValidatorConnectionType,
-    },
+    config::{CommonBackendConfig, DonationAddress},
     error::NodeBackedIndexerServiceError,
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
@@ -63,11 +60,8 @@ use zaino_status::{Status, StatusType};
 /// A single node-backed chain-fetch + tx-submission service, generic over its
 /// [`BlockchainSource`].
 ///
-/// Replaces the former `FetchService` / `StateService` split: the JSON-RPC (`Rpc`) and
-/// direct-`ReadStateService` (`Direct`) backends are now one type selected at runtime
-/// via [`NodeBackedIndexerServiceConfig`]. Production instantiates the default
-/// `Source = ZebraValidatorSource` (which itself carries the `Rpc`/`Direct` arm); tests
-/// may instantiate over a mock source.
+/// Production instantiates the default `Source = ZebraValidatorSource`, which reaches the
+/// validator over JSON-RPC; tests may instantiate over a mock source.
 ///
 /// This service is a central service — create a [`NodeBackedIndexerServiceSubscriber`]
 /// (via [`ZcashService::get_subscriber`]) to fetch data. This lets large numbers of
@@ -125,36 +119,30 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
 
 impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>;
-    type Config = NodeBackedIndexerServiceConfig;
+    type Config = CommonBackendConfig;
 
     fn is_synced(&self) -> bool {
         self.indexer.is_synced()
     }
 
     /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.
-    #[instrument(name = "NodeBackedIndexerService::spawn", skip(config), fields(network = %config.common.network))]
-    async fn spawn(
-        config: NodeBackedIndexerServiceConfig,
-    ) -> Result<Self, NodeBackedIndexerServiceError> {
+    #[instrument(name = "NodeBackedIndexerService::spawn", skip(config), fields(network = %config.network))]
+    async fn spawn(config: CommonBackendConfig) -> Result<Self, NodeBackedIndexerServiceError> {
         info!(
-            rpc_address = %config.common.validator_rpc_address,
-            network = %config.common.network,
+            rpc_address = %config.validator_rpc_address,
+            network = %config.network,
             "Launching NodeBackedIndexerService"
         );
 
-        // Select the validator connection from config; both arms return the built source,
-        // the validator `getinfo` used for service metadata, and the runtime network
-        // (activation schedule adopted from the validator at first contact, zaino#1076).
-        let (source, zebra_build_data, network) = match &config.connection {
-            ValidatorConnectionType::Rpc => ZebraValidatorSource::spawn_rpc(&config.common).await,
-            ValidatorConnectionType::Direct(direct) => {
-                ZebraValidatorSource::spawn_direct(&config.common, direct).await
-            }
-        }
-        .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
+        // Returns the built source, the validator `getinfo` used for service metadata,
+        // and the runtime network (activation schedule adopted from the validator at first
+        // contact, zaino#1076).
+        let (source, zebra_build_data, network) = ZebraValidatorSource::spawn_rpc(&config)
+            .await
+            .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
         let data = ServiceMetadata::new(
-            get_build_info(config.common.indexer_version.clone()),
+            get_build_info(config.indexer_version.clone()),
             network.clone(),
             zebra_build_data.build,
             zebra_build_data.subversion,
@@ -163,7 +151,7 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
 
         let indexer = NodeBackedChainIndex::new(
             source,
-            crate::config::ChainIndexConfig::from_backend_config(&config.common, network),
+            crate::config::ChainIndexConfig::from_backend_config(&config, network),
         )
         .await
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
@@ -171,7 +159,7 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
         let service = Self {
             indexer,
             data,
-            config: config.common,
+            config,
         };
 
         // wait for sync to complete, return error on sync fail.
@@ -422,38 +410,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     }
 }
 
-/// A subscriber to any chaintip updates.
-#[derive(Clone)]
-pub struct ChainTipSubscriber {
-    monitor: zebra_state::ChainTipChange,
-}
-
-impl ChainTipSubscriber {
-    /// Waits until the tip hash has changed (relative to the last time this method
-    /// was called), then returns the best tip's block hash.
-    pub async fn next_tip_hash(
-        &mut self,
-    ) -> Result<zebra_chain::block::Hash, tokio::sync::watch::error::RecvError> {
-        self.monitor
-            .wait_for_tip_change()
-            .await
-            .map(|tip| tip.best_tip_hash())
-    }
-}
-
 impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     NodeBackedIndexerServiceSubscriber<Source>
 {
-    /// A subscriber to chain-tip updates, when the backing source exposes a
-    /// local tip-change stream. `Some` only on the `Direct` connection; the
-    /// `Rpc` connection (and any other stream-less source) observes tips by
-    /// polling the validator and yields `None`.
-    pub fn chaintip_update_subscriber(&self) -> Option<ChainTipSubscriber> {
-        Some(ChainTipSubscriber {
-            monitor: self.indexer.source().chain_tip_change()?,
-        })
-    }
-
     /// Shared body of `get_block_range` and `get_block_range_nullifiers`: streams the
     /// requested compact-block range through a channel, applying `map_block` to every
     /// block before it is sent. `rpc_name` labels log lines and nothing else.
@@ -561,19 +520,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
 /// the `Direct` connection owns a `ReadStateService` that the generic source
 /// abstraction does not expose.
 impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
-    /// The backing Zebra [`zebra_state::ReadStateService`] (`Direct` connection only).
-    ///
-    /// Test-only escape hatch: live tests recompute expected chain data directly off the
-    /// `ReadStateService`. Production code goes through the `ChainIndex` API.
-    #[cfg(feature = "test_dependencies")]
-    pub fn read_state_service(&self) -> zebra_state::ReadStateService {
-        self.indexer
-            .source()
-            .read_state_service()
-            .expect("read_state_service requires the Direct connection")
-            .clone()
-    }
-
     /// The indexer's mempool subscriber.
     ///
     /// Test-only escape hatch: live tests recompute expected `getmempoolinfo` values

@@ -1311,32 +1311,6 @@ async fn service_drop_survives_current_thread_runtime() {
     .expect("dropping the service on a current-thread runtime must not panic");
 }
 
-/// The `Rpc` connection has no local chain-tip-change stream, so requesting a
-/// chain-tip subscriber over such a source must yield `None` rather than
-/// panic. Before this method returned `Option`, it existed only in a
-/// panicking form (`.expect("chaintip_update_subscriber requires the Direct
-/// connection")`) reachable by any deployment configured with `backend = "rpc"`;
-/// pre-merge the misuse was a compile error because only the State-backed
-/// subscriber type had the method.
-#[tokio::test(flavor = "multi_thread")]
-async fn chaintip_update_subscriber_absent_without_tip_stream() {
-    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
-    use zaino_common::network::ActivationHeights;
-
-    let (_blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-
-    let service = NodeBackedIndexerServiceSubscriber::new_for_test(
-        index_reader,
-        ActivationHeights::default().to_regtest_network(),
-    );
-
-    assert!(
-        service.chaintip_update_subscriber().is_none(),
-        "a source with no local tip-change stream must yield no subscriber, not panic"
-    );
-}
-
 /// `sendrawtransaction` rejections must carry the legacy full node's legacy error code:
 /// zaino-serve forwards the code by downcast-walking the `source()` chain for
 /// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),

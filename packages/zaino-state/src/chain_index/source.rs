@@ -212,14 +212,6 @@ pub trait BlockchainSource:
     /// minimum difficulty (the `getdifficulty` RPC value).
     fn get_difficulty(&self) -> impl SendFut<BlockchainSourceResult<f64>>;
 
-    /// A watch stream of the source's chain-tip changes, when the source owns
-    /// one locally. Only the `Direct` validator connection (which drives its
-    /// own Zebra syncer) does; every other source observes tips by polling,
-    /// and inherits this `None` default.
-    fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
-        None
-    }
-
     /// Returns the `getblockchaininfo` response.
     fn get_blockchain_info(
         &self,
@@ -466,19 +458,6 @@ pub enum BlockchainSourceError {
 }
 
 impl BlockchainSourceError {
-    /// Wraps a typed error, preserving it for `source()`-chain recovery.
-    /// Accepts both concrete error types and already-boxed errors (e.g.
-    /// zebra's `BoxError`).
-    pub(crate) fn unrecoverable(
-        error: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
-    ) -> Self {
-        let source = error.into();
-        Self::UnrecoverableWithSource {
-            message: source.to_string(),
-            source,
-        }
-    }
-
     /// Wraps a typed error with a context prefix, preserving the error for
     /// `source()`-chain recovery.
     pub(crate) fn unrecoverable_context(

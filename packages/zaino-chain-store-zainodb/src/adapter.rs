@@ -582,7 +582,7 @@ mod tests {
         #[cfg(feature = "transparent_address_history_experimental")]
         fn history<R: zaino_chain_store::TransparentHistoryIndex>() {}
 
-        type Validator = zaino_source_zebra::ZebraValidator;
+        type Validator = zaino_source_zebra_rpc::ZebraRpcAdapter;
 
         reader::<DbReader<Validator>>();
         indexes::<DbReader<Validator>>();

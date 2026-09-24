@@ -9,8 +9,7 @@ use zaino_serve::{
     server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
 };
 use zaino_state::{
-    IndexerService, LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig,
-    ZcashIndexer, ZcashService,
+    IndexerService, LightWalletService, NodeBackedIndexerService, ZcashIndexer, ZcashService,
 };
 use zaino_status::StatusType;
 
@@ -75,10 +74,7 @@ pub async fn spawn_indexer(
 
     info!(uri = %zebrad_uri, "Connected to node via JsonRPSee");
 
-    // Both the JSON-RPC (`Rpc`) and direct-`ReadStateService` (`Direct`) connections are
-    // now served by the single `NodeBackedIndexerService`; the connection is selected
-    // inside the config conversion from `config.backend`.
-    let service_config = NodeBackedIndexerServiceConfig::try_from(config.clone())?;
+    let service_config = crate::config::build_common(config.clone());
     Indexer::<NodeBackedIndexerService>::launch_inner(service_config, config)
         .await
         .map(|res| res.0)
