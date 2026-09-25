@@ -15,14 +15,7 @@ migration   = "Replace ChainHeadWork with zaino_primitives::types::RelativeChain
 [[changes]]
 crate       = "zaino-chain-store-zainodb"
 kind        = "breaking"
-description = """
-- BlockContext, BlockHeaderData and IndexedBlock take a Work parameter: \
-AbsoluteChainWork or Option<AbsoluteChainWork> (default).
-- Only the AbsoluteChainWork form has a stored encoding.
-- DbWrite::write_block takes IndexedBlock<AbsoluteChainWork>.
-- StoredBlockRead answers from the v1 backend only.
-- On-disk format unchanged.
-"""
+description = "BlockContext, BlockHeaderData and IndexedBlock take a Work parameter: AbsoluteChainWork or Option<AbsoluteChainWork> (default). Only the AbsoluteChainWork form has a stored encoding. DbWrite::write_block takes IndexedBlock<AbsoluteChainWork>. StoredBlockRead answers from the v1 backend only. On-disk format unchanged."
 migration = "BlockContext::new and conversion::indexed_block take the chainwork in either form. indexed_block_from_stored yields IndexedBlock<AbsoluteChainWork>; widen with map_chainwork(Some). Chain-head blocks carry None and do not type-check against the writer."
 
 [[changes]]
@@ -38,19 +31,9 @@ description = "Chain-head blocks converted for serving now carry no chain work, 
 [[changes]]
 crate = "zaino-chain-store-zainodb"
 kind = "fix"
-description = """
-- chainwork_from_parent takes the block's height; genesis seeds its own work, \
-an unknown parent above genesis is ParentChainWorkUnknown.
-- chainwork_from_parent_if_known maps that error to None for the zebra-block builder.
-- A missing parent chainwork is StoreError::DataUnavailable on every build path.
-"""
+description = "chainwork_from_parent takes the block's height; genesis seeds its own work, an unknown parent above genesis is ParentChainWorkUnknown. chainwork_from_parent_if_known maps that error to None for the zebra-block builder. A missing parent chainwork is StoreError::DataUnavailable on every build path."
 
 [[changes]]
 crate = "zaino-state"
 kind = "internal"
-description = """
-- The chain-index proptests run against a persistent finalised state and wait for it \
-to finish building; they no longer exercise ephemeral mode.
-- Generated chains are relinked (merkle root and parent hash) so the finalised state's \
-write-path checks accept them, which also re-enables make_chain.
-"""
+description = "The chain-index proptests run against a persistent finalised state and wait for it to finish building; they no longer exercise ephemeral mode. Generated chains are relinked (merkle root and parent hash) so the finalised state's write-path checks accept them, which also re-enables make_chain."
