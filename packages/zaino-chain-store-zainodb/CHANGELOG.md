@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-09-11
+
+### Added
 - New crate. ZainoDB, the LMDB-backed implementation of the `zaino-chain-store`
   ports, and the on-disk vocabulary it is built from. Moved from
   `zaino-state`'s `chain_index/finalised_state/**` and `chain_index/types/db/**`
