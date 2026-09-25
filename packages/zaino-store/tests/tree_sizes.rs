@@ -14,7 +14,7 @@ use std::sync::Arc;
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_core::{BlockRef, Height};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
+use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
     Block, CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
@@ -109,7 +109,7 @@ async fn indexer_computes_and_serves_cumulative_tree_sizes() {
     let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
     let store = StoreComponent::new(
         ComponentName("store"),
-        StoreReader::new(Arc::new(backend.clone())),
+        StoreReader::<_, CurrentZaino>::new(Arc::new(backend.clone())),
     );
     let validator = ValidatorComponent::connect(&Probe(true))
         .await

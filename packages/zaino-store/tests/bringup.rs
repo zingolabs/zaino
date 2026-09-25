@@ -12,6 +12,7 @@ use std::sync::Arc;
 use zaino_component::{
     CancellationToken, ComponentName, Lifecycle, ReachabilityProbe, RunLoop, RunReporter,
 };
+use zaino_indexes::sets::current_zaino::CurrentZaino;
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_store::{StoreComponent, StoreReader};
@@ -48,7 +49,7 @@ async fn validator_indexer_store_boot_in_order() {
         .await
         .expect("validator reachable");
     let indexer = IndexerComponent::new(ComponentName("indexer"), NoOpDriver);
-    let reader = StoreReader::new(Arc::new(InMemoryBackend::new()));
+    let reader = StoreReader::<_, CurrentZaino>::new(Arc::new(InMemoryBackend::new()));
     let store = StoreComponent::new(ComponentName("store"), reader);
 
     // Root first (observed), then the writer, then the reader that reads behind

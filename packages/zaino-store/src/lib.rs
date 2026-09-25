@@ -12,8 +12,9 @@
 //! ([[error-propagation-rule]] is relaxed for sure-throwaway code).
 //!
 //! What it demonstrates today:
-//! - a [`StoreReader`] over any [`Backend`], consuming the writer's committed
-//!   watermark to yield a pinned [`StoreSnapshot`] (tip + serviceable range);
+//! - a [`StoreReader`] over any [`Backend`] and any
+//!   [`Materialisation`], consuming the writer's committed watermark to yield a
+//!   pinned [`StoreSnapshot`] (tip + serviceable range);
 //! - [`Serviceable`]: the capability manifest derived from the built index set;
 //! - [`CompactBlockRead`]: **true compact blocks composed on read** from the
 //!   `Blocks` index set (headers + txids + per-pool data + chain-metadata),
@@ -22,8 +23,20 @@
 //! - [`AddressRead::tx_ids`]: address history via `read_receives` — but the
 //!   address-decode dependency is stubbed, so it reports not-serviceable for now.
 //!
-//! Still stubbed: block/treestate/transaction reads that are passthrough (need
-//! the validator), and address decoding.
+//! # Presence is in the type
+//!
+//! Every serving read is implemented **only for materialisations that build
+//! the indexes it composes from**: `CompactBlockRead` needs the eight
+//! compact-block indexes, `AddressRead` needs `address_history`. A store over
+//! a materialisation lacking one does not have the read, so a use case that
+//! demands it fails where the store is wired, not per request. The store
+//! claims nothing it cannot back: reads it does not own (treestate, raw
+//! transactions, mempool, broadcast) are not stubbed here — the composer
+//! routes them to the provider that has them.
+//!
+//! ```text
+//! reads(StoreSnapshot<B, M>) = { R : indexes(R) ⊆ built(M) }
+//! ```
 #![forbid(unsafe_code)]
 
 mod component;
@@ -31,14 +44,15 @@ mod component;
 pub use component::StoreComponent;
 
 use std::future::Future;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-use futures::stream::{self, BoxStream, StreamExt};
+use futures::stream::BoxStream;
 use zaino_core::{
-    AddressBalance, AddressDelta, BlockHash, BlockId, BlockRef, Capability, Height, HeightRange,
-    MempoolTx, RawTransaction, ServiceabilityManifest, ServiceableRange, ShieldedPool, SubtreeRoot,
-    TipEvent, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
+    AddressBalance, AddressDelta, Answerable, BlockHash, BlockId, BlockRef, Capability, Height,
+    HeightRange, ServiceabilityManifest, ServiceableRange, TransactionId, TransparentAddress, Utxo,
 };
+use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
 use zaino_indexes::indexes::hash_to_height::{self, HashToHeightIndex};
@@ -48,6 +62,7 @@ use zaino_indexes::indexes::orchard::{self, OrchardIndex};
 use zaino_indexes::indexes::sapling::{self, SaplingIndex};
 use zaino_indexes::indexes::transparent_data::{self, TransparentDataIndex};
 use zaino_indexes::indexes::txids::{self, TxidsIndex};
+use zaino_indexes::materialisation::{Builds, Materialisation};
 use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{
     decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
@@ -56,59 +71,70 @@ use zaino_primitives::types::{
     CompactBlock, OrchardAction, PreIndexCompactTx, SaplingOutput, TransparentInput,
     TransparentOutput,
 };
-use zaino_service::error::{
-    AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError, Transient,
-    TreestateReadError, TxReadError,
-};
+use zaino_service::error::{AddressReadError, BlockReadError, ReadError, Transient};
 use zaino_service::{
-    AddressRead, Broadcast, ChainSegment, CompactBlockRead, CompactNullifierRead, MempoolContent,
-    MempoolSubscribe, RawTransactionRead, Serviceable, Snapshot, TakeSnapshot, TipSubscribe,
-    TransactionRead, TreestateRead,
+    AddressRead, ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot,
 };
 use zaino_sync::primitives::BlockHeight;
 
-/// EXPLORATORY: a read handle over the KV backend. It consumes the writer's
-/// committed watermark on each snapshot — it holds no stubbed coordinates.
-pub struct StoreReader<B> {
+/// EXPLORATORY: a read handle over the KV backend, for the materialisation
+/// `M`. It consumes the writer's committed watermark on each snapshot — it
+/// holds no stubbed coordinates.
+///
+/// `M` names the index set the backend was built with. It carries no data; it
+/// is the static promise the serving reads bound on.
+pub struct StoreReader<B, M> {
     backend: Arc<B>,
+    materialisation: PhantomData<M>,
 }
 
-impl<B> StoreReader<B> {
-    /// A reader over `backend`. The finalised tip is read live from the
-    /// backend's watermark at snapshot time, not passed in.
+impl<B, M> StoreReader<B, M> {
+    /// A reader over `backend`, built to the materialisation `M`. The finalised
+    /// tip is read live from the backend's watermark at snapshot time, not
+    /// passed in.
     pub fn new(backend: Arc<B>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            materialisation: PhantomData,
+        }
     }
 }
 
 // Manual `Clone` so the bound is on `Arc<B>` (always cloneable), not `B` — a
 // serving adapter clones the reader per connection, and all clones share one
 // backend.
-impl<B> Clone for StoreReader<B> {
+impl<B, M> Clone for StoreReader<B, M> {
     fn clone(&self) -> Self {
         Self {
             backend: Arc::clone(&self.backend),
+            materialisation: PhantomData,
         }
     }
 }
 
-impl<B: Backend + 'static> Serviceable for StoreReader<B> {
+impl<B: Backend + 'static, M: Materialisation> Serviceable for StoreReader<B, M> {
     fn serviceability(&self) -> ServiceabilityManifest {
         // Infallible by contract: a serviceability query must not be the call
-        // that fails, so a backend read failure degrades to "nothing locally
-        // serviceable" rather than propagating. The manifest is derived from the
-        // built index set (the `Capability ⇄ IndexId` relation), bounded by the
-        // committed watermark.
+        // that fails, so a backend read failure degrades to "nothing serviceable
+        // right now" rather than propagating — not-yet, because the indexes are
+        // still built; the reader just could not see them. The manifest is
+        // derived from the built index set (the `Capability ⇄ IndexId`
+        // relation), bounded by the committed watermark.
         let Ok(reader) = self.backend.reader() else {
-            return ServiceabilityManifest::default();
+            return ServiceabilityManifest::uniform(Answerable::NotYet);
         };
         let finalized_tip = watermark::read(&reader).ok().flatten();
         zaino_indexes::capabilities::serviceability(&reader, finalized_tip)
     }
 }
 
-impl<B: Backend + 'static> TakeSnapshot for StoreReader<B> {
-    type Snapshot = StoreSnapshot<B>;
+impl<B, M> TakeSnapshot for StoreReader<B, M>
+where
+    B: Backend + 'static,
+    // The pinned tip's hash is composed from the headers index.
+    M: Builds<HeadersIndex>,
+{
+    type Snapshot = StoreSnapshot<B, M>;
 
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
         let backend = self.backend.clone();
@@ -139,32 +165,36 @@ impl<B: Backend + 'static> TakeSnapshot for StoreReader<B> {
                 backend: backend.clone(),
                 finalized_tip,
                 pinned_tip,
+                materialisation: PhantomData,
             })
         }
     }
 }
 
-/// EXPLORATORY: an immutable pinned view. Clones share the backend via `Arc`.
-pub struct StoreSnapshot<B> {
+/// EXPLORATORY: an immutable pinned view over a store built to `M`. Clones
+/// share the backend via `Arc`.
+pub struct StoreSnapshot<B, M> {
     backend: Arc<B>,
     /// The finalised watermark this view was pinned to, read from the backend.
     finalized_tip: Option<Height>,
     /// The finalised tip's `BlockId`, composed from the headers index at pin time.
     pinned_tip: Option<BlockId>,
+    materialisation: PhantomData<M>,
 }
 
 // Manual `Clone` so the bound is on `Arc<B>` (always cloneable), not `B`.
-impl<B> Clone for StoreSnapshot<B> {
+impl<B, M> Clone for StoreSnapshot<B, M> {
     fn clone(&self) -> Self {
         Self {
             backend: self.backend.clone(),
             finalized_tip: self.finalized_tip,
             pinned_tip: self.pinned_tip,
+            materialisation: PhantomData,
         }
     }
 }
 
-impl<B: Backend + 'static> ChainSegment for StoreSnapshot<B> {
+impl<B: Backend + 'static, M: Materialisation> ChainSegment for StoreSnapshot<B, M> {
     fn pinned_tip(&self) -> Option<BlockId> {
         self.pinned_tip
     }
@@ -179,7 +209,7 @@ impl<B: Backend + 'static> ChainSegment for StoreSnapshot<B> {
     }
 }
 
-impl<B: Backend + 'static> Snapshot for StoreSnapshot<B> {
+impl<B: Backend + 'static, M: Materialisation> Snapshot for StoreSnapshot<B, M> {
     fn serviceable_range(&self) -> ServiceableRange {
         // No non-finalised window is wired, so the view answers up to the
         // finalised tip only: `tip == finalized_tip`.
@@ -191,7 +221,14 @@ impl<B: Backend + 'static> Snapshot for StoreSnapshot<B> {
     }
 }
 
-impl<B: Backend + 'static> CompactBlockRead for StoreSnapshot<B> {
+/// The read exists only where every index a compact block composes from is
+/// built — the one list [`local::Blocks`] declares, which the manifest checks
+/// stamps for at snapshot time.
+impl<B, M> CompactBlockRead for StoreSnapshot<B, M>
+where
+    B: Backend + 'static,
+    M: Backs<local::Blocks>,
+{
     fn compact_block(
         &self,
         at: BlockRef,
@@ -472,7 +509,15 @@ where
     })
 }
 
-impl<B: Backend + 'static> AddressRead for StoreSnapshot<B> {
+/// The read exists only where the address-history index is built. A store
+/// over a materialisation without it has no local address read at all — the
+/// honest shape for a deployment that passes address queries through, and the
+/// one a use case wanting them local is checked against at its wiring.
+impl<B, M> AddressRead for StoreSnapshot<B, M>
+where
+    B: Backend + 'static,
+    M: Backs<local::AddressHistory>,
+{
     async fn balance(
         &self,
         _addr: &TransparentAddress,
@@ -521,100 +566,6 @@ impl<B: Backend + 'static> AddressRead for StoreSnapshot<B> {
     }
 }
 
-// --- Light-serve completion ---------------------------------------------------
-//
-// The reads and controls, beyond `CompactBlockRead`, that `LightServeService`
-// requires. Index-only serving covers compact blocks (real, above); the rest
-// are passthrough / mempool / chain-head concerns this finalised store does not
-// own, so they report `NotServiceable` (reads) or empty/refused (controls)
-// rather than fabricate an answer. These impls are what make `StoreReader` a
-// `LightServeService` — locked by the compile-time assertion in `tests`.
-
-impl<B: Backend + 'static> TransactionRead for StoreSnapshot<B> {
-    async fn transaction(&self, _id: TransactionId) -> Result<Option<Transaction>, TxReadError> {
-        Err(TxReadError::NotServiceable(Capability::RawTransaction))
-    }
-    async fn transaction_status(&self, _id: TransactionId) -> Result<TxStatus, TxReadError> {
-        Err(TxReadError::NotServiceable(Capability::TransactionLocation))
-    }
-}
-
-impl<B: Backend + 'static> RawTransactionRead for StoreSnapshot<B> {
-    async fn raw_transaction(
-        &self,
-        _id: TransactionId,
-    ) -> Result<Option<RawTransaction>, TxReadError> {
-        Err(TxReadError::NotServiceable(Capability::RawTransaction))
-    }
-}
-
-impl<B: Backend + 'static> TreestateRead for StoreSnapshot<B> {
-    async fn treestate(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
-        Err(TreestateReadError::NotServiceable(Capability::Treestate))
-    }
-    async fn subtree_roots(
-        &self,
-        _pool: ShieldedPool,
-        _start_index: u16,
-        _limit: Option<u16>,
-    ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
-        Err(TreestateReadError::NotServiceable(Capability::SubtreeRoots))
-    }
-}
-
-impl<B: Backend + 'static> CompactNullifierRead for StoreSnapshot<B> {
-    async fn compact_block_nullifiers(
-        &self,
-        _at: BlockRef,
-    ) -> Result<Option<CompactBlock>, BlockReadError> {
-        // The nullifier-populated serving variant needs the spend set joined in;
-        // the plain compact block (above) is the index-only slice.
-        Err(BlockReadError::NotServiceable(Capability::Blocks))
-    }
-}
-
-impl<B: Backend + 'static> Broadcast for StoreReader<B> {
-    async fn broadcast(&self, _raw_tx: Vec<u8>) -> Result<TransactionId, BroadcastRejection> {
-        // A finalised read store does not relay transactions; broadcast is the
-        // validator's, wired at the composed runtime, not here.
-        Err(BroadcastRejection::Invalid(
-            "the finalised store does not broadcast".to_owned(),
-        ))
-    }
-}
-
-impl<B: Backend + 'static> MempoolSubscribe for StoreReader<B> {
-    fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx> {
-        // No mempool at the finalised store; the composed runtime supplies it.
-        stream::empty().boxed()
-    }
-}
-
-impl<B: Backend + 'static> MempoolContent for StoreReader<B> {
-    async fn mempool_raw_transaction(
-        &self,
-        _txid: TransactionId,
-    ) -> Result<Option<Vec<u8>>, MempoolReadError> {
-        // No mempool at the finalised store; the composed runtime supplies it.
-        Ok(None)
-    }
-
-    async fn mempool_compact_transaction(
-        &self,
-        _txid: TransactionId,
-    ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
-        // No mempool at the finalised store; the composed runtime supplies it.
-        Ok(None)
-    }
-}
-
-impl<B: Backend + 'static> TipSubscribe for StoreReader<B> {
-    fn subscribe_tip(&self) -> BoxStream<'_, TipEvent> {
-        // Tip changes come from the chain head, not the finalised store.
-        stream::empty().boxed()
-    }
-}
-
 /// EXPLORATORY: a read whose index this stub does not build yet reports
 /// not-serviceable rather than panicking.
 fn not_built() -> AddressReadError {
@@ -628,21 +579,4 @@ fn not_built() -> AddressReadError {
 /// compiles and the read path is exercised the moment decoding lands.
 fn decode_address(_addr: &TransparentAddress) -> Result<AddrId, AddressReadError> {
     Err(AddressReadError::NotServiceable(Capability::AddressHistory))
-}
-
-#[cfg(test)]
-mod light_serve_bound {
-    use super::StoreReader;
-    use zaino_persistence::Backend;
-    use zaino_service::LightServeService;
-
-    /// `StoreReader` type-checks as the lightwalletd serving profile over any
-    /// backend: the compact-block reads are real, the remaining reads report
-    /// `NotServiceable`, and the controls are finalised-store stubs. Compile-time
-    /// only — this is the bound that lets `zaino-lightserve` bind to the store.
-    fn _store_reader_is_light_serve<B: Backend + 'static>()
-    where
-        StoreReader<B>: LightServeService,
-    {
-    }
 }

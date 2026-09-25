@@ -14,9 +14,11 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_core::{BlockRef, Capability, Height};
+use zaino_core::{Answerable, BlockRef, Capability, Height};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZainoContext};
+use zaino_indexes::sets::current_zaino::{
+    context_from_block, index_set, CurrentZaino, CurrentZainoContext,
+};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
@@ -67,7 +69,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
     // The store reads behind the same backend.
     let store = StoreComponent::new(
         ComponentName("store"),
-        StoreReader::new(Arc::new(backend.clone())),
+        StoreReader::<_, CurrentZaino>::new(Arc::new(backend.clone())),
     );
 
     let validator = ValidatorComponent::connect(&Probe(true))
@@ -124,24 +126,18 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
 
     // The serviceability manifest is derived from the built index set (the
     // Capability ⇄ IndexId relation): after indexing, Blocks is answerable up to
-    // the finalised tip, while a passthrough capability has no local answer.
+    // the finalised tip, while a capability with no local index is absent here
+    // (the composer that holds a passthrough provider widens that).
     let manifest = store.reader().serviceability();
-    let answerable = |capability| {
-        manifest
-            .answerable
-            .iter()
-            .find(|(cap, _)| *cap == capability)
-            .and_then(|(_, height)| *height)
-    };
     assert_eq!(
-        answerable(Capability::Blocks).map(u32::from),
-        Some(2),
+        manifest.get(Capability::Blocks),
+        Answerable::ToHeight(Height::try_from(2).expect("height")),
         "Blocks serviceable to the tip once its indexes are built"
     );
     assert_eq!(
-        answerable(Capability::Treestate),
-        None,
-        "a passthrough capability has no local serviceability"
+        manifest.get(Capability::Treestate),
+        Answerable::Absent,
+        "a capability with no local index is locally absent"
     );
 
     // Compose a true compact block on read from the Blocks index set: header +

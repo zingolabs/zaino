@@ -22,13 +22,13 @@ use zaino_persistence::Backend;
 use crate::StoreReader;
 
 /// A [`StoreReader`] presented to the runtime as an owned component.
-pub struct StoreComponent<B> {
+pub struct StoreComponent<B, M> {
     name: ComponentName,
-    reader: Arc<StoreReader<B>>,
+    reader: Arc<StoreReader<B, M>>,
     status: watch::Sender<ComponentStatus>,
 }
 
-impl<B> Clone for StoreComponent<B> {
+impl<B, M> Clone for StoreComponent<B, M> {
     fn clone(&self) -> Self {
         Self {
             name: self.name,
@@ -38,9 +38,9 @@ impl<B> Clone for StoreComponent<B> {
     }
 }
 
-impl<B> StoreComponent<B> {
+impl<B, M> StoreComponent<B, M> {
     /// A store component named `name` serving `reader`, initially `Offline`.
-    pub fn new(name: ComponentName, reader: StoreReader<B>) -> Self {
+    pub fn new(name: ComponentName, reader: StoreReader<B, M>) -> Self {
         let (status, _) = watch::channel(ComponentStatus::new(
             name,
             Lifecycle::Offline,
@@ -55,24 +55,24 @@ impl<B> StoreComponent<B> {
 
     /// The reader this component supervises — how the engine / serving layer
     /// takes snapshots against the store.
-    pub fn reader(&self) -> Arc<StoreReader<B>> {
+    pub fn reader(&self) -> Arc<StoreReader<B, M>> {
         Arc::clone(&self.reader)
     }
 }
 
-impl<B: Send + Sync + 'static> StatusSource for StoreComponent<B> {
+impl<B: Send + Sync + 'static, M: Send + Sync + 'static> StatusSource for StoreComponent<B, M> {
     fn status(&self) -> ComponentStatus {
         self.status.borrow().clone()
     }
 }
 
-impl<B: Send + Sync + 'static> StatusWatch for StoreComponent<B> {
+impl<B: Send + Sync + 'static, M: Send + Sync + 'static> StatusWatch for StoreComponent<B, M> {
     fn subscribe(&self) -> watch::Receiver<ComponentStatus> {
         self.status.subscribe()
     }
 }
 
-impl<B: Backend + 'static> Managed for StoreComponent<B> {
+impl<B: Backend + 'static, M: Send + Sync + 'static> Managed for StoreComponent<B, M> {
     // The reader is passive: opening a KV read handle does not fail in this
     // stub, so bringup cannot fail synchronously and there is no run task whose
     // `Err` could surface. A real store that can fail to open would carry a
