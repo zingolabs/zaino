@@ -162,10 +162,25 @@ impl Default for IndexerConfig {
     }
 }
 
+/// Which deployment shape to run.
+///
+/// A closed set: each variant is a static use case (`zainod::use_case`) that
+/// binds a serving profile, a routing and an index set, checked by the
+/// compiler. Config selects one; it does not shape one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UseCaseKind {
+    /// Lightwalletd-compatible serving over the compact-block index set.
+    #[default]
+    LightWallet,
+}
+
 /// The zainod daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DaemonConfig {
+    /// The deployment shape.
+    pub use_case: UseCaseKind,
     /// Network the validator serves.
     pub network: Network,
     /// Prometheus `/metrics` endpoint. Disabled when absent; requires the
@@ -184,6 +199,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
+            use_case: UseCaseKind::default(),
             network: Network::Mainnet,
             metrics_endpoint: None,
             source: SourceMode::default(),
@@ -665,7 +681,10 @@ path = "/tmp/zaino-store"
             config.serve.grpc_listen_address,
             "0.0.0.0:8137".parse().expect("valid addr"),
         );
-        assert_eq!(config.store.path, super::mainnet_direct_state_fixture().store.path);
+        assert_eq!(
+            config.store.path,
+            super::mainnet_direct_state_fixture().store.path
+        );
     }
 
     /// The endpoint env override reaches the Rpc fixture.
@@ -676,7 +695,9 @@ path = "/tmp/zaino-store"
         let config = super::mainnet_rpc_fixture();
         std::env::remove_var(super::TEST_FIXTURE_JSONRPC_ENV);
         match config.source {
-            SourceMode::Rpc { jsonrpc_address, .. } => {
+            SourceMode::Rpc {
+                jsonrpc_address, ..
+            } => {
                 assert_eq!(jsonrpc_address, "zebra.example.svc:8232")
             }
             other => panic!("expected Rpc source, got {other:?}"),

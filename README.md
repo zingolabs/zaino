@@ -212,6 +212,7 @@ mistakes its design is trying to prevent.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): materialisations as types, and each local capability declared once with the indexes it composes from.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): composes the finalised store and the non-finalised view into one served compact-block snapshot over a watermark-governed seam, and why the initial-build gap is an explicit policy knob.
 - [`zaino-store-service`](./packages/zaino-store-service/usage.md): the composed engine — which provider answers each capability is the use case's routing, checked where the engine is wired.
+- [`zainod`](./packages/zainod/usage.md): the composition root — use cases as types, config selects one, and how to add another.
 
 
 ## Security Vulnerability Disclosure

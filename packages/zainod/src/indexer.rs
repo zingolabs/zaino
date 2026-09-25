@@ -18,13 +18,14 @@ use tracing::{error, info};
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_chain_head::ChainHeadConfig;
-use zaino_chain_head_service::ChainHeadService;
-use zaino_component::{CancellationToken, ComponentName, ReachabilityProbe};
+use zaino_chain_head_service::{ChainHeadService, ChainHeadSubscriber};
+use zaino_component::{
+    CancellationToken, ComponentName, Managed, ReachabilityProbe, StatusSource, StatusWatch,
+};
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_indexer::{SourceSyncDriver, SyncTuning};
 use zaino_indexes::materialisation::Materialisation;
 use zaino_indexes::sets::current_zaino::context_from_pre_index_compact_block;
-use zaino_indexes::sets::light_wallet::LightWallet;
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
@@ -32,16 +33,22 @@ use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_runtime::{
     IndexerComponent, OrchestraBuilder, RunComponent, ServeComponent, ValidatorComponent,
 };
-use zaino_service::routing::LightRouting;
+use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zaino_store::{StoreComponent, StoreReader};
-use zaino_store_service::Composed;
 
-use crate::config::{DaemonConfig, Network, SourceMode};
+use crate::config::{DaemonConfig, Network, SourceMode, UseCaseKind};
 use crate::error::IndexerError;
+use crate::use_case::{self, Serves, UseCase};
+
+/// The engine this daemon wires for use case `U`: the LMDB store over the use
+/// case's materialisation, the chain head, and the resilient validator client,
+/// under the use case's routing.
+type DaemonEngine<U> =
+    use_case::Engine<U, LmdbBackend, ChainHeadSubscriber, ValidatorClient<Arc<ZebraValidator>>>;
 
 /// Start the Zaino daemon.
 ///
@@ -86,7 +93,7 @@ pub async fn spawn_indexer(
                 password.as_deref(),
             )?);
             let validator = Arc::new(ZebraValidator::with_read_state(rpc, readstate));
-            boot(validator, config).await
+            select_use_case(validator, config).await
         }
         // Off-node: reach the validator over JSON-RPC alone, no co-located state
         // DB. The FS indexer sources compact blocks over RPC and the chain-head
@@ -107,7 +114,7 @@ pub async fn spawn_indexer(
                 password.as_deref(),
             )?);
             let validator = Arc::new(ZebraValidator::rpc_only(rpc));
-            boot(validator, config).await
+            select_use_case(validator, config).await
         }
     }
 }
@@ -164,10 +171,44 @@ fn rpc_auth(
 /// wraps it in the resilient [`ValidatorClient`]; the chain-head reaches the raw
 /// one-shot ports through the `Arc` directly. The chain-head's confirmed-watermark
 /// gate is the seam owner — it trims only what the FS has committed.
-async fn boot(
+/// Select the use case config names and boot it.
+///
+/// The one place a runtime value becomes a type: each arm is a fully static
+/// shape, and the only thing an arm supplies beyond the use case is the
+/// serving adapter that speaks its protocol. Adding a use case is adding an
+/// arm; the compiler checks the arm's shape at [`use_case::compose`].
+async fn select_use_case(
     validator: Arc<ZebraValidator>,
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    match config.use_case {
+        UseCaseKind::LightWallet => {
+            boot::<use_case::LightWallet, _>(validator, config, |engine, addr| {
+                GrpcServer::new(LightServe::new(engine), addr)
+            })
+            .await
+        }
+    }
+}
+
+/// Boot the runtime for use case `U`, serving its engine through `serve`.
+///
+/// Generic over the use case: the index set the backend opens and the indexer
+/// builds, the materialisation the store reader is typed to, and the routing
+/// the engine composes under all come from `U`, so none of them can be paired
+/// wrongly here. `demand ⊆ supply` is checked once, at [`use_case::compose`].
+async fn boot<U, A>(
+    validator: Arc<ZebraValidator>,
+    config: DaemonConfig,
+    serve: impl FnOnce(DaemonEngine<U>, std::net::SocketAddr) -> A,
+) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
+where
+    U: UseCase,
+    StoreReader<LmdbBackend, U::Materialisation>:
+        TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    DaemonEngine<U>: Serves<U>,
+    RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
+{
     // The FS indexer sources through the resilient wrapper over the shared
     // validator; the chain-head reaches the same validator's raw one-shot ports
     // through the `Arc`.
@@ -178,9 +219,9 @@ async fn boot(
 
     // LMDB must declare every namespace up front: one per index in the set, plus
     // the engine's reserved watermark / format-version namespaces. The set is
-    // the light-wallet materialisation's — the same type the store reader is
-    // wired over below, so what is built and what is served cannot drift.
-    let namespaces: Vec<Namespace> = LightWallet::index_set()
+    // the use case's materialisation — the same type the store reader is wired
+    // over below, so what is built and what is served cannot drift.
+    let namespaces: Vec<Namespace> = U::Materialisation::index_set()
         .index_ids()
         .into_iter()
         .map(Namespace::from)
@@ -193,16 +234,16 @@ async fn boot(
     })?;
 
     // The finalised store: the indexer writes it, the engine composes blocks on
-    // read from it. One reader, shared (Arc-backed clone). Typed to the
-    // light-wallet materialisation: the reads it has are exactly the reads
-    // those indexes back.
-    let store_reader = StoreReader::<_, LightWallet>::new(Arc::new(backend.clone()));
+    // read from it. One reader, shared (Arc-backed clone). Typed to the use
+    // case's materialisation: the reads it has are exactly the reads those
+    // indexes back.
+    let store_reader = StoreReader::<_, U::Materialisation>::new(Arc::new(backend.clone()));
 
     // The FS indexer sources the cheap pre-index compact block and builds the
-    // light-wallet index set, resuming from the backend watermark.
+    // use case's index set, resuming from the backend watermark.
     let driver = SourceSyncDriver::resuming_compact(
         &backend,
-        LightWallet::index_set(),
+        U::Materialisation::index_set(),
         Arc::clone(&source),
         |compact_block| context_from_pre_index_compact_block(&compact_block),
         SyncTuning {
@@ -232,13 +273,12 @@ async fn boot(
     .await
     .map_err(IndexerError::ChainHeadInit)?;
 
-    // Compose FS ⊕ NFS ⊕ validator into the served engine under the light
-    // routing: compact blocks local, wallet-parsed reads passed through, node
-    // reads withheld. The passthrough side consumes the resilient
-    // ValidatorClient decorator over the shared validator — the canonical ports,
-    // never the raw one-shots, and never the concrete adapter type. That this
-    // engine *is* the light-serve profile is checked at compile time in `tests`.
-    let engine: Composed<_, _, _, LightRouting> = Composed::new(
+    // Compose FS ⊕ NFS ⊕ validator into the served engine under the use case's
+    // routing. The passthrough side consumes the resilient ValidatorClient
+    // decorator over the shared validator — the canonical ports, never the raw
+    // one-shots, and never the concrete adapter type. That this engine serves
+    // what the use case demands is the `compose` bound.
+    let engine = use_case::compose::<U, _, _, _>(
         store_reader.clone(),
         chain_head_subscriber,
         ValidatorClient::new(Arc::clone(&validator), RetryPolicy::default()),
@@ -252,8 +292,8 @@ async fn boot(
     // The chain-head writer is escalated and supervised exactly like the indexer.
     let chain_head = RunComponent::new(ComponentName("chain-head"), chain_head_writer);
     let light_serve = ServeComponent::new(
-        ComponentName("light-serve"),
-        GrpcServer::new(LightServe::new(engine), config.serve.grpc_listen_address),
+        ComponentName(U::NAME),
+        serve(engine, config.serve.grpc_listen_address),
     );
 
     // Readiness-gated order: validator, then the FS indexer (so its watermark is
@@ -361,35 +401,4 @@ fn startup_message() {
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
     "#;
     println!("{welcome_message}");
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use zaino_backend_lmdb::LmdbBackend;
-    use zaino_chain_head_service::ChainHeadSubscriber;
-    use zaino_indexes::sets::light_wallet::LightWallet;
-    use zaino_service::routing::LightRouting;
-    use zaino_service::LightServeService;
-    use zaino_source::ValidatorClient;
-    use zaino_source_zebra::ZebraValidator;
-    use zaino_store::StoreReader;
-    use zaino_store_service::Composed;
-
-    /// The engine `spawn_indexer` wires — real backend, real store over the
-    /// light-wallet materialisation, real chain head, real validator client,
-    /// under the light routing — is the light-serve profile. Compile-time
-    /// only: a materialisation lacking an index the profile's reads need, or a
-    /// placement no provider can take, fails here rather than at a request.
-    fn _the_wired_engine_is_the_light_serve_profile()
-    where
-        Composed<
-            StoreReader<LmdbBackend, LightWallet>,
-            ChainHeadSubscriber,
-            ValidatorClient<Arc<ZebraValidator>>,
-            LightRouting,
-        >: LightServeService,
-    {
-    }
 }
