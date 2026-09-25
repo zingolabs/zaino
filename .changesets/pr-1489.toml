@@ -1,0 +1,6 @@
+[[changes]]
+crate       = "zaino-chain-head-service"
+kind        = "breaking"
+description = "`ChainHeadAdvanceError::SourceUnavailable` carries the transport `zaino_source::FetchError` as its `#[source]` instead of a `String`, so `Error::source()` yields the underlying cause and its machine-readable `FailureMode`. A transport failure fetching commitment tree roots is now classified `SourceUnavailable` rather than `InconsistentSource`; genuine domain rejections stay message-only under `InconsistentSource`."
+migration   = "Match `SourceUnavailable(FetchError)` where `SourceUnavailable(String)` was matched or constructed, using the error's `Display` for a message. Retry/give-up behaviour is unchanged; only the surfaced variant and cause chain differ."
+issues      = ["#1478"]

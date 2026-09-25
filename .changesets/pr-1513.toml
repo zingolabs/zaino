@@ -1,0 +1,11 @@
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "Confirmation depth is now a typed state model, not a signed integer. The `Confirmations = i64` alias is removed and replaced by two enums — `BlockConfirmations` (`NotInBestChain` | `Confirmed(NonZeroU32)`) and `TxConfirmations` (`Mempool` | `Mined(BlockConfirmations)`) — plus a `ConfirmationsCodecError`. The `confirmations` field of `BlockVerbose`, `BlockDeltas`, and `BlockHeaderVerbose` is now `BlockConfirmations`; the `confirmations` field of `TxOut` is now `TxConfirmations`."
+migration   = "Drop the `Confirmations` alias and stop reasoning about confirmations as an i64. Cross the RPC integer boundary with each type's `to_rpc_i64` / `try_from_rpc_i64`; `try_from_rpc_i64` rejects an integer that encodes no state (`0` for a block, anything below `-1`, a count past `u32`). Build a best-chain block's state with `BlockConfirmations::of_best_chain_block(height, tip)` instead of writing the depth-plus-one by hand, and recover a boolean with `is_in_best_chain()`."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = "`Height::depth_from(tip)` returns this height's depth below the tip (`tip - self`), or `None` when the height is above the tip — the single home for the tip-minus-height subtraction."
+
