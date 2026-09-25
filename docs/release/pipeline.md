@@ -156,25 +156,24 @@ strings are filled in when the categorization pass runs against the tree. This
 document fixes the **indirection and the rule**, not the final per-test list.
 
 **How a gate reads its suite (the indirection, wired).** A gate never names a
-workflow or a test mode. It requires a **named signal** — a check-run or commit
-status whose context is the suite name (e.g. `rc-gate`, configurable per repo) —
-to be `success` on the commit it is admitting. *Whatever* produces that signal
-is the swappable membership: a `nextest` workflow, an external runner, or a human
-posting a manual attestation all satisfy the same gate identically. Concretely:
-`rc-gate` checks for a green `rc-gate` check/status on `dev` HEAD before
-advancing; the deployment gate runs a **named WorkflowTemplate** whose content is
-the suite. So the gate↔flow-point mapping is fixed in code while the gate↔suite
-mapping is pure configuration — the two concerns never touch.
+workflow or a test mode. Its suite is whatever the branch it admits from
+requires: a commit reaches that branch only through a PR whose required status
+checks passed, so the branch head is green by construction and the gate reads
+no separate signal. *Whatever* produces those checks is the swappable
+membership: a `nextest` workflow, an external runner, or a human-run dispatch
+all satisfy the same requirement identically. Concretely: the `rc`-gate
+advances `rc` to `dev` HEAD unconditionally, because `dev`'s ruleset requires
+the live suite's "Run on cluster" job on every PR; the deployment gate runs a
+**named WorkflowTemplate** whose content is the suite. So the gate↔flow-point
+mapping is fixed in code while the gate↔suite mapping is branch configuration —
+the two concerns never touch. Anything that must not be released is kept off
+`dev`, not filtered at the gate.
 
-**The publishers, wired.** The signal producers exist; the gate still names none
-of them:
+**The publishers, wired.**
 
-- `rc-gate` signal — any producer that posts a `success` check-run/commit-status
-  with context `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the tested
-  commit. **No producer is wired yet** (the gate won't advance without `force`).
-  The anticipated producer is a **cluster job driven by `ztest`** that runs the
-  live suite and posts the status; it lands with no change to the gate. `GITHUB_TOKEN`
-  suffices for whichever producer runs inside Actions — the gate only reads.
+- `rc`-gate suite — the live suite (`live-tests.yaml`, driven by `ztest` on the
+  cluster), a required status check on `dev`. No producer posts a separate
+  signal; the requirement is the signal. `vars.RELMAN_RC_GATE_CHECK` is retired.
 - `release-gate` (deployment) signal — normally the cluster deployment gate posts
   a `deployment_status` back (poller → live-chain WorkflowTemplate). The manual
   path is `deployment-signoff.yml`: a human dispatches `success`/`failure` for an
@@ -187,7 +186,7 @@ of them:
 Which test lands in which suite is decided **here**, never by the runner. The
 runner — `ztest`, a restored self-hosted fleet, or plain CI — is a *scheduler and
 reporter*: it resolves a gate name to a selection this repo defines, executes it,
-and posts the named signal (§ "How a gate reads its suite"). A "gate-aware"
+and reports as a status check (§ "How a gate reads its suite"). A "gate-aware"
 runner is simply one that reads the manifest below; that awareness grants it no
 authority over membership. This is what lets `ztest` give a "simple standard
 answer" (`rc-gate: green`) without owning any policy.
