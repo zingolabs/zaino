@@ -60,6 +60,14 @@ compact-block serving needs. It does **not** force
 `TransactionRead`/`TreestateRead`/etc. onto consumers (those are named
 separately, or passed through).
 
+A composer that merges *other* reads across the same seam — address history
+split at the watermark, spend status asked of the head then the store — reaches
+the two pinned sides through `finalised()` / `non_finalised()` and the split
+point through `watermark()`, so it routes on the coordinates this pin already
+captured rather than re-deriving them. `ChainView::finalised()` likewise
+exposes the store handle for the serviceability manifest. See
+`zaino-store-service` for the composer that does this.
+
 ## Testing
 
 `testing::StubNonFinalised` (behind the `testing` feature) is an in-memory NFS

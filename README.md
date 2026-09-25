@@ -208,7 +208,10 @@ mistakes its design is trying to prevent.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
+- [`zaino-service`](./packages/zaino-service/usage.md): the inner driving surface — profiles as a use case's demand, routing as its per-capability placement, and the three layers of availability.
+- [`zaino-indexes`](./packages/zaino-indexes/usage.md): materialisations as types, and each local capability declared once with the indexes it composes from.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): composes the finalised store and the non-finalised view into one served compact-block snapshot over a watermark-governed seam, and why the initial-build gap is an explicit policy knob.
+- [`zaino-store-service`](./packages/zaino-store-service/usage.md): the composed engine — which provider answers each capability is the use case's routing, checked where the engine is wired.
 
 
 ## Security Vulnerability Disclosure
