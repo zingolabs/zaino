@@ -2,6 +2,7 @@
 [workspace]
 members = [
     "packages/zaino-status",
+    "packages/zaino-async",
     "packages/zaino-component",
     "packages/zaino-consensus",
     "packages/zaino-encoding",
