@@ -1,0 +1,36 @@
+[[changes]]
+crate       = "zaino-proto"
+kind        = "feature"
+description = "New `zaino.index.v1.IndexedTipService` gRPC service with the server-streaming `SubscribeIndexedTips` method and its `SubscribeIndexedTipsRequest` and `IndexedTip` messages, defined separately from the lightwalletd protocol."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "feature"
+description = "Serves `zaino.index.v1.IndexedTipService/SubscribeIndexedTips`, a server-streaming RPC that emits the canonical tip currently readable through the local index immediately, then each tip change (including same-height reorgs), coalescing superseded updates for slow consumers and ending the stream on server or index shutdown."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "breaking"
+description = "`grpc_routes` takes an additional `tokio::sync::watch::Receiver<()>` shutdown argument and now requires the indexer to also implement `IndexedTipIndexer` and `Clone`."
+migration   = "Pass the server's shutdown receiver as the new second argument. `TonicServer::spawn_with_routes` / `spawn_from_listener_with_routes` supply it to the route-builder closure."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "feature"
+description = "`TonicServer::spawn_with_routes` (and, under test, `spawn_from_listener_with_routes`) build the route set from a closure handed the server's shutdown receiver, letting a streaming service terminate its streams when the server closes."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "feature"
+description = "New `IndexedTipIndexer` trait and `IndexedTipStream` type for subscribing to the canonical tip currently readable through the local index: the stream starts with the present tip and follows it with latest-state changes."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "breaking"
+description = "`ZcashService::Subscriber` now additionally requires `IndexedTipIndexer`."
+migration   = "Implement `IndexedTipIndexer` for the subscriber type of any external `ZcashService` implementation."
+
+[[changes]]
+crate       = "zainod"
+kind        = "feature"
+description = "The running indexer serves the `IndexedTipService/SubscribeIndexedTips` streaming RPC on the gRPC endpoint alongside the lightwalletd services."

@@ -1,0 +1,48 @@
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "TreeSize is a checked u32-backed newtype, replacing the former `type TreeSize = u64` alias. The tree-size fields of TreeRootInfo, BlockTreeSizes and ChainMetadata now carry it. A size is built with `TreeSize::from(u32)` or `TreeSize::try_from(u64)`; a value past the wire/storage u32 range is rejected with TreeSizeOutOfRange instead of a full depth-32 tree being silently truncated to zero."
+migration   = "Replace u64 tree-size literals and arithmetic with TreeSize: `TreeSize::from(count)` for a u32 count known to fit, or `TreeSize::try_from(count)?` at an ingest boundary that receives a u64. Read a stored size back with `u32::from(size)` or `u64::from(size)`."
+issues      = ["#549"]
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = "ChainMetadata gains `ZERO` (every pool size zero) and `new(sapling, orchard, ironwood)`, which accept anything `Into<TreeSize>` (a `u32` or a `TreeSize`), collapsing the per-field construction boilerplate at call sites."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "The 32-byte `ChainWork` type is removed. Proof-of-work is carried by two distinct quantities: `AbsoluteChainWork`, the total work of a chain up to a block (ordered, strictly positive), and `SingleBlockWork`, one block's expected work, combined by the checked `genesis` / `accumulate` / `rollback` fold operations. The chainwork fields of the RPC block-header, blockchain-info and verbose-block types are now `Option<AbsoluteChainWork>`."
+migration   = "Replace `ChainWork` with `AbsoluteChainWork` for a chain total, or `SingleBlockWork` for one block's work. Seed a total with `AbsoluteChainWork::genesis` and extend or unwind it with `accumulate` / `rollback`; an absent total is `Option<AbsoluteChainWork>`, never a zero."
+
+[[changes]]
+crate       = "zaino-chain-store"
+kind        = "breaking"
+description = "`StoredBlock.chainwork` is now `AbsoluteChainWork` instead of the removed `ChainWork`."
+migration   = "Read the field as `AbsoluteChainWork`."
+
+[[changes]]
+crate       = "zaino-source"
+kind        = "internal"
+description = "Zeroed chain metadata at the source boundary is built with `ChainMetadata::ZERO`. No observable change."
+
+[[changes]]
+crate       = "zaino-source-zebra-rpc"
+kind        = "internal"
+description = "The JSON-RPC parse layer carries note-commitment tree sizes as the checked `TreeSize`; a reported size past the u32 range is refused at parse rather than truncated later. No observable change on well-formed replies."
+
+[[changes]]
+crate       = "zaino-source-zebra-readstate"
+kind        = "internal"
+description = "The ReadState adapter builds TreeRootInfo sizes through the checked `TreeSize`."
+
+[[changes]]
+crate       = "zaino-chain-store-zainodb"
+kind        = "internal"
+description = "Tree sizes are adapted to the `TreeSize` newtype at the store boundary. The on-disk u32 tree-size column format is unchanged."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "internal"
+description = "Chain-index construction is adapted to the `TreeSize` newtype and `ChainMetadata::{ZERO, new}`. The ascending and descending compact-block streams share a single `wire_chunk` flattening helper."

@@ -23,11 +23,7 @@ AbsoluteChainWork or Option<AbsoluteChainWork> (default).
 - StoredBlockRead answers from the v1 backend only.
 - On-disk format unchanged.
 """
-migration   = """
-- BlockContext::new and conversion::indexed_block take the chainwork in either form.
-- indexed_block_from_stored yields IndexedBlock<AbsoluteChainWork>; widen with map_chainwork(Some).
-- Chain-head blocks carry None and do not type-check against the writer.
-"""
+migration = "BlockContext::new and conversion::indexed_block take the chainwork in either form. indexed_block_from_stored yields IndexedBlock<AbsoluteChainWork>; widen with map_chainwork(Some). Chain-head blocks carry None and do not type-check against the writer."
 
 [[changes]]
 crate       = "zaino-chain-head-service"
