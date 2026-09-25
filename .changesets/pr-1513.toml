@@ -9,22 +9,3 @@ crate       = "zaino-primitives"
 kind        = "feature"
 description = "`Height::depth_from(tip)` returns this height's depth below the tip (`tip - self`), or `None` when the height is above the tip — the single home for the tip-minus-height subtraction."
 
-[[changes]]
-crate       = "zaino-serve"
-kind        = "internal"
-description = "The JSON-RPC block, block-header, and tx-out wire renderers convert the now-typed confirmation state through its `to_rpc_i64` codec. The emitted integer is unchanged."
-
-[[changes]]
-crate       = "zaino-source-zebra-readstate"
-kind        = "internal"
-description = "The read-state adapter builds a block's confirmation state through `BlockConfirmations::of_best_chain_block`. The served value is unchanged."
-
-[[changes]]
-crate       = "zaino-source-zebra-rpc"
-kind        = "internal"
-description = "The `confirmations` field of parsed block, block-header, and tx-out replies is validated through the typed confirmation codec (new internal `ParseError::Confirmations`); a validator integer that encodes no state now fails the parse instead of flowing through as a raw number. Well-formed replies are unaffected."
-
-[[changes]]
-crate       = "zaino-state"
-kind        = "internal"
-description = "Call sites in the validator source and the node-backed indexer adapt to the typed confirmation state, rendering through its RPC codec at the zebra sink boundary; the mock source builds it through the new constructor. No served behaviour changes."

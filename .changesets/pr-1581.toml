@@ -23,7 +23,3 @@ crate       = "zaino-source-zebra-readstate"
 kind        = "fix"
 description = "`getblockchaininfo` on the read-state backend reports every value pool — `transparent`, `sprout`, `sapling`, `orchard`, `lockbox` and `ironwood` — instead of only `sprout`, `sapling` and `orchard`, so an omitted pool no longer reads as empty (the `ironwood` pool appeared to hold nothing across NU6.3 activation). `chainSupply` is now the total over every pool rather than the transparent balance."
 
-[[changes]]
-crate       = "zaino-source-zebra-rpc"
-kind        = "internal"
-description = "Comment-only update to the treestate parse path documenting why `finalRoot` is not read back from the validator reply. No behavioural change."

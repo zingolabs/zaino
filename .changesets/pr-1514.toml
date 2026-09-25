@@ -20,17 +20,3 @@ kind        = "breaking"
 description = "`GetAddressDeltasParams::into_domain` is now fallible, returning `Result<AddressDeltasRequest, GetAddressDeltasError>` (a new public error type), because it parses the client's address strings."
 migration   = "Handle the `Result` at the call site; a request carrying an invalid transparent address is now an error rather than a silently-wrapped string."
 
-[[changes]]
-crate       = "zaino-source-zebra-readstate"
-kind        = "internal"
-description = "The read-state adapter constructs transparent addresses through the validating `TransparentAddress::try_new`; a malformed validator-derived address now surfaces as a parse failure. Well-formed responses are unaffected."
-
-[[changes]]
-crate       = "zaino-source-zebra-rpc"
-kind        = "internal"
-description = "Reply parsing constructs transparent addresses through the validating `TransparentAddress::try_new` (new internal `ParseError::Address`); a malformed address in a validator reply now fails the parse instead of entering the domain unchecked. Well-formed replies are unaffected."
-
-[[changes]]
-crate       = "zaino-state"
-kind        = "internal"
-description = "Test-only: the mock source and its tests construct transparent addresses through `TransparentAddress::try_new`."

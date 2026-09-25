@@ -78,35 +78,3 @@ kind        = "breaking"
 description = "BlockConversionError gains a TxPositionOverflow variant. Block conversion derives each transaction's stored index from its block-order position (the domain Transaction no longer stores one), and refuses rather than truncates a position that does not fit the stored u64 width."
 migration   = "Match the new BlockConversionError::TxPositionOverflow variant."
 
-[[changes]]
-crate       = "zaino-chain-store-zainodb"
-kind        = "internal"
-description = "A stored per-pool value balance read back from disk is validated through the checked signed-value door, surfacing an out-of-range value as a corrupt row instead of carrying it into the domain. The on-disk format is unchanged."
-
-# zaino-chain-head-service
-
-[[changes]]
-crate       = "zaino-chain-head-service"
-kind        = "internal"
-description = "A transaction's position is read from the order of the block's transactions rather than from a per-transaction index, following the removal of Transaction.index. Served positions are unchanged."
-
-# zaino-source-zebra-rpc
-
-[[changes]]
-crate       = "zaino-source-zebra-rpc"
-kind        = "internal"
-description = "Adapts to the primitives quantity changes: a parsed AddressBalance received total lands in ZatoshisFlowSum through its boundary door and is no longer rejected when large, and parsed signed amounts go through the checked SignedZatoshis::try_new. No public surface change."
-
-# zaino-source-zebra-readstate
-
-[[changes]]
-crate       = "zaino-source-zebra-readstate"
-kind        = "internal"
-description = "Adapts to the primitives quantity changes: an AddressBalance received total from the state service lands in ZatoshisFlowSum through its boundary door, and signed amounts go through the checked SignedZatoshis::try_new. No public surface change."
-
-# zaino-state
-
-[[changes]]
-crate       = "zaino-state"
-kind        = "internal"
-description = "Adapts to the primitives quantity changes: the transparent-balance stream folds per-address balances with a checked sum and reports an impossible total as an error instead of an unchecked add, and mempool transaction conversion drops the removed index argument. No public surface change."

@@ -1,30 +1,5 @@
 [[changes]]
-crate       = "zainod"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-serve"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-state"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-proto"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
 crate       = "zaino-common"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-primitives"
 kind        = "internal"
 description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
 
@@ -34,47 +9,12 @@ kind        = "internal"
 description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
 
 [[changes]]
-crate       = "zaino-source"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-rpc"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-convert-zebra"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-source-zebra-rpc"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-source-zebra-readstate"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
 crate       = "zaino-source-zebra"
 kind        = "internal"
 description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
 
 [[changes]]
-crate       = "zaino-consensus"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
 crate       = "zaino-mempool"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-mempool-service"
 kind        = "internal"
 description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
 
@@ -90,26 +30,6 @@ description = "The packaged manifest carries the crates.io metadata `readme`, `k
 
 [[changes]]
 crate       = "zaino-source-macros"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-chain-head"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-chain-head-service"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-chain-store"
-kind        = "internal"
-description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
-
-[[changes]]
-crate       = "zaino-chain-store-zainodb"
 kind        = "internal"
 description = "The packaged manifest carries the crates.io metadata `readme`, `keywords` and `categories` from the workspace. No code change."
 

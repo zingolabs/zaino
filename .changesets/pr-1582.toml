@@ -22,27 +22,3 @@ kind        = "breaking"
 description = "`StoredBlock.chainwork` is now `AbsoluteChainWork` instead of the removed `ChainWork`."
 migration   = "Read the field as `AbsoluteChainWork`."
 
-[[changes]]
-crate       = "zaino-source"
-kind        = "internal"
-description = "Zeroed chain metadata at the source boundary is built with `ChainMetadata::ZERO`. No observable change."
-
-[[changes]]
-crate       = "zaino-source-zebra-rpc"
-kind        = "internal"
-description = "The JSON-RPC parse layer carries note-commitment tree sizes as the checked `TreeSize`; a reported size past the u32 range is refused at parse rather than truncated later. No observable change on well-formed replies."
-
-[[changes]]
-crate       = "zaino-source-zebra-readstate"
-kind        = "internal"
-description = "The ReadState adapter builds TreeRootInfo sizes through the checked `TreeSize`."
-
-[[changes]]
-crate       = "zaino-chain-store-zainodb"
-kind        = "internal"
-description = "Tree sizes are adapted to the `TreeSize` newtype at the store boundary. The on-disk u32 tree-size column format is unchanged."
-
-[[changes]]
-crate       = "zaino-state"
-kind        = "internal"
-description = "Chain-index construction is adapted to the `TreeSize` newtype and `ChainMetadata::{ZERO, new}`. The ascending and descending compact-block streams share a single `wire_chunk` flattening helper."

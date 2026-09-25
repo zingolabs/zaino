@@ -1,5 +1,2 @@
-[[changes]]
-crate       = "zaino-chain-head-service"
-kind        = "internal"
-description = "The \"graph contains its own tip\" lookup is routed through a single internal `tip_block` accessor rather than re-asserted at each call site. No externally observable change."
-issues      = ["#1482"]
+[empty]
+reason = "Internal refactor of zaino-chain-head-service: the tip lookup is routed through one accessor; no observable change."

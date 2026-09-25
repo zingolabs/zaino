@@ -33,32 +33,3 @@ kind        = "breaking"
 description = "Difficulty is now validated once, by the primitives type the block header carries, rather than again at store conversion. The `conversion::block_work` free function and the `BlockConversionError::InvalidDifficulty` variant are removed, `conversion::chainwork_from_parent` takes a `CompactDifficulty` (previously a raw `u32`), and `BlockData::bits()` returns the value by copy instead of by reference. `CompactDifficulty` and `CompactDifficultyError` are re-exported from zaino-primitives in place of the former store-local types. The on-disk format is unchanged."
 migration   = "Compute a block's work from `header.bits.to_work()` instead of the removed `block_work`. Drop handling of the removed `InvalidDifficulty` variant. Pass a `CompactDifficulty` to `chainwork_from_parent`, and use the value returned by `BlockData::bits()` directly."
 
-[[changes]]
-crate       = "zaino-serve"
-kind        = "internal"
-description = "The JSON-RPC block-header and block-deltas wire builders read the header's validated difficulty through `as_bits`; the rendered hex output is unchanged."
-
-[[changes]]
-crate       = "zaino-source-zebra-rpc"
-kind        = "internal"
-description = "The Zebra JSON-RPC block parser yields a validated CompactDifficulty and rejects a malformed nBits at parse time. Adaptation to the primitives type; no change to this crate's public API."
-
-[[changes]]
-crate       = "zaino-source-zebra-readstate"
-kind        = "internal"
-description = "The GetBlockDeltas adapter constructs the validated CompactDifficulty at the readstate boundary. Adaptation to the primitives type; no public API change."
-
-[[changes]]
-crate       = "zaino-source"
-kind        = "internal"
-description = "Test-only: test blocks build their difficulty through the CompactDifficulty newtype."
-
-[[changes]]
-crate       = "zaino-chain-head-service"
-kind        = "internal"
-description = "The chain-head advance takes each block's work from the header's validated difficulty (`bits.to_work()`) and no longer depends on zaino-consensus."
-
-[[changes]]
-crate       = "zaino-state"
-kind        = "internal"
-description = "Compact-transaction proto builders read the fixed 52-byte ciphertext directly, and mock and test sources build the validated CompactDifficulty at their boundaries."
