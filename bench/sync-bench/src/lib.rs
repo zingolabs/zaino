@@ -21,7 +21,7 @@ use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_core::BlockRef;
 use zaino_indexer::{CompactBlocks, FetchConcurrency, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{
-    context_from_pre_index_compact_block, index_set, CurrentZainoContext,
+    context_from_pre_index_compact_block, index_set, CurrentZaino, CurrentZainoContext,
 };
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
@@ -437,7 +437,7 @@ fn attribute(ceiling: f64, end_to_end: f64) -> Attribution {
 /// compose-on-read path, confirming it serves composed compact blocks whose
 /// cumulative tree sizes never decrease across the window.
 pub async fn verify(backend: &LmdbBackend, from: Height, to: Height) -> Result<(), BoxError> {
-    let reader = StoreReader::new(Arc::new(backend.clone()));
+    let reader = StoreReader::<_, CurrentZaino>::new(Arc::new(backend.clone()));
     let snapshot = reader.snapshot().await.map_err(|e| e.to_string())?;
 
     // Up to `SAMPLES` evenly-spaced heights across the window; the endpoints are

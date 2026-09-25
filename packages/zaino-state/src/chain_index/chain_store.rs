@@ -49,13 +49,12 @@ pub trait WithChainStoreSource: BlockchainSource {
 /// `ChainIndexSourcePorts` names what ChainIndex asks — which includes the
 /// *raw* block ports, because it hands bytes to callers — and supplies
 /// `GetTransaction`, which only the store's passthrough mode needs.
-/// `ChainHeadBlockSource` supplies the parsed block reads. Naming the second
-/// here is not a chain-head dependency: it is the shortest way to say "this
-/// validator parses blocks", and the store's own requirement is stated by
-/// [`ChainStoreSource`], which the compiler checks this satisfies.
+/// [`ChainStoreSource`] is the store's own statement of what it asks of a
+/// validator — the single-attempt block ports, since the store runs its own
+/// ingest loop over them.
 impl<V> WithChainStoreSource for ValidatorSource<V>
 where
-    V: ChainIndexSourcePorts + zaino_chain_head::ChainHeadBlockSource,
+    V: ChainIndexSourcePorts + ChainStoreSource,
 {
     type Store = V;
 

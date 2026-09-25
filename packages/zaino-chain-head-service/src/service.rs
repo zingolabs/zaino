@@ -123,17 +123,17 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// same published cell and status the writer publishes into, so it observes
     /// every later advance without holding the writer.
     ///
-    /// `cancel` governs only the anchoring retry here; the run loop is cancelled
-    /// through the token its `RunComponent` hands [`RunLoop::run`]. Pass a token
-    /// that is a *child* of the runtime's, so runtime shutdown reaches anchoring.
+    /// Anchoring is one attempt against a source that has already retried:
+    /// the bound is over the canonical ports, so transience was handled below,
+    /// and there is nothing here to cancel. The run loop is cancelled through
+    /// the token its `RunComponent` hands [`RunLoop::run`].
     #[instrument(name = "ChainHeadService::anchor", skip_all, fields(max_depth = config.max_depth()))]
     pub async fn anchor(
         source: Arc<S>,
         config: ChainHeadConfig,
         confirmed_watermark: watch::Receiver<Option<Height>>,
-        cancel: CancellationToken,
     ) -> Result<(ChainHeadSubscriber, Self), ChainHeadInitError> {
-        let writer = Self::anchored(source, config, confirmed_watermark, &cancel).await?;
+        let writer = Self::anchored(source, config, confirmed_watermark).await?;
         let subscriber = writer.subscriber();
         Ok((subscriber, writer))
     }
@@ -153,10 +153,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         source: Arc<S>,
         config: ChainHeadConfig,
         confirmed_watermark: watch::Receiver<Option<Height>>,
-        cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
         Ok(Arc::new(
-            Self::anchored(source, config, confirmed_watermark, &cancel).await?,
+            Self::anchored(source, config, confirmed_watermark).await?,
         ))
     }
 
@@ -176,11 +175,12 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         source: Arc<S>,
         config: ChainHeadConfig,
         confirmed_watermark: watch::Receiver<Option<Height>>,
-        cancel: &CancellationToken,
     ) -> Result<Self, ChainHeadInitError> {
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
-        let snapshot = anchor_with_retry(&source, &config, cancel).await?;
+        let snapshot = anchor(&source, &config)
+            .await
+            .map_err(ChainHeadInitError::Anchor)?;
         info!(
             height = u32::from(snapshot.best_tip().height),
             hash = %snapshot.best_tip().hash,
@@ -576,11 +576,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         self.source
             .get_commitment_tree_roots(hash)
             .await
-            .map_err(|error| {
-                ChainHeadAdvanceError::InconsistentSource(format!(
-                    "tree roots for block {hash}: {error}"
-                ))
-            })
+            .map_err(|error| ChainHeadAdvanceError::from_source("get_commitment_tree_roots", error))
     }
 
     /// Resolve the chain head's anchor (root) block at `anchor_height`.
@@ -612,7 +608,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             .source
             .get_chain_tip()
             .await
-            .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
+            .map_err(|error| ChainHeadAdvanceError::from_source("get_chain_tip", error))?;
         Ok(BlockRef { hash, height })
     }
 
@@ -628,13 +624,13 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             // rather than a wildcard so a future second domain variant breaks
             // the build here — the one site that must reclassify it — instead
             // of being silently read as end-of-chain.
-            Err(zaino_source::QueryError::Domain(zaino_source::GetBlockError::HeightNotFound(
-                missing,
-            ))) => {
+            Err(zaino_source::SourceError::Domain(
+                zaino_source::GetBlockError::HeightNotFound(missing),
+            )) => {
                 debug!(height = %missing, "block_at_height: source reports no block; treating as absent");
                 Ok(None)
             }
-            Err(error) => Err(ChainHeadAdvanceError::SourceUnavailable(error.to_string())),
+            Err(error) => Err(ChainHeadAdvanceError::from_source("get_block", error)),
         }
     }
 
@@ -648,13 +644,16 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             // Absent, not failed. Matched by name, not a wildcard, so a future
             // second domain variant is caught by the compiler here rather than
             // silently reclassified as absent.
-            Err(zaino_source::QueryError::Domain(zaino_source::GetBlockByHashError::NotFound(
-                missing,
-            ))) => {
+            Err(zaino_source::SourceError::Domain(
+                zaino_source::GetBlockByHashError::NotFound(missing),
+            )) => {
                 debug!(hash = %missing, "block_at_hash: source reports no block; treating as absent");
                 Ok(None)
             }
-            Err(error) => Err(ChainHeadAdvanceError::SourceUnavailable(error.to_string())),
+            Err(error) => Err(ChainHeadAdvanceError::from_source(
+                "get_block_by_hash",
+                error,
+            )),
         }
     }
 }
@@ -674,23 +673,26 @@ impl<S: ChainHeadBlockSource> RunLoop for ChainHeadService<S> {
 
     /// The writer loop.
     ///
-    /// The loop ChainIndex's sync worker ran for the non-finalised state, with
-    /// the same backoff ladder, reshaped as a supervised [`RunLoop`]: it reports
-    /// `Ready` on its first successful advance (the first moment the published
-    /// snapshot matches the validator tip), reports progress as the tip advances,
-    /// and runs until `cancel`. A clean cancellation returns `Ok(())` (the
-    /// component settles `Offline`); giving up on the validator after
-    /// `max_consecutive_failures` returns the last error as `Err` (the component
-    /// flips `Critical` and the Orchestra escalates), rather than silently
-    /// parking on a stale snapshot.
+    /// The loop ChainIndex's sync worker ran for the non-finalised state,
+    /// reshaped as a supervised [`RunLoop`]: it reports `Ready` on its first
+    /// successful advance (the first moment the published snapshot matches the
+    /// validator tip), reports progress as the tip advances, and runs until
+    /// `cancel`. A clean cancellation returns `Ok(())` (the component settles
+    /// `Offline`).
+    ///
+    /// A failed advance is reported as `RecoverableError` and retried on the
+    /// next poll — not backed off and not counted. The source has already
+    /// retried under the client's policy, so what reaches here is either the
+    /// validator genuinely down, which the runtime's validator supervision
+    /// owns, or a transient reorg-race the next tick resolves. The loop never
+    /// gives up on its own: the last published snapshot stays served, with a
+    /// status saying it is stale.
     async fn run(
         self: Arc<Self>,
         cancel: CancellationToken,
         reporter: RunReporter,
     ) -> Result<(), ChainHeadAdvanceError> {
         let mut wake = self.source.subscribe_to_blocks_received();
-        let mut backoff = self.config.initial_backoff();
-        let mut consecutive_failures = 0u32;
         let mut announced_ready = false;
 
         loop {
@@ -710,8 +712,6 @@ impl<S: ChainHeadBlockSource> RunLoop for ChainHeadService<S> {
 
             match iteration {
                 Ok(()) => {
-                    consecutive_failures = 0;
-                    backoff = self.config.initial_backoff();
                     // The first successful advance is the ready condition: the
                     // window now reaches the validator tip. `Ready` on the
                     // status cell is already published from inside `tick`; this
@@ -731,23 +731,15 @@ impl<S: ChainHeadBlockSource> RunLoop for ChainHeadService<S> {
                     }
                 }
                 Err(error) => {
-                    consecutive_failures += 1;
-                    if consecutive_failures >= self.config.max_consecutive_failures() {
-                        warn!(
-                            %error,
-                            attempts = consecutive_failures,
-                            "ChainHead giving up on the validator; last published snapshot is now stale",
-                        );
-                        self.status.apply(|s| next_status(s, TickOutcome::GaveUp));
-                        return Err(error);
-                    }
-                    warn!(%error, attempts = consecutive_failures, "ChainHead failed to advance; retrying");
-                    self.status.apply(|s| next_status(s, TickOutcome::Retrying));
-                    if sleep_or_cancel(backoff, &cancel).await.is_break() {
+                    warn!(%error, "ChainHead failed to advance; last published snapshot stays served until the next poll");
+                    self.status.apply(|s| next_status(s, TickOutcome::Failed));
+                    if sleep_or_cancel(self.config.poll_interval(), &cancel)
+                        .await
+                        .is_break()
+                    {
                         self.status.store(StatusType::Closing);
                         return Ok(());
                     }
-                    backoff = (backoff * 2).min(self.config.max_backoff());
                 }
             }
         }
@@ -759,10 +751,9 @@ impl<S: ChainHeadBlockSource> RunLoop for ChainHeadService<S> {
 enum TickOutcome {
     /// The snapshot now matches the validator tip read this iteration.
     Advanced,
-    /// The advance failed and the backoff ladder will retry it.
-    Retrying,
-    /// The advance failed `max_consecutive_failures` times and the writer is exiting.
-    GaveUp,
+    /// The advance failed; the published snapshot is stale until the next poll
+    /// succeeds.
+    Failed,
 }
 
 /// The chain head's status transition rule, pure and total so its invariants
@@ -773,8 +764,7 @@ fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
         // iteration must stay observable on every handle.
         (StatusType::Closing, _) => StatusType::Closing,
         (_, TickOutcome::Advanced) => StatusType::Ready,
-        (_, TickOutcome::Retrying) => StatusType::RecoverableError,
-        (_, TickOutcome::GaveUp) => StatusType::CriticalError,
+        (_, TickOutcome::Failed) => StatusType::RecoverableError,
     }
 }
 
@@ -813,41 +803,8 @@ fn chain_head_block(
     })
 }
 
-/// Anchors the graph, retrying transient source failures.
-async fn anchor_with_retry<S: ChainHeadBlockSource>(
-    source: &Arc<S>,
-    config: &ChainHeadConfig,
-    cancel: &CancellationToken,
-) -> Result<MapBackedSnapshot, ChainHeadInitError> {
-    let mut backoff = config.initial_backoff();
-    let mut failures = 0u32;
-
-    loop {
-        if cancel.is_cancelled() {
-            return Err(ChainHeadInitError::Cancelled);
-        }
-
-        match anchor(source, config).await {
-            Ok(snapshot) => return Ok(snapshot),
-            Err(error) => {
-                failures += 1;
-                if failures >= config.max_consecutive_failures() {
-                    return Err(ChainHeadInitError::SourceUnavailable {
-                        attempts: failures,
-                        source: error,
-                    });
-                }
-                warn!(%error, attempt = failures, "ChainHead anchoring failed; retrying");
-                if sleep_or_cancel(backoff, cancel).await.is_break() {
-                    return Err(ChainHeadInitError::Cancelled);
-                }
-                backoff = (backoff * 2).min(config.max_backoff());
-            }
-        }
-    }
-}
-
-/// One attempt at anchoring: the block at `tip - depth`, alone.
+/// Anchoring: the block at `tip - depth`, alone, in one attempt against a
+/// source that has already retried.
 ///
 /// The writer task extends from here one block at a time, exactly as before.
 async fn anchor<S: ChainHeadBlockSource>(
@@ -857,18 +814,18 @@ async fn anchor<S: ChainHeadBlockSource>(
     let (_, tip_height) = source
         .get_chain_tip()
         .await
-        .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
+        .map_err(|error| ChainHeadAdvanceError::from_source("get_chain_tip", error))?;
 
     let anchor_height = height_below(tip_height, config.max_depth());
 
     let block = source
         .get_block(anchor_height)
         .await
-        .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
+        .map_err(|error| ChainHeadAdvanceError::from_source("get_block", error))?;
     let tree_roots = source
         .get_commitment_tree_roots(block.header.hash)
         .await
-        .map_err(|error| ChainHeadAdvanceError::InconsistentSource(error.to_string()))?;
+        .map_err(|error| ChainHeadAdvanceError::from_source("get_commitment_tree_roots", error))?;
 
     Ok(MapBackedSnapshot::from_initial_block(chain_head_block(
         block,
@@ -1005,11 +962,7 @@ impl Block for BranchBlock {
 mod next_status_rule {
     use super::{next_status, StatusType, TickOutcome};
 
-    const OUTCOMES: [TickOutcome; 3] = [
-        TickOutcome::Advanced,
-        TickOutcome::Retrying,
-        TickOutcome::GaveUp,
-    ];
+    const OUTCOMES: [TickOutcome; 2] = [TickOutcome::Advanced, TickOutcome::Failed];
 
     /// No outcome may overwrite `Closing`, so a shutdown stays observable.
     #[test]
@@ -1041,12 +994,8 @@ mod next_status_rule {
                 StatusType::Ready
             );
             assert_eq!(
-                next_status(current, TickOutcome::Retrying),
+                next_status(current, TickOutcome::Failed),
                 StatusType::RecoverableError
-            );
-            assert_eq!(
-                next_status(current, TickOutcome::GaveUp),
-                StatusType::CriticalError
             );
         }
     }

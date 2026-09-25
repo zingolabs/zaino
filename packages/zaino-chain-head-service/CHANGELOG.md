@@ -9,8 +9,20 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- The chain head no longer retries on its own. Anchoring is one attempt and
+  the writer reports a failed advance as `RecoverableError` and tries again on
+  the next poll; the `ValidatorClient` it is handed has already retried
+  transient failures. It never escalates to `CriticalError` by itself.
+- `ChainHeadAdvanceError` carries the source failure as a typed `#[source]`
+  cause: `Unavailable` (retries spent), `Transport` (not retryable) or
+  `Rejected { query, source }` (an unexpected domain answer), replacing the
+  stringified `SourceUnavailable`.
+- `ChainHeadService::anchor` and `spawn_without_writer` no longer take a
+  cancellation token; there is nothing to cancel during a single attempt.
 ### Deprecated
 ### Removed
+- `ChainHeadInitError::SourceUnavailable { attempts, .. }` and `Cancelled`;
+  anchoring failure is `ChainHeadInitError::Anchor(cause)`.
 ### Fixed
 
 ## [0.1.0] - 2026-08-28

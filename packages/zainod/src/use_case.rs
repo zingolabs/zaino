@@ -23,13 +23,74 @@
 //! Config selects a use case from a closed set; it does not shape one. What a
 //! use case *is* stays static.
 
+use zaino_chain_head::ChainHeadBlockSource;
+use zaino_indexer::CompactSource;
 use zaino_indexes::materialisation::Materialisation;
 use zaino_indexes::sets::current_zaino::CurrentZainoContext;
 use zaino_indexes::sets::light_wallet::LightWallet as LightWalletIndexes;
 use zaino_service::routing::{LightRouting, Routing};
 use zaino_service::{ChainSegment, CompactBlockRead, LightServeService, TakeSnapshot};
+use zaino_source::{
+    GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos,
+    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction,
+    GetSubtreeRoots, GetTransaction, GetTreestate, SendRawTransaction,
+};
 use zaino_store::StoreReader;
 use zaino_store_service::Composed;
+
+/// What this daemon needs of any validator to boot at all, as one name: the
+/// chain head's source port and the compact-block indexer's, both over the
+/// **canonical** (resilient) ports — the daemon hands every consumer the same
+/// `ValidatorClient` over one shared validator, so no consumer, and no bound
+/// here, names a single-attempt port.
+///
+/// A new validator adapter implements the one-shot ports it can; the client
+/// over it satisfies this exactly when those cover what the chain head and the
+/// indexer ask, and a use case's `…Source` bundle names what else that use
+/// case sends through.
+pub trait DaemonSource: ChainHeadBlockSource + CompactSource + Clone {}
+impl<S> DaemonSource for S where S: ChainHeadBlockSource + CompactSource + Clone {}
+
+/// What the light-wallet use case requires of the validator, as one name: the
+/// daemon floor plus every port its routing's remote placements and the
+/// always-remote reads relay through.
+///
+/// Hand-kept beside the use case rather than derived, because Rust cannot
+/// compute "the union of the source bounds of the impls this routing selects".
+/// Safe to be wrong in one direction: a port missing here fails the profile
+/// bound at the wiring, naming it.
+pub trait LightWalletSource:
+    DaemonSource
+    + SendRawTransaction
+    + GetMempoolTxids
+    + GetMempoolSourceTip
+    + GetRawMempoolTransaction
+    + GetMempoolCompactTransaction
+    + GetTransaction
+    + GetTreestate
+    + GetSubtreeRoots
+    + GetAddressBalance
+    + GetAddressUtxos
+    + GetAddressTxids
+    + GetAddressDeltas
+{
+}
+impl<S> LightWalletSource for S where
+    S: DaemonSource
+        + SendRawTransaction
+        + GetMempoolTxids
+        + GetMempoolSourceTip
+        + GetRawMempoolTransaction
+        + GetMempoolCompactTransaction
+        + GetTransaction
+        + GetTreestate
+        + GetSubtreeRoots
+        + GetAddressBalance
+        + GetAddressUtxos
+        + GetAddressTxids
+        + GetAddressDeltas
+{
+}
 
 /// A deployment shape: its routing and its materialisation, bound together.
 pub trait UseCase: 'static {

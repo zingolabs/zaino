@@ -34,7 +34,6 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot as _};
 use zaino_chain_head_service::ChainHeadService;
@@ -274,7 +273,7 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
 async fn build_non_finalised_head(
     tip: u32,
     max_depth: u32,
-) -> Arc<ChainHeadService<OfflineValidator>> {
+) -> Arc<ChainHeadService<ValidatorClient<Arc<OfflineValidator>>>> {
     let validator = OfflineValidator::linear(tip);
     let config = ChainHeadConfig::with_max_depth(
         NonZeroU32::new(max_depth).expect("demo max_depth is not zero"),
@@ -283,11 +282,15 @@ async fn build_non_finalised_head(
     // confirmed nothing: it retains everything down to its anchor and never
     // trims a height the (absent) finalised side cannot serve.
     let (_confirmed, confirmed_watermark) = watch::channel::<Option<Height>>(None);
+    // The head binds the canonical ports, so the offline validator goes behind
+    // the same client production uses; nothing here retries on its own.
     let head = ChainHeadService::spawn_without_writer(
-        Arc::new(validator),
+        Arc::new(ValidatorClient::new(
+            Arc::new(validator),
+            RetryPolicy::default(),
+        )),
         config,
         confirmed_watermark,
-        CancellationToken::new(),
     )
     .await
     .expect("offline validator is reachable, so the head anchors");

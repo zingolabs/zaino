@@ -890,7 +890,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                     .expect("the operational chain-head depth derives from a non-zero reorg bound"),
             ),
             confirmed_watermark,
-            cancel_token.child_token(),
         )
         .await
         .map_err(crate::InitError::ChainHeadInitialisationError)?;

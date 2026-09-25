@@ -52,9 +52,17 @@ the process's life — there is no "not ready yet" case for any read path to
 handle.
 
 Once running it does not fail. A validator that becomes unreachable leaves the
-last published snapshot in place and moves the status to `RecoverableError`,
-then to `CriticalError` once `max_consecutive_failures` is spent. Stale data with
-a status saying it is stale is more useful than no data.
+last published snapshot in place, moves the status to `RecoverableError`, and
+is asked again on the next poll. Stale data with a status saying it is stale is
+more useful than no data, and the chain head never escalates to `CriticalError`
+on its own: whether a validator that stays down takes the process down is the
+runtime's validator supervision to decide, not this component's.
+
+There is no retry ladder here, by design. The chain head binds the canonical
+`zaino-source` ports, which only a `ValidatorClient` answers, and that client
+has already retried transient failures under its own `RetryPolicy` before the
+chain head sees an error. Anchoring is likewise one attempt: an error there is
+the ladder already spent. One place decides how hard a validator is retried.
 
 Callers wanting readiness poll `status()`, on either handle. There is
 deliberately no `wait_until_ready`.
@@ -106,7 +114,10 @@ not.
 
 **Running** — `spawn` the real service against a mock source and observe through
 the subscriber with a bounded `wait_for(predicate)`. Use this when the writer
-task, the wake handling or the backoff ladder is the thing under test.
+task or the wake handling is the thing under test. Either way the mock source
+goes behind a `ValidatorClient` with a fast `RetryPolicy`, exactly as
+production wires it; a test that wants "the validator was briefly down" injects
+failures into the mock and lets the client absorb them.
 
 Reach for stepped first. A running test that polls for a condition is slower and
 can pass for the wrong reason.

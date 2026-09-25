@@ -55,15 +55,26 @@ use crate::snapshot::ChainHeadSnapshot;
 /// so a source offering no push path is served correctly by the poll interval
 /// alone.
 ///
+/// # The query ports are the resilient ones
+///
+/// ChainHead binds the **canonical** ports ([`GetBlock`](zaino_source::GetBlock),
+/// …), whose error carries
+/// [`SourceError::Unavailable`](zaino_source::SourceError::Unavailable) — "the
+/// validator was unreachable and the retry ladder is spent". Those ports are
+/// sealed to [`ValidatorClient`](zaino_source::ValidatorClient), so the source a
+/// ChainHead is given has provably already handled transience, and the runtime
+/// holds no retry ladder of its own: a failure it sees is terminal for that
+/// tick, not "try again".
+///
 /// Deliberately not `Clone`: a source may own connections and a database handle
-/// that must not be duplicated. The runtime shares one behind an `Arc` instead,
-/// which is why `zaino_source_zebra::ZebraValidator` — which is not `Clone` —
-/// satisfies this bound directly rather than through a wrapper.
+/// that must not be duplicated. The runtime shares one behind an `Arc`, and the
+/// client forwards through it — a `ValidatorClient<Arc<V>>` satisfies this
+/// bound over a validator shared with every other consumer.
 pub trait ChainHeadBlockSource:
-    zaino_source::OneShotGetChainTip
-    + zaino_source::OneShotGetBlock
-    + zaino_source::OneShotGetBlockByHash
-    + zaino_source::OneShotGetCommitmentTreeRoots
+    zaino_source::GetChainTip
+    + zaino_source::GetBlock
+    + zaino_source::GetBlockByHash
+    + zaino_source::GetCommitmentTreeRoots
     + zaino_source::SubscribeBlocks
     + Send
     + Sync
@@ -72,10 +83,10 @@ pub trait ChainHeadBlockSource:
 }
 
 impl<T> ChainHeadBlockSource for T where
-    T: zaino_source::OneShotGetChainTip
-        + zaino_source::OneShotGetBlock
-        + zaino_source::OneShotGetBlockByHash
-        + zaino_source::OneShotGetCommitmentTreeRoots
+    T: zaino_source::GetChainTip
+        + zaino_source::GetBlock
+        + zaino_source::GetBlockByHash
+        + zaino_source::GetCommitmentTreeRoots
         + zaino_source::SubscribeBlocks
         + Send
         + Sync
@@ -119,12 +130,20 @@ pub trait ChainHeadBlockService: Clone + Send + Sync + 'static {
 mod tests {
     use super::ChainHeadBlockSource;
 
-    /// The production composite must satisfy the driven port. A compile-time
+    /// The production source must satisfy the driven port. A compile-time
     /// check: if a question is added to ChainHead's requirements that
     /// `ZebraValidator` cannot answer, this stops building.
+    ///
+    /// The bound is over the canonical ports, so the wrapped shape is what
+    /// satisfies it — `ValidatorClient<Arc<ZebraValidator>>`, the resilient view
+    /// of a validator shared with every other consumer. The bare
+    /// `ZebraValidator` deliberately does not: it answers only the
+    /// single-attempt `OneShot*` ports.
     #[test]
-    fn zebra_validator_satisfies_the_bound() {
+    fn the_client_over_a_shared_zebra_validator_satisfies_the_bound() {
         fn assert_satisfied<T: ChainHeadBlockSource>() {}
-        assert_satisfied::<zaino_source_zebra::ZebraValidator>();
+        assert_satisfied::<
+            zaino_source::ValidatorClient<std::sync::Arc<zaino_source_zebra::ZebraValidator>>,
+        >();
     }
 }

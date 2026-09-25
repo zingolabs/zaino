@@ -42,13 +42,16 @@ use zaino_store::{StoreComponent, StoreReader};
 
 use crate::config::{DaemonConfig, Network, SourceMode, UseCaseKind};
 use crate::error::IndexerError;
-use crate::use_case::{self, Serves, UseCase};
+use crate::use_case::{self, DaemonSource, LightWalletSource, Serves, UseCase};
 
-/// The engine this daemon wires for use case `U`: the LMDB store over the use
-/// case's materialisation, the chain head, and the resilient validator client,
-/// under the use case's routing.
-type DaemonEngine<U> =
-    use_case::Engine<U, LmdbBackend, ChainHeadSubscriber, ValidatorClient<Arc<ZebraValidator>>>;
+/// The engine this daemon wires for use case `U` over the validator client
+/// `C`: the LMDB store over the use case's materialisation, the chain head,
+/// and the client, under the use case's routing.
+///
+/// The validator is the second supply axis beside the materialisation: a
+/// validator lacking a port the use case's routing sends to it fails at the
+/// same `compose` bound a missing index does.
+type DaemonEngine<U, C> = use_case::Engine<U, LmdbBackend, ChainHeadSubscriber, C>;
 
 /// Start the Zaino daemon.
 ///
@@ -93,7 +96,7 @@ pub async fn spawn_indexer(
                 password.as_deref(),
             )?);
             let validator = Arc::new(ZebraValidator::with_read_state(rpc, readstate));
-            select_use_case(validator, config).await
+            select_use_case(client_over(validator), config).await
         }
         // Off-node: reach the validator over JSON-RPC alone, no co-located state
         // DB. The FS indexer sources compact blocks over RPC and the chain-head
@@ -114,9 +117,15 @@ pub async fn spawn_indexer(
                 password.as_deref(),
             )?);
             let validator = Arc::new(ZebraValidator::rpc_only(rpc));
-            select_use_case(validator, config).await
+            select_use_case(client_over(validator), config).await
         }
     }
+}
+
+/// The one client every consumer shares: the resilient wrapper over one shared
+/// validator. Retrying transient failures happens here and nowhere above.
+fn client_over<V>(validator: Arc<V>) -> Arc<ValidatorClient<Arc<V>>> {
+    Arc::new(ValidatorClient::new(validator, RetryPolicy::default()))
 }
 
 /// Build the validator JSON-RPC client from the configured coordinates.
@@ -177,13 +186,18 @@ fn rpc_auth(
 /// shape, and the only thing an arm supplies beyond the use case is the
 /// serving adapter that speaks its protocol. Adding a use case is adding an
 /// arm; the compiler checks the arm's shape at [`use_case::compose`].
-async fn select_use_case(
-    validator: Arc<ZebraValidator>,
+async fn select_use_case<C>(
+    client: Arc<C>,
     config: DaemonConfig,
-) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
+where
+    // Each arm names what its use case requires of the validator, as one
+    // bundle; the profile its adapter demands then follows from the impls.
+    C: LightWalletSource,
+{
     match config.use_case {
         UseCaseKind::LightWallet => {
-            boot::<use_case::LightWallet, _>(validator, config, |engine, addr| {
+            boot::<use_case::LightWallet, _, C>(client, config, |engine, addr| {
                 GrpcServer::new(LightServe::new(engine), addr)
             })
             .await
@@ -197,25 +211,22 @@ async fn select_use_case(
 /// builds, the materialisation the store reader is typed to, and the routing
 /// the engine composes under all come from `U`, so none of them can be paired
 /// wrongly here. `demand ⊆ supply` is checked once, at [`use_case::compose`].
-async fn boot<U, A>(
-    validator: Arc<ZebraValidator>,
+async fn boot<U, A, C>(
+    client: Arc<C>,
     config: DaemonConfig,
-    serve: impl FnOnce(DaemonEngine<U>, std::net::SocketAddr) -> A,
+    serve: impl FnOnce(DaemonEngine<U, C>, std::net::SocketAddr) -> A,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
 where
     U: UseCase,
+    C: DaemonSource,
     StoreReader<LmdbBackend, U::Materialisation>:
         TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    DaemonEngine<U>: Serves<U>,
+    DaemonEngine<U, C>: Serves<U>,
     RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
 {
-    // The FS indexer sources through the resilient wrapper over the shared
-    // validator; the chain-head reaches the same validator's raw one-shot ports
-    // through the `Arc`.
-    let source = Arc::new(ValidatorClient::new(
-        Arc::clone(&validator),
-        RetryPolicy::default(),
-    ));
+    // Every consumer — the FS indexer, the chain head, the engine's passthrough
+    // — reads through the one shared client; none holds a raw validator.
+    let source = client;
 
     // LMDB must declare every namespace up front: one per index in the set, plus
     // the engine's reserved watermark / format-version namespaces. The set is
@@ -258,17 +269,16 @@ where
     // durably committed (confirm-before-trim).
     let confirmed_watermark = driver.subscribe_confirmed_watermark();
 
-    // The NFS chain head, anchored over the raw validator. Its cancel is a child
-    // of the runtime's root token (governs anchoring; the run loop is cancelled
-    // through the token its RunComponent hands it).
+    // The NFS chain head, anchored over the same client: it binds the canonical
+    // ports, so retrying lives in the client and the chain head carries no
+    // ladder of its own. Its cancel is a child of the runtime's root token.
     let runtime_cancel = CancellationToken::new();
     let (chain_head_subscriber, chain_head_writer) = ChainHeadService::anchor(
-        Arc::clone(&validator),
+        Arc::clone(&source),
         ChainHeadConfig::with_max_depth(
             NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT).expect("the consensus reorg bound is non-zero"),
         ),
         confirmed_watermark,
-        runtime_cancel.child_token(),
     )
     .await
     .map_err(IndexerError::ChainHeadInit)?;
@@ -281,7 +291,7 @@ where
     let engine = use_case::compose::<U, _, _, _>(
         store_reader.clone(),
         chain_head_subscriber,
-        ValidatorClient::new(Arc::clone(&validator), RetryPolicy::default()),
+        (*source).clone(),
     );
 
     // Reachability was already confirmed (Direct opened its state DB), so the

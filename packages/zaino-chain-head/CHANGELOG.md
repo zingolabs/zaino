@@ -9,8 +9,14 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- `ChainHeadBlockSource` is bound over the canonical (resilient) `zaino-source`
+  ports rather than the single-attempt `OneShot*` ones. Only a `ValidatorClient`
+  satisfies it now; a bare adapter does not.
 ### Deprecated
 ### Removed
+- `ChainHeadConfig`'s `initial_backoff`, `max_backoff` and
+  `max_consecutive_failures` knobs and setters. Retrying is the client's job;
+  the chain head keeps only `max_depth` and `poll_interval`.
 ### Fixed
 
 ## [0.1.0] - 2026-08-28

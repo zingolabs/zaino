@@ -34,7 +34,7 @@ use zaino_source::{
     FailureMode, GetBlockByHashError, GetBlockError, GetChainTipError, GetChainTipsError,
     GetCommitmentTreeRootsError, NonDomainError, OneShotGetBlock, OneShotGetBlockByHash,
     OneShotGetChainTip, OneShotGetChainTips, OneShotGetCommitmentTreeRoots, QueryError,
-    SubscribeBlocks,
+    RetryPolicy, SubscribeBlocks, ValidatorClient,
 };
 
 use crate::{service::ChainHeadService, snapshot::MapBackedSnapshot};
@@ -264,11 +264,27 @@ impl SubscribeBlocks for MockValidator {}
 fn test_config(max_depth: u32) -> ChainHeadConfig {
     let mut config = ChainHeadConfig::with_max_depth(nonzero_u32(max_depth));
     config.set_poll_interval_ms(nonzero_u64(3_600_000));
-    config.set_initial_backoff_ms(nonzero_u64(1));
-    config.set_max_backoff_ms(nonzero_u64(1));
-    config.set_max_consecutive_failures(nonzero_u32(3));
     config
 }
+
+/// The client the chain head is handed: the mock behind the same resilient
+/// wrapper production uses, with a policy fast enough for tests. Retrying is
+/// the client's job, so a test that wants "the validator was briefly down"
+/// injects failures into the mock and lets the client absorb them.
+fn client(validator: &MockValidator) -> Arc<ValidatorClient<Arc<MockValidator>>> {
+    Arc::new(ValidatorClient::new(
+        Arc::new(validator.clone()),
+        RetryPolicy {
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+            backoff_factor: 1.0,
+            max_delay: Duration::from_millis(1),
+        },
+    ))
+}
+
+/// The service type every helper hands back: the chain head over the client.
+type Service = ChainHeadService<ValidatorClient<Arc<MockValidator>>>;
 
 fn nonzero_u32(value: u32) -> std::num::NonZeroU32 {
     std::num::NonZeroU32::new(value).expect("test config values are not zero")
@@ -297,10 +313,7 @@ fn fixed_watermark(value: Option<Height>) -> watch::Receiver<Option<Height>> {
 }
 
 /// An anchored chain head with no writer, for stepped tests.
-async fn stepped(
-    validator: &MockValidator,
-    max_depth: u32,
-) -> Arc<ChainHeadService<MockValidator>> {
+async fn stepped(validator: &MockValidator, max_depth: u32) -> Arc<Service> {
     stepped_with_watermark(validator, max_depth, fixed_watermark(None)).await
 }
 
@@ -309,12 +322,11 @@ async fn stepped_with_watermark(
     validator: &MockValidator,
     max_depth: u32,
     confirmed_watermark: watch::Receiver<Option<Height>>,
-) -> Arc<ChainHeadService<MockValidator>> {
+) -> Arc<Service> {
     ChainHeadService::spawn_without_writer(
-        Arc::new(validator.clone()),
+        client(validator),
         test_config(max_depth),
         confirmed_watermark,
-        CancellationToken::new(),
     )
     .await
     .expect("mock validator is reachable")
@@ -327,15 +339,11 @@ async fn stepped_with_watermark(
 /// tests stay free of the runtime. The loop's own cancel token is never
 /// cancelled; the task is torn down with the test's runtime, and
 /// [`ChainHeadService::shutdown`] is what the shutdown tests exercise.
-async fn running(
-    validator: &MockValidator,
-    max_depth: u32,
-) -> Arc<ChainHeadService<MockValidator>> {
+async fn running(validator: &MockValidator, max_depth: u32) -> Arc<Service> {
     let (_subscriber, writer) = ChainHeadService::anchor(
-        Arc::new(validator.clone()),
+        client(validator),
         running_config(max_depth),
         fixed_watermark(None),
-        CancellationToken::new(),
     )
     .await
     .expect("mock validator is reachable");
@@ -353,7 +361,7 @@ async fn running(
 ///
 /// Bounded so a genuine failure surfaces as a panic rather than a hang.
 async fn wait_for(
-    service: &ChainHeadService<MockValidator>,
+    service: &Service,
     what: &str,
     predicate: impl Fn(&MapBackedSnapshot) -> bool,
 ) -> Arc<MapBackedSnapshot> {
@@ -369,7 +377,7 @@ async fn wait_for(
 }
 
 /// Advances the stepped service to the source's current tip.
-async fn step_to_tip(service: &ChainHeadService<MockValidator>, validator: &MockValidator) {
+async fn step_to_tip(service: &Service, validator: &MockValidator) {
     let _ = validator.tip();
     service.advance_once().await.expect("advance succeeds");
 }
@@ -400,30 +408,28 @@ async fn a_short_chain_anchors_at_genesis() {
 }
 
 /// A validator unreachable at startup fails construction rather than producing
-/// a chain head with nothing in it.
+/// a chain head with nothing in it — once the client's retry ladder is spent,
+/// which the error names.
 #[tokio::test]
 async fn spawn_fails_when_the_validator_never_answers() {
     let validator = MockValidator::linear(5);
     validator.lock().fail_calls = usize::MAX;
 
-    let error = ChainHeadService::anchor(
-        Arc::new(validator),
-        test_config(100),
-        fixed_watermark(None),
-        CancellationToken::new(),
-    )
-    .await
-    .expect_err("unreachable validator must fail construction");
+    let error =
+        ChainHeadService::anchor(client(&validator), test_config(100), fixed_watermark(None))
+            .await
+            .expect_err("unreachable validator must fail construction");
 
     assert!(matches!(
         error,
-        crate::ChainHeadInitError::SourceUnavailable { .. }
+        crate::ChainHeadInitError::Anchor(crate::ChainHeadAdvanceError::Unavailable(_))
     ));
 }
 
-/// A briefly-unreachable validator is retried rather than treated as fatal.
+/// A briefly-unreachable validator is absorbed by the client below, not by a
+/// ladder here: two failures against a three-attempt policy anchor fine.
 #[tokio::test]
-async fn spawn_retries_a_transient_failure() {
+async fn spawn_survives_a_transient_failure_through_the_client() {
     let validator = MockValidator::linear(5);
     validator.lock().fail_calls = 2;
 
@@ -669,7 +675,7 @@ async fn a_failed_advance_leaves_the_snapshot_intact() {
 /// graph tracks the tip without ever re-anchoring — the path where the trim
 /// floor, not the anchor floor, decides what is retained.
 async fn grow_stepping(
-    service: &ChainHeadService<MockValidator>,
+    service: &Service,
     validator: &MockValidator,
     next_ids: impl IntoIterator<Item = u16>,
 ) {

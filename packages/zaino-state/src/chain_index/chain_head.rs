@@ -29,13 +29,14 @@ use crate::chain_index::{
 };
 use crate::IndexedBlock;
 use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource, ChainHeadWork};
+use zaino_source::{RetryPolicy, ValidatorClient};
 
 /// A source that can also answer ChainHead's questions.
 ///
-/// ChainHead speaks the `zaino-source` ports directly, while ChainIndex still
+/// ChainHead speaks the canonical `zaino-source` ports, while ChainIndex still
 /// consumes the wire-typed [`BlockchainSource`] scaffolding. This trait is how
 /// the second hands over the first: an implementor exposes the underlying
-/// validator, and ChainHead is built on that rather than on the wrapper.
+/// validator behind the resilient client, and ChainHead is built on that.
 ///
 /// Kept off `BlockchainSource` because that port is frozen scaffolding
 /// (docs/adr/zaino/0008) and shrinks as each subsystem moves onto the real ports.
@@ -57,12 +58,20 @@ pub trait WithChainHeadSource: BlockchainSource {
 /// needs, rather than restating ChainHead's inside ChainIndex's.
 impl<V> WithChainHeadSource for ValidatorSource<V>
 where
-    V: ChainIndexSourcePorts + ChainHeadBlockSource,
+    V: ChainIndexSourcePorts + Send + Sync + 'static,
+    ValidatorClient<Arc<V>>: ChainHeadBlockSource,
 {
-    type Head = V;
+    type Head = ValidatorClient<Arc<V>>;
 
     fn chain_head_source(&self) -> Arc<Self::Head> {
-        self.validator()
+        // The chain head binds the canonical ports, which only the client
+        // answers; it retries transient failures once, below, so the chain
+        // head carries no ladder of its own. ChainIndex still reads the same
+        // validator over the one-shot ports — the remaining debt.
+        Arc::new(ValidatorClient::new(
+            self.validator(),
+            RetryPolicy::default(),
+        ))
     }
 }
 
