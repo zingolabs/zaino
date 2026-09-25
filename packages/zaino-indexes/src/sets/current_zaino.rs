@@ -1,9 +1,12 @@
 //! current_zaino index set: all indexes matching zaino-state's V1 schema.
 //!
-//! 8 BlockLocal×Append indexes covering headers, txids, transparent, sapling,
-//! orchard, hash→height, txid→location, and outpoint→spender; plus one
-//! SelfCumulative×Append index, chain-metadata (per-height commitment-tree
+//! 9 BlockLocal×Append indexes covering headers, txids, transparent, sapling,
+//! orchard, ironwood, hash→height, txid→location, and outpoint→spender; plus
+//! one SelfCumulative×Append index, chain-metadata (per-height commitment-tree
 //! sizes, accumulated from each block's added commitments).
+//!
+//! Declared as the [`CurrentZaino`] materialisation, so the set is also a type
+//! a store can be wired over (see [`crate::materialisation`]).
 
 use zaino_primitives::types::{
     Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
@@ -369,17 +372,27 @@ impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
 // Index set builder
 // ---------------------------------------------------------------------------
 
+crate::materialisation! {
+    /// The full current-zaino set: compact-block serving plus the spend and
+    /// txid-location indexes.
+    pub struct CurrentZaino over CurrentZainoContext {
+        HeadersIndex,
+        TxidsIndex,
+        HashToHeightIndex,
+        TransparentSpendsIndex,
+        TxidLocationIndex,
+        TransparentDataIndex,
+        SaplingIndex,
+        OrchardIndex,
+        IronwoodIndex,
+        ChainMetadataIndex,
+    }
+}
+
 /// Build the full current-zaino index set (10 indexes).
+///
+/// The same set [`CurrentZaino`] names as a type; kept as a function for
+/// callers that only need the runtime value.
 pub fn index_set() -> IndexSet<CurrentZainoContext> {
-    IndexSet::new()
-        .with::<HeadersIndex>()
-        .with::<TxidsIndex>()
-        .with::<HashToHeightIndex>()
-        .with::<TransparentSpendsIndex>()
-        .with::<TxidLocationIndex>()
-        .with::<TransparentDataIndex>()
-        .with::<SaplingIndex>()
-        .with::<OrchardIndex>()
-        .with::<IronwoodIndex>()
-        .with::<ChainMetadataIndex>()
+    <CurrentZaino as crate::materialisation::Materialisation>::index_set()
 }

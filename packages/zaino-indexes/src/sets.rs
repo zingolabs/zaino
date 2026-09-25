@@ -6,3 +6,4 @@
 pub mod current_zaino;
 pub mod headers_and_spends;
 pub mod headers_only;
+pub mod light_wallet;

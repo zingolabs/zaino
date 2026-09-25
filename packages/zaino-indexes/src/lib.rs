@@ -37,4 +37,5 @@
 
 pub mod capabilities;
 pub mod indexes;
+pub mod materialisation;
 pub mod sets;
