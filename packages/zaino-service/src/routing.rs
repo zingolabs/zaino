@@ -12,11 +12,13 @@
 //!
 //! So the decision is a type, [`Routing`], with one associated [`Placement`]
 //! per capability whose placement varies. The composer implements each read
-//! trait once per placement, bounded on `R: Routing<Address = Local>` and on
-//! the provider ports that placement needs. The two impls do not overlap
-//! because the associated type differs, and a placement whose provider ports
-//! are missing is an impl that does not exist — checked where the use case is
-//! wired, not discovered per request.
+//! trait once, dispatching to a per-capability *placement trait* implemented
+//! on the placement markers themselves — `Local` carries the bounds a local
+//! merge needs of the chain tiers, `Remote` the source ports a passthrough
+//! needs. Distinct `Self` types, so the impls cannot overlap; `Withheld`
+//! implements none of them. A placement whose provider ports are missing is
+//! an impl that does not exist — checked where the use case is wired, not
+//! discovered per request.
 //!
 //! ```text
 //! reads(Composed<Fs, Nfs, Src, R>) =
