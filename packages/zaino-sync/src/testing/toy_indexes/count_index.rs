@@ -1,7 +1,6 @@
 //! BlockLocal × Monoidal: counts total blocks seen in each batch.
 
 use crate::descriptor::{BlockLocal, Monoidal};
-use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeMonoidal, Schema};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
@@ -24,37 +23,13 @@ impl BlockCount {
     }
 }
 
-impl Encode for BlockCount {
-    fn encode(&self) -> Vec<u8> {
-        self.0.to_le_bytes().to_vec()
-    }
-}
 
-impl Decode for BlockCount {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        Ok(Self(u64::decode(bytes)?))
-    }
-}
 
 /// Unit key type for the single "total" entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TotalKey;
 
-impl Encode for TotalKey {
-    fn encode(&self) -> Vec<u8> {
-        b"total".to_vec()
-    }
-}
 
-impl Decode for TotalKey {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        if bytes == b"total" {
-            Ok(Self)
-        } else {
-            Err(DecodeError::Failed("expected 'total' key".into()))
-        }
-    }
-}
 
 /// Counts total blocks seen in each batch.
 pub struct CountIndex;
@@ -121,45 +96,35 @@ impl EntryCodec for CountIndex {
 }
 
 /// On-disk record for [`TotalKey`].
-pub struct PersistentTotalKey(TotalKey);
+#[derive(PersistentRecord)]
+pub struct PersistentTotalKey([u8; 5]);
 
 impl PersistentRecord for PersistentTotalKey {
     type Domain = TotalKey;
 
-    fn from_domain(domain: &TotalKey) -> Self {
-        Self(*domain)
+    fn from_domain(_domain: &TotalKey) -> Self {
+        Self(*b"total")
     }
     fn into_domain(self) -> Result<TotalKey, PersistDecodeError> {
-        Ok(self.0)
-    }
-    fn encode(&self) -> Vec<u8> {
-        Encode::encode(&self.0)
-    }
-    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
-        <TotalKey as Decode>::decode(bytes)
-            .map(Self)
-            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+        if self.0 == *b"total" {
+            Ok(TotalKey)
+        } else {
+            Err(PersistDecodeError::Invalid("not the total key".to_owned()))
+        }
     }
 }
 
 /// On-disk record for [`BlockCount`].
-pub struct PersistentBlockCount(BlockCount);
+#[derive(PersistentRecord)]
+pub struct PersistentBlockCount(u64);
 
 impl PersistentRecord for PersistentBlockCount {
     type Domain = BlockCount;
 
     fn from_domain(domain: &BlockCount) -> Self {
-        Self(*domain)
+        Self(domain.0)
     }
     fn into_domain(self) -> Result<BlockCount, PersistDecodeError> {
-        Ok(self.0)
-    }
-    fn encode(&self) -> Vec<u8> {
-        Encode::encode(&self.0)
-    }
-    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
-        <BlockCount as Decode>::decode(bytes)
-            .map(Self)
-            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+        Ok(BlockCount(self.0))
     }
 }

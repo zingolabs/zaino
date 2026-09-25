@@ -1,7 +1,6 @@
 //! BlockLocal × Fold: running sum of values across blocks in a batch.
 
 use crate::descriptor::{BlockLocal, Fold};
-use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeFold, Schema};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
@@ -23,37 +22,13 @@ impl RunningSum {
     }
 }
 
-impl Encode for RunningSum {
-    fn encode(&self) -> Vec<u8> {
-        self.0.to_le_bytes().to_vec()
-    }
-}
 
-impl Decode for RunningSum {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        Ok(Self(u64::decode(bytes)?))
-    }
-}
 
 /// Unit key type for the single "sum" entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SumKey;
 
-impl Encode for SumKey {
-    fn encode(&self) -> Vec<u8> {
-        b"sum".to_vec()
-    }
-}
 
-impl Decode for SumKey {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        if bytes == b"sum" {
-            Ok(Self)
-        } else {
-            Err(DecodeError::Failed("expected 'sum' key".into()))
-        }
-    }
-}
 
 /// Running sum of values across blocks in a batch.
 pub struct RunningSumIndex;
@@ -116,45 +91,35 @@ impl EntryCodec for RunningSumIndex {
 }
 
 /// On-disk record for [`SumKey`].
-pub struct PersistentSumKey(SumKey);
+#[derive(PersistentRecord)]
+pub struct PersistentSumKey([u8; 3]);
 
 impl PersistentRecord for PersistentSumKey {
     type Domain = SumKey;
 
-    fn from_domain(domain: &SumKey) -> Self {
-        Self(*domain)
+    fn from_domain(_domain: &SumKey) -> Self {
+        Self(*b"sum")
     }
     fn into_domain(self) -> Result<SumKey, PersistDecodeError> {
-        Ok(self.0)
-    }
-    fn encode(&self) -> Vec<u8> {
-        Encode::encode(&self.0)
-    }
-    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
-        <SumKey as Decode>::decode(bytes)
-            .map(Self)
-            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+        if self.0 == *b"sum" {
+            Ok(SumKey)
+        } else {
+            Err(PersistDecodeError::Invalid("not the sum key".to_owned()))
+        }
     }
 }
 
 /// On-disk record for [`RunningSum`].
-pub struct PersistentRunningSum(RunningSum);
+#[derive(PersistentRecord)]
+pub struct PersistentRunningSum(u64);
 
 impl PersistentRecord for PersistentRunningSum {
     type Domain = RunningSum;
 
     fn from_domain(domain: &RunningSum) -> Self {
-        Self(*domain)
+        Self(domain.0)
     }
     fn into_domain(self) -> Result<RunningSum, PersistDecodeError> {
-        Ok(self.0)
-    }
-    fn encode(&self) -> Vec<u8> {
-        Encode::encode(&self.0)
-    }
-    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
-        <RunningSum as Decode>::decode(bytes)
-            .map(Self)
-            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+        Ok(RunningSum(self.0))
     }
 }

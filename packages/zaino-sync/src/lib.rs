@@ -15,7 +15,6 @@ pub mod descriptor;
 // engine persists its watermark through `zaino-persistence-codec`. Gated so it
 // isn't dead code in a production build.
 #[cfg(any(test, feature = "testing"))]
-pub(crate) mod encode;
 pub mod engine;
 pub mod index_set;
 pub mod pipeline;

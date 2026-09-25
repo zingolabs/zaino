@@ -1,7 +1,6 @@
 //! BlockLocal × Append: stores (height → value) for each block.
 
 use crate::descriptor::{Append, BlockLocal};
-use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::keys::HeightKey;
@@ -31,17 +30,7 @@ impl BlockValue {
     }
 }
 
-impl Encode for BlockValue {
-    fn encode(&self) -> Vec<u8> {
-        self.0.to_le_bytes().to_vec()
-    }
-}
 
-impl Decode for BlockValue {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        Ok(Self(u32::decode(bytes)?))
-    }
-}
 
 /// A single height → value entry. Domain type — no serialization.
 pub struct Entry {
@@ -108,23 +97,16 @@ impl EntryCodec for ValueIndex {
 }
 
 /// On-disk record for [`BlockValue`].
-pub struct PersistentBlockValue(BlockValue);
+#[derive(PersistentRecord)]
+pub struct PersistentBlockValue(u32);
 
 impl PersistentRecord for PersistentBlockValue {
     type Domain = BlockValue;
 
     fn from_domain(domain: &BlockValue) -> Self {
-        Self(*domain)
+        Self(domain.0)
     }
     fn into_domain(self) -> Result<BlockValue, PersistDecodeError> {
-        Ok(self.0)
-    }
-    fn encode(&self) -> Vec<u8> {
-        Encode::encode(&self.0)
-    }
-    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
-        <BlockValue as Decode>::decode(bytes)
-            .map(Self)
-            .map_err(|e| PersistDecodeError::Invalid(e.to_string()))
+        Ok(BlockValue(self.0))
     }
 }

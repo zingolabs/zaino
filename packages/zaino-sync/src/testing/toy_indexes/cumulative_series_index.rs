@@ -11,7 +11,6 @@ use crate::descriptor::{Append, SelfCumulative};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{CumulativeAppend, ExtractCumulative, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::layout::{Cursor, Writer};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
 
 /// Block context: the block's height and its value.
@@ -99,6 +98,7 @@ impl EntryCodec for CumulativeSeriesIndex {
 }
 
 /// On-disk record for [`RunningTotal`]: a single `u64` little-endian.
+#[derive(PersistentRecord)]
 pub struct PersistentRunningTotal(u64);
 
 impl PersistentRecord for PersistentRunningTotal {
@@ -109,16 +109,5 @@ impl PersistentRecord for PersistentRunningTotal {
     }
     fn into_domain(self) -> Result<RunningTotal, PersistDecodeError> {
         Ok(RunningTotal(self.0))
-    }
-    fn encode(&self) -> Vec<u8> {
-        let mut writer = Writer::with_capacity(8);
-        writer.u64(self.0);
-        writer.into_bytes()
-    }
-    fn decode(bytes: &[u8]) -> Result<Self, PersistDecodeError> {
-        let mut cursor = Cursor::new(bytes);
-        let raw = cursor.u64()?;
-        cursor.finish()?;
-        Ok(Self(raw))
     }
 }

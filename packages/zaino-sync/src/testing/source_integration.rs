@@ -5,7 +5,6 @@
 //! - HeadersIndex (L,A): stores height → (hash, prev_hash, time, bits)
 
 use crate::descriptor::{Append, BlockLocal};
-use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
 use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec};
 use crate::traits::{
@@ -15,24 +14,9 @@ use crate::traits::{
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty, Height};
 
 // ---------------------------------------------------------------------------
-// Encode/Decode impls for domain types (test-only, will move to index crate)
 // ---------------------------------------------------------------------------
 
-impl Encode for BlockHash {
-    fn encode(&self) -> Vec<u8> {
-        <[u8; 32]>::from(*self).to_vec()
-    }
-}
 
-impl Decode for BlockHash {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let arr: [u8; 32] = bytes.try_into().map_err(|_| DecodeError::InvalidLength {
-            expected: 32,
-            got: bytes.len(),
-        })?;
-        Ok(BlockHash::from(arr))
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Set-wide context: carries everything the provisioner extracts from a Block
@@ -201,33 +185,7 @@ pub struct HeaderValue {
     pub bits: CompactDifficulty,
 }
 
-impl Encode for HeaderValue {
-    fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(72);
-        buf.extend_from_slice(&self.hash.encode());
-        buf.extend_from_slice(&self.prev_hash.encode());
-        buf.extend_from_slice(&self.time.to_le_bytes());
-        buf.extend_from_slice(&self.bits.to_le_bytes());
-        buf
-    }
-}
 
-impl Decode for HeaderValue {
-    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        if bytes.len() != 72 {
-            return Err(DecodeError::InvalidLength {
-                expected: 72,
-                got: bytes.len(),
-            });
-        }
-        Ok(Self {
-            hash: BlockHash::decode(&bytes[0..32])?,
-            prev_hash: BlockHash::decode(&bytes[32..64])?,
-            time: u32::from_le_bytes(bytes[64..68].try_into().expect("4 bytes")),
-            bits: u32::from_le_bytes(bytes[68..72].try_into().expect("4 bytes")),
-        })
-    }
-}
 
 /// Headers index definition.
 pub struct HeadersIndex;
