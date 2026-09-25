@@ -452,9 +452,23 @@ where
     }
 }
 
+/// What the compact-block driver needs of a source: the pre-index compact
+/// block fetch, the tip, and tip changes — the canonical (resilient) ports a
+/// composition root supplies through a
+/// [`ValidatorClient`](zaino_source::ValidatorClient). Named here, once, so a
+/// root bounds on this rather than restating the list.
+pub trait CompactSource:
+    GetPreIndexCompactBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static
+{
+}
+impl<S> CompactSource for S where
+    S: GetPreIndexCompactBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static
+{
+}
+
 impl<S, B, Ctx, F> SourceSyncDriver<S, B, Ctx, F, CompactBlocks>
 where
-    S: GetPreIndexCompactBlock + GetChainTip + SubscribeChainTip + Send + Sync + 'static,
+    S: CompactSource,
     B: Backend + Clone + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
     F: Fn(PreIndexCompactBlock) -> Ctx + Send + Sync + 'static,

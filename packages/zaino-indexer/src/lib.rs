@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 mod source_provisioner;
+pub use source_provisioner::CompactSource;
 pub use source_provisioner::{
     CompactBlocks, FetchConcurrency, FullBlocks, SourceFetch, SourceProvisioner, SourceSyncDriver,
     SyncTuning,
