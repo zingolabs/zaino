@@ -8,6 +8,10 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `Arc<V>` forwards for `OneShotGetBlock`, `OneShotGetBlockByHash`,
+  `OneShotGetCommitmentTreeRoots` and `SubscribeBlocks`, so a
+  `ValidatorClient<Arc<V>>` over one shared validator satisfies the chain
+  head's source port.
 ### Changed
 ### Deprecated
 ### Removed

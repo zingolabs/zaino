@@ -1,18 +1,19 @@
 //! `Arc` forwarding for the ports the compact indexer consumes.
 //!
-//! One shared `Arc<V>` backs both driven-port consumers in the composed runtime:
-//! the chain-head reaches the raw [`OneShotGetChainTip`] / block ports through
-//! the `Arc`'s `Deref`, while the FS indexer wraps the *same* `Arc<V>` in a
-//! [`ValidatorClient`](crate::ValidatorClient), whose resilient port impls require
-//! the wrapped type — the `Arc` itself — to provide the matching `OneShot*`
-//! ports. These mechanical `Deref`-forwards let a bare `Arc<V>` satisfy those
-//! bounds, so a single validator handle serves both consumers without cloning
-//! the adapter.
+//! One shared `Arc<V>` backs every driven-port consumer in the composed runtime:
+//! each wraps the *same* `Arc<V>` in a [`ValidatorClient`](crate::ValidatorClient),
+//! whose resilient port impls require the wrapped type — the `Arc` itself — to
+//! provide the matching `OneShot*` ports. These mechanical `Deref`-forwards let
+//! a bare `Arc<V>` satisfy those bounds, so a single validator handle serves
+//! every consumer without cloning the adapter, and no consumer touches a
+//! single-attempt port directly.
 //!
 //! The forwarded set is exactly the ports the shared `Arc<V>` must satisfy for
-//! the two consumers: [`ValidatorSource`] (the shared supertrait) plus the
+//! those consumers: [`ValidatorSource`] (the shared supertrait) plus the
 //! compact-indexer path ([`OneShotGetPreIndexCompactBlock`],
-//! [`OneShotGetChainTip`], [`SubscribeChainTip`]) and the serving path's
+//! [`OneShotGetChainTip`], [`SubscribeChainTip`]), the chain head's block
+//! reads ([`OneShotGetBlock`], [`OneShotGetBlockByHash`],
+//! [`OneShotGetCommitmentTreeRoots`]), and the serving path's
 //! passthrough ports ([`OneShotGetTreestate`], [`OneShotSendRawTransaction`],
 //! [`OneShotGetTransaction`], [`OneShotGetSubtreeRoots`], the transparent-address
 //! reads, and the mempool reads ([`OneShotGetMempoolTxids`],
@@ -26,20 +27,21 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, BlockHash, Height, PreIndexCompactBlock, PreIndexCompactTx,
-    ShieldedPool, SubtreeRoot, TransactionId, Treestate, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHash, Height, PreIndexCompactBlock,
+    PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
 };
 
 use crate::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockError, GetChainTipError, GetMempoolTxidsError, GetRawMempoolTransactionError,
-    GetSubtreeRootsError, GetTransactionError, GetTreestateError, OneShotGetAddressBalance,
-    OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetChainTip,
-    OneShotGetMempoolCompactTransaction, OneShotGetMempoolSourceTip, OneShotGetMempoolTxids,
-    OneShotGetPreIndexCompactBlock, OneShotGetRawMempoolTransaction, OneShotGetSubtreeRoots,
-    OneShotGetTransaction, OneShotGetTreestate, OneShotSendRawTransaction, QueryError,
-    SendRawTransactionError, SubscribeChainTip, TipObservation, TransactionResponse,
-    ValidatorSource,
+    GetBlockByHashError, GetBlockError, GetChainTipError, GetCommitmentTreeRootsError,
+    GetMempoolTxidsError, GetRawMempoolTransactionError, GetSubtreeRootsError, GetTransactionError,
+    GetTreestateError, OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
+    OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip,
+    OneShotGetCommitmentTreeRoots, OneShotGetMempoolCompactTransaction, OneShotGetMempoolSourceTip,
+    OneShotGetMempoolTxids, OneShotGetPreIndexCompactBlock, OneShotGetRawMempoolTransaction,
+    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate, OneShotSendRawTransaction,
+    QueryError, SendRawTransactionError, SubscribeBlocks, SubscribeChainTip, TipObservation,
+    TransactionResponse, ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -66,9 +68,48 @@ impl<V: OneShotGetChainTip + ?Sized> OneShotGetChainTip for Arc<V> {
     }
 }
 
+impl<V: SubscribeBlocks + ?Sized> SubscribeBlocks for Arc<V> {
+    fn subscribe_to_blocks_received(&self) -> Option<watch::Receiver<()>> {
+        (**self).subscribe_to_blocks_received()
+    }
+}
+
 impl<V: SubscribeChainTip + ?Sized> SubscribeChainTip for Arc<V> {
     fn subscribe_to_chain_tip(&self) -> Option<watch::Receiver<TipObservation>> {
         (**self).subscribe_to_chain_tip()
+    }
+}
+
+// The chain head's questions reach a validator shared behind the same `Arc<V>`:
+// it binds the canonical ports, which the client answers over these.
+impl<V: OneShotGetBlock + ?Sized> OneShotGetBlock for Arc<V> {
+    fn get_block(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Block, QueryError<GetBlockError, Self::NonDomain>>> + Send
+    {
+        (**self).get_block(height)
+    }
+}
+
+impl<V: OneShotGetBlockByHash + ?Sized> OneShotGetBlockByHash for Arc<V> {
+    fn get_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError, Self::NonDomain>>> + Send
+    {
+        (**self).get_block_by_hash(hash)
+    }
+}
+
+impl<V: OneShotGetCommitmentTreeRoots + ?Sized> OneShotGetCommitmentTreeRoots for Arc<V> {
+    fn get_commitment_tree_roots(
+        &self,
+        block: BlockHash,
+    ) -> impl Future<
+        Output = Result<TreeRoots, QueryError<GetCommitmentTreeRootsError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_commitment_tree_roots(block)
     }
 }
 
