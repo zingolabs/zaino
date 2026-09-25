@@ -5,7 +5,6 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use rand::RngCore as _;
 use subtle::ConstantTimeEq as _;
 
 #[cfg(unix)]
@@ -16,11 +15,11 @@ const FILE: &str = ".cookie";
 
 /// The secret every request must present when cookie authentication is enabled.
 #[derive(Clone, Debug)]
-pub struct Cookie(String);
+pub(crate) struct Cookie(String);
 
 impl Cookie {
     /// Compares `passwd` with the cookie in constant time, so the comparison leaks no timing.
-    pub fn authenticate(&self, passwd: String) -> bool {
+    pub(crate) fn authenticate(&self, passwd: String) -> bool {
         if passwd.len() != self.0.len() {
             return false;
         }
@@ -39,13 +38,13 @@ impl Cookie {
 impl Default for Cookie {
     fn default() -> Self {
         let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rand::fill(&mut bytes);
         Self(STANDARD.encode(bytes))
     }
 }
 
 /// Writes `cookie` to `dir` as `__cookie__:<secret>`, readable only by the owner, refusing a symlinked path.
-pub fn write_to_disk(cookie: &Cookie, dir: &Path) -> io::Result<()> {
+pub(crate) fn write_to_disk(cookie: &Cookie, dir: &Path) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
 
     let cookie_path = dir.join(FILE);
@@ -78,7 +77,7 @@ fn create_owner_only_file(path: &Path) -> io::Result<File> {
 }
 
 /// Removes the cookie file from `dir`.
-pub fn remove_from_disk(dir: &Path) -> io::Result<()> {
+pub(crate) fn remove_from_disk(dir: &Path) -> io::Result<()> {
     remove_file(dir.join(FILE))?;
 
     tracing::info!("RPC auth cookie removed from disk");

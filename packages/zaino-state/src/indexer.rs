@@ -834,7 +834,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                             .await
                         {
                             Ok(GetBlock::Object(block_object)) => {
-                                let checked_height = match block_object.height() {
+                                let checked_height = match block_object.height {
                                     Some(h) => h.0 as u64,
                                     None => {
                                         match channel_tx
@@ -863,7 +863,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                         // gone.
                                         root_hash: <[u8; 32]>::from(subtree.root).to_vec(),
                                         completing_block_hash: block_object
-                                            .hash()
+                                            .hash
                                             .bytes_in_display_order()
                                             .to_vec(),
                                         completing_block_height: checked_height,

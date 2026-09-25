@@ -1,139 +1,99 @@
-use derive_getters::Getters;
-use derive_new::new;
-use zebra_chain::{
-    amount::{Amount, NegativeAllowed, NonNegative},
-    value_balance::ValueBalance,
-};
+use zaino_primitives::types::{SignedZatoshis, ValuePoolBalance, Zatoshis};
 
-use super::zec::Zec;
+/// Zatoshis per ZEC.
+const ZATOSHIS_PER_ZEC: f64 = 100_000_000.0;
+
+/// The pool names in the order the six value-pool slots list them.
+const POOL_IDS: [&str; 6] = [
+    "transparent",
+    "sprout",
+    "sapling",
+    "orchard",
+    "lockbox",
+    "ironwood",
+];
+
+/// Converts zatoshis to the lossy ZEC float this interface reports, which consensus-critical code must never use.
+pub fn zatoshis_to_lossy_zec(zatoshis: i64) -> f64 {
+    zatoshis as f64 / ZATOSHIS_PER_ZEC
+}
+
+/// A value pool name the interface has no slot for.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown value pool `{0}`")]
+pub struct UnknownValuePool(pub String);
+
+/// The slot a pool name occupies, `None` for the unnamed chain supply, accepting zcashd's `deferred` for the lockbox.
+fn pool_slot(id: &str) -> Result<Option<usize>, UnknownValuePool> {
+    match id {
+        "" => Ok(None),
+        "deferred" => Ok(Some(4)),
+        other => POOL_IDS
+            .iter()
+            .position(|pool| *pool == other)
+            .map(Some)
+            .ok_or_else(|| UnknownValuePool(other.to_string())),
+    }
+}
 
 /// A value pool's balance in ZEC and zatoshis.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetBlockchainInfoBalance {
-    /// Name of the pool
-    #[serde(skip_serializing_if = "String::is_empty", default)]
+    /// The pool's name, empty for the chain supply.
+    #[serde(skip_serializing_if = "String::is_empty")]
     id: String,
-    /// Total amount in the pool, in ZEC
-    #[getter(copy)]
-    chain_value: Zec<NonNegative>,
-    /// Total amount in the pool, in zatoshis
-    #[getter(copy)]
-    chain_value_zat: Amount<NonNegative>,
-    /// Whether the value pool balance is being monitored.
+    /// The total amount in the pool, in ZEC.
+    chain_value: f64,
+    /// The total amount in the pool, in zatoshis.
+    chain_value_zat: u64,
+    /// Whether the pool holds any value.
     monitored: bool,
-    /// Change to the amount in the pool produced by this block, in ZEC
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    #[getter(copy)]
-    value_delta: Option<Zec<NegativeAllowed>>,
-    /// Change to the amount in the pool produced by this block, in zatoshis
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    #[getter(copy)]
-    value_delta_zat: Option<Amount>,
+    /// The change to the pool's amount produced by the block, in ZEC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value_delta: Option<f64>,
+    /// The change to the pool's amount produced by the block, in zatoshis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value_delta_zat: Option<i64>,
 }
 
 impl GetBlockchainInfoBalance {
-    /// Returns a list of [`GetBlockchainInfoBalance`]s converted from the default [`ValueBalance`].
-    pub fn zero_pools() -> [Self; 6] {
-        Self::value_pools(Default::default(), None)
-    }
-
-    /// Creates a [`GetBlockchainInfoBalance`] from a pool name, its value balance, and an optional delta.
-    fn new_internal(
-        id: impl ToString,
-        amount: Amount<NonNegative>,
-        delta_amount: Option<Amount<NegativeAllowed>>,
-    ) -> Self {
+    /// Builds the balance of the pool named `id`.
+    fn new(id: &str, value: Zatoshis, delta: Option<SignedZatoshis>) -> Self {
+        let value = u64::from(value);
         Self {
             id: id.to_string(),
-            chain_value: Zec::from(amount),
-            chain_value_zat: amount,
-            monitored: amount.zatoshis() != 0,
-            value_delta: delta_amount.map(Zec::from),
-            value_delta_zat: delta_amount,
+            chain_value: zatoshis_to_lossy_zec(value as i64),
+            chain_value_zat: value,
+            monitored: value != 0,
+            value_delta: delta.map(|delta| zatoshis_to_lossy_zec(i64::from(delta))),
+            value_delta_zat: delta.map(i64::from),
         }
     }
 
-    /// Creates a [`GetBlockchainInfoBalance`] for the transparent pool.
-    pub fn transparent(
-        amount: Amount<NonNegative>,
-        delta: Option<Amount<NegativeAllowed>>,
-    ) -> Self {
-        Self::new_internal("transparent", amount, delta)
+    /// The chain supply when the validator reported none.
+    pub fn empty_chain_supply() -> Self {
+        Self::new("", Zatoshis::ZERO, None)
     }
 
-    /// Creates a [`GetBlockchainInfoBalance`] for the Sprout pool.
-    pub fn sprout(amount: Amount<NonNegative>, delta: Option<Amount<NegativeAllowed>>) -> Self {
-        Self::new_internal("sprout", amount, delta)
+    /// Renders a domain balance, keyed by its pool name, with an unnamed balance as the chain supply.
+    pub fn from_domain(balance: &ValuePoolBalance) -> Result<Self, UnknownValuePool> {
+        Ok(match pool_slot(&balance.id)? {
+            None => Self::new("", balance.chain_value, None),
+            Some(slot) => Self::new(POOL_IDS[slot], balance.chain_value, balance.value_delta),
+        })
     }
 
-    /// Creates a [`GetBlockchainInfoBalance`] for the Sapling pool.
-    pub fn sapling(amount: Amount<NonNegative>, delta: Option<Amount<NegativeAllowed>>) -> Self {
-        Self::new_internal("sapling", amount, delta)
-    }
-
-    /// Creates a [`GetBlockchainInfoBalance`] for the Orchard pool.
-    pub fn orchard(amount: Amount<NonNegative>, delta: Option<Amount<NegativeAllowed>>) -> Self {
-        Self::new_internal("orchard", amount, delta)
-    }
-
-    /// Creates a [`GetBlockchainInfoBalance`] for the Lockbox pool.
-    pub fn deferred(amount: Amount<NonNegative>, delta: Option<Amount<NegativeAllowed>>) -> Self {
-        Self::new_internal("lockbox", amount, delta)
-    }
-
-    /// Creates a [`GetBlockchainInfoBalance`] for the Ironwood pool (NU6.3).
-    pub fn ironwood(amount: Amount<NonNegative>, delta: Option<Amount<NegativeAllowed>>) -> Self {
-        Self::new_internal("ironwood", amount, delta)
-    }
-
-    /// Converts a [`ValueBalance`] to a list of [`GetBlockchainInfoBalance`]s.
-    pub fn value_pools(
-        value_balance: ValueBalance<NonNegative>,
-        delta_balance: Option<ValueBalance<NegativeAllowed>>,
-    ) -> [Self; 6] {
-        [
-            Self::transparent(
-                value_balance.transparent_amount(),
-                delta_balance.map(|b| b.transparent_amount()),
-            ),
-            Self::sprout(
-                value_balance.sprout_amount(),
-                delta_balance.map(|b| b.sprout_amount()),
-            ),
-            Self::sapling(
-                value_balance.sapling_amount(),
-                delta_balance.map(|b| b.sapling_amount()),
-            ),
-            Self::orchard(
-                value_balance.orchard_amount(),
-                delta_balance.map(|b| b.orchard_amount()),
-            ),
-            Self::deferred(
-                value_balance.deferred_amount(),
-                delta_balance.map(|b| b.deferred_amount()),
-            ),
-            // The Ironwood chain value pool balance is zero before NU6.3 activates.
-            Self::ironwood(
-                value_balance.ironwood_amount(),
-                delta_balance.map(|b| b.ironwood_amount()),
-            ),
-        ]
-    }
-
-    /// Converts a [`ValueBalance`] to a [`GetBlockchainInfoBalance`] representing the total chain supply.
-    pub fn chain_supply(value_balance: ValueBalance<NonNegative>) -> Self {
-        Self::value_pools(value_balance, None)
-            .into_iter()
-            .reduce(|a, b| {
-                GetBlockchainInfoBalance::new_internal(
-                    "",
-                    (a.chain_value_zat + b.chain_value_zat)
-                        .expect("sum of value balances should not overflow"),
-                    None,
-                )
-            })
-            .expect("at least one pool")
+    /// Renders domain balances as the six value-pool slots, with a pool the validator did not report as zero.
+    pub fn value_pools_from_domain(
+        pools: &[ValuePoolBalance],
+    ) -> Result<BlockchainValuePoolBalances, UnknownValuePool> {
+        let mut slots = POOL_IDS.map(|id| Self::new(id, Zatoshis::ZERO, None));
+        for pool in pools {
+            let slot = pool_slot(&pool.id)?.ok_or_else(|| UnknownValuePool(pool.id.clone()))?;
+            slots[slot] = Self::new(POOL_IDS[slot], pool.chain_value, pool.value_delta);
+        }
+        Ok(slots)
     }
 }
 

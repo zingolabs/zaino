@@ -21,7 +21,7 @@ pub struct ValidateAddressResponse {
 }
 
 /// Renders a [`ValidatedAddress`] as the `validateaddress` response.
-pub fn validate_address_from_domain(validated: ValidatedAddress) -> ValidateAddressResponse {
+pub(crate) fn validate_address_from_domain(validated: ValidatedAddress) -> ValidateAddressResponse {
     match validated {
         ValidatedAddress::Invalid => ValidateAddressResponse::default(),
         ValidatedAddress::Transparent { address, is_script } => ValidateAddressResponse {

@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use derive_getters::Getters;
-use derive_new::new;
 use hex::ToHex as _;
 use zebra_chain::{
     amount::{Amount, NegativeAllowed},
@@ -18,27 +16,23 @@ use zebra_chain::{
 
 use zcash_script::script::Asm as _;
 
-use super::hex::{arrayhex, opthex};
-use super::zec::Zec;
+use super::balance::zatoshis_to_lossy_zec;
+use super::hex::{hexvec, opthex};
 
 /// A transaction object as returned by the `getrawtransaction` and `getblock` requests.
-#[allow(clippy::too_many_arguments)]
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct TransactionObject {
     /// Whether the containing block is in the best chain, present only when a block is known.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     in_active_chain: Option<bool>,
     /// The raw transaction, encoded as hex bytes.
     #[serde(with = "hex")]
     hex: SerializedTransaction,
     /// The containing block's height in the best chain, -1 in a side chain, or `None` in the mempool.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     height: Option<i32>,
     /// The confirmations of the containing block, 0 in a side chain, or `None` in the mempool.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     confirmations: Option<i64>,
 
     /// Transparent inputs of the transaction.
@@ -65,30 +59,24 @@ pub struct TransactionObject {
     #[serde(
         skip_serializing_if = "Option::is_none",
         with = "opthex",
-        default,
         rename = "bindingSig"
     )]
-    #[getter(copy)]
     binding_sig: Option<[u8; 64]>,
 
     /// JoinSplit public key of the transaction.
     #[serde(
         skip_serializing_if = "Option::is_none",
         with = "opthex",
-        default,
         rename = "joinSplitPubKey"
     )]
-    #[getter(copy)]
     joinsplit_pub_key: Option<[u8; 32]>,
 
     /// JoinSplit signature of the transaction.
     #[serde(
         skip_serializing_if = "Option::is_none",
         with = "opthex",
-        default,
         rename = "joinSplitSig"
     )]
-    #[getter(copy)]
     joinsplit_sig: Option<[u8; ed25519::Signature::BYTE_SIZE]>,
 
     /// Orchard actions of the transaction.
@@ -101,37 +89,30 @@ pub struct TransactionObject {
 
     /// The net value of Sapling spends minus outputs, in ZEC.
     #[serde(rename = "valueBalance", skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     value_balance: Option<f64>,
 
     /// The net value of Sapling spends minus outputs, in zatoshis.
     #[serde(rename = "valueBalanceZat", skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     value_balance_zat: Option<i64>,
 
     /// The size of the transaction in bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     size: Option<i64>,
 
     /// The time the transaction was included in a block.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     time: Option<i64>,
 
     /// The transaction identifier, encoded as hex bytes.
     #[serde(with = "hex")]
-    #[getter(copy)]
     txid: transaction::Hash,
 
     /// The transaction's auth digest, all `ff` bytes for transactions before v5.
     #[serde(
         rename = "authdigest",
         with = "opthex",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
-    #[getter(copy)]
     auth_digest: Option<transaction::AuthDigest>,
 
     /// Whether the overwintered flag is set.
@@ -144,8 +125,7 @@ pub struct TransactionObject {
     #[serde(
         rename = "versiongroupid",
         with = "opthex",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     version_group_id: Option<Vec<u8>>,
 
@@ -155,29 +135,25 @@ pub struct TransactionObject {
 
     /// The height after which the transaction expires, present only for Overwinter and later transactions as in zcashd.
     #[serde(rename = "expiryheight", skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     expiry_height: Option<Height>,
 
     /// The hash of the block that contains the transaction.
     #[serde(
         rename = "blockhash",
         with = "opthex",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
-    #[getter(copy)]
     block_hash: Option<block::Hash>,
 
     /// The time of the block that contains the transaction.
     #[serde(rename = "blocktime", skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     block_time: Option<i64>,
 }
 
 /// The transparent input of a transaction.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(untagged)]
-pub enum Input {
+enum Input {
     /// A coinbase input.
     Coinbase {
         /// The coinbase scriptSig as hex.
@@ -210,8 +186,8 @@ pub enum Input {
 }
 
 /// The transparent output of a transaction.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct Output {
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Output {
     /// The value in ZEC.
     value: f64,
     /// The value in zats.
@@ -225,8 +201,8 @@ pub struct Output {
 }
 
 /// The scriptPubKey of a transaction output.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct ScriptPubKey {
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct ScriptPubKey {
     /// the asm.
     asm: String,
     /// the hex.
@@ -234,21 +210,18 @@ pub struct ScriptPubKey {
     hex: Script,
     /// The required sigs.
     #[serde(rename = "reqSigs")]
-    #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     req_sigs: Option<u32>,
     /// The type, eg 'pubkeyhash'.
     r#type: String,
     /// The addresses.
-    #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     addresses: Option<Vec<String>>,
 }
 
 /// The scriptSig of a transaction input.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct ScriptSig {
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct ScriptSig {
     /// The asm.
     asm: String,
     /// The hex.
@@ -256,10 +229,8 @@ pub struct ScriptSig {
 }
 
 /// A Sprout JoinSplit of a transaction.
-#[allow(clippy::too_many_arguments)]
-#[serde_with::serde_as]
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct JoinSplit {
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct JoinSplit {
     /// Public input value in ZEC.
     #[serde(rename = "vpub_old")]
     old_public_value: f64,
@@ -274,77 +245,60 @@ pub struct JoinSplit {
     new_public_value_zat: i64,
     /// Merkle root of the Sprout note commitment tree.
     #[serde(with = "hex")]
-    #[getter(copy)]
     anchor: [u8; 32],
     /// The nullifier of the input notes.
-    #[serde_as(as = "Vec<serde_with::hex::Hex>")]
+    #[serde(serialize_with = "hexvec")]
     nullifiers: Vec<[u8; 32]>,
     /// The commitments of the output notes.
-    #[serde_as(as = "Vec<serde_with::hex::Hex>")]
+    #[serde(serialize_with = "hexvec")]
     commitments: Vec<[u8; 32]>,
     /// The one-time public key used to encrypt the ciphertexts.
     #[serde(rename = "onetimePubKey")]
     #[serde(with = "hex")]
-    #[getter(copy)]
     one_time_pubkey: [u8; 32],
     /// The random seed.
     #[serde(rename = "randomSeed")]
     #[serde(with = "hex")]
-    #[getter(copy)]
     random_seed: [u8; 32],
     /// The input notes MACs.
-    #[serde_as(as = "Vec<serde_with::hex::Hex>")]
+    #[serde(serialize_with = "hexvec")]
     macs: Vec<[u8; 32]>,
     /// A zero-knowledge proof using the Sprout circuit.
     #[serde(with = "hex")]
     proof: Vec<u8>,
     /// The output notes ciphertexts.
-    #[serde_as(as = "Vec<serde_with::hex::Hex>")]
+    #[serde(serialize_with = "hexvec")]
     ciphertexts: Vec<Vec<u8>>,
 }
 
 /// A Sapling spend of a transaction.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct ShieldedSpend {
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+struct ShieldedSpend {
     /// Value commitment to the input note.
     #[serde(with = "hex")]
-    #[getter(skip)]
     cv: ValueCommitment,
     /// Merkle root of the Sapling note commitment tree.
     #[serde(with = "hex")]
-    #[getter(copy)]
     anchor: [u8; 32],
     /// The nullifier of the input note.
     #[serde(with = "hex")]
-    #[getter(copy)]
     nullifier: [u8; 32],
     /// The randomized public key for spendAuthSig.
     #[serde(with = "hex")]
-    #[getter(copy)]
     rk: [u8; 32],
     /// A zero-knowledge proof using the Sapling Spend circuit.
     #[serde(with = "hex")]
-    #[getter(copy)]
     proof: [u8; 192],
     /// A signature authorizing this Spend.
     #[serde(rename = "spendAuthSig", with = "hex")]
-    #[getter(copy)]
     spend_auth_sig: [u8; 64],
 }
 
-impl ShieldedSpend {
-    /// The value commitment to the input note.
-    pub fn cv(&self) -> ValueCommitment {
-        self.cv.clone()
-    }
-}
-
 /// A Sapling output of a transaction.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct ShieldedOutput {
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+struct ShieldedOutput {
     /// Value commitment to the output note.
     #[serde(with = "hex")]
-    #[getter(skip)]
     cv: ValueCommitment,
     /// The u-coordinate of the note commitment for the output note.
     #[serde(rename = "cmu", with = "hex")]
@@ -353,7 +307,7 @@ pub struct ShieldedOutput {
     #[serde(rename = "ephemeralKey", with = "hex")]
     ephemeral_key: [u8; 32],
     /// The output note encrypted to the recipient.
-    #[serde(rename = "encCiphertext", with = "arrayhex")]
+    #[serde(rename = "encCiphertext", with = "hex")]
     enc_ciphertext: [u8; 580],
     /// A ciphertext enabling the sender to recover the output note.
     #[serde(rename = "outCiphertext", with = "hex")]
@@ -363,17 +317,9 @@ pub struct ShieldedOutput {
     proof: [u8; 192],
 }
 
-impl ShieldedOutput {
-    /// The value commitment to the output note.
-    pub fn cv(&self) -> ValueCommitment {
-        self.cv.clone()
-    }
-}
-
 /// Object with Orchard-specific information.
-#[serde_with::serde_as]
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct Orchard {
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Orchard {
     /// Array of Orchard actions.
     actions: Vec<OrchardAction>,
     /// The net value of Orchard Actions in ZEC.
@@ -386,25 +332,23 @@ pub struct Orchard {
     #[serde(skip_serializing_if = "Option::is_none")]
     flags: Option<OrchardFlags>,
     /// A root of the Orchard note commitment tree at some past block height.
-    #[serde_as(as = "Option<serde_with::hex::Hex>")]
+    #[serde(with = "opthex")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[getter(copy)]
     anchor: Option<[u8; 32]>,
     /// The aggregated zk-SNARK proof for the Orchard actions.
-    #[serde_as(as = "Option<serde_with::hex::Hex>")]
+    #[serde(with = "opthex")]
     #[serde(skip_serializing_if = "Option::is_none")]
     proof: Option<Vec<u8>>,
     /// An Orchard binding signature on the SIGHASH transaction hash.
     #[serde(rename = "bindingSig")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "Option<serde_with::hex::Hex>")]
-    #[getter(copy)]
+    #[serde(with = "opthex")]
     binding_sig: Option<[u8; 64]>,
 }
 
 /// The flags of an Orchard-shaped bundle.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct OrchardFlags {
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct OrchardFlags {
     /// Whether Orchard outputs are enabled.
     #[serde(rename = "enableOutputs")]
     enable_outputs: bool,
@@ -414,9 +358,8 @@ pub struct OrchardFlags {
 }
 
 /// The Orchard action of a transaction.
-#[allow(clippy::too_many_arguments)]
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct OrchardAction {
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+struct OrchardAction {
     /// A value commitment to the net value of the input note minus the output note.
     #[serde(with = "hex")]
     cv: [u8; 32],
@@ -433,7 +376,7 @@ pub struct OrchardAction {
     #[serde(rename = "ephemeralKey", with = "hex")]
     ephemeral_key: [u8; 32],
     /// The output note encrypted to the recipient.
-    #[serde(rename = "encCiphertext", with = "arrayhex")]
+    #[serde(rename = "encCiphertext", with = "hex")]
     enc_ciphertext: [u8; 580],
     /// A signature authorizing the spend in this action.
     #[serde(rename = "spendAuthSig", with = "hex")]
@@ -468,13 +411,11 @@ fn orchard_shaped_object(
 
     Orchard {
         actions,
-        value_balance: Zec::from(value_balance).lossy_zec(),
+        value_balance: zatoshis_to_lossy_zec(value_balance.zatoshis()),
         value_balance_zat: value_balance.zatoshis(),
-        flags: shielded_data.map(|data| {
-            OrchardFlags::new(
-                data.flags.contains(orchard::Flags::ENABLE_OUTPUTS),
-                data.flags.contains(orchard::Flags::ENABLE_SPENDS),
-            )
+        flags: shielded_data.map(|data| OrchardFlags {
+            enable_outputs: data.flags.contains(orchard::Flags::ENABLE_OUTPUTS),
+            enable_spends: data.flags.contains(orchard::Flags::ENABLE_SPENDS),
         }),
         anchor: shielded_data.map(|data| data.shared_anchor.bytes_in_display_order()),
         proof: shielded_data.map(|data| data.proof.bytes_in_display_order()),
@@ -483,6 +424,16 @@ fn orchard_shaped_object(
 }
 
 impl TransactionObject {
+    /// Returns the raw transaction.
+    pub fn hex(&self) -> &SerializedTransaction {
+        &self.hex
+    }
+
+    /// Returns the containing block's height in the best chain, -1 in a side chain, or `None` in the mempool.
+    pub fn height(&self) -> Option<i32> {
+        self.height
+    }
+
     /// Renders `tx` as the verbose transaction object, placed in the chain by its block facts.
     #[allow(clippy::too_many_arguments)]
     pub fn from_transaction(
@@ -559,7 +510,7 @@ impl TransactionObject {
                         .unzip();
 
                     Output {
-                        value: Zec::from(output.1.value).lossy_zec(),
+                        value: zatoshis_to_lossy_zec(output.1.value.zatoshis()),
                         value_zat: output.1.value.zatoshis(),
                         n: output.0 as u32,
                         script_pub_key: ScriptPubKey {
@@ -643,9 +594,9 @@ impl TransactionObject {
                     ephemeral_key_bytes.reverse();
 
                     JoinSplit {
-                        old_public_value: Zec::from(joinsplit.vpub_old).lossy_zec(),
+                        old_public_value: zatoshis_to_lossy_zec(joinsplit.vpub_old.zatoshis()),
                         old_public_value_zat: joinsplit.vpub_old.zatoshis(),
-                        new_public_value: Zec::from(joinsplit.vpub_new).lossy_zec(),
+                        new_public_value: zatoshis_to_lossy_zec(joinsplit.vpub_new.zatoshis()),
                         new_public_value_zat: joinsplit.vpub_new.zatoshis(),
                         anchor: joinsplit.anchor.bytes_in_display_order(),
                         nullifiers: joinsplit
@@ -674,7 +625,9 @@ impl TransactionObject {
                     }
                 })
                 .collect(),
-            value_balance: Some(Zec::from(tx.sapling_value_balance().sapling_amount()).lossy_zec()),
+            value_balance: Some(zatoshis_to_lossy_zec(
+                tx.sapling_value_balance().sapling_amount().zatoshis(),
+            )),
             value_balance_zat: Some(tx.sapling_value_balance().sapling_amount().zatoshis()),
             orchard: Some(orchard_shaped_object(
                 tx.orchard_shielded_data(),
@@ -717,7 +670,7 @@ impl TransactionObject {
 }
 
 /// A response to a `getrawtransaction` request: the raw transaction, or its object when verbose.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(untagged)]
 pub enum GetRawTransaction {
     /// The raw transaction, encoded as hex bytes.

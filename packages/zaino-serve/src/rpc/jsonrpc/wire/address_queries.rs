@@ -2,7 +2,31 @@
 //! `getaddressutxos`, and their conversions from the domain.
 
 use zaino_primitives::types::{AddressBalance as DomainAddressBalance, Utxo};
-use zaino_state::jsonrpc_types::GetAddressUtxos;
+use zebra_chain::{
+    block::Height,
+    transaction,
+    transparent::{self, OutputIndex},
+};
+
+/// One UTXO in the `getaddressutxos` response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct GetAddressUtxos {
+    /// The transparent address, base58check encoded.
+    address: transparent::Address,
+    /// The output txid, in big-endian order, hex-encoded.
+    #[serde(with = "hex")]
+    txid: transaction::Hash,
+    /// The transparent output index.
+    #[serde(rename = "outputIndex")]
+    output_index: OutputIndex,
+    /// The transparent output script, hex encoded.
+    #[serde(with = "hex")]
+    script: transparent::Script,
+    /// The amount of zatoshis in the transparent output.
+    satoshis: u64,
+    /// The block height, last to match zcashd's field order.
+    height: Height,
+}
 
 /// The `getaddressbalance` response: the transparent balance of a set of addresses, in zatoshis.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, serde::Serialize)]
@@ -60,17 +84,18 @@ pub fn address_utxos_from_domain(
     utxos
         .into_iter()
         .map(|utxo| {
-            Ok(GetAddressUtxos::new(
-                utxo.address
+            Ok(GetAddressUtxos {
+                address: utxo
+                    .address
                     .as_str()
                     .parse()
                     .map_err(|e| UnrenderableUtxoAddress(format!("{e}")))?,
-                zebra_chain::transaction::Hash::from(<[u8; 32]>::from(utxo.txid)),
-                zebra_chain::transparent::OutputIndex::from_index(utxo.output_index),
-                zebra_chain::transparent::Script::new(&Vec::<u8>::from(utxo.script)),
-                u64::from(utxo.satoshis),
-                zebra_chain::block::Height(utxo.height.into()),
-            ))
+                txid: transaction::Hash::from(<[u8; 32]>::from(utxo.txid)),
+                output_index: OutputIndex::from_index(utxo.output_index),
+                script: transparent::Script::new(&Vec::<u8>::from(utxo.script)),
+                satoshis: u64::from(utxo.satoshis),
+                height: Height(utxo.height.into()),
+            })
         })
         .collect()
 }

@@ -2,9 +2,10 @@
 //! largest conversion in the wire layer, because this response reshapes value
 //! pools into a fixed array and renames network upgrades by consensus branch id.
 
-use crate::rpc::jsonrpc::wire::common::amount;
-use zaino_primitives::types::{BlockchainInfo, ValuePoolBalance};
-use zaino_state::jsonrpc_types::{BlockchainValuePoolBalances, GetBlockchainInfoBalance};
+use zaino_primitives::types::BlockchainInfo;
+use zaino_state::jsonrpc_types::{
+    BlockchainValuePoolBalances, GetBlockchainInfoBalance, UnknownValuePool,
+};
 use zebra_chain::{
     block,
     parameters::{ConsensusBranchId, Network, NetworkUpgrade},
@@ -96,8 +97,8 @@ pub struct TipConsensusBranch {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BlockchainInfoWireError {
     /// A value pool the interface has no slot for.
-    #[error("unknown value pool `{0}`")]
-    UnknownValuePool(String),
+    #[error(transparent)]
+    UnknownValuePool(#[from] UnknownValuePool),
 
     /// A consensus branch id this build does not recognise.
     ///
@@ -106,60 +107,6 @@ pub enum BlockchainInfoWireError {
     /// from the validator it indexes.
     #[error("validator reported consensus branch {0}, which this build does not recognise")]
     UnrecognisedConsensusBranch(String),
-}
-
-/// One value pool as the interface's balance type, keyed by pool name.
-///
-/// The name is how the interface identifies a pool, so an unrecognised one is
-/// rejected rather than silently filed under the wrong pool.
-fn pool_balance(
-    balance: &ValuePoolBalance,
-) -> Result<GetBlockchainInfoBalance, BlockchainInfoWireError> {
-    let value = amount::non_negative(balance.chain_value);
-    let delta = balance.value_delta.map(amount::negative_allowed);
-
-    Ok(match balance.id.as_str() {
-        "transparent" => GetBlockchainInfoBalance::transparent(value, delta),
-        "sprout" => GetBlockchainInfoBalance::sprout(value, delta),
-        "sapling" => GetBlockchainInfoBalance::sapling(value, delta),
-        "orchard" => GetBlockchainInfoBalance::orchard(value, delta),
-        // zebra names this pool `lockbox` on the wire; `deferred` is the legacy full node's
-        // name for the same pool, and zebra's own constructor is still called
-        // `deferred`. Both spellings are accepted so the answer does not depend
-        // on which validator is behind the adapter.
-        "lockbox" | "deferred" => GetBlockchainInfoBalance::deferred(value, delta),
-        "ironwood" => GetBlockchainInfoBalance::ironwood(value, delta),
-        // `chainSupply` is a total rather than a pool, and arrives unnamed.
-        // `chain_supply` sums a `ValueBalance`, so the total is handed to it as a
-        // one-pool balance — the only public constructor that leaves `id` empty.
-        "" => GetBlockchainInfoBalance::chain_supply(
-            zebra_chain::value_balance::ValueBalance::from_transparent_amount(value),
-        ),
-        other => return Err(BlockchainInfoWireError::UnknownValuePool(other.to_string())),
-    })
-}
-
-/// The interface reports value pools as a fixed six-slot array, in a defined
-/// order. Pools the validator did not report are zero rather than absent —
-/// there is no slot for "unknown".
-fn value_pool_array(
-    pools: &[ValuePoolBalance],
-) -> Result<BlockchainValuePoolBalances, BlockchainInfoWireError> {
-    let mut slots = GetBlockchainInfoBalance::zero_pools();
-    for pool in pools {
-        let built = pool_balance(pool)?;
-        let slot = match pool.id.as_str() {
-            "transparent" => 0,
-            "sprout" => 1,
-            "sapling" => 2,
-            "orchard" => 3,
-            "lockbox" | "deferred" => 4,
-            "ironwood" => 5,
-            other => return Err(BlockchainInfoWireError::UnknownValuePool(other.to_string())),
-        };
-        slots[slot] = built;
-    }
-    Ok(slots)
 }
 
 /// Renders the domain type as the `getblockchaininfo` response.
@@ -213,8 +160,8 @@ pub fn from_domain(
         blocks: block::Height(info.blocks.into()),
         best_block_hash: block::Hash(info.best_block_hash.into()),
         estimated_height: block::Height(info.estimated_height.into()),
-        chain_supply: pool_balance(&info.chain_supply)?,
-        value_pools: value_pool_array(&info.value_pools)?,
+        chain_supply: GetBlockchainInfoBalance::from_domain(&info.chain_supply)?,
+        value_pools: GetBlockchainInfoBalance::value_pools_from_domain(&info.value_pools)?,
         upgrades,
         consensus: TipConsensusBranch {
             chain_tip: ConsensusBranchIdHex(u32::from(info.consensus.chain_tip).into()),
@@ -239,7 +186,7 @@ mod tests {
     use super::*;
     use zaino_primitives::types::{
         BlockHash, BlockchainInfo, ConsensusBranchIds, Height, NetworkUpgradeInfo,
-        NetworkUpgradeStatus, Zatoshis,
+        NetworkUpgradeStatus, ValuePoolBalance, Zatoshis,
     };
 
     fn pool(id: &str, value: u64) -> ValuePoolBalance {
@@ -320,9 +267,9 @@ mod tests {
 
         assert_eq!(
             from_domain(info, &Network::new_regtest(Default::default())),
-            Err(BlockchainInfoWireError::UnknownValuePool(
+            Err(BlockchainInfoWireError::UnknownValuePool(UnknownValuePool(
                 "plasma".to_string()
-            ))
+            )))
         );
     }
 

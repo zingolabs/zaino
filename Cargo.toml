@@ -111,7 +111,10 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 
 # Utility
+base64 = "0.22.1"
 bytes = "1.12"
+rand = "0.10.1"
+subtle = { version = "2.6", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2.0"
 chrono = "0.4"

@@ -61,13 +61,13 @@ indexmap = { workspace = true, features = ["serde"] }
 zaino-source.workspace = true
 zaino-status.workspace = true
 zaino-consensus.workspace = true
-base64 = "0.22.1"
-rand = "0.8.5"
-subtle = { version = "2.6", default-features = false }
 bytes.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
+base64.workspace = true
+rand.workspace = true
+subtle.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

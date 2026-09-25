@@ -10,19 +10,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use zaino_chain_store_zainodb::tests::vectors::{load_vector_blocks, vectors_dir, VectorBlock};
+use zaino_chain_store_zainodb::tests::vectors::{load_vector_blocks, VectorBlock};
 use zaino_common::network::ActivationHeights;
-use zebra_chain::amount::{Amount, NegativeAllowed, NonNegative};
+use zaino_primitives::types::{SignedZatoshis, ValuePoolBalance, Zatoshis};
 use zebra_chain::block::{self, SerializedBlock};
 use zebra_chain::parameters::Network;
 use zebra_chain::serialization::ZcashSerialize as _;
 use zebra_chain::transaction::{SerializedTransaction, Transaction};
-use zebra_chain::value_balance::ValueBalance;
 
 use zaino_state::jsonrpc_types::{
-    BlockObject, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-    GetBlockHash, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoBalance, GetRawTransaction,
-    LegacyCode, TransactionObject,
+    BlockObject, BlockchainValuePoolBalances, GetAddressBalanceRequest, GetAddressTxIdsRequest,
+    GetBlock, GetBlockHash, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoBalance,
+    GetRawTransaction, LegacyCode, TransactionObject,
 };
 
 /// The directory holding this suite's golden files.
@@ -48,14 +47,15 @@ fn block_time() -> DateTime<Utc> {
     DateTime::from_timestamp(1_700_000_000, 0).expect("the fixed timestamp is in range")
 }
 
-/// A non-negative amount from a constant the test chose.
-fn amount(zatoshis: i64) -> Amount<NonNegative> {
-    Amount::try_from(zatoshis).expect("the test amount is non-negative")
-}
-
-/// A signed amount from a constant the test chose.
-fn delta(zatoshis: i64) -> Amount<NegativeAllowed> {
-    Amount::try_from(zatoshis).expect("the test delta is in range")
+/// A domain pool balance from constants the test chose.
+fn pool(id: &str, value: u64, delta: Option<i64>) -> ValuePoolBalance {
+    ValuePoolBalance {
+        id: id.to_string(),
+        chain_value: Zatoshis::new(value).expect("the test amount is in range"),
+        monitored: true,
+        value_delta: delta
+            .map(|delta| SignedZatoshis::try_new(delta).expect("the test delta is in range")),
+    }
 }
 
 /// The vector chain, which spans coinbase-only, transparent, Sapling and Orchard transactions.
@@ -152,41 +152,42 @@ fn block_response(vector: &VectorBlock, verbosity: u8, next: Option<block::Hash>
             .collect()
     };
 
-    GetBlock::Object(Box::new(BlockObject::new(
-        block_hash,
+    GetBlock::Object(Box::new(BlockObject {
+        hash: block_hash,
         confirmations,
-        Some(raw.len() as i64),
-        Some(height),
-        Some(block.header.version),
-        Some(block.header.merkle_root),
-        Some(*block.header.commitment_bytes),
-        Some(<[u8; 32]>::from(vector.sapling_root)),
-        Some(<[u8; 32]>::from(vector.orchard_root)),
-        block.transactions.len(),
+        size: Some(raw.len() as i64),
+        height: Some(height),
+        version: Some(block.header.version),
+        merkle_root: Some(block.header.merkle_root),
+        block_commitments: Some(*block.header.commitment_bytes),
+        final_sapling_root: Some(<[u8; 32]>::from(vector.sapling_root)),
+        final_orchard_root: Some(<[u8; 32]>::from(vector.orchard_root)),
+        n_tx: block.transactions.len(),
         tx,
-        Some(block_time().timestamp()),
-        Some(*block.header.nonce),
-        Some(block.header.solution),
-        Some(block.header.difficulty_threshold),
-        Some(1.5),
-        Some(GetBlockchainInfoBalance::chain_supply(ValueBalance::zero())),
-        Some(value_pools()),
-        GetBlockTrees::new(vector.sapling_tree_size, vector.orchard_tree_size, 0),
-        Some(block.header.previous_block_hash),
-        next,
-    )))
+        time: Some(block_time().timestamp()),
+        nonce: Some(*block.header.nonce),
+        solution: Some(block.header.solution),
+        bits: Some(block.header.difficulty_threshold),
+        difficulty: Some(1.5),
+        chain_supply: Some(GetBlockchainInfoBalance::empty_chain_supply()),
+        value_pools: Some(value_pools()),
+        trees: GetBlockTrees::new(vector.sapling_tree_size, vector.orchard_tree_size, 0),
+        previous_block_hash: Some(block.header.previous_block_hash),
+        next_block_hash: next,
+    }))
 }
 
-/// A value-pool array with a distinct amount and delta in every slot.
-fn value_pools() -> [GetBlockchainInfoBalance; 6] {
-    [
-        GetBlockchainInfoBalance::transparent(amount(1_000), Some(delta(-1))),
-        GetBlockchainInfoBalance::sprout(amount(2_000), None),
-        GetBlockchainInfoBalance::sapling(amount(3_000), Some(delta(3))),
-        GetBlockchainInfoBalance::orchard(amount(4_000), Some(delta(-4))),
-        GetBlockchainInfoBalance::deferred(amount(5_000), Some(delta(5))),
-        GetBlockchainInfoBalance::ironwood(amount(6_000), None),
-    ]
+/// A value-pool array with a distinct amount and delta in every slot, the lockbox named by zcashd's alias.
+fn value_pools() -> BlockchainValuePoolBalances {
+    GetBlockchainInfoBalance::value_pools_from_domain(&[
+        pool("transparent", 1_000, Some(-1)),
+        pool("sprout", 2_000, None),
+        pool("sapling", 3_000, Some(3)),
+        pool("orchard", 4_000, Some(-4)),
+        pool("deferred", 5_000, Some(5)),
+        pool("ironwood", 6_000, None),
+    ])
+    .expect("every test pool has a slot")
 }
 
 #[test]
@@ -255,20 +256,12 @@ fn getblockhash_renders_display_order_hex() {
 #[test]
 fn value_pool_balances_render_each_pool() {
     let mut balances = value_pools().to_vec();
-    balances.extend(GetBlockchainInfoBalance::zero_pools());
-    balances.push(GetBlockchainInfoBalance::chain_supply(ValueBalance::zero()));
+    balances.extend(
+        GetBlockchainInfoBalance::value_pools_from_domain(&[])
+            .expect("no pools means no unknown pool"),
+    );
+    balances.push(GetBlockchainInfoBalance::empty_chain_supply());
     assert_golden("value_pool_balances", &balances);
-}
-
-#[test]
-fn address_utxos_render_as_the_wallet_vectors_store_them() {
-    for wallet in ["faucet", "recipient"] {
-        let file = std::fs::File::open(vectors_dir().join(format!("{wallet}_data.json")))
-            .expect("the wallet vector file opens");
-        let (_txids, utxos, _balance): (Vec<String>, Vec<GetAddressUtxos>, u64) =
-            serde_json::from_reader(file).expect("the wallet vector file parses");
-        assert_golden(&format!("getaddressutxos_{wallet}"), &utxos);
-    }
 }
 
 #[test]
@@ -301,34 +294,21 @@ fn address_requests_accept_every_client_form() {
 
 #[test]
 fn legacy_codes_keep_zcashd_numbering() {
-    let codes: BTreeMap<String, i32> = [
+    let captured: BTreeMap<String, i32> = serde_json::from_str(
+        &std::fs::read_to_string(golden_dir().join("legacy_codes.json"))
+            .expect("zebra's captured numbering is present"),
+    )
+    .expect("zebra's captured numbering parses");
+
+    for (name, code) in [
         ("Misc", LegacyCode::Misc),
-        ("ForbiddenBySafeMode", LegacyCode::ForbiddenBySafeMode),
-        ("Type", LegacyCode::Type),
         ("InvalidAddressOrKey", LegacyCode::InvalidAddressOrKey),
-        ("OutOfMemory", LegacyCode::OutOfMemory),
         ("InvalidParameter", LegacyCode::InvalidParameter),
-        ("Database", LegacyCode::Database),
-        ("Deserialization", LegacyCode::Deserialization),
-        ("Verify", LegacyCode::Verify),
-        ("VerifyRejected", LegacyCode::VerifyRejected),
-        ("VerifyAlreadyInChain", LegacyCode::VerifyAlreadyInChain),
-        ("InWarmup", LegacyCode::InWarmup),
-        ("ClientNotConnected", LegacyCode::ClientNotConnected),
-        (
-            "ClientInInitialDownload",
-            LegacyCode::ClientInInitialDownload,
-        ),
-        ("ClientNodeAlreadyAdded", LegacyCode::ClientNodeAlreadyAdded),
-        ("ClientNodeNotAdded", LegacyCode::ClientNodeNotAdded),
-        ("ClientNodeNotConnected", LegacyCode::ClientNodeNotConnected),
-        (
-            "ClientInvalidIpOrSubnet",
-            LegacyCode::ClientInvalidIpOrSubnet,
-        ),
-    ]
-    .into_iter()
-    .map(|(name, code)| (name.to_string(), i32::from(code)))
-    .collect();
-    assert_golden("legacy_codes", &codes);
+    ] {
+        assert_eq!(
+            Some(&i32::from(code)),
+            captured.get(name),
+            "{name} is numbered as zebra numbered it"
+        );
+    }
 }

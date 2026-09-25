@@ -162,3 +162,117 @@ fn read_sized<R: Read>(mut r: R) -> io::Result<Vec<u8>> {
     r.read_exact(&mut bytes)?;
     Ok(bytes)
 }
+
+/// One wallet's recorded view of the vector chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorWallet {
+    /// Transaction ids touching this wallet, hex-encoded, in chain order.
+    pub txids: Vec<String>,
+    /// The wallet's unspent outputs.
+    pub utxos: Vec<VectorUtxo>,
+    /// The wallet's transparent balance.
+    pub balance: u64,
+}
+
+/// One unspent output as a wallet vector file records it, in the `getaddressutxos` shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VectorUtxo {
+    address: zebra_chain::transparent::Address,
+    txid: zebra_chain::transaction::Hash,
+    output_index: zebra_chain::transparent::OutputIndex,
+    script: zebra_chain::transparent::Script,
+    satoshis: u64,
+    height: zebra_chain::block::Height,
+}
+
+impl VectorUtxo {
+    /// Returns the output's fields in the order the vector file records them.
+    pub fn into_parts(
+        &self,
+    ) -> (
+        zebra_chain::transparent::Address,
+        zebra_chain::transaction::Hash,
+        zebra_chain::transparent::OutputIndex,
+        zebra_chain::transparent::Script,
+        u64,
+        zebra_chain::block::Height,
+    ) {
+        (
+            self.address,
+            self.txid,
+            self.output_index,
+            self.script.clone(),
+            self.satoshis,
+            self.height,
+        )
+    }
+
+    /// Reads one output object from a wallet vector file.
+    fn from_json(utxo: &serde_json::Value) -> io::Result<Self> {
+        let text = |name: &str| {
+            utxo[name]
+                .as_str()
+                .ok_or_else(|| invalid_wallet(format!("utxo field {name} is not a string")))
+        };
+        let number = |name: &str| {
+            utxo[name]
+                .as_u64()
+                .ok_or_else(|| invalid_wallet(format!("utxo field {name} is not a number")))
+        };
+        Ok(Self {
+            address: text("address")?
+                .parse()
+                .map_err(|error| invalid_wallet(format!("utxo address: {error}")))?,
+            txid: hex::FromHex::from_hex(text("txid")?)
+                .map_err(|error| invalid_wallet(format!("utxo txid: {error}")))?,
+            output_index: zebra_chain::transparent::OutputIndex::from_u64(number("outputIndex")?),
+            script: zebra_chain::transparent::Script::new(
+                &hex::decode(text("script")?)
+                    .map_err(|error| invalid_wallet(format!("utxo script: {error}")))?,
+            ),
+            satoshis: number("satoshis")?,
+            height: zebra_chain::block::Height(
+                u32::try_from(number("height")?)
+                    .map_err(|error| invalid_wallet(format!("utxo height: {error}")))?,
+            ),
+        })
+    }
+}
+
+/// A wallet vector file that does not have the recorded shape.
+fn invalid_wallet(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// Reads the wallet vector file `file`, recorded as `[txids, utxos, balance]`.
+pub fn load_wallet(file: &str) -> io::Result<VectorWallet> {
+    let wallet: serde_json::Value =
+        serde_json::from_reader(BufReader::new(File::open(vectors_dir().join(file))?))
+            .map_err(|error| invalid_wallet(format!("{file}: {error}")))?;
+    let [txids, utxos, balance] = wallet
+        .as_array()
+        .and_then(|parts| <&[serde_json::Value; 3]>::try_from(parts.as_slice()).ok())
+        .ok_or_else(|| invalid_wallet(format!("{file} is not [txids, utxos, balance]")))?;
+
+    Ok(VectorWallet {
+        txids: txids
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|txid| {
+                txid.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| invalid_wallet(format!("{file}: a txid is not a string")))
+            })
+            .collect::<io::Result<_>>()?,
+        utxos: utxos
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(VectorUtxo::from_json)
+            .collect::<io::Result<_>>()?,
+        balance: balance
+            .as_u64()
+            .ok_or_else(|| invalid_wallet(format!("{file}: the balance is not a number")))?,
+    })
+}

@@ -12,8 +12,11 @@ depends on zebra-rpc or zebra-state.
 crate = "zaino-state"
 kind = "breaking"
 description = """
-Address validation on the address requests reports an \
-InvalidTransparentAddress instead of a jsonrpsee error object.
+Address validation is the valid_addresses function over address strings, \
+and it reports an InvalidTransparentAddress instead of a jsonrpsee error \
+object. The served response types are serialize-only, LegacyCode keeps only \
+the three codes Zaino reports, and getaddressutxos's response type moves to \
+zaino-serve.
 """
 
 [[changes]]

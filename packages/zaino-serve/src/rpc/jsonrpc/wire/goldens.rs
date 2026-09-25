@@ -1,12 +1,9 @@
 //! Pins the JSON of every response `zaino-serve` renders from the domain to golden files.
 
-#![forbid(unsafe_code)]
-
-#[path = "../../zaino-state/tests/support/golden.rs"]
-mod golden;
-
 use std::path::PathBuf;
 
+use super::{address, address_queries, blockchain_info, hashes, node_info, subtrees, treestate};
+use crate::golden;
 use zaino_common::network::ActivationHeights;
 use zaino_primitives::types::rpc::{NodeInfo, SubtreeRoots};
 use zaino_primitives::types::{
@@ -14,9 +11,6 @@ use zaino_primitives::types::{
     NetworkUpgradeStatus, PoolTreestate, Script, ShieldedPool, SignedZatoshis, SubtreeRoot,
     TransactionId, TransparentAddress, TreeRoot, Treestate, Utxo, ValuePoolBalance, Zatoshis,
     ZatoshisFlowSum,
-};
-use zaino_serve::rpc::jsonrpc::wire::{
-    address, address_queries, blockchain_info, hashes, node_info, subtrees, treestate,
 };
 
 /// Asymmetric under reversal, so a missing or doubled byte-reversal changes the golden.

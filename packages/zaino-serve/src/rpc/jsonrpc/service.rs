@@ -9,13 +9,13 @@ use zaino_address::DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION;
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
 use zaino_state::jsonrpc_types::{
-    self, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock,
-    GetBlockHash, GetRawTransaction,
+    self, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash,
+    GetRawTransaction,
 };
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
 
 use crate::rpc::jsonrpc::wire::address::ValidateAddressResponse;
-use crate::rpc::jsonrpc::wire::address_queries::AddressBalance;
+use crate::rpc::jsonrpc::wire::address_queries::{AddressBalance, GetAddressUtxos};
 use crate::rpc::jsonrpc::wire::blockchain_info::GetBlockchainInfoResponse;
 use crate::rpc::jsonrpc::wire::hashes::SentTransactionHash;
 use crate::rpc::jsonrpc::wire::node_info::GetInfo;

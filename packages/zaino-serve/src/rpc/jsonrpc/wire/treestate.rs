@@ -14,9 +14,6 @@ pub struct GetTreestateResponse {
     height: zebra_chain::block::Height,
     /// The block's time, in seconds since the Unix epoch.
     time: u32,
-    /// The Sprout treestate, which Zaino never serves.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sprout: Option<WireTreestate>,
     /// The Sapling treestate.
     sapling: WireTreestate,
     /// The Orchard treestate.
@@ -104,7 +101,6 @@ pub fn from_domain(trees: Treestate) -> GetTreestateResponse {
         hash: zebra_chain::block::Hash(trees.block_hash.into()),
         height: zebra_chain::block::Height(trees.height.into()),
         time: trees.time,
-        sprout: None,
         sapling: pool(trees.sapling, RootOrder::Reversed),
         orchard: pool(trees.orchard, RootOrder::AsIs),
         // The ironwood field is `Some` only from NU6.3, so pre-NU6.3 responses

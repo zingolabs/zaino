@@ -34,7 +34,7 @@ use zaino_primitives::types::HashOrHeight;
 use zaino_source::QueryError;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 
-use crate::jsonrpc_types::{self, ValidateAddresses as _};
+use crate::jsonrpc_types;
 
 use super::source::{BlockchainSource, BlockchainSourceError, BlockchainSourceResult};
 use super::source_ports::ChainIndexSourcePorts;
@@ -231,8 +231,7 @@ fn block_from_bytes(
 fn address_strings_to_vec(
     request: &jsonrpc_types::GetAddressBalanceRequest,
 ) -> Result<Vec<String>, BlockchainSourceError> {
-    Ok(request
-        .valid_addresses()
+    Ok(jsonrpc_types::valid_addresses(request.addresses())
         .map_err(|e| invalid(format!("invalid address: {e}")))?
         .into_iter()
         .map(|address| address.to_string())
@@ -310,77 +309,9 @@ fn parse_display_hash32(hex_str: &str) -> Result<[u8; 32], BlockchainSourceError
     Ok(internal)
 }
 
-/// A signed zatoshi amount as zebra's checked type.
-fn amount<C: zebra_chain::amount::Constraint>(
-    zats: i64,
-) -> Result<zebra_chain::amount::Amount<C>, BlockchainSourceError> {
-    zebra_chain::amount::Amount::try_from(zats)
-        .map_err(|e| invalid(format!("amount out of range: {e}")))
-}
-
-/// One value pool as the interface's balance type, keyed by pool name.
-///
-/// The name is how the interface identifies a pool, so an unrecognised one is
-/// rejected rather than silently filed under the wrong pool.
-fn pool_balance(
-    balance: Option<&zaino_primitives::types::ValuePoolBalance>,
-) -> Result<jsonrpc_types::GetBlockchainInfoBalance, BlockchainSourceError> {
-    use jsonrpc_types::GetBlockchainInfoBalance;
-
-    let Some(balance) = balance else {
-        return Ok(GetBlockchainInfoBalance::chain_supply(Default::default()));
-    };
-    let value = amount(
-        i64::try_from(u64::from(balance.chain_value))
-            .map_err(|_| invalid("pool balance out of range".to_string()))?,
-    )?;
-    let delta = balance
-        .value_delta
-        .map(|d| amount(i64::from(d)))
-        .transpose()?;
-
-    Ok(match balance.id.as_str() {
-        "transparent" => GetBlockchainInfoBalance::transparent(value, delta),
-        "sprout" => GetBlockchainInfoBalance::sprout(value, delta),
-        "sapling" => GetBlockchainInfoBalance::sapling(value, delta),
-        "orchard" => GetBlockchainInfoBalance::orchard(value, delta),
-        // zebra names this pool `lockbox` on the wire; `deferred` is the legacy full node's
-        // name for the same pool, and zebra's own constructor is still called
-        // `deferred`. Both spellings are accepted so the answer does not depend
-        // on which validator is behind the adapter.
-        "lockbox" | "deferred" => GetBlockchainInfoBalance::deferred(value, delta),
-        "ironwood" => GetBlockchainInfoBalance::ironwood(value, delta),
-        // `chainSupply` is a total rather than a pool, and arrives unnamed.
-        // `chain_supply` sums a `ValueBalance`, so the total is handed to it as a
-        // one-pool balance — the only public constructor that leaves `id` empty.
-        "" => GetBlockchainInfoBalance::chain_supply(
-            zebra_chain::value_balance::ValueBalance::from_transparent_amount(value),
-        ),
-        other => return Err(invalid(format!("unknown value pool `{other}`"))),
-    })
-}
-
-/// The interface reports value pools as a fixed six-slot array, in a defined
-/// order. Pools the validator did not report are zero rather than absent —
-/// there is no slot for "unknown".
-fn value_pool_array(
-    pools: &[zaino_primitives::types::ValuePoolBalance],
-) -> Result<jsonrpc_types::BlockchainValuePoolBalances, BlockchainSourceError> {
-    let mut slots = jsonrpc_types::GetBlockchainInfoBalance::zero_pools();
-    for pool in pools {
-        let built = pool_balance(Some(pool))?;
-        let slot = match pool.id.as_str() {
-            "transparent" => 0,
-            "sprout" => 1,
-            "sapling" => 2,
-            "orchard" => 3,
-            "lockbox" | "deferred" => 4,
-            "ironwood" => 5,
-            other => return Err(invalid(format!("unknown value pool `{other}`"))),
-        };
-        slots[slot] = built;
-    }
-    Ok(slots)
+/// Reports a pool name the interface has no slot for as invalid validator data.
+fn unknown_pool(error: jsonrpc_types::UnknownValuePool) -> BlockchainSourceError {
+    invalid(error.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -706,42 +637,49 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                 .collect()
         };
 
-        Ok(GetBlock::Object(Box::new(jsonrpc_types::BlockObject::new(
-            block_hash,
-            verbose.confirmations.to_rpc_i64(),
-            Some(raw.len() as i64),
-            Some(block_height),
-            Some(block.header.version),
-            Some(block.header.merkle_root),
-            Some(*block.header.commitment_bytes),
-            roots.sapling.map(|info| <[u8; 32]>::from(info.root)),
-            roots.orchard.map(|info| <[u8; 32]>::from(info.root)),
-            block.transactions.len(),
+        Ok(GetBlock::Object(Box::new(jsonrpc_types::BlockObject {
+            hash: block_hash,
+            confirmations: verbose.confirmations.to_rpc_i64(),
+            size: Some(raw.len() as i64),
+            height: Some(block_height),
+            version: Some(block.header.version),
+            merkle_root: Some(block.header.merkle_root),
+            block_commitments: Some(*block.header.commitment_bytes),
+            final_sapling_root: roots.sapling.map(|info| <[u8; 32]>::from(info.root)),
+            final_orchard_root: roots.orchard.map(|info| <[u8; 32]>::from(info.root)),
+            n_tx: block.transactions.len(),
             tx,
-            Some(block_time.timestamp()),
-            Some(*block.header.nonce),
-            Some(block.header.solution),
-            Some(block.header.difficulty_threshold),
-            Some(verbose.difficulty),
-            match verbose.chain_supply.as_ref() {
-                Some(supply) => Some(pool_balance(Some(supply))?),
-                None => None,
-            },
-            if verbose.value_pools.is_empty() {
+            time: Some(block_time.timestamp()),
+            nonce: Some(*block.header.nonce),
+            solution: Some(block.header.solution),
+            bits: Some(block.header.difficulty_threshold),
+            difficulty: Some(verbose.difficulty),
+            chain_supply: verbose
+                .chain_supply
+                .as_ref()
+                .map(jsonrpc_types::GetBlockchainInfoBalance::from_domain)
+                .transpose()
+                .map_err(unknown_pool)?,
+            value_pools: if verbose.value_pools.is_empty() {
                 None
             } else {
-                Some(value_pool_array(&verbose.value_pools)?)
+                Some(
+                    jsonrpc_types::GetBlockchainInfoBalance::value_pools_from_domain(
+                        &verbose.value_pools,
+                    )
+                    .map_err(unknown_pool)?,
+                )
             },
-            GetBlockTrees::new(
+            trees: GetBlockTrees::new(
                 u64::from(verbose.tree_sizes.sapling),
                 u64::from(verbose.tree_sizes.orchard),
                 u64::from(verbose.tree_sizes.ironwood),
             ),
-            Some(block.header.previous_block_hash),
-            verbose
+            previous_block_hash: Some(block.header.previous_block_hash),
+            next_block_hash: verbose
                 .next_block_hash
                 .map(|h| zebra_chain::block::Hash(h.into())),
-        ))))
+        })))
     }
 
     // ***** Headers, deltas, chain info *****

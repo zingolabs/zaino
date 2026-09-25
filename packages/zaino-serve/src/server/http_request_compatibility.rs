@@ -141,7 +141,7 @@ impl<S> tower::Layer<S> for HttpRequestMiddlewareLayer {
 
 impl<S> Service<HttpRequest<HttpBody>> for HttpRequestMiddleware<S>
 where
-    S: Service<HttpRequest, Response = HttpResponse> + Clone + Send + 'static,
+    S: Service<HttpRequest, Response = HttpResponse> + Clone + Send + Unpin + 'static,
     S::Error: Into<BoxError> + 'static,
     S::Future: Send + 'static,
 {
@@ -168,7 +168,7 @@ where
             stage: Stage::ReadingRequest {
                 parts: Some(parts),
                 body: Box::pin(Limited::new(body, self.max_request_body_size).collect()),
-                service: Box::new(self.service.clone()),
+                service: self.service.clone(),
             },
         }
     }
@@ -187,7 +187,7 @@ enum Stage<S: Service<HttpRequest>> {
     ReadingRequest {
         parts: Option<http::request::Parts>,
         body: Pin<Box<Collect<Limited<HttpBody>>>>,
-        service: Box<S>,
+        service: S,
     },
     /// Awaiting the inner service's response.
     Calling {
@@ -206,7 +206,7 @@ enum Stage<S: Service<HttpRequest>> {
 
 impl<S> Future for HttpRequestFuture<S>
 where
-    S: Service<HttpRequest, Response = HttpResponse>,
+    S: Service<HttpRequest, Response = HttpResponse> + Unpin,
     S::Error: Into<BoxError>,
 {
     type Output = Result<HttpResponse, BoxError>;

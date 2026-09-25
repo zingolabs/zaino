@@ -1,7 +1,7 @@
 //! Mock BlockchainSourceResult implementation.
 
 use super::*;
-use crate::jsonrpc_types::ValidateAddresses as _;
+use crate::jsonrpc_types;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -1085,13 +1085,9 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
         &self,
         addresses: Vec<String>,
     ) -> Result<domain::AddressBalance, PortError<zaino_source::GetAddressBalanceError>> {
-        let valid = GetAddressBalanceRequest::new(addresses)
-            .valid_addresses()
-            .map_err(|error| {
-                port_fault::<zaino_source::GetAddressBalanceError>(format!(
-                    "invalid address: {error}"
-                ))
-            })?;
+        let valid = jsonrpc_types::valid_addresses(&addresses).map_err(|error| {
+            port_fault::<zaino_source::GetAddressBalanceError>(format!("invalid address: {error}"))
+        })?;
 
         let network = mockchain_network();
         let matching = self.matching_transparent_outputs(&valid, &network);
@@ -1140,13 +1136,9 @@ impl zaino_source::OneShotGetAddressTxids for MockchainSource {
         start: domain::Height,
         end: domain::Height,
     ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetAddressTxidsError>> {
-        let valid = GetAddressBalanceRequest::new(addresses)
-            .valid_addresses()
-            .map_err(|error| {
-                port_fault::<zaino_source::GetAddressTxidsError>(format!(
-                    "invalid address: {error}"
-                ))
-            })?;
+        let valid = jsonrpc_types::valid_addresses(&addresses).map_err(|error| {
+            port_fault::<zaino_source::GetAddressTxidsError>(format!("invalid address: {error}"))
+        })?;
 
         let tip = self.active_height();
         if start > end {
@@ -1185,13 +1177,9 @@ impl zaino_source::OneShotGetAddressUtxos for MockchainSource {
         &self,
         addresses: Vec<String>,
     ) -> Result<Vec<domain::Utxo>, PortError<zaino_source::GetAddressUtxosError>> {
-        let valid = GetAddressBalanceRequest::new(addresses)
-            .valid_addresses()
-            .map_err(|error| {
-                port_fault::<zaino_source::GetAddressUtxosError>(format!(
-                    "invalid address: {error}"
-                ))
-            })?;
+        let valid = jsonrpc_types::valid_addresses(&addresses).map_err(|error| {
+            port_fault::<zaino_source::GetAddressUtxosError>(format!("invalid address: {error}"))
+        })?;
 
         let network = mockchain_network();
         let spent = self.spent_transparent_outpoints();
@@ -1381,13 +1369,9 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
     ) -> Result<Vec<domain::AddressDelta>, PortError<zaino_source::GetAddressDeltasError>> {
         use zaino_source::OneShotGetAddressTxids as _;
 
-        let valid = GetAddressBalanceRequest::new(addresses.clone())
-            .valid_addresses()
-            .map_err(|error| {
-                port_fault::<zaino_source::GetAddressDeltasError>(format!(
-                    "invalid address: {error}"
-                ))
-            })?;
+        let valid = jsonrpc_types::valid_addresses(&addresses).map_err(|error| {
+            port_fault::<zaino_source::GetAddressDeltasError>(format!("invalid address: {error}"))
+        })?;
         let network = mockchain_network();
         let requested: Vec<String> = normalize_requested_addresses_for_network(&valid, &network)
             .into_iter()

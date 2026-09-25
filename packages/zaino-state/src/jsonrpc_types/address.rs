@@ -1,12 +1,6 @@
 use std::collections::HashSet;
 
-use derive_getters::Getters;
-use derive_new::new;
-use zebra_chain::{
-    block::Height,
-    transaction,
-    transparent::{self, Address, OutputIndex},
-};
+use zebra_chain::transparent::Address;
 
 /// A request for the transparent balance of a set of addresses.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Deserialize, serde::Serialize)]
@@ -44,6 +38,11 @@ impl GetAddressBalanceRequest {
     pub fn new(addresses: Vec<String>) -> GetAddressBalanceRequest {
         GetAddressBalanceRequest { addresses }
     }
+
+    /// Returns the address strings as the client sent them.
+    pub fn addresses(&self) -> &[String] {
+        &self.addresses
+    }
 }
 
 /// An address string that is not a valid transparent address.
@@ -56,88 +55,27 @@ pub struct InvalidTransparentAddress {
     pub reason: String,
 }
 
-/// A request that carries address strings to be validated as transparent addresses.
-pub trait ValidateAddresses {
-    /// Parses every address string, failing on the first that is not a valid transparent address.
-    fn valid_addresses(&self) -> Result<HashSet<Address>, InvalidTransparentAddress> {
-        self.addresses()
-            .iter()
-            .map(|address| {
-                address
-                    .parse()
-                    .map_err(|error: zebra_chain::serialization::SerializationError| {
-                        InvalidTransparentAddress {
-                            address: address.clone(),
-                            reason: error.to_string(),
-                        }
-                    })
-            })
-            .collect()
-    }
-
-    /// Returns the address strings as the client sent them.
-    fn addresses(&self) -> &[String];
-}
-
-impl ValidateAddresses for GetAddressBalanceRequest {
-    fn addresses(&self) -> &[String] {
-        &self.addresses
-    }
-}
-
-/// A UTXO returned by the `getaddressutxos` request.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, Getters, new)]
-pub struct GetAddressUtxos {
-    /// The transparent address, base58check encoded.
-    address: transparent::Address,
-
-    /// The output txid, in big-endian order, hex-encoded.
-    #[serde(with = "hex")]
-    #[getter(copy)]
-    txid: transaction::Hash,
-
-    /// The transparent output index.
-    #[serde(rename = "outputIndex")]
-    #[getter(copy)]
-    output_index: OutputIndex,
-
-    /// The transparent output script, hex encoded.
-    #[serde(with = "hex")]
-    script: transparent::Script,
-
-    /// The amount of zatoshis in the transparent output.
-    satoshis: u64,
-
-    /// The block height, last to match zcashd's field order.
-    #[getter(copy)]
-    height: Height,
-}
-
-impl GetAddressUtxos {
-    /// Returns the UTXO's fields in declaration order.
-    pub fn into_parts(
-        &self,
-    ) -> (
-        transparent::Address,
-        transaction::Hash,
-        OutputIndex,
-        transparent::Script,
-        u64,
-        Height,
-    ) {
-        (
-            self.address,
-            self.txid,
-            self.output_index,
-            self.script.clone(),
-            self.satoshis,
-            self.height,
-        )
-    }
+/// Parses every address string, failing on the first that is not a valid transparent address.
+pub fn valid_addresses(
+    addresses: &[String],
+) -> Result<HashSet<Address>, InvalidTransparentAddress> {
+    addresses
+        .iter()
+        .map(|address| {
+            address
+                .parse()
+                .map_err(|error: zebra_chain::serialization::SerializationError| {
+                    InvalidTransparentAddress {
+                        address: address.clone(),
+                        reason: error.to_string(),
+                    }
+                })
+        })
+        .collect()
 }
 
 /// A request for the transaction ids that touch a set of addresses, optionally within a height range.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize, Getters, new)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(from = "DGetAddressTxIdsRequest")]
 pub struct GetAddressTxIdsRequest {
     /// The addresses whose transactions are requested.
@@ -149,6 +87,15 @@ pub struct GetAddressTxIdsRequest {
 }
 
 impl GetAddressTxIdsRequest {
+    /// Creates a request for `addresses`, optionally bounded by `start` and `end`.
+    pub fn new(addresses: Vec<String>, start: Option<u32>, end: Option<u32>) -> Self {
+        Self {
+            addresses,
+            start,
+            end,
+        }
+    }
+
     /// Returns the addresses and the range, with an absent bound as zero.
     pub fn into_parts(&self) -> (Vec<String>, u32, u32) {
         (
@@ -195,10 +142,4 @@ enum DGetAddressTxIdsRequest {
         /// The height to end looking for transactions.
         end: Option<u32>,
     },
-}
-
-impl ValidateAddresses for GetAddressTxIdsRequest {
-    fn addresses(&self) -> &[String] {
-        &self.addresses
-    }
 }
