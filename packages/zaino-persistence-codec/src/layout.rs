@@ -165,6 +165,108 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// A single on-disk layout atom: how one field of a [`PersistentRecord`]
+/// (crate::PersistentRecord) crosses to and from bytes.
+///
+/// A DTO's `encode`/`decode` is one call per field in declaration order, so the
+/// per-type byte logic lives here — one small, unit-testable impl per atom —
+/// rather than in the derive macro. `#[derive(PersistentRecord)]` emits nothing
+/// but a call to [`encode`](LayoutAtom::encode)/[`decode`](LayoutAtom::decode)
+/// for each field, so the encode and decode sides cannot drift from each other or
+/// from the struct's fields.
+///
+/// The atoms mirror what [`Writer`]/[`Cursor`] provide: `u8`, little-endian
+/// `u32`/`u64`, any `[u8; N]` (raw `N` bytes — this covers the 32-byte
+/// hash/commitment width), and `Vec<u8>` (length-framed). Big-endian integers —
+/// the key-ordering case — are their own atoms, [`BeU32`]/[`BeU64`], which the
+/// derive selects for a `#[persistent(be)]` field.
+pub trait LayoutAtom: Sized {
+    /// Append this value's on-disk bytes to `writer`.
+    fn encode(&self, writer: &mut Writer);
+
+    /// Read this value back from `cursor`, or fail on a short/malformed buffer.
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError>;
+}
+
+impl LayoutAtom for u8 {
+    fn encode(&self, writer: &mut Writer) {
+        writer.raw(&[*self]);
+    }
+
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError> {
+        Ok(cursor.array::<1>()?[0])
+    }
+}
+
+impl LayoutAtom for u32 {
+    fn encode(&self, writer: &mut Writer) {
+        writer.u32(*self);
+    }
+
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError> {
+        cursor.u32()
+    }
+}
+
+impl LayoutAtom for u64 {
+    fn encode(&self, writer: &mut Writer) {
+        writer.u64(*self);
+    }
+
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError> {
+        cursor.u64()
+    }
+}
+
+impl<const N: usize> LayoutAtom for [u8; N] {
+    fn encode(&self, writer: &mut Writer) {
+        writer.raw(self);
+    }
+
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError> {
+        cursor.array::<N>()
+    }
+}
+
+impl LayoutAtom for Vec<u8> {
+    fn encode(&self, writer: &mut Writer) {
+        writer.len_prefixed(self);
+    }
+
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError> {
+        cursor.len_prefixed()
+    }
+}
+
+/// A big-endian `u32` layout atom — the key-ordering case, where lexicographic
+/// byte order must match numeric order. Selected by `#[persistent(be)]` on a
+/// `u32` field.
+pub struct BeU32(pub u32);
+
+impl LayoutAtom for BeU32 {
+    fn encode(&self, writer: &mut Writer) {
+        writer.raw(&self.0.to_be_bytes());
+    }
+
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError> {
+        Ok(Self(u32::from_be_bytes(cursor.array::<4>()?)))
+    }
+}
+
+/// A big-endian `u64` layout atom — see [`BeU32`]. Selected by
+/// `#[persistent(be)]` on a `u64` field.
+pub struct BeU64(pub u64);
+
+impl LayoutAtom for BeU64 {
+    fn encode(&self, writer: &mut Writer) {
+        writer.raw(&self.0.to_be_bytes());
+    }
+
+    fn decode(cursor: &mut Cursor) -> Result<Self, DecodeError> {
+        Ok(Self(u64::from_be_bytes(cursor.array::<8>()?)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +300,59 @@ mod tests {
         let mut c = Cursor::new(&[0u8; 5]);
         assert_eq!(c.u32().expect("u32"), 0);
         assert!(c.finish().is_err());
+    }
+
+    /// Encode one atom, then decode it back, asserting equality.
+    fn round_trip<A: LayoutAtom + PartialEq + core::fmt::Debug>(value: A) {
+        let mut w = Writer::new();
+        value.encode(&mut w);
+        let bytes = w.into_bytes();
+        let mut c = Cursor::new(&bytes);
+        let back = A::decode(&mut c).expect("decode");
+        c.finish().expect("consumed all");
+        assert_eq!(back, value);
+    }
+
+    #[test]
+    fn layout_atoms_round_trip() {
+        round_trip(0xABu8);
+        round_trip(0x2233_4455u32);
+        round_trip(0x0102_0304_0506_0708u64);
+        round_trip([0x7u8; 32]);
+        round_trip([0x9u8; 5]);
+        round_trip(vec![1u8, 2, 3]);
+        round_trip(Vec::<u8>::new());
+    }
+
+    #[test]
+    fn be_atoms_write_big_endian_bytes_and_round_trip() {
+        let mut w = Writer::new();
+        BeU32(0x0102_0304).encode(&mut w);
+        BeU64(0x0102_0304_0506_0708).encode(&mut w);
+        let bytes = w.into_bytes();
+
+        // Big-endian: most-significant byte first, distinct from the LE atoms.
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&0x0102_0304u32.to_be_bytes());
+        expected.extend_from_slice(&0x0102_0304_0506_0708u64.to_be_bytes());
+        assert_eq!(bytes, expected);
+
+        let mut c = Cursor::new(&bytes);
+        assert_eq!(BeU32::decode(&mut c).expect("be32").0, 0x0102_0304);
+        assert_eq!(
+            BeU64::decode(&mut c).expect("be64").0,
+            0x0102_0304_0506_0708,
+        );
+        c.finish().expect("consumed all");
+    }
+
+    #[test]
+    fn a_short_buffer_fails_each_atom() {
+        assert!(<u32 as LayoutAtom>::decode(&mut Cursor::new(&[0u8; 3])).is_err());
+        assert!(<[u8; 32] as LayoutAtom>::decode(&mut Cursor::new(&[0u8; 8])).is_err());
+        // A length prefix promising more bytes than remain.
+        let mut framed = 9u32.to_le_bytes().to_vec();
+        framed.extend_from_slice(&[0u8; 2]);
+        assert!(<Vec<u8> as LayoutAtom>::decode(&mut Cursor::new(&framed)).is_err());
     }
 }
