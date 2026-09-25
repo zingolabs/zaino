@@ -5755,7 +5755,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-proto"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "librocksdb-sys",
  "prost",
