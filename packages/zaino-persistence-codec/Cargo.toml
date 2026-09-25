@@ -1,0 +1,19 @@
+[package]
+name = "zaino-persistence-codec"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "The domain persistence port: typed, versioned entries over the low-level KV backend, with reject-and-rebuild on a format-version mismatch."
+
+[dependencies]
+zaino-persistence = { workspace = true }
+zaino-persistence-macros = { workspace = true }
+thiserror = { workspace = true }
+zaino-primitives = { version = "0.2.0", path = "../zaino-primitives" }
+
+[dev-dependencies]
+zaino-persistence = { workspace = true, features = ["testing"] }

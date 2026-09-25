@@ -7,6 +7,9 @@ members = [
     "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-persistence",
+    "packages/zaino-persistence-macros",
+    "packages/zaino-persistence-codec",
+    "packages/zaino-backend-lmdb",
     "packages/zaino-address",
     "packages/zaino-source-macros",
     "packages/zaino-source",
@@ -156,6 +159,12 @@ zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.2.0" }
+# Persistence port + its codec/macros and the LMDB backend adapter (greenfield
+# runtime storage layer; additive, not yet wired into the daemon).
+zaino-persistence = { path = "packages/zaino-persistence", version = "0.1.0" }
+zaino-persistence-macros = { path = "packages/zaino-persistence-macros", version = "0.1.0" }
+zaino-persistence-codec = { path = "packages/zaino-persistence-codec", version = "0.1.0" }
+zaino-backend-lmdb = { path = "packages/zaino-backend-lmdb", version = "0.1.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
 zaino-address = { path = "packages/zaino-address", version = "0.1.0" }

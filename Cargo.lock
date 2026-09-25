@@ -6004,6 +6004,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-backend-lmdb"
+version = "0.1.0"
+dependencies = [
+ "lmdb",
+ "tempfile",
+ "zaino-persistence",
+]
+
+[[package]]
 name = "zaino-chain-head"
 version = "0.1.0"
 dependencies = [
@@ -6178,6 +6187,25 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.20",
  "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-persistence-codec"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+ "zaino-persistence",
+ "zaino-persistence-macros",
+ "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-persistence-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
