@@ -16,7 +16,10 @@
 //! component fell out). Everything else is a pure function of the current
 //! component statuses.
 
-use zaino_component::{ComponentStatus, Health, Lifecycle};
+use zaino_component::{ComponentStatus, Health, Lifecycle, Progress};
+
+/// The default for [`ReadinessCriteria::max_blocks_behind`], equal to Zebra's `ready_max_blocks_behind`.
+const DEFAULT_MAX_BLOCKS_BEHIND: u64 = 2;
 
 /// The app's macro-lifecycle — the state the probes are projected from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,12 +43,49 @@ pub struct ReadinessCriteria {
     /// Whether a component still `Syncing` blocks readiness. Full mode gates on
     /// sync; ephemeral mode (passthrough, no local index) does not.
     pub sync_gated: bool,
+    /// The most blocks a component may trail its known target and still count as serving, or `None` to ignore lag.
+    pub max_blocks_behind: Option<u64>,
 }
 
 impl Default for ReadinessCriteria {
     fn default() -> Self {
         // Full mode: a component that is still syncing is not yet serving.
-        Self { sync_gated: true }
+        Self {
+            sync_gated: true,
+            max_blocks_behind: Some(DEFAULT_MAX_BLOCKS_BEHIND),
+        }
+    }
+}
+
+/// How a component's reported progress compares with [`ReadinessCriteria::max_blocks_behind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lag {
+    /// The criteria ignore lag, or the component reported no progress or no target.
+    Unknown,
+    /// The component trails its target by at most the tolerated number of blocks.
+    Tolerated,
+    /// The component trails its target by more than the tolerated number of blocks.
+    Excessive,
+}
+
+impl ReadinessCriteria {
+    /// Classifies `progress` against the lag tolerance.
+    fn lag(&self, progress: Option<Progress>) -> Lag {
+        let (
+            Some(max),
+            Some(Progress {
+                current,
+                target: Some(target),
+            }),
+        ) = (self.max_blocks_behind, progress)
+        else {
+            return Lag::Unknown;
+        };
+        if target.saturating_sub(current) <= max {
+            Lag::Tolerated
+        } else {
+            Lag::Excessive
+        }
     }
 }
 
@@ -59,6 +99,8 @@ enum Contribution {
     ComingUp,
     /// Was expected to serve but cannot (critical / offline-while-Ready).
     Failed,
+    /// Reached `Ready`, then fell further behind its target than the criteria tolerate.
+    Lagging,
     /// Closing down.
     Draining,
 }
@@ -66,21 +108,24 @@ enum Contribution {
 /// Exhaustively classify a single component. No wildcards: a new `Lifecycle` or
 /// `Health` variant must be decided here.
 fn contribution(status: &ComponentStatus, criteria: &ReadinessCriteria) -> Contribution {
+    let lag = criteria.lag(status.progress);
     match status.lifecycle {
         Lifecycle::Closing => Contribution::Draining,
-        Lifecycle::Ready => match status.health {
-            Health::Healthy | Health::Recoverable => Contribution::Serving,
-            Health::Critical | Health::Offline => Contribution::Failed,
+        Lifecycle::Ready => match (status.health, lag) {
+            (Health::Critical | Health::Offline, _) => Contribution::Failed,
+            (Health::Healthy | Health::Recoverable, Lag::Excessive) => Contribution::Lagging,
+            (Health::Healthy | Health::Recoverable, Lag::Unknown | Lag::Tolerated) => {
+                Contribution::Serving
+            }
         },
         // A syncing component blocks readiness only when the mode gates on sync;
         // ephemeral / passthrough mode does not.
-        Lifecycle::Syncing => {
-            if criteria.sync_gated {
-                Contribution::ComingUp
-            } else {
-                Contribution::Serving
-            }
-        }
+        Lifecycle::Syncing => match (criteria.sync_gated, status.health, lag) {
+            (false, _, _) => Contribution::Serving,
+            (true, Health::Healthy | Health::Recoverable, Lag::Tolerated) => Contribution::Serving,
+            (true, Health::Healthy | Health::Recoverable, Lag::Unknown | Lag::Excessive)
+            | (true, Health::Critical | Health::Offline, _) => Contribution::ComingUp,
+        },
         Lifecycle::Spawning | Lifecycle::Offline => Contribution::ComingUp,
     }
 }
@@ -102,7 +147,9 @@ pub fn classify(
     for status in statuses {
         match contribution(status, criteria) {
             Contribution::Serving => {}
-            Contribution::ComingUp | Contribution::Failed => all_serving = false,
+            Contribution::ComingUp | Contribution::Failed | Contribution::Lagging => {
+                all_serving = false
+            }
             Contribution::Draining => {
                 any_draining = true;
                 all_serving = false;
@@ -158,8 +205,10 @@ impl RuntimeSignals {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
-    use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle};
+    use super::{
+        classify, ReadinessCriteria, RuntimePhase, RuntimeSignals, DEFAULT_MAX_BLOCKS_BEHIND,
+    };
+    use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, Progress};
 
     fn status(lifecycle: Lifecycle, health: Health) -> ComponentStatus {
         ComponentStatus::new(ComponentName("c"), lifecycle, health)
@@ -205,8 +254,75 @@ mod tests {
     #[test]
     fn ephemeral_mode_does_not_gate_on_sync() {
         let s = [status(Lifecycle::Syncing, Health::Healthy)];
-        let ephemeral = ReadinessCriteria { sync_gated: false };
+        let ephemeral = ReadinessCriteria {
+            sync_gated: false,
+            ..full()
+        };
         assert_eq!(classify(&ephemeral, &s, false), RuntimePhase::Serving);
+    }
+
+    fn trailing(lifecycle: Lifecycle, blocks_behind: u64) -> ComponentStatus {
+        const TARGET: u64 = 1_000;
+        let mut trailing = status(lifecycle, Health::Healthy);
+        trailing.progress = Some(Progress {
+            current: TARGET - blocks_behind,
+            target: Some(TARGET),
+        });
+        trailing
+    }
+
+    #[test]
+    fn syncing_within_the_tolerance_is_serving() {
+        let s = [trailing(Lifecycle::Syncing, DEFAULT_MAX_BLOCKS_BEHIND)];
+        assert_eq!(classify(&full(), &s, false), RuntimePhase::Serving);
+    }
+
+    #[test]
+    fn syncing_beyond_the_tolerance_is_booting() {
+        let s = [trailing(Lifecycle::Syncing, DEFAULT_MAX_BLOCKS_BEHIND + 1)];
+        assert_eq!(classify(&full(), &s, false), RuntimePhase::Booting);
+    }
+
+    #[test]
+    fn ready_beyond_the_tolerance_is_degraded() {
+        let s = [trailing(Lifecycle::Ready, DEFAULT_MAX_BLOCKS_BEHIND + 1)];
+        assert_eq!(classify(&full(), &s, true), RuntimePhase::Degraded);
+    }
+
+    #[test]
+    fn ready_within_the_tolerance_is_serving() {
+        let s = [trailing(Lifecycle::Ready, DEFAULT_MAX_BLOCKS_BEHIND)];
+        assert_eq!(classify(&full(), &s, true), RuntimePhase::Serving);
+    }
+
+    #[test]
+    fn an_unknown_target_leaves_the_lifecycle_rule_in_force() {
+        let mut s = [trailing(Lifecycle::Syncing, 0)];
+        s[0].progress = Some(Progress {
+            current: 1_000,
+            target: None,
+        });
+        assert_eq!(classify(&full(), &s, false), RuntimePhase::Booting);
+    }
+
+    #[test]
+    fn criteria_without_a_tolerance_ignore_lag() {
+        let lag_blind = ReadinessCriteria {
+            max_blocks_behind: None,
+            ..full()
+        };
+        let far_behind = DEFAULT_MAX_BLOCKS_BEHIND + 1;
+        let ready = [trailing(Lifecycle::Ready, far_behind)];
+        assert_eq!(classify(&lag_blind, &ready, true), RuntimePhase::Serving);
+        let syncing = [trailing(Lifecycle::Syncing, 0)];
+        assert_eq!(classify(&lag_blind, &syncing, false), RuntimePhase::Booting);
+    }
+
+    #[test]
+    fn an_unhealthy_syncing_component_gains_nothing_from_the_tolerance() {
+        let mut s = [trailing(Lifecycle::Syncing, 0)];
+        s[0].health = Health::Critical;
+        assert_eq!(classify(&full(), &s, false), RuntimePhase::Booting);
     }
 
     #[test]
