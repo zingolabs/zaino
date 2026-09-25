@@ -6,9 +6,10 @@
 //! them, and the split serves the *consumer* (each outer client depends only on
 //! the subset it needs), plus mocking and per-capability error mapping.
 //!
-//! Serviceability is a *runtime* property, not type-level: the concrete
-//! snapshot implements every read trait, but a read returns
-//! [`error::NotServiceable`](error) until its backing index is built.
+//! Presence is type-level, reach is runtime. A composed snapshot implements a
+//! read trait only where its providers can back it under the use case's
+//! [`routing`]; a read that exists returns [`error::NotServiceable`](error)
+//! only while its backing index is still catching up.
 //!
 //! Async style follows the consumer stack (zallet): RPITIT (`impl Future +
 //! Send`) and `BoxStream`, driven through generics — no `async-trait`, no `dyn`
@@ -21,6 +22,7 @@ mod controls;
 pub mod error;
 mod profiles;
 mod reads;
+pub mod routing;
 
 #[cfg(feature = "testing")]
 pub mod conformance;

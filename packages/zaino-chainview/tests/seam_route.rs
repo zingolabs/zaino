@@ -20,7 +20,7 @@ use zaino_chainview::testing::{StubNonFinalised, stub_compact_block};
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_core::{BlockHash, BlockRef, Capability, Height, HeightRange};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
+use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_service::error::{BlockReadError, ReadError};
@@ -50,13 +50,13 @@ fn range(start: u32, end: u32) -> HeightRange {
 
 /// A finalised store holding nothing — an empty backend, no indexing. Its
 /// watermark is `None`.
-fn empty_store() -> StoreReader<InMemoryBackend> {
+fn empty_store() -> StoreReader<InMemoryBackend, CurrentZaino> {
     StoreReader::new(Arc::new(InMemoryBackend::new()))
 }
 
 /// A finalised store indexed over `[0, tip]`. Finalised depth is zero, so the
 /// watermark is exactly `tip`. Block `h` carries hash `[10 + h; 32]`.
-async fn indexed_store(tip: u32) -> StoreReader<InMemoryBackend> {
+async fn indexed_store(tip: u32) -> StoreReader<InMemoryBackend, CurrentZaino> {
     let backend = InMemoryBackend::new();
     let mut chain = MockChain::new();
     for h in 0..=tip {

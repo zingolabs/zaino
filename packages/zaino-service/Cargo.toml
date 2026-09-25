@@ -17,3 +17,4 @@ testing = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
+strum = { workspace = true }

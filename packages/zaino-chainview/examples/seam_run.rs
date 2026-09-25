@@ -42,7 +42,7 @@ use zaino_chainview::ChainView;
 use zaino_component::{ComponentName, ReachabilityProbe};
 use zaino_core::{BlockRef, Capability, CompactBlock, Height, HeightRange};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
+use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
@@ -197,7 +197,7 @@ impl SubscribeBlocks for OfflineValidator {}
 /// Build a finalised store indexed over `[0, tip]` by running the real sync stack
 /// over an offline `MockChain`, booted under the orchestra until every component
 /// is `Ready`. Finalised depth is zero, so the watermark is exactly `tip`.
-async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend> {
+async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, CurrentZaino> {
     let backend = InMemoryBackend::new();
     let mut chain = MockChain::new();
     for h in 0..=tip {

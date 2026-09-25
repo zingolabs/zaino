@@ -79,6 +79,25 @@ where
         Self { fs, nfs, watermark }
     }
 
+    /// The finalised segment, as pinned. A composer merging a read across the
+    /// seam asks each side for its half; the split point is
+    /// [`watermark`](Self::watermark).
+    pub fn finalised(&self) -> &F {
+        &self.fs
+    }
+
+    /// The non-finalised segment, as pinned. See [`finalised`](Self::finalised).
+    pub fn non_finalised(&self) -> &N {
+        &self.nfs
+    }
+
+    /// The seam watermark `w` captured with this pin: the finalised store's
+    /// tip, or `None` when it holds nothing. Heights `≤ w` are the finalised
+    /// side's; above it, the volatile window's.
+    pub fn watermark(&self) -> Option<Height> {
+        self.watermark
+    }
+
     /// Classify `height` against the seam. Pure over the captured coordinates.
     fn route(&self, height: Height) -> Route {
         // FS covers [genesis, w].
