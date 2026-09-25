@@ -13,7 +13,7 @@ pub use zaino_primitives::types::{
     CompactCiphertext, CompactDifficulty, Height, Nullifier, OrchardAction, OutputIndex,
     PreIndexCompactBlock, PreIndexCompactTx, RawTransaction, SaplingOutput, Script, ShieldedPool,
     SubtreeRoot, Transaction, TransactionId, TransactionLocation, TransparentAddress,
-    TransparentInput, TransparentOutput, Treestate, Utxo, Zatoshis,
+    TransparentInput, TransparentOutput, Treestate, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 
 mod chain_info;
