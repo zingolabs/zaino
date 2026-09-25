@@ -19,11 +19,11 @@ use std::sync::{Arc, Mutex};
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_core::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
-    ChainInfo, CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint,
-    PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, RawTransaction, ReportedUpgrade,
-    ServiceabilityManifest, ServiceableRange, ShieldedPool, SpendStatus, SubtreeRoot, Transaction,
-    TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
+    AddressBalance, AddressDelta, Answerable, Block, BlockHash, BlockHeader, BlockId, BlockRef,
+    Capability, ChainInfo, CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx,
+    Outpoint, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, RawTransaction,
+    ReportedUpgrade, ServiceabilityManifest, ServiceableRange, ShieldedPool, SpendStatus,
+    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
 };
 
 use crate::error::{
@@ -134,7 +134,13 @@ impl Broadcast for MockIndexerService {
 
 impl Serviceable for MockIndexerService {
     fn serviceability(&self) -> ServiceabilityManifest {
-        ServiceabilityManifest::default()
+        // The mock snapshot answers every read, so the honest manifest is
+        // "answerable to the pinned tip" for all of them. Live would also be
+        // defensible; ToHeight keeps a consumer's height checks exercisable.
+        match self.current().tip {
+            Some(tip) => ServiceabilityManifest::uniform(Answerable::ToHeight(tip.height)),
+            None => ServiceabilityManifest::uniform(Answerable::NotYet),
+        }
     }
 }
 

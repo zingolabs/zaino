@@ -30,6 +30,6 @@ pub use events::{MempoolTx, TipEvent};
 pub use locator::{ForkPoint, Locator};
 pub use passthrough::{PassthroughAnswer, PassthroughQuery};
 pub use refs::{BlockId, BlockRef, HeightRange, Outpoint};
-pub use serviceability::{Capability, ServiceabilityManifest, ServiceableRange};
+pub use serviceability::{Answerable, Capability, ServiceabilityManifest, ServiceableRange};
 pub use status::{SpendStatus, TxStatus};
 pub use upgrades::{ReportedUpgrade, UpgradeStatus};

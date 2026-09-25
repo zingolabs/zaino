@@ -1,47 +1,46 @@
-//! The `Capability ⇄ IndexId` relation, and serviceability derived from it.
+//! The `Capability ⇄ IndexId` relation, and the finalised store's
+//! serviceability derived from it.
 //!
 //! A capability is *backed* by a set of local indexes. A capability with an
-//! empty set has no local index and is served by the validator (passthrough).
-//! Serviceability is then **derived, not hand-kept**: a capability is answerable
-//! up to the finalised tip exactly when every index that backs it is built. Add
-//! an index to the set that backs a capability and that capability's
+//! empty set has no local index here and is answered, if at all, by another
+//! provider (the validator, through a passthrough) — which this module does
+//! not know about, so it reports it [`Answerable::Absent`] *locally*. The
+//! composer that holds the other providers widens that answer.
+//!
+//! Serviceability is **derived, not hand-kept**: a capability is answerable up
+//! to the finalised tip exactly when every index that backs it is built. Add an
+//! index to the set that backs a capability and that capability's
 //! serviceability automatically depends on it.
+//!
+//! ```text
+//! local(cap, w) = ToHeight(w)  if backing(cap) ≠ ∅ ∧ backing(cap) ⊆ built ∧ w known
+//!               | NotYet       if backing(cap) ≠ ∅ ∧ backing(cap) ⊆ built ∧ w unknown
+//!               | Absent       otherwise
+//! ```
 
-use strum::IntoEnumIterator;
-use zaino_core::{Capability, ServiceabilityManifest};
+use zaino_core::{Answerable, Capability, ServiceabilityManifest};
 use zaino_primitives::types::{Height, IndexId};
 use zaino_sync::backend::BackendReader;
 
-use crate::indexes::{
-    address_history, chain_metadata, hash_to_height, headers, orchard, sapling, transparent_data,
-    transparent_spends, txid_location, txids,
-};
+pub mod local;
+
+use local::LocalCapability;
 
 /// The local indexes that back `capability`.
 ///
-/// Empty for a passthrough capability — no local index, the validator answers.
-/// Exhaustive by design: a new [`Capability`] variant must be classified here,
-/// which keeps this relation and `resolve`'s serving strategy in step (a
-/// non-empty set is locally served; an empty set is passthrough).
+/// Empty for a capability with no local index. Exhaustive by design: a new
+/// [`Capability`] variant must be classified here, either as one of the
+/// [`local`] declarations or as having no local index. Each local arm reads
+/// the list off the same declaration the store's read bounds on, so this
+/// function adds no second copy of the relation — only the variant → type
+/// mapping.
 pub fn capability_indexes(capability: Capability) -> &'static [IndexId] {
     match capability {
-        // A compact block is composed from the granular per-pool indexes;
-        // by-hash access adds the hash→height index.
-        Capability::Blocks => &[
-            headers::ID,
-            txids::ID,
-            transparent_data::ID,
-            sapling::ID,
-            orchard::ID,
-            hash_to_height::ID,
-            chain_metadata::ID,
-        ],
-        // Where a transaction was mined — a local lookup. Its raw bytes are a
-        // *separate* capability (`RawTransaction`), served by the validator.
-        Capability::TransactionLocation => &[txid_location::ID],
-        Capability::AddressHistory => &[address_history::ID],
-        Capability::SpendStatus => &[transparent_spends::ID],
-        // No local index — served by the validator.
+        Capability::Blocks => local::Blocks::INDEXES,
+        Capability::TransactionLocation => local::TransactionLocation::INDEXES,
+        Capability::AddressHistory => local::AddressHistory::INDEXES,
+        Capability::SpendStatus => local::SpendStatus::INDEXES,
+        // No local index — answered, if at all, by another provider.
         Capability::RawTransaction
         | Capability::Treestate
         | Capability::SubtreeRoots
@@ -63,30 +62,27 @@ fn index_built(reader: &dyn BackendReader, index: IndexId) -> bool {
         .unwrap_or(false)
 }
 
-/// Derive the serviceability manifest from the built index set.
+/// Derive the finalised store's serviceability manifest from the built index set.
 ///
 /// For each capability: answerable up to `finalized_tip` when every index that
-/// backs it is built, else `None`. A passthrough capability (no backing index)
-/// is `None` here — it is not *locally* serviceable; the runtime answers it via
-/// the validator, which is resolve's concern, not this manifest's.
+/// backs it is built; `NotYet` when built but no watermark has been committed;
+/// `Absent` when an index is missing or the capability has no local index at
+/// all. The last is *locally* absent — a composer holding a passthrough
+/// provider widens it.
 pub fn serviceability(
     reader: &dyn BackendReader,
     finalized_tip: Option<Height>,
 ) -> ServiceabilityManifest {
-    let answerable = Capability::iter()
-        .map(|capability| {
-            let required = capability_indexes(capability);
-            let answerable_to = if !required.is_empty()
-                && required.iter().all(|index| index_built(reader, *index))
-            {
-                finalized_tip
-            } else {
-                None
-            };
-            (capability, answerable_to)
-        })
-        .collect();
-    ServiceabilityManifest { answerable }
+    ServiceabilityManifest::derive(|capability| {
+        let required = capability_indexes(capability);
+        let built =
+            !required.is_empty() && required.iter().all(|index| index_built(reader, *index));
+        match (built, finalized_tip) {
+            (true, Some(tip)) => Answerable::ToHeight(tip),
+            (true, None) => Answerable::NotYet,
+            (false, _) => Answerable::Absent,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -96,10 +92,16 @@ mod tests {
     use zaino_persistence::{Backend, BackendWriter, WriteOp};
     use zaino_persistence_codec::version_stamp;
 
+    use crate::indexes::{
+        address_history, chain_metadata, hash_to_height, headers, ironwood, orchard, sapling,
+        transparent_data, transparent_spends, txids,
+    };
+
     use crate::indexes::address_history::AddressHistoryIndex;
     use crate::indexes::chain_metadata::ChainMetadataIndex;
     use crate::indexes::hash_to_height::HashToHeightIndex;
     use crate::indexes::headers::HeadersIndex;
+    use crate::indexes::ironwood::IronwoodIndex;
     use crate::indexes::orchard::OrchardIndex;
     use crate::indexes::sapling::SaplingIndex;
     use crate::indexes::transparent_data::TransparentDataIndex;
@@ -110,12 +112,8 @@ mod tests {
         Height::try_from(h).expect("valid test height")
     }
 
-    fn answerable(manifest: &ServiceabilityManifest, capability: Capability) -> Option<Height> {
-        manifest
-            .answerable
-            .iter()
-            .find(|(cap, _)| *cap == capability)
-            .and_then(|(_, height)| *height)
+    fn answerable(manifest: &ServiceabilityManifest, capability: Capability) -> Answerable {
+        manifest.get(capability)
     }
 
     fn commit(backend: &InMemoryBackend, ops: Vec<WriteOp>) {
@@ -135,8 +133,8 @@ mod tests {
         let backend = InMemoryBackend::new();
         let reader = backend.reader().expect("reader");
         let manifest = serviceability(&reader, None);
-        for (_, height) in &manifest.answerable {
-            assert_eq!(*height, None);
+        for (_, answer) in manifest.iter() {
+            assert_eq!(answer, Answerable::Absent);
         }
     }
 
@@ -152,6 +150,7 @@ mod tests {
                 version_stamp::<TransparentDataIndex>(transparent_data::ID.into()),
                 version_stamp::<SaplingIndex>(sapling::ID.into()),
                 version_stamp::<OrchardIndex>(orchard::ID.into()),
+                version_stamp::<IronwoodIndex>(ironwood::ID.into()),
                 version_stamp::<HashToHeightIndex>(hash_to_height::ID.into()),
                 version_stamp::<ChainMetadataIndex>(chain_metadata::ID.into()),
             ],
@@ -160,10 +159,24 @@ mod tests {
         let manifest = serviceability(&reader, Some(height(100)));
 
         // Blocks: all backing indexes built → answerable to the tip.
-        assert_eq!(answerable(&manifest, Capability::Blocks), Some(height(100)));
-        // AddressHistory / SpendStatus: their index is missing → not answerable.
-        assert_eq!(answerable(&manifest, Capability::AddressHistory), None);
-        assert_eq!(answerable(&manifest, Capability::SpendStatus), None);
+        assert_eq!(
+            answerable(&manifest, Capability::Blocks),
+            Answerable::ToHeight(height(100))
+        );
+        // AddressHistory / SpendStatus: their index is missing → absent locally.
+        assert_eq!(
+            answerable(&manifest, Capability::AddressHistory),
+            Answerable::Absent
+        );
+        assert_eq!(
+            answerable(&manifest, Capability::SpendStatus),
+            Answerable::Absent
+        );
+        // Built, but no watermark committed yet: offered, not yet serviceable.
+        assert_eq!(
+            answerable(&serviceability(&reader, None), Capability::Blocks),
+            Answerable::NotYet
+        );
 
         // Now build address_history and spends too.
         commit(
@@ -177,11 +190,11 @@ mod tests {
         let manifest = serviceability(&reader, Some(height(100)));
         assert_eq!(
             answerable(&manifest, Capability::AddressHistory),
-            Some(height(100))
+            Answerable::ToHeight(height(100))
         );
         assert_eq!(
             answerable(&manifest, Capability::SpendStatus),
-            Some(height(100))
+            Answerable::ToHeight(height(100))
         );
     }
 }
