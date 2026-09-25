@@ -22,7 +22,9 @@ use zaino_chain_head_service::ChainHeadService;
 use zaino_component::{CancellationToken, ComponentName, ReachabilityProbe};
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_indexer::{SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_pre_index_compact_block, index_set};
+use zaino_indexes::materialisation::Materialisation;
+use zaino_indexes::sets::current_zaino::context_from_pre_index_compact_block;
+use zaino_indexes::sets::light_wallet::LightWallet;
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
@@ -30,12 +32,13 @@ use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_runtime::{
     IndexerComponent, OrchestraBuilder, RunComponent, ServeComponent, ValidatorComponent,
 };
+use zaino_service::routing::LightRouting;
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zaino_store::{StoreComponent, StoreReader};
-use zaino_store_service::Engine;
+use zaino_store_service::Composed;
 
 use crate::config::{DaemonConfig, Network, SourceMode};
 use crate::error::IndexerError;
@@ -174,8 +177,10 @@ async fn boot(
     ));
 
     // LMDB must declare every namespace up front: one per index in the set, plus
-    // the engine's reserved watermark / format-version namespaces.
-    let namespaces: Vec<Namespace> = index_set()
+    // the engine's reserved watermark / format-version namespaces. The set is
+    // the light-wallet materialisation's — the same type the store reader is
+    // wired over below, so what is built and what is served cannot drift.
+    let namespaces: Vec<Namespace> = LightWallet::index_set()
         .index_ids()
         .into_iter()
         .map(Namespace::from)
@@ -188,14 +193,16 @@ async fn boot(
     })?;
 
     // The finalised store: the indexer writes it, the engine composes blocks on
-    // read from it. One reader, shared (Arc-backed clone).
-    let store_reader = StoreReader::new(Arc::new(backend.clone()));
+    // read from it. One reader, shared (Arc-backed clone). Typed to the
+    // light-wallet materialisation: the reads it has are exactly the reads
+    // those indexes back.
+    let store_reader = StoreReader::<_, LightWallet>::new(Arc::new(backend.clone()));
 
     // The FS indexer sources the cheap pre-index compact block and builds the
-    // current-zaino index set, resuming from the backend watermark.
+    // light-wallet index set, resuming from the backend watermark.
     let driver = SourceSyncDriver::resuming_compact(
         &backend,
-        index_set(),
+        LightWallet::index_set(),
         Arc::clone(&source),
         |compact_block| context_from_pre_index_compact_block(&compact_block),
         SyncTuning {
@@ -225,11 +232,13 @@ async fn boot(
     .await
     .map_err(IndexerError::ChainHeadInit)?;
 
-    // Compose FS ⊕ NFS into the served engine, behind the light-wallet profile.
-    // The engine's passthrough side (broadcast today, treestate next) consumes the
-    // resilient ValidatorClient decorator over the shared validator — the canonical
-    // ports, never the raw one-shots, and never the concrete adapter type.
-    let engine = Engine::new(
+    // Compose FS ⊕ NFS ⊕ validator into the served engine under the light
+    // routing: compact blocks local, wallet-parsed reads passed through, node
+    // reads withheld. The passthrough side consumes the resilient
+    // ValidatorClient decorator over the shared validator — the canonical ports,
+    // never the raw one-shots, and never the concrete adapter type. That this
+    // engine *is* the light-serve profile is checked at compile time in `tests`.
+    let engine: Composed<_, _, _, LightRouting> = Composed::new(
         store_reader.clone(),
         chain_head_subscriber,
         ValidatorClient::new(Arc::clone(&validator), RetryPolicy::default()),
@@ -352,4 +361,35 @@ fn startup_message() {
 ****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
     "#;
     println!("{welcome_message}");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use zaino_backend_lmdb::LmdbBackend;
+    use zaino_chain_head_service::ChainHeadSubscriber;
+    use zaino_indexes::sets::light_wallet::LightWallet;
+    use zaino_service::routing::LightRouting;
+    use zaino_service::LightServeService;
+    use zaino_source::ValidatorClient;
+    use zaino_source_zebra::ZebraValidator;
+    use zaino_store::StoreReader;
+    use zaino_store_service::Composed;
+
+    /// The engine `spawn_indexer` wires — real backend, real store over the
+    /// light-wallet materialisation, real chain head, real validator client,
+    /// under the light routing — is the light-serve profile. Compile-time
+    /// only: a materialisation lacking an index the profile's reads need, or a
+    /// placement no provider can take, fails here rather than at a request.
+    fn _the_wired_engine_is_the_light_serve_profile()
+    where
+        Composed<
+            StoreReader<LmdbBackend, LightWallet>,
+            ChainHeadSubscriber,
+            ValidatorClient<Arc<ZebraValidator>>,
+            LightRouting,
+        >: LightServeService,
+    {
+    }
 }

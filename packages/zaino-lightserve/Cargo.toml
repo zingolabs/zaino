@@ -26,3 +26,5 @@ zaino-sync = { path = "../zaino-sync" }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
+zaino-store-service = { path = "../zaino-store-service" }
+zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }

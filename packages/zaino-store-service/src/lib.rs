@@ -1,50 +1,35 @@
 //! `zaino-store-service` — the concrete inner engine.
 //!
-//! Composes the finalised store and the non-finalised chain head — both named
-//! only through the shared `zaino-service` ports — into one `IndexerService`,
-//! the real backend behind the profiles the serve adapters consume.
+//! Composes the finalised store, the non-finalised chain head and the
+//! validator into one `IndexerService`, **under a use case's routing**. The
+//! two chain tiers are named only through the shared `zaino-service` ports
+//! and captured together on each pin by [`zaino_chainview::ChainView`], so the
+//! seam watermark and the volatile window are coherent; the validator is
+//! reached live through [`RemoteChainView`] over the canonical (resilient)
+//! `zaino-source` ports.
 //!
-//! The composition itself lives in [`zaino_chainview::ChainView`]: it pairs a
-//! finalised [`TakeSnapshot`](zaino_service::TakeSnapshot) source (`Fs`) with a
-//! non-finalised one (`Nfs`), both of whose snapshots are a
-//! [`ChainSegment`](zaino_service::ChainSegment) (the coherence coordinate) and a
-//! [`CompactBlockRead`](zaino_service::CompactBlockRead) (compact-block serving),
-//! and captures both in one shot so the seam watermark and the volatile window
-//! are coherent. [`Engine`] wraps that composer and dresses it as the full inner
-//! service: it forwards the pin and the compact-block reads to the composed view
-//! ([`EngineSnapshot`]), and stands in for the reads and controls the
-//! compact-serving slice does not yet source.
+//! Which provider answers each capability is not decided here. It is the
+//! use case's [`Routing`](zaino_service::routing::Routing) type, and
+//! [`Composed`] carries it as a type parameter: each read trait on
+//! [`ComposedSnapshot`] is implemented once per placement, bounded on that
+//! placement and on the provider ports it needs. A capability the providers
+//! cannot back under the chosen routing is an impl that does not exist, so a
+//! use case's profile bound fails where the engine is wired — the proofs are
+//! in [`Composed`]'s docs.
 //!
-//! **Serviceable slice.** Compact-block serving and the coherence surface (pin,
-//! coverage, serviceable range, chain info) are wired against the real composed
-//! view. Passthrough capabilities are answered by [`RemoteChainView`] over the
-//! resilient source ports: `Broadcast` relays a wallet's transaction, and the
-//! `Treestate` and transparent-address reads answer live from the validator
-//! (zaino does not index them). The remaining reads (full `Block` / transaction /
-//! spend / nullifier / subtree roots) return `NotServiceable`; `Passthrough`
-//! refuses and the streaming controls (`TipSubscribe`, `MempoolSubscribe`) are
-//! empty streams — wiring those through the same provider is the next increment.
-//!
-//! The classification is *which provider carries a capability*: local ones on the
-//! composed [`ChainView`](zaino_chainview::ChainView), passthrough ones on
-//! [`RemoteChainView`]. Consumers bind the **canonical** (resilient) source
-//! traits, never the raw `OneShot*` ports — those belong to the adapters and the
-//! `ValidatorClient` decorator the root injects.
-//!
-//! The milestone this crate proves is the static assertion in `tests`: the
-//! composed engine type-checks as **every** profile (`WalletLibService`,
-//! `LightServeService`, `NodeRpcService`) over any two composer inputs.
+//! Always local: compact blocks (and their nullifier projection), chain info.
+//! Always remote: raw transactions, broadcast, mempool, the upgrade schedule.
+//! Decided per use case: address history, treestate, spend status, transaction
+//! location.
 #![forbid(unsafe_code)]
 #![deny(clippy::wildcard_enum_match_arm)]
 
-mod engine;
+mod composed;
 mod nullifiers;
 mod remote;
-mod snapshot;
 
-pub use engine::Engine;
+pub use composed::{Composed, ComposedSnapshot};
 pub use remote::RemoteChainView;
-pub use snapshot::EngineSnapshot;
 
 #[cfg(test)]
 mod tests;

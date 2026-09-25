@@ -4,19 +4,22 @@
 //! Builds the current-zaino index set in-process over an in-memory backend from
 //! shielded mock blocks (so the served `ChainMetadata` tree sizes are the
 //! indexer's cumulative counts, not the source's), wraps it in the store's
-//! compose-on-read `StoreReader`, stands up the real `zaino-lightserve`
+//! compose-on-read `StoreReader`, composes it with an empty head and an idle
+//! validator under the light routing, stands up the real `zaino-lightserve`
 //! `GrpcServer`, and drives `GetLatestBlock` / `GetBlockRange` / `GetBlock`
-//! through a generated gRPC client over the wire. This is the finalised,
-//! index-only serving slice — no validator passthrough, no runtime supervision.
+//! through a generated gRPC client over the wire. Only the finalised,
+//! index-only reads are exercised — the passthrough provider is wired but
+//! never asked, and there is no runtime supervision.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use zaino_chainview::testing::StubNonFinalised;
 use zaino_component::{CancellationToken, RunLoop, RunReport, RunReporter};
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
+use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
@@ -25,9 +28,11 @@ use zaino_primitives::types::{
 };
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zaino_proto::proto::service::{BlockId, BlockRange, ChainSpec};
+use zaino_service::routing::LightRouting;
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::StoreReader;
+use zaino_store_service::Composed;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
 
@@ -108,17 +113,35 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
         .expect("provision succeeds");
 }
 
+/// The engine the server serves: the indexed store as the finalised tier, an
+/// empty head, and an idle validator, under the light routing. The store alone
+/// is not the light profile — it has no treestate or raw-transaction read —
+/// so it is composed exactly as the daemon composes it.
+type Engine = Composed<
+    StoreReader<InMemoryBackend, CurrentZaino>,
+    StubNonFinalised,
+    ValidatorClient<MockChain>,
+    LightRouting,
+>;
+
 /// Stand up the real gRPC server over `store` on an ephemeral port; return its
 /// address and a cancel handle. The server notifies readiness after it binds,
 /// so the caller can connect without racing the bind.
-async fn serve(store: StoreReader<InMemoryBackend>) -> (SocketAddr, CancellationToken) {
+async fn serve(
+    store: StoreReader<InMemoryBackend, CurrentZaino>,
+) -> (SocketAddr, CancellationToken) {
     // Discover a free port, then let the server rebind it.
     let addr: SocketAddr = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind probe socket")
         .local_addr()
         .expect("probe local addr");
 
-    let server = Arc::new(GrpcServer::new(LightServe::new(store), addr));
+    let engine: Engine = Composed::new(
+        store,
+        StubNonFinalised::empty(),
+        ValidatorClient::new(MockChain::new(), RetryPolicy::default()),
+    );
+    let server = Arc::new(GrpcServer::new(LightServe::new(engine), addr));
     let cancel = CancellationToken::new();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
     // `RunReporter` calls its closure for every report, so the one-shot sender is
@@ -146,7 +169,7 @@ async fn serve(store: StoreReader<InMemoryBackend>) -> (SocketAddr, Cancellation
 async fn a_client_streams_composed_compact_blocks_over_grpc() {
     let backend = InMemoryBackend::new();
     index_chain(&backend, 2).await;
-    let store = StoreReader::new(Arc::new(backend));
+    let store = StoreReader::<_, CurrentZaino>::new(Arc::new(backend));
 
     let (addr, cancel) = serve(store).await;
     let mut client = CompactTxStreamerClient::connect(format!("http://{addr}"))

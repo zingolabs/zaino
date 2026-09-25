@@ -63,6 +63,7 @@ zaino-consensus = { workspace = true }
 # The composed serving stack: the finalised store, the non-finalised chain head,
 # and the engine that composes them behind the light-wallet serve profile.
 zaino-store-service = { path = "../zaino-store-service" }
+zaino-service = { path = "../zaino-service" }
 zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
 

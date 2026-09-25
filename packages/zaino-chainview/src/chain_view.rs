@@ -42,6 +42,15 @@ where
     }
 }
 
+impl<Fs, Nfs> ChainView<Fs, Nfs> {
+    /// The finalised store handle. A composer that reports serviceability asks
+    /// this side for its manifest; the durable tier is the only one that
+    /// derives one from built indexes.
+    pub fn finalised(&self) -> &Fs {
+        &self.fs
+    }
+}
+
 // A composer is only as clonable as the two handles it holds, both of which are
 // cheap `Arc`-backed clones in practice. Derived by hand rather than with
 // `#[derive(Clone)]` so no `Clone` bound leaks onto the `TakeSnapshot` impls —

@@ -3,7 +3,7 @@ name = "zaino-store-service"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The concrete inner engine: composes the finalised chain store and the non-finalised chain head into one zaino-service IndexerService. Slice 1: the seam + coherence are wired; conversion-heavy per-block reads are NotServiceable pending the primitives re-seam."
+description = "The concrete inner engine: the finalised store, the non-finalised chain head and the validator, composed under a use case's routing into one zaino-service IndexerService."
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
@@ -17,3 +17,8 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
 zaino-service = { path = "../zaino-service", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
+# The wiring proofs in the crate docs compose the real store over a real
+# materialisation, so the compile-fail case fails for the right reason.
+zaino-store = { path = "../zaino-store" }
+zaino-indexes = { workspace = true }
+zaino-persistence = { workspace = true, features = ["testing"] }

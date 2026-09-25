@@ -6106,6 +6106,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonic",
+ "zaino-chainview",
  "zaino-component",
  "zaino-core",
  "zaino-indexer",
@@ -6116,6 +6117,7 @@ dependencies = [
  "zaino-service",
  "zaino-source",
  "zaino-store",
+ "zaino-store-service",
  "zaino-sync",
 ]
 
@@ -6288,6 +6290,7 @@ name = "zaino-service"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "strum",
  "thiserror 2.0.18",
  "tokio",
  "zaino-core",
@@ -6459,8 +6462,11 @@ dependencies = [
  "tokio",
  "zaino-chainview",
  "zaino-core",
+ "zaino-indexes",
+ "zaino-persistence",
  "zaino-service",
  "zaino-source",
+ "zaino-store",
 ]
 
 [[package]]
@@ -6517,6 +6523,7 @@ dependencies = [
  "zaino-persistence-codec",
  "zaino-rpc",
  "zaino-runtime",
+ "zaino-service",
  "zaino-source",
  "zaino-source-zebra",
  "zaino-source-zebra-readstate",

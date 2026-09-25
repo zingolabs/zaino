@@ -1,61 +1,50 @@
-//! Composed-engine tests: the profile-coverage assertion, the light-serve
-//! acceptance gate, and the per-capability passthrough routing tests.
+//! Composed-engine tests: the light-serve acceptance gate, the per-capability
+//! routing tests under `LightRouting`, the manifest derivation, and the seam
+//! split a local merge relies on.
 //!
-//! Exercised entirely with in-crate mocks — two empty stub views for the
-//! composed chain and a [`MockChain`] for the validator source, wrapped in the
+//! Exercised entirely with in-crate mocks — stub views for the composed chain
+//! and a [`MockChain`] for the validator source, wrapped in the
 //! [`ValidatorClient`] decorator exactly as the root injects it. No cluster, no
 //! validator; the routing is deterministic.
 
 use futures::stream::StreamExt;
-use zaino_chainview::testing::StubNonFinalised;
+use zaino_chainview::testing::{stub_compact_block, StubNonFinalised};
 use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
+use zaino_service::routing::LightRouting;
+use zaino_service::testing::{MockChain as MockService, MockIndexerService};
 use zaino_service::{
-    AddressRead, Broadcast, MempoolContent, MempoolSubscribe, RawTransactionRead, TakeSnapshot,
-    TreestateRead,
+    AddressRead, Broadcast, MempoolContent, MempoolSubscribe, RawTransactionRead, Serviceable,
+    TakeSnapshot, TreestateRead,
 };
 use zaino_source::mock::MockChain;
 use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
 
 use zaino_core::{
-    Height, HeightRange, RawTransaction, ShieldedPool, TransactionId, TransactionLocation,
-    TransparentAddress,
+    Answerable, BlockId, Capability, Height, HeightRange, RawTransaction, ShieldedPool,
+    TransactionId, TransactionLocation, TransparentAddress,
 };
 
-use crate::Engine;
+use crate::composed::split_at_seam;
+use crate::Composed;
 
-/// The milestone: the composed engine type-checks as every public profile, over
-/// any two composer inputs (each a `TakeSnapshot` whose snapshot is a
-/// `ChainSegment + CompactBlockRead`). Compile-time only.
-fn _engine_satisfies_all_profiles<Fs, Nfs, Src>()
-where
-    Fs: TakeSnapshot<Snapshot: zaino_service::ChainSegment + zaino_service::CompactBlockRead>,
-    Nfs: TakeSnapshot<Snapshot: zaino_service::ChainSegment + zaino_service::CompactBlockRead>,
-    Src: zaino_source::GetTreestate
-        + zaino_source::SendRawTransaction
-        + zaino_source::GetAddressBalance
-        + zaino_source::GetAddressUtxos
-        + zaino_source::GetAddressTxids
-        + zaino_source::GetAddressDeltas
-        + zaino_source::GetTransaction
-        + zaino_source::GetSubtreeRoots
-        + Clone
-        + 'static,
-    Engine<Fs, Nfs, Src>: zaino_service::WalletLibService
-        + zaino_service::LightServeService
-        + zaino_service::NodeRpcService,
-{
-}
+type LightEngine =
+    Composed<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>, LightRouting>;
 
 fn height(h: u32) -> Height {
     Height::try_from(h).expect("valid height")
 }
 
+fn range(start: u32, end: u32) -> HeightRange {
+    HeightRange {
+        start: height(start),
+        end: height(end),
+    }
+}
+
 // The engine consumes the *canonical* (resilient) source, so the mock is wrapped
 // in the ValidatorClient decorator — exactly how the root injects it.
-fn engine_with(
-    source: MockChain,
-) -> Engine<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>> {
-    Engine::new(
+fn engine_with(source: MockChain) -> LightEngine {
+    Composed::new(
         StubNonFinalised::empty(),
         StubNonFinalised::empty(),
         ValidatorClient::new(source, RetryPolicy::default()),
@@ -110,8 +99,6 @@ async fn mempool_raw_transaction_maps_a_missing_txid_to_none() {
 
 #[tokio::test]
 async fn subscribe_mempool_over_an_empty_mempool_yields_nothing() {
-    // The mock exposes an empty mempool; the subscription completes with no items
-    // rather than erroring or hanging.
     let engine = engine_with(MockChain::new());
     let listing: Vec<_> = engine.subscribe_mempool().collect().await;
     assert!(listing.is_empty());
@@ -119,8 +106,6 @@ async fn subscribe_mempool_over_an_empty_mempool_yields_nothing() {
 
 #[tokio::test]
 async fn mempool_compact_transaction_maps_a_missing_txid_to_none() {
-    // The mock reports the txid absent; the compact passthrough maps that domain
-    // miss to `Ok(None)`, the same race the raw read handles.
     let engine = engine_with(MockChain::new());
     let answer = engine
         .mempool_compact_transaction(TransactionId::from([9u8; 32]))
@@ -129,11 +114,10 @@ async fn mempool_compact_transaction_maps_a_missing_txid_to_none() {
     assert!(answer.is_none());
 }
 
-// The acceptance gate for the full light-wallet read-set (#10): the composed
-// engine serves every read `LightServeService` demands — none reporting itself
-// `NotServiceable`. Green now that the whole read-set is wired (compact blocks
-// and nullifiers local; treestate, subtree roots, raw transaction, and address
-// reads passthrough). The per-cap tests below pin each capability's routing.
+// The acceptance gate for the full light-wallet read-set: under `LightRouting`
+// the composed engine serves every read `LightServeService` demands — none
+// reporting itself `NotServiceable`. The per-cap tests below pin each
+// capability's placement.
 #[tokio::test]
 async fn light_serve_conformance_over_a_provisioned_source() {
     let engine = engine_with(MockChain::new());
@@ -141,29 +125,25 @@ async fn light_serve_conformance_over_a_provisioned_source() {
 }
 
 #[tokio::test]
-async fn address_reads_pass_through_and_answer() {
+async fn address_reads_are_remote_under_light_routing() {
     // No rejection seeded: the mock answers empty (no-match) results. An `Ok` —
     // not a `NotServiceable` stub — proves each address read routes to the
-    // passthrough provider.
+    // passthrough provider, as `LightRouting::Address = Remote` says.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
-    let range = HeightRange {
-        start: height(0),
-        end: height(10),
-    };
-    AddressRead::balance(&snapshot, &addr, range)
+    AddressRead::balance(&snapshot, &addr, range(0, 10))
         .await
         .expect("balance served");
     assert!(AddressRead::unspent_outpoints(&snapshot, &addr)
         .await
         .expect("utxos served")
         .is_empty());
-    assert!(AddressRead::tx_ids(&snapshot, &addr, range)
+    assert!(AddressRead::tx_ids(&snapshot, &addr, range(0, 10))
         .await
         .expect("txids served")
         .is_empty());
-    assert!(AddressRead::deltas(&snapshot, &addr, range)
+    assert!(AddressRead::deltas(&snapshot, &addr, range(0, 10))
         .await
         .expect("deltas served")
         .is_empty());
@@ -171,17 +151,10 @@ async fn address_reads_pass_through_and_answer() {
 
 #[tokio::test]
 async fn address_reads_map_an_invalid_address_to_fatal() {
-    // The mock rejects the addresses as invalid; the remote provider maps that
-    // domain rejection to a definitive (non-retryable) read failure, proving the
-    // read routes to the source and its rejection is surfaced.
     let engine = engine_with(MockChain::new().reject_addresses("bad t-addr"));
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("bogus".to_string());
-    let range = HeightRange {
-        start: height(0),
-        end: height(10),
-    };
-    match AddressRead::balance(&snapshot, &addr, range).await {
+    match AddressRead::balance(&snapshot, &addr, range(0, 10)).await {
         Err(AddressReadError::Fatal(msg)) => {
             assert!(msg.contains("invalid address"), "got: {msg}")
         }
@@ -191,8 +164,6 @@ async fn address_reads_map_an_invalid_address_to_fatal() {
 
 #[tokio::test]
 async fn raw_transaction_passes_through_the_bytes_and_location() {
-    // Seed a canned response: passthrough must relay the exact bytes and where
-    // the validator placed the transaction, unparsed.
     let bytes = vec![0xab, 0xcd, 0xef];
     let engine = engine_with(
         MockChain::new()
@@ -213,8 +184,6 @@ async fn raw_transaction_passes_through_the_bytes_and_location() {
 
 #[tokio::test]
 async fn raw_transaction_maps_a_missing_txid_to_none() {
-    // No response seeded: the mock answers NotFound, a domain miss the passthrough
-    // maps to `Ok(None)` — not a NotServiceable stub.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let got = RawTransactionRead::raw_transaction(&snapshot, TransactionId::from([2u8; 32]))
@@ -224,9 +193,7 @@ async fn raw_transaction_maps_a_missing_txid_to_none() {
 }
 
 #[tokio::test]
-async fn subtree_roots_pass_through_from_an_index() {
-    // An `Ok` — not a NotServiceable stub — proves the index-addressed subtree
-    // read routes to the passthrough provider.
+async fn subtree_roots_are_remote_under_light_routing() {
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let roots = TreestateRead::subtree_roots(&snapshot, ShieldedPool::Sapling, 0, None)
@@ -237,10 +204,6 @@ async fn subtree_roots_pass_through_from_an_index() {
 
 #[tokio::test]
 async fn compact_block_nullifiers_are_served_locally() {
-    // Local projection over the composed compact block. The empty stub views
-    // hold no block, so the answer is a domain miss (`Ok(None)`) — serviceable,
-    // not a `NotServiceable` stub. The projection itself is unit-tested in
-    // `crate::nullifiers`.
     use zaino_core::BlockRef;
     use zaino_service::CompactNullifierRead;
     let engine = engine_with(MockChain::new());
@@ -253,11 +216,10 @@ async fn compact_block_nullifiers_are_served_locally() {
 }
 
 #[tokio::test]
-async fn treestate_passes_through_a_missing_height() {
+async fn treestate_is_remote_under_light_routing() {
     // No treestate seeded: the mock answers HeightNotFound, which the remote
     // provider maps to a definitive read failure. Proves treestate routes to the
-    // passthrough provider (the read-set's per-cap classification) — not a
-    // NotServiceable stub.
+    // passthrough provider, as `LightRouting::Treestate = Remote` says.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     match TreestateRead::treestate(&snapshot, height(5)).await {
@@ -266,4 +228,114 @@ async fn treestate_passes_through_a_missing_height() {
         }
         other => panic!("expected a definitive miss, got {other:?}"),
     }
+}
+
+// --- the manifest follows the routing ----------------------------------------
+
+/// A finalised side that derives a real manifest: the service mock, whose
+/// manifest is "to the tip" once it has one.
+fn engine_over_a_serviceable_store(
+    tip: Option<u32>,
+) -> Composed<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightRouting> {
+    let fs = MockIndexerService::new(MockService {
+        tip: tip.map(|h| BlockId {
+            height: height(h),
+            hash: [0u8; 32].into(),
+        }),
+        ..MockService::default()
+    });
+    Composed::new(
+        fs,
+        StubNonFinalised::empty(),
+        ValidatorClient::new(MockChain::new(), RetryPolicy::default()),
+    )
+}
+
+#[test]
+fn the_manifest_is_derived_from_the_routing_and_the_store() {
+    let manifest = engine_over_a_serviceable_store(Some(42)).serviceability();
+
+    // Local: whatever the finalised store says.
+    assert_eq!(
+        manifest.get(Capability::Blocks),
+        Answerable::ToHeight(height(42))
+    );
+    // Remote: live, the validator answers.
+    assert_eq!(manifest.get(Capability::AddressHistory), Answerable::Live);
+    assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
+    assert_eq!(manifest.get(Capability::RawTransaction), Answerable::Live);
+    assert_eq!(manifest.get(Capability::Broadcast), Answerable::Live);
+    // Withheld: absent, whatever the providers could answer.
+    assert_eq!(manifest.get(Capability::SpendStatus), Answerable::Absent);
+    assert_eq!(
+        manifest.get(Capability::TransactionLocation),
+        Answerable::Absent
+    );
+}
+
+#[test]
+fn a_store_with_no_progress_makes_local_capabilities_not_yet() {
+    let manifest = engine_over_a_serviceable_store(None).serviceability();
+    assert_eq!(manifest.get(Capability::Blocks), Answerable::NotYet);
+    // Remote and withheld are unaffected by the store's progress.
+    assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
+    assert_eq!(manifest.get(Capability::SpendStatus), Answerable::Absent);
+}
+
+// --- the seam split a local merge relies on ----------------------------------
+
+/// A finalised side covering `[0, tip]` and an empty head.
+async fn pinned_with_finalised_tip(
+    tip: u32,
+) -> zaino_chainview::ChainViewSnapshot<StubNonFinalised, StubNonFinalised> {
+    let blocks = (0..=tip)
+        .map(|h| stub_compact_block(h, 1))
+        .collect::<Vec<_>>();
+    zaino_chainview::ChainView::new(
+        StubNonFinalised::from_blocks(blocks),
+        StubNonFinalised::empty(),
+    )
+    .snapshot()
+    .await
+    .expect("snapshot")
+}
+
+#[tokio::test]
+async fn a_range_splits_at_the_watermark() {
+    let local = pinned_with_finalised_tip(10).await;
+    // Straddling: `[5, 11)` is the store's, `[11, 20)` the head's.
+    assert_eq!(
+        split_at_seam(&local, range(5, 20)),
+        (Some(range(5, 11)), Some(range(11, 20)))
+    );
+    // Entirely below the seam.
+    assert_eq!(
+        split_at_seam(&local, range(0, 5)),
+        (Some(range(0, 5)), None)
+    );
+    // Entirely above it.
+    assert_eq!(
+        split_at_seam(&local, range(11, 20)),
+        (None, Some(range(11, 20)))
+    );
+    // Ending exactly at the seam: the watermark height itself is the store's.
+    assert_eq!(
+        split_at_seam(&local, range(8, 11)),
+        (Some(range(8, 11)), None)
+    );
+    // Empty.
+    assert_eq!(split_at_seam(&local, range(7, 7)), (None, None));
+}
+
+#[tokio::test]
+async fn with_no_watermark_the_whole_range_is_the_heads() {
+    let local =
+        zaino_chainview::ChainView::new(StubNonFinalised::empty(), StubNonFinalised::empty())
+            .snapshot()
+            .await
+            .expect("snapshot");
+    assert_eq!(
+        split_at_seam(&local, range(3, 9)),
+        (None, Some(range(3, 9)))
+    );
 }
