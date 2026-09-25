@@ -1046,7 +1046,7 @@ impl<T: ChainStoreSource> Migration<T> for Migration1_2_1To1_3_0 {
         use lmdb::DatabaseFlags;
 
         use crate::store::{
-            build_indexed_block_from_source,
+            assemble_indexed_block_with, fetch_block_for_indexing,
             finalised_source::v1::write_core::build_block_ironwood_entry, PoolActivationHeights,
         };
 
@@ -1158,26 +1158,30 @@ impl<T: ChainStoreSource> Migration<T> for Migration1_2_1To1_3_0 {
                                 .to_string(),
                         )
                     })?;
-                    let block = build_indexed_block_from_source(
-                        source.as_ref(),
-                        sapling_activation_height,
-                        nu5_activation_height,
-                        nu6_3_activation_height,
-                        next_height,
-                        // Chainwork is irrelevant here: only the commitment-tree and ironwood rows
-                        // are extracted, and neither depends on it.
-                        None,
-                    )
-                    .await
-                    .map_err(|error| {
-                        StoreError::Custom(format!(
+                    // Built only to extract the commitment-tree and ironwood rows, neither of
+                    // which depends on chainwork, so the block carries none and is never written.
+                    let block: crate::types::IndexedBlock =
+                        fetch_block_for_indexing(source.as_ref(), next_height)
+                            .await
+                            .and_then(|fetched| {
+                                assemble_indexed_block_with(
+                                    fetched,
+                                    sapling_activation_height,
+                                    nu5_activation_height,
+                                    nu6_3_activation_height,
+                                    next_height,
+                                    None,
+                                )
+                            })
+                            .map_err(|error| {
+                                StoreError::Custom(format!(
                             "v1.3.0 ironwood backfill failed at height {next_height}: {error}. \
                              This backfill refetches every stored block from NU6.3 activation \
                              through the database tip; ensure the backing validator serves that \
                              range, or wipe the finalised-state directory and re-index from the \
                              validator."
                         ))
-                    })?;
+                            })?;
 
                     commitment_bytes =
                         StoredEntryVar::new(&height_bytes, *block.commitment_tree_data())

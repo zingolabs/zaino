@@ -803,17 +803,6 @@ impl<T: ChainStoreSource> IndexedBlockExt for FinalisedSource<T> {
             Self::Ephemeral(db) => db.get_chain_block(height).await,
         }
     }
-
-    async fn get_chain_block_range(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<IndexedBlock>, StoreError> {
-        match self {
-            Self::V1(db) => db.get_chain_block_range(start, end).await,
-            Self::Ephemeral(db) => db.get_chain_block_range(start, end).await,
-        }
-    }
 }
 
 #[cfg(feature = "transparent_address_history_experimental")]

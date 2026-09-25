@@ -12,19 +12,6 @@ impl IndexedBlockExt for DbV1 {
             .await?
             .map(|block| block.map_chainwork(Some)))
     }
-
-    async fn get_chain_block_range(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<IndexedBlock>, StoreError> {
-        Ok(self
-            .get_stored_block_range(start, end)
-            .await?
-            .into_iter()
-            .map(|block| block.map_chainwork(Some))
-            .collect())
-    }
 }
 
 impl DbV1 {

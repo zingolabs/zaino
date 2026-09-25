@@ -59,7 +59,7 @@ impl DbV1 {
     /// Returns every compact block in `start..=end`, ascending.
     ///
     /// One read transaction for the range, for the same reasons as
-    /// [`DbV1::get_chain_block_range`]: coherence between the blocks, and the
+    /// [`DbV1::get_stored_block_range`]: coherence between the blocks, and the
     /// per-block transaction cost paid once. A hole is an error — a wallet
     /// syncing a range must not be handed a short one and left to infer that
     /// the chain ended.

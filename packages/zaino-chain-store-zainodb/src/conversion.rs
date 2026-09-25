@@ -132,7 +132,7 @@ pub fn chainwork_from_parent(
 }
 
 /// [`chainwork_from_parent`] for a builder that may not know the parent's chainwork, whose block above genesis then has none.
-pub fn chainwork_from_parent_if_known(
+pub(crate) fn chainwork_from_parent_if_known(
     block_work: SingleBlockWork,
     hash: BlockHash,
     height: Height,

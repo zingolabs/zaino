@@ -256,10 +256,6 @@ store's row is that form. Nothing reads chainwork off the wire, since Zebra does
 not report it. For an integer you already hold, use
 `AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::new(NonZeroU128)`.
 
-The `types::work` module documentation states the full algebra, including what
-`AbsoluteChainWork` is *not* — in particular `zaino-chain-head`'s
-anchor-relative work, which is a third quantity.
-
 ### Where `SingleBlockWork` comes from: `CompactDifficulty`
 
 The nBits encoding from the block header is its own validated type,

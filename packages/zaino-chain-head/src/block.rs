@@ -16,11 +16,7 @@ pub struct ChainHeadBlock {
     pub reference: BlockRef,
     /// The parent block's hash. The graph's only edge.
     pub parent_hash: BlockHash,
-    /// Work accumulated over the blocks this window retains above its anchor.
-    ///
-    /// Measured from the anchor, not from genesis, for the reason given in the
-    /// [crate documentation](crate). Every block in a window shares that
-    /// anchor, which is what makes these totals comparable with each other.
+    /// Work accumulated over the blocks this window retains above its anchor, comparable across the window because every block in it shares that anchor.
     pub work: RelativeChainWork,
     /// The parsed block.
     pub block: Block,

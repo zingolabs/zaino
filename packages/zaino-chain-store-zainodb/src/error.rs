@@ -12,7 +12,7 @@ use zaino_chain_store::ChainStoreSourceError;
 
 use crate::conversion::BlockConversionError;
 use crate::store::capability::CapabilityRequest;
-use crate::types::BlockHash;
+use crate::types::{BlockHash, Height};
 
 /// Something went wrong inside the store.
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +32,15 @@ pub enum StoreError {
     /// request input.
     #[error("Missing data: {0}")]
     DataUnavailable(String),
+
+    /// The store was asked to build a block above genesis without the chainwork of its parent, which the store itself must supply.
+    #[error("no parent chainwork for block {hash} at height {height}")]
+    ParentChainWorkUnknown {
+        /// The block that could not be built.
+        hash: BlockHash,
+        /// The block's height, which is above genesis.
+        height: Height,
+    },
 
     /// A block is present on disk but failed internal validation.
     ///
@@ -126,8 +135,8 @@ pub(crate) fn inconsistent(message: impl Into<String>) -> StoreError {
 /// A failed block conversion, attributed to the store when the parent chainwork it needed is missing and to the validator otherwise.
 pub(crate) fn conversion_error(error: BlockConversionError) -> StoreError {
     match error {
-        BlockConversionError::ParentChainWorkUnknown { .. } => {
-            StoreError::DataUnavailable(error.to_string())
+        BlockConversionError::ParentChainWorkUnknown { hash, height } => {
+            StoreError::ParentChainWorkUnknown { hash, height }
         }
         other => inconsistent(other.to_string()),
     }

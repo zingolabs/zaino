@@ -1065,23 +1065,6 @@ pub trait IndexedBlockExt: Send + Sync {
         &self,
         height: Height,
     ) -> impl SendFut<Result<Option<IndexedBlock>, StoreError>>;
-
-    /// Returns every [`IndexedBlock`] in `start..=end`, ascending.
-    ///
-    /// The range primitive, and the reason there is no batching helper built on
-    /// [`Self::get_chain_block`]: a backend answers a range under one read
-    /// transaction, so the blocks are coherent with each other, and the
-    /// per-block transaction and validation costs are paid once.
-    ///
-    /// A missing height in the middle of the range is an error. The finalised
-    /// state is contiguous, so a hole means corruption rather than a branch,
-    /// and returning a short range would look to a caller like the chain ends
-    /// there.
-    fn get_chain_block_range(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<IndexedBlock>, StoreError>>;
 }
 
 /// One unspent output found by an address-history range query: where the
