@@ -11,17 +11,16 @@
 //!   gives each a babysitter, and funnels escalations up one channel; [`run`]
 //!   turns the first escalation into a [`RuntimeOutcome`].
 //!
-//! The read-serving composition over the finalised / non-finalised / mempool
-//! components (route/merge/serviceability) is re-seamed onto dev's
-//! `zaino-chain-store` / `zaino-chain-head` / `zaino-mempool` ports separately —
-//! it is the primitives-heavy half and lands after the primitives settle.
+//! The read-serving composition over the finalised / non-finalised /
+//! validator providers lives in `zaino-store-service`; which provider answers
+//! each capability is the use case's `zaino_service::routing::Routing` type,
+//! not a policy table here.
 //!
 //! [`run`]: Orchestra::run
 #![forbid(unsafe_code)]
 
 mod health;
 mod orchestra;
-mod resolve;
 mod run;
 mod run_component;
 mod signals;
@@ -31,7 +30,6 @@ mod validator;
 
 pub use health::{HealthServeError, HealthServer};
 pub use orchestra::{BootError, Orchestra, OrchestraBuilder, RuntimeOutcome};
-pub use resolve::{strategy, tier_of, Strategy, Tier};
 pub use run_component::RunComponent;
 pub use signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
 pub use supervisor::{observe, supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
