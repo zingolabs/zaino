@@ -13,6 +13,21 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.1] - 2026-09-11
+
+### Added
+- `BlockTxPosition`: a transaction's position as a block height and an
+  index within the block, with `is_coinbase` read from the position.
+- `MempoolInfo`, moved here from zaino-state.
+- `ScriptType` and `classify_script`, which classify a transparent output
+  script into its 20-byte hash and its type.
+- `ShieldedPool::ALL`, every shielded pool in activation order.
+### Changed
+- Documentation no longer refers to zcashd.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.2.0] - 2026-08-28
 
 ### Added
