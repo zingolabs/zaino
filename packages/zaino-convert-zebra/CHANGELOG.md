@@ -13,6 +13,16 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.1] - 2026-09-11
+
+### Added
+### Changed
+- Requires zaino-primitives 0.2.1. No code change: the dependency
+  requirement is part of the packaged manifest.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.2.0] - 2026-08-28
 
 ### Added
