@@ -513,8 +513,10 @@ Summary
   another schema hash is moved aside to `v1.stale-<first four bytes of that
   hash>`, and one whose metadata this build cannot decode to
   `v1.stale-unreadable`; the store then resyncs from the validator. Nothing
-  is deleted, and a stale directory that already exists stops the start.
-  Upgrades and downgrades take the same path.
+  is deleted, and a stale name that is already taken gets a numbered suffix.
+  The check reads the metadata record alone, creates no table in a database
+  it moves aside, and also moves aside a database that holds blocks without
+  a metadata record. Upgrades and downgrades take the same path.
 - The schema version and the hand-maintained schema text are removed. The
   store computes its schema hash from the canonical encoding of every stored
   type, every table name and its flags, the singleton keys, the enabled index
@@ -547,14 +549,13 @@ API / capabilities
   `ChainStoreReader::schema`.
 - Removed: the startup integrity scans, the background re-validation loop, and
   the on-demand validation of reads. The write path keeps two checks.
-  Parent-hash continuity now fails as `StoreError::DoesNotExtendTip`. The
+  Continuity, one height above the tip with the tip as parent, now fails as
+  `StoreError::DoesNotExtendTip` on both the single-block and batch paths. The
   merkle-root check at ingest stays, because it catches a fault in Zaino's own
-  conversion of the block, which no type or validator guarantee covers.
-- Kept: the cross-checks of the spent index and the address history. The
-  maintenance task now runs them over each stored block, from genesis on each
-  start, and then over each new block. Zaino derives these indexes itself, so
-  only this check detects a fault in their derivation. A failed cross-check
-  logs an error and sets the store's status to `CriticalError`.
+  conversion of the block, which no type or validator guarantee covers. The
+  indexes a write derives from a block are covered by unit tests, not by
+  runtime cross-checks. Silent corruption on disk and mutation of the database
+  from outside Zaino are not in scope for the store's correctness checks.
 
 Rebuild
 - Every existing v1.0.0 to v1.3.0 database rebuilds once on its first start
