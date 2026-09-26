@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-09-11
+
+### Added
 - New crate. The domain half of the finalised-state subsystem: vocabulary and
   ports for everything below the reorg seam, with no runtime and no storage. The
   LMDB implementation is `zaino-chain-store-zainodb`. See ADR-0012.
