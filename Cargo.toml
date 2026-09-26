@@ -22,6 +22,7 @@ members = [
     "packages/zaino-chain-head-service",
     "packages/zaino-chain-store",
     "packages/zaino-chain-store-zainodb",
+    "packages/zaino-chain",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -207,6 +208,13 @@ zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
 # implementation is expected, and neither should be able to claim to be *the*
 # chain store. Consumers depend on the ports; this is what a deployment picks.
 zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.1.0" }
+# ChainView: the unified chain read surface, composed from the two tiers above
+# and validator passthrough. Unlike the subsystems it composes, this is one
+# crate rather than a domain/adapter pair — the composer is generic over the
+# ports either side, so it names no implementation and can sit beside the
+# vocabulary it implements. A consumer bringing its own store and head depends
+# on the same crate and writes its own composer against the same ports.
+zaino-chain = { path = "packages/zaino-chain", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.0" }
 zaino-state = { path = "packages/zaino-state", version = "0.9.0", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.8.0", default-features = false }

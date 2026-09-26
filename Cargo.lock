@@ -6004,6 +6004,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-chain"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-chain",
+ "zaino-chain-head",
+ "zaino-chain-store",
+ "zaino-chain-store-zainodb",
+ "zaino-component",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-zebra",
+]
+
+[[package]]
 name = "zaino-chain-head"
 version = "0.1.1"
 dependencies = [
@@ -6350,6 +6370,7 @@ dependencies = [
  "tracing-subscriber",
  "whoami",
  "zaino-address",
+ "zaino-chain",
  "zaino-chain-head",
  "zaino-chain-head-service",
  "zaino-chain-store",
