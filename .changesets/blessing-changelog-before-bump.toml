@@ -1,0 +1,4 @@
+id = "01a0ded8-8f69-7b61-bfa9-f00b3e8120fb"
+
+[empty]
+reason = "CI only: blessing.yml writes changelogs before bumping versions; no governed crate changes."

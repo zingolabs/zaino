@@ -35,23 +35,25 @@ use zaino_proto::proto::utils::PoolTypeFilter;
 use crate::error::StoreError;
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, BlockHeaderData,
-    CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
-    TxLocation, TxOutCompact, TxidList,
+    db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, Height,
+    IndexedBlock, Outpoint, TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
 };
+#[cfg(test)]
+use crate::types::{BlockHeaderData, OrchardTxList};
 use zaino_chain_store::ChainStoreSource;
 use zaino_status::StatusType;
 
+#[cfg(all(test, feature = "transparent_address_history_experimental"))]
+use crate::store::capability::AddrUtxo;
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::store::capability::{AddrUtxo, TransparentHistExt};
+use crate::store::capability::TransparentHistExt;
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::types::{AddrEventBytes, AddrScript};
+use crate::types::AddrScript;
 
 use super::{
     capability::{
-        BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbMetadata,
-        IndexedBlockExt, SpentOutputExt, TxOutSetExt,
+        BlockCoreExt, BlockTransparentExt, CompactBlockExt, IndexedBlockExt, SpentOutputExt,
+        TxOutSetExt,
     },
     finalised_source::v1::DbV1,
     FinalisedState,
@@ -99,18 +101,9 @@ impl<T: ChainStoreSource> DbReader<T> {
     }
 
     /// Returns the greatest block `Height` stored in the database, or `None` if the DB is empty.
+    #[cfg(test)]
     pub(crate) async fn db_height(&self) -> Result<Option<Height>, StoreError> {
         self.inner.db_height().await
-    }
-
-    /// Fetches the persisted database metadata singleton (`DbMetadata`).
-    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
-        self.inner.get_metadata().await
-    }
-
-    /// Waits until the database reports [`StatusType::Ready`].
-    pub(crate) async fn wait_until_ready(&self) {
-        self.inner.wait_until_ready().await
     }
 
     /// Fetches the main-chain height for a given block hash, if present in finalised state.
@@ -134,6 +127,7 @@ impl<T: ChainStoreSource> DbReader<T> {
     }
 
     /// Fetch block header data by height.
+    #[cfg(test)]
     pub(crate) async fn get_block_header(
         &self,
         height: Height,
@@ -141,32 +135,9 @@ impl<T: ChainStoreSource> DbReader<T> {
         self.db().get_block_header(height).await
     }
 
-    /// Fetches block headers for the given height range.
-    pub(crate) async fn get_block_range_headers(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<BlockHeaderData>, StoreError> {
-        self.db().get_block_range_headers(start, end).await
-    }
-
     /// Fetch the txid bytes for a given TxLocation.
     pub async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
         self.db().get_txid(tx_location).await
-    }
-
-    /// Fetch block txids by height.
-    pub(crate) async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
-        self.db().get_block_txids(height).await
-    }
-
-    /// Fetches block txids for the given height range.
-    pub(crate) async fn get_block_range_txids(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<TxidList>, StoreError> {
-        self.db().get_block_range_txids(start, end).await
     }
 
     // ***** Block Transparent Ext *****
@@ -179,84 +150,10 @@ impl<T: ChainStoreSource> DbReader<T> {
         self.db().get_transparent(tx_location).await
     }
 
-    /// Fetch block transparent transaction data by height.
-    pub(crate) async fn get_block_transparent(
-        &self,
-        height: Height,
-    ) -> Result<TransparentTxList, StoreError> {
-        self.db().get_block_transparent(height).await
-    }
-
-    /// Fetches block transparent tx data for the given height range.
-    pub(crate) async fn get_block_range_transparent(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<TransparentTxList>, StoreError> {
-        self.db().get_block_range_transparent(start, end).await
-    }
-
-    // ***** Block shielded Ext *****
-
-    /// Fetch the serialized SaplingCompactTx for the given TxLocation, if present.
-    pub(crate) async fn get_sapling(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, StoreError> {
-        self.db().get_sapling(tx_location).await
-    }
-
-    /// Fetch block sapling transaction data by height.
-    pub(crate) async fn get_block_sapling(
-        &self,
-        height: Height,
-    ) -> Result<SaplingTxList, StoreError> {
-        self.db().get_block_sapling(height).await
-    }
-
-    /// Fetches block sapling tx data for the given height range.
-    pub(crate) async fn get_block_range_sapling(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<SaplingTxList>, StoreError> {
-        self.db().get_block_range_sapling(start, end).await
-    }
-
-    /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
-    pub(crate) async fn get_orchard(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, StoreError> {
-        self.db().get_orchard(tx_location).await
-    }
-
-    /// Fetch block orchard transaction data by height.
-    pub(crate) async fn get_block_orchard(
-        &self,
-        height: Height,
-    ) -> Result<OrchardTxList, StoreError> {
-        self.db().get_block_orchard(height).await
-    }
-
-    /// Fetches block orchard tx data for the given height range.
-    pub(crate) async fn get_block_range_orchard(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<OrchardTxList>, StoreError> {
-        self.db().get_block_range_orchard(start, end).await
-    }
-
-    /// Fetch the serialized ironwood (NU6.3) compact tx for the given TxLocation, if present.
-    pub(crate) async fn get_ironwood(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, StoreError> {
-        self.db().get_ironwood(tx_location).await
-    }
+    // ***** Block shielded reads *****
 
     /// Fetch block ironwood transaction data by height.
+    #[cfg(test)]
     pub(crate) async fn get_block_ironwood(
         &self,
         height: Height,
@@ -264,66 +161,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         self.db().get_block_ironwood(height).await
     }
 
-    /// Fetches block ironwood tx data for the given height range.
-    pub(crate) async fn get_block_range_ironwood(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<OrchardTxList>, StoreError> {
-        self.db().get_block_range_ironwood(start, end).await
-    }
-
-    /// Fetch block commitment tree data by height.
-    pub(crate) async fn get_block_commitment_tree_data(
-        &self,
-        height: Height,
-    ) -> Result<CommitmentTreeData, StoreError> {
-        self.db().get_block_commitment_tree_data(height).await
-    }
-
-    /// Fetches block commitment tree data for the given height range.
-    pub(crate) async fn get_block_range_commitment_tree_data(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, StoreError> {
-        self.db()
-            .get_block_range_commitment_tree_data(start, end)
-            .await
-    }
-
     // ***** Transparent Hist Ext *****
-
-    /// Fetch all address history records for a given transparent address.
-    ///
-    /// Returns:
-    /// - `Ok(Some(records))` if one or more valid records exist,
-    /// - `Ok(None)` if no records exist (not an error),
-    /// - `Err(...)` if any decoding or DB error occurs.
-    #[cfg(feature = "transparent_address_history_experimental")]
-    pub(crate) async fn addr_records(
-        &self,
-        addr_script: AddrScript,
-    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        self.db().addr_records(addr_script).await
-    }
-
-    /// Fetch all address history records for a given address and TxLocation.
-    ///
-    /// Returns:
-    /// - `Ok(Some(records))` if one or more matching records are found at that index,
-    /// - `Ok(None)` if no matching records exist (not an error),
-    /// - `Err(...)` on decode or DB failure.
-    #[cfg(feature = "transparent_address_history_experimental")]
-    pub(crate) async fn addr_and_index_records(
-        &self,
-        addr_script: AddrScript,
-        tx_location: TxLocation,
-    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        self.db()
-            .addr_and_index_records(addr_script, tx_location)
-            .await
-    }
 
     /// Fetch all distinct `TxLocation` values for `addr_script` within the
     /// height range `[start_height, end_height]` (inclusive).
@@ -353,7 +191,7 @@ impl<T: ChainStoreSource> DbReader<T> {
     /// - `Ok(Some(vec))` if one or more UTXOs are found,
     /// - `Ok(None)` if none found (not an error),
     /// - `Err(...)` on decode or DB failure.
-    #[cfg(feature = "transparent_address_history_experimental")]
+    #[cfg(all(test, feature = "transparent_address_history_experimental"))]
     pub(crate) async fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
@@ -373,7 +211,7 @@ impl<T: ChainStoreSource> DbReader<T> {
     /// - `−value` for spent inputs
     ///
     /// Returns the signed net value as `i64`, or error on failure.
-    #[cfg(feature = "transparent_address_history_experimental")]
+    #[cfg(all(test, feature = "transparent_address_history_experimental"))]
     pub(crate) async fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,
@@ -445,16 +283,6 @@ impl<T: ChainStoreSource> DbReader<T> {
         end: Height,
     ) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
         self.db().get_stored_block_range(start, end).await
-    }
-
-    pub(crate) async fn get_chain_block_by_hash(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Option<IndexedBlock>, StoreError> {
-        let Some(height) = self.inner.get_block_height(hash).await? else {
-            return Ok(None);
-        };
-        self.get_chain_block_by_height(height).await
     }
 
     // ***** CompactBlock Ext *****

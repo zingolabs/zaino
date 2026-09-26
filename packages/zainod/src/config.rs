@@ -354,6 +354,7 @@ pub fn default_ephemeral_cookie_path() -> PathBuf {
 }
 
 /// Resolves a hostname to a SocketAddr.
+#[cfg(not(feature = "no_tls_use_unencrypted_traffic"))]
 fn fetch_socket_addr_from_hostname(address: &str) -> Result<SocketAddr, IndexerError> {
     zaino_common::net::resolve_socket_addr(address)
         .map_err(|e| IndexerError::ConfigError(format!("Invalid address '{address}': {e}")))

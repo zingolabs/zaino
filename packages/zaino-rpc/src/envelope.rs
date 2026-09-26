@@ -52,8 +52,6 @@ pub(crate) enum ResponseOutcome {
 /// Raw JSON-RPC 2.0 response envelope.
 #[derive(serde::Deserialize)]
 struct RpcResponseEnvelope {
-    #[allow(dead_code)]
-    id: Value,
     result: Option<Value>,
     error: Option<RpcErrorObject>,
 }

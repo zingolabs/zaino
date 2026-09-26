@@ -18,7 +18,7 @@
 //!   - [`DbRead`], [`DbWrite`], and [`DbCore`]
 //!
 //! - **Extension traits**:
-//!   - [`BlockCoreExt`], [`BlockTransparentExt`], [`BlockShieldedExt`]
+//!   - [`BlockCoreExt`], [`BlockTransparentExt`]
 //!   - [`CompactBlockExt`]
 //!   - [`IndexedBlockExt`]
 //!   - [`SpentOutputExt`], [`TxOutSetExt`]
@@ -40,16 +40,16 @@ use crate::codec::{read_fixed_le, write_fixed_le, DbCodec, FixedEncodedLen};
 use crate::error::StoreError;
 use crate::stream::CompactBlockStream;
 use crate::support::SendFut;
+#[cfg(test)]
+use crate::types::BlockHeaderData;
 use crate::types::{
-    db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, BlockHeaderData,
-    CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
-    TxLocation, TxOutCompact, TxidList,
+    db::metadata::FinalisedTxOutSetInfoAccumulator, BlockHash, Height, IndexedBlock, Outpoint,
+    TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
 };
 use zaino_status::StatusType;
 
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::types::{AddrEventBytes, AddrScript};
+use crate::types::AddrScript;
 
 use corez::io::{self, Read, Write};
 use zaino_proto::proto::utils::PoolTypeFilter;
@@ -99,8 +99,7 @@ impl FixedEncodedLen for DbMetadata {
 ///
 /// These operations form the minimum required surface for:
 /// - determining the chain tip stored on disk,
-/// - mapping hashes to heights and vice versa,
-/// - and reading the persisted schema metadata.
+/// - and mapping hashes to heights and vice versa.
 ///
 /// All methods must be consistent with the database’s *finalised* chain view.
 pub trait DbRead: Send + Sync {
@@ -125,56 +124,22 @@ pub trait DbRead: Send + Sync {
     /// - `Ok(None)` if not present (not an error).
     fn get_block_hash(&self, height: Height)
         -> impl SendFut<Result<Option<BlockHash>, StoreError>>;
-
-    /// Returns the persisted metadata singleton.
-    ///
-    /// This must reflect the schema actually used by the backend instance.
-    fn get_metadata(&self) -> impl SendFut<Result<DbMetadata, StoreError>>;
 }
 
 /// Core write operations that *every* database schema version must support.
-///
-/// The finalised database is updated using *stack semantics*:
-/// - blocks are appended at the tip (`write_block`),
-/// - and removed only from the tip (`delete_block_at_height` / `delete_block`).
-///
-/// Implementations must keep all secondary indices internally consistent with these operations.
 pub trait DbWrite: Send + Sync {
-    /// Appends a fully-validated block to the database.
-    ///
-    /// Invariant: `block` must be the next height after the current tip (no gaps, no rewrites).
-    fn write_block(
-        &self,
-        block: IndexedBlock<AbsoluteChainWork>,
-    ) -> impl SendFut<Result<(), StoreError>>;
-
     /// Ingests blocks from `source`, writing every height from the current tip up to and including
     /// `height` in order.
     ///
     /// This is the bulk catch-up path. Implementations own the ingestion loop so they can choose an
     /// efficient strategy: the v1 backend defers expensive secondary-index maintenance (the
-    /// txout-set accumulator) across the run and rebuilds it once at the tip, whereas legacy
-    /// backends may simply loop [`DbWrite::write_block`]. A no-op is valid when the tip already
-    /// meets or exceeds `height`.
+    /// txout-set accumulator) across the run and rebuilds it once at the tip. A no-op is valid
+    /// when the tip already meets or exceeds `height`.
     fn write_blocks_to_height<S: zaino_chain_store::ChainStoreSource>(
         &self,
         height: Height,
         source: &S,
     ) -> impl SendFut<Result<(), StoreError>>;
-
-    /// Deletes the tip block identified by `height` from every finalised table.
-    ///
-    /// Invariant: `height` must be the current database tip height.
-    fn delete_block_at_height(&self, height: Height) -> impl SendFut<Result<(), StoreError>>;
-
-    /// Deletes the provided tip block from every finalised table.
-    ///
-    /// This is the “full-information” deletion path: it takes an [`IndexedBlock`] so the backend
-    /// can deterministically remove all derived index entries even if reconstructing them from
-    /// height alone is not possible.
-    ///
-    /// Invariant: `block` must be the current database tip block.
-    fn delete_block(&self, block: &IndexedBlock) -> impl SendFut<Result<(), StoreError>>;
 }
 
 /// Core runtime surface that binds the core read/write operations to lifecycle and status reporting.
@@ -190,35 +155,12 @@ pub trait DbCore: DbRead + DbWrite + Send + Sync {
 
 /// Core block indexing extension.
 ///
-/// This extension covers header and txid range fetches plus transaction indexing by [`TxLocation`].
-///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise [`Capability::BLOCK_CORE_EXT`].
+/// This extension covers transaction indexing by [`TxLocation`].
 pub trait BlockCoreExt: Send + Sync {
     /// Return block header data by height.
+    #[cfg(test)]
     fn get_block_header(&self, height: Height)
         -> impl SendFut<Result<BlockHeaderData, StoreError>>;
-
-    /// Returns block headers for the inclusive range `[start, end]`.
-    ///
-    /// Callers should ensure `start <= end`.
-    fn get_block_range_headers(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<BlockHeaderData>, StoreError>>;
-
-    /// Return block txids by height.
-    fn get_block_txids(&self, height: Height) -> impl SendFut<Result<TxidList, StoreError>>;
-
-    /// Return block txids for the given height range.
-    ///
-    /// Callers should ensure `start <= end`.
-    fn get_block_range_txids(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<TxidList>, StoreError>>;
 
     /// Returns the transaction hash for the given [`TxLocation`].
     ///
@@ -242,10 +184,6 @@ pub trait BlockCoreExt: Send + Sync {
 }
 
 /// Transparent transaction indexing extension.
-///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise
-///   [`Capability::BLOCK_TRANSPARENT_EXT`].
 pub trait BlockTransparentExt: Send + Sync {
     /// Returns the serialized [`TransparentCompactTx`] for `tx_location`, if present.
     ///
@@ -256,19 +194,6 @@ pub trait BlockTransparentExt: Send + Sync {
         &self,
         tx_location: TxLocation,
     ) -> impl SendFut<Result<Option<TransparentCompactTx>, StoreError>>;
-
-    /// Fetch block transparent transaction data for given block height.
-    fn get_block_transparent(
-        &self,
-        height: Height,
-    ) -> impl SendFut<Result<TransparentTxList, StoreError>>;
-
-    /// Returns transparent transaction tx data for the inclusive block height range `[start, end]`.
-    fn get_block_range_transparent(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<TransparentTxList>, StoreError>>;
 
     /// Returns the [`TxOutCompact`] referenced by `outpoint`, looking up the previous
     /// transaction's transparent data via the txid index and the transparent block table.
@@ -281,87 +206,7 @@ pub trait BlockTransparentExt: Send + Sync {
     ) -> impl SendFut<Result<TxOutCompact, StoreError>>;
 }
 
-/// Shielded transaction indexing extension (Sapling + Orchard + commitment tree data).
-///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise
-///   [`Capability::BLOCK_SHIELDED_EXT`].
-pub trait BlockShieldedExt: Send + Sync {
-    /// Fetch the serialized SaplingCompactTx for the given TxLocation, if present.
-    fn get_sapling(
-        &self,
-        tx_location: TxLocation,
-    ) -> impl SendFut<Result<Option<SaplingCompactTx>, StoreError>>;
-
-    /// Fetch block sapling transaction data by height.
-    fn get_block_sapling(&self, height: Height) -> impl SendFut<Result<SaplingTxList, StoreError>>;
-
-    /// Fetches block sapling tx data for the given (inclusive) height range.
-    fn get_block_range_sapling(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<SaplingTxList>, StoreError>>;
-
-    /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
-    fn get_orchard(
-        &self,
-        tx_location: TxLocation,
-    ) -> impl SendFut<Result<Option<OrchardCompactTx>, StoreError>>;
-
-    /// Fetch block orchard transaction data by height.
-    fn get_block_orchard(&self, height: Height) -> impl SendFut<Result<OrchardTxList, StoreError>>;
-
-    /// Fetches block orchard tx data for the given (inclusive) height range.
-    fn get_block_range_orchard(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<OrchardTxList>, StoreError>>;
-
-    /// Fetch the serialized Ironwood (NU6.3) compact tx for the given TxLocation, if present.
-    ///
-    /// Ironwood actions are modelled with the Orchard compact types. Returns `None` when the block
-    /// has no ironwood row (any block below NU6.3 activation, or written before schema v1.3.0).
-    fn get_ironwood(
-        &self,
-        tx_location: TxLocation,
-    ) -> impl SendFut<Result<Option<OrchardCompactTx>, StoreError>>;
-
-    /// Fetch block ironwood transaction data by height.
-    ///
-    /// Returns an empty [`OrchardTxList`] when the block has no ironwood row.
-    fn get_block_ironwood(&self, height: Height)
-        -> impl SendFut<Result<OrchardTxList, StoreError>>;
-
-    /// Fetches block ironwood tx data for the given (inclusive) height range.
-    ///
-    /// Heights with no ironwood row yield an empty [`OrchardTxList`].
-    fn get_block_range_ironwood(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<OrchardTxList>, StoreError>>;
-
-    /// Fetch block commitment tree data by height.
-    fn get_block_commitment_tree_data(
-        &self,
-        height: Height,
-    ) -> impl SendFut<Result<CommitmentTreeData, StoreError>>;
-
-    /// Fetches block commitment tree data for the given (inclusive) height range.
-    fn get_block_range_commitment_tree_data(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<CommitmentTreeData>, StoreError>>;
-}
-
 /// CompactBlock materialization extension.
-///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise
-///   [`Capability::COMPACT_BLOCK_EXT`].
 pub trait CompactBlockExt: Send + Sync {
     /// Returns the compact block at `height`.
     ///
@@ -401,10 +246,6 @@ pub trait CompactBlockExt: Send + Sync {
 }
 
 /// `IndexedBlock` materialization extension.
-///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise
-///   [`Capability::CHAIN_BLOCK_EXT`].
 pub trait IndexedBlockExt: Send + Sync {
     /// Returns the [`IndexedBlock`] for `height`, if present.
     ///
@@ -416,32 +257,15 @@ pub trait IndexedBlockExt: Send + Sync {
         &self,
         height: Height,
     ) -> impl SendFut<Result<Option<IndexedBlock>, StoreError>>;
-
-    /// Returns every [`IndexedBlock`] in `start..=end`, ascending.
-    ///
-    /// The range primitive, and the reason there is no batching helper built on
-    /// [`Self::get_chain_block`]: a backend answers a range under one read
-    /// transaction, so the blocks are coherent with each other, and the
-    /// per-block transaction and validation costs are paid once.
-    ///
-    /// A missing height in the middle of the range is an error. The finalised
-    /// state is contiguous, so a hole means corruption rather than a branch,
-    /// and returning a short range would look to a caller like the chain ends
-    /// there.
-    fn get_chain_block_range(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<IndexedBlock>, StoreError>>;
 }
 
 /// One unspent output found by an address-history range query: where the
 /// transaction sits, which output of it, and its value.
 ///
-/// A named alias rather than a bare tuple repeated at five signatures — the
+/// A named alias rather than a bare tuple repeated at each signature — the
 /// positions are not self-describing, and a `u16` beside a `u64` invites being
 /// swapped.
-#[cfg(feature = "transparent_address_history_experimental")]
+#[cfg(all(test, feature = "transparent_address_history_experimental"))]
 pub(crate) type AddrUtxo = (TxLocation, u16, u64);
 
 /// Transparent address history indexing extension.
@@ -449,47 +273,13 @@ pub(crate) type AddrUtxo = (TxLocation, u16, u64);
 /// This extension provides address-scoped queries backed by persisted indices built from the
 /// transparent transaction graph (outputs, spends, and derived address events).
 ///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise
-///   [`Capability::TRANSPARENT_HIST_INDEX`].
-///
 /// Range semantics:
 /// - Methods that accept `start_height` and `end_height` interpret the range as inclusive:
 ///   `[start_height, end_height]`
-// `pub(crate)`, unlike its eight sibling traits, because two of its methods
-// return `AddrEventBytes`, which is `pub(crate)`. Narrowing the trait is the
-// direction that keeps the packed 17-byte record private; widening the record
-// to satisfy a `pub` the module never exports would leak an on-disk detail for
-// nothing. The module itself is `pub(crate)` and none of these traits are
-// re-exported, so this costs no reachability.
-//
 // Gated as a whole rather than per method: every method it has left is behind
 // the feature, so without it the trait had no methods at all.
 #[cfg(feature = "transparent_address_history_experimental")]
 pub(crate) trait TransparentHistExt: Send + Sync {
-    /// Fetch all address history records for a given transparent address.
-    ///
-    /// Returns:
-    /// - `Ok(Some(records))` if one or more valid records exist,
-    /// - `Ok(None)` if no records exist (not an error),
-    /// - `Err(...)` if any decoding or DB error occurs.
-    fn addr_records(
-        &self,
-        addr_script: AddrScript,
-    ) -> impl SendFut<Result<Option<Vec<AddrEventBytes>>, StoreError>>;
-
-    /// Fetch all address history records for a given address and TxLocation.
-    ///
-    /// Returns:
-    /// - `Ok(Some(records))` if one or more matching records are found at that index,
-    /// - `Ok(None)` if no matching records exist (not an error),
-    /// - `Err(...)` on decode or DB failure.
-    fn addr_and_index_records(
-        &self,
-        addr_script: AddrScript,
-        tx_location: TxLocation,
-    ) -> impl SendFut<Result<Option<Vec<AddrEventBytes>>, StoreError>>;
-
     /// Fetch all distinct `TxLocation` values for `addr_script` within the
     /// height range `[start_height, end_height]` (inclusive).
     ///
@@ -513,6 +303,7 @@ pub(crate) trait TransparentHistExt: Send + Sync {
     /// - `Ok(Some(vec))` if one or more UTXOs are found,
     /// - `Ok(None)` if none found (not an error),
     /// - `Err(...)` on decode or DB failure.
+    #[cfg(test)]
     fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
@@ -528,6 +319,7 @@ pub(crate) trait TransparentHistExt: Send + Sync {
     /// - `−value` for spent inputs
     ///
     /// Returns the signed net value as `i64`, or error on failure.
+    #[cfg(test)]
     fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,
@@ -547,10 +339,6 @@ pub(crate) trait TransparentHistExt: Send + Sync {
 /// which meant a build with address history compiled out still had to advertise
 /// an address-history capability in order to answer a spend lookup — a name that
 /// described neither what was being asked nor what was built.
-///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise
-///   [`Capability::SPENT_OUTPUT_INDEX`].
 pub trait SpentOutputExt: Send + Sync {
     /// Fetch the `TxLocation` that spent a given outpoint, if any.
     ///
@@ -576,10 +364,6 @@ pub trait SpentOutputExt: Send + Sync {
 }
 
 /// UTXO-set accumulator extension.
-///
-/// Capability gating:
-/// - Backends must only be routed for this surface if they advertise
-///   [`Capability::TXOUT_SET_INDEX`].
 pub trait TxOutSetExt: Send + Sync {
     /// Returns the finalised-state txout-set accumulator.
     ///

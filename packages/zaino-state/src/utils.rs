@@ -19,7 +19,6 @@ pub(crate) struct BuildInfo {
     version: String,
 }
 
-#[allow(dead_code)]
 impl BuildInfo {
     pub(crate) fn commit_hash(&self) -> String {
         self.commit_hash.clone()

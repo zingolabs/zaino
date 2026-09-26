@@ -295,11 +295,8 @@ pub enum ChainIndexErrorKind {
     /// Zaino is in some way nonfunctional
     InternalServerError,
     /// The given snapshot contains invalid data.
-    // This variant isn't used yet...it should indicate
-    // that the provided snapshot contains information unknown to Zebra
     // Unlike an internal server error, generating a new snapshot may solve
     // whatever went wrong
-    #[allow(dead_code)]
     InvalidSnapshot,
     /// The caller asked for something Zaino cannot serve *right now*, but
     /// could on a later attempt — a mempool read against a snapshot the
@@ -373,6 +370,11 @@ impl ChainIndexError {
             message: message.into(),
             source: None,
         }
+    }
+
+    /// Constructs an `Unavailable`-kind error for a height the chain has but the finalised state has not built yet, so a later attempt can serve it.
+    pub(crate) fn not_yet_indexed(height: impl Display) -> Self {
+        Self::unavailable(format!("the index has not built height {height} yet"))
     }
 
     /// Constructs an `InvalidArgument`-kind error: the request itself is wrong,

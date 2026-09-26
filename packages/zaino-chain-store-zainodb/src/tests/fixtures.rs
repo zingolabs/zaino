@@ -167,8 +167,8 @@ fn vector_chain_up_to(
 /// Writes through the backend's own writer rather than the store's sync path,
 /// so a test can build a database at an exact height without a source.
 #[cfg(test)]
-pub async fn sync_db_with_blockdata(
-    db: &impl crate::store::capability::DbWrite,
+pub(crate) async fn sync_db_with_blockdata(
+    db: &crate::store::finalised_source::v1::DbV1,
     blocks: &[VectorBlock],
     height_limit: Option<u32>,
 ) {

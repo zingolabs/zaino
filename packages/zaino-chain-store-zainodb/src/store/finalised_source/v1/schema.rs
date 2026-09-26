@@ -113,6 +113,18 @@ impl Table {
     pub(super) async fn open(self, env: &lmdb::Environment) -> Result<lmdb::Database, StoreError> {
         super::super::open_or_create_db(env, self.name, self.flags).await
     }
+
+    /// Opens this table in `env` without creating it, reporting `None` when the environment holds no table of this name.
+    pub(super) fn open_existing(
+        self,
+        env: &lmdb::Environment,
+    ) -> Result<Option<lmdb::Database>, StoreError> {
+        match env.open_db(Some(self.name)) {
+            Ok(table) => Ok(Some(table)),
+            Err(lmdb::Error::NotFound) => Ok(None),
+            Err(error) => Err(StoreError::LmdbError(error)),
+        }
+    }
 }
 
 /// Computes this build's schema hash from its epoch, enum tags, record encodings, tables, singleton keys and index features.
@@ -259,21 +271,25 @@ fn hash_schema(
 pub(crate) mod canonical {
     use core::num::NonZeroU128;
 
+    #[cfg(any(test, feature = "transparent_address_history_experimental"))]
     use corez::io;
 
     use crate::store::capability::DbMetadata;
     use crate::types::db::commitment::{
         CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes,
     };
+    #[cfg(any(test, feature = "transparent_address_history_experimental"))]
     use crate::types::db::legacy::AddrEventBytes;
     use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
     use crate::types::{
-        AbsoluteChainWork, AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash,
-        BlockHeaderData, CompactDifficulty, CompactOrchardAction, CompactSaplingOutput,
-        CompactSaplingSpend, EquihashSolution, Height, OrchardCompactTx, OrchardTxList, Outpoint,
-        SaplingCompactTx, SaplingTxList, ScriptType, TransactionHash, TransparentCompactTx,
-        TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
+        AbsoluteChainWork, BlockContext, BlockData, BlockHash, BlockHeaderData, CompactDifficulty,
+        CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, EquihashSolution, Height,
+        OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, ScriptType,
+        TransactionHash, TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation,
+        TxOutCompact, TxidList,
     };
+    #[cfg(any(test, feature = "transparent_address_history_experimental"))]
+    use crate::types::{AddrHistRecord, AddrScript};
 
     /// The chainwork the canonical block context carries.
     const CHAINWORK: NonZeroU128 = match NonZeroU128::new(0x0dec_0de0) {
@@ -300,6 +316,7 @@ pub(crate) mod canonical {
     }
 
     /// The canonical address script.
+    #[cfg(any(test, feature = "transparent_address_history_experimental"))]
     pub(crate) fn addr_script() -> AddrScript {
         AddrScript::new([0x33; 20], ScriptType::P2SH as u8)
     }
@@ -399,11 +416,13 @@ pub(crate) mod canonical {
     }
 
     /// The canonical address history record.
+    #[cfg(any(test, feature = "transparent_address_history_experimental"))]
     pub(crate) fn addr_hist_record() -> AddrHistRecord {
         AddrHistRecord::new(tx_location(), 2, 555_000, AddrEventBytes::FLAG_MINED)
     }
 
     /// The canonical packed address event, the stored form of the canonical address history record.
+    #[cfg(any(test, feature = "transparent_address_history_experimental"))]
     pub(crate) fn addr_event_bytes() -> io::Result<AddrEventBytes> {
         AddrEventBytes::from_record(&addr_hist_record())
     }
