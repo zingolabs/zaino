@@ -13,6 +13,16 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.1] - 2026-09-11
+
+### Added
+### Changed
+- Documentation no longer refers to zcashd, whose support was removed from
+  Zaino. No code change.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.2.0] - 2026-08-28
 
 ### Added
