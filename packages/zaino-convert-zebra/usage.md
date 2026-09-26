@@ -24,17 +24,10 @@ index. A mempool transaction is in no block and has no position to supply.
 
 ## Why a separate crate
 
-`zebra-chain` should appear in exactly one place below the adapters. Both
-adapters need the same conversions:
-
-- `zaino-source-zebra-rpc` deserializes raw block bytes with `zebra-chain` and
-  converts the result.
-- `zaino-source-zebra-readstate` gets `zebra-chain` types directly from the
-  read-state service.
-
-Without this crate the conversions get written twice, and the two copies drift —
-which is how a field ends up populated on one transport and defaulted on the
-other.
+`zebra-chain` should appear in exactly one place below the adapters.
+`zaino-source-zebra-rpc` deserializes raw block bytes with `zebra-chain` and
+converts the result through this crate. A second adapter would reuse these
+conversions rather than write a copy that drifts from them.
 
 ## One direction, deliberately
 
