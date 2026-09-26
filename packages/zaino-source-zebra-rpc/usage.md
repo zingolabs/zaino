@@ -10,9 +10,8 @@ let adapter = ZebraRpcAdapter::new(rpc_client);
 let block = zaino_source::GetBlock::get_block(&adapter, height).await?;
 ```
 
-This adapter implements **every** port that JSON-RPC can answer, so it is the
-one transport that is always present. `zaino-source-zebra-readstate` is an
-optional accelerator, not an alternative.
+This adapter implements **every** port that JSON-RPC can answer, and it is
+Zaino's only transport to the validator.
 
 ## The two halves
 
