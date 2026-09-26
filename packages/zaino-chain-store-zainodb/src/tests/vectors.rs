@@ -5,7 +5,7 @@
 //!
 //! These vectors are a regtest chain: blocks, the commitment tree roots after
 //! each, the treestates, and two wallets' expected balances. Their heaviest
-//! consumers are this crate's finalised-state and migration suites, which build
+//! consumers are this crate's finalised-state suites, which build
 //! a database from them and assert on what comes back — so the data sits with
 //! the code it exercises.
 //!
@@ -18,8 +18,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 
+use crate::codec::{read_u32_le, read_u64_le, CompactSize};
 use corez::io::{self, Read};
-use zaino_encoding::{read_u32_le, read_u64_le, CompactSize};
 use zebra_chain::serialization::ZcashDeserialize as _;
 
 /// One block of the vector chain, as it was recorded.

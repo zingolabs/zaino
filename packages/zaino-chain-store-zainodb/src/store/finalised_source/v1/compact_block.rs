@@ -46,13 +46,13 @@ impl DbV1 {
         height: Height,
         pool_types: PoolFilter,
     ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+        let stored_height = self
+            .resolve_stored_height(HashOrHeight::Height(height.into()))
             .await?;
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            self.read_compact_block_in_txn(&txn, validated_height, pool_types)
+            self.read_compact_block_in_txn(&txn, stored_height, pool_types)
         })
     }
 
@@ -69,11 +69,11 @@ impl DbV1 {
         end: Height,
         pool_types: PoolFilter,
     ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
-        let (validated_start, validated_end) = self.validate_block_range(start, end).await?;
+        self.require_stored_range(start, end).await?;
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            Height::range_inclusive(validated_start, validated_end)
+            Height::range_inclusive(start, end)
                 .map(|height| self.read_compact_block_in_txn(&txn, height, pool_types))
                 .collect()
         })
@@ -105,9 +105,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let header: BlockHeaderData<AbsoluteChainWork> = *StoredEntryVar::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
-                .inner();
+            let header = BlockHeaderData::<AbsoluteChainWork>::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?;
 
             // ----- Fetch Txids -----
             let raw = match txn.get(self.txids, &height_bytes) {
@@ -119,37 +118,36 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let txids_stored_entry_var = StoredEntryVar::<TxidList>::from_bytes(raw)
+            let txid_list = TxidList::from_bytes(raw)
                 .map_err(|e| StoreError::Custom(format!("txids decode error: {e}")))?;
-            let txids = txids_stored_entry_var.inner().txids();
+            let txids = txid_list.txids();
 
             // ----- Fetch Transparent Tx Data -----
-            let transparent_stored_entry_var = if pool_types.includes_transparent() {
-                let raw = match txn.get(self.transparent, &height_bytes) {
-                    Ok(val) => val,
-                    Err(lmdb::Error::NotFound) => {
-                        return Err(StoreError::DataUnavailable(
-                            "block data missing from db".into(),
-                        ));
-                    }
-                    Err(e) => return Err(StoreError::LmdbError(e)),
-                };
+            let transparent_list =
+                if pool_types.includes_transparent() {
+                    let raw = match txn.get(self.transparent, &height_bytes) {
+                        Ok(val) => val,
+                        Err(lmdb::Error::NotFound) => {
+                            return Err(StoreError::DataUnavailable(
+                                "block data missing from db".into(),
+                            ));
+                        }
+                        Err(e) => return Err(StoreError::LmdbError(e)),
+                    };
 
-                Some(
-                    StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|e| {
+                    Some(TransparentTxList::from_bytes(raw).map_err(|e| {
                         StoreError::Custom(format!("transparent decode error: {e}"))
-                    })?,
-                )
-            } else {
-                None
-            };
-            let transparent = match transparent_stored_entry_var.as_ref() {
-                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+                    })?)
+                } else {
+                    None
+                };
+            let transparent = match transparent_list.as_ref() {
+                Some(list) => list.tx(),
                 None => &[],
             };
 
             // ----- Fetch Sapling Tx Data -----
-            let sapling_stored_entry_var = if pool_types.includes(ShieldedPool::Sapling) {
+            let sapling_list = if pool_types.includes(ShieldedPool::Sapling) {
                 let raw = match txn.get(self.sapling, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
@@ -161,19 +159,19 @@ impl DbV1 {
                 };
 
                 Some(
-                    StoredEntryVar::<SaplingTxList>::from_bytes(raw)
+                    SaplingTxList::from_bytes(raw)
                         .map_err(|e| StoreError::Custom(format!("sapling decode error: {e}")))?,
                 )
             } else {
                 None
             };
-            let sapling = match sapling_stored_entry_var.as_ref() {
-                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+            let sapling = match sapling_list.as_ref() {
+                Some(list) => list.tx(),
                 None => &[],
             };
 
             // ----- Fetch Orchard Tx Data -----
-            let orchard_stored_entry_var = if pool_types.includes(ShieldedPool::Orchard) {
+            let orchard_list = if pool_types.includes(ShieldedPool::Orchard) {
                 let raw = match txn.get(self.orchard, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
@@ -185,35 +183,34 @@ impl DbV1 {
                 };
 
                 Some(
-                    StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                    OrchardTxList::from_bytes(raw)
                         .map_err(|e| StoreError::Custom(format!("orchard decode error: {e}")))?,
                 )
             } else {
                 None
             };
-            let orchard = match orchard_stored_entry_var.as_ref() {
-                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+            let orchard = match orchard_list.as_ref() {
+                Some(list) => list.tx(),
                 None => &[],
             };
 
             // ----- Fetch Ironwood Tx Data -----
             //
-            // Ironwood rows exist only from schema v1.3.0 (NU6.3) onward, so a missing row is not an
-            // error — it just means the block has no ironwood data.
-            let ironwood_stored_entry_var =
+            // A missing ironwood row is not an error — it just means the block has no ironwood data.
+            let ironwood_list =
                 if pool_types.includes(ShieldedPool::Ironwood) {
                     match txn.get(self.ironwood, &height_bytes) {
-                        Ok(raw) => Some(StoredEntryVar::<OrchardTxList>::from_bytes(raw).map_err(
-                            |e| StoreError::Custom(format!("ironwood decode error: {e}")),
-                        )?),
+                        Ok(raw) => Some(OrchardTxList::from_bytes(raw).map_err(|e| {
+                            StoreError::Custom(format!("ironwood decode error: {e}"))
+                        })?),
                         Err(lmdb::Error::NotFound) => None,
                         Err(e) => return Err(StoreError::LmdbError(e)),
                     }
                 } else {
                     None
                 };
-            let ironwood = match ironwood_stored_entry_var.as_ref() {
-                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+            let ironwood = match ironwood_list.as_ref() {
+                Some(list) => list.tx(),
                 None => &[],
             };
 
@@ -227,10 +224,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let commitment_tree_data: CommitmentTreeData =
-                *StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
-                    .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?
-                    .inner();
+            let commitment_tree_data = CommitmentTreeData::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?;
 
             assemble_compact_block(
                 &header,
@@ -282,19 +277,10 @@ impl DbV1 {
         end_height: Height,
         pool_types: PoolTypeFilter,
     ) -> Result<CompactBlockStream, StoreError> {
-        // Do NOT validate the whole requested range up-front here.
-        // Validate heights on-demand inside the blocking task so we can return
-        // the stream handle immediately and start sending blocks as they become ready.
-        //
+        let start_key_bytes = start_height.to_bytes()?;
+
         // Preserve caller ordering: direction is derived from the caller-supplied heights.
-        let validated_start_height = start_height;
-        let validated_end_height = end_height;
-
-        let start_key_bytes = validated_start_height.to_bytes()?;
-
-        // Direction is derived from the validated heights. This relies on `validate_block_range`
-        // preserving input ordering (i.e. not normalising to (min, max)).
-        let is_ascending = validated_start_height <= validated_end_height;
+        let is_ascending = start_height <= end_height;
 
         // Bounded channel provides backpressure so the blocking task cannot run unbounded ahead of
         // the gRPC consumer.
@@ -619,7 +605,7 @@ impl DbV1 {
 
             // Contiguous-height enforcement: we expect every emitted block to have exactly this height.
             // This catches missing heights and cursor ordering/key-encoding problems early.
-            let mut expected_height = validated_start_height;
+            let mut expected_height = start_height;
 
             // Key used to re-seek at the start of each transaction chunk.
             // This begins at the start height and advances by exactly one height per emitted block.
@@ -628,10 +614,10 @@ impl DbV1 {
             loop {
                 // Stop once we have emitted the inclusive end height.
                 if is_ascending {
-                    if expected_height > validated_end_height {
+                    if expected_height > end_height {
                         return;
                     }
-                } else if expected_height < validated_end_height {
+                } else if expected_height < end_height {
                     return;
                 }
 
@@ -800,12 +786,12 @@ impl DbV1 {
                 let mut blocks_streamed_in_transaction: usize = 0;
 
                 loop {
-                    // ----- Decode and validate block header -----
-                    let header: BlockHeaderData<AbsoluteChainWork> =
-                        match StoredEntryVar::from_bytes(raw_header_bytes)
+                    // ----- Decode block header -----
+                    let header =
+                        match BlockHeaderData::<AbsoluteChainWork>::from_bytes(raw_header_bytes)
                             .map_err(|error| format!("header decode error: {error}"))
                         {
-                            Ok(entry) => *entry.inner(),
+                            Ok(header) => header,
                             Err(message) => {
                                 send_status(&sender, tonic::Status::internal(message));
                                 return;
@@ -825,58 +811,23 @@ impl DbV1 {
                         return;
                     }
 
-                    // ----- Ensure the block is validated (on-demand) -----
-                    // We are in a blocking task; call validate_block_blocking directly but only when needed.
-                    if !zaino_db.is_validated(current_height.into()) {
-                        // header.context.hash() is the block hash we just read from DB; call validator.
-                        let block_hash = *header.context.hash();
-
-                        match zaino_db.validate_block_blocking(current_height, block_hash) {
-                            Ok(()) => {
-                                // validation succeeded and mark_validated has been called inside the validator.
-                            }
-                            Err(StoreError::LmdbError(lmdb::Error::NotFound)) => {
-                                // missing data that was expected: emit DataUnavailable -> translate to not_found
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "block data unavailable during validation at height {}",
-                                        current_height.0
-                                    )),
-                                );
-                                return;
-                            }
-                            Err(e) => {
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "validation failed for height {}: {e:?}",
-                                        current_height.0
-                                    )),
-                                );
-                                return;
-                            }
-                        }
-                    }
-
                     // ----- Decode txids and optional pool data -----
-                    let txids_stored_entry_var =
-                        match StoredEntryVar::<TxidList>::from_bytes(raw_txids_bytes)
-                            .map_err(|error| format!("txids decode error: {error}"))
-                        {
-                            Ok(entry) => entry,
-                            Err(message) => {
-                                send_status(&sender, tonic::Status::internal(message));
-                                return;
-                            }
-                        };
-                    let txids = txids_stored_entry_var.inner().txids();
+                    let txid_list = match TxidList::from_bytes(raw_txids_bytes)
+                        .map_err(|error| format!("txids decode error: {error}"))
+                    {
+                        Ok(list) => list,
+                        Err(message) => {
+                            send_status(&sender, tonic::Status::internal(message));
+                            return;
+                        }
+                    };
+                    let txids = txid_list.txids();
 
                     // Each pool database stores a per-height vector aligned to the txids list:
                     // one entry per transaction index (typically `Option<T>` per tx).
-                    let transparent_entries: Option<StoredEntryVar<TransparentTxList>> =
+                    let transparent_entries: Option<TransparentTxList> =
                         if let Some(raw) = raw_transparent_bytes {
-                            match StoredEntryVar::<TransparentTxList>::from_bytes(raw)
+                            match TransparentTxList::from_bytes(raw)
                                 .map_err(|error| format!("transparent decode error: {error}"))
                             {
                                 Ok(entry) => Some(entry),
@@ -889,9 +840,9 @@ impl DbV1 {
                             None
                         };
 
-                    let sapling_entries: Option<StoredEntryVar<SaplingTxList>> =
+                    let sapling_entries: Option<SaplingTxList> =
                         if let Some(raw) = raw_sapling_bytes {
-                            match StoredEntryVar::<SaplingTxList>::from_bytes(raw)
+                            match SaplingTxList::from_bytes(raw)
                                 .map_err(|error| format!("sapling decode error: {error}"))
                             {
                                 Ok(entry) => Some(entry),
@@ -904,9 +855,9 @@ impl DbV1 {
                             None
                         };
 
-                    let orchard_entries: Option<StoredEntryVar<OrchardTxList>> =
+                    let orchard_entries: Option<OrchardTxList> =
                         if let Some(raw) = raw_orchard_bytes {
-                            match StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                            match OrchardTxList::from_bytes(raw)
                                 .map_err(|error| format!("orchard decode error: {error}"))
                             {
                                 Ok(entry) => Some(entry),
@@ -920,61 +871,61 @@ impl DbV1 {
                         };
 
                     let transparent = match transparent_entries.as_ref() {
-                        Some(entry) => entry.inner().tx(),
+                        Some(entry) => entry.tx(),
                         None => &[],
                     };
                     let sapling = match sapling_entries.as_ref() {
-                        Some(entry) => entry.inner().tx(),
+                        Some(entry) => entry.tx(),
                         None => &[],
                     };
                     let orchard = match orchard_entries.as_ref() {
-                        Some(entry) => entry.inner().tx(),
+                        Some(entry) => entry.tx(),
                         None => &[],
                     };
 
                     // Ironwood is fetched with a tolerant point lookup rather than a lockstep cursor:
-                    // rows are sparse (present only from schema v1.3.0 / NU6.3), so a missing row must
+                    // rows are sparse, so a missing row must
                     // not desync a height-aligned cursor. `NotFound` simply means "no ironwood here".
-                    let ironwood_entries: Option<StoredEntryVar<OrchardTxList>> =
-                        if pool_types.includes_ironwood() {
-                            let ironwood_key = match current_height.to_bytes() {
-                                Ok(key) => key,
-                                Err(error) => {
-                                    send_status(
-                                        &sender,
-                                        tonic::Status::internal(format!(
-                                            "ironwood height to_bytes failed: {error}"
-                                        )),
-                                    );
-                                    return;
-                                }
-                            };
-                            match txn.get(zaino_db.ironwood, &ironwood_key) {
-                                Ok(raw) => match StoredEntryVar::<OrchardTxList>::from_bytes(raw)
-                                    .map_err(|error| format!("ironwood decode error: {error}"))
-                                {
-                                    Ok(entry) => Some(entry),
-                                    Err(message) => {
-                                        send_status(&sender, tonic::Status::internal(message));
-                                        return;
-                                    }
-                                },
-                                Err(lmdb::Error::NotFound) => None,
-                                Err(error) => {
-                                    send_status(
-                                        &sender,
-                                        tonic::Status::internal(format!(
-                                            "lmdb get(ironwood) failed: {error}"
-                                        )),
-                                    );
-                                    return;
-                                }
+                    let ironwood_entries: Option<OrchardTxList> = if pool_types.includes_ironwood()
+                    {
+                        let ironwood_key = match current_height.to_bytes() {
+                            Ok(key) => key,
+                            Err(error) => {
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(format!(
+                                        "ironwood height to_bytes failed: {error}"
+                                    )),
+                                );
+                                return;
                             }
-                        } else {
-                            None
                         };
+                        match txn.get(zaino_db.ironwood, &ironwood_key) {
+                            Ok(raw) => match OrchardTxList::from_bytes(raw)
+                                .map_err(|error| format!("ironwood decode error: {error}"))
+                            {
+                                Ok(entry) => Some(entry),
+                                Err(message) => {
+                                    send_status(&sender, tonic::Status::internal(message));
+                                    return;
+                                }
+                            },
+                            Err(lmdb::Error::NotFound) => None,
+                            Err(error) => {
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(format!(
+                                        "lmdb get(ironwood) failed: {error}"
+                                    )),
+                                );
+                                return;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let ironwood = match ironwood_entries.as_ref() {
-                        Some(entry) => entry.inner().tx(),
+                        Some(entry) => entry.tx(),
                         None => &[],
                     };
 
@@ -1123,13 +1074,11 @@ impl DbV1 {
                     }
 
                     // ----- Decode commitment tree data and construct block -----
-                    let commitment_tree_data: CommitmentTreeData =
-                        match StoredEntryVar::<CommitmentTreeData>::from_bytes(
-                            raw_commitment_tree_bytes,
-                        )
-                        .map_err(|error| format!("commitment_tree decode error: {error}"))
+                    let commitment_tree_data =
+                        match CommitmentTreeData::from_bytes(raw_commitment_tree_bytes)
+                            .map_err(|error| format!("commitment_tree decode error: {error}"))
                         {
-                            Ok(entry) => *entry.inner(),
+                            Ok(data) => data,
                             Err(message) => {
                                 send_status(&sender, tonic::Status::internal(message));
                                 return;
@@ -1160,7 +1109,7 @@ impl DbV1 {
                     }
 
                     // If we just emitted the inclusive end height, stop without stepping cursors further.
-                    if current_height == validated_end_height {
+                    if current_height == end_height {
                         return;
                     }
 
@@ -1230,12 +1179,12 @@ impl DbV1 {
                         None => {
                             // Headers ended early; if we have not reached the requested end height, the
                             // database no longer satisfies the contiguous-height invariant for this range.
-                            if current_height != validated_end_height {
+                            if current_height != end_height {
                                 send_status(
                                     &sender,
                                     tonic::Status::internal(format!(
                                     "headers cursor ended early at height {}; expected to reach {}",
-                                    current_height.0, validated_end_height.0
+                                    current_height.0, end_height.0
                                 )),
                                 );
                             }

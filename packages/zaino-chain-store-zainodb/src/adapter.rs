@@ -51,8 +51,8 @@ pub(crate) use to_domain::domain_block_ref;
 use error_map::{chain_store_error, chain_store_source_error};
 use from_domain::{stored_hash, stored_height, stored_outpoint, tx_location};
 use to_domain::{
-    block_tx_position, domain_hash, domain_height, domain_txid, store_capabilities, store_schema,
-    stored_block, stored_tx_outs,
+    block_tx_position, domain_hash, domain_height, domain_txid, store_capabilities, stored_block,
+    stored_tx_outs,
 };
 
 use core::future::Future;
@@ -60,8 +60,8 @@ use core::future::Future;
 use zaino_chain_store::{
     ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
     ChainStoreSource, ChainStoreSourceError, CompactBlockRead, PoolFilter, SpenderRef,
-    SpentOutputIndex, StoreCapabilities, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead,
-    StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetIndex,
+    SpentOutputIndex, StoreCapabilities, StoreWatermark, StoredBlock, StoredBlockRead, StoredTxOut,
+    TransactionIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockTxPosition, CompactBlock, Height as DomainHeight,
@@ -81,11 +81,6 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
 
     fn capabilities(&self) -> StoreCapabilities {
         store_capabilities::<Self>(self.inner.capability())
-    }
-
-    async fn schema(&self) -> Result<StoreSchema, ChainStoreError> {
-        let metadata = self.get_metadata().await.map_err(chain_store_error)?;
-        Ok(store_schema(&metadata))
     }
 
     #[tracing::instrument(skip(self), fields(height = %height))]

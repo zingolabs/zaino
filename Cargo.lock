@@ -6056,7 +6056,6 @@ dependencies = [
  "bitflags 2.13.2",
  "blake2",
  "corez",
- "dashmap",
  "futures",
  "hex",
  "lmdb",
@@ -6080,7 +6079,6 @@ dependencies = [
  "zaino-common",
  "zaino-consensus",
  "zaino-convert-zebra",
- "zaino-encoding",
  "zaino-primitives",
  "zaino-proto",
  "zaino-source",
@@ -6132,13 +6130,6 @@ dependencies = [
  "zaino-consensus",
  "zaino-primitives",
  "zebra-chain",
-]
-
-[[package]]
-name = "zaino-encoding"
-version = "0.1.0"
-dependencies = [
- "corez",
 ]
 
 [[package]]
@@ -6354,7 +6345,6 @@ dependencies = [
  "zaino-common",
  "zaino-consensus",
  "zaino-convert-zebra",
- "zaino-encoding",
  "zaino-mempool",
  "zaino-mempool-service",
  "zaino-primitives",

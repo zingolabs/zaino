@@ -4,6 +4,11 @@ use super::*;
 
 use crate::metric_names::*;
 
+#[cfg(test)]
+mod write_block;
+
+use sha2::{Digest, Sha256};
+
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 use crate::ingest::BlockWork;
 
@@ -200,13 +205,10 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
     Ok(batch)
 }
 
-#[cfg(test)]
-use zaino_encoding::version;
-
 /// [`DbWrite`] capability implementation for [`DbV1`].
 ///
-/// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
-/// performed via LMDB write transactions and validated before becoming visible as “known-good”.
+/// This trait represents the mutating surface (append / delete tip). Each block is written in one
+/// LMDB write transaction.
 /// Per-transaction pool lists for one block's row entries, with the duplicate-txid
 /// guard applied.
 struct BlockPoolLists {
@@ -218,92 +220,98 @@ struct BlockPoolLists {
     ironwood: Vec<Option<OrchardCompactTx>>,
 }
 
-/// Builds the per-transaction pool lists for one block: each pool records
-/// `Some(compact data)` for a transaction with data in that pool, `None` otherwise,
-/// keeping every list index-aligned with the block's txids.
+/// Builds the per-transaction pool lists for one block by a one-to-one map over its transactions, so every list is index-aligned with the block's txids by construction.
 fn extract_block_pool_lists<Work>(
     block: &IndexedBlock<Work>,
 ) -> Result<BlockPoolLists, StoreError> {
-    let block_height = block.context.index.height;
-    let block_hash = block.context.index.hash;
+    let transactions = block.transactions();
 
-    let tx_len = block.transactions().len();
-    let mut transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
-        Vec::with_capacity(tx_len);
-    let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
-    let mut sapling = Vec::with_capacity(tx_len);
-    let mut orchard = Vec::with_capacity(tx_len);
-    let mut ironwood = Vec::with_capacity(tx_len);
-
-    for tx in block.transactions() {
-        let hash = tx.txid();
-        if !txid_set.insert(*hash) {
-            return Err(StoreError::InvalidBlock {
-                height: block_height.0,
-                hash: block_hash,
-                reason: format!("duplicate transaction hash in block: {hash:?}"),
-            });
-        }
-
-        // Transparent transactions — paired with the txid at the source binding.
-        let transparent_data =
-            if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
-                None
-            } else {
-                Some(tx.transparent().clone())
-            };
-        transactions.push((*hash, transparent_data));
-
-        // Sapling transactions
-        let sapling_data = if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty()
-        {
-            None
-        } else {
-            Some(tx.sapling().clone())
-        };
-        sapling.push(sapling_data);
-
-        // Orchard transactions
-        let orchard_data = if tx.orchard().actions().is_empty() {
-            None
-        } else {
-            Some(tx.orchard().clone())
-        };
-        orchard.push(orchard_data);
-
-        // Ironwood transactions (NU6.3; modelled with the Orchard compact types).
-        let ironwood_data = if tx.ironwood().actions().is_empty() {
-            None
-        } else {
-            Some(tx.ironwood().clone())
-        };
-        ironwood.push(ironwood_data);
+    let mut seen: HashSet<TransactionHash> = HashSet::with_capacity(transactions.len());
+    if let Some(duplicate) = transactions
+        .iter()
+        .map(|tx| tx.txid())
+        .find(|hash| !seen.insert(**hash))
+    {
+        return Err(StoreError::InvalidBlock {
+            height: block.context.index.height.0,
+            hash: block.context.index.hash,
+            reason: format!("duplicate transaction hash in block: {duplicate:?}"),
+        });
     }
 
     Ok(BlockPoolLists {
-        transactions,
-        sapling,
-        orchard,
-        ironwood,
+        transactions: transactions
+            .iter()
+            .map(|tx| {
+                let transparent = tx.transparent();
+                let is_empty = transparent.inputs().is_empty() && transparent.outputs().is_empty();
+                (*tx.txid(), present(transparent, is_empty))
+            })
+            .collect(),
+        sapling: transactions
+            .iter()
+            .map(|tx| {
+                let sapling = tx.sapling();
+                let is_empty = sapling.spends().is_empty() && sapling.outputs().is_empty();
+                present(sapling, is_empty)
+            })
+            .collect(),
+        orchard: transactions
+            .iter()
+            .map(|tx| present(tx.orchard(), tx.orchard().actions().is_empty()))
+            .collect(),
+        ironwood: transactions
+            .iter()
+            .map(|tx| present(tx.ironwood(), tx.ironwood().actions().is_empty()))
+            .collect(),
     })
 }
 
-/// Cheap in-memory correctness check: the block's txids must reproduce the header's
-/// merkle root.
+/// Clones `pool` into the list entry unless the transaction has no data in that pool.
+fn present<Pool: Clone>(pool: &Pool, is_empty: bool) -> Option<Pool> {
+    (!is_empty).then(|| pool.clone())
+}
+
+/// Rejects a block whose txids do not reproduce its header's merkle root.
 fn verify_header_merkle_root<Work>(
     txids: &[TransactionHash],
     block: &IndexedBlock<Work>,
 ) -> Result<(), StoreError> {
     let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
-    let computed_merkle_root = DbV1::calculate_block_merkle_root(&txid_bytes);
-    if &computed_merkle_root != block.data().merkle_root() {
-        return Err(StoreError::InvalidBlock {
-            height: block.context.index.height.0,
-            hash: block.context.index.hash,
-            reason: "header merkle root does not match block txids".to_string(),
-        });
+    let reason = match calculate_block_merkle_root(&txid_bytes) {
+        None => "block has no transactions",
+        Some(root) if &root == block.data().merkle_root() => return Ok(()),
+        Some(_) => "header merkle root does not match block txids",
+    };
+    Err(StoreError::InvalidBlock {
+        height: block.context.index.height.0,
+        hash: block.context.index.hash,
+        reason: reason.to_string(),
+    })
+}
+
+/// Returns the Zcash merkle root of `txids`, taken in block order and internal byte order, or `None` when `txids` is empty.
+fn calculate_block_merkle_root(txids: &[[u8; 32]]) -> Option<[u8; 32]> {
+    let mut layer: Vec<[u8; 32]> = txids.to_vec();
+    while layer.len() > 1 {
+        layer = layer
+            .chunks(2)
+            .map(|pair| {
+                let left = &pair[0];
+                let right = pair.get(1).unwrap_or(left);
+                let mut concatenated = [0u8; 64];
+                concatenated[..32].copy_from_slice(left);
+                concatenated[32..].copy_from_slice(right);
+                sha256d(&concatenated)
+            })
+            .collect();
     }
-    Ok(())
+    layer.first().copied()
+}
+
+/// Returns the double SHA-256 of `data`.
+fn sha256d(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(Sha256::digest(data)).into()
 }
 
 /// One block's row entries, ready to put. Everything is keyed by the block height
@@ -311,21 +319,18 @@ fn verify_header_merkle_root<Work>(
 /// when the block has no ironwood data — the ironwood table is sparse; readers treat
 /// an absent row as "no ironwood data".
 struct BlockRowEntries {
-    height_entry: StoredEntryFixed<Height>,
-    header_entry: StoredEntryVar<BlockHeaderData<AbsoluteChainWork>>,
-    commitment_tree_entry: StoredEntryVar<CommitmentTreeData>,
-    txid_entry: StoredEntryVar<TxidList>,
-    transparent_entry: StoredEntryVar<TransparentTxList>,
-    sapling_entry: StoredEntryVar<SaplingTxList>,
-    orchard_entry: StoredEntryVar<OrchardTxList>,
-    ironwood_entry: Option<StoredEntryVar<OrchardTxList>>,
+    height_entry: Height,
+    header_entry: BlockHeaderData<AbsoluteChainWork>,
+    commitment_tree_entry: CommitmentTreeData,
+    txid_entry: TxidList,
+    transparent_entry: TransparentTxList,
+    sapling_entry: SaplingTxList,
+    orchard_entry: OrchardTxList,
+    ironwood_entry: Option<OrchardTxList>,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_block_row_entries(
     block: &IndexedBlock<AbsoluteChainWork>,
-    block_hash_bytes: &[u8],
-    block_height_bytes: &[u8],
     txids: Vec<TransactionHash>,
     transparent: Vec<Option<TransparentCompactTx>>,
     sapling: Vec<Option<SaplingCompactTx>>,
@@ -333,51 +338,23 @@ fn build_block_row_entries(
     ironwood: Vec<Option<OrchardCompactTx>>,
 ) -> BlockRowEntries {
     BlockRowEntries {
-        height_entry: StoredEntryFixed::new(block_hash_bytes, block.context.index.height),
-        header_entry: StoredEntryVar::new(
-            block_height_bytes,
-            BlockHeaderData::new(block.context, *block.data()),
-        ),
-        // Stored as a `StoredEntryVar` because `CommitmentTreeData` V2 is
-        // variable-length (optional Ironwood root).
-        commitment_tree_entry: StoredEntryVar::new(
-            block_height_bytes,
-            *block.commitment_tree_data(),
-        ),
-        txid_entry: StoredEntryVar::new(block_height_bytes, TxidList::new(txids)),
-        transparent_entry: StoredEntryVar::new(
-            block_height_bytes,
-            TransparentTxList::new(transparent),
-        ),
-        sapling_entry: StoredEntryVar::new(block_height_bytes, SaplingTxList::new(sapling)),
-        orchard_entry: StoredEntryVar::new(block_height_bytes, OrchardTxList::new(orchard)),
-        ironwood_entry: ironwood_entry(ironwood, block_height_bytes),
+        height_entry: block.context.index.height,
+        header_entry: BlockHeaderData::new(block.context, *block.data()),
+        commitment_tree_entry: *block.commitment_tree_data(),
+        txid_entry: TxidList::new(txids),
+        transparent_entry: TransparentTxList::new(transparent),
+        sapling_entry: SaplingTxList::new(sapling),
+        orchard_entry: OrchardTxList::new(orchard),
+        ironwood_entry: ironwood_entry(ironwood),
     }
 }
 
-/// Builds the sparse ironwood row entry for a block's per-transaction ironwood list: `Some` only
-/// when at least one transaction carries ironwood data, so a block with none stores no ironwood row
-/// (readers treat an absent row as "no ironwood data").
-fn ironwood_entry(
-    ironwood: Vec<Option<OrchardCompactTx>>,
-    block_height_bytes: &[u8],
-) -> Option<StoredEntryVar<OrchardTxList>> {
+/// Builds the sparse ironwood row for a block, `Some` only when at least one transaction carries ironwood data.
+fn ironwood_entry(ironwood: Vec<Option<OrchardCompactTx>>) -> Option<OrchardTxList> {
     ironwood
         .iter()
         .any(Option::is_some)
-        .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood)))
-}
-
-/// Builds the sparse ironwood row entry for `block` (the same value the write path stores). Used by
-/// the v1.2.1 → v1.3.0 migration to backfill the ironwood table from validator-fetched blocks.
-pub(crate) fn build_block_ironwood_entry<Work>(
-    block: &IndexedBlock<Work>,
-    block_height_bytes: &[u8],
-) -> Result<Option<StoredEntryVar<OrchardTxList>>, StoreError> {
-    Ok(ironwood_entry(
-        extract_block_pool_lists(block)?.ironwood,
-        block_height_bytes,
-    ))
+        .then(|| OrchardTxList::new(ironwood))
 }
 
 impl DbWrite for DbV1 {
@@ -387,8 +364,7 @@ impl DbWrite for DbV1 {
 
     /// Bulk catch-up: ingests `tip+1..=height` from `source`, deferring txout-set accumulator
     /// maintenance across the run and rebuilding it once at the end. Each block is written with
-    /// `update_tx_out_set = false` (deferred) and `validate = false` (the height is marked
-    /// validated directly, since we built the block from the source this session).
+    /// `update_tx_out_set = false` (deferred).
     async fn write_blocks_to_height<S: zaino_chain_store::ChainStoreSource>(
         &self,
         height: Height,
@@ -407,10 +383,7 @@ impl DbWrite for DbV1 {
         let nu6_3_activation_height = pool_activations.nu6_3;
 
         // Seed `parent_chainwork` from the current tip header (the block before the first one we
-        // write). On an empty database this is genesis with zero chainwork. Read raw rather than via
-        // `get_block_header`, which routes through `resolve_validated_hash_or_height` →
-        // `validate_block_blocking` (a full re-validation for any height above `validated_tip`); the
-        // tip is already on disk and trusted here, exactly as the v1.2 migration reads block data.
+        // write). On an empty database this is genesis with zero chainwork.
         // `mut` only under the address-history path, which advances it per block; the pipelined
         // path moves it into the batch cursor, which owns it from there on.
         #[cfg_attr(
@@ -428,14 +401,11 @@ impl DbWrite for DbV1 {
                     let ro = self.env.begin_ro_txn()?;
                     match ro.get(self.headers, &tip_bytes) {
                         Ok(raw) => {
-                            let entry =
-                                StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                                    raw,
-                                )
+                            let header = BlockHeaderData::<AbsoluteChainWork>::from_bytes(raw)
                                 .map_err(|e| {
                                     StoreError::Custom(format!("tip header decode error: {e}"))
                                 })?;
-                            Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
+                            Ok::<_, StoreError>(Some(header.context.chainwork))
                         }
                         Err(lmdb::Error::NotFound) => Ok(None),
                         Err(e) => Err(StoreError::LmdbError(e)),
@@ -582,10 +552,6 @@ impl DbWrite for DbV1 {
     async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
         self.delete_block(block).await
     }
-
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
-        self.update_metadata(metadata).await
-    }
 }
 
 impl DbV1 {
@@ -613,7 +579,7 @@ impl DbV1 {
         Ok(())
     }
 
-    /// Advances the validated tip and reports progress, once a batch is durably committed.
+    /// Marks the database ready and reports progress, once a batch is durably committed.
     ///
     /// Only ever called after [`Self::commit_sync_batch_blocking`] has returned `Ok`, so the
     /// on-disk `headers` tip never runs ahead of the indexes and resume stays gap-free.
@@ -622,9 +588,6 @@ impl DbV1 {
     /// the same walk that bounds its size
     #[cfg(not(feature = "transparent_address_history_experimental"))]
     fn note_sync_batch_committed<Work>(&self, batch: &[IndexedBlock<Work>]) {
-        for block in batch {
-            self.mark_validated(block.context.index.height.0);
-        }
         self.status.store(StatusType::Ready);
 
         let Some(last) = batch.last() else {
@@ -656,8 +619,7 @@ impl DbV1 {
 
     /// Writes a given (finalised) [`IndexedBlock`] to FinalisedState.
     ///
-    /// Single-block append: the txout-set accumulator is maintained incrementally and the written
-    /// block is validated before the height advances. Bulk catch-up uses
+    /// Single-block append: the txout-set accumulator is maintained incrementally. Bulk catch-up uses
     /// [`DbV1::write_blocks_to_height`], which defers the accumulator (see
     /// [`DbV1::write_block_with_options`]) and rebuilds it once at the tip.
     ///
@@ -676,11 +638,8 @@ impl DbV1 {
     ///   When `false`, accumulator maintenance is deferred — the caller is responsible for a bulk
     ///   rebuild (see [`DbV1::rebuild_tx_out_set_accumulator`]).
     ///
-    /// Validation is *not* a read-back pass on this path. Two cheap in-memory correctness checks run
-    /// before commit — parent-hash continuity (tip-check) and the header merkle root (vs. the
-    /// block's txids) — after which the height is marked validated directly. The expensive
-    /// [`DbV1::validate_block_blocking`] re-read is reserved for startup, where on-disk data is
-    /// untrusted.
+    /// The checks before commit are parent-hash continuity against the stored tip and the header
+    /// merkle root against the block's txids.
     ///
     /// NOTE: This method should never leave a block partially written to the database.
     // `u32::is_multiple_of` is only stable from Rust 1.87; the `% 100 == 0` form below keeps the
@@ -706,17 +665,13 @@ impl DbV1 {
             match ro.get(self.headers, &block_height_bytes) {
                 Ok(stored_header_bytes) => {
                     // Block exists at this height - verify it's the same block
-                    // Data is stored as StoredEntryVar<BlockHeaderData>, so deserialize properly
-                    let stored_entry =
-                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                            stored_header_bytes,
-                        )
-                        .map_err(|e| {
-                            StoreError::Custom(format!(
-                                "header decode error during idempotency check: {e}"
-                            ))
-                        })?;
-                    let stored_header = stored_entry.inner();
+                    let stored_header =
+                        BlockHeaderData::<AbsoluteChainWork>::from_bytes(stored_header_bytes)
+                            .map_err(|e| {
+                                StoreError::Custom(format!(
+                                    "header decode error during idempotency check: {e}"
+                                ))
+                            })?;
                     if stored_header.context.index.hash == block_hash {
                         // Same block already written, this is a no-op success
                         return Ok(true);
@@ -743,36 +698,22 @@ impl DbV1 {
                         last_height_bytes.expect("Height is always some in the finalised state"),
                     )?;
 
-                    // Height must be exactly +1 over the current tip
-                    if block_height.0 != last_height.0 + 1 {
-                        return Err(StoreError::Custom(format!(
-                            "cannot write block at height {block_height:?}; \
-                     current tip is {last_height:?}"
-                        )));
-                    }
-
-                    // Parent-hash continuity: the new block must extend the current tip. This is
-                    // one of the two cheap, in-memory correctness checks (the other is the merkle
-                    // root below) that justify marking the block validated after a successful write
-                    // without the expensive post-commit re-read.
-                    let last_entry =
-                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                            last_header_bytes,
-                        )
-                        .map_err(|e| {
-                            StoreError::Custom(format!(
-                                "tip header decode error during continuity check: {e}"
-                            ))
-                        })?;
-                    if last_entry.inner().context.hash() != block.context.parent_hash() {
-                        return Err(StoreError::InvalidBlock {
+                    // Continuity: the new block must sit one above the current tip and name it
+                    // as its parent, or the append-only finalised chain would gap or fork.
+                    let tip_header =
+                        BlockHeaderData::<AbsoluteChainWork>::from_bytes(last_header_bytes)
+                            .map_err(|e| {
+                                StoreError::Custom(format!(
+                                    "tip header decode error during continuity check: {e}"
+                                ))
+                            })?;
+                    if block_height.0 != last_height.0 + 1
+                        || tip_header.context.hash() != block.context.parent_hash()
+                    {
+                        return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
-                            reason: format!(
-                                "parent hash does not extend current tip (tip: {:?}, parent: {:?})",
-                                last_entry.inner().context.hash(),
-                                block.context.parent_hash()
-                            ),
+                            tip: *tip_header.context.hash(),
                         });
                     }
                 }
@@ -944,11 +885,6 @@ impl DbV1 {
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
 
-        // Cheap, in-memory correctness check: the block's txids must reproduce the header's merkle
-        // root. Together with the parent-hash continuity check in the tip-check above, this is what
-        // lets us mark the block validated after a successful write without the expensive
-        // post-commit re-read + spent-index cross-check (which only re-verifies on-disk integrity of
-        // bytes we just wrote from memory, and is redundant for our own writes).
         verify_header_merkle_root(&txids, &block)?;
 
         // Reverse txid index entries (`txid -> TxLocation`). Built before `txids` is moved into
@@ -967,18 +903,10 @@ impl DbV1 {
         }
         txid_location_entries.sort_by_key(|entry| entry.0);
 
-        let entries = build_block_row_entries(
-            &block,
-            &block_hash_bytes,
-            &block_height_bytes,
-            txids,
-            transparent,
-            sapling,
-            orchard,
-            ironwood,
-        );
+        let entries =
+            build_block_row_entries(&block, txids, transparent, sapling, orchard, ironwood);
 
-        // if any database writes fail, or block validation fails, remove block from database and return err.
+        // if any database writes fail, remove block from database and return err.
         let zaino_db = self.detached_handle();
         let join_handle = tokio::task::spawn_blocking(move || {
             // Write block to FinalisedState
@@ -1007,7 +935,7 @@ impl DbV1 {
 
             // Reverse txid index: `txid -> TxLocation`.
             for (txid_bytes, tx_location) in &txid_location_entries {
-                let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+                let entry_bytes = tx_location.to_bytes()?;
                 txn.put(
                     zaino_db.txid_location,
                     txid_bytes,
@@ -1056,8 +984,7 @@ impl DbV1 {
             // Write spent to FinalisedState
             for (outpoint, tx_location) in spent_map {
                 let outpoint_bytes = &outpoint.to_bytes()?;
-                let tx_location_entry_bytes =
-                    StoredEntryFixed::new(outpoint_bytes, tx_location).to_bytes()?;
+                let tx_location_entry_bytes = tx_location.to_bytes()?;
                 txn.put(
                     zaino_db.spent,
                     &outpoint_bytes,
@@ -1081,14 +1008,13 @@ impl DbV1 {
                 for (addr_script, records) in addrhist_outputs_map {
                     let addr_bytes = addr_script.to_bytes()?;
 
-                    // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
+                    // Convert all records to their stored encoding for ordering.
                     let mut stored_entries = Vec::with_capacity(records.len());
                     for record in records {
                         let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
                             StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                         })?;
-                        let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                        let entry_bytes = entry.to_bytes()?;
+                        let entry_bytes = packed_record.to_bytes()?;
                         stored_entries.push((record, entry_bytes));
                     }
 
@@ -1109,14 +1035,13 @@ impl DbV1 {
                 for (addr_script, records) in addrhist_inputs_map {
                     let addr_bytes = addr_script.to_bytes()?;
 
-                    // Convert all records to their StoredEntryFixed<AddrEventBytes> for ordering.
+                    // Convert all records to their stored encoding for ordering.
                     let mut stored_entries = Vec::with_capacity(records.len());
                     for (record, prev_output) in records {
                         let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
                             StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                         })?;
-                        let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
-                        let entry_bytes = entry.to_bytes()?;
+                        let entry_bytes = packed_record.to_bytes()?;
                         stored_entries.push((record, entry_bytes, prev_output));
                     }
 
@@ -1134,17 +1059,16 @@ impl DbV1 {
                         )?;
 
                         // mark corresponding output as spent
-                        let prev_addr_bytes = prev_output_script.to_bytes()?;
                         let packed_prev = AddrEventBytes::from_record(&prev_output_record)
                             .map_err(|e| {
                                 StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                             })?;
-                        let prev_entry_bytes =
-                            StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
-                        let updated = zaino_db.mark_addr_hist_record_spent_in_txn(
+                        let prev_entry_bytes = packed_prev.to_bytes()?;
+                        let updated = zaino_db.mark_addr_hist_record_in_txn(
                             &mut txn,
                             &prev_output_script,
                             &prev_entry_bytes,
+                            super::transparent_address_history::SpentMark::Spent,
                         )?;
                         if !updated {
                             // Log and treat as invalid block — marking the prev-output must succeed.
@@ -1167,14 +1091,6 @@ impl DbV1 {
             // env is opened with `NO_SYNC`, so it is *not* fsynced here. Durability is forced at
             // `SYNC_CHECKPOINT_INTERVAL` boundaries below and on graceful shutdown.
             txn.commit()?;
-
-            // Advance the validated tip directly. The block was built from a trusted source this
-            // session and passed the cheap in-memory correctness checks (parent-hash continuity and
-            // merkle root) before commit, so the expensive read-back validation pass is redundant
-            // here — it only re-verifies on-disk integrity of bytes we just wrote. Startup remains
-            // the integrity gate for untrusted on-disk data (`validate_block_blocking` via
-            // `initial_block_scan`). Marking validated keeps reads on the `is_validated` fast path.
-            zaino_db.mark_validated(block_height.0);
 
             Ok::<_, StoreError>(())
         });
@@ -1241,28 +1157,18 @@ impl DbV1 {
                     let ro = self.env.begin_ro_txn()?;
                     match ro.get(self.headers, &height_bytes) {
                         Ok(stored_header_bytes) => {
-                            // Data is stored as StoredEntryVar<BlockHeaderData>
-                            let stored_entry =
-                                StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                                    stored_header_bytes,
-                                )
-                                .map_err(|e| {
-                                    StoreError::Custom(format!(
-                                        "header decode error in KeyExist handler: {e}"
-                                    ))
-                                })?;
-                            let stored_header = stored_entry.inner();
+                            let stored_header = BlockHeaderData::<AbsoluteChainWork>::from_bytes(
+                                stored_header_bytes,
+                            )
+                            .map_err(|e| {
+                                StoreError::Custom(format!(
+                                    "header decode error in KeyExist handler: {e}"
+                                ))
+                            })?;
                             if stored_header.context.index.hash == block_hash {
-                                // Block hash exists, verify block was fully written.
-                                self.validate_block_blocking(block_height, block_hash)
-                                    .map(|()| true)
-                                    .map_err(|e| {
-                                        StoreError::Custom(format!(
-                                            "Block write fail at height {}, with hash {:?}, \
-                                            validation error: {}",
-                                            block_height.0, block_hash, e
-                                        ))
-                                    })
+                                // A block's rows commit in one transaction, so a stored header
+                                // with this hash means the whole block is already written.
+                                Ok(true)
                             } else {
                                 Err(StoreError::Custom(format!(
                                     "KeyExist race: different block at height {} \
@@ -1404,24 +1310,21 @@ impl DbV1 {
         let mut txn = self.env.begin_rw_txn()?;
 
         // Seed the continuity chain from the current on-disk tip (genesis if empty).
-        let (mut prev_height, mut prev_hash): (Option<u32>, Option<BlockHash>) = {
+        let mut prev: Option<(u32, BlockHash)> = {
             let cursor = txn.open_ro_cursor(self.headers)?;
             match cursor.get(None, None, lmdb_sys::MDB_LAST) {
                 Ok((last_height_bytes, last_header_bytes)) => {
                     let last_height = Height::from_bytes(
                         last_height_bytes.expect("Height is always some in the finalised state"),
                     )?;
-                    let last_entry =
-                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
-                            last_header_bytes,
-                        )
-                        .map_err(|e| StoreError::Custom(format!("tip header decode error: {e}")))?;
-                    (
-                        Some(last_height.0),
-                        Some(*last_entry.inner().context.hash()),
-                    )
+                    let tip_header =
+                        BlockHeaderData::<AbsoluteChainWork>::from_bytes(last_header_bytes)
+                            .map_err(|e| {
+                                StoreError::Custom(format!("tip header decode error: {e}"))
+                            })?;
+                    Some((last_height.0, *tip_header.context.hash()))
                 }
-                Err(lmdb::Error::NotFound) => (None, None),
+                Err(lmdb::Error::NotFound) => None,
                 Err(e) => return Err(StoreError::LmdbError(e)),
             }
         };
@@ -1437,18 +1340,13 @@ impl DbV1 {
             let block_height_bytes = block_height.to_bytes()?;
 
             // Continuity: height = prev + 1 and parent extends the current tip (genesis if empty).
-            match prev_height {
-                Some(tip) => {
-                    if block_height.0 != tip + 1 {
-                        return Err(StoreError::Custom(format!(
-                            "cannot write block at height {block_height:?}; current tip is {tip}"
-                        )));
-                    }
-                    if Some(*block.context.parent_hash()) != prev_hash {
-                        return Err(StoreError::InvalidBlock {
+            match prev {
+                Some((tip, tip_hash)) => {
+                    if block_height.0 != tip + 1 || *block.context.parent_hash() != tip_hash {
+                        return Err(StoreError::DoesNotExtendTip {
                             height: block_height.0,
                             hash: block_hash,
-                            reason: "parent hash does not extend current tip".to_string(),
+                            tip: tip_hash,
                         });
                     }
                 }
@@ -1488,19 +1386,10 @@ impl DbV1 {
             let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
                 transactions.into_iter().unzip();
 
-            // Cheap in-memory correctness check: txids must reproduce the header merkle root.
             verify_header_merkle_root(&txids, block)?;
 
-            let entries = build_block_row_entries(
-                block,
-                &block_hash_bytes,
-                &block_height_bytes,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                ironwood,
-            );
+            let entries =
+                build_block_row_entries(block, txids, transparent, sapling, orchard, ironwood);
 
             // Height-keyed tables (+ the hash-keyed `heights`, one entry/block) written per block.
             put_idempotent(
@@ -1554,8 +1443,7 @@ impl DbV1 {
                 &entries.commitment_tree_entry.to_bytes()?,
             )?;
 
-            prev_height = Some(block_height.0);
-            prev_hash = Some(block_hash);
+            prev = Some((block_height.0, block_hash));
         }
 
         // Insert the random-keyed indexes in ascending key order so the B-tree is swept
@@ -1563,13 +1451,13 @@ impl DbV1 {
         // conflicting value (a double-spend / inconsistency) is rejected by `put_idempotent`.
         spent_batch.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, tx_location) in &spent_batch {
-            let entry_bytes = StoredEntryFixed::new(key, *tx_location).to_bytes()?;
+            let entry_bytes = tx_location.to_bytes()?;
             put_idempotent(&mut txn, self.spent, key, &entry_bytes)?;
         }
 
         txid_location_batch.sort_by_key(|entry| entry.0);
         for (key, tx_location) in &txid_location_batch {
-            let entry_bytes = StoredEntryFixed::new(key, *tx_location).to_bytes()?;
+            let entry_bytes = tx_location.to_bytes()?;
             put_idempotent(&mut txn, self.txid_location, key, &entry_bytes)?;
         }
 
@@ -1614,15 +1502,6 @@ impl DbV1 {
             )));
         };
         self.delete_block(&chain_block).await?;
-
-        // update validated_tip / validated_set
-        let validated_tip = self.validated_tip.load(Ordering::Acquire);
-        if height.0 > validated_tip {
-            self.validated_set.remove(&height.0);
-        } else if height.0 == validated_tip {
-            self.validated_tip
-                .store(validated_tip.saturating_sub(1), Ordering::Release);
-        }
 
         tokio::task::block_in_place(|| {
             self.env
@@ -1864,33 +1743,25 @@ impl DbV1 {
                     // Mark outputs spent in this block as unspent
                     for (_record, (prev_output_script, prev_output_record)) in records {
                         {
-                            let prev_addr_bytes = prev_output_script.to_bytes()?;
-                            let packed_prev = AddrEventBytes::from_record(prev_output_record)
+                            // The DB holds the *spent* form of the previous output, so build that
+                            // form to match it.
+                            let spent_prev_record = AddrHistRecord::new(
+                                prev_output_record.tx_location(),
+                                prev_output_record.out_index(),
+                                prev_output_record.value(),
+                                prev_output_record.flags() | AddrHistRecord::FLAG_SPENT,
+                            );
+                            let spent_prev_entry = AddrEventBytes::from_record(&spent_prev_record)
                                 .map_err(|e| {
                                     StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
-                                })?;
+                                })?
+                                .to_bytes()?;
 
-                            // Build the *spent* form of the stored entry so it matches the DB
-                            // (mark_addr_hist_record_spent_blocking sets FLAG_SPENT and
-                            // recomputes the checksum).  We must pass the spent bytes here
-                            // because the DB currently contains the spent version.
-                            let prev_entry_bytes =
-                                StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
-
-                            // Turn the mined-entry into the spent-entry (mutate flags + checksum)
-                            let mut spent_prev_entry = prev_entry_bytes.clone();
-                            // Set SPENT flag (flags byte is at index 10 in StoredEntry layout)
-                            spent_prev_entry[10] |= AddrHistRecord::FLAG_SPENT;
-                            // Recompute checksum over bytes 1..19 as StoredEntryFixed expects.
-                            let checksum = StoredEntryFixed::<AddrEventBytes>::blake2b256(
-                                &[&prev_addr_bytes, &spent_prev_entry[1..19]].concat(),
-                            );
-                            spent_prev_entry[19..51].copy_from_slice(&checksum);
-
-                            let updated = zaino_db.mark_addr_hist_record_unspent_in_txn(
+                            let updated = zaino_db.mark_addr_hist_record_in_txn(
                                 &mut txn,
                                 prev_output_script,
                                 &spent_prev_entry,
+                                super::transparent_address_history::SpentMark::Unspent,
                             )?;
 
                             if !updated {
@@ -1987,196 +1858,6 @@ impl DbV1 {
         })
         .await
         .map_err(|e| StoreError::Custom(format!("Tokio task error: {e}")))??;
-        Ok(())
-    }
-
-    /// Updates the metadata hed by the database.
-    pub(crate) async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
-        tokio::task::block_in_place(|| {
-            let mut txn = self.env.begin_rw_txn()?;
-
-            let entry = StoredEntryFixed::new(b"metadata", metadata);
-            txn.put(
-                self.metadata,
-                b"metadata",
-                &entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
-
-            txn.commit()?;
-            Ok(())
-        })
-    }
-}
-
-#[cfg(test)]
-impl DbV1 {
-    /// Returns the current contiguous validated-tip height. Test hook for asserting that the write
-    /// path advances the validated tip without relying on the background validator.
-    pub(crate) fn validated_tip_height(&self) -> u32 {
-        self.validated_tip
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Writes a block using the v1.0.0 format.
-    ///
-    /// This intentionally writes only the core v1 tables and uses v1 item encodings.
-    ///
-    /// This method does not perform safety checks and must not be used in production code.
-    ///
-    /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(
-        &self,
-        block: IndexedBlock<AbsoluteChainWork>,
-    ) -> Result<(), StoreError> {
-        self.status.store(StatusType::Syncing);
-
-        let block_hash = block.context.index.hash;
-        let block_hash_bytes = block_hash.to_bytes()?;
-        let block_height = block.context.index.height;
-        let block_height_bytes = block_height.to_bytes()?;
-
-        let height_entry_bytes = StoredEntryFixed::<Height>::to_bytes_with_item_version(
-            &block_hash_bytes,
-            &block.context.index.height,
-            version::V1,
-        )?;
-
-        let header = BlockHeaderData::new(block.context, *block.data());
-        let header_entry_bytes =
-            StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::to_bytes_with_item_version(
-                &block_height_bytes,
-                &header,
-                version::V1,
-            )?;
-
-        let commitment_tree_entry_bytes =
-            StoredEntryFixed::<CommitmentTreeData>::to_bytes_with_item_version(
-                &block_height_bytes,
-                block.commitment_tree_data(),
-                version::V1,
-            )?;
-
-        let tx_len = block.transactions().len();
-        let mut txids = Vec::with_capacity(tx_len);
-        let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
-        let mut transparent = Vec::with_capacity(tx_len);
-        let mut sapling = Vec::with_capacity(tx_len);
-        let mut orchard = Vec::with_capacity(tx_len);
-
-        for tx in block.transactions() {
-            let hash = tx.txid();
-
-            if txid_set.insert(*hash) {
-                txids.push(*hash);
-            }
-
-            let transparent_data =
-                if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.transparent().clone())
-                };
-            transparent.push(transparent_data);
-
-            let sapling_data =
-                if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.sapling().clone())
-                };
-            sapling.push(sapling_data);
-
-            let orchard_data = if tx.orchard().actions().is_empty() {
-                None
-            } else {
-                Some(tx.orchard().clone())
-            };
-            orchard.push(orchard_data);
-        }
-
-        let txid_list = TxidList::new(txids);
-        let txid_entry_bytes = StoredEntryVar::<TxidList>::to_bytes_with_item_version(
-            &block_height_bytes,
-            &txid_list,
-            version::V1,
-        )?;
-
-        let transparent_tx_list = TransparentTxList::new(transparent);
-        let transparent_entry_bytes =
-            StoredEntryVar::<TransparentTxList>::to_bytes_with_item_version(
-                &block_height_bytes,
-                &transparent_tx_list,
-                version::V1,
-            )?;
-
-        let sapling_tx_list = SaplingTxList::new(sapling);
-        let sapling_entry_bytes = StoredEntryVar::<SaplingTxList>::to_bytes_with_item_version(
-            &block_height_bytes,
-            &sapling_tx_list,
-            version::V1,
-        )?;
-
-        let orchard_tx_list = OrchardTxList::new(orchard);
-        let orchard_entry_bytes = StoredEntryVar::<OrchardTxList>::to_bytes_with_item_version(
-            &block_height_bytes,
-            &orchard_tx_list,
-            version::V1,
-        )?;
-
-        tokio::task::block_in_place(|| {
-            let mut txn = self.env.begin_rw_txn()?;
-
-            txn.put(
-                self.headers,
-                &block_height_bytes,
-                &header_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.heights,
-                &block_hash_bytes,
-                &height_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.txids,
-                &block_height_bytes,
-                &txid_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.transparent,
-                &block_height_bytes,
-                &transparent_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.sapling,
-                &block_height_bytes,
-                &sapling_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.orchard,
-                &block_height_bytes,
-                &orchard_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-            txn.put(
-                self.commitment_tree_data,
-                &block_height_bytes,
-                &commitment_tree_entry_bytes,
-                WriteFlags::NO_OVERWRITE,
-            )?;
-
-            txn.commit()?;
-            self.env.sync(true)?;
-
-            Ok::<_, StoreError>(())
-        })?;
-
-        self.status.store(StatusType::Ready);
         Ok(())
     }
 }

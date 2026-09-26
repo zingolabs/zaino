@@ -54,7 +54,6 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-status/                      How a component reports whether it is working
   zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
-  zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
   zaino-address/                     Zcash address classification
   zaino-source/                      Driven ports: one trait per chain question
@@ -223,9 +222,8 @@ mistakes its design is trying to prevent.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
-- [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
-- [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
+- [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why a schema change rebuilds the database.
 - [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
 - [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).
 

@@ -1,7 +1,7 @@
 //! Foundational primitive types for the chain index.
 //!
 //! Business-layer primitives that are *not* persisted directly. DB-serializable
-//! primitives (the ones that implement `ZainoVersionedSerde`) live under
+//! primitives (the ones that implement `DbCodec`) live under
 //! `types/db/` — this module is reserved for types whose role is purely
 //! in-memory / business-logic vocabulary.
 

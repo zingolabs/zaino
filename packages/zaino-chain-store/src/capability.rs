@@ -7,8 +7,7 @@ use zaino_primitives::types::BlockRef;
 /// One thing a chain store may be able to answer.
 ///
 /// Coarser than a method and finer than a trait bound: it names an *index*, on
-/// the grounds that indexes are what a deployment chooses to build and what a
-/// migration adds. A capability being absent is a fact about this store, not
+/// the grounds that indexes are what a deployment chooses to build. A capability being absent is a fact about this store, not
 /// about the chain.
 ///
 /// # Interim
@@ -90,10 +89,8 @@ impl fmt::Display for StoreCapability {
 
 /// The capabilities a store currently offers.
 ///
-/// Runtime state, not a type-level fact. A store on an older schema genuinely
-/// lacks indexes a newer one has, and gains them part-way through a migration,
-/// so this can change over the life of one handle. A consumer that cached it
-/// at open will be wrong later.
+/// Runtime state, not a type-level fact: which optional indexes a store holds
+/// depends on how it was built.
 /// A bit set rather than a sorted `Vec`. The capability set is closed and
 /// small, so membership is a mask test; sorting, deduplicating and binary
 /// searching a seven-element vector was more machinery — and an allocation —
@@ -128,50 +125,6 @@ impl StoreCapabilities {
     }
 }
 
-/// A schema version triple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SchemaVersion {
-    /// Incompatible layout change. A store will not open a major it does not
-    /// know.
-    pub major: u32,
-    /// Additive change — new indexes or new rows, readable by an older reader
-    /// that ignores them.
-    pub minor: u32,
-    /// A change with no layout consequence.
-    pub patch: u32,
-}
-
-impl fmt::Display for SchemaVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-    }
-}
-
-/// Where a store is in its migration lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MigrationState {
-    /// On its target schema, with nothing outstanding.
-    #[default]
-    Settled,
-    /// Moving from one schema to another. Some capabilities may be absent
-    /// until it finishes.
-    InProgress {
-        /// The schema being migrated away from.
-        from: SchemaVersion,
-        /// The schema being migrated to.
-        to: SchemaVersion,
-    },
-}
-
-/// The schema a store is on, and whether it is moving.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StoreSchema {
-    /// The version currently on disk.
-    pub version: SchemaVersion,
-    /// Whether a migration is under way.
-    pub migration: MigrationState,
-}
-
 /// Where a watermark's answer came from.
 ///
 /// A store that is far behind can still answer reads by passing them to the
@@ -185,7 +138,7 @@ pub enum Provenance {
     /// Answers come from the store's own committed data.
     Durable,
     /// Answers are being passed through to the validator while the store
-    /// builds or migrates. Coherent with the chain, but not evidence that the
+    /// builds. Coherent with the chain, but not evidence that the
     /// store holds anything.
     Passthrough,
 }

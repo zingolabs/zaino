@@ -1,6 +1,6 @@
 //! Block-related database-serializable types.
 //!
-//! Contains types for block data that implement `ZainoVersionedSerde`:
+//! Contains types for block data that implement `DbCodec`:
 //! - `PersistentBlockContext` (module-private; the DB serde boundary for
 //!   the business-layer [`BlockContext`])
 //! - BlockHash
@@ -17,12 +17,11 @@
 
 use corez::io::{self, Read, Write};
 
+use crate::codec::{
+    read_fixed_le, read_u32_le, write_fixed_le, write_u32_le, DbCodec, FixedEncodedLen,
+};
 use crate::types::{
     AbsoluteChainWork, BlockContext, BlockHash, BlockIndex, CompactDifficulty, Height,
-};
-use zaino_encoding::{
-    read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option, write_u32_le,
-    FixedEncodedLen, ZainoVersionedSerde,
 };
 
 /// Database-adjacent persistence shape for [`AbsoluteChainWork`].
@@ -49,37 +48,20 @@ impl PersistentChainWork {
     }
 }
 
-impl ZainoVersionedSerde for PersistentChainWork {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for PersistentChainWork {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_fixed_le::<32, _>(w, &self.0)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let bytes = read_fixed_le::<32, _>(r)?;
         Ok(Self(bytes))
     }
 }
 
-/// Fixed-length encoding metadata for `PersistentChainWork`.
-///
-/// v1 consists of a single 32-byte value.
 impl FixedEncodedLen for PersistentChainWork {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(32),
-            _ => None,
-        }
-    }
+    /// The record is a single 32-byte value.
+    const ENCODED_LEN: usize = 32;
 }
 
 /// Database-adjacent persistence shape for [`CompactDifficulty`].
@@ -88,7 +70,7 @@ impl FixedEncodedLen for PersistentChainWork {
 #[derive(Debug)]
 pub(super) struct PersistentCompactDifficulty(u32);
 
-#[expect(dead_code, reason = "will be used by versioned DB schema types")]
+#[expect(dead_code, reason = "will be used by DB schema types")]
 impl PersistentCompactDifficulty {
     pub(super) fn from_business(cd: &CompactDifficulty) -> Self {
         Self(cd.as_bits())
@@ -100,37 +82,20 @@ impl PersistentCompactDifficulty {
     }
 }
 
-impl ZainoVersionedSerde for PersistentCompactDifficulty {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for PersistentCompactDifficulty {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_u32_le(w, self.0)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let bits = read_u32_le(r)?;
         Ok(Self(bits))
     }
 }
 
-/// Fixed-length encoding metadata for `PersistentCompactDifficulty`.
-///
-/// v1 consists of a single 4-byte LE u32.
 impl FixedEncodedLen for PersistentCompactDifficulty {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(4),
-            _ => None,
-        }
-    }
+    /// The record is a single little-endian `u32`.
+    const ENCODED_LEN: usize = 4;
 }
 
 /// Database-adjacent persistence shape for [`BlockContext`].
@@ -174,58 +139,19 @@ impl PersistentBlockContext {
     }
 }
 
-impl ZainoVersionedSerde for PersistentBlockContext {
-    const VERSION: u8 = version::V2;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v2(self, w)
+impl DbCodec for PersistentBlockContext {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.hash.encode(w)?;
+        self.parent_hash.encode(w)?;
+        self.chainwork.encode(w)?;
+        self.height.encode(w)
     }
 
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v2(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        self.hash.serialize_with_version(&mut w, 1)?;
-        self.parent_hash.serialize_with_version(&mut w, 1)?;
-        self.chainwork.serialize_with_version(&mut w, 1)?;
-        write_option(&mut w, &Some(self.height), |w, h| {
-            h.serialize_with_version(w, 1)
-        })
-    }
-
-    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-
-        self.hash.serialize_with_version(&mut w, 1)?;
-        self.parent_hash.serialize_with_version(&mut w, 1)?;
-        self.chainwork.serialize_with_version(&mut w, 1)?;
-        self.height.serialize_with_version(&mut w, 1)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let hash = BlockHash::deserialize(&mut r)?;
-        let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = PersistentChainWork::deserialize(&mut r)?;
-        let height =
-            read_option(&mut r, |r| Height::deserialize(r))?.expect("blocks always have height");
-        Ok(Self {
-            hash,
-            parent_hash,
-            chainwork,
-            height,
-        })
-    }
-
-    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let hash = BlockHash::deserialize(&mut r)?;
-        let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = PersistentChainWork::deserialize(&mut r)?;
-        let height = Height::deserialize(&mut r)?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let hash = BlockHash::decode(r)?;
+        let parent_hash = BlockHash::decode(r)?;
+        let chainwork = PersistentChainWork::decode(r)?;
+        let height = Height::decode(r)?;
         Ok(Self {
             hash,
             parent_hash,
@@ -245,10 +171,10 @@ mod tests {
     use std::num::NonZeroU128;
 
     use super::{BlockContext, PersistentBlockContext, PersistentChainWork};
-    use crate::types::fixtures::{canonical_blockheaderdata, expected_v2_bytes};
+    use crate::codec::DbCodec as _;
+    use crate::types::fixtures::{canonical_blockheaderdata, expected_header_bytes};
     use crate::types::BlockHeaderData;
     use crate::types::{AbsoluteChainWork, BlockHash, BlockIndex, Height};
-    use zaino_encoding::ZainoVersionedSerde as _;
 
     const CHAINWORK: NonZeroU128 = NonZeroU128::new(0x0123_4567).expect("nonzero literal");
 
@@ -434,11 +360,11 @@ mod tests {
     /// protocol is narrower than the business type, by design.
     #[test]
     fn block_header_data_round_trips_through_its_on_disk_bytes() {
-        let original_bytes = expected_v2_bytes();
+        let original_bytes = expected_header_bytes();
 
         // DB bytes → business.
         let header =
-            BlockHeaderData::from_bytes(&original_bytes).expect("decode canonical V2 bytes");
+            BlockHeaderData::from_bytes(&original_bytes).expect("decode canonical header bytes");
         assert_eq!(header, canonical_blockheaderdata());
 
         // DB side is whole: re-encoding produces identical bytes.

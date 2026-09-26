@@ -7,7 +7,7 @@
 //! - [`v1`]: current persistent schema (expanded indices and query surface)
 //! - [`ephemeral`]: ephemeral passthrough that serves finalised reads directly from the
 //!   [`ChainStoreSource`](zaino_chain_store::ChainStoreSource) and persists nothing
-//!   (used for ephemeral mode and as the passthrough during background sync/migration)
+//!   (used for ephemeral mode and as the passthrough during background sync)
 //!
 //! `FinalisedSource` delegates the core traits (`DbCore`, `DbRead`, `DbWrite`) and all extension traits
 //! to the appropriate concrete implementation. It is the finalised-state *backing*, distinct from the
@@ -16,9 +16,8 @@
 //! # Capability model integration
 //!
 //! Each `FinalisedSource` instance declares its supported [`Capability`] set via `FinalisedSource::capability()`.
-//! This must remain consistent with:
-//! - [`capability::DbVersion::capability()`] (schema version → capability mapping), and
-//! - the extension trait impls in this file (unsupported methods must return `FeatureUnavailable`).
+//! This must remain consistent with the extension trait impls in this file (unsupported methods
+//! must return `FeatureUnavailable`).
 //!
 //! In particular:
 //! - v1 supports the full current capability set (`Capability::LATEST`), including:
@@ -27,30 +26,19 @@
 //!   - indexed block retrieval,
 //!   - transparent address history indices.
 //!
-//! # On-disk directory layout (v1+)
+//! # On-disk directory layout
 //!
-//! [`VERSION_DIRS`] enumerates the version subdirectory names used for versioned layouts under the
-//! per-network directory (`mainnet/`, `testnet/`, `regtest/`).
-//!
-//! **Important:** new versions must be appended to `VERSION_DIRS` in order, with no gaps, because
-//! discovery code assumes index+1 corresponds to the version number.
-//!
-//! # Adding a new major version (v2) — checklist
-//!
-//! 1. Create `finalised_source::v2` and implement `DbV2::spawn(cfg)`.
-//! 2. Add `V2(DbV2)` variant to [`FinalisedSource`].
-//! 3. Add `spawn_v2` constructor.
-//! 4. Append `"v2"` to [`VERSION_DIRS`].
-//! 5. Extend all trait delegation `match` arms in this file.
-//! 6. Update `FinalisedSource::capability()` and `DbVersion::capability()` for the new version.
-//! 7. Add a migration step in `migrations.rs` and register it with `MigrationManager`.
+//! The v1 database lives in `<network>/v1/` under the configured path, where `<network>` is
+//! `mainnet`, `testnet` or `regtest`.
 //!
 //! # Development: adding new indices/queries
 //!
-//! Prefer implementing new indices in the latest DB version first (e.g. `v1`) and exposing them via:
+//! Implement new indices in `v1` and expose them via:
 //! - a capability bit + extension trait in `capability.rs`,
-//! - routing via `DbReader` and `Router`,
-//! - and a migration/rebuild plan if the index requires historical backfill.
+//! - and routing via `DbReader` and `Router`.
+//!
+//! A new index adds a table, so it changes the computed schema hash, and every existing
+//! database rebuilds on its next start.
 //!
 //! Keep unsupported methods explicit: if a DB version does not provide a feature, return
 //! `StoreError::FeatureUnavailable(...)` rather than silently degrading semantics.
@@ -210,17 +198,6 @@ pub(super) async fn open_or_create_db(
     }
 }
 
-/// Version subdirectory names for versioned on-disk layouts.
-///
-/// This list defines the supported major-version directory names under a per-network directory.
-/// For example, a v1 database is stored under `<network>/v1/`.
-///
-/// Invariants:
-/// - New versions must be appended to this list in order.
-/// - There must be no missing versions between entries.
-/// - Discovery code assumes `VERSION_DIRS[index]` corresponds to major version `index + 1`.
-pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
-
 #[derive(Debug)]
 /// All concrete database implementations.
 /// Version-erased database backend.
@@ -286,22 +263,15 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
         }
     }
 
-    /// Start the background validator on the primary v1 backend (no-op for the ephemeral
-    /// passthrough).
-    ///
-    /// Called by the orchestrator only once all pending migrations have completed, so the
-    /// validator never races a migration that populates the tables its initial scan reads.
-    pub(super) fn start_validator(&self) {
+    /// Starts the background maintenance task on a v1 backend, and does nothing for the ephemeral passthrough.
+    pub(super) fn start_maintenance(&self) {
         match self {
-            Self::V1(db) => db.start_validator(),
+            Self::V1(db) => db.start_maintenance(),
             Self::Ephemeral(_) => {}
         }
     }
 
-    /// Stores a new runtime status in the concrete backend.
-    ///
-    /// This is used by router-level background orchestration, for example to report an asynchronous
-    /// migration failure after `FinalisedState::spawn` has already returned.
+    /// Stores a new runtime status in the concrete backend, so background work can report a failure after spawn returns.
     pub(crate) fn store_status(&self, status: StatusType) {
         match self {
             Self::V1(database) => database.status_atomic().store(status),
@@ -328,14 +298,7 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
         }
     }
 
-    /// Borrow the underlying v1 backend, or return `V1BackendUnavailable(feature)` for the ephemeral
-    /// passthrough.
-    ///
-    /// Shared by the v1-only maintenance accessors below so each call site is a single line that
-    /// names the handle it requires; `feature` names that handle in the error when the backend is
-    /// ephemeral. This is a backend-state refusal, not a capability refusal: the concrete v1 backend
-    /// is temporarily absent while a migration runs, so it maps to a transient error rather than to
-    /// [`StoreError::FeatureUnavailable`].
+    /// Borrows the underlying v1 backend, or returns `V1BackendUnavailable(feature)` for the ephemeral passthrough.
     fn require_v1(&self, feature: &'static str) -> Result<&DbV1, StoreError> {
         match self {
             Self::V1(db) => Ok(db.as_ref()),
@@ -343,54 +306,11 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
         }
     }
 
-    /// Return an arc clone of the underlying LMDB environment, used during some DB migrations.
+    /// Returns a shared handle to the underlying LMDB environment of a v1 backend.
     pub(crate) fn env(&self) -> Result<Arc<Environment>, StoreError> {
         Ok(Arc::clone(
             self.require_v1("no LMDB environment available")?.env(),
         ))
-    }
-
-    /// Provides access to the metadata DB table, enabling the migration manager
-    /// to use this DB table to store temporary migration metadata.
-    pub(crate) fn metadata_db(&self) -> Result<Database, StoreError> {
-        Ok(self
-            .require_v1("v1 metadata db not available")?
-            .metadata_db())
-    }
-
-    /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
-    pub(crate) fn spent_db(&self) -> Result<Database, StoreError> {
-        Ok(self.require_v1("v1 spent db not available")?.spent_db())
-    }
-
-    /// Provides access to the reverse txid-index DB table, required for Migration1_1_0To1_2_0.
-    pub(crate) fn txid_location_db(&self) -> Result<Database, StoreError> {
-        Ok(self.require_v1("v1 txid_location db")?.txid_location_db())
-    }
-
-    /// Provides access to the txids DB table, required for Migration1_1_0To1_2_0.
-    pub(crate) fn txids_db(&self) -> Result<Database, StoreError> {
-        Ok(self.require_v1("v1 txids db")?.txids_db())
-    }
-
-    /// Provides access to the transparent DB table, required for Migration1_1_0To1_2_0 Stage B to
-    /// read block transparent data directly (bypassing per-height block re-validation).
-    pub(crate) fn transparent_db(&self) -> Result<Database, StoreError> {
-        Ok(self.require_v1("v1 transparent db")?.transparent_db())
-    }
-
-    /// Provides access to the (v1.3.0) `StoredEntryVar` commitment-tree-data table, required for
-    /// Migration1_2_1To1_3_0 to write the rebuilt commitment rows.
-    pub(crate) fn commitment_tree_data_db(&self) -> Result<Database, StoreError> {
-        Ok(self
-            .require_v1("v1 commitment_tree_data db")?
-            .commitment_tree_data_db())
-    }
-
-    /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
-    /// backfill ironwood rows from validator-fetched block data.
-    pub(super) fn ironwood_db(&self) -> Result<Database, StoreError> {
-        Ok(self.require_v1("v1 ironwood db")?.ironwood_db())
     }
 }
 
@@ -461,10 +381,7 @@ impl<T: ChainStoreSource> DbRead for FinalisedSource<T> {
         }
     }
 
-    /// Read the database metadata record.
-    ///
-    /// This includes versioning and migration status and is used by the migration manager and
-    /// compatibility checks.
+    /// Reads the database metadata record, which holds the schema version and schema hash.
     async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
         match self {
             Self::V1(db) => db.get_metadata().await,
@@ -512,16 +429,6 @@ impl<T: ChainStoreSource> DbWrite for FinalisedSource<T> {
     async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.delete_block(block).await,
-            Self::Ephemeral(_ephemeral) => Ok(()),
-        }
-    }
-
-    /// Update the database metadata record.
-    ///
-    /// This is used by migrations and schema management logic.
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
-        match self {
-            Self::V1(db) => db.update_metadata(metadata).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
         }
     }
@@ -920,44 +827,6 @@ impl<T: ChainStoreSource> TxOutSetExt for FinalisedSource<T> {
             Self::V1(database) => database.get_tx_out_set_info_accumulator().await,
             _ => Err(StoreError::FeatureUnavailable(
                 CapabilityRequest::TxOutSetIndex,
-            )),
-        }
-    }
-}
-
-#[cfg(test)]
-impl<T: ChainStoreSource> FinalisedSource<T> {
-    /// Spawn a test-only v1 backend initialized as a v1.0.0 database.
-    ///
-    /// Used by migration tests to create a historical v1.0.0 database fixture before reopening it
-    /// through the current startup / migration path.
-    pub(crate) async fn spawn_v1_0_0(cfg: &StoreSettings) -> Result<Self, StoreError> {
-        Ok(Self::V1(Box::new(DbV1::spawn_v1_0_0(cfg).await?)))
-    }
-
-    /// Current contiguous validated-tip height (v1 only; 0 for ephemeral). Test hook.
-    pub(crate) fn validated_tip_height(&self) -> u32 {
-        match self {
-            Self::V1(db) => db.validated_tip_height(),
-            Self::Ephemeral(_) => 0,
-        }
-    }
-
-    /// Writes a block using the v1.0.0 format.
-    ///
-    /// This intentionally writes only the core v1 tables and uses v1 item encodings.
-    ///
-    /// This method does not perform safety checks and must not be used in production code.
-    ///
-    /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(
-        &self,
-        block: IndexedBlock<AbsoluteChainWork>,
-    ) -> Result<(), StoreError> {
-        match self {
-            Self::V1(db) => db.write_block_v1_0_0(block).await,
-            Self::Ephemeral(_) => Err(StoreError::Custom(
-                "v1.0.0 test fixture writer requires a v1 backend".to_string(),
             )),
         }
     }

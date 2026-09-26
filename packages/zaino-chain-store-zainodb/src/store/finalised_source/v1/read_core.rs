@@ -2,12 +2,12 @@
 
 use super::*;
 
-use zaino_encoding::ZainoVersionedSerde;
+use crate::codec::DbCodec;
 
 /// [`DbRead`] capability implementation for [`DbV1`].
 ///
 /// This trait is the read-only surface used by higher layers. Methods typically delegate to
-/// inherent async helpers that enforce validated reads where required.
+/// inherent async helpers that confirm the requested heights are stored.
 impl DbRead for DbV1 {
     async fn db_height(&self) -> Result<Option<Height>, StoreError> {
         self.tip_height().await
@@ -40,6 +40,9 @@ impl DbV1 {
     /// Returns the greatest `Height` stored in `headers`
     /// (`None` if the DB is still empty).
     pub(crate) async fn tip_height(&self) -> Result<Option<Height>, StoreError> {
+        #[cfg(test)]
+        self.tip_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
             let cur = ro.open_ro_cursor(self.headers)?;
@@ -62,7 +65,7 @@ impl DbV1 {
     /// Fetch the block height in the main chain for a given block hash.
     async fn get_block_height_by_hash(&self, hash: BlockHash) -> Result<Height, StoreError> {
         let height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Hash(hash.into()))
+            .resolve_stored_height(HashOrHeight::Hash(hash.into()))
             .await?;
         Ok(height)
     }
@@ -74,82 +77,108 @@ impl DbV1 {
         end_hash: BlockHash,
     ) -> Result<(Height, Height), StoreError> {
         let start_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Hash(start_hash.into()))
+            .resolve_stored_height(HashOrHeight::Hash(start_hash.into()))
             .await?;
         let end_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Hash(end_hash.into()))
+            .resolve_stored_height(HashOrHeight::Hash(end_hash.into()))
             .await?;
 
-        let (validated_start, validated_end) =
-            self.validate_block_range(start_height, end_height).await?;
-
-        Ok((validated_start, validated_end))
+        self.require_stored_range(start_height, end_height).await?;
+        Ok((start_height, end_height))
     }
 
     /// Fetch database metadata.
     async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.metadata, b"metadata") {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(StoreError::DataUnavailable(
-                        "block data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(StoreError::LmdbError(e)),
-            };
-
-            let entry = StoredEntryFixed::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("metadata decode error: {e}")))?;
-
-            Ok(entry.into_inner())
-        })
+        self.read_row(self.metadata, "metadata", METADATA_KEY)?
+            .ok_or_else(|| StoreError::DataUnavailable("metadata missing from db".into()))
     }
 
-    // *** Internal DB methods ***
+    /// Resolves `hash_or_height` to a stored height, or `DataUnavailable` when the store does not hold it.
+    pub(super) async fn resolve_stored_height(
+        &self,
+        hash_or_height: HashOrHeight,
+    ) -> Result<Height, StoreError> {
+        match hash_or_height {
+            HashOrHeight::Height(z_height) => {
+                let height = Height::try_from(z_height.0)
+                    .map_err(|_| StoreError::DataUnavailable("height out of range".into()))?;
+                if self.tip_height().await?.is_some_and(|tip| height <= tip) {
+                    Ok(height)
+                } else {
+                    Err(not_stored())
+                }
+            }
+            HashOrHeight::Hash(z_hash) => {
+                let hkey = BlockHash::from(z_hash.0).to_bytes()?;
+                tokio::task::block_in_place(|| {
+                    let ro = self.env.begin_ro_txn()?;
+                    let bytes = ro.get(self.heights, &hkey).map_err(|e| {
+                        if e == lmdb::Error::NotFound {
+                            not_stored()
+                        } else {
+                            StoreError::LmdbError(e)
+                        }
+                    })?;
+                    Ok(Height::from_bytes(bytes)?)
+                })
+            }
+        }
+    }
+
+    /// Confirms that the inclusive range between `start` and `end`, in either order, lies at or below the stored tip.
+    pub(super) async fn require_stored_range(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<(), StoreError> {
+        let highest = std::cmp::max(start, end);
+        if self.tip_height().await?.is_some_and(|tip| highest <= tip) {
+            Ok(())
+        } else {
+            Err(not_stored())
+        }
+    }
+}
+
+/// The one answer for a height or hash the store does not hold, whichever read asked.
+fn not_stored() -> StoreError {
+    StoreError::DataUnavailable("height not found in best chain".into())
 }
 
 impl DbV1 {
-    /// Fetches and decodes one `StoredEntryVar<T>` row keyed by an already-validated
-    /// height. Returns `Ok(None)` when the table has no row for the height; `label`
-    /// names the table in decode errors.
-    fn read_row<T: ZainoVersionedSerde>(
+    /// Fetches and decodes one `T` row keyed by `key`, returning `Ok(None)` when the table has no row there.
+    pub(super) fn read_row<T: DbCodec>(
         &self,
         table: lmdb::Database,
         label: &str,
-        height_bytes: &[u8],
+        key: &[u8],
     ) -> Result<Option<T>, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(table, &height_bytes) {
+            let raw = match txn.get(table, &key) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => return Ok(None),
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let entry: StoredEntryVar<T> = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))?;
-            Ok(Some(entry.into_inner()))
+            T::from_bytes(raw)
+                .map(Some)
+                .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))
         })
     }
 
-    /// [`DbV1::read_row`] at a height that is first validated against the index.
-    pub(super) async fn read_row_at_height<T: ZainoVersionedSerde>(
+    /// [`DbV1::read_row`] keyed by `height`, where an absent row means the caller's table has none there and the caller has established whether the height is stored.
+    pub(super) async fn read_row_at_height<T: DbCodec>(
         &self,
         table: lmdb::Database,
         label: &str,
         height: Height,
     ) -> Result<Option<T>, StoreError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
+        let height_bytes = height.to_bytes()?;
         self.read_row(table, label, &height_bytes)
     }
 
-    /// Cursor-scans and decodes every `StoredEntryVar<T>` row in the validated
-    /// inclusive `start..=end` height range.
-    pub(super) async fn scan_rows<T: ZainoVersionedSerde>(
+    /// Cursor-scans and decodes every `T` row in the inclusive `start..=end` height range.
+    pub(super) async fn scan_rows<T: DbCodec>(
         &self,
         table: lmdb::Database,
         label: &str,
@@ -161,7 +190,7 @@ impl DbV1 {
     }
 
     /// [`DbV1::scan_rows`] with each decoded row passed through `map` before it is collected.
-    pub(super) async fn scan_rows_mapped<T: ZainoVersionedSerde, Mapped>(
+    pub(super) async fn scan_rows_mapped<T: DbCodec, Mapped>(
         &self,
         table: lmdb::Database,
         label: &str,
@@ -175,7 +204,7 @@ impl DbV1 {
             ));
         }
 
-        self.validate_block_range(start, end).await?;
+        self.require_stored_range(start, end).await?;
         let start_bytes = start.to_bytes()?;
         let end_bytes = end.to_bytes()?;
 
@@ -204,8 +233,8 @@ impl DbV1 {
         raw_entries
             .into_iter()
             .map(|bytes| {
-                StoredEntryVar::<T>::from_bytes(&bytes)
-                    .map(|e| map(e.into_inner()))
+                T::from_bytes(&bytes)
+                    .map(&mut map)
                     .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))
             })
             .collect()

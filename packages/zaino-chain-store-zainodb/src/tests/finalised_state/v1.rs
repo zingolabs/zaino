@@ -7,6 +7,9 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
+use crate::codec::DbCodec as _;
+use crate::store::capability::{BlockCoreExt as _, BlockShieldedExt as _, DbMetadata, DbRead as _};
+use crate::store::finalised_source::v1::{schema, DbV1, METADATA_KEY};
 use crate::store::finalised_source::FinalisedSource;
 use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
@@ -20,11 +23,9 @@ use crate::tests::init_tracing;
 use crate::types::TransactionHash;
 
 use crate::config::{StoreSettings, ZainoDbConfig};
-use crate::entry::StoredEntryVar;
 use crate::error::StoreError;
-use crate::types::{AbsoluteChainWork, BlockHeaderData, Height};
+use crate::types::Height;
 use zaino_chain_store::ChainStoreConfig;
-use zaino_encoding::ZainoVersionedSerde as _;
 
 use crate::types::{AddrScript, Outpoint};
 
@@ -318,13 +319,13 @@ async fn save_db_to_file_and_reload() {
     .unwrap();
 }
 
+// multi_thread required: opening the database runs inside `block_in_place`.
 #[tokio::test(flavor = "multi_thread")]
-async fn load_db_backend_from_file() {
+async fn a_database_written_by_another_schema_is_rebuilt_empty() {
     init_tracing();
 
-    // Through `vectors_dir` rather than a path literal: this one still spelled
-    // out the old crate's layout, and a wrong path here fails as a missing
-    // file rather than as a wrong fixture.
+    // The fixture is a 101-block database written by a v1.0.0 build, so its
+    // metadata names a schema this build does not carry.
     let fixture_db_path = crate::tests::vectors::vectors_dir().join("v1_test_db");
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("v1_test_db");
@@ -334,44 +335,328 @@ async fn load_db_backend_from_file() {
         ChainStoreConfig::at_path(db_path.clone()),
         ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
     );
-    let finalized_state_backend: FinalisedSource<FakeValidator> =
-        FinalisedSource::spawn_v1(&config).await.unwrap();
+    let backend: FinalisedSource<FakeValidator> = FinalisedSource::spawn_v1(&config).await.unwrap();
 
-    // Read block headers directly from the `headers` table rather than via `get_chain_block`, which
-    // reconstructs the full block and validates (reading the v1.3.0 commitment table). This fixture
-    // is a legacy database whose commitment rows are in `commitment_tree_data_1_0_0`, so validation
-    // would fail; the header context asserted here is unaffected.
-    let read_header_direct = |height: Height| -> Option<BlockHeaderData<AbsoluteChainWork>> {
-        use lmdb::Transaction as _;
-        let environment = finalized_state_backend.env().unwrap();
-        let headers_database = environment.open_db(Some("headers_1_0_0")).unwrap();
-        let transaction = environment.begin_ro_txn().unwrap();
-        match transaction.get(headers_database, &height.to_bytes().unwrap()) {
-            Ok(raw) => Some(
-                *StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(raw)
-                    .unwrap()
-                    .inner(),
-            ),
-            Err(lmdb::Error::NotFound) => None,
-            Err(error) => panic!("failed to read header at height {}: {error}", height.0),
-        }
-    };
+    assert_eq!(backend.db_height().await.unwrap(), None);
+    assert_eq!(
+        backend.get_metadata().await.unwrap(),
+        DbMetadata::new(schema::schema_hash().expect("every canonical record encodes"))
+    );
+    assert_eq!(
+        stale_dirs(&db_path),
+        vec!["v1.stale-unreadable".to_string()],
+        "a metadata row this build cannot decode is unreadable, not a database under another hash"
+    );
+}
 
-    let mut prev_hash = None;
-    for height in 0..=100 {
-        let header = read_header_direct(Height(height)).unwrap();
-        if let Some(prev_hash) = prev_hash {
-            assert_eq!(prev_hash, header.context.parent_hash);
-        }
-        prev_hash = Some(header.context.index.hash);
-        assert_eq!(header.context.index.height, Height(height));
+/// A persistent regtest store rooted in a fresh temporary directory, and that directory.
+fn temporary_store_settings() -> (TempDir, StoreSettings) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = StoreSettings::new(
+        ChainStoreConfig::at_path(temp_dir.path().to_path_buf()),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
+    (temp_dir, config)
+}
+
+/// The v1 database directory under `root` for the regtest network.
+fn v1_dir(root: &std::path::Path) -> PathBuf {
+    root.join("regtest").join("v1")
+}
+
+/// Opens the environment at `v1_dir` as another process would, creating the directory when a test fabricates a database there.
+fn open_v1_env(v1_dir: &std::path::Path) -> lmdb::Environment {
+    std::fs::create_dir_all(v1_dir).expect("the v1 directory exists");
+    lmdb::Environment::new()
+        .set_max_dbs(32)
+        .open(v1_dir)
+        .expect("the v1 environment opens")
+}
+
+/// Applies `edit` to the metadata table at `v1_dir` in one committed write transaction.
+fn edit_metadata(
+    v1_dir: &std::path::Path,
+    edit: impl FnOnce(&mut lmdb::RwTransaction<'_>, lmdb::Database),
+) {
+    use lmdb::Transaction as _;
+    let env = open_v1_env(v1_dir);
+    let metadata = env
+        .open_db(Some("metadata"))
+        .expect("the metadata table exists");
+    let mut txn = env.begin_rw_txn().expect("a write transaction opens");
+    edit(&mut txn, metadata);
+    txn.commit().expect("the write commits");
+}
+
+/// Overwrites the metadata singleton at `v1_dir` with `bytes`, as another build would leave it.
+fn overwrite_metadata(v1_dir: &std::path::Path, bytes: &[u8]) {
+    edit_metadata(v1_dir, |txn, metadata| {
+        txn.put(metadata, &METADATA_KEY, &bytes, lmdb::WriteFlags::empty())
+            .expect("the row writes");
+    });
+}
+
+/// Removes the metadata singleton at `v1_dir`, as a crash before the first record, or a hand restore, would leave it.
+fn delete_metadata(v1_dir: &std::path::Path) {
+    edit_metadata(v1_dir, |txn, metadata| {
+        txn.del(metadata, &METADATA_KEY, None)
+            .expect("the row deletes");
+    });
+}
+
+/// Fabricates a database at `v1_dir` with a populated `headers` table and no `metadata` table, as a build with another layout would leave it.
+fn foreign_database(v1_dir: &std::path::Path) {
+    use lmdb::Transaction as _;
+    let env = open_v1_env(v1_dir);
+    let headers = env
+        .create_db(Some("headers"), lmdb::DatabaseFlags::empty())
+        .expect("the headers table is created");
+    let mut txn = env.begin_rw_txn().expect("a write transaction opens");
+    txn.put(headers, b"0", b"not a header", lmdb::WriteFlags::empty())
+        .expect("the row writes");
+    txn.commit().expect("the write commits");
+}
+
+/// The names of the tables in the environment at `dir`.
+fn table_names(dir: &std::path::Path) -> Vec<String> {
+    use lmdb::{Cursor as _, Transaction as _};
+    let env = open_v1_env(dir);
+    let main = env.open_db(None).expect("the main table opens");
+    let txn = env.begin_ro_txn().expect("a read transaction opens");
+    let mut names: Vec<String> = txn
+        .open_ro_cursor(main)
+        .expect("a cursor opens on the main table")
+        .iter_start()
+        .map(|(name, _)| String::from_utf8_lossy(name).into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// The names of the stale database directories kept beside `v1` under `root`.
+fn stale_dirs(root: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(root.join("regtest"))
+        .expect("the network directory exists")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("v1.stale-"))
+        .collect()
+}
+
+/// A metadata row this build cannot decode names a database another build wrote, which is moved aside for the operator rather than deleted.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_undecodable_metadata_row_moves_the_database_aside() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    drop(DbV1::spawn(&config).await.expect("a fresh database opens"));
+    overwrite_metadata(&v1_dir(temp_dir.path()), b"torn");
+
+    let reopened = DbV1::spawn(&config)
+        .await
+        .expect("this build rebuilds beside the old database");
+    drop(reopened);
+
+    let stale = stale_dirs(temp_dir.path());
+    assert_eq!(
+        stale.len(),
+        1,
+        "the old database is kept beside the new one: {stale:?}"
+    );
+    assert!(
+        temp_dir
+            .path()
+            .join("regtest")
+            .join(&stale[0])
+            .join("data.mdb")
+            .exists(),
+        "the stale directory keeps the old data file"
+    );
+}
+
+/// A database carrying another schema's hash is moved aside under that hash, so a rollback or a mistaken flag never costs the sync.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_with_another_schema_hash_is_moved_aside_before_the_rebuild() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    drop(DbV1::spawn(&config).await.expect("a fresh database opens"));
+    let other_build = DbMetadata::new([0xab; 32])
+        .to_bytes()
+        .expect("metadata encodes");
+    overwrite_metadata(&v1_dir(temp_dir.path()), &other_build);
+
+    let reopened = DbV1::spawn(&config)
+        .await
+        .expect("this build rebuilds beside the old database");
+    assert_eq!(
+        reopened
+            .get_metadata()
+            .await
+            .expect("the fresh database carries metadata"),
+        DbMetadata::new(schema::schema_hash().expect("every canonical record encodes")),
+    );
+    drop(reopened);
+
+    let stale = stale_dirs(temp_dir.path());
+    assert_eq!(
+        stale.len(),
+        1,
+        "the old database is kept beside the new one: {stale:?}"
+    );
+    assert!(
+        stale[0].contains(&hex::encode(&[0xab; 32][..4])),
+        "the stale directory is named by the schema hash it carries: {}",
+        stale[0]
+    );
+}
+
+/// Blocks stored without a metadata record were written by a build this one cannot vouch for, so they are moved aside rather than adopted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_holding_blocks_without_a_metadata_row_is_moved_aside() {
+    init_tracing();
+    let blocks = load_test_vectors().unwrap().blocks;
+    let (temp_dir, config) = temporary_store_settings();
+    let db = DbV1::spawn(&config).await.expect("a fresh database opens");
+    crate::tests::fixtures::sync_db_with_blockdata(&db, &blocks, Some(2)).await;
+    drop(db);
+    delete_metadata(&v1_dir(temp_dir.path()));
+
+    let reopened = DbV1::spawn(&config)
+        .await
+        .expect("this build rebuilds beside the old database");
+
+    assert_eq!(
+        reopened.db_height().await.unwrap(),
+        None,
+        "the blocks without a record are not adopted"
+    );
+    assert_eq!(
+        stale_dirs(temp_dir.path()),
+        vec!["v1.stale-unreadable".to_string()]
+    );
+}
+
+/// The schema check reads the metadata record alone, so a database of another layout is moved aside with no table of this build created in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_of_another_layout_is_moved_aside_before_any_table_is_created() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    foreign_database(&v1_dir(temp_dir.path()));
+
+    drop(
+        DbV1::spawn(&config)
+            .await
+            .expect("this build rebuilds beside the foreign database"),
+    );
+
+    assert_eq!(
+        stale_dirs(temp_dir.path()),
+        vec!["v1.stale-unreadable".to_string()]
+    );
+    let stale = temp_dir.path().join("regtest").join("v1.stale-unreadable");
+    assert_eq!(
+        table_names(&stale),
+        vec!["headers".to_string()],
+        "the foreign database keeps only the tables it had"
+    );
+}
+
+/// A stale name that is already taken gets the next free numbered suffix, so a rollback and a second upgrade never displace an earlier copy or stop the start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_database_under_a_taken_stale_name_gets_a_numbered_directory() {
+    init_tracing();
+    let (temp_dir, config) = temporary_store_settings();
+    let other_build = DbMetadata::new([0xab; 32])
+        .to_bytes()
+        .expect("metadata encodes");
+    for _ in 0..2 {
+        drop(DbV1::spawn(&config).await.expect("a database opens"));
+        overwrite_metadata(&v1_dir(temp_dir.path()), &other_build);
     }
-    assert!(read_header_direct(Height(101)).is_none());
-    std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap()
+
+    drop(
+        DbV1::spawn(&config)
+            .await
+            .expect("this build rebuilds beside both stale copies"),
+    );
+
+    let mut stale = stale_dirs(temp_dir.path());
+    stale.sort();
+    assert_eq!(
+        stale,
+        vec![
+            "v1.stale-abababab".to_string(),
+            "v1.stale-abababab-2".to_string()
+        ]
+    );
+}
+
+/// A dense-table point read costs one transaction: the row's absence already says the height is not stored.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dense_point_read_does_not_look_up_the_tip() {
+    init_tracing();
+    let blocks = load_test_vectors().unwrap().blocks;
+    let (_temp_dir, config) = temporary_store_settings();
+    let db = DbV1::spawn(&config).await.expect("a fresh database opens");
+    crate::tests::fixtures::sync_db_with_blockdata(&db, &blocks, Some(5)).await;
+
+    let before = db.tip_lookups();
+    db.get_block_header(Height(3))
+        .await
+        .expect("a stored header reads");
+
+    assert_eq!(
+        db.tip_lookups() - before,
+        0,
+        "a point read on a dense table must not open a second transaction for the tip"
+    );
+}
+
+/// A sparse-table range read validates the range once, not once per height on top of that.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sparse_range_read_looks_up_the_tip_once() {
+    init_tracing();
+    let blocks = load_test_vectors().unwrap().blocks;
+    let (_temp_dir, config) = temporary_store_settings();
+    let db = DbV1::spawn(&config).await.expect("a fresh database opens");
+    crate::tests::fixtures::sync_db_with_blockdata(&db, &blocks, Some(5)).await;
+
+    let before = db.tip_lookups();
+    let lists = db
+        .get_block_range_ironwood(Height(0), Height(4))
+        .await
+        .expect("a stored range reads");
+
+    assert_eq!(lists.len(), 5, "one entry per requested height");
+    assert_eq!(
+        db.tip_lookups() - before,
+        1,
+        "the range is validated once; each height then reads its own row only"
+    );
+}
+
+/// A range past the tip is the same condition as a height past the tip, and is reported the same way: as data the store does not hold.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_range_past_the_tip_is_reported_as_unavailable() {
+    init_tracing();
+    let (_data, _db_dir, _zaino_db, db_reader) = load_vectors_v1db_and_reader().await;
+    let tip = db_reader
+        .db_height()
+        .await
+        .expect("the store reports its height")
+        .expect("the store is synced");
+
+    let past_tip = db_reader
+        .get_stored_block_range(Height(tip.0 + 1), Height(tip.0 + 2))
+        .await;
+
+    assert!(
+        matches!(past_tip, Err(StoreError::DataUnavailable(_))),
+        "expected DataUnavailable, got {past_tip:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn try_write_invalid_block() {
+async fn a_block_that_does_not_extend_the_tip_is_refused() {
     init_tracing();
 
     let (TestVectorData { blocks, .. }, _db_dir, zaino_db) =
@@ -393,7 +678,7 @@ async fn try_write_invalid_block() {
 
     assert!(matches!(
         db_err,
-        Err(StoreError::InvalidBlock { height: rejected, .. }) if rejected == height.0
+        Err(StoreError::DoesNotExtendTip { height: rejected, .. }) if rejected == height.0
     ));
 
     dbg!(zaino_db.db_height().await.unwrap());
@@ -1001,30 +1286,4 @@ async fn check_recipient_spent_map() {
             }
         }
     }
-}
-
-/// The write path must advance the validated tip itself (via the cheap in-memory parent + merkle
-/// checks), so reads never fall back to the expensive read-back validation. This must hold right
-/// after a sync completes, independent of the background validator.
-#[tokio::test(flavor = "multi_thread")]
-async fn write_path_advances_validated_tip() {
-    init_tracing();
-
-    let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
-
-    // Intentionally do NOT call `wait_until_ready` (which would let the background validator run):
-    // the bulk write path should have marked every synced height validated by the time
-    // `sync_to_height` returned.
-    let backend = zaino_db
-        .backend_for_cap(crate::store::capability::CapabilityRequest::WriteCore)
-        .unwrap();
-
-    use crate::store::capability::DbRead;
-    let db_tip = backend.db_height().await.unwrap().unwrap();
-
-    assert_eq!(
-        backend.validated_tip_height(),
-        db_tip.0,
-        "write path must advance validated_tip to the synced tip"
-    );
 }

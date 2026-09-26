@@ -10,13 +10,6 @@ pub const SYNC_FINALIZED_HEIGHT: &str = "zaino.sync.finalized_height";
 pub const SYNC_FETCHED_HEIGHT: &str = "zaino.sync.fetched_height";
 pub const SYNC_TARGET_HEIGHT: &str = "zaino.sync.target_height";
 
-// Reads above validated_height pay a synchronous re-validation
-pub const DB_VALIDATED_HEIGHT: &str = "zaino.db.validated_height";
-pub const DB_VALIDATION_SECONDS: &str = "zaino.db.validation_seconds";
-pub const DB_ON_DEMAND_VALIDATIONS_TOTAL: &str = "zaino.db.on_demand_validations_total";
-
-pub const MIGRATION_PROGRESS_HEIGHT: &str = "zaino.migration.progress_height";
-
 // Three disjoint spans summing to the per-block cost (under `direct` a fetch = in-process CPU)
 pub const SYNC_BLOCK_FETCH_SECONDS: &str = "zaino.sync.block_fetch_seconds";
 pub const SYNC_TREESTATE_FETCH_SECONDS: &str = "zaino.sync.treestate_fetch_seconds";
@@ -53,7 +46,6 @@ pub const DB_CORRUPT_ROWS_TOTAL: &str = "zaino.db.corrupt_rows_total";
 
 #[rustfmt::skip]
 pub const COUNTERS: &[(&str, &str)] = &[
-    (DB_ON_DEMAND_VALIDATIONS_TOTAL, "Reads that took the synchronous re-validation path"),
     (SYNC_FETCHED_TRANSACTIONS_TOTAL, "Transactions in blocks fetched and assembled by the sync loop"),
     (SYNC_FETCHED_TRANSPARENT_INPUTS_TOTAL, "Transparent inputs in blocks fetched and assembled by the sync loop"),
     (SYNC_FETCHED_TRANSPARENT_OUTPUTS_TOTAL, "Transparent outputs in blocks fetched and assembled by the sync loop"),
@@ -69,8 +61,6 @@ pub const GAUGES: &[(&str, &str)] = &[
     (SYNC_FINALIZED_HEIGHT, "Height the finalized index is committed and fsynced to"),
     (SYNC_FETCHED_HEIGHT, "Height the sync loop has built to in memory, ahead of the next commit"),
     (SYNC_TARGET_HEIGHT, "Height the write path works towards: chain tip minus the reorg buffer"),
-    (DB_VALIDATED_HEIGHT, "Height the finalized index is structurally validated to"),
-    (MIGRATION_PROGRESS_HEIGHT, "Height an in-progress migration backfill has reached"),
     (SYNC_ACCUMULATOR_HEIGHT, "Height the txout-set accumulator is built to"),
     (DB_MAP_SIZE_BYTES, "Bytes the LMDB map is sized to"),
     (DB_USED_BYTES, "Bytes in use by the LMDB environment"),
@@ -78,7 +68,6 @@ pub const GAUGES: &[(&str, &str)] = &[
 
 #[rustfmt::skip]
 pub const HISTOGRAMS: &[(&str, &str)] = &[
-    (DB_VALIDATION_SECONDS, "Seconds to structurally re-validate one stored block"),
     (SYNC_BLOCK_FETCH_SECONDS, "Seconds to fetch one block from the source"),
     (SYNC_TREESTATE_FETCH_SECONDS, "Seconds to fetch one block's commitment-tree roots"),
     (SYNC_BLOCK_ASSEMBLE_SECONDS, "Seconds to assemble one fetched block into an indexed block"),

@@ -2,9 +2,8 @@
 
 use corez::io::{self, Read, Write};
 
-use zaino_encoding::{
-    read_fixed_le, read_u64_le, version, write_fixed_le, write_u64_le, FixedEncodedLen,
-    ZainoVersionedSerde,
+use crate::codec::{
+    read_fixed_le, read_u64_le, write_fixed_le, write_u64_le, DbCodec, FixedEncodedLen,
 };
 
 use super::legacy::{Outpoint, ScriptType, TxOutCompact};
@@ -217,18 +216,8 @@ impl From<TxOutSetError> for AccumulatorDeltaError {
     }
 }
 
-impl ZainoVersionedSerde for FinalisedTxOutSetInfoAccumulator {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<Writer: Write>(&self, writer: &mut Writer) -> io::Result<()> {
-        Self::encode_v1(self, writer)
-    }
-
-    fn decode_latest<Reader: Read>(reader: &mut Reader) -> io::Result<Self> {
-        Self::decode_v1(reader)
-    }
-
-    fn encode_v1<Writer: Write>(&self, writer: &mut Writer) -> io::Result<()> {
+impl DbCodec for FinalisedTxOutSetInfoAccumulator {
+    fn encode<Writer: Write>(&self, writer: &mut Writer) -> io::Result<()> {
         write_u64_le(&mut *writer, self.transactions)?;
         write_u64_le(&mut *writer, self.transaction_outputs)?;
         write_u64_le(&mut *writer, self.bytes_serialized)?;
@@ -236,7 +225,7 @@ impl ZainoVersionedSerde for FinalisedTxOutSetInfoAccumulator {
         write_u64_le(&mut *writer, self.total_zatoshis)
     }
 
-    fn decode_v1<Reader: Read>(reader: &mut Reader) -> io::Result<Self> {
+    fn decode<Reader: Read>(reader: &mut Reader) -> io::Result<Self> {
         let transactions = read_u64_le(&mut *reader)?;
         let transaction_outputs = read_u64_le(&mut *reader)?;
         let bytes_serialized = read_u64_le(&mut *reader)?;
@@ -257,12 +246,8 @@ impl ZainoVersionedSerde for FinalisedTxOutSetInfoAccumulator {
 ///
 /// v1 consists of 8 + 8 + 8 + 32 + 8 = 64 bytes
 impl FixedEncodedLen for FinalisedTxOutSetInfoAccumulator {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(64),
-            _ => None,
-        }
-    }
+    /// Four `u64` counters and a 32-byte hash make up the record.
+    const ENCODED_LEN: usize = 64;
 }
 
 #[cfg(test)]
@@ -286,7 +271,7 @@ mod tests {
 
         assert_eq!(
             encoded_accumulator.len(),
-            FinalisedTxOutSetInfoAccumulator::latest_versioned_len().unwrap()
+            FinalisedTxOutSetInfoAccumulator::ENCODED_LEN
         );
 
         let decoded_accumulator =

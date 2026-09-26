@@ -248,8 +248,6 @@ impl NodeBackedIndexerServiceConfig {
 pub struct ChainIndexConfig {
     /// Storage configuration (cache and database)
     pub storage: StorageConfig,
-    /// Database version selected to be run.
-    pub db_version: u32,
     /// The runtime network, carrying the activation schedule adopted from
     /// the validator (zaino#1076) — or, in fixtures that are their own
     /// chain, the fixture's schedule.
@@ -278,8 +276,6 @@ impl ChainIndexConfig {
     ) -> Self {
         Self {
             storage: common.storage.clone(),
-            // TODO: update zaino configs to include db version.
-            db_version: 1,
             network,
             ephemeral: common.ephemeral_finalised_state,
             mempool: common.mempool.clone(),
@@ -297,21 +293,11 @@ impl ChainIndexConfig {
     /// here, which is where the contradiction between them stops being
     /// expressible: below this point there is no flag to disagree with a path.
     pub fn chain_store_config(&self) -> zaino_chain_store::ChainStoreConfig {
-        let mut config = if self.ephemeral {
+        if self.ephemeral {
             zaino_chain_store::ChainStoreConfig::default()
         } else {
             zaino_chain_store::ChainStoreConfig::at_path(self.storage.database.path.clone())
-        };
-
-        // The service config's `db_version` is a plain `u32` read from TOML, so
-        // zero is expressible here even though it names no schema. Falling back
-        // to the default rather than failing keeps this a projection: an
-        // unusable version is `spawn`'s to reject, with the message that names
-        // the versions it does support.
-        if let Some(major) = std::num::NonZeroU32::new(self.db_version) {
-            config.set_target_schema_major(major);
         }
-        config
     }
 
     /// What ZainoDB is configured from beyond [`Self::chain_store_config`].

@@ -2,10 +2,11 @@
 
 use super::*;
 
+use crate::codec::{DbCodec, FixedEncodedLen};
 use crate::pool::ShieldedPool;
-use zaino_encoding::{FixedEncodedLen, ZainoVersionedSerde};
 
 /// How a pool point lookup treats a block height with no row in the pool's table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingRow {
     /// Every indexed block has a row in this pool's table; an absent row is an error.
     Error,
@@ -265,10 +266,29 @@ impl DbV1 {
 
     /// Fetch one pool's whole-block tx list by height. Dense pools error on a missing
     /// row; sparse pools yield `empty()`.
-    async fn get_block_pool_tx_list<T: ZainoVersionedSerde>(
+    async fn get_block_pool_tx_list<T: DbCodec>(
         &self,
         pool: ShieldedPool,
         height: Height,
+        empty: impl FnOnce() -> T,
+    ) -> Result<T, StoreError> {
+        let missing = MissingRow::for_pool(pool);
+        if missing == MissingRow::NoPoolData {
+            // A sparse table cannot tell a height past the tip from a block
+            // without pool data; only a stored height reads an absent row as
+            // the latter.
+            self.resolve_stored_height(HashOrHeight::Height(height.into()))
+                .await?;
+        }
+        self.pool_row_or_empty(pool, height, missing, empty).await
+    }
+
+    /// The row for `pool` at a height the caller has established is stored, or `empty()` where a sparse pool has none.
+    async fn pool_row_or_empty<T: DbCodec>(
+        &self,
+        pool: ShieldedPool,
+        height: Height,
+        missing: MissingRow,
         empty: impl FnOnce() -> T,
     ) -> Result<T, StoreError> {
         let label = pool.pool_string();
@@ -277,7 +297,7 @@ impl DbV1 {
             .await?
         {
             Some(list) => Ok(list),
-            None => match MissingRow::for_pool(pool) {
+            None => match missing {
                 MissingRow::Error => Err(StoreError::DataUnavailable(format!(
                     "{label} data missing from db"
                 ))),
@@ -291,7 +311,7 @@ impl DbV1 {
     /// Dense pools cursor-scan the range; sparse pools resolve each height individually
     /// so absent rows yield `empty()` and the result stays aligned one-entry-per-height
     /// with the requested range.
-    async fn get_block_range_pool_tx_list<T: ZainoVersionedSerde>(
+    async fn get_block_range_pool_tx_list<T: DbCodec>(
         &self,
         pool: ShieldedPool,
         start: Height,
@@ -309,11 +329,14 @@ impl DbV1 {
                         "invalid block range: end < start".to_string(),
                     ));
                 }
-                self.validate_block_range(start, end).await?;
+                self.require_stored_range(start, end).await?;
 
                 let mut out = Vec::with_capacity((end.0 - start.0 + 1) as usize);
                 for height in Height::range_inclusive(start, end) {
-                    out.push(self.get_block_pool_tx_list(pool, height, &empty).await?);
+                    out.push(
+                        self.pool_row_or_empty(pool, height, MissingRow::NoPoolData, &empty)
+                            .await?,
+                    );
                 }
                 Ok(out)
             }
@@ -323,9 +346,9 @@ impl DbV1 {
     /// Point lookup for one transaction's compact data in `pool`'s per-block table,
     /// without decoding the whole block row.
     ///
-    /// Walks the `StoredEntryVar` tx-list bytes entry-by-entry with the pool's skip
+    /// Walks the stored tx-list bytes entry-by-entry with the pool's skip
     /// function, then decodes only the requested entry.
-    fn get_pool_tx<T: ZainoVersionedSerde>(
+    fn get_pool_tx<T: DbCodec>(
         &self,
         pool: ShieldedPool,
         tx_location: TxLocation,
@@ -358,16 +381,6 @@ impl DbV1 {
             };
 
             let mut cursor = Cursor::new(raw);
-
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            CompactSize::read(&mut cursor)
-                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
-
-            // Skip the tx-list version byte
-            cursor.set_position(cursor.position() + 1);
 
             // Read CompactSize: number of entries
             let list_len = CompactSize::read(&mut cursor)
@@ -403,20 +416,20 @@ impl DbV1 {
                 )));
             }
 
-            // Rewind to include the presence flag in the returned bytes
+            // The record starts after the presence flag; rewind and skip the whole entry to find
+            // where it ends.
+            let tx_start = cursor.position();
             cursor.set_position(start);
             skip_entry(&mut cursor)
                 .map_err(|e| StoreError::Custom(format!("skip entry error (second pass): {e}")))?;
 
             let end = cursor.position();
 
-            Ok(Some(T::from_bytes(&raw[start as usize..end as usize])?))
+            Ok(Some(T::from_bytes(&raw[tx_start as usize..end as usize])?))
         })
     }
 
-    /// Skips the shared prelude of one `Option<PoolCompactTx>` entry: the presence
-    /// byte, and — when the entry is present — the version byte and the `Option<i64>`
-    /// value balance. Returns `false` when the entry was `None` (nothing more to skip).
+    /// Skips the presence byte of one `Option<PoolCompactTx>` entry and, when present, its `Option<i64>` value balance, returning `false` for a `None` entry.
     #[inline]
     fn skip_opt_tx_prelude(cursor: &mut std::io::Cursor<&[u8]>) -> io::Result<bool> {
         // Read presence byte
@@ -431,9 +444,6 @@ impl DbV1 {
                 format!("invalid Option tag: {}", presence[0]),
             ));
         }
-
-        // Read version
-        cursor.read_exact(&mut [0u8; 1])?;
 
         // Read value: Option<i64>
         let mut value_tag = [0u8; 1];
@@ -455,23 +465,22 @@ impl DbV1 {
     /// fixed-length entries of type `T`. Taking the width from the type being
     /// skipped makes a wrong-width skip unrepresentable.
     #[inline]
-    fn skip_counted_fixed_entries<T: FixedEncodedLen + ZainoVersionedSerde>(
+    fn skip_counted_fixed_entries<T: FixedEncodedLen>(
         cursor: &mut std::io::Cursor<&[u8]>,
     ) -> io::Result<()> {
         let count = CompactSize::read(&mut *cursor)? as usize;
-        let entry_len = T::latest_versioned_len()?;
-        cursor.set_position(cursor.position() + (count * entry_len) as u64);
+        cursor.set_position(cursor.position() + (count * T::ENCODED_LEN) as u64);
         Ok(())
     }
 
     /// Skips one `Option<SaplingCompactTx>` from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
-    /// - `StoredEntryVar<SaplingTxList>`
+    /// - stored `SaplingTxList`
     ///
     /// Advances past:
     /// - 1 byte `0x00` if None, or
-    /// - 1 + 1 + value + spends + outputs if Some (presence + version + body)
+    /// - 1 + value + spends + outputs if Some (presence + body)
     ///
     /// This is faster than deserialising the whole struct as we only read the compact sizes.
     #[inline]
@@ -486,12 +495,12 @@ impl DbV1 {
     /// Skips one `Option<OrchardCompactTx>` from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
-    /// - `StoredEntryVar<OrchardTxList>` (the orchard and ironwood tables share this
+    /// - stored `OrchardTxList` (the orchard and ironwood tables share this
     ///   layout)
     ///
     /// Advances past:
     /// - 1 byte `0x00` if None, or
-    /// - 1 + 1 + value + actions if Some (presence + version + body)
+    /// - 1 + value + actions if Some (presence + body)
     ///
     /// This is faster than deserialising the whole struct as we only read the compact sizes.
     #[inline]
@@ -529,8 +538,7 @@ mod skip_opt_sapling_entry {
             .expect("encoding an in-memory list cannot fail");
 
         let mut cursor = std::io::Cursor::new(bytes.as_slice());
-        // Mirror `get_sapling`: skip the SaplingTxList version byte, then the entry count.
-        cursor.set_position(1);
+        // Mirror `get_sapling`: read past the entry count.
         CompactSize::read(&mut cursor).expect("entry count is present");
 
         DbV1::skip_opt_sapling_entry(&mut cursor).expect("entry is well-formed");

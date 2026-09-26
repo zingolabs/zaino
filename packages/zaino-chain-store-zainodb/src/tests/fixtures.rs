@@ -1,20 +1,17 @@
 //! Building a store, and the chain to build it from, out of the vectors.
 //!
-//! Shared by this crate's finalised-state and migration suites, and by
+//! Shared by this crate's finalised-state suites, and by
 //! `zaino-state`'s remaining suites through the `testing` feature — the block
 //! chain these produce is the oracle both sides compare against, so a second
 //! copy of it would be a second oracle.
 
 use std::collections::HashMap;
 
-pub(crate) use super::vectors::VectorBlock;
-
-#[cfg(all(test, not(feature = "transparent_address_history_experimental")))]
-pub(crate) use super::fake_validator::fake_validator_with_tip;
 /// This crate's own tests only: a consumer wanting a mock validator wants one
 /// shaped for its own ports, not for this crate's four.
 #[cfg(test)]
 pub(crate) use super::fake_validator::{fake_validator_from_vectors, FakeValidator};
+pub(crate) use super::vectors::VectorBlock;
 use crate::types::{
     AbsoluteChainWork, BlockMetadata, BlockWithMetadata, CompactTxData, IndexedBlock,
 };

@@ -3,12 +3,13 @@ Zaino Finalised-State Database Changelog
 
 Format
 ------
-One entry per database version bump (major / minor / patch). Keep entries concise and factual.
+One entry per schema hash change. Keep entries concise and factual. Entries up to
+v1.3.0 predate the computed hash and name a hand-maintained version instead.
 
 Entry template:
 
 --------------------------------------------------------------------------------
-DB VERSION vX.Y.Z (from vA.B.C)
+SCHEMA HASH <first 8 hex digits> (from <previous>)
 Date: YYYY-MM-DD
 --------------------------------------------------------------------------------
 
@@ -39,11 +40,10 @@ API / capabilities
   - Removed: <methods / behaviors>
   - Changed: <semantic changes, error mapping changes>
 
-Migration
-- Strategy: <in-place | shadow build | rebuild>
-- Backfill: <what gets rebuilt and how broadly>
-- Completion criteria: <how we decide migration is done>
-- Failure handling: <rollback / retry behavior>
+Rebuild
+- Every schema hash change moves an existing database aside (`v1.stale-*`) on
+  its next start and resyncs from the validator; there are no migrations and
+  nothing is deleted.
 
 Bug Fixes / Optimisations
 
@@ -502,3 +502,61 @@ Behaviour change
   so no chain data is lost.
 - Requesting database version 0 (`cfg.db_version == 0`) is rejected as an
   unsupported database version.
+
+--------------------------------------------------------------------------------
+SCHEMA HASH b5c3a7e5, or 8518ecd8 with address history (from v1.3.0)
+Date: 2026-09-23
+--------------------------------------------------------------------------------
+
+Summary
+- Database migrations are removed. A database whose stored metadata carries
+  another schema hash is moved aside to `v1.stale-<first four bytes of that
+  hash>`, and one whose metadata this build cannot decode to
+  `v1.stale-unreadable`; the store then resyncs from the validator. Nothing
+  is deleted, and a stale name that is already taken gets a numbered suffix.
+  The check reads the metadata record alone, creates no table in a database
+  it moves aside, and also moves aside a database that holds blocks without
+  a metadata record. Upgrades and downgrades take the same path.
+- The schema version and the hand-maintained schema text are removed. The
+  store computes its schema hash from the canonical encoding of every stored
+  type, every table name and its flags, the singleton keys, the enabled index
+  features, `ScriptType`'s tag list, the spendability verdict per tag, the
+  txout-set entry digest over the canonical output, and a hand-bumped epoch.
+
+On-disk schema
+- Encoding:
+  - Values: `DbMetadata` holds only the 32-byte schema hash (32 bytes, was
+    47); `MigrationStatus` and `DbVersion` are gone.
+  - Values: every row is stored as its record's own encoding. The
+    `StoredEntryFixed` / `StoredEntryVar` wrappers are gone, with their
+    wrapper version byte, `StoredEntryVar` length prefix, and 32-byte
+    BLAKE2b-256 checksum over `key || value`.
+  - Checksums / validation: none; rows are trusted as written.
+  - Records: no record or nested field carries a version tag any more. Every
+    key and value is its fields in order, so fixed-width records shrink by
+    one byte per nested record (for example `AddrHistRecord` is 17 bytes).
+- Tables:
+  - Renamed: every table drops its version suffix (`headers_1_0_0` ->
+    `headers`, `ironwood_1_3_0` -> `ironwood`,
+    `tx_out_set_info_accumulator_1_2_0` -> `tx_out_set_info_accumulator`), and
+    `hashes_1_0_0` becomes `heights`, after what it stores.
+  - Removed: the v1.0.0 `commitment_tree_data_1_0_0` table.
+  - The temporary migration progress keys are no longer written.
+
+API / capabilities
+- Removed: `MigrationManager`, `MigrationStatus`, `DbVersion`,
+  `DbWrite::update_metadata`, the `db_version` configuration value, and
+  `ChainStoreReader::schema`.
+- Removed: the startup integrity scans, the background re-validation loop, and
+  the on-demand validation of reads. The write path keeps two checks.
+  Continuity, one height above the tip with the tip as parent, now fails as
+  `StoreError::DoesNotExtendTip` on both the single-block and batch paths. The
+  merkle-root check at ingest stays, because it catches a fault in Zaino's own
+  conversion of the block, which no type or validator guarantee covers. The
+  indexes a write derives from a block are covered by unit tests, not by
+  runtime cross-checks. Silent corruption on disk and mutation of the database
+  from outside Zaino are not in scope for the store's correctness checks.
+
+Rebuild
+- Every existing v1.0.0 to v1.3.0 database rebuilds once on its first start
+  under this version.

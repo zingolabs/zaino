@@ -43,8 +43,8 @@ pub mod config;
 /// depths would suggest one is the more important half. Neither is.
 pub use config::ZainoDbConfig;
 pub mod adapter;
+pub(crate) mod codec;
 pub mod conversion;
-pub mod entry;
 pub mod error;
 pub(crate) mod ingest;
 pub mod metric_names;

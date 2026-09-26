@@ -12,10 +12,10 @@
 
 use super::error_map::{corrupt_row, corrupt_row_because};
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability, MigrationState,
-    SchemaVersion, SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoreSchema,
-    StoredAddress, StoredBlock, StoredBlockReadCapability, StoredTx, StoredTxOut,
-    TransactionIndexCapability, TxOutSetIndexCapability,
+    ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability,
+    SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoredAddress, StoredBlock,
+    StoredBlockReadCapability, StoredTx, StoredTxOut, TransactionIndexCapability,
+    TxOutSetIndexCapability,
 };
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
@@ -24,8 +24,7 @@ use zaino_primitives::types::{
     TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
 };
 
-use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
-use crate::store::finalised_source::v1::DB_VERSION_V1;
+use crate::store::capability::Capability;
 use crate::types::{
     AbsoluteChainWork, BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock,
     Outpoint, TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
@@ -419,36 +418,6 @@ where
     StoreCapabilities::new(capabilities)
 }
 
-/// The persisted metadata, as the domain's schema.
-///
-/// The on-disk record names the migration *phase* but not its destination,
-/// because a migration always runs towards the version the running build
-/// targets. So the target comes from the build rather than from disk, and a
-/// database recorded mid-migration by an older build reports the version this
-/// build would take it to.
-pub(super) fn store_schema(metadata: &DbMetadata) -> StoreSchema {
-    let version = schema_version(metadata.version());
-    let migration = match metadata.migration_status() {
-        MigrationStatus::Empty | MigrationStatus::Complete => MigrationState::Settled,
-        MigrationStatus::PartialBuildInProgress
-        | MigrationStatus::PartialBuildComplete
-        | MigrationStatus::FinalBuildInProgress => MigrationState::InProgress {
-            from: version,
-            to: schema_version(DB_VERSION_V1),
-        },
-    };
-
-    StoreSchema { version, migration }
-}
-
-fn schema_version(version: crate::store::capability::DbVersion) -> SchemaVersion {
-    SchemaVersion {
-        major: version.major(),
-        minor: version.minor(),
-        patch: version.patch(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,34 +553,5 @@ mod tests {
                 "{port} is implemented but nothing advertises it"
             );
         }
-    }
-
-    /// A migrating store reports where it is going, not just where it is.
-    ///
-    /// The on-disk record names the phase but not the destination, because a
-    /// migration always runs towards the version the running build targets. So
-    /// the target comes from the build.
-    #[test]
-    fn a_migrating_store_reports_its_target() {
-        let settled = store_schema(&DbMetadata::new(
-            DB_VERSION_V1,
-            [0u8; 32],
-            MigrationStatus::Empty,
-        ));
-        assert_eq!(settled.migration, MigrationState::Settled);
-
-        let from = crate::store::capability::DbVersion::new(1, 1, 0);
-        let migrating = store_schema(&DbMetadata::new(
-            from,
-            [0u8; 32],
-            MigrationStatus::FinalBuildInProgress,
-        ));
-        assert_eq!(
-            migrating.migration,
-            MigrationState::InProgress {
-                from: schema_version(from),
-                to: schema_version(DB_VERSION_V1),
-            }
-        );
     }
 }

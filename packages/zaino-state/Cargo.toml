@@ -72,7 +72,6 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
 corez = { workspace = true }
-zaino-encoding = { workspace = true }
 arc-swap = { workspace = true }
 
 # The finalised store: the ports it is driven through, and the backend that

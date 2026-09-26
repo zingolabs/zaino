@@ -60,38 +60,52 @@ These are also *this backend's* shapes, not the domain's. What is currently
 re-exported for `zaino-state` is a migration measure with an end date. Do not
 add consumers.
 
-## The checksums are load-bearing
+## Rows carry no checksum
 
-The environment is opened `MDB_NOSYNC`. The documented consequence is that on
-networked or overlay storage, or a hard pod eviction, a crash **can leave torn
-pages**. Per-row BLAKE2b-256 over `encoded_key ‖ encoded_value` is what turns
-that into `"checksum mismatch"` plus a hex dump and a "wipe and re-index"
-instruction, rather than a wrong answer served with confidence.
+Each value is the record's own encoding, with no wrapper, length prefix, or
+checksum. The environment is opened `MDB_NOSYNC`, so on networked or overlay
+storage, or after a hard pod eviction, a crash **can leave torn pages**. Those
+surface as decode errors or LMDB cursor assertions. The recovery is to delete
+the database directory; zainod then resyncs it from the validator.
 
-Three properties to preserve when touching any of it:
+Two classes of fault are out of scope for the store's correctness checks:
+silent corruption on disk, and mutation of the database from outside Zaino.
+The store checks what Zaino itself derives at the write boundary, the parent
+hash against the stored tip and the header merkle root against the block's
+txids, and covers the indexes it derives from a block with unit tests rather
+than runtime cross-checks.
 
-- **The key binding.** The checksum covers the key as well as the value, which
-  is what defeats relocating or splicing a row that is individually valid.
-- **The version-searching `verify`.** It is what makes mixed-version rows in one
-  table safe, which is the exact bug the v1.0.0→v1.1.0 migration exists to
-  record as fixed.
-- **The log-before-scan ordering** in the startup spent-table sweep. If LMDB
-  aborts natively on a torn B-tree, the line that names what was being scanned
-  has already been written.
+## A schema mismatch rebuilds the database
 
-## Migrations advance the version last
+There are no migrations. The `metadata` record holds the schema hash of the
+build that created the database. When `spawn` finds a record that differs from
+its own, or one it cannot decode, it moves the database directory aside, to
+`v1.stale-<first four bytes of the stored hash>` or `v1.stale-unreadable`, and
+resyncs from the validator. It never deletes: a rollback, a flag flipped by
+mistake, or a torn metadata row costs a rebuild, not the data. If that name is
+already taken, the database goes to the next free `-2`, `-3`, ... suffix, so
+nothing moved aside earlier is displaced. `spawn` decides all of this by reading
+the `metadata` record alone: it creates no table in a database it is about to
+move aside, and it also moves aside a database that holds blocks but no
+`metadata` record, since it cannot vouch for them. Upgrades and downgrades take
+the same path, and the index is derived data, so the rebuild loses nothing.
 
-`put_idempotent` byte-compares on conflict, progress is a checksummed
-`StoredEntryFixed<Height>`, and completion **advances the version durably before
-deleting the progress key**. That order is what makes an interrupted migration
-resumable rather than ambiguous. Reversing it produces a database that claims to
-be migrated and is not.
+The store computes the schema hash; nobody maintains it by hand. The hash
+covers the canonical encoding of every stored type, every table name and its
+flags, the singleton keys, the enabled index features, `ScriptType`'s full tag
+list, the spendability verdict on each of those tags, the txout-set entry
+digest over the canonical output, and `SCHEMA_EPOCH`. The tag list means a new
+`ScriptType` variant rebuilds the database before any record carries it, and
+the two rule inputs mean a change to the spendability predicate or the digest
+rebuilds it without anyone remembering to. The epoch is the one input a
+reviewer bumps by hand, for a rule the hash cannot reach, such as which heights
+a sparse table writes a row for. A build with
+`transparent_address_history_experimental` therefore has a different hash from
+one without it, and switching the feature rebuilds the database.
 
-`MigrationType::Major` exists but nothing returns it, and it shares a match arm
-with `Minor`. There is no shadow-build/promote path — `set_shadow`,
-`extend_shadow_caps` and `promote_shadow` were deleted, and the prose describing
-them was deleted with them rather than ported. A rebuild-style migration would
-have to be *built*, on `replace_primary` plus the ephemeral refcounting.
+Any change to an on-disk encoding changes the hash, and every deployment pays
+one full rebuild on its next start. `golden.rs` pins both the encodings and the
+hash, so a failing golden is the signal that a change carries that cost.
 
 ## The ephemeral backend has two jobs, not one
 

@@ -5,11 +5,10 @@
 //!   instead fundamental data should be saved into the struct, and from / into
 //!   (or appropriate getters / setters) should be implemented.
 //!
-//! - structs in this module must implement ZainoVersionedSerialize and abide by
-//!   the stringent version rules outlined in that trait.
+//! - structs in this module must implement `DbCodec`.
 //!
-//! - structs in this module must never be changed without implementing a new version
-//!   and implementing the necessary FinalisedState updates and migrations.
+//! - structs in this module must never change their encoding without updating their
+//!   golden and the schema hash golden.
 //!
 //! This module is currently in transition from a large monolithic file to well-organized
 //! submodules. The organized types have been moved to focused modules:
@@ -35,12 +34,12 @@ use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
-use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty};
-use zaino_encoding::{
+use crate::codec::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
-    read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
-    write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
+    read_vec, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be, write_u32_le,
+    write_u64_le, write_vec, DbCodec, FixedEncodedLen,
 };
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty};
 
 use super::commitment::CommitmentTreeData;
 
@@ -179,22 +178,12 @@ impl From<zcash_primitives::block::BlockHash> for BlockHash {
     }
 }
 
-impl ZainoVersionedSerde for BlockHash {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for BlockHash {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_fixed_le::<32, _>(w, &self.0)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let bytes = read_fixed_le::<32, _>(r)?;
         Ok(BlockHash(bytes))
     }
@@ -202,14 +191,9 @@ impl ZainoVersionedSerde for BlockHash {
 
 /// Fixed-length encoding metadata for `BlockHash`.
 ///
-/// v1 consists of a single 32-byte hash.
+/// The record consists of a single 32-byte hash.
 impl FixedEncodedLen for BlockHash {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(32),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 32;
 }
 
 /// Transaction hash.
@@ -323,22 +307,12 @@ impl From<zcash_primitives::transaction::TxId> for TransactionHash {
     }
 }
 
-impl ZainoVersionedSerde for TransactionHash {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for TransactionHash {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_fixed_le::<32, _>(w, &self.0)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let bytes = read_fixed_le::<32, _>(r)?;
         Ok(TransactionHash(bytes))
     }
@@ -346,14 +320,9 @@ impl ZainoVersionedSerde for TransactionHash {
 
 /// Fixed-length encoding metadata for `TransactionHash`.
 ///
-/// v1 consists of a single 32-byte hash.
+/// The record consists of a single 32-byte hash.
 impl FixedEncodedLen for TransactionHash {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(32),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 32;
 }
 
 /// Block height.
@@ -487,23 +456,13 @@ impl TryFrom<zcash_protocol::consensus::BlockHeight> for Height {
     }
 }
 
-impl ZainoVersionedSerde for Height {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for Height {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         // Height must sort lexicographically - write **big-endian**
         write_u32_be(w, self.0)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let raw = read_u32_be(r)?;
         Height::try_from(raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
@@ -511,14 +470,9 @@ impl ZainoVersionedSerde for Height {
 
 /// Fixed-length encoding metadata for `Height`.
 ///
-/// v1 consists of a single 4-byte big-endian u32.
+/// The record consists of a single 4-byte big-endian u32.
 impl FixedEncodedLen for Height {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(4),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 4;
 }
 
 /// Numerical index of subtree / shard roots.
@@ -529,23 +483,13 @@ impl FixedEncodedLen for Height {
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct ShardIndex(pub u32);
 
-impl ZainoVersionedSerde for ShardIndex {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for ShardIndex {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         // Index must sort lexicographically - write **big-endian**
         write_u32_be(w, self.0)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let raw = read_u32_be(r)?;
         Ok(ShardIndex(raw))
     }
@@ -553,14 +497,9 @@ impl ZainoVersionedSerde for ShardIndex {
 
 /// Fixed-length encoding metadata for `ShardIndex`.
 ///
-/// v1 consists of a single 4-byte big-endian u32.
+/// The record consists of a single 4-byte big-endian u32.
 impl FixedEncodedLen for ShardIndex {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(4),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 4;
 }
 
 /// A 20-byte hash160 *plus* a 1-byte ScriptType tag.
@@ -659,23 +598,13 @@ impl From<AddrScript> for [u8; 21] {
     }
 }
 
-impl ZainoVersionedSerde for AddrScript {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for AddrScript {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_fixed_le::<20, _>(&mut *w, &self.hash)?;
         w.write_all(&[self.script_type])
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let hash = read_fixed_le::<20, _>(&mut *r)?;
         let mut buf = [0u8; 1];
         r.read_exact(&mut buf)?;
@@ -688,14 +617,9 @@ impl ZainoVersionedSerde for AddrScript {
 
 /// Fixed-length encoding metadata for `AddrScript`.
 ///
-/// v1 consists of a 20 byte script (LE) + 1 byte script type
+/// The record consists of a 20 byte script (LE) + 1 byte script type
 impl FixedEncodedLen for AddrScript {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(21),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 21;
 }
 
 /// Reference to a spent transparent UTXO.
@@ -734,24 +658,14 @@ impl Outpoint {
     }
 }
 
-impl ZainoVersionedSerde for Outpoint {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for Outpoint {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
         write_fixed_le::<32, _>(&mut w, &self.prev_txid)?;
         write_u32_le(&mut w, self.prev_index)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
         let txid = read_fixed_le::<32, _>(&mut r)?;
         let index = read_u32_le(&mut r)?;
@@ -761,14 +675,9 @@ impl ZainoVersionedSerde for Outpoint {
 
 /// Fixed-length encoding metadata for `Outpoint`.
 ///
-/// v1 consists of a 32 byte txid + 4 byte tx index.
+/// The record consists of a 32 byte txid + 4 byte tx index.
 impl FixedEncodedLen for Outpoint {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(36),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 36;
 }
 
 // *** Block Level Objects ***
@@ -850,18 +759,8 @@ impl BlockData {
     }
 }
 
-impl ZainoVersionedSerde for BlockData {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for BlockData {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w; // re-borrow
 
         write_u32_le(&mut w, self.version)?;
@@ -873,10 +772,10 @@ impl ZainoVersionedSerde for BlockData {
         write_u32_le(&mut w, self.bits.as_bits())?;
         write_fixed_le::<32, _>(&mut w, &self.nonce)?;
 
-        self.solution.serialize_with_version(&mut w, 1)
+        self.solution.encode(&mut w)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
 
         let version = read_u32_le(&mut r)?;
@@ -890,7 +789,7 @@ impl ZainoVersionedSerde for BlockData {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let nonse = read_fixed_le::<32, _>(&mut r)?;
 
-        let solution = EquihashSolution::deserialize(&mut r)?;
+        let solution = EquihashSolution::decode(&mut r)?;
 
         Ok(BlockData {
             version,
@@ -965,18 +864,8 @@ impl<'a> TryFrom<&'a [u8]> for EquihashSolution {
     }
 }
 
-impl ZainoVersionedSerde for EquihashSolution {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for EquihashSolution {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
 
         match self {
@@ -991,7 +880,7 @@ impl ZainoVersionedSerde for EquihashSolution {
         }
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
 
         let mut tag = [0u8; 1];
@@ -1264,33 +1153,19 @@ pub struct TransparentCompactTx {
     vout: Vec<TxOutCompact>,
 }
 
-impl ZainoVersionedSerde for TransparentCompactTx {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for TransparentCompactTx {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
 
-        write_vec(&mut w, &self.vin, |w, txin| {
-            txin.serialize_with_version(w, 1)
-        })?;
-        write_vec(&mut w, &self.vout, |w, txout| {
-            txout.serialize_with_version(w, 1)
-        })
+        write_vec(&mut w, &self.vin, |w, txin| txin.encode(w))?;
+        write_vec(&mut w, &self.vout, |w, txout| txout.encode(w))
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
 
-        let vin = read_vec(&mut r, |r| TxInCompact::deserialize(r))?;
-        let vout = read_vec(&mut r, |r| TxOutCompact::deserialize(r))?;
+        let vin = read_vec(&mut r, TxInCompact::decode)?;
+        let vout = read_vec(&mut r, TxOutCompact::decode)?;
 
         Ok(TransparentCompactTx::new(vin, vout))
     }
@@ -1394,24 +1269,14 @@ impl TxInCompact {
     }
 }
 
-impl ZainoVersionedSerde for TxInCompact {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for TxInCompact {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
         write_fixed_le::<32, _>(&mut w, &self.prevout_txid)?;
         write_u32_le(&mut w, self.prevout_index)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
         let txid = read_fixed_le::<32, _>(&mut r)?;
         let idx = read_u32_le(&mut r)?;
@@ -1421,14 +1286,9 @@ impl ZainoVersionedSerde for TxInCompact {
 
 /// Fixed-length encoding metadata for `TxInCompact`.
 ///
-/// v1 consists of a 32-byte txid + 4-byte LE index
+/// The record consists of a 32-byte txid + 4-byte LE index
 impl FixedEncodedLen for TxInCompact {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(36),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 36;
 }
 
 /// Identifies the type of transparent transaction output script.
@@ -1441,6 +1301,27 @@ pub enum ScriptType {
     P2SH = 0x01,
     /// Non-standard output script (rare).
     NonStandard = 0xFF,
+}
+
+impl ScriptType {
+    /// Every variant, in tag order, which the schema hash covers so a new variant rebuilds the database.
+    pub(crate) const ALL: [Self; 3] = [Self::P2PKH, Self::P2SH, Self::NonStandard];
+}
+
+#[cfg(test)]
+mod script_type_all {
+    use super::ScriptType;
+
+    /// Fails to compile when a variant is added without being listed, which is what keeps `ALL` and the schema hash honest.
+    #[test]
+    fn every_variant_is_listed() {
+        for variant in ScriptType::ALL {
+            match variant {
+                ScriptType::P2PKH | ScriptType::P2SH | ScriptType::NonStandard => {}
+            }
+        }
+        assert_eq!(ScriptType::ALL.len(), 3);
+    }
 }
 
 impl TryFrom<u8> for ScriptType {
@@ -1467,22 +1348,12 @@ impl ScriptType {
     }
 }
 
-impl ZainoVersionedSerde for ScriptType {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for ScriptType {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(&[*self as u8])
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut b = [0u8; 1];
         r.read_exact(&mut b)?;
         ScriptType::try_from(b[0])
@@ -1492,14 +1363,9 @@ impl ZainoVersionedSerde for ScriptType {
 
 /// Fixed-length encoding metadata for `ScriptType`.
 ///
-/// v1 consists of a single byte
+/// The record consists of a single byte
 impl FixedEncodedLen for ScriptType {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(1),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 1;
 }
 
 /// Try to recognise a standard P2PKH / P2SH locking script.
@@ -1644,25 +1510,15 @@ impl<T: AsRef<[u8]>> TryFrom<(u64, T)> for TxOutCompact {
     }
 }
 
-impl ZainoVersionedSerde for TxOutCompact {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for TxOutCompact {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
         write_u64_le(&mut w, self.value)?;
         write_fixed_le::<20, _>(&mut w, &self.script_hash)?;
         w.write_all(&[self.script_type])
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
         let value = read_u64_le(&mut r)?;
         let script_hash = read_fixed_le::<20, _>(&mut r)?;
@@ -1676,14 +1532,9 @@ impl ZainoVersionedSerde for TxOutCompact {
 
 /// Fixed-length encoding metadata for `TxOutCompact`.
 ///
-/// v1 consists of a 8-byte LE value + 20-byte script hash + 1-byte type
+/// The record consists of a 8-byte LE value + 20-byte script hash + 1-byte type
 impl FixedEncodedLen for TxOutCompact {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(29),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 29;
 }
 
 /// Compact representation of Sapling shielded transaction data for wallet scanning.
@@ -1728,31 +1579,21 @@ impl SaplingCompactTx {
     }
 }
 
-impl ZainoVersionedSerde for SaplingCompactTx {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for SaplingCompactTx {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
 
         write_option(&mut w, &self.value, |w, v| write_i64_le(w, *v))?;
-        write_vec(&mut w, &self.spends, |w, s| s.serialize_with_version(w, 1))?;
-        write_vec(&mut w, &self.outputs, |w, o| o.serialize_with_version(w, 1))
+        write_vec(&mut w, &self.spends, |w, s| s.encode(w))?;
+        write_vec(&mut w, &self.outputs, |w, o| o.encode(w))
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
 
         let value = read_option(&mut r, |r| read_i64_le(r))?;
-        let spends = read_vec(&mut r, |r| CompactSaplingSpend::deserialize(r))?;
-        let outputs = read_vec(&mut r, |r| CompactSaplingOutput::deserialize(r))?;
+        let spends = read_vec(&mut r, CompactSaplingSpend::decode)?;
+        let outputs = read_vec(&mut r, CompactSaplingOutput::decode)?;
 
         Ok(SaplingCompactTx::new(value, spends, outputs))
     }
@@ -1785,36 +1626,21 @@ impl CompactSaplingSpend {
     }
 }
 
-impl ZainoVersionedSerde for CompactSaplingSpend {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for CompactSaplingSpend {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_fixed_le::<32, _>(w, &self.nf)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         Ok(CompactSaplingSpend::new(read_fixed_le::<32, _>(r)?))
     }
 }
 
 /// Fixed-length encoding metadata for `CompactSaplingSpend`.
 ///
-/// v1 consists of a 32 byte nullifier
+/// The record consists of a 32 byte nullifier
 impl FixedEncodedLen for CompactSaplingSpend {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(32),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 32;
 }
 
 /// Compact representation of a newly created Sapling shielded note output.
@@ -1865,25 +1691,15 @@ impl CompactSaplingOutput {
     }
 }
 
-impl ZainoVersionedSerde for CompactSaplingOutput {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for CompactSaplingOutput {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
         write_fixed_le::<32, _>(&mut w, &self.cmu)?;
         write_fixed_le::<32, _>(&mut w, &self.ephemeral_key)?;
         write_fixed_le::<52, _>(&mut w, &self.ciphertext)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
         let cmu = read_fixed_le::<32, _>(&mut r)?;
         let epk = read_fixed_le::<32, _>(&mut r)?;
@@ -1894,14 +1710,9 @@ impl ZainoVersionedSerde for CompactSaplingOutput {
 
 /// Fixed-length encoding metadata for `CompactSaplingOutput`.
 ///
-/// v1 consists of a 32-byte cmu + 32-byte ephemeral_key + 52-byte ciphertext
+/// The record consists of a 32-byte cmu + 32-byte ephemeral_key + 52-byte ciphertext
 impl FixedEncodedLen for CompactSaplingOutput {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(116),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 116;
 }
 
 /// Compact summary of all shielded activity in a transaction.
@@ -1939,29 +1750,19 @@ impl OrchardCompactTx {
     }
 }
 
-impl ZainoVersionedSerde for OrchardCompactTx {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for OrchardCompactTx {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
 
         write_option(&mut w, &self.value, |w, v| write_i64_le(w, *v))?;
-        write_vec(&mut w, &self.actions, |w, a| a.serialize_with_version(w, 1))
+        write_vec(&mut w, &self.actions, |w, a| a.encode(w))
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
 
         let value = read_option(&mut r, |r| read_i64_le(r))?;
-        let actions = read_vec(&mut r, |r| CompactOrchardAction::deserialize(r))?;
+        let actions = read_vec(&mut r, CompactOrchardAction::decode)?;
 
         Ok(OrchardCompactTx::new(value, actions))
     }
@@ -2029,18 +1830,8 @@ impl CompactOrchardAction {
     }
 }
 
-impl ZainoVersionedSerde for CompactOrchardAction {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for CompactOrchardAction {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
         write_fixed_le::<32, _>(&mut w, &self.nullifier)?;
         write_fixed_le::<32, _>(&mut w, &self.cmx)?;
@@ -2048,7 +1839,7 @@ impl ZainoVersionedSerde for CompactOrchardAction {
         write_fixed_le::<52, _>(&mut w, &self.ciphertext)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
         let nf = read_fixed_le::<32, _>(&mut r)?;
         let cmx = read_fixed_le::<32, _>(&mut r)?;
@@ -2060,18 +1851,13 @@ impl ZainoVersionedSerde for CompactOrchardAction {
 
 /// Fixed-length encoding metadata for `CompactOrchardAction`.
 ///
-/// v1 consists of a:
+/// The record consists of a:
 /// - 32-byte nullifier
 /// - 32-byte cmx
 /// - 32-byte ephemeral_key
 /// - 52-byte ciphertext
 impl FixedEncodedLen for CompactOrchardAction {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(148),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 148;
 }
 
 /// Identifies a transaction's location by block height and transaction index.
@@ -2104,23 +1890,13 @@ impl TxLocation {
     }
 }
 
-impl ZainoVersionedSerde for TxLocation {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for TxLocation {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_u32_be(&mut *w, self.block_height)?;
         write_u16_be(&mut *w, self.tx_index)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let block_height = read_u32_be(&mut *r)?;
         let tx_index = read_u16_be(&mut *r)?;
         Ok(TxLocation::new(block_height, tx_index))
@@ -2129,14 +1905,9 @@ impl ZainoVersionedSerde for TxLocation {
 
 /// Fixed-length encoding metadata for `TxLocation`.
 ///
-/// v1 consists of a 4-byte big-endian block_index + 2-byte big-endian tx_index
+/// The record consists of a 4-byte big-endian block_index + 2-byte big-endian tx_index
 impl FixedEncodedLen for TxLocation {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(6),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 6;
 }
 
 /// Single transparent-address activity record (input or output).
@@ -2208,26 +1979,16 @@ impl AddrHistRecord {
     }
 }
 
-impl ZainoVersionedSerde for AddrHistRecord {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.tx_location.serialize_with_version(&mut *w, 1)?;
+impl DbCodec for AddrHistRecord {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        self.tx_location.encode(&mut *w)?;
         write_u16_be(&mut *w, self.out_index)?;
         w.write_all(&[self.flags])?;
         write_u64_le(&mut *w, self.value)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let tx_location = TxLocation::deserialize(&mut *r)?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let tx_location = TxLocation::decode(&mut *r)?;
         let out_index = read_u16_be(&mut *r)?;
         let mut flag = [0u8; 1];
         r.read_exact(&mut flag)?;
@@ -2237,22 +1998,9 @@ impl ZainoVersionedSerde for AddrHistRecord {
     }
 }
 
-/// Fixed-length encoding metadata for `AddrHistRecord`.
-///
-/// v1 consists of:
-///  1 byte:  TxLocation tag
-/// +6 bytes: TxLocation body (4 BE block_index + 2 BE tx_index)
-/// +2 bytes: out_index (BE)
-/// +8 bytes: value     (LE)
-/// +1 byte : flags
-/// =18 bytes
+/// The stored record is 17 bytes: the 6-byte transaction location, a 2-byte big-endian output index, a flag byte, and an 8-byte little-endian value.
 impl FixedEncodedLen for AddrHistRecord {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(18),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = TxLocation::ENCODED_LEN + 2 + 1 + 8;
 }
 
 /// AddrHistRecord database byte array.
@@ -2322,22 +2070,12 @@ impl AddrEventBytes {
     }
 }
 
-impl ZainoVersionedSerde for AddrEventBytes {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for AddrEventBytes {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_fixed_le::<17, _>(w, &self.0)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         Ok(AddrEventBytes(read_fixed_le::<17, _>(r)?))
     }
 }
@@ -2355,12 +2093,7 @@ impl ZainoVersionedSerde for AddrEventBytes {
 /// [9..17]  value        (LE u64) | Amount in zatoshi, little-endian
 /// ```
 impl FixedEncodedLen for AddrEventBytes {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(17),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 17;
 }
 
 // *** Sharding ***
@@ -2369,7 +2102,7 @@ impl FixedEncodedLen for AddrEventBytes {
 //
 // `ShardIndex` and `ShardRoot` have encoders, fixed-length metadata and pinned
 // golden vectors, and nothing else. There is no LMDB table for them, no reader
-// and no writer, and neither appears in `db_schema_v1.txt` — so no database has
+// and no writer, and neither appears in `schema::canonical_encodings` — so no database has
 // ever held one, and deleting them would not change the schema hash.
 //
 // They were groundwork for serving subtree roots (`GetSubtreeRoots`) from a
@@ -2416,25 +2149,15 @@ impl ShardRoot {
     }
 }
 
-impl ZainoVersionedSerde for ShardRoot {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for ShardRoot {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
         write_fixed_le::<32, _>(&mut w, &self.hash)?;
         write_fixed_le::<32, _>(&mut w, &self.final_block_hash)?;
         write_u32_le(&mut w, self.final_block_height)
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
         let hash = read_fixed_le::<32, _>(&mut r)?;
         let final_block_hash = read_fixed_le::<32, _>(&mut r)?;
@@ -2445,14 +2168,9 @@ impl ZainoVersionedSerde for ShardRoot {
 
 /// Fixed-length encoding metadata for `ShardRoot`.
 ///
-/// v1 consists of a 32 byte hash + 32 byte hash + 4 byte block height
+/// The record consists of a 32 byte hash + 32 byte hash + 4 byte block height
 impl FixedEncodedLen for ShardRoot {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(68),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 68;
 }
 
 // *** Wrapper Objects ***
@@ -2491,53 +2209,16 @@ impl<Work> BlockHeaderData<Work> {
 }
 
 /// Only a header whose chainwork is known has a stored form.
-///
-/// ```
-/// use zaino_chain_store_zainodb::types::{AbsoluteChainWork, BlockHeaderData};
-/// use zaino_encoding::ZainoVersionedSerde as _;
-///
-/// fn encode(header: &BlockHeaderData<AbsoluteChainWork>) -> std::io::Result<Vec<u8>> {
-///     header.to_bytes()
-/// }
-/// ```
-///
-/// ```compile_fail
-/// use zaino_chain_store_zainodb::types::BlockHeaderData;
-/// use zaino_encoding::ZainoVersionedSerde as _;
-///
-/// fn encode(header: &BlockHeaderData) -> std::io::Result<Vec<u8>> {
-///     header.to_bytes()
-/// }
-/// ```
-impl ZainoVersionedSerde for BlockHeaderData<AbsoluteChainWork> {
-    const VERSION: u8 = version::V2;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v2(self, w)
+impl DbCodec for BlockHeaderData<AbsoluteChainWork> {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        PersistentBlockContext::from_business(&self.context).encode(w)?;
+        self.data.encode(w)
     }
 
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v2(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 1)?;
-        self.data.serialize_with_version(w, 1)
-    }
-
-    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut *w, 2)?;
-        self.data.serialize_with_version(w, 1)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let context = PersistentBlockContext::deserialize(&mut *r)?.into_business()?;
-        let data = BlockData::deserialize(r)?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let context = PersistentBlockContext::decode(r)?.into_business()?;
+        let data = BlockData::decode(r)?;
         Ok(BlockHeaderData::new(context, data))
-    }
-
-    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
     }
 }
 
@@ -2561,62 +2242,18 @@ impl TxidList {
     }
 }
 
-impl ZainoVersionedSerde for TxidList {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
+impl DbCodec for TxidList {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_vec(w, &self.txids, |w, h| h.encode(w))
     }
 
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_vec(w, &self.txids, |w, h| h.serialize_with_version(w, 1))
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let tx = read_vec(r, |r| TransactionHash::deserialize(r))?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let tx = read_vec(r, TransactionHash::decode)?;
         Ok(TxidList::new(tx))
     }
 }
 
-/// Wrapper for the list of transparent components of each transaction.
-///
-/// Each entry is `Some(TransparentCompactTx)` when the transaction **has**
-/// a transparent part, and `None` when it does not.
-///
-/// This ensures 1-to-1 indexing with `TxidList`: element *i* matches txid *i*.
-/// `None` keeps the index when the tx lacks this pool.
-///
-/// **Serialization layout for `TransparentTxList` (implements `ZainoVersionedSerde`)**
-///
-/// ┌──────────── byte 0 ─────────────┬────────── CompactSize ─────────────┬──────────── entries ───────────────┐
-/// │ TransparentTxList version tag   │ num_txs (CompactSize) = N          │ [`Option<TransparentCompactTx>`; N]│
-/// └─────────────────────────────────┴────────────────────────────────────┴────────────────────────────────────┘
-///
-/// Each `Option<TransparentCompactTx>` is serialized as:
-///
-/// ┌── 1 byte ──┬────────── TransparentCompactTx ─────────────┐
-/// │   0 or 1   │ If Some: 1-byte version + body              │
-/// └────────────┴─────────────────────────────────────────────┘
-///
-/// TransparentCompactTx:
-/// ┌── version ─┬──── CompactSize vin_len ─┬──── vin entries ─────┬──── CompactSize vout_len ──┬──── vout entries ────┐
-/// │    0x01    │ N1 (CompactSize)         │ [TxInCompact; N1]    │ N2 (CompactSize)           │ [TxOutCompact; N2]   │
-/// └────────────┴──────────────────────────┴──────────────────────┴────────────────────────────┴──────────────────────┘
-///
-/// Each `TxInCompact` is serialized as:
-/// ┌── version ─┬────────────── 36 bytes body ──────────────┐
-/// │   0x01     │ 32-byte txid + 4-byte LE prevout_index    │
-/// └────────────┴───────────────────────────────────────────┘
-///
-/// Each `TxOutCompact` is serialized as:
-/// ┌── version ─┬────────────── 29 bytes body ──────────────┐
-/// │   0x01     │ 8-byte LE value + 20-byte script_hash     │
-/// │            │ + 1-byte script_type                      │
-/// └────────────┴───────────────────────────────────────────┘
+/// Each transaction's transparent part in txid order, `None` where a transaction has none, stored as a CompactSize count followed by one presence byte and encoding per entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct TransparentTxList {
@@ -2636,71 +2273,20 @@ impl TransparentTxList {
     }
 }
 
-impl ZainoVersionedSerde for TransparentTxList {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for TransparentTxList {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_vec(w, &self.tx, |w, opt| {
-            write_option(w, opt, |w, t| t.serialize_with_version(w, 1))
+            write_option(w, opt, |w, t| t.encode(w))
         })
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let tx = read_vec(r, |r| {
-            read_option(r, |r| TransparentCompactTx::deserialize(r))
-        })?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let tx = read_vec(r, |r| read_option(r, TransparentCompactTx::decode))?;
         Ok(TransparentTxList::new(tx))
     }
 }
 
-/// List of the Sapling component (if any) of every transaction in a block.
-///
-/// * Each element is `Some(SaplingCompactTx)` when that transaction **does**
-///   contain Sapling data, or `None` when it does not.
-///
-/// This ensures 1-to-1 indexing with `TxidList`: element *i* matches txid *i*.
-/// `None` keeps the index when the tx lacks this pool.
-///
-/// **Serialization layout for `SaplingTxList` (implements `ZainoVersionedSerde`)**
-///
-/// ┌──────────── byte 0 ─────────────┬────────── CompactSize ─────────────┬──────────── entries ───────────────┐
-/// │ SaplingTxList version tag = 1   │ num_txs (CompactSize) = N          │ [`Option<SaplingCompactTx>`; N]    │
-/// └─────────────────────────────────┴────────────────────────────────────┴────────────────────────────────────┘
-///
-/// Each `Option<SaplingCompactTx>` is serialized as:
-///
-/// ┌── 1 byte ──┬────────────── SaplingCompactTx ──────────────┐
-/// │   0 or 1   │ If Some: 1-byte version + body               │
-/// └────────────┴──────────────────────────────────────────────┘
-///
-/// SaplingCompactTx:
-/// ┌── version ─┬──── 1 byte opt ─────┬──── CompactSize ──┬──── spend entries ─────────┬──── CompactSize ───┬──── output entries ─────────┐
-/// │   0x01     │ 0 or 1 + i64 (value)│ N1 = num_spends   │ `[CompactSaplingSpend;N1]` │ N2 = num_outputs   │ `[CompactSaplingOutput;N2]` │
-/// └────────────┴─────────────────────┴───────────────────┴────────────────────────────┴────────────────────┴─────────────────────────────┘
-///
-/// - The **Sapling value** is encoded as an `Option<i64>` using:
-///     - 0 = None
-///     - 1 = Some followed by 8-byte little-endian i64
-///
-/// Each `CompactSaplingSpend` is serialized as:
-///
-/// ┌── version ─┬────────────── 32 bytes ──────────────┐
-/// │   0x01     │ 32-byte nullifier                    │
-/// └────────────┴──────────────────────────────────────┘
-///
-/// Each `CompactSaplingOutput` is serialized as:
-///
-/// ┌── version ─┬────────────── 116 bytes ─────────────────────────────────────────────┐
-/// │   0x01     │ 32-byte cmu + 32-byte ephemeral_key + 52-byte ciphertext             │
-/// └────────────┴──────────────────────────────────────────────────────────────────────┘
+/// Each transaction's Sapling part in txid order, `None` where a transaction has none, stored as a CompactSize count followed by one presence byte and encoding per entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct SaplingTxList {
@@ -2719,63 +2305,20 @@ impl SaplingTxList {
     }
 }
 
-impl ZainoVersionedSerde for SaplingTxList {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for SaplingTxList {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_vec(w, &self.tx, |w, opt| {
-            write_option(w, opt, |w, t| t.serialize_with_version(w, 1))
+            write_option(w, opt, |w, t| t.encode(w))
         })
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let tx = read_vec(r, |r| read_option(r, |r| SaplingCompactTx::deserialize(r)))?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let tx = read_vec(r, |r| read_option(r, SaplingCompactTx::decode))?;
         Ok(SaplingTxList::new(tx))
     }
 }
 
-/// List of the Orchard component (if any) of every transaction in a block.
-///
-/// * Each element is `Some(OrchardCompactTx)` when that transaction **does**
-///   contain Sapling data, or `None` when it does not.
-///
-/// This ensures 1-to-1 indexing with `TxidList`: element *i* matches txid *i*.
-/// `None` keeps the index when the tx lacks this pool.
-///
-/// **Serialization layout for `OrchardTxList` (implements `ZainoVersionedSerde`)**
-///
-/// ┌──────────── byte 0 ─────────────┬────────── CompactSize ─────────────┬──────────── entries ───────────────┐
-/// │ OrchardTxList version tag = 1   │ num_txs (CompactSize) = N          │ [`Option<OrchardCompactTx>`; N]    │
-/// └─────────────────────────────────┴────────────────────────────────────┴────────────────────────────────────┘
-///
-/// Each `Option<OrchardCompactTx>` is serialized as:
-///
-/// ┌── 1 byte ──┬────────────── OrchardCompactTx ───────────────┐
-/// │   0 or 1   │ If Some: 1-byte version + body                │
-/// └────────────┴───────────────────────────────────────────────┘
-///
-/// OrchardCompactTx:
-/// ┌── version ─┬──── 1 byte opt ─────┬──── CompactSize ──────┬────────── action entries ─────────┐
-/// │   0x01     │ 0 or 1 + i64 (value)│ N = num_actions       │ [CompactOrchardAction; N]         │
-/// └────────────┴─────────────────────┴───────────────────────┴───────────────────────────────────┘
-///
-/// - The **Orchard value** is encoded as an `Option<i64>` using:
-///     - 0 = None
-///     - 1 = Some followed by 8-byte little-endian i64
-///
-/// Each `CompactOrchardAction` is serialized as:
-///
-/// ┌── version ─┬──────────── 148 bytes ─────────────────────────────────────────────────────────────┐
-/// │   0x01     │ 32-byte nullifier + 32-byte cmx + 32-byte ephemeral_key + 52-byte ciphertext       │
-/// └────────────┴────────────────────────────────────────────────────────────────────────────────────┘
+/// Each transaction's Orchard-shaped part in txid order, `None` where a transaction has none, stored as a CompactSize count followed by one presence byte and encoding per entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct OrchardTxList {
@@ -2794,25 +2337,15 @@ impl OrchardTxList {
     }
 }
 
-impl ZainoVersionedSerde for OrchardTxList {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl DbCodec for OrchardTxList {
+    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write_vec(w, &self.tx, |w, opt| {
-            write_option(w, opt, |w, t| t.serialize_with_version(w, 1))
+            write_option(w, opt, |w, t| t.encode(w))
         })
     }
 
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let tx = read_vec(r, |r| read_option(r, |r| OrchardCompactTx::deserialize(r)))?;
+    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
+        let tx = read_vec(r, |r| read_option(r, OrchardCompactTx::decode))?;
         Ok(OrchardTxList::new(tx))
     }
 }

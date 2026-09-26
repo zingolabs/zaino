@@ -1,8 +1,7 @@
 //! Database-serializable types for the chain index.
 //!
-//! This module contains all types that implement `ZainoVersionedSerde` and are used
-//! for database persistence. These types follow strict versioning rules to maintain
-//! backward compatibility across database schema changes.
+//! This module contains all types that implement `DbCodec` and are used
+//! for database persistence.
 //!
 //! ## Rules for Types in This Module
 //!
@@ -10,13 +9,10 @@
 //!    - Store fundamental data in the struct
 //!    - Implement `From`/`Into` or getters/setters for external type conversions
 //!
-//! 2. **Must implement ZainoVersionedSerde**
-//!    - Follow stringent versioning rules outlined in the trait
-//!    - Ensure backward compatibility
+//! 2. **Must implement `DbCodec`**
 //!
-//! 3. **Never change structs without proper migration**
-//!    - Implement a new version when changes are needed
-//!    - Update FinalisedState and implement necessary migrations
+//! 3. **Never change a struct's encoding without updating its golden and the schema hash golden**
+//!    - Every existing database then rebuilds on its next start
 
 pub mod address;
 pub mod block;

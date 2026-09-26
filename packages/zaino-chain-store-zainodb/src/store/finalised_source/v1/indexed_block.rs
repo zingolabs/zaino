@@ -35,8 +35,8 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<Option<IndexedBlock<AbsoluteChainWork>>, StoreError> {
-        let validated_height = match self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+        let stored_height = match self
+            .resolve_stored_height(HashOrHeight::Height(height.into()))
             .await
         {
             Ok(height) => height,
@@ -46,7 +46,7 @@ impl DbV1 {
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            Self::read_chain_block_in_txn(self, &txn, validated_height)
+            Self::read_chain_block_in_txn(self, &txn, stored_height)
         })
     }
 
@@ -55,7 +55,7 @@ impl DbV1 {
     /// One read transaction for the whole range, where calling
     /// [`Self::get_stored_block`] per height opens one each. That is the whole
     /// point: a `GetBlockRange` over a thousand heights used to pay a thousand
-    /// `begin_ro_txn` calls and a thousand separate validations, and the reads
+    /// `begin_ro_txn` calls, and the reads
     /// were not even coherent with each other — the database could advance
     /// between them.
     ///
@@ -68,15 +68,14 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
-        let (validated_start, validated_end) = self.validate_block_range(start, end).await?;
+        self.require_stored_range(start, end).await?;
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            let mut blocks = Vec::with_capacity(
-                (validated_end.0.saturating_sub(validated_start.0) as usize).saturating_add(1),
-            );
+            let mut blocks =
+                Vec::with_capacity((end.0.saturating_sub(start.0) as usize).saturating_add(1));
 
-            for height in Height::range_inclusive(validated_start, validated_end) {
+            for height in Height::range_inclusive(start, end) {
                 match Self::read_chain_block_in_txn(self, &txn, height)? {
                     Some(block) => blocks.push(block),
                     None => {
@@ -116,9 +115,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let header: BlockHeaderData<AbsoluteChainWork> = *StoredEntryVar::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
-                .inner();
+            let header = BlockHeaderData::<AbsoluteChainWork>::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?;
 
             // fetch transaction data
             let raw = match txn.get(self.txids, &height_bytes) {
@@ -130,10 +128,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let txids_list = StoredEntryVar::<TxidList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("txids decode error: {e}")))?
-                .inner()
-                .clone();
+            let txids_list = TxidList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("txids decode error: {e}")))?;
             let txids = txids_list.txids();
 
             let raw = match txn.get(self.transparent, &height_bytes) {
@@ -145,10 +141,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let transparent_list = StoredEntryVar::<TransparentTxList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("transparent decode error: {e}")))?
-                .inner()
-                .clone();
+            let transparent_list = TransparentTxList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("transparent decode error: {e}")))?;
             let transparent = transparent_list.tx();
 
             let raw = match txn.get(self.sapling, &height_bytes) {
@@ -160,10 +154,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let sapling_list = StoredEntryVar::<SaplingTxList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("sapling decode error: {e}")))?
-                .inner()
-                .clone();
+            let sapling_list = SaplingTxList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("sapling decode error: {e}")))?;
             let sapling = sapling_list.tx();
 
             let raw = match txn.get(self.orchard, &height_bytes) {
@@ -175,10 +167,8 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let orchard_list = StoredEntryVar::<OrchardTxList>::from_bytes(raw)
-                .map_err(|e| StoreError::Custom(format!("orchard decode error: {e}")))?
-                .inner()
-                .clone();
+            let orchard_list = OrchardTxList::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("orchard decode error: {e}")))?;
             let orchard = orchard_list.tx();
 
             // Ironwood (NU6.3): rows only exist from schema v1.3.0 onward, and only for blocks at or
@@ -186,10 +176,8 @@ impl DbV1 {
             // transaction has an empty ironwood component.
             let ironwood_list = match txn.get(self.ironwood, &height_bytes) {
                 Ok(raw) => Some(
-                    StoredEntryVar::<OrchardTxList>::from_bytes(raw)
-                        .map_err(|e| StoreError::Custom(format!("ironwood decode error: {e}")))?
-                        .inner()
-                        .clone(),
+                    OrchardTxList::from_bytes(raw)
+                        .map_err(|e| StoreError::Custom(format!("ironwood decode error: {e}")))?,
                 ),
                 Err(lmdb::Error::NotFound) => None,
                 Err(e) => return Err(StoreError::LmdbError(e)),
@@ -249,10 +237,8 @@ impl DbV1 {
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
-            let commitment_tree_data: CommitmentTreeData =
-                *StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
-                    .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?
-                    .inner();
+            let commitment_tree_data = CommitmentTreeData::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?;
 
             // Construct IndexedBlock
             Ok(Some(IndexedBlock::new(

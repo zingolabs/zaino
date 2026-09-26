@@ -409,13 +409,6 @@ impl<T: ChainStoreSource> DbWrite for EphemeralFinalisedState<T> {
         Ok(())
     }
 
-    /// Update the database metadata record.
-    ///
-    /// This is used by migrations and schema management logic.
-    async fn update_metadata(&self, _metadata: DbMetadata) -> Result<(), StoreError> {
-        Ok(())
-    }
-
     /// Bulk catch-up ingestion.
     ///
     /// No-op for the ephemeral passthrough: there is no persistent store to ingest into, and
@@ -476,7 +469,7 @@ impl<T: ChainStoreSource> BlockCoreExt for EphemeralFinalisedState<T> {
         let block = self.get_required_block_by_height(height).await?;
 
         let txids = block
-            .transactions
+            .transactions()
             .iter()
             .map(|transaction| TransactionHash(transaction.txid.into()))
             .collect();

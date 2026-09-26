@@ -7,10 +7,9 @@
 //!
 //! 1. **API hygiene:** it narrows the surface to reads and discourages accidental use of write APIs
 //!    from query paths.
-//! 2. **Migration safety:** it routes each call through [`Router`](super::router::Router) using a
+//! 2. **Routing safety:** it routes each call through [`Router`](super::router::Router) using a
 //!    [`CapabilityRequest`](crate::store::capability::CapabilityRequest),
-//!    ensuring the underlying backend supports the requested feature (especially important during
-//!    major migrations where different DB versions may coexist).
+//!    ensuring the underlying backend supports the requested feature.
 //!
 //! # How routing works
 //!
@@ -86,15 +85,7 @@ use super::{
 
 use std::sync::Arc;
 
-/// `DbReader` is the preferred entry point for serving chain queries:
-/// - it exposes only read APIs,
-/// - it routes each operation via [`CapabilityRequest`] to ensure the selected backend supports the
-///   requested feature,
-/// - and it remains stable across major migrations because routing is handled internally by the
-///   [`Router`](super::router::Router).
-///
-/// ## Cloning and sharing
-/// `DbReader` is cheap to clone; clones share the underlying `Arc<FinalisedState>`.
+/// Cheaply cloneable, read-only entry point for chain queries, routing each read to a backend that supports it.
 pub struct DbReader<T: ChainStoreSource> {
     /// Shared handle to the running `FinalisedState` instance.
     pub(crate) inner: Arc<FinalisedState<T>>,

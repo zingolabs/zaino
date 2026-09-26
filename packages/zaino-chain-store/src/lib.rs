@@ -19,7 +19,7 @@
 //! bound names exactly what it uses and a store that cannot serve something
 //! simply does not implement it. Absence is then a compile-time fact where it
 //! can be, and a runtime one ([`StoreCapabilities`]) where it cannot, because
-//! a store on an older schema genuinely lacks indexes until it has migrated.
+//! which optional indexes a store holds depends on how it was built.
 //!
 //! # What ChainStore is not
 //!
@@ -59,10 +59,7 @@ pub mod transparent;
 pub mod txout_set;
 
 pub use block::{PoolFilter, StoredBlock, StoredTx};
-pub use capability::{
-    MigrationState, Provenance, SchemaVersion, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark,
-};
+pub use capability::{Provenance, StoreCapabilities, StoreCapability, StoreWatermark};
 pub use config::ChainStoreConfig;
 pub use error::{ChainStoreError, ChainStoreSourceError};
 pub use output::{SpenderRef, StoredAddress, StoredTxOut};

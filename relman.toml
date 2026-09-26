@@ -94,10 +94,6 @@ name = "zaino-status"
 path = "packages/zaino-status"
 
 [[target]]
-name = "zaino-encoding"
-path = "packages/zaino-encoding"
-
-[[target]]
 name = "zaino-source-macros"
 path = "packages/zaino-source-macros"
 

@@ -1130,15 +1130,6 @@ impl<T: ChainStoreSource> DbWrite for Router<T> {
             .delete_block(blk)
             .await
     }
-
-    /// Updates the persisted metadata singleton via the backend currently serving `WRITE_CORE`.
-    ///
-    /// This is used by migrations to record progress and completion status.
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
-        self.backend(CapabilityRequest::WriteCore)?
-            .update_metadata(metadata)
-            .await
-    }
 }
 
 /// Core read surface routed through `READ_CORE`.

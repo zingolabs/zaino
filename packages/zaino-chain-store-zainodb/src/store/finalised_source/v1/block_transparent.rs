@@ -61,16 +61,6 @@ impl DbV1 {
             };
             let mut cursor = Cursor::new(raw);
 
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            let _body_len = CompactSize::read(&mut cursor)
-                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
-
-            // Read [1] TransparentTxList Record version (skip 1 byte)
-            cursor.set_position(cursor.position() + 1);
-
             // Read CompactSize: number of records
             let list_len = CompactSize::read(&mut cursor)
                 .map_err(|e| StoreError::Custom(format!("txid list len error: {e}")))?;
@@ -147,12 +137,12 @@ impl DbV1 {
     /// Skips one `Option<TransparentCompactTx>` entry from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
-    /// - `StoredEntryVar<TransparentTxList>`
+    /// - stored `TransparentTxList`
     ///
     /// Advances the cursor past either:
     /// - 1 byte (`0x00`) if `None`, or
-    /// - 1 + 1 + vin_size + vout_size if `Some(TransparentCompactTx)`
-    ///   (presence + version + variable vin/vout sections)
+    /// - 1 + vin_size + vout_size if `Some(TransparentCompactTx)`
+    ///   (presence + variable vin/vout sections)
     ///
     /// This is faster than deserialising the whole struct as we only read the compact sizes.
     #[inline]
@@ -172,23 +162,14 @@ impl DbV1 {
             ));
         }
 
-        // Read version (1 byte)
-        cursor.read_exact(&mut [0u8; 1])?;
-
-        // Read vin_len (CompactSize)
+        // Read vin_len (CompactSize), then skip the fixed-length vin entries
         let vin_len = CompactSize::read(&mut *cursor)? as usize;
-
-        // Skip vin entries: each is 1-byte version + 36-byte body
-        let tx_in_len = TxInCompact::latest_versioned_len()?;
-        let vin_skip = vin_len * tx_in_len;
+        let vin_skip = vin_len * TxInCompact::ENCODED_LEN;
         cursor.set_position(cursor.position() + vin_skip as u64);
 
-        // Read vout_len (CompactSize)
+        // Read vout_len (CompactSize), then skip the fixed-length vout entries
         let vout_len = CompactSize::read(&mut *cursor)? as usize;
-
-        // Skip vout entries: each is 1-byte version + 29-byte body
-        let tx_out_len = TxOutCompact::latest_versioned_len()?;
-        let vout_skip = vout_len * tx_out_len;
+        let vout_skip = vout_len * TxOutCompact::ENCODED_LEN;
         cursor.set_position(cursor.position() + vout_skip as u64);
 
         Ok(())
