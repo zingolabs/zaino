@@ -13,6 +13,11 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-09-26
+### Changed
+- `work_from_bits`, `WorkError` and the `work` module are removed; `zaino-primitives` owns the one native difficulty pipeline.
+  _Migration:_ Compute work through `zaino_primitives`' `CompactDifficulty`.
+
 ## [0.1.1] - 2026-09-11
 
 ### Added
@@ -30,9 +35,6 @@ and this library adheres to Rust's notion of
   on them: `COINBASE_MATURITY`, `MAX_BLOCK_REORG_HEIGHT`,
   `MAX_NONFINALISED_DEPTH`, `MAX_BLOCK_BYTES`. Nothing else in the workspace
   should restate these values.
-- `work_from_bits` — expands a compact nBits difficulty target and returns the
-  work it represents, `floor(2^256 / (target + 1))`, per the protocol
-  specification. Rejects malformed targets rather than saturating.
 
 ### Changed
 - **This crate has no dependencies on any node implementation**, and that is the

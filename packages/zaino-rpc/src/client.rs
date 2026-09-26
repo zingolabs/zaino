@@ -112,7 +112,10 @@ impl RpcClient {
     ///
     /// Returns the `result` field from the response as a raw `Value`.
     /// Retries on work-queue-full errors (code -1) up to `max_retries`.
-    pub async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+    ///
+    /// - `method` is `&'static str` because it is also a metric label: cardinality
+    ///   bounded to the compiled-in method set, no per-request alloc
+    pub async fn call(&self, method: &'static str, params: Vec<Value>) -> Result<Value, RpcError> {
         self.call_with_timeout(method, params, None).await
     }
 
@@ -126,7 +129,7 @@ impl RpcClient {
     /// default everywhere else.
     pub async fn call_with_timeout(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<Value>,
         timeout: Option<Duration>,
     ) -> Result<Value, RpcError> {
@@ -137,20 +140,60 @@ impl RpcClient {
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
 
             let body = envelope::build_request(method, params.clone(), id);
-            let response_bytes = self.send_http(&body, timeout).await?;
-            let outcome = envelope::parse_response(&response_bytes)?;
+
+            // Per attempt, excluding the retry sleeps: folding those in makes a
+            // saturated validator look like a slow one
+            let started = std::time::Instant::now();
+
+            let response_bytes = match self.send_http(&body, timeout).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    // No JSON-RPC code exists for a refused or timed-out connection
+                    Self::record_failure(method, "transport_error");
+                    return Err(error);
+                }
+            };
+            let outcome = match envelope::parse_response(&response_bytes) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    // Malformed envelope = transport failure (no answer to the question)
+                    Self::record_failure(method, "transport_error");
+                    return Err(error);
+                }
+            };
+
+            metrics::histogram!(
+                crate::metric_names::RPC_OUTBOUND_DURATION_SECONDS,
+                crate::metric_names::RPC_METHOD => method,
+            )
+            .record(started.elapsed().as_secs_f64());
 
             match outcome {
                 ResponseOutcome::Success(value) => return Ok(value),
                 ResponseOutcome::RpcError { code, message } => {
                     if retry::is_retryable(code) && retry::should_retry(attempt, self.max_retries) {
+                        // Timed like any other attempt, and a refusal is fast — the
+                        // saturation signal is this outcome's share, not latency
+                        Self::record_failure(method, "retried");
                         tokio::time::sleep(self.retry_delay).await;
                         continue;
                     }
+                    Self::record_failure(method, "rpc_error");
                     return Err(RpcError::Rpc { code, message });
                 }
             }
         }
+    }
+
+    /// - Success is not counted: attempt volume is the duration histogram's `_count`
+    #[inline]
+    fn record_failure(method: &'static str, outcome: &'static str) {
+        metrics::counter!(
+            crate::metric_names::RPC_OUTBOUND_ERRORS_TOTAL,
+            crate::metric_names::RPC_METHOD => method,
+            crate::metric_names::RPC_OUTCOME => outcome,
+        )
+        .increment(1);
     }
 
     /// Send an HTTP POST with the JSON body, return raw response bytes.

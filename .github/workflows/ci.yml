@@ -1,304 +1,71 @@
-name: CI - PR
+name: CI
 
 on:
-  workflow_call:
-  workflow_dispatch:
-  push:
-    tags:
-      - "**"
-      # Release-pipeline tags (`cycle-<N>`, `cycle-<N>-rc.<M>`, `<crate>-X.Y.Z`)
-      # point at commits `stable`/`rc` already validated; blessing pushes up to
-      # one per governed crate, so they must not fan out into full CI runs.
-      - "!cycle-*"
-      - "!zaino*-[0-9]*.[0-9]*.[0-9]*"
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [dev]
 
-env:
-  AWS_ACCESS_KEY_ID: ${{ secrets.MINIO_ACCESS_KEY }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.MINIO_SECRET_KEY }}
-  AWS_REGION: us-east-1
-  CACHE_ENDPOINT: gh-cache-hl.minio-tenants.svc.cluster.local
-  CACHE_PORT: 9000
-  CACHE_BUCKET: gha-cache-bucket
-  INSECURE_CACHE: true
+# PR push supersedes its own run; every dev commit keeps its result
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# No protoc: zaino-proto & zebra-rpc build.rs fall back to checked-in generated code
+# (protoc present = regenerate over tracked sources)
 
 jobs:
-  hadolint:
-    name: Hadolint
-    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
-    # executes on pull requests, unlike the build/test jobs below which are
-    # skipped on PRs until a self-hosted runner is available. The hadolint
-    # image is pinned by digest for supply-chain integrity; .hadolint.yaml at
-    # the repo root sets the policy (DL3008 apt-version pinning is enforced).
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Lint Dockerfiles
-        run: |
-          docker run --rm -v "$PWD:/repo" -w /repo \
-            --entrypoint hadolint \
-            hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e \
-            Dockerfile live-tests/test_environment/Containerfile
-
-  fmt:
-    name: Rustfmt
-    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
-    # executes on pull requests, unlike the build/test jobs below which are
-    # skipped on PRs until a self-hosted runner is available. cargo fmt
-    # auto-installs the toolchain and rustfmt component pinned in
-    # rust-toolchain.toml on first use.
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-  repo-guards:
-    name: Repo guards
-    # GitHub-hosted runner so it runs on pull requests. Runs the workbench
-    # repo guards: the rustc-pin check (Dockerfile.deterministic's pallet-rust
-    # tag == rust-toolchain.toml channel), the no-OpenSSL-apt check, and the
-    # duplicate-Rust-logic check, plus the crate's own fmt/clippy/tests.
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Cache the tool-crate builds
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            tools/workbench
-            tools/relman
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: Lint and test the workbench crate
-        run: |
-          cargo fmt --manifest-path tools/workbench/Cargo.toml -- --check
-          cargo clippy --manifest-path tools/workbench/Cargo.toml --all-targets -- -D warnings
-          cargo nextest run --manifest-path tools/workbench/Cargo.toml
-
-      - name: Lint and test the relman crate
-        run: |
-          cargo fmt --manifest-path tools/relman/Cargo.toml --all -- --check
-          cargo clippy --manifest-path tools/relman/Cargo.toml --workspace --all-targets -- -D warnings
-          cargo nextest run --manifest-path tools/relman/Cargo.toml --workspace
-
-      - name: Check toolchain pin
-        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-toolchain-pin
-
-      - name: Check no OpenSSL apt packages
-        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-no-openssl-apt
-
-      - name: Check for duplicate Rust logic
-        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-code-duplication
-
-  cargo-deny:
-    name: cargo-deny
-    # Enforces deny.toml — including the openssl / openssl-sys / boring* crate
-    # bans. The policy already existed but ran only in the nix dev shell; this
-    # executes it on pull requests so a forbidden crate fails CI.
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: cargo-deny check bans
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          # Scoped to `bans` (the openssl/boring* crate prohibition). Full
-          # `check` also runs advisories/licenses, which have pre-existing
-          # failures (e.g. RUSTSEC-2022-0001 lmdb) handled separately.
-          command: check bans
-
-  compute-tag:
-    uses: ./.github/workflows/compute-tag.yml
-
-  experimental-features-build:
-    name: Experimental-features build (--features experimental_features)
-    # The experimental/alpha feature set is off by default, so the normal build
-    # never compiles it and it bit-rots unwatched: two `#[cfg]` blocks in the
-    # finalised state's address-history writer kept referencing bindings the
-    # non-gated path had renamed away, and the feature had not compiled for some
-    # time before anyone tried it. This job is the thing that notices.
-    #
-    # Gated on the `experimental_features` umbrella rather than on a single
-    # feature, so anything added to that set is covered the day it lands.
-    # Deliberately separate from the main test archive, which stays on the
-    # shipped feature set — CI should not gate release testing on a
-    # non-release combo (see the note on the archive step below).
-    needs: compute-tag
-    container:
-      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
-    runs-on: arc-sh-runners
-    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Restore cargo dependencies
-        uses: tespkg/actions-cache/restore@v1
-        with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
-            ~/.cargo
-            target/debug/deps
-
-      - name: Check the experimental feature set compiles and its tests pass
-        run: makers check-experimental-features
-
-  build-test-artifacts:
-    name: Build test artifacts
-    needs: compute-tag
-    container:
-      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
-    runs-on: arc-sh-runners
-    # Skip on PRs until self-hosted runner is available
-    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Restore cargo dependencies
-        id: restore-cargo
-        uses: tespkg/actions-cache/restore@v1
-        with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
-            ~/.cargo
-            target/debug/deps
-
-      - name: Check zaino-proto `heavy` survives --no-default-features
-        # The archive below is built --no-default-features; this guard fails the
-        # job if a `default-features = false` edge silently strips `heavy`.
-        run: makers check-zaino-proto-heavy
-
-      - name: Build and archive tests
-        # `--workspace` now resolves to the production crates only: the live-test
-        # suite (e2e / clientless / zaino-testutils) is a separate standalone
-        # workspace under live-tests/, driven by the ztest k8s harness, and is not
-        # a member here. So this archives and runs the packages/* unit + crate
-        # integration tests.
-        #
-        # --no-default-features, NOT --all-features: enable only what the tests
-        # need. This deliberately omits the product features `--all-features` was
-        # speculatively enabling:
-        #   - experimental_features / transparent_address_history_experimental:
-        #     not shipped on by default; CI should not gate on a non-release combo.
-        #     Compiled and tested separately by `experimental-features-build`, so
-        #     omitting it here no longer means it goes unbuilt.
-        #   - prometheus.
-        run: cargo nextest archive --verbose --workspace --no-default-features --archive-file nextest-archive.tar.zst
-
-      - name: Save cargo dependencies
-        if: steps.restore-cargo.outputs.cache-hit != 'true'
-        uses: tespkg/actions-cache/save@v1
-        with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          path: |
-            ~/.cargo
-            target/debug/deps
-
-      - name: Save nextest archive to S3
-        uses: tespkg/actions-cache/save@v1
-        with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: nextest-archive-${{ github.sha }}
-          path: nextest-archive.tar.zst
-
-  test:
-    name: Tests
-    needs: [compute-tag, build-test-artifacts]
-    runs-on: arc-sh-runners
-    container:
-      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
-    strategy:
-      fail-fast: false
-      matrix:
-        partition:
-          # Production crates only. The live-test suite (clientless / e2e /
-          # zaino-testutils) is a separate standalone workspace under
-          # live-tests/ and runs on the ztest k8s harness, so it is not in this
-          # job's `--workspace` archive.
-          #
-          # Maintained by hand: add a line when a crate gains its first test,
-          # or a `crate::target` line when it gains a second test binary.
-          - "zaino-address"
-          - "zaino-chain-head"
-          - "zaino-chain-head-service"
-          - "zaino-chain-store"
-          - "zaino-chain-store-zainodb"
-          - "zaino-common"
-          - "zaino-consensus"
-          - "zaino-convert-zebra"
-          - "zaino-mempool"
-          - "zaino-mempool-service"
-          - "zainod"
-          - "zaino-encoding"
-          - "zaino-primitives"
-          - "zaino-proto"
-          - "zaino-rpc"
-          - "zaino-serve"
-          - "zaino-source"
-          - "zaino-source-zebra"
-          - "zaino-source-zebra-readstate"
-          - "zaino-source-zebra-rpc"
-          - "zaino-source-zebra-rpc::block_parity"
-          - "zaino-state"
-          - "zaino-state::source_capabilities"
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore cargo dependencies
-        uses: tespkg/actions-cache/restore@v1
+      - uses: Swatinem/rust-cache@v2
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-deps-
-          path: |
-            ~/.cargo
-            target/debug/deps
+          workspaces: |
+            .
+            tools/workbench
 
-      - name: Restore nextest archive from S3
-        uses: tespkg/actions-cache/restore@v1
+      - uses: taiki-e/install-action@v2
         with:
-          endpoint: ${{ env.CACHE_ENDPOINT }}
-          port: ${{ env.CACHE_PORT }}
-          bucket: ${{ env.CACHE_BUCKET }}
-          insecure: ${{ env.INSECURE_CACHE }}
-          key: nextest-archive-${{ github.sha }}
-          path: nextest-archive.tar.zst
+          tool: cargo-make,cargo-deny,cargo-nextest
 
-      - name: Run Tests (Nextest)
-        run: |
-          # `--no-tests fail` guards against a mistyped partition (binary_id
-          # matching nothing).
-          cargo nextest run --verbose --no-tests fail --archive-file nextest-archive.tar.zst \
-            --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})"
+      # Same task as the pre-push hook (shellcheck preinstalled on ubuntu-latest)
+      - run: cargo make lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@nextest
+
+      - run: cargo nextest run --locked --workspace --no-fail-fast
+
+      # Only crate the experimental umbrella reaches; clippy --all-features covers its compile
+      - run: cargo nextest run --locked -p zaino-state --features experimental_features --no-fail-fast
+
+      # Recorder, admin listener & metric registration contracts compile only under `prometheus`
+      - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
+
+  features:
+    name: Each feature compiles
+    # dev only (~77 checks); --feature-powerset = 412, over the 6h hosted-runner cap
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@cargo-hack
+
+      - run: cargo hack check --locked --workspace --each-feature --lib --bins --tests
+        env:
+          RUSTFLAGS: -D warnings

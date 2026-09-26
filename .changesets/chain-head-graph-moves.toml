@@ -1,0 +1,21 @@
+consumed_in = "zainod-0-10-1"
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "fix"
+description = """
+The chain head follows the validator's tip, including a tip that rolls back, \
+and refuses a block labelled with a height other than the next one. Before, \
+the heaviest retained block won and a mislabelled block joined the best \
+chain. The previous rule stays as a crate-private policy, TipSelection::HeaviestRetained.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = """
+The snapshot keeps its own invariants in the type: the tip is a field, so the \
+graph is never empty; a block becomes canonical only as a checked child of \
+the tip; a branch switch rewinds to the fork point first. A crate-private \
+ChainGraph contract, with a model-based property test, runs against every \
+implementation.
+"""

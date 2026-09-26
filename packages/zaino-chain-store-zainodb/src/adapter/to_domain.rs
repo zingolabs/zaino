@@ -18,18 +18,17 @@ use zaino_chain_store::{
     TransactionIndexCapability, TxOutSetIndexCapability,
 };
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition,
-    ChainWork as DomainChainWork, EncryptedCiphertext, Height as DomainHeight, Nullifier,
-    OrchardAction, Outpoint as DomainOutpoint, PreIndexCompactTx, SaplingOutput, Script,
-    ScriptType, SignedZatoshis, TransactionId, TransparentInput, TransparentOutput, TreeRootInfo,
-    TreeRoots, TxIndex, Zatoshis,
+    BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
+    Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
+    PreIndexCompactTx, SaplingOutput, Script, ScriptType, SignedZatoshis, TransactionId,
+    TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
 use crate::store::finalised_source::v1::DB_VERSION_V1;
 use crate::types::{
-    BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock, Outpoint, TransactionHash,
-    TransparentCompactTx, TxLocation, TxOutCompact,
+    AbsoluteChainWork, BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock,
+    Outpoint, TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
 };
 
 /// This crate's height, as the domain names it.
@@ -135,7 +134,9 @@ pub(super) fn stored_tx_outs(
 /// the identity an index reads (hash, parent, height), and the data, which
 /// carries the consensus fields. They are separate on disk because they are
 /// written to separate tables; nothing above this cares.
-pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStoreError> {
+pub(super) fn stored_block(
+    block: IndexedBlock<AbsoluteChainWork>,
+) -> Result<StoredBlock, ChainStoreError> {
     let context = &block.context;
     let data = &block.data;
 
@@ -152,7 +153,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
         })?,
         merkle_root: data.merkle_root.into(),
         block_commitments: data.block_commitments.into(),
-        bits: data.bits.as_bits(),
+        bits: data.bits,
         nonce: data.nonce,
         solution: match data.solution {
             crate::types::EquihashSolution::Standard(bytes) => {
@@ -172,7 +173,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
             .map(stored_compact_tx)
             .collect::<Result<Vec<_>, _>>()?,
         tree_roots: tree_roots(&block.commitment_tree_data),
-        chainwork: domain_chainwork(context.chainwork()),
+        chainwork: context.chainwork,
     })
 }
 
@@ -186,10 +187,25 @@ fn stored_compact_tx(tx: &CompactTxData) -> Result<StoredTx, ChainStoreError> {
     let (sapling_value, orchard_value) = tx.balances();
 
     Ok(StoredTx {
-        sapling_value: sapling_value.map(SignedZatoshis::new),
-        orchard_value: orchard_value.map(SignedZatoshis::new),
-        ironwood_value: tx.ironwood().value().map(SignedZatoshis::new),
+        sapling_value: stored_value_balance(sapling_value, "sapling")?,
+        orchard_value: stored_value_balance(orchard_value, "orchard")?,
+        ironwood_value: stored_value_balance(tx.ironwood().value(), "ironwood")?,
         compact: stored_compact_tx_body(tx)?,
+    })
+}
+
+/// Read a stored per-pool value balance, or `None` where the pool is absent.
+///
+/// The on-disk `i64` is the boundary the delta's invariant is enforced at: a
+/// value whose magnitude exceeds the money supply is not a representable balance
+/// change, so it surfaces as a corrupt row rather than being carried into the
+/// domain.
+fn stored_value_balance(
+    raw: Option<i64>,
+    pool: &str,
+) -> Result<Option<SignedZatoshis>, ChainStoreError> {
+    raw.map(SignedZatoshis::try_new).transpose().map_err(|e| {
+        corrupt_row_because(format!("a {pool} value balance within the money supply"), e)
     })
 }
 
@@ -225,7 +241,7 @@ fn stored_compact_tx_body(tx: &CompactTxData) -> Result<PreIndexCompactTx, Chain
             .map(|output| SaplingOutput {
                 cmu: (*output.cmu()).into(),
                 ephemeral_key: (*output.ephemeral_key()).into(),
-                enc_ciphertext: EncryptedCiphertext::new(output.ciphertext().to_vec()),
+                enc_ciphertext: CompactCiphertext::from(*output.ciphertext()),
             })
             .collect(),
         orchard_actions: tx.orchard().actions().iter().map(orchard_action).collect(),
@@ -238,7 +254,7 @@ fn orchard_action(action: &crate::types::CompactOrchardAction) -> OrchardAction 
         nullifier: (*action.nullifier()).into(),
         cmx: (*action.cmx()).into(),
         ephemeral_key: (*action.ephemeral_key()).into(),
-        enc_ciphertext: EncryptedCiphertext::new(action.ciphertext().to_vec()),
+        enc_ciphertext: CompactCiphertext::from(*action.ciphertext()),
     }
 }
 
@@ -310,18 +326,6 @@ fn non_standard_key_script(output: &TxOutCompact) -> Vec<u8> {
 /// Reporting the zero root as present is what the stored bytes say, and
 /// inventing an absence from a zero value would make a pre-activation block
 /// indistinguishable from one with an empty tree.
-/// Stored chainwork, as the domain's 256-bit big-endian value.
-///
-/// The store holds work as a `u128`, which is ample — Zcash's cumulative work
-/// is nowhere near 2^128 — while the domain carries the 256-bit form the RPC
-/// surface reports. Widening is left-padding with zeroes, and cannot lose
-/// anything.
-pub(super) fn domain_chainwork(chainwork: &crate::types::ChainWork) -> DomainChainWork {
-    let mut bytes = [0u8; 32];
-    bytes[16..].copy_from_slice(&chainwork.as_non_zero_u128().get().to_be_bytes());
-    DomainChainWork::new(bytes)
-}
-
 pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     let roots = data.roots();
     let sizes = data.sizes();
@@ -329,15 +333,15 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     TreeRoots {
         sapling: Some(TreeRootInfo {
             root: (*roots.sapling()).into(),
-            size: u64::from(sizes.sapling()),
+            size: sizes.sapling().into(),
         }),
         orchard: Some(TreeRootInfo {
             root: (*roots.orchard()).into(),
-            size: u64::from(sizes.orchard()),
+            size: sizes.orchard().into(),
         }),
         ironwood: roots.ironwood().map(|root| TreeRootInfo {
             root: root.into(),
-            size: u64::from(sizes.ironwood()),
+            size: sizes.ironwood().into(),
         }),
     }
 }

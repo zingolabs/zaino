@@ -12,7 +12,7 @@
 //! - BlockWithMetadata - Block with associated metadata
 
 use super::db::legacy::*;
-use crate::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty, SingleBlockWork};
 
 /// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
 ///
@@ -118,8 +118,8 @@ pub struct BlockMetadata {
     /// Ironwood commitment tree root and size; `None` when the block has no ironwood
     /// treestate (below NU6.3 activation, or a network with no NU6.3 activation height)
     pub ironwood: Option<(zebra_chain::orchard::tree::Root, u32)>,
-    /// Parent block's chainwork (`None` for genesis).
-    pub parent_chainwork: Option<ChainWork>,
+    /// Parent block's chainwork, `None` at genesis and wherever the caller cannot know it.
+    pub parent_chainwork: Option<AbsoluteChainWork>,
     /// Network for block validation
     pub network: zebra_chain::parameters::Network,
 }
@@ -310,13 +310,13 @@ impl<'a> BlockWithMetadata<'a> {
             .map(|height| Height(height.0))
             .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-        let block_work = block_work(&block.header)?;
-        let chainwork = match self.metadata.parent_chainwork {
-            Some(parent) => parent
-                .add(&block_work)
-                .map_err(|e| format!("chainwork overflow: {e}"))?,
-            None => block_work,
-        };
+        let chainwork = crate::conversion::chainwork_from_parent_if_known(
+            block_work(&block.header)?,
+            hash,
+            height,
+            self.metadata.parent_chainwork,
+        )
+        .map_err(|error| error.to_string())?;
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }
@@ -327,11 +327,10 @@ impl<'a> BlockWithMetadata<'a> {
 /// Depends on nothing but this one header, which is what makes the cumulative chainwork a running
 /// sum that can be folded over already-fetched blocks in a separate pass from assembling them.
 /// Shared so the fold and [`BlockWithMetadata`]'s own assembly cannot drift apart.
-pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<ChainWork, String> {
-    let bits =
-        CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
-            .map_err(|e| format!("invalid nBits: {e}"))?;
-    Ok(bits.to_work())
+pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<SingleBlockWork, String> {
+    CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
+        .map(|bits| bits.to_work())
+        .map_err(|e| format!("invalid nBits: {e}"))
 }
 
 impl BlockMetadata {

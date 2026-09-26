@@ -1,13 +1,6 @@
-# syntax=docker/dockerfile:1
-
 ############################
 # Global build args
 ############################
-# RUST_VERSION must be supplied via --build-arg. Canonical source is
-# rust-toolchain.toml's `channel`, surfaced by the workbench get-rust-version bin
-# — no default is set so a stale literal cannot drift from the workspace's
-# pinned toolchain. See README for the recommended build invocation.
-ARG RUST_VERSION
 ARG UID=1000
 ARG GID=1000
 ARG USER=container_user
@@ -16,29 +9,33 @@ ARG HOME=/home/container_user
 ############################
 # Builder
 ############################
-FROM docker.io/library/rust:${RUST_VERSION}-bookworm AS builder
+FROM docker.io/library/rust:1.98.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
-# Toggle to build without TLS feature if needed
-ARG NO_TLS=false
-
-# Extra cargo features to enable (comma-separated, e.g. "prometheus,no_tls_with_prometheus").
-# Takes precedence over NO_TLS when set.
+# Comma-separated; empty = default feature set (e.g. "prometheus")
 ARG CARGO_FEATURES=""
+
+# `release` or `profiling` (adds line tables + frame pointers, set below)
+ARG CARGO_PROFILE=release
 
 # Build deps incl. protoc for prost-build
 # Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
-# match the candidate versions in docker.io/library/rust:1.95.0-bookworm; bump
+# match the candidate versions in docker.io/library/rust:1.98.0-bookworm; bump
 # them together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config=1.8.1-1 \
       clang=1:14.0-55.7~deb12u1 \
       cmake=3.25.1-1 \
       make=4.3-4.1 \
-      ca-certificates=20230311+deb12u1 \
+      ca-certificates=20250419~deb12u1 \
       protobuf-compiler=3.21.12-3+deb12u1 \
   && rm -rf /var/lib/apt/lists/*
+
+# rust-toolchain.toml lists these components; installing them here keeps
+# the download in a cached layer instead of re-syncing the channel on
+# every build of the workspace layer below.
+RUN rustup component add clippy rustfmt
 
 # Copy entire workspace (prevents missing members)
 COPY . .
@@ -48,13 +45,11 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    if [ -n "${CARGO_FEATURES}" ]; then \
-      cargo install --locked --path packages/zainod --bin zainod --root /out --features "${CARGO_FEATURES}"; \
-    elif [ "${NO_TLS}" = "true" ]; then \
-      cargo install --locked --path packages/zainod --bin zainod --root /out --features no_tls_use_unencrypted_traffic; \
-    else \
-      cargo install --locked --path packages/zainod --bin zainod --root /out; \
-    fi
+    if [ "${CARGO_PROFILE}" = "profiling" ]; then \
+      export RUSTFLAGS="-C force-frame-pointers=yes"; \
+    fi; \
+    cargo install --locked --path packages/zainod --bin zainod --root /out \
+      --profile "${CARGO_PROFILE}" --features "${CARGO_FEATURES}"
 
 ############################
 # Runtime
@@ -72,7 +67,7 @@ ARG HOME
 # docker.io/library/debian:bookworm-slim; bump together with the base image.
 RUN apt-get -qq update && \
     apt-get -qq install -y --no-install-recommends \
-      ca-certificates=20230311+deb12u1 \
+      ca-certificates=20250419~deb12u1 \
       libgcc-s1=12.2.0-14+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 

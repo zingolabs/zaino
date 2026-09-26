@@ -1,0 +1,3 @@
+consumed_in = "zainod-0-10-1"
+[empty]
+reason = "Docker build only: re-pins ca-certificates in both image stages; no governed crate changes."

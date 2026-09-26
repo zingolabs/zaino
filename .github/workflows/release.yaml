@@ -1,18 +1,9 @@
-# Builds and pushes the Docker images. It fires on the legacy version tags
-# (`X.Y.Z`, `X.Y.Z-rc.N`, cut by auto-tag-rc / final-tag-on-stable until the
-# pipeline cutover) and on the per-crate `zainod-X.Y.Z` provenance tag the
-# release pipeline's blessing pushes, from which the image version is taken.
-# The pipeline's `cycle-<N>` and other `<crate>-X.Y.Z` tags carry no zainod
-# image and are ignored here. Blessing owns the GitHub Release for pipeline
-# tags, so the `create-release` job below runs only for the legacy tags.
-# TODO(cutover): gh-pages doc publish.
+# zainod images, on blessing's `zainod-X.Y.Z` provenance tag (image version = X.Y.Z)
 name: Zaino Release
 
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
-      - '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
       - 'zainod-[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
@@ -23,120 +14,54 @@ on:
 
 jobs:
   docker:
-    name: Docker images (build+push)
+    name: Docker image (${{ matrix.variant }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - variant: default
+            suffix: ''
+            features: ''
+          - variant: no-tls
+            suffix: '-no-tls'
+            features: no_tls_use_unencrypted_traffic
     env:
-      # Push only on tag-push events, or when workflow_dispatch with input.push=true.
       PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@v4
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v4
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
-      - name: Determine Rust version from rust-toolchain.toml
-        run: |
-          echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> "$GITHUB_ENV"
-
-      - name: Extract metadata for Docker (default image)
-        id: meta-default
-        uses: docker/metadata-action@v6
-        with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/zaino
-            ${{ secrets.DOCKERHUB_USERNAME }}/zainod
-          tags: |
-            type=semver,pattern={{version}}
-            type=match,pattern=zainod-(.*),group=1
-            type=ref,event=branch
-            type=sha,prefix=,format=short
-
-      - name: Build and Push Default Image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
-          tags: ${{ steps.meta-default.outputs.tags }}
-          labels: ${{ steps.meta-default.outputs.labels }}
-          build-args: |
-            RUST_VERSION=${{ env.RUST_VERSION }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache,mode=max
-            type=gha,mode=max
-
-      - name: Extract metadata for Docker (no-tls image)
-        id: meta-no-tls
+      - id: meta
         uses: docker/metadata-action@v6
         with:
           images: |
             ${{ secrets.DOCKERHUB_USERNAME }}/zaino
             ${{ secrets.DOCKERHUB_USERNAME }}/zainod
           flavor: |
-            suffix=-no-tls
+            suffix=${{ matrix.suffix }}
           tags: |
-            type=semver,pattern={{version}}
             type=match,pattern=zainod-(.*),group=1
             type=ref,event=branch
             type=sha,prefix=,format=short
 
-      - name: Build and Push No-TLS Image
-        uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@v7
         with:
-          build-args: |
-            NO_TLS=true
-            RUST_VERSION=${{ env.RUST_VERSION }}
           context: .
           platforms: linux/amd64
           push: ${{ env.PUSH_IMAGES }}
-          tags: "${{ steps.meta-no-tls.outputs.tags }}"
-          labels: ${{ steps.meta-no-tls.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CARGO_FEATURES=${{ matrix.features }}
           cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache-no-tls
-            type=gha
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache${{ matrix.suffix }}
+            type=gha,scope=${{ matrix.variant }}
           cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache-no-tls,mode=max
-            type=gha,mode=max
-
-  create-release:
-    needs: docker
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-    # Only create a GitHub release when triggered by a legacy semver tag push.
-    # workflow_dispatch (e.g. for verification on a feature branch) skips this,
-    # and so does a pipeline `zainod-X.Y.Z` tag: blessing already created the
-    # cycle's GitHub Release.
-    if: startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/zainod-')
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Generate Changelog
-        id: changelog
-        run: |
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -z "$PREVIOUS_TAG" ]; then
-            git log --pretty=format:"* %s" > CHANGELOG.md
-          else
-            git log --pretty=format:"* %s" "$PREVIOUS_TAG"..HEAD > CHANGELOG.md
-          fi
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            CHANGELOG.md
-          body_path: CHANGELOG.md
-          draft: false
-          prerelease: ${{ contains(github.ref, '-rc.') }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache${{ matrix.suffix }},mode=max
+            type=gha,scope=${{ matrix.variant }},mode=max

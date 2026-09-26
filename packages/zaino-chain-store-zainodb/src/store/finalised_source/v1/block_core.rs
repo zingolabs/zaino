@@ -50,9 +50,14 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<BlockHeaderData, StoreError> {
-        self.read_row_at_height(self.headers, "header", height)
-            .await?
-            .ok_or_else(|| StoreError::DataUnavailable("header data missing from db".into()))
+        self.read_row_at_height::<BlockHeaderData<AbsoluteChainWork>>(
+            self.headers,
+            "header",
+            height,
+        )
+        .await?
+        .map(|header| header.map_chainwork(Some))
+        .ok_or_else(|| StoreError::DataUnavailable("header data missing from db".into()))
     }
 
     /// Fetches block headers for the given height range.
@@ -67,7 +72,14 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<BlockHeaderData>, StoreError> {
-        self.scan_rows(self.headers, "header", start, end).await
+        self.scan_rows_mapped(
+            self.headers,
+            "header",
+            start,
+            end,
+            |header: BlockHeaderData<AbsoluteChainWork>| header.map_chainwork(Some),
+        )
+        .await
     }
 
     /// Fetch the txid bytes for a given TxLocation.

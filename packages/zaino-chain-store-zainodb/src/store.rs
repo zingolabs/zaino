@@ -244,12 +244,9 @@ use router::Router;
 use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
-#[cfg(feature = "prometheus")]
-use crate::metric_names::*;
-
 use crate::adapter::domain_block_ref;
 use crate::store::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode};
-use crate::types::{BlockHash, ChainWork, Height, IndexedBlock, GENESIS_HEIGHT};
+use crate::types::{AbsoluteChainWork, BlockHash, Height, IndexedBlock, GENESIS_HEIGHT};
 use zaino_chain_store::ChainStoreConfig;
 
 use crate::config::{StoreSettings, ZainoDbConfig};
@@ -270,6 +267,16 @@ struct PoolActivationHeights {
     sapling: Option<zebra_chain::block::Height>,
     nu5: Option<zebra_chain::block::Height>,
     nu6_3: Option<zebra_chain::block::Height>,
+}
+
+/// - Shared by the version probe and the backend that opens one; two copies drift
+///   silently onto different networks
+pub(super) fn network_dir(kind: NetworkKind) -> &'static str {
+    match kind {
+        NetworkKind::Mainnet => "mainnet",
+        NetworkKind::Testnet => "testnet",
+        NetworkKind::Regtest => "regtest",
+    }
 }
 
 impl PoolActivationHeights {
@@ -303,8 +310,8 @@ pub(crate) async fn build_indexed_block_from_source<S: ChainStoreSource + ?Sized
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
-    parent_chainwork: Option<ChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let fetched = fetch_block_for_indexing(source, height_int).await?;
     assemble_indexed_block(
         fetched,
@@ -335,10 +342,13 @@ impl FetchedBlock {
     /// Lets a caller fold the cumulative chainwork over a run of already-fetched blocks before
     /// assembling any of them — the fold is the only ordering constraint in block building, and it
     /// is pure integer arithmetic, so it must not hold the expensive conversion in block order.
-    pub(crate) fn block_work(&self) -> Result<ChainWork, StoreError> {
-        let hash = crate::types::BlockHash(self.block.header.hash.into());
-        crate::conversion::block_work(self.block.header.bits, hash)
-            .map_err(|error| inconsistent(error.to_string()))
+    pub(crate) fn block_work(&self) -> crate::types::SingleBlockWork {
+        self.block.header.bits.to_work()
+    }
+
+    /// This block's hash, for naming it in an error.
+    pub(crate) fn hash(&self) -> crate::types::BlockHash {
+        crate::types::BlockHash(self.block.header.hash.into())
     }
 }
 
@@ -363,8 +373,12 @@ pub(crate) fn assemble_indexed_block(
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
-    parent_chainwork: Option<ChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
+    let _assembling = crate::timer::Timer::start(metrics::histogram!(
+        crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS
+    ));
+
     let FetchedBlock { block, tree_roots } = fetched;
 
     require_pool_roots(
@@ -420,6 +434,9 @@ async fn fetch_block<S: ChainStoreSource + ?Sized>(
 ) -> Result<zaino_primitives::types::Block, StoreError> {
     let height = zaino_primitives::types::Height::try_from(height)
         .map_err(|_| inconsistent(format!("height {height} is above the protocol maximum")))?;
+    let _timer = crate::timer::Timer::start(metrics::histogram!(
+        crate::metric_names::SYNC_BLOCK_FETCH_SECONDS
+    ));
     source
         .get_block(height)
         .await
@@ -434,6 +451,9 @@ async fn fetch_tree_roots<S: ChainStoreSource + ?Sized>(
     source: &S,
     block: &zaino_primitives::types::Block,
 ) -> Result<zaino_primitives::types::TreeRoots, StoreError> {
+    let _timer = crate::timer::Timer::start(metrics::histogram!(
+        crate::metric_names::SYNC_TREESTATE_FETCH_SECONDS
+    ));
     source
         .get_commitment_tree_roots(block.header.hash)
         .await
@@ -444,19 +464,22 @@ async fn fetch_tree_roots<S: ChainStoreSource + ?Sized>(
 pub(crate) fn indexed_block_from_parts(
     block: &zaino_primitives::types::Block,
     tree_roots: &zaino_primitives::types::TreeRoots,
-    parent_chainwork: Option<ChainWork>,
-) -> Result<IndexedBlock, StoreError> {
+    parent_chainwork: Option<AbsoluteChainWork>,
+) -> Result<IndexedBlock<AbsoluteChainWork>, StoreError> {
     let hash = crate::types::BlockHash(block.header.hash.into());
-    let chainwork =
-        crate::conversion::chainwork_from_parent(block.header.bits, hash, parent_chainwork)
-            .map_err(|error| inconsistent(error.to_string()))?;
-    crate::conversion::indexed_block(block, tree_roots, chainwork)
-        .map_err(|error| inconsistent(error.to_string()))
+    let chainwork = crate::conversion::chainwork_from_parent(
+        block.header.bits.to_work(),
+        hash,
+        Height(u32::from(block.header.height)),
+        parent_chainwork,
+    )
+    .map_err(conversion_error)?;
+    crate::conversion::indexed_block(block, tree_roots, chainwork).map_err(conversion_error)
 }
 
 use zaino_chain_store::ChainStoreSource;
 
-use crate::error::{inconsistent, source_error};
+use crate::error::{conversion_error, inconsistent, source_error};
 
 // The build-behaviour knobs — how wide a sync runs in the background, how many
 // attempts it makes, and how long it waits between them — were constants here.
@@ -794,14 +817,6 @@ impl<T: ChainStoreSource> FinalisedState<T> {
         // Deliberately not hooked to `wait_until_ready`: despite its name it has no production
         // caller — only tests and the `reader` wrapper use it.
         let mode = self.db.finalised_state_mode();
-
-        #[cfg(feature = "prometheus")]
-        metrics::gauge!(FINALISED_EPHEMERAL).set(if mode == FinalisedStateMode::Persistent {
-            0.0
-        } else {
-            1.0
-        });
-
         if status == StatusType::Ready && mode == FinalisedStateMode::Persistent {
             self.db.note_persistent_online();
         }
@@ -1206,7 +1221,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     ///
     /// For reorg handling, callers should delete tip blocks using [`FinalisedState::delete_block_at_height`]
     /// or [`FinalisedState::delete_block`] before re-appending.
-    pub async fn write_block(&self, b: IndexedBlock) -> Result<(), StoreError> {
+    pub async fn write_block(&self, b: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         self.db.write_block(b).await?;
         self.refresh_watermark().await;
         Ok(())
@@ -1452,7 +1467,7 @@ impl<T: ChainStoreSource> FinalisedState<T> {
             .activation_upgrade()
             .activation_height(cfg.db.network());
 
-        let mut parent_chainwork: Option<ChainWork> = None;
+        let mut parent_chainwork: Option<AbsoluteChainWork> = None;
 
         for height in crate::types::GENESIS_HEIGHT.0..=tip.0 {
             let block = fetch_block(source.as_ref(), height).await?;

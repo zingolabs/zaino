@@ -650,6 +650,9 @@ impl<T: ChainStoreSource> Migration<T> for Migration1_1_0To1_2_0 {
             let stage_a_started = std::time::Instant::now();
 
             while next_height <= db_tip {
+                metrics::gauge!(crate::metric_names::MIGRATION_PROGRESS_HEIGHT)
+                    .set(next_height as f64);
+
                 let height = Height::try_from(next_height)
                     .map_err(|error| StoreError::Custom(error.to_string()))?;
                 let height_bytes = height.to_bytes()?;
@@ -1129,6 +1132,11 @@ impl<T: ChainStoreSource> Migration<T> for Migration1_2_1To1_3_0 {
             let started = std::time::Instant::now();
 
             while next_height <= db_tip {
+                // Hours-long, every read proxied to the validator throughout: the
+                // frontier is what makes it a visible distance, not an outage
+                metrics::gauge!(crate::metric_names::MIGRATION_PROGRESS_HEIGHT)
+                    .set(next_height as f64);
+
                 let height = Height::try_from(next_height)
                     .map_err(|error| StoreError::Custom(error.to_string()))?;
                 let height_bytes = height.to_bytes()?;

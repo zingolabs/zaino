@@ -13,7 +13,7 @@ use crate::store::FinalisedState;
 use crate::tests::fixtures::FakeValidator;
 use crate::tests::fixtures::{
     copy_dir_recursive, fake_validator_from_vectors, index_vector_blocks, indexed_block_chain,
-    load_test_vectors, TestVectorData, VectorBlock,
+    load_test_vectors, TestVectorData,
 };
 use crate::tests::init_tracing;
 
@@ -22,7 +22,7 @@ use crate::types::TransactionHash;
 use crate::config::{StoreSettings, ZainoDbConfig};
 use crate::entry::StoredEntryVar;
 use crate::error::StoreError;
-use crate::types::{BlockHeaderData, BlockMetadata, BlockWithMetadata, Height, IndexedBlock};
+use crate::types::{AbsoluteChainWork, BlockHeaderData, Height};
 use zaino_chain_store::ChainStoreConfig;
 use zaino_encoding::ZainoVersionedSerde as _;
 
@@ -203,7 +203,7 @@ async fn sync_to_height_across_many_write_batches() {
     // Gap-free, not just tip-correct: a pipeline that dropped or double-committed a batch could
     // still land on the right tip.
     let reader = std::sync::Arc::new(zaino_db).to_reader();
-    let mut previous_chainwork: Option<crate::types::ChainWork> = None;
+    let mut previous_chainwork: Option<crate::types::AbsoluteChainWork> = None;
     for height in 0..=200u32 {
         let header = reader
             .get_block_header(Height(height))
@@ -214,19 +214,20 @@ async fn sync_to_height_across_many_write_batches() {
         // folded in height order, then assembled concurrently. A fold that paired a block with the
         // wrong parent still yields a readable, gap-free, strictly-increasing range — so assert the
         // exact increment against this block's own stored difficulty, which an off-by-one breaks.
-        let chainwork = *header.context.chainwork();
+        let chainwork = header.context.chainwork();
         let block_work = header.data().bits.to_work();
         let expected = match previous_chainwork {
             Some(previous) => previous
-                .add(&block_work)
+                .accumulate(block_work)
                 .expect("no overflow in test vectors"),
-            None => block_work,
+            None => crate::types::AbsoluteChainWork::genesis(block_work),
         };
         assert_eq!(
-            chainwork, expected,
+            chainwork,
+            Some(expected),
             "chainwork at height {height} must be its parent's plus this block's own work"
         );
-        previous_chainwork = Some(chainwork);
+        previous_chainwork = chainwork;
     }
 }
 
@@ -340,14 +341,14 @@ async fn load_db_backend_from_file() {
     // reconstructs the full block and validates (reading the v1.3.0 commitment table). This fixture
     // is a legacy database whose commitment rows are in `commitment_tree_data_1_0_0`, so validation
     // would fail; the header context asserted here is unaffected.
-    let read_header_direct = |height: Height| -> Option<BlockHeaderData> {
+    let read_header_direct = |height: Height| -> Option<BlockHeaderData<AbsoluteChainWork>> {
         use lmdb::Transaction as _;
         let environment = finalized_state_backend.env().unwrap();
         let headers_database = environment.open_db(Some("headers_1_0_0")).unwrap();
         let transaction = environment.begin_ro_txn().unwrap();
         match transaction.get(headers_database, &height.to_bytes().unwrap()) {
             Ok(raw) => Some(
-                *StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                *StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(raw)
                     .unwrap()
                     .inner(),
             ),
@@ -380,37 +381,20 @@ async fn try_write_invalid_block() {
     dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
 
-    let VectorBlock {
-        height,
-        zebra_block,
-        sapling_root,
-        sapling_tree_size,
-        orchard_root,
-        orchard_tree_size,
-        ..
-    } = blocks.last().unwrap().clone();
+    let mut chain_block = indexed_block_chain(&blocks)
+        .last()
+        .expect("the vector chain is not empty");
 
-    let metadata = BlockMetadata {
-        sapling_root,
-        sapling_size: sapling_tree_size as u32,
-        orchard_root,
-        orchard_size: orchard_tree_size as u32,
-        ironwood: None,
-        // no parent chainwork for this test
-        parent_chainwork: None,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
-
-    let mut chain_block =
-        IndexedBlock::try_from(BlockWithMetadata::new(&zebra_block, metadata)).unwrap();
-
-    chain_block.context.index.height = crate::types::Height(height + 1);
+    chain_block.context.index.height = crate::types::Height(chain_block.height().0 + 1);
     dbg!(chain_block.context.index.height);
 
+    let height = chain_block.height();
     let db_err = dbg!(zaino_db.write_block(chain_block).await);
 
-    // TODO: Update with concrete err type.
-    assert!(db_err.is_err());
+    assert!(matches!(
+        db_err,
+        Err(StoreError::InvalidBlock { height: rejected, .. }) if rejected == height.0
+    ));
 
     dbg!(zaino_db.db_height().await.unwrap());
 }
@@ -467,7 +451,7 @@ async fn get_chain_blocks() {
     for chain_block in indexed_block_chain(&blocks) {
         let height = chain_block.context.index.height;
         let reader_chain_block = db_reader.get_chain_block_by_height(height).await.unwrap();
-        assert_eq!(Some(chain_block), reader_chain_block);
+        assert_eq!(Some(chain_block.map_chainwork(Some)), reader_chain_block);
         println!("IndexedBlock at height {} OK", height.0);
     }
 }

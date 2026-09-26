@@ -156,6 +156,19 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<T>, StoreError> {
+        self.scan_rows_mapped(table, label, start, end, core::convert::identity)
+            .await
+    }
+
+    /// [`DbV1::scan_rows`] with each decoded row passed through `map` before it is collected.
+    pub(super) async fn scan_rows_mapped<T: ZainoVersionedSerde, Mapped>(
+        &self,
+        table: lmdb::Database,
+        label: &str,
+        start: Height,
+        end: Height,
+        map: impl FnMut(T) -> Mapped,
+    ) -> Result<Vec<Mapped>, StoreError> {
         if end.0 < start.0 {
             return Err(StoreError::Custom(
                 "invalid block range: end < start".to_string(),
@@ -187,11 +200,12 @@ impl DbV1 {
             Ok::<Vec<Vec<u8>>, StoreError>(raw_entries)
         })?;
 
+        let mut map = map;
         raw_entries
             .into_iter()
             .map(|bytes| {
                 StoredEntryVar::<T>::from_bytes(&bytes)
-                    .map(|e| e.into_inner())
+                    .map(|e| map(e.into_inner()))
                     .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))
             })
             .collect()

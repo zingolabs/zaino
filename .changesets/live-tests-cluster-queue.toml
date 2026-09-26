@@ -1,0 +1,3 @@
+consumed_in = "zainod-0-10-1"
+[empty]
+reason = "CI only: the live-tests workflow queues cluster runs in GitHub and cancels a PR's run when the PR closes."

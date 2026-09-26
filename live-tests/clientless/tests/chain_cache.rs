@@ -82,14 +82,14 @@ mod chain_query_interface {
         indexer.wait_for_block_num(tip, READY).await?;
         let tip = u32::from(tip);
 
-        // Nothing persisted: `zaino_db_tip_height` is set on every batch commit of the v1
-        // write path, which ephemeral mode never spawns, so the family never appears.
+        // Nothing persisted: `zaino_sync_finalized_height` comes only from the v1 write path,
+        // which ephemeral mode never spawns (family never appears)
         assert_eq!(
             indexer
                 .read(SCRAPE)
                 .await
                 .map_err(anyhow::Error::msg)?
-                .height_gauge(family("zaino_db_tip_height")),
+                .height(zaino_testutils::finalised::FINALIZED_HEIGHT),
             None,
             "ephemeral mode must open no finalised database, but the finalised writer \
              reported a committed tip"

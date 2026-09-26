@@ -6,7 +6,10 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.5.2"
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+version = "0.5.3"
 
 [dependencies]
 # Zebra

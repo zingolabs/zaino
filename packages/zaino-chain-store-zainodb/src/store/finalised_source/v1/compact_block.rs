@@ -105,7 +105,7 @@ impl DbV1 {
                 }
                 Err(e) => return Err(StoreError::LmdbError(e)),
             };
-            let header: BlockHeaderData = *StoredEntryVar::from_bytes(raw)
+            let header: BlockHeaderData<AbsoluteChainWork> = *StoredEntryVar::from_bytes(raw)
                 .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
                 .inner();
 
@@ -801,15 +801,16 @@ impl DbV1 {
 
                 loop {
                     // ----- Decode and validate block header -----
-                    let header: BlockHeaderData = match StoredEntryVar::from_bytes(raw_header_bytes)
-                        .map_err(|error| format!("header decode error: {error}"))
-                    {
-                        Ok(entry) => *entry.inner(),
-                        Err(message) => {
-                            send_status(&sender, tonic::Status::internal(message));
-                            return;
-                        }
-                    };
+                    let header: BlockHeaderData<AbsoluteChainWork> =
+                        match StoredEntryVar::from_bytes(raw_header_bytes)
+                            .map_err(|error| format!("header decode error: {error}"))
+                        {
+                            Ok(entry) => *entry.inner(),
+                            Err(message) => {
+                                send_status(&sender, tonic::Status::internal(message));
+                                return;
+                            }
+                        };
 
                     // Contiguous-height check: ensures cursor ordering and storage invariants are intact.
                     let current_height = header.context.height();
@@ -1349,8 +1350,8 @@ impl DbV1 {
 /// building wire messages is the wrong direction — and it forced the read to
 /// commit to one serving format, so the domain port could not be given the
 /// same data without a second conversion.
-fn assemble_compact_block(
-    header: &BlockHeaderData,
+fn assemble_compact_block<Work>(
+    header: &BlockHeaderData<Work>,
     txids: &[TransactionHash],
     transparent: &[Option<TransparentCompactTx>],
     sapling: &[Option<SaplingCompactTx>],
@@ -1397,13 +1398,13 @@ fn assemble_compact_block(
                 header.data().time()
             ))
         })?,
-        bits: header.data().bits().as_bits(),
+        bits: header.data().bits(),
         transactions,
-        chain_metadata: zaino_primitives::types::ChainMetadata {
-            sapling_tree_size: commitment_tree_data.sizes().sapling(),
-            orchard_tree_size: commitment_tree_data.sizes().orchard(),
-            ironwood_tree_size: commitment_tree_data.sizes().ironwood(),
-        },
+        chain_metadata: zaino_primitives::types::ChainMetadata::new(
+            commitment_tree_data.sizes().sapling(),
+            commitment_tree_data.sizes().orchard(),
+            commitment_tree_data.sizes().ironwood(),
+        ),
     })
 }
 
@@ -1471,8 +1472,8 @@ fn compact_tx(
                     .map(|output| zaino_primitives::types::SaplingOutput {
                         cmu: (*output.cmu()).into(),
                         ephemeral_key: (*output.ephemeral_key()).into(),
-                        enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
-                            output.ciphertext().to_vec(),
+                        enc_ciphertext: zaino_primitives::types::CompactCiphertext::from(
+                            *output.ciphertext(),
                         ),
                     })
                     .collect()
@@ -1490,9 +1491,7 @@ fn domain_actions(pool: &OrchardCompactTx) -> Vec<zaino_primitives::types::Orcha
             nullifier: (*action.nullifier()).into(),
             cmx: (*action.cmx()).into(),
             ephemeral_key: (*action.ephemeral_key()).into(),
-            enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
-                action.ciphertext().to_vec(),
-            ),
+            enc_ciphertext: zaino_primitives::types::CompactCiphertext::from(*action.ciphertext()),
         })
         .collect()
 }
@@ -1554,6 +1553,7 @@ fn has_pool_data(tx: &zaino_primitives::types::PreIndexCompactTx) -> bool {
 pub fn compact_block_to_wire(
     block: &zaino_primitives::types::CompactBlock,
 ) -> zaino_proto::proto::compact_formats::CompactBlock {
+    let metadata = &block.chain_metadata;
     zaino_proto::proto::compact_formats::CompactBlock {
         height: u64::from(block.height),
         hash: <[u8; 32]>::from(block.hash).to_vec(),
@@ -1568,9 +1568,9 @@ pub fn compact_block_to_wire(
             .map(|(index, tx)| compact_tx_to_proto(index, tx))
             .collect(),
         chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
-            sapling_commitment_tree_size: block.chain_metadata.sapling_tree_size,
-            orchard_commitment_tree_size: block.chain_metadata.orchard_tree_size,
-            ironwood_commitment_tree_size: block.chain_metadata.ironwood_tree_size,
+            sapling_commitment_tree_size: u32::from(metadata.sapling_tree_size),
+            orchard_commitment_tree_size: u32::from(metadata.orchard_tree_size),
+            ironwood_commitment_tree_size: u32::from(metadata.ironwood_tree_size),
         }),
     }
 }
@@ -1601,7 +1601,7 @@ fn compact_tx_to_proto(
             .map(|output| proto::CompactSaplingOutput {
                 cmu: <[u8; 32]>::from(output.cmu).to_vec(),
                 ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
-                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+                ciphertext: <[u8; 52]>::from(output.enc_ciphertext).to_vec(),
             })
             .collect(),
         actions: tx.orchard_actions.iter().map(action_to_proto).collect(),
@@ -1632,7 +1632,7 @@ fn action_to_proto(
         nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
         cmx: <[u8; 32]>::from(action.cmx).to_vec(),
         ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+        ciphertext: <[u8; 52]>::from(action.enc_ciphertext).to_vec(),
     }
 }
 
@@ -1678,13 +1678,13 @@ pub(crate) fn compact_block_from_indexed(
                 block.data.time()
             ))
         })?,
-        bits: block.data.bits().as_bits(),
+        bits: block.data.bits(),
         transactions,
-        chain_metadata: zaino_primitives::types::ChainMetadata {
-            sapling_tree_size: sizes.sapling(),
-            orchard_tree_size: sizes.orchard(),
-            ironwood_tree_size: sizes.ironwood(),
-        },
+        chain_metadata: zaino_primitives::types::ChainMetadata::new(
+            sizes.sapling(),
+            sizes.orchard(),
+            sizes.ironwood(),
+        ),
     })
 }
 

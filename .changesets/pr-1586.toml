@@ -1,0 +1,5 @@
+id = "01a0db8a-f8b7-7c93-abd0-9f4af20a0003"
+consumed_in = "zainod-0-10-1"
+
+[empty]
+reason = "Dev-dependency only: zaino-chain-head-service restores the zaino-consensus dev-dependency its tests need."

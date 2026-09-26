@@ -1,12 +1,15 @@
 [package]
 name = "zaino-source"
 description = "Driven-port traits for Zcash validator access, backing the Zaino indexer's source adapters."
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 zaino-primitives = { workspace = true }

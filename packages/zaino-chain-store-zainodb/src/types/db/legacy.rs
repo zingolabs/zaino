@@ -35,7 +35,7 @@ use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
-use crate::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{AbsoluteChainWork, BlockContext, CompactDifficulty};
 use zaino_encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
@@ -779,7 +779,6 @@ impl FixedEncodedLen for Outpoint {
 /// - hashLightClientRoot (FlyClient proofs)
 /// - hashAuthDataRoot (ZIP-244 witness commitments)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockData {
     /// Version number of the block format (protocol upgrades).
     pub version: u32,
@@ -836,8 +835,8 @@ impl BlockData {
     }
 
     /// Returns the validated compact difficulty.
-    pub fn bits(&self) -> &CompactDifficulty {
-        &self.bits
+    pub fn bits(&self) -> CompactDifficulty {
+        self.bits
     }
 
     /// Returns Equihash Nonse.
@@ -1014,12 +1013,11 @@ impl ZainoVersionedSerde for EquihashSolution {
     }
 }
 
-/// Represents the indexing data of a single compact Zcash block used internally by Zaino.
-/// Provides efficient indexing for blockchain state queries and updates.
+/// The indexing data of one compact Zcash block, with its chainwork in the form `Work` names as on [`BlockContext`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndexedBlock {
+pub struct IndexedBlock<Work = Option<AbsoluteChainWork>> {
     /// The block's `BlockIndex`, parent hash, and cumulative chainwork.
-    pub context: BlockContext,
+    pub context: BlockContext<Work>,
     /// Essential header and metadata information for the block.
     pub data: BlockData,
     /// Compact representations of transactions in this block.
@@ -1029,10 +1027,27 @@ pub struct IndexedBlock {
     pub commitment_tree_data: CommitmentTreeData,
 }
 
-impl IndexedBlock {
+impl<Work: Copy> IndexedBlock<Work> {
+    /// Returns the total chain work up to this block, in whichever form `Work` names.
+    pub fn chainwork(&self) -> Work {
+        self.context.chainwork()
+    }
+}
+
+impl<Work> IndexedBlock<Work> {
+    /// The same block with its chainwork re-expressed by `map`.
+    pub fn map_chainwork<Mapped>(self, map: impl FnOnce(Work) -> Mapped) -> IndexedBlock<Mapped> {
+        IndexedBlock {
+            context: self.context.map_chainwork(map),
+            data: self.data,
+            transactions: self.transactions,
+            commitment_tree_data: self.commitment_tree_data,
+        }
+    }
+
     /// Creates a new `IndexedBlock`.
     pub fn new(
-        context: BlockContext,
+        context: BlockContext<Work>,
         data: BlockData,
         tx: Vec<CompactTxData>,
         commitment_tree_data: CommitmentTreeData,
@@ -1070,13 +1085,8 @@ impl IndexedBlock {
         self.context.height()
     }
 
-    /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &ChainWork {
-        self.context.chainwork()
-    }
-
     /// Returns the single-block proof-of-work contribution.
-    pub fn work(&self) -> ChainWork {
+    pub fn work(&self) -> crate::types::SingleBlockWork {
         self.data.bits.to_work()
     }
 
@@ -2450,16 +2460,16 @@ impl FixedEncodedLen for ShardRoot {
 /// Holds full block header data, split into the block's [`BlockContext`] and
 /// additional header data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlockHeaderData {
+pub struct BlockHeaderData<Work = Option<AbsoluteChainWork>> {
     /// The block's `BlockIndex`, parent hash, and cumulative chainwork.
-    pub context: BlockContext,
+    pub context: BlockContext<Work>,
     /// Block header data
     data: BlockData,
 }
 
-impl BlockHeaderData {
+impl<Work> BlockHeaderData<Work> {
     /// Constructs a new `BlockHeaderData`.
-    pub fn new(context: BlockContext, data: BlockData) -> Self {
+    pub fn new(context: BlockContext<Work>, data: BlockData) -> Self {
         Self { context, data }
     }
 
@@ -2467,9 +2477,39 @@ impl BlockHeaderData {
     pub fn data(&self) -> &BlockData {
         &self.data
     }
+
+    /// The same header with its chainwork re-expressed by `map`.
+    pub fn map_chainwork<Mapped>(
+        self,
+        map: impl FnOnce(Work) -> Mapped,
+    ) -> BlockHeaderData<Mapped> {
+        BlockHeaderData {
+            context: self.context.map_chainwork(map),
+            data: self.data,
+        }
+    }
 }
 
-impl ZainoVersionedSerde for BlockHeaderData {
+/// Only a header whose chainwork is known has a stored form.
+///
+/// ```
+/// use zaino_chain_store_zainodb::types::{AbsoluteChainWork, BlockHeaderData};
+/// use zaino_encoding::ZainoVersionedSerde as _;
+///
+/// fn encode(header: &BlockHeaderData<AbsoluteChainWork>) -> std::io::Result<Vec<u8>> {
+///     header.to_bytes()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use zaino_chain_store_zainodb::types::BlockHeaderData;
+/// use zaino_encoding::ZainoVersionedSerde as _;
+///
+/// fn encode(header: &BlockHeaderData) -> std::io::Result<Vec<u8>> {
+///     header.to_bytes()
+/// }
+/// ```
+impl ZainoVersionedSerde for BlockHeaderData<AbsoluteChainWork> {
     const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {

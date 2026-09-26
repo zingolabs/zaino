@@ -2,29 +2,10 @@
 
 use super::*;
 
-#[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 
-/// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync write
-/// batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps the batch's
-/// peak memory roughly within the configured budget.
 #[cfg(not(feature = "transparent_address_history_experimental"))]
-fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
-    block
-        .transactions()
-        .iter()
-        .map(|tx| {
-            let transparent = tx.transparent();
-            let items = transparent.inputs().len()
-                + transparent.outputs().len()
-                + tx.sapling().spends().len()
-                + tx.sapling().outputs().len()
-                + tx.orchard().actions().len()
-                + tx.ironwood().actions().len();
-            256 + items as u64 * 128
-        })
-        .sum()
-}
+use crate::ingest::BlockWork;
 
 /// Maximum number of blocks buffered in a single bulk-sync write batch, regardless of the byte
 /// budget. Early-chain blocks are tiny, so the byte budget alone could buffer an enormous number of
@@ -85,7 +66,7 @@ struct BatchBuild {
 struct BatchCursor {
     /// Height of the next block to build.
     next: u32,
-    parent_chainwork: Option<crate::types::ChainWork>,
+    parent_chainwork: Option<crate::types::AbsoluteChainWork>,
     last_progress_log: std::time::Instant,
 }
 
@@ -98,8 +79,8 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
     build: &BatchBuild,
     cursor: &mut BatchCursor,
     source: &S,
-) -> Result<Vec<IndexedBlock>, StoreError> {
-    let mut batch: Vec<IndexedBlock> = Vec::new();
+) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
+    let mut batch: Vec<IndexedBlock<AbsoluteChainWork>> = Vec::new();
     let mut batch_bytes: u64 = 0;
     let started = std::time::Instant::now();
 
@@ -122,18 +103,9 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
         // so the fold below still sees blocks in the order the chain has them.
         let fetches = futures::StreamExt::map(
             futures::stream::iter(heights.iter().copied()),
-            |height_int| async move {
-                #[cfg(feature = "prometheus")]
-                let build_start = std::time::Instant::now();
-                let fetched = crate::store::fetch_block_for_indexing(source, height_int).await;
-                // Per-block cost, so it stays comparable across concurrency settings. With N
-                // fetches in flight the sum of this histogram approaches N x wall-clock; compare
-                // it against wall-clock only after dividing by the concurrency in force.
-                #[cfg(feature = "prometheus")]
-                metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
-                    .record(build_start.elapsed().as_secs_f64());
-                fetched
-            },
+            // With N fetches in flight each histogram's sum approaches N x wall-clock —
+            // divide by the concurrency in force before comparing
+            |height_int| async move { crate::store::fetch_block_for_indexing(source, height_int).await },
         );
         let fetched: Vec<_> = futures::TryStreamExt::try_collect(futures::StreamExt::buffered(
             fetches,
@@ -148,13 +120,15 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
         let mut prepared = Vec::with_capacity(fetched.len());
         for (height_int, parts) in heights.into_iter().zip(fetched) {
             let parent_chainwork = cursor.parent_chainwork;
-            let block_work = parts.block_work()?;
-            cursor.parent_chainwork = Some(match parent_chainwork {
-                Some(parent) => parent
-                    .add(&block_work)
-                    .map_err(|e| StoreError::Custom(format!("chainwork overflow: {e}")))?,
-                None => block_work,
-            });
+            cursor.parent_chainwork = Some(
+                crate::conversion::chainwork_from_parent(
+                    parts.block_work(),
+                    parts.hash(),
+                    Height(height_int),
+                    parent_chainwork,
+                )
+                .map_err(crate::error::conversion_error)?,
+            );
             prepared.push((height_int, parts, parent_chainwork));
         }
 
@@ -187,26 +161,26 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
                 }
             },
         );
-        let assembled: Vec<IndexedBlock> = futures::TryStreamExt::try_collect(
+        let assembled: Vec<IndexedBlock<AbsoluteChainWork>> = futures::TryStreamExt::try_collect(
             futures::StreamExt::buffered(assemblies, build.concurrency),
         )
         .await?;
 
         for block in assembled {
-            batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
+            // One walk, feeding both the byte budget and the throughput counters
+            let work = BlockWork::tally(&block);
+            work.record();
+            batch_bytes = batch_bytes.saturating_add(work.approx_bytes());
             batch.push(block);
             cursor.next += 1;
+            metrics::gauge!(SYNC_FETCHED_HEIGHT).set((cursor.next - 1) as f64);
         }
 
         // In-flight progress: the last block built, throttled by time. The committed tip is
         // reported separately by `note_sync_batch_committed`, and the two now differ by up to a
         // full batch while the pipeline is running.
         if cursor.last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
-            #[cfg(feature = "prometheus")]
-            {
-                metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((cursor.next - 1) as f64);
-                metrics::gauge!(SYNC_TARGET_HEIGHT).set(build.target as f64);
-            }
+            metrics::gauge!(SYNC_TARGET_HEIGHT).set(build.target as f64);
             info!(
                 current = cursor.next - 1,
                 target = build.target,
@@ -215,6 +189,12 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
             );
             cursor.last_progress_log = std::time::Instant::now();
         }
+    }
+
+    // Normalises `batch_write_seconds` to seconds-per-block. Skipped for the empty
+    // batch that ends the run: nothing was flushed
+    if !batch.is_empty() {
+        metrics::histogram!(SYNC_BATCH_BLOCKS).record(batch.len() as f64);
     }
 
     Ok(batch)
@@ -241,7 +221,9 @@ struct BlockPoolLists {
 /// Builds the per-transaction pool lists for one block: each pool records
 /// `Some(compact data)` for a transaction with data in that pool, `None` otherwise,
 /// keeping every list index-aligned with the block's txids.
-fn extract_block_pool_lists(block: &IndexedBlock) -> Result<BlockPoolLists, StoreError> {
+fn extract_block_pool_lists<Work>(
+    block: &IndexedBlock<Work>,
+) -> Result<BlockPoolLists, StoreError> {
     let block_height = block.context.index.height;
     let block_hash = block.context.index.hash;
 
@@ -308,9 +290,9 @@ fn extract_block_pool_lists(block: &IndexedBlock) -> Result<BlockPoolLists, Stor
 
 /// Cheap in-memory correctness check: the block's txids must reproduce the header's
 /// merkle root.
-fn verify_header_merkle_root(
+fn verify_header_merkle_root<Work>(
     txids: &[TransactionHash],
-    block: &IndexedBlock,
+    block: &IndexedBlock<Work>,
 ) -> Result<(), StoreError> {
     let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
     let computed_merkle_root = DbV1::calculate_block_merkle_root(&txid_bytes);
@@ -330,7 +312,7 @@ fn verify_header_merkle_root(
 /// an absent row as "no ironwood data".
 struct BlockRowEntries {
     height_entry: StoredEntryFixed<Height>,
-    header_entry: StoredEntryVar<BlockHeaderData>,
+    header_entry: StoredEntryVar<BlockHeaderData<AbsoluteChainWork>>,
     commitment_tree_entry: StoredEntryVar<CommitmentTreeData>,
     txid_entry: StoredEntryVar<TxidList>,
     transparent_entry: StoredEntryVar<TransparentTxList>,
@@ -341,7 +323,7 @@ struct BlockRowEntries {
 
 #[allow(clippy::too_many_arguments)]
 fn build_block_row_entries(
-    block: &IndexedBlock,
+    block: &IndexedBlock<AbsoluteChainWork>,
     block_hash_bytes: &[u8],
     block_height_bytes: &[u8],
     txids: Vec<TransactionHash>,
@@ -388,8 +370,8 @@ fn ironwood_entry(
 
 /// Builds the sparse ironwood row entry for `block` (the same value the write path stores). Used by
 /// the v1.2.1 → v1.3.0 migration to backfill the ironwood table from validator-fetched blocks.
-pub(crate) fn build_block_ironwood_entry(
-    block: &IndexedBlock,
+pub(crate) fn build_block_ironwood_entry<Work>(
+    block: &IndexedBlock<Work>,
     block_height_bytes: &[u8],
 ) -> Result<Option<StoredEntryVar<OrchardTxList>>, StoreError> {
     Ok(ironwood_entry(
@@ -399,7 +381,7 @@ pub(crate) fn build_block_ironwood_entry(
 }
 
 impl DbWrite for DbV1 {
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), StoreError> {
+    async fn write_block(&self, block: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         self.write_block(block).await
     }
 
@@ -435,28 +417,44 @@ impl DbWrite for DbV1 {
             not(feature = "transparent_address_history_experimental"),
             allow(unused_mut)
         )]
-        let (start_height, mut parent_chainwork): (u32, Option<crate::types::ChainWork>) =
-            match self.tip_height().await? {
-                None => (GENESIS_HEIGHT.0, None),
-                Some(tip) => {
-                    let tip_bytes = tip.to_bytes()?;
-                    let chainwork = tokio::task::block_in_place(|| {
-                        let ro = self.env.begin_ro_txn()?;
-                        match ro.get(self.headers, &tip_bytes) {
-                            Ok(raw) => {
-                                let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
-                                    .map_err(|e| {
-                                        StoreError::Custom(format!("tip header decode error: {e}"))
-                                    })?;
-                                Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
-                            }
-                            Err(lmdb::Error::NotFound) => Ok(None),
-                            Err(e) => Err(StoreError::LmdbError(e)),
+        let (start_height, mut parent_chainwork): (
+            u32,
+            Option<crate::types::AbsoluteChainWork>,
+        ) = match self.tip_height().await? {
+            None => (GENESIS_HEIGHT.0, None),
+            Some(tip) => {
+                let tip_bytes = tip.to_bytes()?;
+                let chainwork = tokio::task::block_in_place(|| {
+                    let ro = self.env.begin_ro_txn()?;
+                    match ro.get(self.headers, &tip_bytes) {
+                        Ok(raw) => {
+                            let entry =
+                                StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
+                                    raw,
+                                )
+                                .map_err(|e| {
+                                    StoreError::Custom(format!("tip header decode error: {e}"))
+                                })?;
+                            Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
                         }
-                    })?;
-                    (tip.0 + 1, chainwork)
-                }
-            };
+                        Err(lmdb::Error::NotFound) => Ok(None),
+                        Err(e) => Err(StoreError::LmdbError(e)),
+                    }
+                })?;
+                (tip.0 + 1, chainwork)
+            }
+        };
+
+        // Every pass, before the early return: set only on work leaves an already-synced
+        // node publishing neither, so `tip - finalized` is unavailable at steady state
+        {
+            metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
+            // `start_height` = committed tip + 1; 0 only on an empty db, where a
+            // published 0 would be a false height rather than a missing one
+            if start_height > 0 {
+                metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((start_height - 1) as f64);
+            }
+        }
 
         // Nothing to do when the tip already meets the target. Importantly, this means a steady-state
         // poll (the indexer calls `sync_to_height` repeatedly) does *not* trigger the bulk accumulator
@@ -599,15 +597,19 @@ impl DbV1 {
     /// Blocking, and deliberately free of `block_in_place`: the pipeline runs this on a scoped
     /// thread of its own, which is not a runtime worker, so there is no worker to hand off.
     #[cfg(not(feature = "transparent_address_history_experimental"))]
-    fn commit_sync_batch_blocking(&self, batch: &[IndexedBlock]) -> Result<(), StoreError> {
-        #[cfg(feature = "prometheus")]
+    fn commit_sync_batch_blocking(
+        &self,
+        batch: &[IndexedBlock<AbsoluteChainWork>],
+    ) -> Result<(), StoreError> {
         let write_start = std::time::Instant::now();
         self.write_block_batch_blocking(batch)?;
+        let fsync_start = std::time::Instant::now();
+        metrics::histogram!(SYNC_BATCH_WRITE_SECONDS)
+            .record((fsync_start - write_start).as_secs_f64());
         self.env
             .sync(true)
             .map_err(|e| StoreError::Custom(format!("LMDB checkpoint sync failed: {e}")))?;
-        #[cfg(feature = "prometheus")]
-        metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS).record(write_start.elapsed().as_secs_f64());
+        metrics::histogram!(SYNC_FSYNC_SECONDS).record(fsync_start.elapsed().as_secs_f64());
         Ok(())
     }
 
@@ -615,12 +617,13 @@ impl DbV1 {
     ///
     /// Only ever called after [`Self::commit_sync_batch_blocking`] has returned `Ok`, so the
     /// on-disk `headers` tip never runs ahead of the indexes and resume stays gap-free.
+    ///
+    /// Throughput is tallied per block as the batch is built (`fill_sync_batch`), from
+    /// the same walk that bounds its size
     #[cfg(not(feature = "transparent_address_history_experimental"))]
-    fn note_sync_batch_committed(&self, batch: &[IndexedBlock]) {
+    fn note_sync_batch_committed<Work>(&self, batch: &[IndexedBlock<Work>]) {
         for block in batch {
             self.mark_validated(block.context.index.height.0);
-            #[cfg(feature = "prometheus")]
-            record_block_throughput(block);
         }
         self.status.store(StatusType::Ready);
 
@@ -635,10 +638,19 @@ impl DbV1 {
             blocks = batch.len(),
             "write_blocks_to_height: committed batch"
         );
-        #[cfg(feature = "prometheus")]
-        {
-            metrics::gauge!(DB_TIP_HEIGHT).set(height as f64);
-            metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT).set(crate::support::unix_now_secs());
+        metrics::gauge!(SYNC_FINALIZED_HEIGHT).set(height as f64);
+    }
+
+    /// - Off `data.mdb`'s length: `me_last_pgno` is raw FFI (crate forbids unsafe) and
+    ///   safe [`lmdb::Stat`] covers only the main tree, missing 16 sub-dbs
+    /// - On the maintenance timer, not per commit (which froze while idle)
+    pub(super) fn record_db_used_bytes(&self) {
+        // Pathless config cannot reach a v1 backend; shares the unreadable-file
+        // outcome either way — no sample, no noise
+        if let Ok(path) = super::db_path(&self.config) {
+            if let Ok(meta) = std::fs::metadata(path.join("data.mdb")) {
+                metrics::gauge!(DB_USED_BYTES).set(meta.len() as f64);
+            }
         }
     }
 
@@ -650,7 +662,10 @@ impl DbV1 {
     /// [`DbV1::write_block_with_options`]) and rebuilds it once at the tip.
     ///
     /// NOTE: This method should never leave a block partially written to the database.
-    pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), StoreError> {
+    pub(crate) async fn write_block(
+        &self,
+        block: IndexedBlock<AbsoluteChainWork>,
+    ) -> Result<(), StoreError> {
         self.write_block_with_options(block, true).await
     }
 
@@ -673,7 +688,7 @@ impl DbV1 {
     #[allow(clippy::manual_is_multiple_of)]
     async fn write_block_with_options(
         &self,
-        block: IndexedBlock,
+        block: IndexedBlock<AbsoluteChainWork>,
         update_tx_out_set: bool,
     ) -> Result<(), StoreError> {
         self.status.store(StatusType::Syncing);
@@ -693,12 +708,14 @@ impl DbV1 {
                     // Block exists at this height - verify it's the same block
                     // Data is stored as StoredEntryVar<BlockHeaderData>, so deserialize properly
                     let stored_entry =
-                        StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
-                            .map_err(|e| {
-                                StoreError::Custom(format!(
-                                    "header decode error during idempotency check: {e}"
-                                ))
-                            })?;
+                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
+                            stored_header_bytes,
+                        )
+                        .map_err(|e| {
+                            StoreError::Custom(format!(
+                                "header decode error during idempotency check: {e}"
+                            ))
+                        })?;
                     let stored_header = stored_entry.inner();
                     if stored_header.context.index.hash == block_hash {
                         // Same block already written, this is a no-op success
@@ -738,14 +755,15 @@ impl DbV1 {
                     // one of the two cheap, in-memory correctness checks (the other is the merkle
                     // root below) that justify marking the block validated after a successful write
                     // without the expensive post-commit re-read.
-                    let last_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(
-                        last_header_bytes,
-                    )
-                    .map_err(|e| {
-                        StoreError::Custom(format!(
-                            "tip header decode error during continuity check: {e}"
-                        ))
-                    })?;
+                    let last_entry =
+                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
+                            last_header_bytes,
+                        )
+                        .map_err(|e| {
+                            StoreError::Custom(format!(
+                                "tip header decode error during continuity check: {e}"
+                            ))
+                        })?;
                     if last_entry.inner().context.hash() != block.context.parent_hash() {
                         return Err(StoreError::InvalidBlock {
                             height: block_height.0,
@@ -1225,12 +1243,14 @@ impl DbV1 {
                         Ok(stored_header_bytes) => {
                             // Data is stored as StoredEntryVar<BlockHeaderData>
                             let stored_entry =
-                                StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
-                                    .map_err(|e| {
-                                        StoreError::Custom(format!(
-                                            "header decode error in KeyExist handler: {e}"
-                                        ))
-                                    })?;
+                                StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
+                                    stored_header_bytes,
+                                )
+                                .map_err(|e| {
+                                    StoreError::Custom(format!(
+                                        "header decode error in KeyExist handler: {e}"
+                                    ))
+                                })?;
                             let stored_header = stored_entry.inner();
                             if stored_header.context.index.hash == block_hash {
                                 // Block hash exists, verify block was fully written.
@@ -1348,7 +1368,7 @@ impl DbV1 {
     #[cfg(not(feature = "transparent_address_history_experimental"))]
     pub(crate) fn write_block_batch_blocking(
         &self,
-        blocks: &[IndexedBlock],
+        blocks: &[IndexedBlock<AbsoluteChainWork>],
     ) -> Result<(), StoreError> {
         use lmdb::Transaction as _;
 
@@ -1391,10 +1411,11 @@ impl DbV1 {
                     let last_height = Height::from_bytes(
                         last_height_bytes.expect("Height is always some in the finalised state"),
                     )?;
-                    let last_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(
-                        last_header_bytes,
-                    )
-                    .map_err(|e| StoreError::Custom(format!("tip header decode error: {e}")))?;
+                    let last_entry =
+                        StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
+                            last_header_bytes,
+                        )
+                        .map_err(|e| StoreError::Custom(format!("tip header decode error: {e}")))?;
                     (
                         Some(last_height.0),
                         Some(*last_entry.inner().context.hash()),
@@ -1626,7 +1647,10 @@ impl DbV1 {
     /// NOTE: LMDB database errors are propageted as these show serious database errors,
     /// all other errors are returned as `IncorrectBlock`, if this error is returned the block requested
     /// should be fetched from the validator and this method called with the correct data.
-    pub(crate) async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
+    pub(crate) async fn delete_block<Work>(
+        &self,
+        block: &IndexedBlock<Work>,
+    ) -> Result<(), StoreError> {
         // Check block height and hash
         let block_height = block.context.index.height;
         let block_height_bytes = block_height
@@ -2001,7 +2025,10 @@ impl DbV1 {
     /// This method does not perform safety checks and must not be used in production code.
     ///
     /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(&self, block: IndexedBlock) -> Result<(), StoreError> {
+    pub(crate) async fn write_block_v1_0_0(
+        &self,
+        block: IndexedBlock<AbsoluteChainWork>,
+    ) -> Result<(), StoreError> {
         self.status.store(StatusType::Syncing);
 
         let block_hash = block.context.index.hash;
@@ -2016,11 +2043,12 @@ impl DbV1 {
         )?;
 
         let header = BlockHeaderData::new(block.context, *block.data());
-        let header_entry_bytes = StoredEntryVar::<BlockHeaderData>::to_bytes_with_item_version(
-            &block_height_bytes,
-            &header,
-            version::V1,
-        )?;
+        let header_entry_bytes =
+            StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::to_bytes_with_item_version(
+                &block_height_bytes,
+                &header,
+                version::V1,
+            )?;
 
         let commitment_tree_entry_bytes =
             StoredEntryFixed::<CommitmentTreeData>::to_bytes_with_item_version(
@@ -2151,22 +2179,6 @@ impl DbV1 {
         self.status.store(StatusType::Ready);
         Ok(())
     }
-}
-
-/// Increments per-block throughput counters (transactions, Sapling outputs,
-/// Orchard actions). Only compiled when the `prometheus` feature is enabled.
-#[cfg(feature = "prometheus")]
-fn record_block_throughput(block: &IndexedBlock) {
-    let transactions = block.transactions().len() as u64;
-    let mut sapling_outputs: u64 = 0;
-    let mut orchard_actions: u64 = 0;
-    for tx in block.transactions() {
-        sapling_outputs = sapling_outputs.saturating_add(tx.sapling().outputs().len() as u64);
-        orchard_actions = orchard_actions.saturating_add(tx.orchard().actions().len() as u64);
-    }
-    metrics::counter!(SYNC_TRANSACTIONS_TOTAL).increment(transactions);
-    metrics::counter!(SYNC_SAPLING_OUTPUTS_TOTAL).increment(sapling_outputs);
-    metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL).increment(orchard_actions);
 }
 
 #[cfg(test)]

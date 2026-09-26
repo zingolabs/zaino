@@ -1,17 +1,15 @@
 [package]
 name = "zaino-rpc"
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Shared JSON-RPC 2.0 client: envelope, retry, auth. No validator knowledge."
-
-[features]
-# Enables the shared outbound-RPC metric names consumed by `zainod`'s
-# registrations. No metrics are emitted from this crate by the feature alone.
-prometheus = []
 
 [dependencies]
 zaino-source = { workspace = true }
@@ -21,6 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 zaino-common = { workspace = true }
+metrics = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

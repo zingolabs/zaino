@@ -13,6 +13,10 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.6.1] - 2026-09-26
+### Added
+- Add the `zaino.index.v1.IndexedTipService` protocol with the `SubscribeIndexedTips` server-streaming call.
+
 ## [0.6.0] - 2026-09-11
 
 ### Added

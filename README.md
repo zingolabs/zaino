@@ -52,6 +52,7 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 ```
 packages/                          Cargo workspace member crates, in dependency order
   zaino-status/                      How a component reports whether it is working
+  zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
   zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
@@ -73,19 +74,16 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-state/                       Chain state and indexer service library
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
-  zaino-bench/                       Benchmark harness (sync time, connection ceiling, serve rate)
 
 live-tests/                        Live-test suite — standalone workspace, run on the ztest k8s harness
   e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
   clientless/                        Clientless partition (Zaino services -> live validator, no client)
   zaino-testutils/                   Shared test harness and utilities
-  test_environment/                  CI build-environment image context
-    Containerfile                      Rust toolchain + protoc + RocksDB + cargo-nextest (no validators)
 
 docs/                              Architecture diagrams, specs, and usage guides
-tools/                             Development tools, shell helpers, makefiles
-  scripts/                           Shell scripts (CI tag computation, helpers, lints)
-  makefiles/                         cargo-make task definitions (lints, rocksdb, notify)
+tools/                             Development tools
+  workbench/                         Repo guards run by `makers lint`
+  relman/                            Release manager
 .github/                           CI workflows and issue templates
 .githooks/                         Git hooks (pre-push)
 
@@ -95,8 +93,8 @@ Makefile.toml                      cargo-make task definitions
 rust-toolchain.toml                Pinned Rust toolchain
 deny.toml                          cargo-deny policy (licenses, advisories)
 
-Dockerfile                         Production container image
-entrypoint.sh                      Production container entrypoint
+Dockerfile                         Container image
+entrypoint.sh                      Container entrypoint
 .dockerignore                      Docker build context exclusions
 
 README.md                          This file
@@ -109,8 +107,8 @@ LICENSE                            Apache-2.0 license text
 
 ## Server network exposure
 
-Zaino exposes two servers, with different defaults reflecting their transport
-security:
+Zaino exposes two servers and one optional telemetry listener, with different
+defaults reflecting their transport security:
 
 - **gRPC** (`[grpc_settings]`): may bind to a public address only when TLS is
   configured (`[grpc_settings.tls]` with `cert_path` / `key_path`). Binding to a
@@ -126,10 +124,30 @@ security:
   networks where encryption is handled externally (e.g. containers behind a
   service mesh or proxy that terminates TLS).
 
+- **Admin listener** (`metrics_endpoint`, feature `prometheus`): off unless set.
+  `/metrics`, `/livez` (`/readyz`: TODO) on its own thread + runtime — see
+  [`zainod`'s guide](./packages/zainod/usage.md). Unauthenticated + unencrypted, publishes
+  chain tip, sync progress, request volumes, process memory. Non-private bind **warned, not
+  rejected** → restrict to loopback, a private interface, or the scraper's network.
+
 **Security implication:** the JSON-RPC interface transmits unencrypted traffic.
 Do not expose it to untrusted networks, and only enable
 `allow_unencrypted_public_json_rpc_bind` when an external layer secures the
 connection.
+
+## Container image
+
+`Dockerfile`: `rust:<pin>` build → `debian-slim` runtime, non-root `container_user`.
+
+| Build arg        | Values                                    | Default   |
+| ---------------- | ----------------------------------------- | --------- |
+| `CARGO_FEATURES` | comma-separated, e.g. `prometheus`, `no_tls_use_unencrypted_traffic` | empty (default set) |
+| `CARGO_PROFILE`  | `release`, `profiling` (+ line tables & frame pointers, for sampling profilers) | `release` |
+
+```sh
+docker build -t zainod --build-arg CARGO_FEATURES=prometheus .
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod  # local profiling build
+```
 
 ## Running tests
 
@@ -163,26 +181,42 @@ parallelism — re-run, or lower `--test-threads`.
 
 ### Architecture Decision Records
 Decisions that shape the codebase, with the reasoning that produced them. Read
-these before changing the structure they describe.
-- [ADR-0006](./docs/adr/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
-- [ADR-0007](./docs/adr/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
-- [ADR-0008](./docs/adr/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
-- [ADR-0009](./docs/adr/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
-- [ADR-0010](./docs/adr/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
-- [ADR-0011](./docs/adr/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
-- [ADR-0012](./docs/adr/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
+these before changing the structure they describe. Every record lives in
+[zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs). This
+repository checks in only a submodule pointer to it at `docs/adr/`, so the
+directory is empty until you materialise it, and zaino's own records then sit
+under `docs/adr/zaino/`. Propose a record in zingo-adrs, never here.
+
+```sh
+# materialise the records after cloning
+git submodule update --init docs/adr
+
+# advance the pointer to the current dev of zingo-adrs, then commit
+git submodule update --remote docs/adr
+```
+
+Records a newcomer needs first:
+- [ADR-0006](./docs/adr/zaino/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
+- [ADR-0007](./docs/adr/zaino/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
+- [ADR-0008](./docs/adr/zaino/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
+- [ADR-0009](./docs/adr/zaino/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
+- [ADR-0010](./docs/adr/zaino/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
+- [ADR-0011](./docs/adr/zaino/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
+- [ADR-0012](./docs/adr/zaino/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
 
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
 mistakes its design is trying to prevent.
 - [`zaino-status`](./packages/zaino-status/usage.md): the status vocabulary, and why it stays vocabulary.
+- [`zaino-component`](./packages/zaino-component/usage.md): the component abstraction, its two independent axes, and the observed/owned line.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
+- [`zaino-persistence`](./packages/zaino-persistence/usage.md): the storage backend port, and why index code never names a concrete store.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
-- [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
+- [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it does not do.
 - [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
 - [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the JSON-RPC adapter and its error classification.
-- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
+- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it cannot answer.
 - [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
 - [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
@@ -192,7 +226,8 @@ mistakes its design is trying to prevent.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
-- [`zaino-bench`](./packages/zaino-bench/usage.md): measuring sync time, connection ceiling, and serve rate on a running node.
+- [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
+- [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).
 
 
 ## Security Vulnerability Disclosure

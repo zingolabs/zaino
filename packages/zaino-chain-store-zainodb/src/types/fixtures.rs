@@ -1,9 +1,10 @@
 //! Unit tests for Zaino-state::ChainIndex::types and encoding.
 
-use std::num::NonZeroU128;
+use core::num::NonZeroU128;
 
 use crate::types::{
-    BlockContext, BlockData, BlockHeaderData, ChainWork, CompactDifficulty, EquihashSolution,
+    AbsoluteChainWork, BlockContext, BlockData, BlockHeaderData, CompactDifficulty,
+    EquihashSolution,
 };
 use zaino_encoding::{version, ZainoVersionedSerde as _};
 
@@ -11,16 +12,19 @@ use zaino_encoding::{version, ZainoVersionedSerde as _};
 /// validation but does not correspond to any specific real-world block.
 const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 
+/// The chainwork of the canonical fixture header.
+const CANONICAL_CHAINWORK: NonZeroU128 = NonZeroU128::new(0x42).expect("nonzero literal");
+
 /// Canonical [`BlockHeaderData`] used by the serde tests in this module
 /// and by cross-boundary tests that start from its encoded bytes.
 ///
 /// Changing the values produced here invalidates every golden-bytes test
 /// that pins an encoding — regenerate goldens and audit the change for
 /// on-disk-stability implications.
-pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
+pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData<AbsoluteChainWork> {
     let hash = crate::types::BlockHash::from([1u8; 32]);
     let parent_hash = crate::types::BlockHash::from([2u8; 32]);
-    let chainwork = ChainWork::new(NonZeroU128::new(0x42).expect("nonzero"));
+    let chainwork = AbsoluteChainWork::new(CANONICAL_CHAINWORK);
     let height = crate::types::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");
@@ -60,9 +64,9 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
     // BlockHash (parent_hash): V1 tag + 32-byte body.
     out.push(version::V1);
     out.extend_from_slice(&[0x02; 32]);
-    // ChainWork: V1 tag + 32-byte big-endian (value = 0x42, in the low-order 16
+    // AbsoluteChainWork: V1 tag + 32-byte big-endian (value = 0x42, in the low-order 16
     // bytes). Corrected from little-endian: the established v1 on-disk format is
-    // big-endian (the original `ChainWork([u8;32])` via `U256::to_big_endian`,
+    // big-endian (the original `AbsoluteChainWork([u8;32])` via `U256::to_big_endian`,
     // and the `v1_test_db` fixture) — #1313 wrongly minted this golden LE, which
     // is exactly a golden enshrining the bug it should have caught.
     out.push(version::V1);

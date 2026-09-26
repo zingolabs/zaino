@@ -217,11 +217,7 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
         // them (via `GetTreestate` or its own index). Zero is a placeholder,
         // not a measurement: a consumer that needs real sizes must not read
         // them off this block.
-        let chain_metadata = ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
-        };
+        let chain_metadata = ChainMetadata::ZERO;
 
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
             .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
@@ -319,7 +315,7 @@ impl ZebraRpcAdapter {
     /// default.
     async fn call_parsed_classified<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         timeout: Option<std::time::Duration>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
@@ -340,7 +336,7 @@ impl ZebraRpcAdapter {
     /// into the caller's error type.
     async fn call_parsed<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
     ) -> Result<T, QueryError<E>>
@@ -360,7 +356,7 @@ impl ZebraRpcAdapter {
     /// reading those codes this way is unambiguous on exactly these methods.
     async fn call_parsed_or_absent<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         absent: impl FnOnce() -> E,
@@ -379,7 +375,7 @@ impl ZebraRpcAdapter {
     /// `InvalidAddress` answer.
     async fn call_parsed_or_invalid_address<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         invalid: impl FnOnce(String) -> E,
@@ -406,7 +402,7 @@ impl ZebraRpcAdapter {
     /// [`GetSpentInfo`](zaino_source::GetSpentInfo).
     async fn call_parsed_optional<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<Option<T>, parse::ParseError>,
     ) -> Result<Option<T>, QueryError<E>>
@@ -447,11 +443,7 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
             .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
 
         // Tree sizes are indexed state, not block data — see `GetBlock`.
-        let chain_metadata = ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
-        };
+        let chain_metadata = ChainMetadata::ZERO;
         zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
             .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
     }
@@ -784,6 +776,24 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraRpcAdapter {
             hash_param(block),
             parse::parse_tree_roots,
             || zaino_source::GetCommitmentTreeRootsError::BlockNotFound(block),
+        )
+        .await
+    }
+}
+
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ZebraRpcAdapter {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<
+        (BlockHash, zaino_primitives::types::TreeRoots),
+        QueryError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        self.call_parsed_or_absent(
+            "z_gettreestate",
+            vec![serde_json::Value::String(u32::from(height).to_string())],
+            parse::parse_tree_roots_with_hash,
+            || zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
         )
         .await
     }

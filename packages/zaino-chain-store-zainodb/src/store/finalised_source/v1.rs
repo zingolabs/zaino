@@ -32,10 +32,10 @@ use crate::store::capability::{
 };
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactOrchardAction, CompactSaplingSpend,
-    CompactTxData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
-    TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
+    AbsoluteChainWork, BlockHash, BlockHeaderData, CommitmentTreeData, CompactOrchardAction,
+    CompactSaplingSpend, CompactTxData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList,
+    Outpoint, SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx,
+    TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
 };
 use crate::{config::StoreSettings, error::StoreError};
 use zaino_encoding::{CompactSize, FixedEncodedLen as _, ZainoVersionedSerde as _};
@@ -66,7 +66,6 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 use crate::types::{AddrEventBytes, AddrHistRecord, AddrScript};
 
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
-use zebra_chain::parameters::NetworkKind;
 
 use super::LmdbLifecycle;
 
@@ -304,6 +303,22 @@ impl LmdbLifecycle for DbV1 {
     }
 }
 
+/// - One definition: `open` creates the env here, the size metric measures the file in
+///   it; two copies drift onto different networks
+fn db_path(config: &StoreSettings) -> Result<std::path::PathBuf, StoreError> {
+    // A v1 backend is only opened for a store that persists, so an absent path is a
+    // routing mistake above, not a configuration an operator can express
+    let db_root = config.store.path().ok_or_else(|| {
+        StoreError::Custom(
+            "a persistent v1 database was opened for a store configured to hold nothing"
+                .to_string(),
+        )
+    })?;
+    Ok(db_root
+        .join(super::super::network_dir(config.db.network().kind()))
+        .join("v1"))
+}
+
 /// Zaino’s Finalised State database V1.
 ///
 /// This type owns an LMDB [`Environment`] and a fixed set of named databases representing the V1
@@ -319,8 +334,8 @@ const MIN_LMDB_READERS: usize = 2048;
 
 /// Upper bound on LMDB reader slots.
 ///
-/// 8192 slots is ~512 KiB of shared memory, and leaves headroom above the concurrent-client
-/// counts we benchmark (5000) for Zaino's own internal readers: the sync loop, startup
+/// 8192 slots is ~512 KiB of shared memory, and leaves headroom above a 5000 concurrent-client
+/// target for Zaino's own internal readers: the sync loop, startup
 /// validation, the chain head, and the mempool all take slots of their own.
 const MAX_LMDB_READERS: usize = 8192;
 
@@ -496,25 +511,12 @@ impl DbV1 {
 
         // Prepare database details and path.
         let db_size_bytes = config.db.size().to_byte_count();
-        let db_path_dir = match config.db.network().kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
-        };
-        // A v1 backend is only ever opened for a store that persists, so an
-        // absent path is a routing mistake above rather than a configuration an
-        // operator can express: `ChainStoreConfig` with no path is the
-        // passthrough case, and `spawn` takes the ephemeral branch for it.
-        let db_root = config.store.path().ok_or_else(|| {
-            StoreError::Custom(
-                "a persistent v1 database was opened for a store configured to hold nothing"
-                    .to_string(),
-            )
-        })?;
-        let db_path = db_root.join(db_path_dir).join("v1");
+        let db_path = db_path(config)?;
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }
+        // Fixed for the env's lifetime → published here, not per commit
+        metrics::gauge!(crate::metric_names::DB_MAP_SIZE_BYTES).set(db_size_bytes as f64);
 
         // LMDB reader slots, from CPU count, clamped to [MIN_LMDB_READERS, MAX_LMDB_READERS].
         //
@@ -527,7 +529,7 @@ impl DbV1 {
         // belongs to a read *transaction* rather than a thread: every concurrent read holds one,
         // and exhausting the table fails reads with `MDB_READERS_FULL`. The old ceiling of 4096
         // with a floor of 512 gave exactly 512 on any host with 16 cores or fewer — low enough
-        // that an ordinary load test exhausted it (zingolabs/zaino, benchmark run 2026-08-21).
+        // that ordinary concurrent load exhausted it.
         //
         // Raising this does not make exhaustion safe to hit. A client can still open more
         // concurrent reads than there are slots, and `MDB_READERS_FULL` is currently treated as
@@ -724,6 +726,9 @@ impl DbV1 {
                 // *** steady-state loop ***
                 let mut maintenance = interval(Duration::from_secs(60));
 
+                // Before the loop: an already-synced node would otherwise publish none
+                zaino_db.record_db_used_bytes();
+
                 loop {
                     // Check for closing status.
                     if zaino_db.status.load() == StatusType::Closing {
@@ -753,7 +758,11 @@ impl DbV1 {
                     let hash_opt = (|| -> Option<BlockHash> {
                         let ro = zaino_db.env.begin_ro_txn().ok()?;
                         let bytes = ro.get(zaino_db.headers, &hkey).ok()?;
-                        let entry = StoredEntryVar::<BlockHeaderData>::deserialize(bytes).ok()?;
+                        let entry =
+                            StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::deserialize(
+                                bytes,
+                            )
+                            .ok()?;
                         Some(entry.inner().context.index.hash)
                     })();
 
@@ -763,6 +772,20 @@ impl DbV1 {
                         }
                         // Immediately loop – maybe the chain has more blocks ready.
                         continue;
+                    }
+
+                    // Nothing left to validate → about to sleep on the maintenance
+                    // tick, the sampling point for gauges that must stay fresh while idle
+                    {
+                        zaino_db.record_db_used_bytes();
+                        // Else published only by a pass that wrote blocks: on a quiet
+                        // chain, never
+                        if let Ok(Some(built)) =
+                            zaino_db.read_tx_out_set_accumulator_built_height().await
+                        {
+                            metrics::gauge!(crate::metric_names::SYNC_ACCUMULATOR_HEIGHT)
+                                .set(built.0 as f64);
+                        }
                     }
 
                     zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
@@ -903,8 +926,10 @@ impl DbV1 {
             for (height_bytes, header_entry_bytes) in cursor.iter() {
                 let height = Height::from_bytes(height_bytes)?;
                 let header_entry =
-                    StoredEntryVar::<BlockHeaderData>::from_bytes(header_entry_bytes)
-                        .map_err(|e| StoreError::Custom(format!("corrupt header entry: {e}")))?;
+                    StoredEntryVar::<BlockHeaderData<AbsoluteChainWork>>::from_bytes(
+                        header_entry_bytes,
+                    )
+                    .map_err(|e| StoreError::Custom(format!("corrupt header entry: {e}")))?;
                 let hash = *header_entry.inner().context.hash();
 
                 zaino_db.validate_block_blocking(height, hash)?

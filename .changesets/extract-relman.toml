@@ -1,0 +1,3 @@
+consumed_in = "zainod-0-10-1"
+[empty]
+reason = "Tooling only: relman moves to zingolabs/release_manager; no governed crate changes."

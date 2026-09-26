@@ -3,21 +3,19 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use ztest::prelude::{family, Exporter, ZainoIndexer};
+use ztest::prelude::{gauge, Dimension, Exporter, Gauge, ZainoIndexer};
 
 /// Per-scrape budget — `timeout` bounds the whole poll loop, not one round trip
 const SCRAPE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Finalised writer's committed + fsynced tip (absent until the v1 write path runs)
+pub const FINALIZED_HEIGHT: Gauge = gauge("zaino_sync_finalized_height", Dimension::Count);
 
 /// Polls the finalised writer's committed tip until it reaches `target`.
 ///
 /// No served height answers this. Everything above the seam comes from the
 /// in-memory chain head, and below it zaino serves straight from the validator
 /// it proxies, so both read correct at heights the index has never written.
-///
-/// `zaino_db_tip_height` and not [`ZainoIndexer::index_frontier`]: that reads
-/// `zaino_sync_finalized_height`, set only inside a throttled progress-log
-/// branch and so never created on a short chain, then falls back to a gauge
-/// zaino does not emit.
 ///
 /// Requires the indexer image to carry the `prometheus` feature; without it
 /// there is no exporter to scrape and this returns `Err` rather than hanging.
@@ -37,7 +35,7 @@ pub async fn wait_for_finalised(
             .read(SCRAPE_TIMEOUT)
             .await
             .map_err(anyhow::Error::msg)?
-            .height_gauge(family("zaino_db_tip_height"));
+            .height(FINALIZED_HEIGHT);
         if let Some(frontier) = frontier.filter(|f| *f >= target) {
             return Ok(frontier);
         }

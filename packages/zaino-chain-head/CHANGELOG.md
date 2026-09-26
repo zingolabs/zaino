@@ -13,6 +13,17 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-09-26
+### Added
+- `ChainHeadBlockSource` is a bound alias over six `zaino-source` ports, not five: it now also requires `OneShotGetCommitmentTreeRootsByHeight`. A source that implements the bound by hand must answer the new port.
+### Changed
+- ChainHeadWork is removed; a retained block's work is now a RelativeChainWork from zaino-primitives, measured from the anchor rather than from the anchor's parent.
+  _Migration:_ Replace ChainHeadWork with zaino_primitives::types::RelativeChainWork. ChainHeadWork::as_u128 has no replacement: an anchor-relative total cannot be converted to an absolute chain work, which is what that method allowed. The anchor's own work is now RelativeChainWork::ZERO, so a window's totals are each one block's work lower than before; comparisons between them are unaffected.
+- dependency `zaino-consensus` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Internal
+- Block work uses the `zaino-primitives` chain-work types.
+
 ## [0.1.1] - 2026-09-11
 
 ### Added

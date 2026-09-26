@@ -5,6 +5,7 @@
 //! layer, because this response reshapes value pools into a fixed array and
 //! renames network upgrades by consensus branch id.
 
+use crate::rpc::jsonrpc::wire::common::amount;
 use zaino_primitives::types::{BlockchainInfo, ValuePoolBalance};
 use zebra_chain::parameters::Network;
 use zebra_rpc::methods::GetBlockchainInfoResponse;
@@ -15,10 +16,6 @@ pub enum BlockchainInfoWireError {
     /// A value pool the interface has no slot for.
     #[error("unknown value pool `{0}`")]
     UnknownValuePool(String),
-
-    /// A pool balance outside the range the interface's amount type allows.
-    #[error("value pool balance out of range: {0}")]
-    PoolBalanceOutOfRange(String),
 
     /// A consensus branch id this build does not recognise.
     ///
@@ -38,21 +35,8 @@ fn pool_balance(
 ) -> Result<zebra_rpc::client::GetBlockchainInfoBalance, BlockchainInfoWireError> {
     use zebra_rpc::client::GetBlockchainInfoBalance;
 
-    fn amount<C: zebra_chain::amount::Constraint>(
-        zats: i64,
-    ) -> Result<zebra_chain::amount::Amount<C>, BlockchainInfoWireError> {
-        zebra_chain::amount::Amount::try_from(zats)
-            .map_err(|e| BlockchainInfoWireError::PoolBalanceOutOfRange(e.to_string()))
-    }
-
-    let value = amount(
-        i64::try_from(u64::from(balance.chain_value))
-            .map_err(|e| BlockchainInfoWireError::PoolBalanceOutOfRange(e.to_string()))?,
-    )?;
-    let delta = balance
-        .value_delta
-        .map(|d| amount(i64::from(d)))
-        .transpose()?;
+    let value = amount::non_negative(balance.chain_value);
+    let delta = balance.value_delta.map(amount::negative_allowed);
 
     Ok(match balance.id.as_str() {
         "transparent" => GetBlockchainInfoBalance::transparent(value, delta),
@@ -66,7 +50,11 @@ fn pool_balance(
         "lockbox" | "deferred" => GetBlockchainInfoBalance::deferred(value, delta),
         "ironwood" => GetBlockchainInfoBalance::ironwood(value, delta),
         // `chainSupply` is a total rather than a pool, and arrives unnamed.
-        "" => GetBlockchainInfoBalance::chain_supply(Default::default()),
+        // `chain_supply` sums a `ValueBalance`, so the total is handed to it as a
+        // one-pool balance — the only public constructor that leaves `id` empty.
+        "" => GetBlockchainInfoBalance::chain_supply(
+            zebra_chain::value_balance::ValueBalance::from_transparent_amount(value),
+        ),
         other => return Err(BlockchainInfoWireError::UnknownValuePool(other.to_string())),
     })
 }
@@ -226,6 +214,26 @@ mod tests {
         assert_eq!(pools[0]["chainValue"], 0.00001);
         assert_eq!(pools[1]["id"], "sprout");
         assert_eq!(pools[1]["chainValueZat"], 0);
+    }
+
+    /// `chainSupply` carries the validator's total, not a zero. Discarding it
+    /// reported every chain as holding nothing.
+    #[test]
+    fn chain_supply_carries_its_value() {
+        let mut info = sample();
+        info.chain_supply = pool("", 3_000);
+
+        let wire =
+            from_domain(info, &Network::new_regtest(Default::default())).expect("sample renders");
+        let json = serde_json::to_value(&wire).unwrap();
+
+        assert_eq!(json["chainSupply"]["chainValueZat"], 3_000);
+        assert_eq!(json["chainSupply"]["monitored"], true);
+        assert!(
+            json["chainSupply"].get("id").is_none(),
+            "a total is unnamed: {}",
+            json["chainSupply"]
+        );
     }
 
     /// An unnamed pool is `chainSupply`, a total rather than a pool. Filing it
