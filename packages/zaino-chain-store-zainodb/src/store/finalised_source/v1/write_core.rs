@@ -358,10 +358,6 @@ fn ironwood_entry(ironwood: Vec<Option<OrchardCompactTx>>) -> Option<OrchardTxLi
 }
 
 impl DbWrite for DbV1 {
-    async fn write_block(&self, block: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
-        self.write_block(block).await
-    }
-
     /// Bulk catch-up: ingests `tip+1..=height` from `source`, deferring txout-set accumulator
     /// maintenance across the run and rebuilding it once at the end. Each block is written with
     /// `update_tx_out_set = false` (deferred).
@@ -543,14 +539,6 @@ impl DbWrite for DbV1 {
         self.advance_tx_out_set_accumulator_to_tip(height).await?;
 
         Ok(())
-    }
-
-    async fn delete_block_at_height(&self, height: Height) -> Result<(), StoreError> {
-        self.delete_block_at_height(height).await
-    }
-
-    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
-        self.delete_block(block).await
     }
 }
 

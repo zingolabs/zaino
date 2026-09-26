@@ -89,10 +89,7 @@ pub(crate) enum TipSelection {
     Source,
     /// The heaviest retained block is the best chain, even when the source has
     /// moved its tip elsewhere.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a selectable policy; only tests select it")
-    )]
+    #[cfg(test)]
     HeaviestRetained,
 }
 
@@ -509,6 +506,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     heavier = ?heaviest.reference,
                     "a retained block outweighs the source's tip; following the source"
                 ),
+                #[cfg(test)]
                 TipSelection::HeaviestRetained => {
                     let heaviest = heaviest.clone();
                     self.handle_reorg(&mut graph, &heaviest).await?;

@@ -295,11 +295,8 @@ pub enum ChainIndexErrorKind {
     /// Zaino is in some way nonfunctional
     InternalServerError,
     /// The given snapshot contains invalid data.
-    // This variant isn't used yet...it should indicate
-    // that the provided snapshot contains information unknown to Zebra
     // Unlike an internal server error, generating a new snapshot may solve
     // whatever went wrong
-    #[allow(dead_code)]
     InvalidSnapshot,
     /// The caller asked for something Zaino cannot serve *right now*, but
     /// could on a later attempt — a mempool read against a snapshot the

@@ -17,12 +17,8 @@
 
 use corez::io::{self, Read, Write};
 
-use crate::codec::{
-    read_fixed_le, read_u32_le, write_fixed_le, write_u32_le, DbCodec, FixedEncodedLen,
-};
-use crate::types::{
-    AbsoluteChainWork, BlockContext, BlockHash, BlockIndex, CompactDifficulty, Height,
-};
+use crate::codec::{read_fixed_le, write_fixed_le, DbCodec, FixedEncodedLen};
+use crate::types::{AbsoluteChainWork, BlockContext, BlockHash, BlockIndex, Height};
 
 /// Database-adjacent persistence shape for [`AbsoluteChainWork`].
 ///
@@ -62,40 +58,6 @@ impl DbCodec for PersistentChainWork {
 impl FixedEncodedLen for PersistentChainWork {
     /// The record is a single 32-byte value.
     const ENCODED_LEN: usize = 32;
-}
-
-/// Database-adjacent persistence shape for [`CompactDifficulty`].
-///
-/// Stores the raw `u32` nBits value. Validation happens in `into_business`.
-#[derive(Debug)]
-pub(super) struct PersistentCompactDifficulty(u32);
-
-#[expect(dead_code, reason = "will be used by DB schema types")]
-impl PersistentCompactDifficulty {
-    pub(super) fn from_business(cd: &CompactDifficulty) -> Self {
-        Self(cd.as_bits())
-    }
-
-    pub(super) fn into_business(self) -> io::Result<CompactDifficulty> {
-        CompactDifficulty::try_from_bits(self.0)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-}
-
-impl DbCodec for PersistentCompactDifficulty {
-    fn encode<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_u32_le(w, self.0)
-    }
-
-    fn decode<R: Read>(r: &mut R) -> io::Result<Self> {
-        let bits = read_u32_le(r)?;
-        Ok(Self(bits))
-    }
-}
-
-impl FixedEncodedLen for PersistentCompactDifficulty {
-    /// The record is a single little-endian `u32`.
-    const ENCODED_LEN: usize = 4;
 }
 
 /// Database-adjacent persistence shape for [`BlockContext`].

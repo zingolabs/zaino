@@ -28,10 +28,6 @@ impl DbRead for DbV1 {
             Err(other) => Err(other),
         }
     }
-
-    async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
-        self.get_metadata().await
-    }
 }
 
 impl DbV1 {
@@ -70,25 +66,9 @@ impl DbV1 {
         Ok(height)
     }
 
-    /// Fetch the height range for the given block hashes.
-    async fn get_block_range_by_hash(
-        &self,
-        start_hash: BlockHash,
-        end_hash: BlockHash,
-    ) -> Result<(Height, Height), StoreError> {
-        let start_height = self
-            .resolve_stored_height(HashOrHeight::Hash(start_hash.into()))
-            .await?;
-        let end_height = self
-            .resolve_stored_height(HashOrHeight::Hash(end_hash.into()))
-            .await?;
-
-        self.require_stored_range(start_height, end_height).await?;
-        Ok((start_height, end_height))
-    }
-
     /// Fetch database metadata.
-    async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
+    #[cfg(test)]
+    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
         self.read_row(self.metadata, "metadata", METADATA_KEY)?
             .ok_or_else(|| StoreError::DataUnavailable("metadata missing from db".into()))
     }
@@ -175,68 +155,5 @@ impl DbV1 {
     ) -> Result<Option<T>, StoreError> {
         let height_bytes = height.to_bytes()?;
         self.read_row(table, label, &height_bytes)
-    }
-
-    /// Cursor-scans and decodes every `T` row in the inclusive `start..=end` height range.
-    pub(super) async fn scan_rows<T: DbCodec>(
-        &self,
-        table: lmdb::Database,
-        label: &str,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<T>, StoreError> {
-        self.scan_rows_mapped(table, label, start, end, core::convert::identity)
-            .await
-    }
-
-    /// [`DbV1::scan_rows`] with each decoded row passed through `map` before it is collected.
-    pub(super) async fn scan_rows_mapped<T: DbCodec, Mapped>(
-        &self,
-        table: lmdb::Database,
-        label: &str,
-        start: Height,
-        end: Height,
-        map: impl FnMut(T) -> Mapped,
-    ) -> Result<Vec<Mapped>, StoreError> {
-        if end.0 < start.0 {
-            return Err(StoreError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.require_stored_range(start, end).await?;
-        let start_bytes = start.to_bytes()?;
-        let end_bytes = end.to_bytes()?;
-
-        let raw_entries = tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let mut raw_entries = Vec::new();
-            let mut cursor = match txn.open_ro_cursor(table) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(StoreError::DataUnavailable(format!(
-                        "{label} data missing from db"
-                    )));
-                }
-                Err(e) => return Err(StoreError::LmdbError(e)),
-            };
-            for (k, v) in cursor.iter_from(&start_bytes[..]) {
-                if k > &end_bytes[..] {
-                    break;
-                }
-                raw_entries.push(v.to_vec());
-            }
-            Ok::<Vec<Vec<u8>>, StoreError>(raw_entries)
-        })?;
-
-        let mut map = map;
-        raw_entries
-            .into_iter()
-            .map(|bytes| {
-                T::from_bytes(&bytes)
-                    .map(&mut map)
-                    .map_err(|e| StoreError::Custom(format!("{label} decode error: {e}")))
-            })
-            .collect()
     }
 }
