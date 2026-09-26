@@ -43,7 +43,7 @@ pub enum StoreError {
         reason: String,
     },
 
-    /// A block offered for writing does not have the stored tip as its parent, so appending it would fork the finalised chain.
+    /// A block offered for writing is not the block after the stored tip, by height or by parent hash, so appending it would break the append-only finalised chain.
     #[error("block @ height {height} (hash {hash}) does not extend the stored tip {tip}")]
     DoesNotExtendTip {
         /// The height the block was offered at.

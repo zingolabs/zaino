@@ -5,9 +5,11 @@ description = """
 The finalised store has no migrations. When the stored schema hash differs \
 from the build's, or cannot be decoded, the store moves its database aside \
 (to v1.stale-<hash prefix>, or v1.stale-unreadable) and resyncs from the \
-validator; it never deletes. A stale directory that already exists stops the \
-start, so the operator decides what to do with it. Every existing database \
-rebuilds once on its first start under this release.
+validator; it never deletes. A stale name that is already taken gets a \
+numbered suffix, so nothing moved aside earlier is displaced. The check reads \
+the metadata record alone, creates no table in a database it moves aside, and \
+also moves aside a database that holds blocks without a metadata record. \
+Every existing database rebuilds once on its first start under this release.
 """
 
 [[changes]]
@@ -30,12 +32,12 @@ description = """
 Rows are stored as bare encodings, without checksums or version tags. The \
 startup integrity scans, the background re-validation, and the validation of \
 reads are removed. The write path keeps two checks. Each block must extend \
-the stored tip, and a block that does not fails as \
-StoreError::DoesNotExtendTip. The txids of each block must also reproduce its \
+the stored tip, one height above it with the tip as its parent, and a block \
+that does not fails as StoreError::DoesNotExtendTip. The txids of each block must also reproduce its \
 header's merkle root, which catches a fault in Zaino's own block conversion. \
-The maintenance task also cross-checks the spent index, and the address \
-history when compiled in, against the transparent data of each stored block. \
-A failed cross-check sets the store's status to CriticalError.
+The indexes a write derives from a block are covered by unit tests, not by \
+runtime cross-checks. Silent corruption on disk and mutation of the database \
+from outside Zaino are not in scope for the store's correctness checks.
 """
 
 [[changes]]
