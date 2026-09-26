@@ -3,40 +3,15 @@
 //! This file defines [`DbReader`], the **read-only** interface that should be used for *all* chain
 //! data fetches from the finalised database.
 //!
-//! `DbReader` exists for two reasons:
-//!
-//! 1. **API hygiene:** it narrows the surface to reads and discourages accidental use of write APIs
-//!    from query paths.
-//! 2. **Routing safety:** it routes each call through [`Router`](super::router::Router) using a
-//!    [`CapabilityRequest`](crate::store::capability::CapabilityRequest),
-//!    ensuring the underlying backend supports the requested feature.
-//!
-//! # How routing works
-//!
-//! Each method in `DbReader` requests a specific capability (e.g. `BlockCoreExt`, `TransparentHistExt`).
-//! Internally, `DbReader::db(cap)` calls `FinalisedState::backend_for_cap(cap)`, which consults the router.
-//!
-//! - If the capability is currently served by the ephemeral passthrough, the
-//!   query runs against that.
-//! - Otherwise, it runs against primary if primary supports it.
-//! - If neither backend supports it, the call returns `StoreError::FeatureUnavailable(...)`.
-//!
-//! # Version constraints and error handling
-//!
-//! Some queries are only available in newer DB versions (notably most v1 extension traits).
-//! Callers should either:
-//! - require a minimum DB version (via configuration and/or metadata checks), or
-//! - handle `FeatureUnavailable` errors gracefully when operating against legacy databases.
+//! `DbReader` narrows the surface to reads and discourages accidental use of write APIs from query
+//! paths. Every method reads the one database directly; an optional index's methods exist only
+//! when its cargo feature is enabled.
 //!
 //! # Development: adding a new read method
 //!
 //! 1. Decide whether the new query belongs under an existing extension trait or needs a new one.
-//! 2. If a new capability is required:
-//!    - add a new `Capability` bit and `CapabilityRequest` variant in `capability.rs`,
-//!    - implement the corresponding extension trait for supported DB versions,
-//!    - delegate through `FinalisedSource` and route via the router.
-//! 3. Add the new method on `DbReader` that requests the corresponding `CapabilityRequest` and calls
-//!    into the backend.
+//! 2. Implement the extension trait for `DbV1`, gated by a cargo feature if the index is optional.
+//! 3. Add the new method on `DbReader`, which calls into the database.
 //!
 //! # Usage pattern
 //!
@@ -58,7 +33,6 @@
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use crate::error::StoreError;
-use crate::store::capability::CapabilityRequest;
 use crate::stream::CompactBlockStream;
 use crate::types::{
     db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, BlockHeaderData,
@@ -79,13 +53,13 @@ use super::{
         BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbMetadata,
         IndexedBlockExt, SpentOutputExt, TxOutSetExt,
     },
-    finalised_source::FinalisedSource,
+    finalised_source::v1::DbV1,
     FinalisedState,
 };
 
 use std::sync::Arc;
 
-/// Cheaply cloneable, read-only entry point for chain queries, routing each read to a backend that supports it.
+/// Cheaply cloneable, read-only entry point for chain queries.
 pub struct DbReader<T: ChainStoreSource> {
     /// Shared handle to the running `FinalisedState` instance.
     pub(crate) inner: Arc<FinalisedState<T>>,
@@ -111,31 +85,15 @@ impl<T: ChainStoreSource> std::fmt::Debug for DbReader<T> {
 }
 
 impl<T: ChainStoreSource> DbReader<T> {
-    /// Resolves the backend that should serve `cap` right now.
-    ///
-    /// This is the single routing choke-point for all `DbReader` methods. It delegates to
-    /// `FinalisedState::backend_for_cap`, which consults the router’s primary/ephemeral masks.
-    ///
-    /// # Errors
-    /// Returns `StoreError::FeatureUnavailable(...)` if no currently-open backend
-    /// advertises the requested capability.
+    /// Returns the database every read goes to.
     #[inline(always)]
-    fn db(&self, cap: CapabilityRequest) -> Result<Arc<FinalisedSource<T>>, StoreError> {
-        self.inner.backend_for_cap(cap)
-    }
-
-    /// Returns `true` if `db_result` is a feature-unavailable routing result.
-    #[inline(always)]
-    fn is_feature_unavailable(db_result: &Result<Arc<FinalisedSource<T>>, StoreError>) -> bool {
-        matches!(db_result, Err(StoreError::FeatureUnavailable(_)))
+    fn db(&self) -> &DbV1 {
+        self.inner.backend()
     }
 
     // ***** DB Core Read *****
 
-    /// Returns the current runtime status of the serving database.
-    ///
-    /// This reflects the status of the backend currently serving `READ_CORE`, which is the minimum
-    /// capability required for basic chain queries.
+    /// Returns the current runtime status of the database.
     pub fn status(&self) -> StatusType {
         self.inner.status()
     }
@@ -151,9 +109,6 @@ impl<T: ChainStoreSource> DbReader<T> {
     }
 
     /// Waits until the database reports [`StatusType::Ready`].
-    ///
-    /// This is a convenience wrapper around `FinalisedState::wait_until_ready` and should typically be
-    /// awaited once during startup before serving queries.
     pub(crate) async fn wait_until_ready(&self) {
         self.inner.wait_until_ready().await
     }
@@ -175,9 +130,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         txid: &TransactionHash,
     ) -> Result<Option<TxLocation>, StoreError> {
-        self.db(CapabilityRequest::BlockCoreExt)?
-            .get_tx_location(txid)
-            .await
+        self.db().get_tx_location(txid).await
     }
 
     /// Fetch block header data by height.
@@ -185,9 +138,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         height: Height,
     ) -> Result<BlockHeaderData, StoreError> {
-        self.db(CapabilityRequest::BlockCoreExt)?
-            .get_block_header(height)
-            .await
+        self.db().get_block_header(height).await
     }
 
     /// Fetches block headers for the given height range.
@@ -196,23 +147,17 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<BlockHeaderData>, StoreError> {
-        self.db(CapabilityRequest::BlockCoreExt)?
-            .get_block_range_headers(start, end)
-            .await
+        self.db().get_block_range_headers(start, end).await
     }
 
     /// Fetch the txid bytes for a given TxLocation.
     pub async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
-        self.db(CapabilityRequest::BlockCoreExt)?
-            .get_txid(tx_location)
-            .await
+        self.db().get_txid(tx_location).await
     }
 
     /// Fetch block txids by height.
     pub(crate) async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
-        self.db(CapabilityRequest::BlockCoreExt)?
-            .get_block_txids(height)
-            .await
+        self.db().get_block_txids(height).await
     }
 
     /// Fetches block txids for the given height range.
@@ -221,9 +166,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<TxidList>, StoreError> {
-        self.db(CapabilityRequest::BlockCoreExt)?
-            .get_block_range_txids(start, end)
-            .await
+        self.db().get_block_range_txids(start, end).await
     }
 
     // ***** Block Transparent Ext *****
@@ -233,9 +176,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<TransparentCompactTx>, StoreError> {
-        self.db(CapabilityRequest::BlockTransparentExt)?
-            .get_transparent(tx_location)
-            .await
+        self.db().get_transparent(tx_location).await
     }
 
     /// Fetch block transparent transaction data by height.
@@ -243,9 +184,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         height: Height,
     ) -> Result<TransparentTxList, StoreError> {
-        self.db(CapabilityRequest::BlockTransparentExt)?
-            .get_block_transparent(height)
-            .await
+        self.db().get_block_transparent(height).await
     }
 
     /// Fetches block transparent tx data for the given height range.
@@ -254,9 +193,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<TransparentTxList>, StoreError> {
-        self.db(CapabilityRequest::BlockTransparentExt)?
-            .get_block_range_transparent(start, end)
-            .await
+        self.db().get_block_range_transparent(start, end).await
     }
 
     // ***** Block shielded Ext *****
@@ -266,9 +203,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<SaplingCompactTx>, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_sapling(tx_location)
-            .await
+        self.db().get_sapling(tx_location).await
     }
 
     /// Fetch block sapling transaction data by height.
@@ -276,9 +211,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         height: Height,
     ) -> Result<SaplingTxList, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_block_sapling(height)
-            .await
+        self.db().get_block_sapling(height).await
     }
 
     /// Fetches block sapling tx data for the given height range.
@@ -287,9 +220,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<SaplingTxList>, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_block_range_sapling(start, end)
-            .await
+        self.db().get_block_range_sapling(start, end).await
     }
 
     /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
@@ -297,9 +228,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_orchard(tx_location)
-            .await
+        self.db().get_orchard(tx_location).await
     }
 
     /// Fetch block orchard transaction data by height.
@@ -307,9 +236,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         height: Height,
     ) -> Result<OrchardTxList, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_block_orchard(height)
-            .await
+        self.db().get_block_orchard(height).await
     }
 
     /// Fetches block orchard tx data for the given height range.
@@ -318,9 +245,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<OrchardTxList>, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_block_range_orchard(start, end)
-            .await
+        self.db().get_block_range_orchard(start, end).await
     }
 
     /// Fetch the serialized ironwood (NU6.3) compact tx for the given TxLocation, if present.
@@ -328,9 +253,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_ironwood(tx_location)
-            .await
+        self.db().get_ironwood(tx_location).await
     }
 
     /// Fetch block ironwood transaction data by height.
@@ -338,9 +261,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         height: Height,
     ) -> Result<OrchardTxList, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_block_ironwood(height)
-            .await
+        self.db().get_block_ironwood(height).await
     }
 
     /// Fetches block ironwood tx data for the given height range.
@@ -349,9 +270,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<OrchardTxList>, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_block_range_ironwood(start, end)
-            .await
+        self.db().get_block_range_ironwood(start, end).await
     }
 
     /// Fetch block commitment tree data by height.
@@ -359,9 +278,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         height: Height,
     ) -> Result<CommitmentTreeData, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
-            .get_block_commitment_tree_data(height)
-            .await
+        self.db().get_block_commitment_tree_data(height).await
     }
 
     /// Fetches block commitment tree data for the given height range.
@@ -370,7 +287,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<CommitmentTreeData>, StoreError> {
-        self.db(CapabilityRequest::BlockShieldedExt)?
+        self.db()
             .get_block_range_commitment_tree_data(start, end)
             .await
     }
@@ -388,9 +305,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         addr_script: AddrScript,
     ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        self.db(CapabilityRequest::TransparentHistIndex)?
-            .addr_records(addr_script)
-            .await
+        self.db().addr_records(addr_script).await
     }
 
     /// Fetch all address history records for a given address and TxLocation.
@@ -405,7 +320,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         addr_script: AddrScript,
         tx_location: TxLocation,
     ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
-        self.db(CapabilityRequest::TransparentHistIndex)?
+        self.db()
             .addr_and_index_records(addr_script, tx_location)
             .await
     }
@@ -424,7 +339,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start_height: Height,
         end_height: Height,
     ) -> Result<Option<Vec<TxLocation>>, StoreError> {
-        self.db(CapabilityRequest::TransparentHistIndex)?
+        self.db()
             .addr_tx_locations_by_range(addr_script, start_height, end_height)
             .await
     }
@@ -445,7 +360,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start_height: Height,
         end_height: Height,
     ) -> Result<Option<Vec<AddrUtxo>>, StoreError> {
-        self.db(CapabilityRequest::TransparentHistIndex)?
+        self.db()
             .addr_utxos_by_range(addr_script, start_height, end_height)
             .await
     }
@@ -465,7 +380,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start_height: Height,
         end_height: Height,
     ) -> Result<i64, StoreError> {
-        self.db(CapabilityRequest::TransparentHistIndex)?
+        self.db()
             .addr_balance_by_range(addr_script, start_height, end_height)
             .await
     }
@@ -480,9 +395,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         outpoint: Outpoint,
     ) -> Result<Option<TxLocation>, StoreError> {
-        self.db(CapabilityRequest::SpentOutputIndex)?
-            .get_outpoint_spender(outpoint)
-            .await
+        self.db().get_outpoint_spender(outpoint).await
     }
 
     /// Fetch the `TxLocation` entries for a batch of outpoints.
@@ -495,43 +408,22 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         outpoints: Vec<Outpoint>,
     ) -> Result<Vec<Option<TxLocation>>, StoreError> {
-        self.db(CapabilityRequest::SpentOutputIndex)?
-            .get_outpoint_spenders(outpoints)
-            .await
+        self.db().get_outpoint_spenders(outpoints).await
     }
 
     /// Returns the finalised-state txout-set accumulator.
-    ///
-    /// Routed through `TXOUT_SET_INDEX`. It used to route through
-    /// `TRANSPARENT_HIST_EXT`, which was accurate about the dependency — the
-    /// accumulator is only correct where spent indexing is maintained — but
-    /// named it after address history, a feature production does not enable.
     pub async fn get_tx_out_set_info_accumulator(
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
-        self.db(CapabilityRequest::TxOutSetIndex)?
-            .get_tx_out_set_info_accumulator()
-            .await
+        self.db().get_tx_out_set_info_accumulator().await
     }
 
-    /// Returns the previous transparent output referenced by `outpoint`.
-    ///
-    /// Routed through `BlockTransparentExt` because the lookup reads the transparent block
-    /// table via the txid index. Used by chain-level `gettxoutsetinfo` assembly to resolve
-    /// non-finalised spends against the finalised UTXO set.
-    ///
-    /// Deliberately *not* moved to `SPENT_OUTPUT_INDEX` alongside its only
-    /// caller's other calls: it does not read the spent index, and routing a
-    /// method through a capability it does not need is the mistake that split
-    /// created. A backend with transparent block rows and no spent index can
-    /// answer this.
+    /// Returns the previous transparent output referenced by `outpoint`, which `gettxoutsetinfo` uses to resolve non-finalised spends.
     pub async fn get_previous_output(
         &self,
         outpoint: Outpoint,
     ) -> Result<TxOutCompact, StoreError> {
-        self.db(CapabilityRequest::BlockTransparentExt)?
-            .get_previous_output(outpoint)
-            .await
+        self.db().get_previous_output(outpoint).await
     }
 
     // ***** IndexedBlock Ext *****
@@ -543,9 +435,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         &self,
         height: Height,
     ) -> Result<Option<IndexedBlock>, StoreError> {
-        self.db(CapabilityRequest::IndexedBlockExt)?
-            .get_chain_block(height)
-            .await
+        self.db().get_chain_block(height).await
     }
 
     /// Returns every stored `IndexedBlock` in `start..=end`, ascending, under one read transaction.
@@ -554,9 +444,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
-        self.db(CapabilityRequest::IndexedBlockExt)?
-            .get_stored_block_range(start, end)
-            .await
+        self.db().get_stored_block_range(start, end).await
     }
 
     pub(crate) async fn get_chain_block_by_hash(
@@ -584,7 +472,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, StoreError> {
         let block = self
-            .db(CapabilityRequest::CompactBlockExt)?
+            .db()
             .get_compact_block(
                 height,
                 crate::store::finalised_source::v1::compact_block::pool_filter_from_wire(
@@ -603,7 +491,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         end: Height,
         pool_types: zaino_chain_store::PoolFilter,
     ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
-        self.db(CapabilityRequest::CompactBlockExt)?
+        self.db()
             .get_compact_block_range(start, end, pool_types)
             .await
     }
@@ -622,7 +510,7 @@ impl<T: ChainStoreSource> DbReader<T> {
         end_height: Height,
         pool_types: PoolTypeFilter,
     ) -> Result<CompactBlockStream, StoreError> {
-        self.db(CapabilityRequest::CompactBlockExt)?
+        self.db()
             .get_compact_block_stream(start_height, end_height, pool_types)
             .await
     }

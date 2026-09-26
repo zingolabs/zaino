@@ -39,8 +39,7 @@ use zaino_proto::proto::{
 
 use crate::{
     chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
-    ChainIndex, ChainIndexRpcExt, MapBackedSnapshot, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber,
+    ChainIndex, MapBackedSnapshot, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
 use crate::{
@@ -128,8 +127,8 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>;
     type Config = NodeBackedIndexerServiceConfig;
 
-    fn finalised_state_mode(&self) -> crate::FinalisedStateMode {
-        self.indexer.finalised_state_mode()
+    fn is_synced(&self) -> bool {
+        self.indexer.is_synced()
     }
 
     /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.
@@ -376,7 +375,6 @@ fn test_service_parts(
             None,
             zaino_common::ServiceConfig::default(),
             zaino_common::StorageConfig::default(),
-            true,
             network_kind,
             None,
         ),
@@ -484,7 +482,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     let non_finalized_snapshot = &snapshot;
-                    // Use the snapshot tip directly, as this function doesn't support passthrough
+                    // Use the snapshot tip directly: every served height is at or below it
                     let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
 
                     let height_out_of_range_status = move || {
@@ -912,75 +910,53 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         &self,
         hash_or_height: String,
     ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
-        let fallback_hash_or_height = hash_or_height.clone();
-        let local_result: Result<zaino_primitives::types::Treestate, Self::Error> = async {
-            let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
-            let snapshot = self.indexer.snapshot_nonfinalized_state();
-
-            let block_data = match hash_or_height_struct {
-                HashOrHeight::Hash(hash) => self
-                    .indexer
-                    .get_indexed_block_by_hash(&snapshot, &hash.into())
-                    .await?
-                    .ok_or(
-                        #[allow(deprecated)]
-                        NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                            "Failed to fetch block data.",
-                        )),
-                    )?,
-                HashOrHeight::Height(height) => self
-                    .indexer
-                    .get_indexed_block_by_height(&snapshot, &height.into())
-                    .await?
-                    .ok_or(
-                        #[allow(deprecated)]
-                        NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                            "Failed to fetch block data.",
-                        )),
-                    )?,
-            };
-
-            let treestates = self.indexer.get_treestate(block_data.hash()).await?;
-            let time: u32 = block_data.data().time().try_into().map_err(|_error| {
-                #[allow(deprecated)]
-                NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Block time is out of range for u32.",
-                ))
-            })?;
-
-            Ok(super::build_treestate_response(
-                zaino_primitives::types::BlockHash::from(block_data.hash().0),
-                zaino_primitives::types::Height::try_from(block_data.height().0).map_err(|e| {
-                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
-                        format!("indexed block height out of range: {e}"),
-                    ))
-                })?,
-                time,
-                treestates,
-            ))
-        }
-        .await;
-
-        if let Ok(response) = local_result {
-            return Ok(response);
-        }
-
+        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        if !self
-            .indexer
-            .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
-            .await?
-        {
-            return local_result;
-        }
 
-        Ok(self
-            .indexer
-            .get_treestate_by_id(fallback_hash_or_height)
-            .await?)
+        let block_data = match hash_or_height_struct {
+            HashOrHeight::Hash(hash) => self
+                .indexer
+                .get_indexed_block_by_hash(&snapshot, &hash.into())
+                .await?
+                .ok_or(
+                    #[allow(deprecated)]
+                    NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    )),
+                )?,
+            HashOrHeight::Height(height) => self
+                .indexer
+                .get_indexed_block_by_height(&snapshot, &height.into())
+                .await?
+                .ok_or(
+                    #[allow(deprecated)]
+                    NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to fetch block data.",
+                    )),
+                )?,
+        };
+
+        let treestates = self.indexer.get_treestate(block_data.hash()).await?;
+        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+            #[allow(deprecated)]
+            NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                "Block time is out of range for u32.",
+            ))
+        })?;
+
+        Ok(super::build_treestate_response(
+            zaino_primitives::types::BlockHash::from(block_data.hash().0),
+            zaino_primitives::types::Height::try_from(block_data.height().0).map_err(|e| {
+                NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(format!(
+                    "indexed block height out of range: {e}"
+                )))
+            })?,
+            time,
+            treestates,
+        ))
     }
 
     /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.

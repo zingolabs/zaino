@@ -26,11 +26,10 @@ use crate::error::ChainIndexError;
 
 /// A read the finalised store has no answer for, as `None`.
 ///
-/// Three conditions mean the same thing to ChainIndex: the store holds nothing
-/// at that height, has not opened yet, or is not built up to it. In all three
-/// the answer is above or outside the finalised half, and ChainIndex's job is
-/// to look in the recent window or at the validator instead — which is exactly
-/// what it already does with `None`.
+/// Two conditions mean the same thing to ChainIndex: the store holds nothing
+/// at that height, or is not built up to it. In both the answer is above the
+/// finalised half, and ChainIndex's job is to look in the recent window
+/// instead — which is exactly what it already does with `None`.
 ///
 /// Collapsing them here rather than at each call site keeps the behaviour the
 /// inherent reads had: those returned `Ok(None)` for an unbuilt height, because
@@ -40,7 +39,7 @@ use crate::error::ChainIndexError;
 fn absent<T>(result: Result<Option<T>, ChainStoreError>) -> Result<Option<T>, ChainIndexError> {
     match result {
         Ok(value) => Ok(value),
-        Err(ChainStoreError::AboveWatermark { .. }) | Err(ChainStoreError::NotReady) => Ok(None),
+        Err(ChainStoreError::AboveWatermark { .. }) => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -57,19 +56,6 @@ pub(super) fn domain_height(height: crate::Height) -> Option<zaino_primitives::t
 /// The domain's height, as this crate names it.
 fn local_height(height: zaino_primitives::types::Height) -> crate::Height {
     crate::Height(u32::from(height))
-}
-
-/// The main-chain block hash at `height`, or `None` if the store has none.
-pub(crate) async fn block_hash<R: ChainStoreReader>(
-    reader: &R,
-    height: crate::Height,
-) -> Result<Option<crate::BlockHash>, ChainIndexError> {
-    // A height the domain cannot express names no block, which is the same
-    // answer as a height the store does not hold.
-    let Some(domain) = domain_height(height) else {
-        return Ok(None);
-    };
-    Ok(absent(reader.block_hash(domain).await)?.map(|hash| crate::BlockHash(hash.into())))
 }
 
 /// The height of `hash`, or `None` if the store does not hold that block.
@@ -347,10 +333,6 @@ fn wire_status(error: ChainStoreError) -> tonic::Status {
             tonic::Status::out_of_range(message)
         }
 
-        // Transient, and it resolves on its own once opening completes, so the
-        // caller is told to come back.
-        ChainStoreError::NotReady => tonic::Status::unavailable(message),
-
         // The store is healthy and this row is genuinely not here.
         ChainStoreError::MissingRow(_) => tonic::Status::not_found(message),
 
@@ -437,22 +419,20 @@ mod tests {
         );
     }
 
-    /// The three conditions that mean "the finalised store has no answer" all
-    /// become `None`, and nothing else does.
-    ///
-    /// The mapping is what keeps ChainIndex routing to the recent window as it
-    /// did before the ports were consulted, so a variant leaking through as an
-    /// error is a read that used to fall through and now fails.
+    /// A height above the watermark, including any height in an empty store, becomes `None`, and nothing else does.
     #[test]
     fn only_the_absent_conditions_become_none() {
         assert!(matches!(
-            absent::<u8>(Err(ChainStoreError::NotReady)),
+            absent::<u8>(Err(ChainStoreError::AboveWatermark {
+                requested: h(2),
+                watermark: None,
+            })),
             Ok(None)
         ));
         assert!(matches!(
             absent::<u8>(Err(ChainStoreError::AboveWatermark {
                 requested: h(2),
-                watermark: h(1),
+                watermark: Some(h(1)),
             })),
             Ok(None)
         ));
@@ -474,13 +454,9 @@ mod tests {
         use tonic::Code;
 
         assert_eq!(
-            wire_status(ChainStoreError::NotReady).code(),
-            Code::Unavailable
-        );
-        assert_eq!(
             wire_status(ChainStoreError::AboveWatermark {
                 requested: h(2),
-                watermark: h(1)
+                watermark: Some(h(1))
             })
             .code(),
             Code::OutOfRange

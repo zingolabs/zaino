@@ -1,5 +1,4 @@
 //! Zaino-State ChainIndex Finalised State (FinalisedState) unit tests.
-pub(crate) mod ephemeral;
 mod ports;
 pub(crate) mod v1;
 

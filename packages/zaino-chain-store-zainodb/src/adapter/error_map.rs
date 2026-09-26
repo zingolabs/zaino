@@ -6,10 +6,9 @@
 //! translated — and the rest arrive opaque but not silent, carrying their cause
 //! for the operator's log.
 
-use zaino_chain_store::{ChainStoreError, ChainStoreSourceError, StoreCapability};
+use zaino_chain_store::{ChainStoreError, ChainStoreSourceError};
 
 use crate::error::StoreError;
-use crate::store::capability::CapabilityRequest;
 
 /// This backend's error, as the domain names it.
 ///
@@ -28,38 +27,7 @@ use crate::store::capability::CapabilityRequest;
 pub(super) fn chain_store_error(error: StoreError) -> ChainStoreError {
     match error {
         StoreError::DataUnavailable(what) => ChainStoreError::MissingRow(what),
-        StoreError::FeatureUnavailable(request) => {
-            ChainStoreError::Unavailable(capability_for_feature(request))
-        }
-        StoreError::V1BackendUnavailable(_) => ChainStoreError::NotReady,
         other => ChainStoreError::backend_because(other.to_string(), other),
-    }
-}
-
-/// Which domain capability a refusal was about.
-///
-/// The refusal carries the [`CapabilityRequest`] itself, so producer and matcher
-/// cannot drift: the crate's finer request vocabulary is folded onto the
-/// domain's coarser one here, and the match is total. The three index requests
-/// name their own domain capability; every core and block-extension request
-/// folds to [`StoreCapability::Core`], the one capability every store must
-/// have, so a caller routes elsewhere rather than retrying.
-///
-/// The grouping is explicit rather than a `_` catch-all so that adding a
-/// [`CapabilityRequest`] variant is a compile error here until it is classified,
-/// rather than silently collapsing to `Core`.
-fn capability_for_feature(request: CapabilityRequest) -> StoreCapability {
-    match request {
-        CapabilityRequest::SpentOutputIndex => StoreCapability::SpentOutputs,
-        CapabilityRequest::TxOutSetIndex => StoreCapability::TxOutSet,
-        CapabilityRequest::TransparentHistIndex => StoreCapability::TransparentHistory,
-        CapabilityRequest::ReadCore
-        | CapabilityRequest::WriteCore
-        | CapabilityRequest::BlockCoreExt
-        | CapabilityRequest::BlockTransparentExt
-        | CapabilityRequest::BlockShieldedExt
-        | CapabilityRequest::CompactBlockExt
-        | CapabilityRequest::IndexedBlockExt => StoreCapability::Core,
     }
 }
 
@@ -231,62 +199,5 @@ mod tests {
         ));
 
         assert!(matches!(error, ChainStoreSourceError::Unavailable { .. }));
-    }
-
-    /// Each index request names the capability the caller was denied.
-    ///
-    /// The refusal carries the [`CapabilityRequest`] itself, so producer and
-    /// matcher share one vocabulary and cannot drift — the failure an earlier,
-    /// string-matching version had, where literals the producer never emitted
-    /// read as correct while every real refusal collapsed to `Core`.
-    #[test]
-    fn an_index_refusal_maps_to_the_capability_it_denied() {
-        assert_eq!(
-            capability_for_feature(CapabilityRequest::SpentOutputIndex),
-            StoreCapability::SpentOutputs
-        );
-        assert_eq!(
-            capability_for_feature(CapabilityRequest::TxOutSetIndex),
-            StoreCapability::TxOutSet
-        );
-        assert_eq!(
-            capability_for_feature(CapabilityRequest::TransparentHistIndex),
-            StoreCapability::TransparentHistory
-        );
-    }
-
-    /// Every core and block-extension request folds to `Core`.
-    ///
-    /// The domain does not distinguish these, so a refusal of any of them is
-    /// reported as the one capability every store must have; the caller routes
-    /// elsewhere rather than over-claiming which index is missing. The typed,
-    /// total match replaces the old catch-all — there is no longer an
-    /// "unrecognised name" case, because there is no name.
-    #[test]
-    fn a_core_or_block_refusal_maps_to_core() {
-        for request in [
-            CapabilityRequest::ReadCore,
-            CapabilityRequest::WriteCore,
-            CapabilityRequest::BlockCoreExt,
-            CapabilityRequest::BlockTransparentExt,
-            CapabilityRequest::BlockShieldedExt,
-            CapabilityRequest::CompactBlockExt,
-            CapabilityRequest::IndexedBlockExt,
-        ] {
-            assert_eq!(capability_for_feature(request), StoreCapability::Core);
-        }
-    }
-
-    /// A missing v1 backend is transient, so it reaches the domain as `NotReady`.
-    ///
-    /// It is a backend-state refusal, not a capability one: the concrete v1
-    /// backend is absent only while a migration runs and returns once it
-    /// completes, which is exactly what [`ChainStoreError::NotReady`] means.
-    #[test]
-    fn a_missing_v1_backend_maps_to_not_ready() {
-        let error = chain_store_error(StoreError::V1BackendUnavailable(
-            "v1 spent db not available",
-        ));
-        assert!(matches!(error, ChainStoreError::NotReady));
     }
 }

@@ -1585,58 +1585,6 @@ fn action_to_proto(
     }
 }
 
-/// A compact block from an already-materialised [`IndexedBlock`].
-///
-/// For the passthrough backend, which has no rows to filter at read time: it
-/// builds a whole block from the validator and then drops what the filter
-/// excludes. The dropping still happens per pool rather than per transaction,
-/// so the result is dense in the same way the on-disk read's is.
-pub(crate) fn compact_block_from_indexed(
-    block: &IndexedBlock,
-    pool_types: PoolFilter,
-) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
-    let transactions = block
-        .transactions
-        .iter()
-        .map(|tx| {
-            compact_tx(
-                *tx.txid(),
-                pool_types.includes_transparent().then(|| tx.transparent()),
-                pool_types
-                    .includes(ShieldedPool::Sapling)
-                    .then(|| tx.sapling()),
-                pool_types
-                    .includes(ShieldedPool::Orchard)
-                    .then(|| tx.orchard()),
-                pool_types
-                    .includes(ShieldedPool::Ironwood)
-                    .then(|| tx.ironwood()),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let sizes = block.commitment_tree_data.sizes();
-
-    Ok(zaino_primitives::types::CompactBlock {
-        hash: zaino_primitives::types::BlockHash::from(block.context.hash().0),
-        prev_hash: zaino_primitives::types::BlockHash::from(block.context.parent_hash().0),
-        height: block.context.height().0,
-        time: u32::try_from(block.data.time()).map_err(|_| {
-            StoreError::Custom(format!(
-                "block time {} does not fit a compact block",
-                block.data.time()
-            ))
-        })?,
-        bits: block.data.bits(),
-        transactions,
-        chain_metadata: zaino_primitives::types::ChainMetadata::new(
-            sizes.sapling(),
-            sizes.orchard(),
-            sizes.ironwood(),
-        ),
-    })
-}
-
 /// The wire pool filter, as the domain names it.
 ///
 /// Total, and only in this direction. The wire filter cannot express "no pools

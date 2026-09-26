@@ -102,32 +102,19 @@ let (finalised, recent) = match watermark.tip {
 };
 ```
 
-Read `provenance` before you rely on `tip` as a coverage bound — see below.
-
-### The boundary only applies to durable answers
-
-Read `provenance` before you read `tip`. A store whose provenance is
-`Passthrough` is answering from the validator rather than from what it holds, so
-its durable tip is not a limit on what it can answer, and it will not refuse
-above it. That is the state a store is in for the whole of a long initial
-build — precisely when a node depends on it to stay useful — so a consumer that
-treated `AboveWatermark` as the only way a read can be out of range would be
-right about a settled store and wrong about a building one.
-
-What the watermark still tells you in that state is what the store *holds*,
-which is what a consumer deciding whether to trust it as a durable record wants.
-The two questions are different, and `provenance` is which one you are asking.
+A store answers only from what it holds. An empty store, including one that is
+still building its first blocks, covers nothing: every read is
+`AboveWatermark` with no watermark height, and every range is empty.
 
 ## What a failure means, and what it carries
 
-`ChainStoreError` distinguishes five conditions, and the distinctions are the
+`ChainStoreError` distinguishes these conditions, and the distinctions are the
 point — a caller that collapses them either retries what cannot succeed or
 reports a healthy store as broken.
 
 | Variant | Means | What a caller does |
 | --- | --- | --- |
-| `NotReady` | still opening | retry; it resolves itself |
-| `AboveWatermark` | not this half's to answer | ask the chain head |
+| `AboveWatermark` | not this half's to answer, or the store is empty | ask the chain head |
 | `InvalidRange` | start above end | fix the request |
 | `Unavailable(capability)` | this deployment does not build that index | route elsewhere; retrying never helps |
 | `MissingRow` | an index points at a row that is not there | the store is damaged |

@@ -1,15 +1,13 @@
-use super::{load_test_vectors_and_sync_chain_index, MockchainMode, DEEP_FINALISED_SEED_TIP};
-use crate::{
-    chain_index::{
-        tests::vectors::MockSource,
-        tests::{
-            poll::poll_until,
-            vectors::{indexed_block_chain, load_test_vectors, TestVectorBlockData},
-        },
-        types::{BestChainLocation, ChainScope, TransactionHash},
-        ChainIndex, ChainIndexRpcExt, NodeBackedChainIndexSubscriber,
+use super::{load_test_vectors_and_sync_chain_index, MockchainMode};
+use crate::chain_index::{
+    source::BlockchainSource as _,
+    tests::vectors::MockSource,
+    tests::{
+        poll::poll_until,
+        vectors::{load_test_vectors, TestVectorBlockData},
     },
-    BlockchainSource as _, Outpoint,
+    types::{BestChainLocation, TransactionHash},
+    ChainIndex, NodeBackedChainIndexSubscriber,
 };
 use tokio::time::Duration;
 use tokio_stream::StreamExt as _;
@@ -121,31 +119,6 @@ fn faucet_transparent_address() -> String {
         vector_data.faucet.utxos[0].clone().into_parts();
 
     transparent_address.to_string()
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn get_block_range() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state();
-
-    let start = crate::Height(0);
-
-    let indexer_blocks =
-        ChainIndex::get_block_range(&index_reader, &nonfinalized_snapshot, start, None)
-            .unwrap()
-            .collect::<Vec<_>>()
-            .await;
-
-    for (i, block) in indexer_blocks.into_iter().enumerate() {
-        let parsed_block = block
-            .unwrap()
-            .zcash_deserialize_into::<zebra_chain::block::Block>()
-            .unwrap();
-
-        let expected_block = &blocks[i].zebra_block;
-        assert_eq!(&parsed_block, expected_block);
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -298,7 +271,7 @@ async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing()
 ///
 /// The mempool subsystem's own totals arithmetic is covered by mocks in
 /// `zaino-mempool-service`, and the live suite checks it against the validator's
-/// `getmempoolinfo`. What is only checkable here is the passthrough: that the
+/// `getmempoolinfo`. What is only checkable here is the hand-off: that the
 /// `MempoolInfo` the ChainIndex hands back describes the same transactions
 /// `get_mempool_transactions` returns, rather than a stale or unrelated set.
 #[tokio::test(flavor = "multi_thread")]
@@ -1046,167 +1019,6 @@ async fn get_address_utxos() {
     assert!(invalid_address_result.is_err());
 }
 
-/// Walks zaino's own indexed view of the test-vector chain and derives, for every
-/// non-coinbase transparent input, the `(spend height, outpoint, spending txid)` it
-/// represents, plus every transparent outpoint created on the chain.
-///
-/// Ground truth is built from `CompactTxData` — the exact representation
-/// `get_outpoint_spenders` scans — so the assertions also confirm the outpoint byte order
-/// matches between an indexed input and the looked-up key.
-fn outpoint_spend_ground_truth(
-    blocks: &[TestVectorBlockData],
-) -> (Vec<(u32, Outpoint, TransactionHash)>, Vec<Outpoint>) {
-    let mut spends = Vec::new();
-    let mut created = Vec::new();
-    for block in indexed_block_chain(blocks) {
-        let height = u32::from(block.height());
-        for tx in block.transactions() {
-            let txid = *tx.txid();
-            let transparent = tx.transparent();
-            for output_index in 0..transparent.outputs().len() {
-                created.push(Outpoint::new(txid.0, output_index as u32));
-            }
-            // Spend-walking goes through the canonical `spent_outpoints` helper (#1332),
-            // whose null-prevout filtering and outpoint construction are pinned by its own
-            // unit tests; here we only pair each spent outpoint with its spending txid.
-            for outpoint in transparent.spent_outpoints() {
-                spends.push((height, outpoint, txid));
-            }
-        }
-    }
-    (spends, created)
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn get_outpoint_spenders() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let snapshot = index_reader.snapshot_nonfinalized_state();
-
-    let (spends, created) = outpoint_spend_ground_truth(&blocks);
-    assert!(
-        !spends.is_empty(),
-        "test vectors must contain transparent spends"
-    );
-
-    // Every spent outpoint resolves to its spending txid, index-aligned with the input.
-    let outpoints: Vec<Outpoint> = spends.iter().map(|(_, op, _)| *op).collect();
-    let result = index_reader
-        .get_outpoint_spenders(&snapshot, outpoints, ChainScope::FullChain)
-        .await
-        .unwrap();
-    assert_eq!(result.len(), spends.len());
-    for ((_, outpoint, expected_txid), got) in spends.iter().zip(result) {
-        assert_eq!(got, Some(*expected_txid), "wrong spender for {outpoint:?}");
-    }
-
-    // Outpoints that were created but never spent must report `None`.
-    let spent_set: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(_, op, _)| *op).collect();
-    let unspent: Vec<Outpoint> = created
-        .into_iter()
-        .filter(|op| !spent_set.contains(op))
-        .collect();
-    assert!(!unspent.is_empty(), "expected some unspent outputs");
-    let unspent_result = index_reader
-        .get_outpoint_spenders(&snapshot, unspent.clone(), ChainScope::FullChain)
-        .await
-        .unwrap();
-    assert_eq!(unspent_result.len(), unspent.len());
-    assert!(unspent_result.iter().all(Option::is_none));
-}
-
-/// `ChainScope` decides how deep a spend lookup reaches. Under
-/// [`MockchainMode::StaticDeepFinalised`] the finalised index holds the chain up to
-/// [`DEEP_FINALISED_SEED_TIP`] while the non-finalised state holds everything above the
-/// seam, so one spend sits in both stores and one in the non-finalised state alone —
-/// `Finalised` must see only the first. This is the only exercise of the finalised
-/// `TxLocation -> txid` resolution through the `ChainIndex`.
-#[tokio::test(flavor = "multi_thread")]
-async fn get_outpoint_spenders_chain_scope() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::StaticDeepFinalised).await;
-    let snapshot = index_reader.snapshot_nonfinalized_state();
-
-    let (spends, created) = outpoint_spend_ground_truth(&blocks);
-    let (finalised_outpoint, finalised_spender) = spends
-        .iter()
-        .find(|(height, ..)| *height <= DEEP_FINALISED_SEED_TIP)
-        .map(|(_, outpoint, txid)| (*outpoint, *txid))
-        .expect("the corpus must spend a transparent output inside the finalised range");
-    let (nonfinalised_outpoint, nonfinalised_spender) = spends
-        .iter()
-        .find(|(height, ..)| *height > DEEP_FINALISED_SEED_TIP)
-        .map(|(_, outpoint, txid)| (*outpoint, *txid))
-        .expect("the corpus must spend a transparent output above the finalised range");
-    let spent: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(_, outpoint, _)| *outpoint).collect();
-    let unspent = created
-        .into_iter()
-        .find(|outpoint| !spent.contains(outpoint))
-        .expect("the corpus must leave a transparent output unspent");
-
-    let outpoints = vec![finalised_outpoint, nonfinalised_outpoint, unspent];
-
-    assert_eq!(
-        index_reader
-            .get_outpoint_spenders(&snapshot, outpoints.clone(), ChainScope::FullChain)
-            .await
-            .unwrap(),
-        vec![Some(finalised_spender), Some(nonfinalised_spender), None],
-        "FullChain resolves both spends and leaves the unspent outpoint as None"
-    );
-    assert_eq!(
-        index_reader
-            .get_outpoint_spenders(&snapshot, outpoints, ChainScope::Finalised)
-            .await
-            .unwrap(),
-        vec![Some(finalised_spender), None, None],
-        "Finalised never reads the non-finalised state, so only the buried spend resolves"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn get_outpoint_spenders_empty_and_single() {
-    let (blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let snapshot = index_reader.snapshot_nonfinalized_state();
-
-    // Empty input -> empty output.
-    assert!(index_reader
-        .get_outpoint_spenders(&snapshot, Vec::new(), ChainScope::FullChain)
-        .await
-        .unwrap()
-        .is_empty());
-
-    let (spends, created) = outpoint_spend_ground_truth(&blocks);
-
-    // Length-1 query (the "single request" path) returns the expected spender.
-    let (_, op, txid) = spends.first().unwrap();
-    assert_eq!(
-        index_reader
-            .get_outpoint_spenders(&snapshot, vec![*op], ChainScope::FullChain)
-            .await
-            .unwrap(),
-        vec![Some(*txid)],
-    );
-
-    // ...and a length-1 query for an unspent outpoint returns `None`.
-    let spent_set: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(_, op, _)| *op).collect();
-    let unspent = created
-        .into_iter()
-        .find(|op| !spent_set.contains(op))
-        .unwrap();
-    assert_eq!(
-        index_reader
-            .get_outpoint_spenders(&snapshot, vec![unspent], ChainScope::FullChain)
-            .await
-            .unwrap(),
-        vec![None],
-    );
-}
-
 /// `z_get_block` served through the ChainIndex from the mock vectors: verbosity 0
 /// round-trips to the stored block, and verbosity 1 matches the source and reports the
 /// block's hash / height / txids.
@@ -1503,7 +1315,7 @@ async fn service_drop_survives_current_thread_runtime() {
 /// chain-tip subscriber over such a source must yield `None` rather than
 /// panic. Before this method returned `Option`, it existed only in a
 /// panicking form (`.expect("chaintip_update_subscriber requires the Direct
-/// connection")`) reachable by any embedder configured with `backend = "rpc"`;
+/// connection")`) reachable by any deployment configured with `backend = "rpc"`;
 /// pre-merge the misuse was a compile error because only the State-backed
 /// subscriber type had the method.
 #[tokio::test(flavor = "multi_thread")]

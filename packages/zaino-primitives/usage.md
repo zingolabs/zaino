@@ -61,7 +61,7 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis`, and the
   transparent-script family `Script` / `ScriptType` / `classify_script` /
   `TransparentAddressKey` / `TransparentAddress` (all four families below).
-- `types::rpc` — the response shapes for passthrough RPCs, in domain
+- `types::rpc` — the response shapes for node-forwarding RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
   `BlockSubsidy`.

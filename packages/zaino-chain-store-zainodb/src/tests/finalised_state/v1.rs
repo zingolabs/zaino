@@ -10,7 +10,6 @@ use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use crate::codec::DbCodec as _;
 use crate::store::capability::{BlockCoreExt as _, BlockShieldedExt as _, DbMetadata, DbRead as _};
 use crate::store::finalised_source::v1::{schema, DbV1, METADATA_KEY};
-use crate::store::finalised_source::FinalisedSource;
 use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
 use crate::tests::fixtures::FakeValidator;
@@ -77,7 +76,7 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
 
     let (db_dir, zaino_db) = spawn_v1_zaino_db(source).await.unwrap();
 
-    crate::tests::fixtures::sync_db_with_blockdata(zaino_db.router(), &blocks, None).await;
+    crate::tests::fixtures::sync_db_with_blockdata(zaino_db.backend(), &blocks, None).await;
 
     // The fill above writes straight to the backend, deliberately skipping the
     // store's ingest machinery — so it also skips the watermark publish that
@@ -285,7 +284,7 @@ async fn save_db_to_file_and_reload() {
                 .await
                 .unwrap();
 
-            crate::tests::fixtures::sync_db_with_blockdata(zaino_db.router(), &blocks, None).await;
+            crate::tests::fixtures::sync_db_with_blockdata(zaino_db.backend(), &blocks, None).await;
             zaino_db.wait_until_ready().await;
             dbg!(zaino_db.status());
             dbg!(zaino_db.db_height().await.unwrap());
@@ -335,7 +334,7 @@ async fn a_database_written_by_another_schema_is_rebuilt_empty() {
         ChainStoreConfig::at_path(db_path.clone()),
         ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
     );
-    let backend: FinalisedSource<FakeValidator> = FinalisedSource::spawn_v1(&config).await.unwrap();
+    let backend = DbV1::spawn(&config).await.unwrap();
 
     assert_eq!(backend.db_height().await.unwrap(), None);
     assert_eq!(

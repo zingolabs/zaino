@@ -47,18 +47,6 @@ impl ShieldedPool {
         }
     }
 
-    /// [`ShieldedPool::activation_upgrade`] in `zcash_protocol` terms, for call sites
-    /// gated through [`zcash_protocol::consensus::Parameters`].
-    pub(crate) fn zcash_protocol_activation_upgrade(
-        &self,
-    ) -> zcash_protocol::consensus::NetworkUpgrade {
-        match self {
-            ShieldedPool::Sapling => zcash_protocol::consensus::NetworkUpgrade::Sapling,
-            ShieldedPool::Orchard => zcash_protocol::consensus::NetworkUpgrade::Nu5,
-            ShieldedPool::Ironwood => zcash_protocol::consensus::NetworkUpgrade::Nu6_3,
-        }
-    }
-
     /// Returns the string representative of the given pool.
     ///
     /// Used for display purposes and in converting the strongly types `PoolType`

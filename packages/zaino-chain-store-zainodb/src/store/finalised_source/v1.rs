@@ -360,18 +360,12 @@ impl LmdbLifecycle for DbV1 {
 
 /// - One definition: `open` creates the env here, the size metric measures the file in
 ///   it; two copies drift onto different networks
-fn db_path(config: &StoreSettings) -> Result<std::path::PathBuf, StoreError> {
-    // A v1 backend is only opened for a store that persists, so an absent path is a
-    // routing mistake above, not a configuration an operator can express
-    let db_root = config.store.path().ok_or_else(|| {
-        StoreError::Custom(
-            "a persistent v1 database was opened for a store configured to hold nothing"
-                .to_string(),
-        )
-    })?;
-    Ok(db_root
+fn db_path(config: &StoreSettings) -> std::path::PathBuf {
+    config
+        .store
+        .path()
         .join(super::super::network_dir(config.db.network().kind()))
-        .join("v1"))
+        .join("v1")
 }
 
 /// Zaino’s Finalised State database V1.
@@ -503,7 +497,7 @@ pub(crate) struct DbV1 {
 impl DbV1 {
     /// Opens the v1 database without starting the maintenance task, moving it aside untouched and creating a fresh one when its stored schema is not this build's.
     pub(crate) async fn spawn(config: &StoreSettings) -> Result<Self, StoreError> {
-        let db_path = db_path(config)?;
+        let db_path = db_path(config);
         let db_size_bytes = config.db.size().to_byte_count();
         let check = tokio::task::block_in_place(|| stored_schema_check(&db_path, db_size_bytes))?;
         if let Some(stale_dir_name) = check.stale_dir_name() {
@@ -528,7 +522,7 @@ impl DbV1 {
 
         // Prepare database details and path.
         let db_size_bytes = config.db.size().to_byte_count();
-        let db_path = db_path(config)?;
+        let db_path = db_path(config);
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }
@@ -615,8 +609,13 @@ impl DbV1 {
 
     // *** Internal Control Methods ***
 
+    /// Stores a new runtime status, so background work can report a failure after spawn returns.
+    pub(in crate::store) fn store_status(&self, status: StatusType) {
+        self.status.store(status);
+    }
+
     /// Marks the database ready and spawns the maintenance task that refreshes gauges and releases trailing readers until shutdown.
-    pub(super) fn start_maintenance(&self) {
+    pub(in crate::store) fn start_maintenance(&self) {
         let zaino_db = self.detached_handle();
         zaino_db.status.store(StatusType::Ready);
 

@@ -64,9 +64,6 @@ zebra-chain = { workspace = true }
 zaino-proto = { workspace = true }
 
 metrics = { workspace = true }
-
-# Utility
-bitflags = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tokio-stream = { workspace = true }
@@ -80,7 +77,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 zaino-status.workspace = true
-arc-swap.workspace = true
 tonic.workspace = true
 sha2.workspace = true
 

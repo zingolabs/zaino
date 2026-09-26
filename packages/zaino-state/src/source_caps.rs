@@ -20,11 +20,9 @@ use zaino_source::*;
 /// What the finalised state asks of the validator.
 ///
 /// Derived from what the implementation calls, not from what a store might
-/// plausibly want. Blocks by height to build from; blocks by hash and
-/// transactions for the passthrough mode, which answers reads from the
-/// validator and so asks questions a building store never does; the chain tip
-/// to know how far there is to go; commitment tree roots, which a block alone
-/// does not yield.
+/// plausibly want. Blocks by height to build from; the chain tip to know how
+/// far there is to go; commitment tree roots, which a block alone does not
+/// yield.
 ///
 /// Blocks are asked for parsed rather than raw. This previously named
 /// [`OneShotGetRawBlock`], on the reasoning that the finalised state wants the exact
@@ -33,23 +31,14 @@ use zaino_source::*;
 /// never implemented and would have made every store parse blocks a second
 /// time.
 pub trait FinalisedSourceCaps:
-    OneShotGetBestBlockHeight
-    + OneShotGetBlock
-    + OneShotGetBlockByHash
-    + OneShotGetCommitmentTreeRoots
-    + OneShotGetTransaction
-    + Send
-    + Sync
-    + 'static
+    OneShotGetBestBlockHeight + OneShotGetBlock + OneShotGetCommitmentTreeRoots + Send + Sync + 'static
 {
 }
 
 impl<T> FinalisedSourceCaps for T where
     T: OneShotGetBestBlockHeight
         + OneShotGetBlock
-        + OneShotGetBlockByHash
         + OneShotGetCommitmentTreeRoots
-        + OneShotGetTransaction
         + Send
         + Sync
         + 'static
@@ -107,9 +96,10 @@ impl<T> IndexerSourceCaps for T where T: SubscribeChainTip + Send + Sync + 'stat
 /// What `ChainIndex` asks of the validator.
 ///
 /// Much the widest of these, and honestly so: `ChainIndex` is the RPC-facing
-/// layer, so it forwards every query the index cannot answer locally. That the
-/// list is long is information — it says this layer is where the passthrough
-/// surface lives, and shrinking it is what the later modularisation is for.
+/// layer, so it forwards every query about node state that zaino never
+/// indexes. That the list is long is information — it says this layer is where
+/// the forwarding surface lives, and shrinking it is what the later
+/// modularisation is for.
 pub trait ChainIndexSourceCaps:
     FinalisedSourceCaps
     + ChainHeadSourceCaps
@@ -129,7 +119,6 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetTxOut
     + OneShotGetSpentInfo
     + OneShotGetSubtreeRoots
-    + OneShotGetTreestate
     + OneShotGetTreestateByHash
     + OneShotGetAddressBalance
     + OneShotGetAddressDeltas
@@ -160,7 +149,6 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetTxOut
         + OneShotGetSpentInfo
         + OneShotGetSubtreeRoots
-        + OneShotGetTreestate
         + OneShotGetTreestateByHash
         + OneShotGetAddressBalance
         + OneShotGetAddressDeltas

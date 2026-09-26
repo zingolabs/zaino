@@ -173,22 +173,15 @@ Full documentation for `Zaino-Serve` can be found [here](https://zingolabs.githu
 - Configurable Backend:
   - Implementes a configurable backend service enabling clients to use a single interface for any validator set-up.
 
-- Finalised State (persistent or ephemeral):
+- Finalised State:
   - The finalised portion of the chain index (all but the top 100 blocks) is
-    served by a `FinalisedState` facade over a `FinalisedSource` backing. The
-    backing is either a versioned, LMDB-backed persistent database or, when
-    `ephemeral_finalised_state` is set, an ephemeral passthrough that serves
-    finalised reads directly from the backing validator and persists nothing.
-  - Sync and version migration are **background, non-blocking** operations. Large
-    syncs and migrations run in the background while an ephemeral passthrough
-    continues serving finalised reads from the source; small syncs run inline.
-    Background failures retry and escalate to a critical status.
-  - During a large background sync/migration, passthrough-served blocks carry a
-    chainwork of `0`. This is consistent for the non-finalised state's relative
-    fork-choice but leaves absolute chainwork offset-low until the persistent
-    database catches up. The non-finalised cache caps its in-memory retention at
-    a fixed depth below the tip so it cannot grow unbounded while `db_height`
-    lags or is pinned at `0`.
+    served by a `FinalisedState` facade over an LMDB-backed database.
+  - Sync is a **background, non-blocking** operation. Large syncs run in the
+    background and small syncs run inline. Background failures retry and
+    escalate to a critical status. Nothing answers finalised reads in the
+    database's place while it builds.
+  - The non-finalised cache caps its in-memory retention at a fixed depth below
+    the tip so it cannot grow unbounded while `db_height` lags.
 
 Full documentation for `Zaino-State` can be found [here](https://zingolabs.github.io/zaino/zaino_state/index.html).
 
@@ -202,7 +195,7 @@ and each crate's `usage.md` for practical guidance.
 ### Functionality
 - Domain vocabulary (`zaino-primitives`):
   - The chain in Zaino's own terms: blocks, transactions, hashes, heights,
-    treestates, amounts, and the passthrough RPC response shapes.
+    treestates, amounts, and the node-forwarding RPC response shapes.
   - Depends on `thiserror` and nothing else. No serde: serialization belongs to
     whichever boundary owns the format.
 
@@ -227,7 +220,7 @@ and each crate's `usage.md` for practical guidance.
     classification.
   - The read-state adapter reads Zebra's state database directly where Zaino
     and Zebra share a host. It is an accelerator, not an alternative, and
-    deliberately does not implement the mempool or passthrough ports.
+    deliberately does not implement the mempool or node-forwarding ports.
 
 - Composite (`zaino-source-zebra`):
   - `ZebraValidator` holds an RPC adapter and an optional read-state adapter,

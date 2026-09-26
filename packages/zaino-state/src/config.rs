@@ -93,14 +93,6 @@ pub struct CommonBackendConfig {
     pub service: ServiceConfig,
     /// Storage configuration (cache and database)
     pub storage: StorageConfig,
-    /// Ephemeral finalised state:
-    ///
-    /// If true, FinalisedState does not write data to disk,
-    /// fetching data  from the backing validator.
-    ///
-    /// Note that full functionality is not available and
-    /// performanc will be reduced in this configuration.
-    pub ephemeral_finalised_state: bool,
     /// Network type.
     pub network: Network,
     /// Zcash donation UA address
@@ -135,7 +127,6 @@ impl CommonBackendConfig {
         validator_rpc_password: Option<String>,
         service: ServiceConfig,
         storage: StorageConfig,
-        ephemeral_finalised_state: bool,
         network: Network,
         donation_address: Option<DonationAddress>,
     ) -> Self {
@@ -146,7 +137,6 @@ impl CommonBackendConfig {
             validator_rpc_password: validator_rpc_password.unwrap_or_else(|| "xxxxxx".to_string()),
             service,
             storage,
-            ephemeral_finalised_state,
             // Not an argument: this constructor is already at the
             // too-many-arguments limit, and the mempool bounds are an operator
             // knob with a safe default rather than something every caller has
@@ -183,7 +173,6 @@ impl NodeBackedIndexerServiceConfig {
         validator_rpc_password: Option<String>,
         service: ServiceConfig,
         storage: StorageConfig,
-        ephemeral_finalised_state: bool,
         network: Network,
         donation_address: Option<DonationAddress>,
     ) -> Self {
@@ -195,7 +184,6 @@ impl NodeBackedIndexerServiceConfig {
                 validator_rpc_password,
                 service,
                 storage,
-                ephemeral_finalised_state,
                 network,
                 donation_address,
             ),
@@ -216,7 +204,6 @@ impl NodeBackedIndexerServiceConfig {
         validator_rpc_password: Option<String>,
         service: ServiceConfig,
         storage: StorageConfig,
-        ephemeral_finalised_state: bool,
         network: Network,
         donation_address: Option<DonationAddress>,
     ) -> Self {
@@ -230,7 +217,6 @@ impl NodeBackedIndexerServiceConfig {
                 validator_rpc_password,
                 service,
                 storage,
-                ephemeral_finalised_state,
                 network,
                 donation_address,
             ),
@@ -252,14 +238,6 @@ pub struct ChainIndexConfig {
     /// the validator (zaino#1076) — or, in fixtures that are their own
     /// chain, the fixture's schedule.
     pub network: zebra_chain::parameters::Network,
-    /// Ephemeral finalised state:
-    ///
-    /// If true, FinalisedState does not write data to disk,
-    /// fetching data  from the backing validator.
-    ///
-    /// Note that full functionality is not available and
-    /// performanc will be reduced in this configuration.
-    pub ephemeral: bool,
     /// Mempool bounds and poll cadence, shared with the backend config it came
     /// from — see [`CommonBackendConfig::mempool`].
     pub mempool: zaino_mempool::MempoolConfig,
@@ -277,7 +255,6 @@ impl ChainIndexConfig {
         Self {
             storage: common.storage.clone(),
             network,
-            ephemeral: common.ephemeral_finalised_state,
             mempool: common.mempool.clone(),
         }
     }
@@ -288,16 +265,8 @@ impl ChainIndexConfig {
     /// knowing the mempool's bounds, and `zaino-chain-store` does not depend on
     /// `zaino-mempool`. The two travel together here only because one service
     /// config is the source of both.
-    ///
-    /// `ephemeral` and the configured path collapse into one `Option<PathBuf>`
-    /// here, which is where the contradiction between them stops being
-    /// expressible: below this point there is no flag to disagree with a path.
     pub fn chain_store_config(&self) -> zaino_chain_store::ChainStoreConfig {
-        if self.ephemeral {
-            zaino_chain_store::ChainStoreConfig::default()
-        } else {
-            zaino_chain_store::ChainStoreConfig::at_path(self.storage.database.path.clone())
-        }
+        zaino_chain_store::ChainStoreConfig::at_path(self.storage.database.path.clone())
     }
 
     /// What ZainoDB is configured from beyond [`Self::chain_store_config`].

@@ -7,11 +7,10 @@ use crate::store::finalised_source::v1::{
     ACCUMULATOR_BUILD_MAX_SHARDS, SPENT_SET_ENTRY_BYTES_ESTIMATE,
     TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
-use crate::store::finalised_source::FinalisedSource;
 use crate::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
 };
-use zaino_chain_store::{ChainStoreSource, TXOUT_SET_ENTRY_LEN};
+use zaino_chain_store::TXOUT_SET_ENTRY_LEN;
 
 /// Direction of an accumulator update.
 ///
@@ -462,10 +461,6 @@ impl DbV1 {
         }
 
         Ok((created_entries, spent_entries, spendable_spent_count_by_tx))
-    }
-    /// Provides access to the finalised txout-set accumulator DB table.
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
-        self.tx_out_set_info_accumulator
     }
 
     /// Reads the stored txout-set accumulator singleton, which only the write paths create and update.
@@ -1590,30 +1585,6 @@ impl DbV1 {
     }
 }
 
-/// `FinalisedSource` dispatch for the accumulator capability, co-located with the V1
-/// implementation it forwards to. V1-only; ephemeral backends have no accumulator.
-impl<T: ChainStoreSource> FinalisedSource<T> {
-    /// Provides access to the finalised txout-set accumulator DB table.
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, StoreError> {
-        Ok(self
-            .require_v1("v1 tx_out_set_info_accumulator db not available")?
-            .tx_out_set_info_accumulator_db())
-    }
-
-    /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
-    /// only).
-    ///
-    /// Recomputes the accumulator from the finalised `transparent` + `spent` tables via sequential
-    /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
-    /// accumulator maintenance that dominated sync time at sandblast height; used by
-    /// `sync_to_height` after a catch-up run.
-    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), StoreError> {
-        self.require_v1("v1 txout-set accumulator builder")?
-            .rebuild_tx_out_set_accumulator()
-            .await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1933,11 +1904,9 @@ mod tests {
         let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
         zaino_db.wait_until_ready().await;
 
-        use crate::store::capability::{CapabilityRequest, DbRead, TxOutSetExt};
+        use crate::store::capability::DbRead;
 
-        let backend = zaino_db
-            .backend_for_cap(CapabilityRequest::WriteCore)
-            .unwrap();
+        let backend = zaino_db.backend();
 
         let db_tip = backend.db_height().await.unwrap().unwrap();
         let incremental = backend.get_tx_out_set_info_accumulator().await.unwrap();
@@ -1986,9 +1955,7 @@ mod tests {
         let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
         zaino_db.wait_until_ready().await;
 
-        let backend = zaino_db
-            .backend_for_cap(crate::store::capability::CapabilityRequest::WriteCore)
-            .unwrap();
+        let backend = zaino_db.backend();
 
         // A budget far larger than the (tiny regtest) spent set => the whole set fits in one shard.
         assert_eq!(
@@ -2011,7 +1978,7 @@ mod tests {
         blocks: Vec<VectorBlock>,
         sync_write_batch_size: SyncWriteBatchSize,
     ) -> (Height, FinalisedTxOutSetInfoAccumulator) {
-        use crate::store::capability::{CapabilityRequest, DbRead, TxOutSetExt};
+        use crate::store::capability::DbRead;
 
         let source = fake_validator_from_vectors(&blocks);
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
@@ -2039,9 +2006,7 @@ mod tests {
         // persistent DB to actually reach the tip before reading it back.
         zaino_db.wait_until_synced().await;
 
-        let backend = zaino_db
-            .backend_for_cap(CapabilityRequest::WriteCore)
-            .unwrap();
+        let backend = zaino_db.backend();
         let db_tip = backend.db_height().await.unwrap().unwrap();
         let accumulator = backend.get_tx_out_set_info_accumulator().await.unwrap();
 
@@ -2082,7 +2047,7 @@ mod tests {
     async fn incremental_accumulator_update_matches_full_rebuild() {
         init_tracing();
 
-        use crate::store::capability::{CapabilityRequest, DbRead, TxOutSetExt};
+        use crate::store::capability::DbRead;
         use zaino_consensus::COINBASE_MATURITY;
 
         let blocks = load_test_vectors().unwrap().blocks;
@@ -2105,9 +2070,7 @@ mod tests {
         // Background catch-up (>background_build_threshold); wait for the persistent build + watermark.
         zaino_db.wait_until_synced().await;
 
-        let backend = zaino_db
-            .backend_for_cap(CapabilityRequest::WriteCore)
-            .unwrap();
+        let backend = zaino_db.backend();
 
         // The watermark must sit at `COINBASE_MATURITY` here: that (together with the gap to the tip
         // <= the incremental cap) pins the next sync to the incremental branch rather than a silent

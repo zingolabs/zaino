@@ -48,7 +48,7 @@ pub enum GetSpentInfoError {
 ///
 /// # TODO: Zaino could answer this itself, and does not
 ///
-/// This is a straight passthrough to the validator — it has been one since
+/// This is straight node forwarding to the validator — it has been since
 /// `getspentinfo` was added, and no version of Zaino has ever answered it from
 /// its own index. That is a problem now that zebrad is the supported backend,
 /// because zebrad will never implement it: as things stand the method dies with

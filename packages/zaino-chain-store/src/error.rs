@@ -29,23 +29,21 @@ pub type BoxCause = Box<dyn std::error::Error + Send + Sync + 'static>;
 /// instead, which is what they were really asserting.
 #[derive(Debug, thiserror::Error)]
 pub enum ChainStoreError {
-    /// The store has not finished opening, so there is nothing to answer from.
-    /// Transient: it resolves once initialisation completes.
-    #[error("chain store is not ready")]
-    NotReady,
-
     /// The requested height is above the finalised watermark.
     ///
     /// Not a miss. The block may well exist — the chain head holds what sits
     /// above the watermark — so a caller that treats this as "no such block"
     /// will report absent data as absent chain. The caller routes rather than
     /// retries.
-    #[error("height {requested} is above the finalised watermark {watermark}")]
+    #[error(
+        "height {requested} is above the finalised watermark {}",
+        .watermark.map_or_else(|| "(empty store)".to_string(), |height| height.to_string())
+    )]
     AboveWatermark {
         /// The height that was asked for.
         requested: Height,
-        /// The highest height the store can currently answer for.
-        watermark: Height,
+        /// The highest height the store can currently answer for, or `None` for an empty store.
+        watermark: Option<Height>,
     },
 
     /// A range whose start is above its end.

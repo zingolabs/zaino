@@ -59,7 +59,7 @@ pub mod transparent;
 pub mod txout_set;
 
 pub use block::{PoolFilter, StoredBlock, StoredTx};
-pub use capability::{Provenance, StoreCapabilities, StoreCapability, StoreWatermark};
+pub use capability::{StoreCapabilities, StoreCapability, StoreWatermark};
 pub use config::ChainStoreConfig;
 pub use error::{ChainStoreError, ChainStoreSourceError};
 pub use output::{SpenderRef, StoredAddress, StoredTxOut};

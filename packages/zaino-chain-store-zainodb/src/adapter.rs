@@ -80,7 +80,7 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
     }
 
     fn capabilities(&self) -> StoreCapabilities {
-        store_capabilities::<Self>(self.inner.capability())
+        store_capabilities::<Self>()
     }
 
     #[tracing::instrument(skip(self), fields(height = %height))]
@@ -131,25 +131,10 @@ impl<T: ChainStoreSource> DbReader<T> {
         if watermark.covers(height) {
             return Ok(());
         }
-        // A passthrough store is not bounded by what it holds, because it is
-        // not answering from what it holds: the read goes to the validator, and
-        // the validator has the block. The watermark still describes the
-        // durable rows — that is what it is for — but using it as a *limit*
-        // here would refuse a question this store can answer perfectly well,
-        // which is exactly the case a store that is still building is in.
-        if watermark.provenance == zaino_chain_store::Provenance::Passthrough {
-            return Ok(());
-        }
-        // No tip at all is not "above the watermark" — there is no watermark to
-        // be above. A store still opening or still empty is transiently unable
-        // to answer, which is what the caller needs to know.
-        match watermark.tip {
-            Some(tip) => Err(ChainStoreError::AboveWatermark {
-                requested: height,
-                watermark: tip.height,
-            }),
-            None => Err(ChainStoreError::NotReady),
-        }
+        Err(ChainStoreError::AboveWatermark {
+            requested: height,
+            watermark: watermark.tip.map(|tip| tip.height),
+        })
     }
 }
 
@@ -223,17 +208,8 @@ impl<T: ChainStoreSource> DbReader<T> {
             return Err(ChainStoreError::InvalidRange { start, end });
         }
 
-        let watermark = self.inner.watermark();
-
-        // Passthrough answers from the validator, so there is nothing to clamp
-        // to — see [`Self::bounded`]. The ascending check above still applies,
-        // because that one is about the request rather than about coverage.
-        if watermark.provenance == zaino_chain_store::Provenance::Passthrough {
-            return Ok(Some((stored_height(start), stored_height(end))));
-        }
-
-        let Some(tip) = watermark.tip else {
-            return Err(ChainStoreError::NotReady);
+        let Some(tip) = self.inner.watermark().tip else {
+            return Ok(None);
         };
         if start > tip.height {
             return Ok(None);

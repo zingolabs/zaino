@@ -12,11 +12,23 @@ timed-out liveness probe kills the pod).
 | ---------- | -------------------------------------- | ---------------------------- |
 | `/metrics` | Prometheus exposition: quantities only | never (render panic → `500`) |
 | `/livez`   | indexer loop still running             | no heartbeat for 30s         |
-| `/readyz`  | TODO                                   | TODO                         |
+| `/readyz`  | index synced, gRPC and JSON-RPC bound  | still syncing (body `syncing`) |
 
 - Heartbeat republished by the indexer loop every 100ms
 
-### `/readyz` — TODO
+## Nothing is served until the index has synced
+
+zainod binds its gRPC and JSON-RPC listeners only once the finalised state
+reaches the finalised floor, which is the validator tip less the chain-head
+depth. Until then no client can connect, and `/readyz` answers `503`. The
+admin listener binds at startup, so `/livez` and `/metrics` work throughout
+the sync. A supervisor restart clears readiness, and the restarted indexer
+binds its listeners again once it has synced. Once bound, the listeners stay
+up even if the index later falls behind.
+
+### `/readyz` per component — TODO
+
+Today `/readyz` answers only the sync gate above. The planned body:
 
 Status code: `200` iff every component `Ready` + `Healthy`. Body, per component (`zaino-component`
 `ComponentStatus`):
@@ -31,7 +43,7 @@ Per-component detail:
 
 | Component       | Detail                                                                                          |
 | --------------- | ----------------------------------------------------------------------------------------------- |
-| finalised state | mode: `persistent`, `ephemeral(configured)`, `ephemeral(syncing)`, `ephemeral(migrating)`; accumulator rebuild running |
+| finalised state | building or synced; accumulator rebuild running                                                  |
 | mempool         | completeness: `complete`, `incomplete(capacity_limited / pending_metadata / source_error)`      |
 
 ## Quantities on `/metrics`, modes on `/readyz`

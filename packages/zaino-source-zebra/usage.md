@@ -43,7 +43,7 @@ self.rpc.method(args)                // RPC only — the state service cannot an
   side-chain block is not in the finalised state, and the RPC path can still
   find it. This preserves a behaviour the old connector had as an undocumented
   per-variant difference.
-- **RPC only** for the mempool and the passthrough RPCs.
+- **RPC only** for the mempool and the node-forwarding RPCs.
 
 ## Two places the usual preference inverts
 

@@ -125,26 +125,7 @@ impl StoreCapabilities {
     }
 }
 
-/// Where a watermark's answer came from.
-///
-/// A store that is far behind can still answer reads by passing them to the
-/// validator, which is how a freshly-created or long-stopped deployment stays
-/// useful while it builds. That is a materially different answer from one
-/// served out of the store's own committed history, and a consumer reasoning
-/// about coherence needs to be able to tell them apart — so this is on the
-/// watermark rather than hidden behind it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Provenance {
-    /// Answers come from the store's own committed data.
-    Durable,
-    /// Answers are being passed through to the validator while the store
-    /// builds. Coherent with the chain, but not evidence that the
-    /// store holds anything.
-    Passthrough,
-}
-
-/// The highest block the store can answer for, and where that answer comes
-/// from.
+/// The highest block the store can answer for.
 ///
 /// Cheap and infallible: it is held in memory and updated on commit, so a
 /// caller can bound a read against it without paying for a disk read first.
@@ -158,17 +139,12 @@ pub enum Provenance {
 pub struct StoreWatermark {
     /// The highest block the store can answer for, or `None` when empty.
     pub tip: Option<BlockRef>,
-    /// Whether reads are served from committed data or passed through.
-    pub provenance: Provenance,
 }
 
 impl StoreWatermark {
-    /// A store holding nothing, serving from its own (empty) data.
+    /// A store holding nothing.
     pub fn empty() -> Self {
-        Self {
-            tip: None,
-            provenance: Provenance::Durable,
-        }
+        Self { tip: None }
     }
 
     /// Whether `height` is at or below the watermark, and so within the range
@@ -189,7 +165,6 @@ mod tests {
                 height: Height::try_from(height).expect("valid height"),
                 hash: BlockHash::from([0; 32]),
             }),
-            provenance: Provenance::Durable,
         }
     }
 

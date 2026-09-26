@@ -14,7 +14,6 @@
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
 use crate::chain_index::source::GetTransactionLocation;
-use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeRootData};
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
@@ -22,16 +21,13 @@ use crate::metric_names::*;
 use crate::{CompactBlockStream, SyncError};
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
-use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
-use zaino_chain_store_zainodb::store::FinalisedStateMode;
 use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use chain_head::WithChainHeadSource;
 use chain_store::WithChainStoreSource;
-use futures::Stream;
 use source::BlockchainSource;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -50,7 +46,6 @@ use zaino_primitives::types::rpc::{
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
-use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
     methods::GetBlock,
@@ -129,6 +124,14 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
 }
 
+/// Whether the finalised state has built `height`, judged by its watermark.
+fn store_holds<R: zaino_chain_store::ChainStoreReader>(reader: &R, height: crate::Height) -> bool {
+    reader
+        .watermark()
+        .tip
+        .is_some_and(|tip| u32::from(tip.height) >= height.0)
+}
+
 /// The interface to the chain index.
 ///
 /// `ChainIndex` provides a unified interface for querying blockchain data from different
@@ -137,60 +140,16 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
 ///
 /// # Implementation
 ///
-/// The primary implementation is [`NodeBackedChainIndex`], which can be backed by either:
-/// - Direct read access to a zebrad database via `ReadStateService` (preferred)
-/// - A JSON-RPC connection to a validator node (zebrad or another zainod)
+/// The implementation is [`NodeBackedChainIndex`], built by
+/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService). Its subscriber implements this
+/// trait, and a snapshot pins the non-finalised state so a sequence of queries sees one
+/// consistent chain.
 ///
-/// # Constructing one
+/// A call for indexed data (e.g. a block) is answered from the mempool, the chain head's snapshot,
+/// or the finalised store, and a miss in all three is a not-found answer; only RPCs about node
+/// state that zaino never indexes are forwarded to the validator.
 ///
-/// Both backends are selected by config and built through
-/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService), which
-/// resolves the connection type, probes the validator, adopts its activation
-/// schedule and waits for the initial sync:
-///
-/// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{
-///     LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
-/// };
-///
-/// // `ValidatorConnectionType::Rpc` reaches the validator over JSON-RPC only;
-/// // `Direct` additionally reads its state database, and is preferred where
-/// // available.
-/// let config = NodeBackedIndexerServiceConfig::default();
-/// let service = NodeBackedIndexerService::spawn(config).await?;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// Consumers then query through the service's subscriber, which implements this
-/// trait. A snapshot pins the non-finalised state so a sequence of queries sees
-/// one consistent chain:
-///
-/// ```no_run
-/// # async fn example(
-/// #     subscriber: impl zaino_state::ChainIndex<Error: std::error::Error + 'static>,
-/// # ) -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::ChainIndex as _;
-///
-/// // Capturing a snapshot cannot fail and cannot block: the chain head has
-/// // published one before this subscriber could exist.
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
-/// let tip = subscriber.best_chaintip(&snapshot).await?;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// When a call asks for info (e.g. a block), Zaino selects sources in this order:
-#[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
-///
-/// This trait holds the core methods required by the embedded wallet consumer
-/// (zallet). RPC-server-only methods live on the [`ChainIndexRpcExt`] extension
-/// trait.
-///
-/// TODO: The core/extension split is a provisional first pass. It should be refined
-/// into finer capability-based traits (zallet / lwd / block-explorer) in a follow-up
-/// PR.
+/// It holds every read the gRPC (lightwalletd) and JSON-RPC servers make.
 pub trait ChainIndex {
     /// A snapshot of the non-finalised chain head, needed for atomic access.
     ///
@@ -224,50 +183,19 @@ pub trait ChainIndex {
         hash: types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<types::Height>, Self::Error>>;
 
-    /// Returns Some(BlockHash) for the given block height.in the best chain.
-    ///
-    /// Returns None if the specified block height is above the best chain tip.
-    fn get_block_hash(
-        &self,
-        snapshot: &Self::Snapshot,
-        hash: types::Height,
-    ) -> impl std::future::Future<Output = Result<Option<types::BlockHash>, Self::Error>>;
-
-    /// Returns Some(IndexedBlock) for the given block hash.
-    ///
-    /// Returns None if the specified block is not found.
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", cumulative
-    /// chain work must be made optional to enable this.**
+    /// Returns Some(IndexedBlock) for the given block hash, or None if the specified block is not found.
     fn get_indexed_block_by_hash(
         &self,
         snapshot: &Self::Snapshot,
         target_hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
 
-    /// Returns Some(IndexedBlock) for the given block height.in the best chain.
-    ///
-    /// Returns None if the specified block height is above the best chain tip.
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", cumulative
-    /// chain work must be made optional to enable this.**
+    /// Returns Some(IndexedBlock) for the given block height in the best chain, or None if the height is above the best chain tip.
     fn get_indexed_block_by_height(
         &self,
         snapshot: &Self::Snapshot,
         target_height: &types::Height,
     ) -> impl std::future::Future<Output = Result<Option<IndexedBlock>, Self::Error>>;
-
-    /// Given inclusive start and end heights, stream all blocks
-    /// between the given heights.
-    /// Returns None if the specified end height
-    /// is greater than the snapshot's tip
-    #[allow(clippy::type_complexity)]
-    fn get_block_range(
-        &self,
-        snapshot: &Self::Snapshot,
-        start: types::Height,
-        end: Option<types::Height>,
-    ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
 
     // ********** Transaction methods **********
 
@@ -335,14 +263,6 @@ pub trait ChainIndex {
         nonfinalized_snapshot: &Self::Snapshot,
     ) -> impl std::future::Future<Output = Result<BlockIndex, Self::Error>>;
 
-    /// Finds the newest ancestor of the given block on the main
-    /// chain, or the block itself if it is on the main chain.
-    fn find_fork_point(
-        &self,
-        snapshot: &Self::Snapshot,
-        hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
-
     /// Returns the block commitment tree data by hash.
     ///
     /// The hash must exist in the non-finalized snapshot or finalized database
@@ -390,37 +310,6 @@ pub trait ChainIndex {
         address_strings: GetAddressBalanceRequest,
     ) -> impl std::future::Future<Output = Result<Vec<zaino_primitives::types::Utxo>, Self::Error>>;
 
-    /// For each outpoint, returns the txid of the transaction that spent it on the best
-    /// chain, or `None` if the outpoint is unspent or unknown.
-    ///
-    /// The output is aligned with the input by index: `result[i]` corresponds to
-    /// `outpoints[i]`. An outpoint is spent at most once on the best chain. `scope` selects
-    /// how far the search reaches: [`ChainScope::FullChain`] searches the non-finalised best
-    /// chain first then the finalised index; [`ChainScope::Finalised`] searches only the
-    /// finalised index, yielding reorg-stable results.
-    ///
-    /// [`ChainScope::FullChain`]: types::ChainScope::FullChain
-    /// [`ChainScope::Finalised`]: types::ChainScope::Finalised
-    fn get_outpoint_spenders(
-        &self,
-        snapshot: &Self::Snapshot,
-        outpoints: Vec<types::Outpoint>,
-        scope: types::ChainScope,
-    ) -> impl std::future::Future<Output = Result<Vec<Option<types::TransactionHash>>, Self::Error>>;
-}
-
-/// RPC-server extension methods layered on top of [`ChainIndex`].
-///
-/// The core [`ChainIndex`] trait holds the subset required by the embedded wallet
-/// consumer (zallet). This extension holds the additional functionality required by
-/// the gRPC (lightwalletd) and JSON-RPC servers: compact-block serving, mempool
-/// metadata, address deltas, and the block-explorer / node-passthrough RPCs.
-///
-/// TODO: This two-way core/extension split is a provisional first pass. It should be
-/// refined into finer capability-based traits (zallet / lwd / block-explorer) in a
-/// follow-up PR, at which point methods will be redistributed to their narrowest
-/// capability.
-pub trait ChainIndexRpcExt: ChainIndex {
     // ********** Block methods **********
 
     /// Returns the *compact* block for the given height.
@@ -511,7 +400,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Zcash RPC reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     fn get_difficulty(&self) -> impl std::future::Future<Output = Result<f64, Self::Error>>;
 
-    // ********** Node-passthrough methods **********
+    // ********** Node-forwarding methods **********
     //
     // No local-index equivalent; always delegate to the backing validator.
 
@@ -566,13 +455,6 @@ pub trait ChainIndexRpcExt: ChainIndex {
         &self,
         raw_transaction_hex: String,
     ) -> impl std::future::Future<Output = Result<zaino_primitives::types::TransactionId, Self::Error>>;
-
-    /// Returns the full `z_gettreestate` response for the given hash-or-height, via the
-    /// backing validator (node-passthrough fallback for treestates not locally serviceable).
-    fn get_treestate_by_id(
-        &self,
-        hash_or_height: String,
-    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::Treestate, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
@@ -675,6 +557,8 @@ pub struct NodeBackedChainIndex<
     network: ZebraNetwork,
     source: Source,
     sync_timings: SyncTimings,
+    /// Latched the first time the finalised state reaches the finalised floor, after which the index may be served.
+    synced: Arc<std::sync::atomic::AtomicBool>,
     /// Signals the sync worker to exit cooperatively. `shutdown()` fires
     /// `cancel_token.cancel()` *before* tearing down `finalized_db`, so the
     /// worker wakes from any in-flight `tokio::time::sleep` and returns
@@ -817,7 +701,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
             cancel_token.child_token(),
         )
         .await
-        .map_err(crate::InitError::ChainHeadInitialisationError)?;
+        .map_err(crate::InitError::ChainHead)?;
 
         let (block_wake_signal, block_wake) = tokio::sync::watch::channel(());
 
@@ -851,6 +735,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
             network: config.network.clone(),
             source,
             sync_timings,
+            synced: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cancel_token,
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
@@ -912,19 +797,15 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         self.source.shutdown();
     }
 
-    /// How long tip-coherent mempool reads have been frozen, or `None` if live.
-    ///
-    /// See [`NodeBackedChainIndexSubscriber::mempool_coherence_health`].
-    pub fn mempool_coherence_health(&self) -> Option<std::time::Duration> {
-        self.coherence.subscriber().frozen_for()
+    /// Returns whether the finalised state is still building in the background.
+    #[cfg(test)]
+    pub(crate) fn finalised_state_is_building(&self) -> bool {
+        self.finalized_db.is_building()
     }
 
-    /// Returns which backend is currently answering finalised-state reads.
-    ///
-    /// Companion to [`NodeBackedChainIndex::status`], which cannot express this: an ephemeral
-    /// passthrough reports [`StatusType::Ready`] identically to a synced persistent database.
-    pub fn finalised_state_mode(&self) -> FinalisedStateMode {
-        self.finalized_db.finalised_state_mode()
+    /// Returns whether the finalised state has reached the finalised floor, so the index may be served.
+    pub fn is_synced(&self) -> bool {
+        self.synced.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Displays the status of the chain_index
@@ -941,11 +822,13 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
         info!("Starting ChainIndex sync loop");
         let fs = self.finalized_db.clone();
+        let store = zaino_chain_store::ChainStoreService::reader(fs.as_ref());
         let status = self.status.clone();
         let source = self.source.clone();
         let block_wake_signal = self.block_wake_signal.clone();
         let coherence = self.coherence.subscriber();
         let timings = self.sync_timings;
+        let synced = Arc::clone(&self.synced);
         let cancel_token = self.cancel_token.clone();
 
         tokio::task::spawn(async move {
@@ -1015,6 +898,17 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                     chain_store::build_to(fs.as_ref(), finalised_height)
                         .await
                         .map_err(source_error)?;
+                    // Judged by the watermark, not by whether a build is running: a
+                    // background build that has just finished leaves the store at its
+                    // own target, which may sit below the floor this tick derived.
+                    if store_holds(&store, finalised_height)
+                        && !synced.swap(true, std::sync::atomic::Ordering::AcqRel)
+                    {
+                        info!(
+                            finalised_height = finalised_height.0,
+                            "finalised state reached the finalised floor; the index may be served"
+                        );
+                    }
 
                     if last_woken_height != Some(chain_height.0) {
                         last_woken_height = Some(chain_height.0);
@@ -1168,92 +1062,6 @@ pub struct NodeBackedChainIndexSubscriber<
     source: Source,
 }
 
-async fn compact_block_from_source<Source: BlockchainSource>(
-    source: &Source,
-    network: ZebraNetwork,
-    height: types::Height,
-    pool_types: &PoolTypeFilter,
-) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, ChainIndexError> {
-    let Some(block) = source
-        .get_block(HashOrHeight::Height(zebra_chain::block::Height(height.0)))
-        .await
-        .map_err(ChainIndexError::backing_validator)?
-    else {
-        return Ok(None);
-    };
-
-    let block_height = block
-        .coinbase_height()
-        .map(|height| types::Height(height.0))
-        .ok_or_else(|| {
-            ChainIndexError::backing_validator(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "validator returned a block without a height",
-            ))
-        })?;
-    if block_height != height {
-        return Err(ChainIndexError::backing_validator(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "validator returned block at height {}, expected {}",
-                block_height.0, height.0
-            ),
-        )));
-    }
-
-    let tree_roots = source
-        .get_commitment_tree_roots(types::BlockHash::from(block.hash()))
-        .await
-        .map_err(ChainIndexError::backing_validator)?;
-    let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
-        TreeRootData::new(tree_roots.0, tree_roots.1, tree_roots.2).extract_with_defaults();
-
-    let metadata = BlockMetadata {
-        sapling_root,
-        sapling_size: sapling_size.try_into().map_err(|_| {
-            ChainIndexError::backing_validator(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "sapling commitment tree size overflow",
-            ))
-        })?,
-        orchard_root,
-        orchard_size: orchard_size.try_into().map_err(|_| {
-            ChainIndexError::backing_validator(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "orchard commitment tree size overflow",
-            ))
-        })?,
-        ironwood: ironwood
-            .map(|(root, size)| {
-                Ok::<_, ChainIndexError>((
-                    root,
-                    size.try_into().map_err(|_| {
-                        ChainIndexError::backing_validator(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "ironwood commitment tree size overflow",
-                        ))
-                    })?,
-                ))
-            })
-            .transpose()?,
-        // parent chainwork unknown — single-block construction
-        parent_chainwork: None,
-        network,
-    };
-    let indexed_block =
-        IndexedBlock::try_from(BlockWithMetadata::new(&block, metadata)).map_err(|error| {
-            ChainIndexError::backing_validator(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                error,
-            ))
-        })?;
-
-    Ok(Some(prune_compact_block(
-        indexed_block.to_compact_block(),
-        pool_types,
-    )))
-}
-
 /// Cloned and formatted by hand rather than derived.
 ///
 /// Both derives would demand the same bound on `Source::Store` — the validator
@@ -1273,6 +1081,26 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Clon
             status: self.status.clone(),
             network: self.network.clone(),
             source: self.source.clone(),
+        }
+    }
+}
+
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedChainIndexSubscriber<Source>
+{
+    /// Clears a finalised-half read of `height` after the chain head missed it: `None` above the snapshot's tip, an error while the finalised state has not built it, and the height itself otherwise.
+    fn finalised_height(
+        &self,
+        snapshot: &impl zaino_chain_head::ChainHeadSnapshot,
+        height: types::Height,
+    ) -> Result<Option<types::Height>, ChainIndexError> {
+        if height > types::Height(u32::from(snapshot.best_tip().height)) {
+            return Ok(None);
+        }
+        if store_holds(&self.finalized_state, height) {
+            Ok(Some(height))
+        } else {
+            Err(ChainIndexError::not_yet_indexed(height))
         }
     }
 }
@@ -1366,29 +1194,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         Ok(spenders.into_iter().filter(|s| s.is_none()).count() as u64)
     }
 
-    async fn get_fullblock_bytes_from_node(
-        &self,
-        id: HashOrHeight,
-    ) -> Result<Option<Vec<u8>>, ChainIndexError> {
-        self.source()
-            .get_block(id)
-            .await
-            .map_err(ChainIndexError::backing_validator)?
-            .map(|bk| {
-                bk.zcash_serialize_to_vec()
-                    .map_err(ChainIndexError::backing_validator)
-            })
-            .transpose()
-    }
-
-    async fn get_compact_block_from_node(
-        &self,
-        height: types::Height,
-        pool_types: &PoolTypeFilter,
-    ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, ChainIndexError> {
-        compact_block_from_source(self.source(), self.network.clone(), height, pool_types).await
-    }
-
     async fn get_indexed_block_height(
         &self,
         snapshot: &MapBackedSnapshot,
@@ -1456,11 +1261,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
             .chain(non_finalized_blocks_containing_transaction))
     }
 
-    /// Returns true when the block hash is present in the local chain index.
-    ///
-    /// During finalized-state sync, a hash is considered known when it is in
-    /// the finalized database or the backing validator can serve it as a
-    /// finalized block.
+    /// Returns true when the block hash is in the chain head's snapshot or the finalised database.
     pub(crate) async fn block_hash_known_for_treestate(
         &self,
         snapshot: &Arc<MapBackedSnapshot>,
@@ -1475,33 +1276,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         Ok(chain_store::block_height(&self.finalized_state, *hash)
             .await?
             .is_some())
-    }
-
-    /// Returns true when the hash-or-height string refers to a block known to
-    /// the local chain index.
-    pub(crate) async fn hash_or_height_known_for_treestate(
-        &self,
-        snapshot: &Arc<MapBackedSnapshot>,
-        hash_or_height: &str,
-    ) -> Result<bool, ChainIndexError> {
-        let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
-            ChainIndexError::internal(format!("invalid hash or height: {error}"))
-        })?;
-        match hash_or_height {
-            HashOrHeight::Hash(hash) => {
-                self.block_hash_known_for_treestate(snapshot, &types::BlockHash::from(hash))
-                    .await
-            }
-            HashOrHeight::Height(height) => {
-                match self
-                    .get_block_hash(snapshot, types::Height::from(height))
-                    .await?
-                {
-                    Some(hash) => self.block_hash_known_for_treestate(snapshot, &hash).await,
-                    None => Ok(false),
-                }
-            }
-        }
     }
 }
 
@@ -1550,29 +1324,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         self.get_indexed_block_height(snapshot, hash).await
     }
 
-    /// Returns Some(BlockHash) for the given block height.in the best chain.
-    ///
-    /// Returns None if the specified block height is above the best chain tip.
-    async fn get_block_hash(
-        &self,
-        snapshot: &Self::Snapshot,
-        height: types::Height,
-    ) -> Result<Option<types::BlockHash>, Self::Error> {
-        // The chain head first; below its window, the finalised state.
-        match chain_head::domain_height(height)
-            .and_then(|height| snapshot.best_block_by_height(height))
-        {
-            Some(block) => Ok(Some(types::BlockHash(block.hash().into()))),
-            None => chain_store::block_hash(&self.finalized_state, height).await,
-        }
-    }
-
-    /// Returns Some(IndexedBlock) for the given block hash.
-    ///
-    /// Returns None if the specified block is not found.
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", cumulative
-    /// chain work must be made optional to enable this.**
+    /// Returns Some(IndexedBlock) for the given block hash, or None if the specified block is not found.
     async fn get_indexed_block_by_hash(
         &self,
         snapshot: &Self::Snapshot,
@@ -1588,12 +1340,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         }
     }
 
-    /// Returns Some(IndexedBlock) for the given block height.in the best chain.
-    ///
-    /// Returns None if the specified block height is above the best chain tip.
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", cumulative
-    /// chain work must be made optional to enable this.**
+    /// Returns Some(IndexedBlock) for the given block height in the best chain, or None if the height is above the best chain tip.
     async fn get_indexed_block_by_height(
         &self,
         snapshot: &Self::Snapshot,
@@ -1603,74 +1350,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
             .and_then(|height| snapshot.best_block_by_height(height))
         {
             Some(block) => Ok(Some(chain_head::indexed_block(block)?)),
-            None => chain_store::block_at(&self.finalized_state, *target_height).await,
-        }
-    }
-
-    /// Given inclusive start and end heights, stream all blocks
-    /// between the given heights.
-    /// Returns None if the specified start height
-    /// is greater than the snapshot's tip and greater
-    /// than the validator's finalized height (`OPERATIONAL_NFS_DEPTH` blocks below tip)
-    fn get_block_range(
-        &self,
-        snapshot: &Self::Snapshot,
-        start: types::Height,
-        end: std::option::Option<types::Height>,
-    ) -> Option<impl Stream<Item = Result<Vec<u8>, Self::Error>>> {
-        // ChainIndex step 1: Skip
-        // mempool blocks have no canon height
-
-        // The lower of the end of the provided range, and the highest block we can serve
-        let end = end
-            .unwrap_or(types::Height(u32::from(snapshot.best_tip().height)))
-            .min(types::Height(u32::from(snapshot.best_tip().height)));
-        // Serve as high as we can, or to the provided end if it's lower
-        if start <= types::Height(u32::from(snapshot.best_tip().height)).min(end) {
-            Some(
-                futures::stream::iter((start.0)..=(end.0)).then(move |height| async move {
-                    // For blocks above validator_finalized_height, it's not reorg-safe to get blocks by height. It is reorg-safe to get blocks by hash. What we need to do in this case is use our snapshot index to look up the hash at a given height, and then get that hash from the validator.
-                    // This is why we now look in the index.
-                    match chain_store::block_hash(&self.finalized_state, types::Height(height))
-                        .await
-                    {
-                        Ok(Some(hash)) => {
-                            return self
-                                .get_fullblock_bytes_from_node(HashOrHeight::Hash(hash.into()))
-                                .await?
-                                .ok_or(ChainIndexError::database_hole(hash, None))
-                        }
-                        Err(e) => Err(ChainIndexError {
-                            kind: ChainIndexErrorKind::InternalServerError,
-                            message: "".to_string(),
-                            source: Some(Box::new(e)),
-                        }),
-                        Ok(None) => {
-                            match chain_head::domain_height(types::Height(height))
-                                .and_then(|height| snapshot.best_block_by_height(height))
-                            {
-                                Some(block) => {
-                                    return self
-                                        .get_fullblock_bytes_from_node(HashOrHeight::Hash(
-                                            types::BlockHash(block.hash().into()).into(),
-                                        ))
-                                        .await?
-                                        .ok_or(ChainIndexError::database_hole(block.hash(), None))
-                                }
-                                None => self
-                                    // usually getting by height is not reorg-safe, but here, height is known to be below or equal to validator_finalized_height.
-                                    .get_fullblock_bytes_from_node(HashOrHeight::Height(
-                                        zebra_chain::block::Height(height),
-                                    ))
-                                    .await?
-                                    .ok_or(ChainIndexError::database_hole(height, None)),
-                            }
-                        }
-                    }
-                }),
-            )
-        } else {
-            None
+            None => match self.finalised_height(snapshot, *target_height)? {
+                Some(height) => chain_store::block_at(&self.finalized_state, height).await,
+                None => Ok(None),
+            },
         }
     }
 
@@ -1906,39 +1589,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
 
     // ********** Chain methods **********
 
-    /// For a given block,
-    /// find its newest main-chain ancestor,
-    /// or the block itself if it is on the main-chain.
-    /// Returns Ok(None) if no fork point found. This is not an error,
-    /// as zaino does not guarentee knowledge of all sidechain data.
-    async fn find_fork_point(
-        &self,
-        snapshot: &Self::Snapshot,
-        hash: &types::BlockHash,
-    ) -> Result<Option<(types::BlockHash, types::Height)>, Self::Error> {
-        // ChainIndex step 1: Skip
-        // mempool blocks have no canon height, guaranteed to return None
-        // todo: possible efficiency boost by checking mempool for a negative?
-
-        // The chain head first. A retained block that is canonical at its
-        // height *is* its own fork point; one that is not is on a competing
-        // branch, and the walk back to the canonical chain is the snapshot's
-        // own to do.
-        if let Some(fork) = snapshot.find_fork_point(&chain_head::domain_hash(*hash)) {
-            return Ok(Some((
-                types::BlockHash(fork.hash.into()),
-                types::Height(u32::from(fork.height)),
-            )));
-        }
-
-        // Not retained by the chain head, so it is finalised or unknown.
-        match chain_store::block_height(&self.finalized_state, *hash).await {
-            Ok(Some(height)) => Ok(Some((*hash, height))),
-            Ok(None) => Ok(None),
-            Err(e) => Err(ChainIndexError::database_hole(hash, Some(Box::new(e)))),
-        }
-    }
-
     /// Returns the block commitment tree data by hash.
     async fn get_treestate(
         &self,
@@ -2017,68 +1667,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_outpoint_spenders(
-        &self,
-        snapshot: &Self::Snapshot,
-        outpoints: Vec<types::Outpoint>,
-        scope: types::ChainScope,
-    ) -> Result<Vec<Option<types::TransactionHash>>, Self::Error> {
-        use std::collections::HashMap;
-
-        let mut result: Vec<Option<TransactionHash>> = vec![None; outpoints.len()];
-
-        // 1) Non-finalised best chain (FullChain scope only). Scan only the blocks reachable
-        //    via `heights_to_hashes` (the `blocks` map also holds reorged-away blocks, which
-        //    must not count). One pass builds an outpoint -> spending-txid map regardless of
-        //    how many outpoints we look up. Under `Finalised` scope this is skipped so results
-        //    are reorg-stable.
-        if scope == types::ChainScope::FullChain {
-            let mut nfs_spenders: HashMap<Outpoint, TransactionHash> = HashMap::new();
-            for block in snapshot.best_chain() {
-                let block = chain_head::indexed_block(block)?;
-                for tx in block.transactions() {
-                    let txid = *tx.txid();
-                    // `spent_outpoints` already skips coinbase null prevouts and builds each
-                    // `Outpoint`, keeping the construction in one place (see #1332).
-                    for outpoint in tx.transparent().spent_outpoints() {
-                        nfs_spenders.insert(outpoint, txid);
-                    }
-                }
-            }
-            for (i, outpoint) in outpoints.iter().enumerate() {
-                if let Some(txid) = nfs_spenders.get(outpoint) {
-                    result[i] = Some(*txid);
-                }
-            }
-        }
-
-        // 2) Finalised lookup for the still-unresolved outpoints, batched into one DB call.
-        let unresolved_indices: Vec<usize> = result
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| r.is_none().then_some(i))
-            .collect();
-        if unresolved_indices.is_empty() {
-            return Ok(result);
-        }
-        let unresolved_outpoints: Vec<Outpoint> =
-            unresolved_indices.iter().map(|&i| outpoints[i]).collect();
-
-        // The port answers with the spending transaction's identifier, not just
-        // its position, so there is no second pass to resolve one to the other
-        // and no need to dedup positions to avoid repeating it.
-        let spenders =
-            chain_store::outpoint_spenders(&self.finalized_state, &unresolved_outpoints).await?;
-
-        for (slot, spender) in unresolved_indices.into_iter().zip(spenders) {
-            if let Some(txid) = spender {
-                result[slot] = Some(txid);
-            }
-        }
-
-        Ok(result)
-    }
-
     // ********** Metadata methods **********
 
     async fn best_chaintip(&self, snapshot: &Self::Snapshot) -> Result<BlockIndex, Self::Error> {
@@ -2088,11 +1676,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
             hash: types::BlockHash(tip.hash.into()),
         })
     }
-}
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> ChainIndexRpcExt
-    for NodeBackedChainIndexSubscriber<Source>
-{
     /// Returns the *compact* block for the given height.
     ///
     /// Returns `None` if the specified `height` is greater than the snapshot's tip.
@@ -2107,60 +1691,29 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
     ///
     /// Returns None if the specified height
     /// is greater than the snapshot's tip
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
-    /// fetching block data from the backing validator when not locally available.**
     async fn get_compact_block(
         &self,
         snapshot: &Self::Snapshot,
         height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
-        if height > types::Height(u32::from(snapshot.best_tip().height)) {
-            return Ok(None);
-        }
-
-        Ok(Some(
-            match chain_head::domain_height(height)
-                .and_then(|height| snapshot.best_block_by_height(height))
-            {
-                Some(block) => prune_compact_block(
-                    chain_head::indexed_block(block)?.to_compact_block(),
-                    &pool_types,
-                ),
-                None => {
-                    let finalised =
-                        chain_store::compact_block(&self.finalized_state, height, &pool_types)
-                            .await;
-
-                    // A failure takes the same route as a miss, but it is not
-                    // one, so it is logged rather than absorbed. Silently, the
-                    // two are indistinguishable: an LMDB cursor desync or a
-                    // corrupt row would read as "the store has not built this
-                    // height yet" for as long as the validator kept covering
-                    // for it, which is indefinitely.
-                    if let Err(error) = &finalised {
-                        tracing::warn!(
-                            error = error as &dyn std::error::Error,
-                            %height,
-                            "finalised compact-block read failed; falling back to validator"
-                        );
-                    }
-
-                    match finalised {
-                        Ok(Some(block)) => block,
-                        // A miss and a failure both fall through to the
-                        // validator, as they did before: the store not holding
-                        // the block is the ordinary case on a node that is
-                        // still building, and passthrough is what covers it.
-                        Ok(None) | Err(_) => self
-                            .get_compact_block_from_node(height, &pool_types)
-                            .await?
-                            .ok_or(ChainIndexError::database_hole(height, None))?,
-                    }
-                }
-            },
-        ))
+        let compact_block = match chain_head::domain_height(height)
+            .and_then(|height| snapshot.best_block_by_height(height))
+        {
+            Some(block) => prune_compact_block(
+                chain_head::indexed_block(block)?.to_compact_block(),
+                &pool_types,
+            ),
+            None => {
+                let Some(height) = self.finalised_height(snapshot, height)? else {
+                    return Ok(None);
+                };
+                chain_store::compact_block(&self.finalized_state, height, &pool_types)
+                    .await?
+                    .ok_or(ChainIndexError::database_hole(height, None))?
+            }
+        };
+        Ok(Some(compact_block))
     }
 
     /// Streams *compact* blocks for an inclusive height range.
@@ -2179,9 +1732,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
     ///   The original transaction index is preserved in `CompactTx.index`.
     /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
     ///   components are populated).
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
-    /// fetching block data from the backing validator when not locally available.**
     #[allow(clippy::type_complexity)]
     async fn get_compact_block_stream(
         &self,
@@ -2224,6 +1774,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                 ));
 
                 if start_height <= finalized_end_height {
+                    // The store clamps a range to its watermark without complaint, so
+                    // the highest finalised height asked for is checked here; otherwise
+                    // the gap up to the floor would be skipped rather than refused.
+                    self.finalised_height(nonfinalized_snapshot, finalized_end_height)?;
                     Some(
                         chain_store::compact_blocks_ascending(
                             &self.finalized_state,
@@ -2246,6 +1800,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
             } else {
                 types::Height(lowest_nonfinalized_height.0.saturating_sub(1))
             };
+            self.finalised_height(nonfinalized_snapshot, finalized_start_height)?;
 
             Some(
                 chain_store::compact_blocks_descending(
@@ -2261,9 +1816,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         };
 
         let nonfinalized_snapshot = nonfinalized_snapshot.clone();
-        let source = self.source.clone();
-        let network = self.network.clone();
-        let pool_types_for_node = pool_types.clone();
         // TODO: Investigate whether channel size should be changed, added to config, or set dynamically based on resources.
         let (channel_sender, channel_receiver) = tokio::sync::mpsc::channel(128);
 
@@ -2291,35 +1843,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                             .map_err(ChainIndexError::from)
                             .unwrap_or(None)
                     else {
-                        match compact_block_from_source(
-                            &source,
-                            network.clone(),
-                            types::Height(height_value),
-                            &pool_types_for_node,
-                        )
-                        .await
-                        {
-                            Ok(Some(compact_block)) => {
-                                if channel_sender.send(Ok(compact_block)).await.is_err() {
-                                    return;
-                                }
-                                continue;
-                            }
-                            Ok(None) => {
-                                let _ = channel_sender
-                                    .send(Err(tonic::Status::internal(format!(
-                                        "Internal error, missing nonfinalized block at height [{height_value}].",
-                                    ))))
-                                    .await;
-                                return;
-                            }
-                            Err(error) => {
-                                let _ = channel_sender
-                                    .send(Err(tonic::Status::internal(error.to_string())))
-                                    .await;
-                                return;
-                            }
-                        }
+                        let _ = channel_sender
+                            .send(Err(tonic::Status::internal(format!(
+                                "Internal error, missing nonfinalized block at height [{height_value}].",
+                            ))))
+                            .await;
+                        return;
                     };
                     let compact_block =
                         prune_compact_block(indexed_block.to_compact_block(), &pool_types);
@@ -2353,35 +1882,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                                 .map_err(ChainIndexError::from)
                                 .unwrap_or(None)
                         else {
-                            match compact_block_from_source(
-                                &source,
-                                network.clone(),
-                                types::Height(height_value),
-                                &pool_types_for_node,
-                            )
-                            .await
-                            {
-                                Ok(Some(compact_block)) => {
-                                    if channel_sender.send(Ok(compact_block)).await.is_err() {
-                                        return;
-                                    }
-                                    continue;
-                                }
-                                Ok(None) => {
-                                    let _ = channel_sender
-                                        .send(Err(tonic::Status::internal(format!(
-                                            "Internal error, missing nonfinalized block at height [{height_value}].",
-                                        ))))
-                                        .await;
-                                    return;
-                                }
-                                Err(error) => {
-                                    let _ = channel_sender
-                                        .send(Err(tonic::Status::internal(error.to_string())))
-                                        .await;
-                                    return;
-                                }
-                            }
+                            let _ = channel_sender
+                                .send(Err(tonic::Status::internal(format!(
+                                    "Internal error, missing nonfinalized block at height [{height_value}].",
+                                ))))
+                                .await;
+                            return;
                         };
                         let compact_block =
                             prune_compact_block(indexed_block.to_compact_block(), &pool_types);
@@ -2446,7 +1952,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
     // TODO(internal-first): `getblockdeltas` is buildable from the indexed chainblocks
     // + finalised/non-finalised prevout resolution. Build it internally by default once
     // an internal prevout resolver (spanning non-finalised + finalised, reconstructing
-    // addresses from `TxOutCompact`) exists, keeping this source call as the fallback.
+    // addresses from `TxOutCompact`) exists, and drop this forwarding call then.
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
         self.source()
             .get_block_deltas(hash)
@@ -2554,16 +2060,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         })?;
         self.source()
             .send_raw_transaction(raw_transaction_hex)
-            .await
-            .map_err(ChainIndexError::backing_validator)
-    }
-
-    async fn get_treestate_by_id(
-        &self,
-        hash_or_height: String,
-    ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
-        self.source()
-            .get_treestate_by_id(hash_or_height)
             .await
             .map_err(ChainIndexError::backing_validator)
     }

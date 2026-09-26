@@ -63,7 +63,7 @@ impl DbV1 {
     /// gaps because its window genuinely has competing branches; the finalised
     /// state does not, and silently returning a short range would truncate a
     /// wallet's sync without telling it.
-    pub(in crate::store::finalised_source) async fn get_stored_block_range(
+    pub(in crate::store) async fn get_stored_block_range(
         &self,
         start: Height,
         end: Height,

@@ -60,12 +60,12 @@ async fn indexed_tip_events_name_index_readable_blocks() {
     // Then
     for tip in [initial, updated] {
         let snapshot = index_reader.snapshot_nonfinalized_state();
-        let indexed_hash = index_reader
-            .get_block_hash(&snapshot, crate::Height(u32::from(tip.height)))
+        let indexed = index_reader
+            .get_indexed_block_by_height(&snapshot, &crate::Height(u32::from(tip.height)))
             .await
             .expect("indexed block lookup succeeds")
             .expect("announced tip is readable");
-        assert_eq!(indexed_hash.0, <[u8; 32]>::from(tip.hash));
+        assert_eq!(indexed.hash().0, <[u8; 32]>::from(tip.hash));
     }
 }
 
@@ -107,9 +107,9 @@ async fn layers_meet_without_a_gap() {
     for height in u32::from(lowest_retained)..=target_tip {
         assert!(
             index_reader
-                .get_block_hash(&snapshot, crate::Height(height))
+                .get_indexed_block_by_height(&snapshot, &crate::Height(height))
                 .await
-                .expect("block hash lookup succeeds")
+                .expect("block lookup succeeds")
                 .is_some(),
             "no layer answers for height {height}",
         );
@@ -119,9 +119,9 @@ async fn layers_meet_without_a_gap() {
         let below = crate::Height(u32::from(lowest_retained) - 1);
         assert!(
             index_reader
-                .get_block_hash(&snapshot, below)
+                .get_indexed_block_by_height(&snapshot, &below)
                 .await
-                .expect("block hash lookup succeeds")
+                .expect("block lookup succeeds")
                 .is_some(),
             "the height just below the chain head window must come from the \
              finalised state, but nothing answered for {below:?}",

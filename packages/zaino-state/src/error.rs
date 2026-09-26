@@ -368,6 +368,11 @@ impl ChainIndexError {
         }
     }
 
+    /// Constructs an `Unavailable`-kind error for a height the chain has but the finalised state has not built yet, so a later attempt can serve it.
+    pub(crate) fn not_yet_indexed(height: impl Display) -> Self {
+        Self::unavailable(format!("the index has not built height {height} yet"))
+    }
+
     /// Constructs an `InvalidArgument`-kind error: the request itself is wrong,
     /// and retrying it unchanged will fail identically.
     pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
@@ -437,33 +442,24 @@ pub enum SyncError {
 /// An error occurred while constructing a ChainIndex.
 #[derive(Debug, thiserror::Error)]
 pub enum InitError {
-    /// The connected node returned data that could not be used.
-    #[error("validator returned invalid data: {0}")]
-    InvalidNodeData(Box<dyn std::error::Error + Send + Sync + 'static>),
     /// The mempool failed to initialise.
     #[error(transparent)]
-    MempoolInitialzationError(#[from] crate::error::MempoolError),
+    Mempool(#[from] crate::error::MempoolError),
     /// The finalised state failed to initialise.
     #[error(transparent)]
-    FinalisedStateInitialzationError(#[from] FinalisedStateError),
+    FinalisedState(#[from] FinalisedStateError),
     /// The chain head could not build its first window.
     ///
     /// Fatal by design: a chain head with no window has nothing to serve, and
     /// it holds no persistent state to fall back on.
     #[error(transparent)]
-    ChainHeadInitialisationError(#[from] zaino_chain_head_service::ChainHeadInitError),
+    ChainHead(#[from] zaino_chain_head_service::ChainHeadInitError),
 }
 
 impl From<FinalisedStateError> for ChainIndexError {
     fn from(value: FinalisedStateError) -> Self {
         let message = match &value {
             FinalisedStateError::DataUnavailable(err) => format!("unhandled missing data: {err}"),
-            FinalisedStateError::FeatureUnavailable(err) => {
-                format!("unhandled missing feature: {err}")
-            }
-            FinalisedStateError::V1BackendUnavailable(handle) => {
-                format!("v1 backend unavailable: {handle}")
-            }
             FinalisedStateError::InvalidBlock {
                 height,
                 hash: _,
@@ -508,10 +504,6 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
         use zaino_chain_store::ChainStoreError as Error;
 
         let kind = match &value {
-            // Transient. It resolves once the store finishes opening, so the
-            // caller is told to come back.
-            Error::NotReady => ChainIndexErrorKind::Unavailable,
-
             // The caller handed over a range that runs backwards. Nothing is
             // broken and retrying it unchanged fails identically.
             Error::InvalidRange { .. } => ChainIndexErrorKind::InvalidArgument,
@@ -611,15 +603,6 @@ mod tests {
         );
     }
 
-    /// A store that has not opened yet is retryable.
-    #[test]
-    fn a_store_still_opening_is_retryable() {
-        assert_eq!(
-            kind_of(ChainStoreError::NotReady),
-            ChainIndexErrorKind::Unavailable
-        );
-    }
-
     /// A broken store is a server fault, and so is a routing mistake.
     #[test]
     fn a_broken_store_is_a_server_fault() {
@@ -629,7 +612,7 @@ mod tests {
             ChainStoreError::backend("lmdb"),
             ChainStoreError::AboveWatermark {
                 requested: h(2),
-                watermark: h(1),
+                watermark: Some(h(1)),
             },
         ] {
             assert_eq!(kind_of(error), ChainIndexErrorKind::InternalServerError);
@@ -645,7 +628,6 @@ mod tests {
         use std::error::Error as _;
 
         for error in [
-            ChainStoreError::NotReady,
             ChainStoreError::Unavailable(StoreCapability::TxOutSet),
             ChainStoreError::backend("lmdb"),
         ] {

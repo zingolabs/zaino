@@ -46,8 +46,7 @@ pub(crate) struct FakeValidator {
     blocks: Vec<FakeBlock>,
     /// Hash to index, so a lookup by hash is not a scan.
     by_hash: HashMap<BlockHash, usize>,
-    /// Where each transaction is, so `get_transaction` can answer without a
-    /// scan. The store's passthrough mode asks this per transaction.
+    /// Where each transaction is, so `get_transaction` can answer without a scan.
     by_txid: HashMap<TransactionId, Height>,
     /// The height this validator reports as its tip.
     ///

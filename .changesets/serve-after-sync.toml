@@ -1,0 +1,70 @@
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The ephemeral_finalised_state config key is removed. A config that still \
+sets it fails to load, because the config denies unknown fields.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+zainod binds its gRPC and JSON-RPC listeners only once the finalised \
+state reaches the finalised floor. Until then no client can connect. The \
+admin listener binds at startup and now answers /readyz: 503 while the \
+index syncs and 200 once the listeners are bound.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+The finalised state has one backend, the LMDB database, and no longer \
+serves reads from a validator passthrough while it builds. The router, \
+the ephemeral backend, the capability bitmap, CapabilityRequest, \
+FinalisedStateMode, StoreError::FeatureUnavailable, and \
+StoreError::V1BackendUnavailable are removed. FinalisedState::is_building \
+reports a background build.
+"""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+Every store persists. ChainStoreConfig requires a path and has no \
+Default. ChainStoreError::NotReady and Provenance are removed, and \
+StoreWatermark keeps only its tip. A read against an empty store is \
+AboveWatermark, whose watermark field is now an Option<Height>. \
+ChainStoreSource no longer requires the block-by-hash and transaction \
+ports.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+Embedding is no longer supported. ChainIndex, the chain_index module, \
+and the re-exports for wiring a ChainIndex are crate-private, and \
+ChainIndexRpcExt is merged into ChainIndex. The embedder-only reads \
+get_block_hash, get_block_range, find_fork_point, and \
+get_outpoint_spenders are removed. ChainIndexConfig.ephemeral, \
+CommonBackendConfig.ephemeral_finalised_state, and FinalisedStateMode are \
+removed. ZcashService gains is_synced.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+A local miss is a not-found answer. The index no longer asks the \
+validator for data it indexes: the z_gettreestate retry, the compact \
+block fallbacks, and the block-range fallback by height are removed. RPCs \
+about node state that the index never holds still go to the validator. \
+A height the chain has but the finalised state has not built yet, which \
+can occur while a background catch-up runs, answers as unavailable with \
+the message "the index has not built height N yet" rather than as a \
+truncated range, an internal error, or an invalid parameter; the sync \
+loop reports the index synced only once the store's watermark reaches the \
+finalised floor.
+"""

@@ -47,8 +47,7 @@ pub trait WithChainStoreSource: BlockchainSource {
 ///
 /// Both bounds are load-bearing and neither implies the other.
 /// `ChainIndexSourcePorts` names what ChainIndex asks — which includes the
-/// *raw* block ports, because it hands bytes to callers — and supplies
-/// `GetTransaction`, which only the store's passthrough mode needs.
+/// *raw* block ports, because it hands bytes to callers.
 /// `ChainHeadBlockSource` supplies the parsed block reads. Naming the second
 /// here is not a chain-head dependency: it is the shortest way to say "this
 /// validator parses blocks", and the store's own requirement is stated by
@@ -95,7 +94,7 @@ mod reading;
 
 pub(crate) use driving::{build_to, shutdown};
 pub(crate) use reading::{
-    block_at, block_hash, block_height, compact_block, compact_blocks_ascending,
-    compact_blocks_descending, outpoint_spenders, previous_output, transparent_outputs,
-    tx_position, txout_set, WireCompactBlocks,
+    block_at, block_height, compact_block, compact_blocks_ascending, compact_blocks_descending,
+    outpoint_spenders, previous_output, transparent_outputs, tx_position, txout_set,
+    WireCompactBlocks,
 };
