@@ -100,6 +100,22 @@ pub trait ChainHeadSnapshot: Send + Sync + 'static {
     /// The canonical tip of this view.
     fn best_tip(&self) -> BlockRef;
 
+    /// The block every retained block's work is counted from, exclusive.
+    ///
+    /// The block this window was anchored on. Its own work is
+    /// `RelativeChainWork::ZERO`, so for any retained block `B`,
+    /// [`work`](ChainHeadBlock::work) sums block work over `(anchor, B]` and
+    ///
+    /// ```text
+    /// absolute(B) = chainwork(anchor) + work(B)
+    /// ```
+    ///
+    /// Recorded rather than derived. Retention prunes the anchor block itself
+    /// once the tip moves far enough past it, while every surviving block's
+    /// work still counts from the same place — so the lowest retained block is
+    /// no substitute, its work being an accumulation rather than zero.
+    fn work_anchor(&self) -> BlockRef;
+
     /// Which chain state this view represents.
     ///
     /// On the snapshot rather than only on the runtime handle because a
@@ -167,6 +183,10 @@ pub trait ChainHeadSnapshot: Send + Sync + 'static {
 impl<T: ChainHeadSnapshot> ChainHeadSnapshot for std::sync::Arc<T> {
     fn best_tip(&self) -> BlockRef {
         self.as_ref().best_tip()
+    }
+
+    fn work_anchor(&self) -> BlockRef {
+        self.as_ref().work_anchor()
     }
 
     fn epoch(&self) -> ChainStateEpoch {

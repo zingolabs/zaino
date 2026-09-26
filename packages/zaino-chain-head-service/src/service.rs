@@ -48,10 +48,11 @@ use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _,
 };
+use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, TreeRoots,
 };
-use zaino_status::{NamedAtomicStatus, Status, StatusType};
+use zaino_status::{NamedAtomicStatus, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
@@ -268,8 +269,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     }
 
     /// The runtime's current status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        component_status(&self.status)
     }
 
     /// Stops the writer task.
@@ -758,10 +759,32 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     }
 }
 
-impl<S: ChainHeadBlockSource> Status for ChainHeadService<S> {
-    fn status(&self) -> StatusType {
-        self.status.load()
+impl<S: ChainHeadBlockSource> StatusSource for ChainHeadService<S> {
+    fn status(&self) -> ComponentStatus {
+        component_status(&self.status)
     }
+}
+
+/// A status cell's fused value, as the two axes a component reports.
+///
+/// Transitional, and the only place the two vocabularies meet here. The
+/// runtime tracks the fused [`StatusType`] throughout — `next_status` still
+/// folds a tick outcome into one value — and this re-splits it at the reporting
+/// boundary. It goes when the runtime holds a phase and a condition separately.
+pub(crate) fn component_status(status: &NamedAtomicStatus) -> ComponentStatus {
+    let (lifecycle, health) = match status.load() {
+        StatusType::Spawning => (Lifecycle::Spawning, Health::Healthy),
+        StatusType::Syncing => (Lifecycle::Syncing, Health::Healthy),
+        StatusType::Ready => (Lifecycle::Ready, Health::Healthy),
+        StatusType::Closing => (Lifecycle::Closing, Health::Healthy),
+        StatusType::Offline => (Lifecycle::Offline, Health::Offline),
+        StatusType::Busy | StatusType::RecoverableError => {
+            (Lifecycle::Syncing, Health::Recoverable)
+        }
+        StatusType::CriticalError => (Lifecycle::Offline, Health::Critical),
+    };
+
+    ComponentStatus::new(ComponentName(status.name()), lifecycle, health)
 }
 
 impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {

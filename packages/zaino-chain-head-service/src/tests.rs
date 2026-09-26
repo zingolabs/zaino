@@ -426,16 +426,16 @@ async fn spawn_anchors_at_the_window_floor() {
 /// An anchored service reports `Syncing` until its first advance reaches the tip, and `Ready` after it.
 #[tokio::test]
 async fn an_anchored_service_is_syncing_until_its_first_advance() {
-    use zaino_status::StatusType;
+    use zaino_component::Lifecycle;
 
     let validator = MockValidator::linear(50);
     let service = stepped(&validator, 10).await;
 
-    assert_eq!(service.status(), StatusType::Syncing);
+    assert_eq!(service.status().lifecycle, Lifecycle::Syncing);
 
     step_to_tip(&service, &validator).await;
 
-    assert_eq!(service.status(), StatusType::Ready);
+    assert_eq!(service.status().lifecycle, Lifecycle::Ready);
 }
 
 /// A chain shorter than the depth anchors at genesis.
@@ -446,6 +446,122 @@ async fn a_short_chain_anchors_at_genesis() {
     let service = stepped(&validator, 100).await;
 
     assert_eq!(service.subscriber().current().best_tip().height, height(0));
+}
+
+/// The work anchor is the block the window was anchored on: retained, at the floor, and carrying zero work, so `absolute(B) = chainwork(anchor) + work(B)` is a plain addition.
+#[tokio::test]
+async fn the_work_anchor_is_the_window_floor() {
+    let validator = MockValidator::linear(50);
+
+    let service = stepped(&validator, 10).await;
+    let snapshot = service.subscriber().current();
+
+    assert_eq!(snapshot.best_tip().height, height(39), "the floor");
+    assert_eq!(
+        snapshot.work_anchor(),
+        BlockRef {
+            hash: hash(39),
+            height: height(39),
+        },
+    );
+    let anchor = snapshot
+        .block_by_hash(&hash(39))
+        .expect("the anchor is the lowest retained block");
+    assert_eq!(anchor.work, RelativeChainWork::ZERO);
+}
+
+/// A chain shorter than the depth anchors on genesis, which is then the work anchor like any other.
+#[tokio::test]
+async fn a_genesis_floor_is_the_work_anchor() {
+    let validator = MockValidator::linear(5);
+
+    let service = stepped(&validator, 100).await;
+
+    assert_eq!(
+        service.subscriber().current().work_anchor(),
+        BlockRef {
+            hash: hash(0),
+            height: height(0),
+        },
+    );
+}
+
+/// Retention prunes the anchor block itself, and the recorded anchor outlives it.
+///
+/// This is why the anchor is recorded rather than derived from the graph. Every
+/// surviving block's work still counts from the same place after the anchor is
+/// gone, and the lowest *retained* block is no substitute — its work is an
+/// accumulation from the anchor, not zero, so rebasing against it would count
+/// the blocks between them twice.
+#[tokio::test]
+async fn the_work_anchor_survives_the_anchor_block_being_pruned() {
+    let validator = MockValidator::linear(50);
+    let service = stepped(&validator, 10).await;
+    step_to_tip(&service, &validator).await;
+
+    // Far enough past the anchor that trimming — which stops `max_depth` plus
+    // the retention margin below the tip — reaches above it. In two passes, so
+    // the held tip never falls below the anchor the next tick computes: that
+    // would re-anchor the graph, and a re-anchored graph has a new anchor
+    // rather than an outlived one, which is the opposite of what is under test.
+    for id in 50..60 {
+        validator.extend(id);
+    }
+    step_to_tip(&service, &validator).await;
+    for id in 60..70 {
+        validator.extend(id);
+    }
+    step_to_tip(&service, &validator).await;
+
+    let snapshot = service.subscriber().current();
+    assert!(
+        snapshot.best_block_by_height(height(39)).is_none(),
+        "the anchor block must actually have been pruned for this to test anything",
+    );
+    assert_eq!(
+        snapshot.work_anchor(),
+        BlockRef {
+            hash: hash(39),
+            height: height(39),
+        },
+        "the anchor is the same block it always was",
+    );
+}
+
+/// Re-anchoring moves the work anchor, because the new graph accumulates from a new floor.
+///
+/// The companion to
+/// [`the_work_anchor_survives_the_anchor_block_being_pruned`]: the anchor
+/// outlives pruning but not a rebuild, so a consumer caching the anchor's
+/// absolute chainwork must key that cache to the snapshot rather than hold it
+/// for the life of the chain head.
+#[tokio::test]
+async fn a_re_anchor_moves_the_work_anchor() {
+    let validator = MockValidator::linear(50);
+    let service = stepped(&validator, 10).await;
+    step_to_tip(&service, &validator).await;
+    let before = service.subscriber().current().work_anchor();
+
+    // One jump larger than the window, so the held tip falls below the floor
+    // the next tick computes and the graph is rebuilt rather than extended.
+    for id in 50..75 {
+        validator.extend(id);
+    }
+    step_to_tip(&service, &validator).await;
+
+    let after = service.subscriber().current().work_anchor();
+    assert_ne!(
+        before, after,
+        "a rebuilt graph accumulates from a new floor"
+    );
+    assert_eq!(
+        after,
+        BlockRef {
+            hash: hash(64),
+            height: height(64),
+        },
+        "the new floor at `tip - max_depth`",
+    );
 }
 
 /// A validator unreachable at startup fails construction rather than producing
@@ -993,7 +1109,10 @@ async fn shutdown_reports_closing() {
 
     service.shutdown();
 
-    assert_eq!(service.status(), zaino_status::StatusType::Closing);
+    assert_eq!(
+        service.status().lifecycle,
+        zaino_component::Lifecycle::Closing
+    );
 }
 
 /// The subscriber reads the runtime's status, not a copy taken when it was made.
@@ -1004,18 +1123,18 @@ async fn shutdown_reports_closing() {
 /// proves the two handles share one cell rather than merely agreeing once.
 #[tokio::test]
 async fn the_subscriber_observes_status_transitions() {
-    use zaino_status::{Status as _, StatusType};
+    use zaino_component::{Lifecycle, StatusSource as _};
 
     let validator = MockValidator::linear(5);
     let service = running(&validator, 100).await;
     let subscriber = service.subscriber();
     wait_for(&service, "readiness", |s| s.best_tip().height == height(4)).await;
 
-    assert_eq!(subscriber.status(), StatusType::Ready);
+    assert_eq!(subscriber.status().lifecycle, Lifecycle::Ready);
 
     service.shutdown();
 
-    assert_eq!(subscriber.status(), StatusType::Closing);
+    assert_eq!(subscriber.status().lifecycle, Lifecycle::Closing);
     assert_eq!(subscriber.status(), service.status());
 }
 

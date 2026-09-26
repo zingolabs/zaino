@@ -98,6 +98,46 @@ That orders competing branches, which is all the chain head needs. Two chain
 heads with different anchors produce different numbers for the same block, so
 compare a `RelativeChainWork` only against another from the same window.
 
+### Rebasing to absolute chainwork
+
+`ChainHeadSnapshot::work_anchor` names the anchor block, so a consumer holding a
+finalised store can make a block's work absolute with one addition and no
+subtraction:
+
+```text
+absolute(B) = chainwork(anchor) + work(B)
+```
+
+The anchor's own work is `RelativeChainWork::ZERO`, so the formula holds for the
+anchor itself and for every block above it. `zaino-chain` does this for the
+composed chain view, and answers `None` rather than a guess while the store has
+not yet built as far as the anchor. A consumer doing it itself should do the
+same: there is no correct value to serve until the anchor's chainwork is known,
+and a wrong one written to disk does not come back.
+
+Two properties make the rebase safe, and both are worth knowing before relying
+on it:
+
+- **The anchor outlives its block.** Retention prunes the anchor block once the
+  tip moves far enough past it, while every surviving block's work still counts
+  from the same place. The lowest *retained* block is therefore not a substitute
+  for the anchor — its work is an accumulation, not zero.
+- **Re-anchoring replaces it.** When the chain moves further than the window
+  covers, the graph is rebuilt from a new floor and the anchor moves with it. A
+  consumer caching the anchor's absolute chainwork must key that cache to the
+  snapshot, not hold it for the life of the chain head.
+
+### Why the head is not given absolute work instead
+
+A port injecting absolute chainwork into the chain head is not a layering
+violation — it would be an ordinary driven port, and the head would still never
+read a store itself. It is ruled out for a different reason: chain selection
+compares `work` across the whole retained graph. A graph holding some absolute
+values and some relative ones has no usable ordering, because any absolute value
+dwarfs every relative one, so the heaviest branch would be chosen by which
+blocks happened to be rebased rather than by work. Keeping one uniform scale
+inside the graph, and rebasing at the edge, is what keeps that comparison exact.
+
 ## The driven port names only what is asked
 
 `ChainHeadBlockSource` is a bound alias over five `zaino-source` ports with a
