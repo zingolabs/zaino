@@ -363,6 +363,7 @@ impl DbV1 {
     /// Efficiently filters by matching block + tx index bytes in-place.
     ///
     /// WARNING: This operates *inside* an existing RO txn.
+    #[cfg(test)]
     #[cfg(feature = "transparent_address_history_experimental")]
     pub(super) fn addr_hist_records_by_addr_and_index_in_txn(
         &self,
