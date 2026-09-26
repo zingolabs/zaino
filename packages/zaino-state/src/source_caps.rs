@@ -88,11 +88,6 @@ impl<T> MempoolSourceCaps for T where
 {
 }
 
-/// What the indexer service asks of the validator.
-pub trait IndexerSourceCaps: SubscribeChainTip + Send + Sync + 'static {}
-
-impl<T> IndexerSourceCaps for T where T: SubscribeChainTip + Send + Sync + 'static {}
-
 /// What `ChainIndex` asks of the validator.
 ///
 /// Much the widest of these, and honestly so: `ChainIndex` is the RPC-facing

@@ -43,6 +43,7 @@ use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
 };
+use zaino_primitives::types::HashOrHeight;
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
@@ -50,7 +51,6 @@ use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
     methods::GetBlock,
 };
-use zebra_state::HashOrHeight;
 
 /// ChainIndex's side of the ChainHead boundary: handing ChainHead a validator,
 /// and re-expressing its blocks in this crate's vocabulary.
@@ -1923,12 +1923,14 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         // downcast-walking the error chain.
         let snapshot = self.snapshot_nonfinalized_state();
         let tip = self.best_chaintip(&snapshot).await?;
-        let id = HashOrHeight::new(&hash_or_height, Some(tip.height.into())).map_err(|error| {
-            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                error,
-            ))
-        })?;
+        let id =
+            HashOrHeight::parse_relative(&hash_or_height, chain_head::domain_height(tip.height))
+                .map_err(|_| {
+                    ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "parse error: could not convert the input string to a hash or height",
+                    ))
+                })?;
         self.source()
             .get_block_verbose(id, verbosity)
             .await

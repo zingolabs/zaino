@@ -81,6 +81,16 @@ pub(crate) fn domain_height(height: crate::Height) -> Option<zaino_primitives::t
     zaino_primitives::types::Height::try_from(height.0).ok()
 }
 
+/// The domain's block hash, as this crate names it.
+pub(crate) fn local_hash(hash: zaino_primitives::types::BlockHash) -> crate::BlockHash {
+    crate::BlockHash(<[u8; 32]>::from(hash))
+}
+
+/// The domain's height, as this crate names it.
+pub(crate) fn local_height(height: zaino_primitives::types::Height) -> crate::Height {
+    crate::Height(u32::from(height))
+}
+
 /// A [`ChainHeadBlock`] could not be expressed as an [`IndexedBlock`].
 #[derive(Debug, thiserror::Error)]
 pub enum ChainHeadConversionError {

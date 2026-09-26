@@ -52,7 +52,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 # The compile-time check that a real validator satisfies `ChainStoreSource`.
-zaino-source-zebra = { workspace = true }
+zaino-source-zebra-rpc = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

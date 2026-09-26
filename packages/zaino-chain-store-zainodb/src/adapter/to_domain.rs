@@ -382,7 +382,7 @@ mod tests {
     };
 
     /// The concrete reader whose ports the capability mapping is read from.
-    type Reader = DbReader<zaino_source_zebra::ZebraValidator>;
+    type Reader = DbReader<zaino_source_zebra_rpc::ZebraRpcAdapter>;
 
     /// A stored value the domain cannot express is corruption, not absence.
     ///

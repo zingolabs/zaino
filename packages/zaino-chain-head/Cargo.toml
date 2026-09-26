@@ -30,7 +30,7 @@ tokio = { workspace = true, features = ["sync"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-zaino-source-zebra = { workspace = true }
+zaino-source-zebra-rpc = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

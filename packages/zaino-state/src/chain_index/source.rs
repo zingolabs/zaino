@@ -10,15 +10,15 @@
 //! the `zaino-source` ports exist.
 //!
 //! The real port layer now lives in `zaino-source`: one trait per question a
-//! consumer can ask, in domain vocabulary, with per-query errors. The composite
-//! in `zaino-source-zebra` routes each question to whichever transport can
-//! answer it.
+//! consumer can ask, in domain vocabulary, with per-query errors. The adapter
+//! in `zaino-source-zebra-rpc` answers each question over the validator's
+//! JSON-RPC interface.
 //!
 //! This trait survives only as an **anti-corruption layer**, so that ChainIndex
 //! and everything above it keep working while the new stack is wired in
 //! underneath. Its single implementation,
 //! [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
-//! delegates to that composite and converts back into the shapes these
+//! delegates to that adapter and converts back into the shapes these
 //! signatures still demand.
 //!
 //! **Do not extend it.** A new capability belongs in `zaino-source`, where it
@@ -71,8 +71,8 @@ use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
 };
+use zaino_primitives::types::HashOrHeight;
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
-use zebra_state::HashOrHeight;
 
 #[cfg(test)]
 pub(crate) mod mockchain_source;
@@ -211,14 +211,6 @@ pub trait BlockchainSource:
     /// Returns the proof-of-work difficulty of the best chain as a multiple of the
     /// minimum difficulty (the `getdifficulty` RPC value).
     fn get_difficulty(&self) -> impl SendFut<BlockchainSourceResult<f64>>;
-
-    /// A watch stream of the source's chain-tip changes, when the source owns
-    /// one locally. Only the `Direct` validator connection (which drives its
-    /// own Zebra syncer) does; every other source observes tips by polling,
-    /// and inherits this `None` default.
-    fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
-        None
-    }
 
     /// Returns the `getblockchaininfo` response.
     fn get_blockchain_info(
@@ -466,19 +458,6 @@ pub enum BlockchainSourceError {
 }
 
 impl BlockchainSourceError {
-    /// Wraps a typed error, preserving it for `source()`-chain recovery.
-    /// Accepts both concrete error types and already-boxed errors (e.g.
-    /// zebra's `BoxError`).
-    pub(crate) fn unrecoverable(
-        error: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
-    ) -> Self {
-        let source = error.into();
-        Self::UnrecoverableWithSource {
-            message: source.to_string(),
-            source,
-        }
-    }
-
     /// Wraps a typed error with a context prefix, preserving the error for
     /// `source()`-chain recovery.
     pub(crate) fn unrecoverable_context(

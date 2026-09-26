@@ -13,12 +13,10 @@ version = "0.6.0"
 
 [features]
 default = ["heavy"]
-heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
+heavy = [ "dep:which"]
 grpc_proxy_server = []
 
 [dependencies]
-zebra-state = { workspace = true, optional = true }
-zebra-chain = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tonic = { workspace = true }
