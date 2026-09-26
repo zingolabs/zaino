@@ -124,6 +124,14 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
 }
 
+/// Whether the finalised state has built `height`, judged by its watermark.
+fn store_holds<R: zaino_chain_store::ChainStoreReader>(reader: &R, height: crate::Height) -> bool {
+    reader
+        .watermark()
+        .tip
+        .is_some_and(|tip| u32::from(tip.height) >= height.0)
+}
+
 /// The interface to the chain index.
 ///
 /// `ChainIndex` provides a unified interface for querying blockchain data from different
@@ -814,6 +822,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
         info!("Starting ChainIndex sync loop");
         let fs = self.finalized_db.clone();
+        let store = zaino_chain_store::ChainStoreService::reader(fs.as_ref());
         let status = self.status.clone();
         let source = self.source.clone();
         let block_wake_signal = self.block_wake_signal.clone();
@@ -889,7 +898,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                     chain_store::build_to(fs.as_ref(), finalised_height)
                         .await
                         .map_err(source_error)?;
-                    if !fs.is_building() && !synced.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    // Judged by the watermark, not by whether a build is running: a
+                    // background build that has just finished leaves the store at its
+                    // own target, which may sit below the floor this tick derived.
+                    if store_holds(&store, finalised_height)
+                        && !synced.swap(true, std::sync::atomic::Ordering::AcqRel)
+                    {
                         info!(
                             finalised_height = finalised_height.0,
                             "finalised state reached the finalised floor; the index may be served"
@@ -1067,6 +1081,26 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Clon
             status: self.status.clone(),
             network: self.network.clone(),
             source: self.source.clone(),
+        }
+    }
+}
+
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
+    NodeBackedChainIndexSubscriber<Source>
+{
+    /// Clears a finalised-half read of `height` after the chain head missed it: `None` above the snapshot's tip, an error while the finalised state has not built it, and the height itself otherwise.
+    fn finalised_height(
+        &self,
+        snapshot: &impl zaino_chain_head::ChainHeadSnapshot,
+        height: types::Height,
+    ) -> Result<Option<types::Height>, ChainIndexError> {
+        if height > types::Height(u32::from(snapshot.best_tip().height)) {
+            return Ok(None);
+        }
+        if store_holds(&self.finalized_state, height) {
+            Ok(Some(height))
+        } else {
+            Err(ChainIndexError::not_yet_indexed(height))
         }
     }
 }
@@ -1316,7 +1350,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
             .and_then(|height| snapshot.best_block_by_height(height))
         {
             Some(block) => Ok(Some(chain_head::indexed_block(block)?)),
-            None => chain_store::block_at(&self.finalized_state, *target_height).await,
+            None => match self.finalised_height(snapshot, *target_height)? {
+                Some(height) => chain_store::block_at(&self.finalized_state, height).await,
+                None => Ok(None),
+            },
         }
     }
 
@@ -1660,23 +1697,23 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
-        if height > types::Height(u32::from(snapshot.best_tip().height)) {
-            return Ok(None);
-        }
-
-        Ok(Some(
-            match chain_head::domain_height(height)
-                .and_then(|height| snapshot.best_block_by_height(height))
-            {
-                Some(block) => prune_compact_block(
-                    chain_head::indexed_block(block)?.to_compact_block(),
-                    &pool_types,
-                ),
-                None => chain_store::compact_block(&self.finalized_state, height, &pool_types)
+        let compact_block = match chain_head::domain_height(height)
+            .and_then(|height| snapshot.best_block_by_height(height))
+        {
+            Some(block) => prune_compact_block(
+                chain_head::indexed_block(block)?.to_compact_block(),
+                &pool_types,
+            ),
+            None => {
+                let Some(height) = self.finalised_height(snapshot, height)? else {
+                    return Ok(None);
+                };
+                chain_store::compact_block(&self.finalized_state, height, &pool_types)
                     .await?
-                    .ok_or(ChainIndexError::database_hole(height, None))?,
-            },
-        ))
+                    .ok_or(ChainIndexError::database_hole(height, None))?
+            }
+        };
+        Ok(Some(compact_block))
     }
 
     /// Streams *compact* blocks for an inclusive height range.
@@ -1737,6 +1774,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                 ));
 
                 if start_height <= finalized_end_height {
+                    // The store clamps a range to its watermark without complaint, so
+                    // the highest finalised height asked for is checked here; otherwise
+                    // the gap up to the floor would be skipped rather than refused.
+                    self.finalised_height(nonfinalized_snapshot, finalized_end_height)?;
                     Some(
                         chain_store::compact_blocks_ascending(
                             &self.finalized_state,
@@ -1759,6 +1800,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
             } else {
                 types::Height(lowest_nonfinalized_height.0.saturating_sub(1))
             };
+            self.finalised_height(nonfinalized_snapshot, finalized_start_height)?;
 
             Some(
                 chain_store::compact_blocks_descending(

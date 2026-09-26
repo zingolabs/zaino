@@ -60,5 +60,11 @@ description = """
 A local miss is a not-found answer. The index no longer asks the \
 validator for data it indexes: the z_gettreestate retry, the compact \
 block fallbacks, and the block-range fallback by height are removed. RPCs \
-about node state that the index never holds still go to the validator.
+about node state that the index never holds still go to the validator. \
+A height the chain has but the finalised state has not built yet, which \
+can occur while a background catch-up runs, answers as unavailable with \
+the message "the index has not built height N yet" rather than as a \
+truncated range, an internal error, or an invalid parameter; the sync \
+loop reports the index synced only once the store's watermark reaches the \
+finalised floor.
 """
