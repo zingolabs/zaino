@@ -75,7 +75,6 @@
             protobuf
             pkg-config
             cmake
-            rustPlatform.bindgenHook
             cargo-nextest
             cargo-deny
             cargo-make
@@ -88,10 +87,7 @@
             openshift
           ];
 
-          env = commonArgs.env // {
-            # Needed for librocksdb-sys
-            LD_LIBRARY_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          };
+          env = commonArgs.env;
         };
 
         formatter = pkgs.nixfmt-rfc-style;

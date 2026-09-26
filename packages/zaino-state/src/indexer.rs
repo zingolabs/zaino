@@ -6,6 +6,9 @@
 
 pub(crate) mod node_backed_indexer;
 
+use crate::jsonrpc_types::{
+    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
+};
 use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
@@ -25,9 +28,6 @@ use zaino_proto::proto::{
 };
 use zebra_chain::{
     block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
-};
-use zebra_rpc::methods::{
-    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
 
 use crate::stream::{
@@ -834,7 +834,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                             .await
                         {
                             Ok(GetBlock::Object(block_object)) => {
-                                let checked_height = match block_object.height() {
+                                let checked_height = match block_object.height {
                                     Some(h) => h.0 as u64,
                                     None => {
                                         match channel_tx
@@ -863,7 +863,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                         // gone.
                                         root_hash: <[u8; 32]>::from(subtree.root).to_vec(),
                                         completing_block_hash: block_object
-                                            .hash()
+                                            .hash
                                             .bytes_in_display_order()
                                             .to_vec(),
                                         completing_block_height: checked_height,

@@ -1,0 +1,10 @@
+{
+  "pool": "ironwood",
+  "start_index": 3,
+  "subtrees": [
+    {
+      "root": "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01",
+      "end_height": 2000
+    }
+  ]
+}

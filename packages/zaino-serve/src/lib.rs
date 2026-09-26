@@ -10,6 +10,10 @@
 pub mod rpc;
 pub mod server;
 
+#[cfg(test)]
+#[path = "../../zaino-state/tests/support/golden.rs"]
+mod golden;
+
 /// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {

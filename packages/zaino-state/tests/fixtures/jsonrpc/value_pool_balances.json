@@ -1,0 +1,87 @@
+[
+  {
+    "id": "transparent",
+    "chainValue": 0.00001,
+    "chainValueZat": 1000,
+    "monitored": true,
+    "valueDelta": -1e-8,
+    "valueDeltaZat": -1
+  },
+  {
+    "id": "sprout",
+    "chainValue": 0.00002,
+    "chainValueZat": 2000,
+    "monitored": true
+  },
+  {
+    "id": "sapling",
+    "chainValue": 0.00003,
+    "chainValueZat": 3000,
+    "monitored": true,
+    "valueDelta": 3e-8,
+    "valueDeltaZat": 3
+  },
+  {
+    "id": "orchard",
+    "chainValue": 0.00004,
+    "chainValueZat": 4000,
+    "monitored": true,
+    "valueDelta": -4e-8,
+    "valueDeltaZat": -4
+  },
+  {
+    "id": "lockbox",
+    "chainValue": 0.00005,
+    "chainValueZat": 5000,
+    "monitored": true,
+    "valueDelta": 5e-8,
+    "valueDeltaZat": 5
+  },
+  {
+    "id": "ironwood",
+    "chainValue": 0.00006,
+    "chainValueZat": 6000,
+    "monitored": true
+  },
+  {
+    "id": "transparent",
+    "chainValue": 0.0,
+    "chainValueZat": 0,
+    "monitored": false
+  },
+  {
+    "id": "sprout",
+    "chainValue": 0.0,
+    "chainValueZat": 0,
+    "monitored": false
+  },
+  {
+    "id": "sapling",
+    "chainValue": 0.0,
+    "chainValueZat": 0,
+    "monitored": false
+  },
+  {
+    "id": "orchard",
+    "chainValue": 0.0,
+    "chainValueZat": 0,
+    "monitored": false
+  },
+  {
+    "id": "lockbox",
+    "chainValue": 0.0,
+    "chainValueZat": 0,
+    "monitored": false
+  },
+  {
+    "id": "ironwood",
+    "chainValue": 0.0,
+    "chainValueZat": 0,
+    "monitored": false
+  },
+  {
+    "chainValue": 0.0,
+    "chainValueZat": 0,
+    "monitored": false
+  }
+]

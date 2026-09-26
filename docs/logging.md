@@ -52,7 +52,7 @@ RUST_LOG=zaino=debug,zainod=debug zainod start
 RUST_LOG=info zainod start
 
 # Fine-grained control
-RUST_LOG="zaino_state=debug,zaino_serve=info,zebra_state=warn" zainod start
+RUST_LOG="zaino_state=debug,zaino_serve=info,zebra_chain=warn" zainod start
 
 # Disable colors (for file output)
 ZAINOLOG_COLOR=false zainod start 2>&1 | tee zainod.log

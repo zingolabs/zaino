@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use zebra_rpc::methods::opthex;
+use zaino_state::jsonrpc_types::opthex;
 
 /// Response to a `getblockheader` RPC request.
 #[allow(clippy::large_enum_variant)]

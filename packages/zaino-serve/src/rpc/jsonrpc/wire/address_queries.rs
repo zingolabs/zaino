@@ -1,11 +1,41 @@
-//! The transparent-address query responses: `getaddressbalance`,
-//! `getaddressutxos`.
-//!
-//! Both reuse Zebra's own types, so this module holds only the conversions from
-//! the domain.
+//! The transparent-address query responses, `getaddressbalance` and
+//! `getaddressutxos`, and their conversions from the domain.
 
 use zaino_primitives::types::{AddressBalance as DomainAddressBalance, Utxo};
-use zebra_rpc::methods::{AddressBalance, GetAddressUtxos};
+use zebra_chain::{
+    block::Height,
+    transaction,
+    transparent::{self, OutputIndex},
+};
+
+/// One UTXO in the `getaddressutxos` response.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct GetAddressUtxos {
+    /// The transparent address, base58check encoded.
+    address: transparent::Address,
+    /// The output txid, in big-endian order, hex-encoded.
+    #[serde(with = "hex")]
+    txid: transaction::Hash,
+    /// The transparent output index.
+    #[serde(rename = "outputIndex")]
+    output_index: OutputIndex,
+    /// The transparent output script, hex encoded.
+    #[serde(with = "hex")]
+    script: transparent::Script,
+    /// The amount of zatoshis in the transparent output.
+    satoshis: u64,
+    /// The block height, last to match zcashd's field order.
+    height: Height,
+}
+
+/// The `getaddressbalance` response: the transparent balance of a set of addresses, in zatoshis.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, serde::Serialize)]
+pub struct AddressBalance {
+    /// The total transparent balance.
+    balance: u64,
+    /// The total received balance, including change.
+    received: u64,
+}
 
 /// A UTXO whose address the wire type cannot represent.
 ///
@@ -39,7 +69,10 @@ pub fn address_balance_from_domain(
 ) -> Result<AddressBalance, UnrenderableReceivedTotal> {
     let received = u128::from(balance.received);
     let received = u64::try_from(received).map_err(|_| UnrenderableReceivedTotal(received))?;
-    Ok(AddressBalance::new(u64::from(balance.balance), received))
+    Ok(AddressBalance {
+        balance: u64::from(balance.balance),
+        received,
+    })
 }
 
 /// Renders the domain UTXOs as the `getaddressutxos` response.
@@ -51,17 +84,18 @@ pub fn address_utxos_from_domain(
     utxos
         .into_iter()
         .map(|utxo| {
-            Ok(GetAddressUtxos::new(
-                utxo.address
+            Ok(GetAddressUtxos {
+                address: utxo
+                    .address
                     .as_str()
                     .parse()
                     .map_err(|e| UnrenderableUtxoAddress(format!("{e}")))?,
-                zebra_chain::transaction::Hash::from(<[u8; 32]>::from(utxo.txid)),
-                zebra_chain::transparent::OutputIndex::from_index(utxo.output_index),
-                zebra_chain::transparent::Script::new(&Vec::<u8>::from(utxo.script)),
-                u64::from(utxo.satoshis),
-                zebra_chain::block::Height(utxo.height.into()),
-            ))
+                txid: transaction::Hash::from(<[u8; 32]>::from(utxo.txid)),
+                output_index: OutputIndex::from_index(utxo.output_index),
+                script: transparent::Script::new(&Vec::<u8>::from(utxo.script)),
+                satoshis: u64::from(utxo.satoshis),
+                height: Height(utxo.height.into()),
+            })
         })
         .collect()
 }

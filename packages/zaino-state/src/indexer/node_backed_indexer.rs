@@ -9,12 +9,12 @@ use tracing::{info, instrument, warn};
 use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::HashOrHeight;
 
+use crate::jsonrpc_types::{
+    self, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash,
+    GetRawTransaction, TransactionObject,
+};
 use zebra_chain::{
     block::Height, serialization::ZcashDeserialize as _, subtree::NoteCommitmentSubtreeIndex,
-};
-use zebra_rpc::{
-    client::{GetAddressBalanceRequest, TransactionObject},
-    methods::{GetAddressTxIdsRequest, GetBlock, GetBlockHashResponse, GetRawTransaction},
 };
 
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
@@ -777,10 +777,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
     /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
-    async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error> {
+    async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state();
         let tip = self.indexer.best_chaintip(&snapshot).await?;
-        Ok(GetBlockHashResponse::new(tip.hash.into()))
+        Ok(GetBlockHash::new(tip.hash.into()))
     }
 
     /// Returns the current block count in the best valid block chain.
@@ -878,7 +878,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
                 .ok_or(
                     #[allow(deprecated)]
                     NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        jsonrpc_types::LegacyCode::InvalidParameter,
                         "Failed to fetch block data.",
                     )),
                 )?,
@@ -889,7 +889,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
                 .ok_or(
                     #[allow(deprecated)]
                     NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        jsonrpc_types::LegacyCode::InvalidParameter,
                         "Failed to fetch block data.",
                     )),
                 )?,
@@ -899,7 +899,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         let time: u32 = block_data.data().time().try_into().map_err(|_error| {
             #[allow(deprecated)]
             NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                jsonrpc_types::LegacyCode::InvalidParameter,
                 "Block time is out of range for u32.",
             ))
         })?;
@@ -1009,7 +1009,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         #[allow(deprecated)]
         let txid = types::TransactionHash::from_hex(&txid_hex).map_err(|error| {
             NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+                jsonrpc_types::LegacyCode::InvalidAddressOrKey,
                 error.to_string(),
             ))
         })?;
@@ -1017,7 +1017,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         #[allow(deprecated)]
         let not_found_error = || {
             NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+                jsonrpc_types::LegacyCode::InvalidAddressOrKey,
                 "No such mempool or main chain transaction",
             ))
         };

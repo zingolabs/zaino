@@ -4,7 +4,7 @@
 //!
 //! [`BlockchainSource`] is not the abstraction Zaino wants over a validator. It
 //! is declared in the transport's vocabulary — its methods return
-//! `zebra_chain` and `zebra_rpc` types — so anything depending on
+//! `zebra_chain` and JSON-RPC types — so anything depending on
 //! it inherits that whole graph. That is why no subsystem could be extracted
 //! from `zaino-state` without dragging those crates along, and it is the reason
 //! the `zaino-source` ports exist.
@@ -66,13 +66,13 @@ use crate::chain_index::{
     types::{BlockHash, TransactionHash},
     ShieldedPool,
 };
+use crate::jsonrpc_types::{self, GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use crate::SendFut;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
 };
 use zaino_primitives::types::HashOrHeight;
-use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
 #[cfg(test)]
 pub(crate) mod mockchain_source;
@@ -159,7 +159,7 @@ pub trait BlockchainSource:
         &self,
         hash_or_height: HashOrHeight,
         verbosity: Option<u8>,
-    ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::methods::GetBlock>>;
+    ) -> impl SendFut<BlockchainSourceResult<jsonrpc_types::GetBlock>>;
 
     /// Returns the `getblockheader`-shaped block header for the given block hash.
     ///

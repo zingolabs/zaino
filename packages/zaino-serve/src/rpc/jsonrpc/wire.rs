@@ -57,6 +57,9 @@ pub mod peer_info;
 pub mod subtrees;
 pub mod treestate;
 
+#[cfg(test)]
+mod goldens;
+
 /// Renders a 32-byte identifier as hex in RPC display order.
 ///
 /// Block hashes and transaction IDs are byte-reversed for display; tree roots
@@ -73,7 +76,7 @@ pub(crate) fn display_hex(mut bytes: [u8; 32]) -> String {
 /// conversion happens at the wire boundary and nowhere earlier. Domain types
 /// carry integer zatoshis precisely.
 pub(crate) fn zats_to_zec(amount: zaino_primitives::types::Zatoshis) -> f64 {
-    u64::from(amount) as f64 / 1e8
+    zaino_state::jsonrpc_types::zatoshis_to_lossy_zec(u64::from(amount) as i64)
 }
 
 #[cfg(test)]

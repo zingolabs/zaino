@@ -22,8 +22,8 @@ serde_json = { workspace = true }
 
 # `legacy_parser` only. It is the independent second parser the transaction
 # vectors compare against, so it renders into the same compact-format types the
-# server serves. `default-features = false` keeps the `heavy` feature — and with
-# it zebra-state and rocksdb — out of the live-test dependency graph.
+# server serves. `default-features = false` keeps the `heavy` feature, and with
+# it the build-time protoc lookup, out of the live-test dependency graph.
 zaino-proto = { workspace = true, default-features = false }
 zebra-chain = { workspace = true }
 prost = { workspace = true }

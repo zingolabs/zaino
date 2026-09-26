@@ -1,0 +1,19 @@
+{
+  "hash": "01eeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100",
+  "height": 1000,
+  "time": 1700000000,
+  "sapling": {
+    "commitments": {}
+  },
+  "orchard": {
+    "commitments": {
+      "finalState": "beef"
+    }
+  },
+  "ironwood": {
+    "commitments": {
+      "finalRoot": "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01",
+      "finalState": "cafe"
+    }
+  }
+}

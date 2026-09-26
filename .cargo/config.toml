@@ -1,3 +1,0 @@
-[env]
-# Workaround for GCC 15+: zebra's librocksdb-sys vendored C++ relies on transitive <cstdint>.
-CXXFLAGS = { value = "-include cstdint", force = false, relative = false }

@@ -133,43 +133,18 @@ pub struct TestVectorData {
     /// Every block of the chain, in height order from genesis.
     pub blocks: Vec<VectorBlock>,
     /// What the faucet wallet should see.
-    pub faucet: TestVectorClientData,
+    pub faucet: super::vectors::VectorWallet,
     /// What the recipient wallet should see.
-    pub recipient: TestVectorClientData,
-}
-
-/// One wallet's recorded view of the vector chain.
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub struct TestVectorClientData {
-    /// Transaction ids touching this wallet, hex-encoded, in chain order.
-    pub txids: Vec<String>,
-    /// The wallet's unspent outputs.
-    pub utxos: Vec<zebra_rpc::methods::GetAddressUtxos>,
-    /// The wallet's transparent balance.
-    pub balance: u64,
+    pub recipient: super::vectors::VectorWallet,
 }
 
 /// Loads the chain and both wallets' recorded results.
 #[cfg(test)]
 pub fn load_test_vectors() -> corez::io::Result<TestVectorData> {
-    use std::fs::File;
-
-    let base = super::vectors::vectors_dir();
-    let client_data = |file: &str| -> corez::io::Result<TestVectorClientData> {
-        let (txids, utxos, balance) = serde_json::from_reader(File::open(base.join(file))?)
-            .map_err(|error| corez::io::Error::new(corez::io::ErrorKind::InvalidData, error))?;
-        Ok(TestVectorClientData {
-            txids,
-            utxos,
-            balance,
-        })
-    };
-
     Ok(TestVectorData {
         blocks: super::vectors::load_vector_blocks()?,
-        faucet: client_data("faucet_data.json")?,
-        recipient: client_data("recipient_data.json")?,
+        faucet: super::vectors::load_wallet("faucet_data.json")?,
+        recipient: super::vectors::load_wallet("recipient_data.json")?,
     })
 }
 

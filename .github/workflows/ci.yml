@@ -13,7 +13,7 @@ concurrency:
 permissions:
   contents: read
 
-# No protoc: zaino-proto & zebra-rpc build.rs fall back to checked-in generated code
+# No protoc: zaino-proto's build.rs falls back to checked-in generated code
 # (protoc present = regenerate over tracked sources)
 
 jobs:

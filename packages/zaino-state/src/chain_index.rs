@@ -26,6 +26,7 @@ use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
+use crate::jsonrpc_types::{self, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock};
 use chain_head::WithChainHeadSource;
 use chain_store::WithChainStoreSource;
 use source::BlockchainSource;
@@ -47,10 +48,6 @@ use zaino_primitives::types::HashOrHeight;
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
-use zebra_rpc::{
-    client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::GetBlock,
-};
 
 /// ChainIndex's side of the ChainHead boundary: handing ChainHead a validator,
 /// and re-expressing its blocks in this crate's vocabulary.
@@ -1927,7 +1924,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
             HashOrHeight::parse_relative(&hash_or_height, chain_head::domain_height(tip.height))
                 .map_err(|_| {
                     ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        jsonrpc_types::LegacyCode::InvalidParameter,
                         "parse error: could not convert the input string to a hash or height",
                     ))
                 })?;
@@ -2056,7 +2053,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         // chain.
         validate_raw_transaction_hex(&raw_transaction_hex).map_err(|error| {
             ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                jsonrpc_types::LegacyCode::InvalidParameter,
                 error.to_string(),
             ))
         })?;

@@ -43,7 +43,6 @@ sapling-crypto = "0.7"
 
 # Zebra
 zebra-chain = { workspace = true }
-zebra-rpc = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
@@ -89,6 +88,7 @@ zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
+zcash_script = "0.4.5"
 
 [dev-dependencies]
 zaino-chain-store-zainodb = { workspace = true, features = ["testing"] }
@@ -98,9 +98,8 @@ primitive-types = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
 incrementalmerkletree = "0.8.2"
-rand = "0.10.1"
 zaino-consensus = { workspace = true }
-zebra-state.workspace = true
+rand.workspace = true
 
 [build-dependencies]
 whoami = { workspace = true }

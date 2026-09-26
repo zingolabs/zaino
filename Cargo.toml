@@ -62,8 +62,6 @@ zcash_transparent = "0.10"
 
 # Zebra
 zebra-chain = "12.0"
-zebra-state = "13.0"
-zebra-rpc = "16.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -111,10 +109,12 @@ futures = "0.3.30"
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
-metrics-process = "2.4"
 
 # Utility
+base64 = "0.22.1"
 bytes = "1.12"
+rand = "0.10.1"
+subtle = { version = "2.6", default-features = false }
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2.0"
 chrono = "0.4"

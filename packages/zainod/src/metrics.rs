@@ -13,6 +13,8 @@ use zaino_state::metric_names::*;
 
 use crate::error::IndexerError;
 
+mod process;
+
 const BUILD_INFO: &str = "zainod.build_info";
 
 /// Supervisor restarts; named here (zainod = emitter & registrar)
@@ -141,14 +143,9 @@ pub fn record_restart() {
 /// - Block time / process CPU separates CPU-bound from disk-bound from waiting
 /// - On scrape, so the sample is as old as the answer and no timer runs while idle
 pub(crate) fn collect_process_metrics() {
-    static COLLECTOR: std::sync::OnceLock<metrics_process::Collector> = std::sync::OnceLock::new();
-    COLLECTOR
-        .get_or_init(|| {
-            let collector = metrics_process::Collector::default();
-            collector.describe();
-            collector
-        })
-        .collect();
+    static DESCRIBED: std::sync::Once = std::sync::Once::new();
+    DESCRIBED.call_once(process::describe);
+    process::collect();
 }
 
 fn describe_metrics() {

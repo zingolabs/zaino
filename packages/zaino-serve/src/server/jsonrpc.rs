@@ -8,12 +8,12 @@ use crate::{
 use zaino_state::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer};
 use zaino_status::{NamedAtomicStatus, StatusType};
 
-use zaino_consensus::MAX_BLOCK_BYTES;
-use zebra_rpc::server::{
+use crate::server::{
     cookie::{remove_from_disk, write_to_disk, Cookie},
     http_request_compatibility::HttpRequestMiddlewareLayer,
     rpc_call_compatibility::FixRpcResponseMiddleware,
 };
+use zaino_consensus::MAX_BLOCK_BYTES;
 
 use jsonrpsee::server::{RpcServiceBuilder, ServerBuilder};
 use std::{path::PathBuf, time::Duration};

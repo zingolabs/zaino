@@ -31,8 +31,8 @@ pub struct LegacyRpcError {
 }
 
 impl LegacyRpcError {
-    /// Construct a rejection from zebra's `LegacyCode` enum.
-    pub fn new(code: zebra_rpc::server::error::LegacyCode, message: impl Into<String>) -> Self {
+    /// Construct a rejection from a zcashd error code.
+    pub fn new(code: crate::jsonrpc_types::LegacyCode, message: impl Into<String>) -> Self {
         Self {
             code: code as i64,
             message: message.into(),

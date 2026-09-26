@@ -1,11 +1,13 @@
 //! Responses that are a single hash: `getbestblockhash`, `sendrawtransaction`.
 //!
-//! Both render as one hex string in RPC display order, and both reuse Zebra's
-//! own type — there is nothing legacy-specific left to reimplement, so this
-//! module holds only the conversions.
+//! Both render as one hex string in RPC display order.
 
 use zaino_primitives::types::{BlockHash, TransactionId};
-use zebra_rpc::methods::{GetBlockHash, SentTransactionHash};
+use zaino_state::jsonrpc_types::GetBlockHash;
+
+/// The `sendrawtransaction` response: the sent transaction's id as display-order hex.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct SentTransactionHash(#[serde(with = "hex")] zebra_chain::transaction::Hash);
 
 /// Renders a block hash as the `getbestblockhash` response.
 pub fn best_block_hash_from_domain(hash: BlockHash) -> GetBlockHash {
@@ -14,7 +16,7 @@ pub fn best_block_hash_from_domain(hash: BlockHash) -> GetBlockHash {
 
 /// Renders a transaction hash as the `sendrawtransaction` response.
 pub fn sent_transaction_hash_from_domain(txid: TransactionId) -> SentTransactionHash {
-    SentTransactionHash::new(zebra_chain::transaction::Hash::from(<[u8; 32]>::from(txid)))
+    SentTransactionHash(zebra_chain::transaction::Hash::from(<[u8; 32]>::from(txid)))
 }
 
 #[cfg(test)]

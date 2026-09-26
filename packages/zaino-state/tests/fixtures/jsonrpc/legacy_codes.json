@@ -1,0 +1,20 @@
+{
+  "ClientInInitialDownload": -10,
+  "ClientInvalidIpOrSubnet": -30,
+  "ClientNodeAlreadyAdded": -23,
+  "ClientNodeNotAdded": -24,
+  "ClientNodeNotConnected": -29,
+  "ClientNotConnected": -9,
+  "Database": -20,
+  "Deserialization": -22,
+  "ForbiddenBySafeMode": -2,
+  "InWarmup": -28,
+  "InvalidAddressOrKey": -5,
+  "InvalidParameter": -8,
+  "Misc": -1,
+  "OutOfMemory": -7,
+  "Type": -3,
+  "Verify": -25,
+  "VerifyAlreadyInChain": -27,
+  "VerifyRejected": -26
+}

@@ -1,11 +1,10 @@
 //! Test vector creation and validity tests, MockchainSource creation.
 
 use std::collections::HashMap;
-use std::fs::File;
 use std::io;
 use std::sync::Arc;
 
-use zebra_rpc::methods::GetAddressUtxos;
+use zaino_chain_store_zainodb::tests::vectors::{load_wallet, VectorWallet};
 
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::types::BlockHash;
@@ -14,8 +13,8 @@ use crate::chain_index::validator_source::ValidatorSource;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestVectorData {
     pub blocks: Vec<TestVectorBlockData>,
-    pub faucet: TestVectorClientData,
-    pub recipient: TestVectorClientData,
+    pub faucet: VectorWallet,
+    pub recipient: VectorWallet,
 }
 
 /// One block of the vector chain.
@@ -24,13 +23,6 @@ pub struct TestVectorData {
 /// structs with the same fields would be two things to keep in step, and the
 /// suites here compare against blocks the backend built.
 pub type TestVectorBlockData = zaino_chain_store_zainodb::tests::vectors::VectorBlock;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TestVectorClientData {
-    pub txids: Vec<String>,
-    pub utxos: Vec<GetAddressUtxos>,
-    pub balance: u64,
-}
 
 /// The vector chain as `IndexedBlock`s.
 ///
@@ -49,27 +41,12 @@ pub(crate) use zaino_chain_store_zainodb::tests::fixtures::{
 ///
 /// The chain itself is read by `zaino-chain-store-zainodb`, which is where the
 /// files live: its finalised-state and migration suites are their heaviest
-/// consumers. This adds the two wallet JSON files, which need `zebra-rpc` types
-/// that a storage crate has no reason to depend on.
+/// consumers, and it reads the two wallet files too.
 pub(crate) fn read_vectors_from_file() -> io::Result<TestVectorData> {
-    let base = zaino_chain_store_zainodb::tests::vectors::vectors_dir();
-
-    let blocks = zaino_chain_store_zainodb::tests::vectors::load_vector_blocks()?;
-
-    let client_data = |file: &str| -> io::Result<TestVectorClientData> {
-        let (txids, utxos, balance) = serde_json::from_reader(File::open(base.join(file))?)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        Ok(TestVectorClientData {
-            txids,
-            utxos,
-            balance,
-        })
-    };
-
     Ok(TestVectorData {
-        blocks,
-        faucet: client_data("faucet_data.json")?,
-        recipient: client_data("recipient_data.json")?,
+        blocks: zaino_chain_store_zainodb::tests::vectors::load_vector_blocks()?,
+        faucet: load_wallet("faucet_data.json")?,
+        recipient: load_wallet("recipient_data.json")?,
     })
 }
 
@@ -280,7 +257,7 @@ fn wallet_vectors_agree_with_chain() {
 /// and anchored in the block vectors, returning the single address it covers.
 fn assert_wallet_vector_consistent(
     label: &str,
-    client: &TestVectorClientData,
+    client: &VectorWallet,
     txids_by_height: &HashMap<u32, Vec<String>>,
 ) -> String {
     assert!(

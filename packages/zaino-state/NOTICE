@@ -1,0 +1,4 @@
+The JSON-RPC types in src/jsonrpc_types/ are derived from zebra-rpc 16.0.0
+(https://github.com/ZcashFoundation/zebra), copyright the Zcash Foundation,
+which is licensed under either the MIT license or the Apache License 2.0.
+Zaino uses them under the Apache License 2.0.

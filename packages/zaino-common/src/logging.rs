@@ -9,7 +9,7 @@
 //!
 //! - `RUST_LOG`: Standard tracing filter. By default only zaino crates are logged.
 //!   Set `RUST_LOG=info` to include all crates (zebra, etc.), or use specific
-//!   filters like `RUST_LOG=zaino=debug,zebra_state=info`.
+//!   filters like `RUST_LOG=zaino=debug,zebra_chain=info`.
 //! - `ZAINOLOG_FORMAT`: Output format ("stream", "tree", or "json")
 //! - `ZAINOLOG_COLOR`: Color mode ("true"/"false"/"auto"). Defaults to color enabled.
 //!

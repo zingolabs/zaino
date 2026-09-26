@@ -1,0 +1,47 @@
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+The ZcashIndexer API now uses Zaino's own JSON-RPC types from \
+zaino_state::jsonrpc_types instead of zebra-rpc's. The types serialize \
+exactly as zebra-rpc's did, and golden files pin that. zaino-state no longer \
+depends on zebra-rpc or zebra-state.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+Address validation is the valid_addresses function over address strings, \
+and it reports an InvalidTransparentAddress instead of a jsonrpsee error \
+object. The served response types are serialize-only, LegacyCode keeps only \
+the three codes Zaino reports, and getaddressutxos's response type moves to \
+zaino-serve.
+"""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = """
+The JSON-RPC responses and the server's cookie authentication, HTTP \
+compatibility layer and response-code fix are now Zaino's own, not \
+zebra-rpc's. The served JSON and the server's behaviour are unchanged, and \
+golden files pin both. zaino-serve no longer depends on zebra-rpc.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "internal"
+description = """
+Building zainod no longer compiles RocksDB or runs bindgen, so the build needs \
+neither clang nor the GCC workaround for RocksDB's C++ code.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The Prometheus process metrics are now read from /proc directly instead of \
+through metrics-process, so zainod builds only on Linux. The metric names, \
+units and descriptions are unchanged.
+"""

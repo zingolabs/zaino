@@ -32,8 +32,6 @@ each of its crates carries a `usage.md` beside its `Cargo.toml`.
 
 **Zebra:**
 - zebra-chain
-- zebra-state
-- zebra-rpc
 
 
 **Zingo-infra-services:**

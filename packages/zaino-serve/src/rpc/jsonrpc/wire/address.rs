@@ -5,19 +5,30 @@ use serde::{
     Serialize, Serializer,
 };
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
-use zebra_rpc::client::ValidateAddressResponse;
 
-/// Renders a [`ValidatedAddress`] into Zebra's `validateaddress` response.
-///
-/// Zebra already defines and serializes this shape correctly, so there is no
-/// wire struct here — only the mapping. A free function rather than a method
-/// because `ValidateAddressResponse` is foreign.
+/// The `validateaddress` response.
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
+pub struct ValidateAddressResponse {
+    /// Whether the address is valid, and the only field present when it is not.
+    #[serde(rename = "isvalid")]
+    is_valid: bool,
+    /// The address that was validated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+    /// Whether the address is a script address.
+    #[serde(rename = "isscript", skip_serializing_if = "Option::is_none")]
+    is_script: Option<bool>,
+}
+
+/// Renders a [`ValidatedAddress`] as the `validateaddress` response.
 pub(crate) fn validate_address_from_domain(validated: ValidatedAddress) -> ValidateAddressResponse {
     match validated {
-        ValidatedAddress::Invalid => ValidateAddressResponse::invalid(),
-        ValidatedAddress::Transparent { address, is_script } => {
-            ValidateAddressResponse::new(true, Some(address), Some(is_script))
-        }
+        ValidatedAddress::Invalid => ValidateAddressResponse::default(),
+        ValidatedAddress::Transparent { address, is_script } => ValidateAddressResponse {
+            is_valid: true,
+            address: Some(address),
+            is_script: Some(is_script),
+        },
     }
 }
 
@@ -257,13 +268,13 @@ mod tests {
             address: "t3zzz".into(),
             is_script: true,
         });
-        assert!(script.is_valid());
-        assert_eq!(script.address().as_deref(), Some("t3zzz"));
-        assert_eq!(script.is_script(), Some(true));
+        assert!(script.is_valid);
+        assert_eq!(script.address.as_deref(), Some("t3zzz"));
+        assert_eq!(script.is_script, Some(true));
 
         let invalid = validate_address_from_domain(ValidatedAddress::Invalid);
-        assert!(!invalid.is_valid());
-        assert_eq!(invalid.address().as_deref(), None);
+        assert!(!invalid.is_valid);
+        assert_eq!(invalid.address.as_deref(), None);
     }
 }
 
