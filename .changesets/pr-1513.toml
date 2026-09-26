@@ -1,0 +1,38 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f878-74c2-a06d-ac75d4248ac2"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+The `Confirmations = i64` alias is replaced by `BlockConfirmations` \
+(`NotInBestChain` or `Confirmed(NonZeroU32)`) and `TxConfirmations` (`Mempool` or \
+`Mined(BlockConfirmations)`). Each type converts to and from the RPC integer with \
+`to_rpc_i64` and `try_from_rpc_i64`."""
+migration = """
+Replace sign checks on the integer with the enum variants or `is_in_best_chain`. \
+Build a best-chain block's value with `BlockConfirmations::of_best_chain_block(height, tip)`."""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "fix"
+description = """
+Confirmation counts in verbose blocks, verbose headers, block deltas and \
+transaction outputs are checked: a value below -1, a block value of 0, or a count \
+past `u32` is rejected instead of passed through."""
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "fix"
+description = "Confirmation counts from the validator are parsed into the exact confirmation states and rejected when invalid."
+
+[[changes]]
+crate = "zaino-source-zebra-readstate"
+kind = "internal"
+description = "Confirmation counts use the exact confirmation state types."
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = "Confirmation counts use the exact confirmation state types."

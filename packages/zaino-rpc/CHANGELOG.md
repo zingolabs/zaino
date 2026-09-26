@@ -13,6 +13,11 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-09-26
+### Changed
+- `RpcClient::call` / `call_with_timeout` take `method: &'static str` (bounds metric-label cardinality). Outbound metrics are now `zaino.rpc.outbound.duration_seconds{method}` and `zaino.rpc.outbound.errors_total{method,outcome}` (`transport_error`, `rpc_error`, `retried`).
+  _Migration:_ Pass method names as string literals. Removed metrics: `zaino.rpc.outbound.requests_total`, `request_duration_seconds`, `retries_total`. Feature `prometheus` removed.
+
 ## [0.2.1] - 2026-09-11
 
 ### Added

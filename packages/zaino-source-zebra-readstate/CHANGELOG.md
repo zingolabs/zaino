@@ -13,6 +13,17 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.2] - 2026-09-26
+### Changed
+- dependency `zaino-convert-zebra` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Fixed
+- A signed zatoshi value outside `-supply ..= supply` in the read state fails as a typed parse error.
+- Transparent addresses from the read state are validated, with a typed error for an invalid one.
+- `getblockchaininfo` reports the `transparent`, `lockbox` and `ironwood` pools, so the Ironwood pool no longer reads as empty across NU6.3 activation. `chainSupply` is the total over every pool, not the transparent balance.
+### Internal
+- Confirmation counts use the exact confirmation state types.
+
 ## [0.2.1] - 2026-09-11
 
 ### Added
