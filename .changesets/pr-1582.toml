@@ -1,0 +1,39 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f86a-7a51-8658-c57d5d77d10d"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+Chain work is two types: `AbsoluteChainWork`, the cumulative work from genesis, and \
+`SingleBlockWork`, one block's contribution, with `genesis`, `accumulate` and \
+`rollback` operations. Each work error is defined in the module that raises it."""
+migration = "Replace the single chain-work type with `AbsoluteChainWork` for totals and `SingleBlockWork` for one block's work."
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`TreeSize` is a checked newtype backed by `u32`. `TreeRootInfo`, `BlockTreeSizes` \
+and `ChainMetadata` use it in place of `u64` and `u32` fields, and an oversized \
+value is refused instead of truncated. `ChainMetadata::ZERO` and `ChainMetadata::new` \
+are added."""
+migration = "Build tree sizes with `TreeSize::from(u32)` or its checked constructor, and read them through `TreeSize`."
+issues = ["#549"]
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = "The crate's own chain-work type is replaced by a re-export of the `zaino-primitives` type. The on-disk format is unchanged."
+migration = "Import chain work from `zaino_primitives`."
+
+[[changes]]
+crate = "zaino-source"
+kind = "internal"
+description = "Tree sizes use the checked `TreeSize` type."
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "internal"
+description = "Block work uses the `zaino-primitives` chain-work types."

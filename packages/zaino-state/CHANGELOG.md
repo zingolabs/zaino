@@ -13,6 +13,30 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.10.0] - 2026-09-26
+### Added
+- Add a stream of indexed-tip changes, driven by the existing watch notifications instead of polling.
+### Changed
+- Sync-loop metrics: added `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`.
+  _Migration:_ Removed metrics: `zaino.sync.lag_blocks` (derive `zaino.chain.tip_height - zaino.sync.finalized_height`), `iterations_total`, `iteration_duration_seconds`, `errors_total`, `has_reached_tip`, `reached_tip_at`. Feature `prometheus` removed.
+- dependency `zaino-chain-head` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-chain-head-service` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-chain-store-zainodb` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-consensus` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-convert-zebra` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-rpc` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Fixed
+- An address's net value no longer rejects busy address history as corrupt. Gross receipts and spends may exceed the supply; only an impossible net value is refused.
+- `getrawtransaction` in verbose mode reports `time` and `blocktime` from the containing block's header.
+### Internal
+- Confirmation counts use the exact confirmation state types.
+- Transparent addresses are constructed through the validating constructor.
+- Chain-head blocks converted for serving now carry no chain work, instead of reinterpreting the window's anchor-relative total as an absolute one.
+- - The chain-index proptests run against a persistent finalised state and wait for it to finish building; they no longer exercise ephemeral mode.
+- Generated chains are relinked (merkle root and parent hash) so the finalised state's write-path checks accept them, which also re-enables make_chain.
+- Test-only: the chain-head test builds block work through SingleBlockWork::new, and the orphaned golden module that no mod declaration named is deleted.
+
 ## [0.9.0] - 2026-09-11
 
 ### Added

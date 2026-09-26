@@ -1,2 +1,3 @@
+consumed_in = "zainod-0-10-1"
 [empty]
 reason = "Comment-only path updates in zaino-state: decision records moved under docs/adr/zaino/."

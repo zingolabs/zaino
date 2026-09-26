@@ -1,5 +1,6 @@
 # Machine-assigned changeset identity — do not edit.
 id = "01a0ab34-1f36-76f3-ba73-c7152f21cb5f"
+consumed_in = "zainod-0-10-1"
 
 [[changes]]
 crate       = "zaino-primitives"
