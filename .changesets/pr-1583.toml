@@ -1,0 +1,45 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f871-7a12-a9f5-78ddfb77022e"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`CompactDifficulty` is validated at construction and computes work natively \
+(nBits to target to work). A valid but very small target reports a typed \
+`WorkOverWidth` instead of panicking."""
+migration = "Construct difficulty values through `CompactDifficulty`'s checked constructor and handle `CompactDifficultyError`."
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+`EncryptedCiphertext` is renamed `CompactCiphertext`, because it holds only the \
+52-byte compact prefix. It is a `[u8; 52]` behind an exact-length `try_new`."""
+migration = "Rename `EncryptedCiphertext` to `CompactCiphertext`, and construct it with `try_new` from exactly 52 bytes."
+
+[[changes]]
+crate = "zaino-consensus"
+kind = "breaking"
+description = "`work_from_bits`, `WorkError` and the `work` module are removed; `zaino-primitives` owns the one native difficulty pipeline."
+migration = "Compute work through `zaino_primitives`' `CompactDifficulty`."
+
+[[changes]]
+crate = "zaino-convert-zebra"
+kind = "breaking"
+description = """
+`ConvertError` gains `Difficulty` and `Ciphertext` variants. A ciphertext shorter \
+than the compact prefix is a typed error instead of a panic."""
+migration = "Match `ConvertError::Difficulty` and `ConvertError::Ciphertext`."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = "The crate's difficulty wrapper and its ciphertext pad-or-truncate helpers are removed in favour of the `zaino-primitives` types."
+migration = "Use `zaino_primitives`' `CompactDifficulty` and `CompactCiphertext`."
+
+[[changes]]
+crate = "zaino-source"
+kind = "internal"
+description = "Difficulty and ciphertexts use the checked `zaino-primitives` types."
