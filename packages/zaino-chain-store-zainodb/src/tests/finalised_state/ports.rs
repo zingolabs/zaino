@@ -554,7 +554,20 @@ async fn a_block_frozen_from_a_read_writes_identical_rows() {
     let target = std::sync::Arc::new(target);
     target.wait_until_ready().await;
 
-    ChainStoreFreezeSink::freeze(target.as_ref(), &blocks)
+    // The chainwork is dropped on the way in, because a frozen block carries
+    // none — so the target derives its own, and the comparison below is between
+    // a store that built itself from a validator and one that did not. Nothing
+    // else checks that those two derivations agree.
+    let frozen: Vec<zaino_chain_store::FrozenBlock> = blocks
+        .into_iter()
+        .map(|block| zaino_chain_store::FrozenBlock {
+            header: block.header,
+            transactions: block.transactions,
+            tree_roots: block.tree_roots,
+        })
+        .collect();
+
+    ChainStoreFreezeSink::freeze(target.as_ref(), &frozen)
         .await
         .expect("every block frozen in order is accepted");
 

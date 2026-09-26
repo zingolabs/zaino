@@ -14,14 +14,15 @@ use super::error_map::{corrupt_row, corrupt_row_because};
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability, MigrationState,
     SchemaVersion, SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoreSchema,
-    StoredAddress, StoredBlock, StoredBlockReadCapability, StoredTx, StoredTxOut,
-    TransactionIndexCapability, TxOutSetIndexCapability,
+    StoredBlock, StoredBlockReadCapability, StoredTx, StoredTxOut, TransactionIndexCapability,
+    TxOutSetIndexCapability,
 };
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
     Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
     PreIndexCompactTx, SaplingOutput, Script, ScriptType, SignedZatoshis, TransactionId,
-    TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
+    TransparentAddressKey, TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex,
+    Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
@@ -114,7 +115,7 @@ pub fn stored_tx_out(output: &TxOutCompact) -> Result<StoredTxOut, ChainStoreErr
                 error,
             )
         })?,
-        address: StoredAddress {
+        address: TransparentAddressKey {
             hash: *output.script_hash(),
             script_type,
         },

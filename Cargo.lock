@@ -6193,6 +6193,7 @@ dependencies = [
 name = "zaino-proto"
 version = "0.6.0"
 dependencies = [
+ "librocksdb-sys",
  "prost",
  "tonic",
  "tonic-prost",
