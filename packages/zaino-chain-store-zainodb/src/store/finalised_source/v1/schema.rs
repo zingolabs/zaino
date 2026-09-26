@@ -113,6 +113,18 @@ impl Table {
     pub(super) async fn open(self, env: &lmdb::Environment) -> Result<lmdb::Database, StoreError> {
         super::super::open_or_create_db(env, self.name, self.flags).await
     }
+
+    /// Opens this table in `env` without creating it, reporting `None` when the environment holds no table of this name.
+    pub(super) fn open_existing(
+        self,
+        env: &lmdb::Environment,
+    ) -> Result<Option<lmdb::Database>, StoreError> {
+        match env.open_db(Some(self.name)) {
+            Ok(table) => Ok(Some(table)),
+            Err(lmdb::Error::NotFound) => Ok(None),
+            Err(error) => Err(StoreError::LmdbError(error)),
+        }
+    }
 }
 
 /// Computes this build's schema hash from its epoch, enum tags, record encodings, tables, singleton keys and index features.
