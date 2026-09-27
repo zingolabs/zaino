@@ -1,0 +1,35 @@
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "CompactDifficulty is no longer a `u32` type alias; it is a validated newtype that owns the native nBits -> target -> work pipeline. Construct it with `try_from_bits` or `try_from_be_bytes`, both of which reject an out-of-set encoding (negative, zero, over-256-bit, or over-128-bit-work target) with the new `CompactDifficultyError`; read it back with `as_bits`, and get the block's proof-of-work with `to_work`. `BlockHeader.bits` now holds this type."
+migration   = "Replace raw-u32 uses of the alias with the newtype: validate a numeric nBits through `CompactDifficulty::try_from_bits(bits)?` (or `try_from_be_bytes` for display-order bytes) and read the raw value back with `.as_bits()`. Take a block's work from `bits.to_work()` instead of a separate consensus conversion."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "EncryptedCiphertext is removed and replaced by CompactCiphertext, which fixes the compact scanning prefix at exactly 52 bytes (`[u8; 52]`) instead of a variable-length `Vec<u8>`. Build one from a slice with `try_new`, which rejects any other length with the new `CompactCiphertextLength` error, or infallibly from a `[u8; 52]` via `From`; `CompactCiphertext::LENGTH` is the width constant. The `enc_ciphertext` fields of `SaplingOutput` and `OrchardAction` now hold this type."
+migration   = "Rename EncryptedCiphertext to CompactCiphertext at every use. Replace `EncryptedCiphertext::new(vec)` with `CompactCiphertext::try_new(&bytes)?` for a slice of unknown length, or `CompactCiphertext::from(array)` for a `[u8; 52]`. Recover the bytes with `<[u8; 52]>::from(ciphertext)` rather than `Vec::from(..)`."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = "SingleBlockWork gains an infallible `From<NonZeroU128>` conversion, since a non-zero integer already carries the whole invariant."
+
+[[changes]]
+crate       = "zaino-consensus"
+kind        = "breaking"
+description = "The `work` module is removed, along with its `work_from_bits` function and `WorkError` type. The nBits validation and difficulty-to-work pipeline now live natively in zaino-primitives as `CompactDifficulty`."
+migration   = "Replace `zaino_consensus::work_from_bits(bits)` with `CompactDifficulty::try_from_bits(bits)?.to_work()` from zaino-primitives. Match on `CompactDifficultyError` in place of `WorkError`."
+
+[[changes]]
+crate       = "zaino-convert-zebra"
+kind        = "breaking"
+description = "Block conversion now validates the header difficulty and the note-ciphertext scanning prefix through the primitives types, so a malformed nBits or a ciphertext too short for the 52-byte prefix surfaces as a typed error instead of a panic. `ConvertError` gains two variants, `Difficulty(CompactDifficultyError)` and `Ciphertext(CompactCiphertextLength)`."
+migration   = "Handle the two new `ConvertError` variants wherever the enum is matched exhaustively."
+
+[[changes]]
+crate       = "zaino-chain-store-zainodb"
+kind        = "breaking"
+description = "Difficulty is now validated once, by the primitives type the block header carries, rather than again at store conversion. The `conversion::block_work` free function and the `BlockConversionError::InvalidDifficulty` variant are removed, `conversion::chainwork_from_parent` takes a `CompactDifficulty` (previously a raw `u32`), and `BlockData::bits()` returns the value by copy instead of by reference. `CompactDifficulty` and `CompactDifficultyError` are re-exported from zaino-primitives in place of the former store-local types. The on-disk format is unchanged."
+migration   = "Compute a block's work from `header.bits.to_work()` instead of the removed `block_work`. Drop handling of the removed `InvalidDifficulty` variant. Pass a `CompactDifficulty` to `chainwork_from_parent`, and use the value returned by `BlockData::bits()` directly."
+

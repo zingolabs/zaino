@@ -1,0 +1,80 @@
+# zaino-primitives
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "The unchecked SignedZatoshis::new(i64) is removed. A signed zatoshi value is now built through the checked SignedZatoshis::try_new (new SignedZatoshisOverflow error), which enforces that its magnitude lies within the money supply, or is derived through ZatoshisFlowSum::net. No construction path skips the range check."
+migration   = "Replace SignedZatoshis::new(v) with SignedZatoshis::try_new(v)? and handle SignedZatoshisOverflow, or obtain the value from ZatoshisFlowSum::net."
+issues      = ["#1504", "#1505"]
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = "A zatoshi quantity family lands beside Zatoshis: ZatoshisFlowSum, an accumulation of movements bounded by u128 rather than by the supply, with try_accumulate (checked fold), from_summed (boundary door for a pre-summed u64), net (difference into a SignedZatoshis) and From<ZatoshisFlowSum> for u128. Zatoshis gains sum_balances (supply-capped fold of coexisting balances), MAX and as_u64; SignedZatoshis gains MAX and as_i64."
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "AddressBalance.received changes type from Zatoshis to ZatoshisFlowSum. Lifetime gross receipts are a flow that legitimately exceeds the money supply across a busy address set, so they no longer parse-error when large."
+migration   = "Construct received with ZatoshisFlowSum (from_summed for a pre-summed total, try_accumulate for a derived one) and read it back through u128::from."
+issues      = ["#1509"]
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "breaking"
+description = "Transaction.index is removed. A transaction's position in its block, and so whether it is the coinbase, is read from block order, not stored on the transaction; a mempool transaction has no position."
+migration   = "Derive position from the order of Block::transactions (enumerate), and use Block::coinbase() for position 0, instead of reading Transaction.index."
+issues      = ["#1515"]
+
+[[changes]]
+crate       = "zaino-primitives"
+kind        = "feature"
+description = "Block gains try_new, which rejects an empty transaction list (new BlockError enum, variant NoTransactions), and coinbase(), the named accessor for the transaction at position 0."
+issues      = ["#1515"]
+
+# zaino-chain-store
+
+[[changes]]
+crate       = "zaino-chain-store"
+kind        = "fix"
+description = "StoreAddressEffects::net_value no longer refuses legitimate high-throughput history. The gross received and spent sides are treated as unbounded flow; only an impossible net (a change in aggregate balance whose magnitude exceeds the supply) yields None. Previously a gross side past the supply was rejected as if the data were corrupt."
+issues      = ["#1504", "#1505"]
+
+# zaino-serve
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "breaking"
+description = "address_balance_from_domain now returns Result<AddressBalance, UnrenderableReceivedTotal>. Because received is a flow total, getaddressbalance renders a lifetime received total past the money supply instead of failing; only a total past the response field's u64 range is refused."
+migration   = "Handle the Result and the new UnrenderableReceivedTotal error at the call site."
+issues      = ["#1509"]
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "breaking"
+description = "Outbound rendering that the domain types already guarantee is now infallible: BlockDeltas::from_domain returns Self (the DeltaAmountOutOfRange error is removed) and getblockchaininfo pool-balance rendering no longer returns BlockchainInfoWireError::PoolBalanceOutOfRange (that variant is removed)."
+migration   = "Drop the removed error handling; BlockDeltas::from_domain no longer returns a Result, and PoolBalanceOutOfRange no longer exists to match."
+
+# zaino-convert-zebra
+
+[[changes]]
+crate       = "zaino-convert-zebra"
+kind        = "breaking"
+description = "transaction_from_zebra no longer takes an index parameter. A transaction carries no block position; block_from_zebra builds the transaction list in order and coinbase-ness is read from that order. An out-of-range shielded value balance is now reported as ConvertError::Value rather than silently constructed."
+migration   = "Drop the index argument from transaction_from_zebra calls."
+issues      = ["#1515"]
+
+[[changes]]
+crate       = "zaino-convert-zebra"
+kind        = "breaking"
+description = "block_from_zebra now rejects a block with no transactions, reported through a new ConvertError::Block variant, since every block mines a coinbase."
+migration   = "Match the new ConvertError::Block variant."
+
+# zaino-chain-store-zainodb
+
+[[changes]]
+crate       = "zaino-chain-store-zainodb"
+kind        = "breaking"
+description = "BlockConversionError gains a TxPositionOverflow variant. Block conversion derives each transaction's stored index from its block-order position (the domain Transaction no longer stores one), and refuses rather than truncates a position that does not fit the stored u64 width."
+migration   = "Match the new BlockConversionError::TxPositionOverflow variant."
+

@@ -1,0 +1,25 @@
+[[changes]]
+crate       = "zaino-serve"
+kind        = "fix"
+description = "`z_gettreestate` no longer byte-reverses the Orchard and Ironwood `finalRoot`. Only the Sapling root is reversed into display order; the Pallas-based roots are already in display order, so reversing them emitted valid-looking hex naming a root no chain ever had."
+
+[[changes]]
+crate       = "zaino-serve"
+kind        = "fix"
+description = "`getblockchaininfo` reports `chainSupply` with the validator's total instead of zero. The wire conversion recognised the unnamed total but discarded its value."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "fix"
+description = "`getrawtransaction` in verbose mode populates `time` and `blocktime` from the containing block's header for a mined transaction; an unmined transaction leaves both absent, as zebrad does."
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "fix"
+description = "`getblockchaininfo` reports `chainSupply` with the validator's total instead of zero. Parsing the validator reply recognised the unnamed total but discarded its value."
+
+[[changes]]
+crate       = "zaino-source-zebra-readstate"
+kind        = "fix"
+description = "`getblockchaininfo` on the read-state backend reports every value pool — `transparent`, `sprout`, `sapling`, `orchard`, `lockbox` and `ironwood` — instead of only `sprout`, `sapling` and `orchard`, so an omitted pool no longer reads as empty (the `ironwood` pool appeared to hold nothing across NU6.3 activation). `chainSupply` is now the total over every pool rather than the transparent balance."
+
