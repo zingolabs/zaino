@@ -2,7 +2,7 @@
 //!
 //! These types are gated behind the `tip_aware_mempool` feature. They describe
 //! how the tip-agnostic core mempool set is made *coherent* with Zaino's
-//! non-finalized-state (NS) tip: the two observed tips, whether they agree, and
+//! non-finalised-state (NS) tip: the two observed tips, whether they agree, and
 //! the resulting [`CoherentSnapshot`] the coherence layer publishes.
 //!
 //! # Why a separate coherent view exists
@@ -25,7 +25,7 @@ use crate::snapshot::MempoolSnapshot;
 
 /// The two tips coherence tracks: the validator/mempool-source tip ("V", from the
 /// core's [`source_tip`](MempoolSnapshot::source_tip) tag) and the
-/// non-finalized-state epoch ("NS", from the [`NfsEpochObserver`](crate::ports::NfsEpochObserver)).
+/// non-finalised-state epoch ("NS", from the [`NfsEpochObserver`](crate::ports::NfsEpochObserver)).
 ///
 /// The V side is a plain [`BlockRef`]. The field name carries the role, and the
 /// NS side is a distinct type, so the two cannot be confused at a call site —
@@ -34,8 +34,8 @@ use crate::snapshot::MempoolSnapshot;
 pub struct ObservedTips {
     /// Latest observed validator/mempool-source tip ("V").
     pub validator: Option<BlockRef>,
-    /// Latest observed non-finalized-state epoch ("NS").
-    pub non_finalized: Option<ChainStateEpoch>,
+    /// Latest observed non-finalised-state epoch ("NS").
+    pub non_finalised: Option<ChainStateEpoch>,
 }
 
 impl ObservedTips {
@@ -43,7 +43,7 @@ impl ObservedTips {
     pub fn none() -> Self {
         Self {
             validator: None,
-            non_finalized: None,
+            non_finalised: None,
         }
     }
 
@@ -51,10 +51,10 @@ impl ObservedTips {
     /// mempool set is coherent for. Otherwise `None`.
     pub fn agree(&self) -> Option<ChainStateEpoch> {
         let validator = self.validator?;
-        let non_finalized = self.non_finalized?;
+        let non_finalised = self.non_finalised?;
 
-        if validator.hash == non_finalized.best_tip.hash {
-            Some(non_finalized)
+        if validator.hash == non_finalised.best_tip.hash {
+            Some(non_finalised)
         } else {
             None
         }
@@ -62,7 +62,7 @@ impl ObservedTips {
 
     /// True when both tips are known but disagree.
     pub fn disagree(&self) -> bool {
-        self.validator.is_some() && self.non_finalized.is_some() && self.agree().is_none()
+        self.validator.is_some() && self.non_finalised.is_some() && self.agree().is_none()
     }
 }
 
@@ -73,7 +73,7 @@ pub enum TipChange {
     None,
     /// Only the validator tip changed.
     ValidatorChanged,
-    /// Only the non-finalized tip changed.
+    /// Only the non-finalised tip changed.
     NonFinalizedChanged,
     /// Both tips changed.
     BothChanged,
@@ -82,13 +82,13 @@ pub enum TipChange {
 /// Why the coherent mempool view is frozen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FreezeReason {
-    /// The non-finalized state is not available.
+    /// The non-finalised state is not available.
     NonFinalizedUnavailable,
     /// The mempool-source tip is not available.
     ValidatorTipUnavailable,
     /// The validator tip changed.
     ValidatorTipChanged,
-    /// The non-finalized tip changed.
+    /// The non-finalised tip changed.
     NonFinalizedTipChanged,
     /// Both tips changed.
     BothTipsChanged,

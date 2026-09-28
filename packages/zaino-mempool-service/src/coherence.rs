@@ -2,7 +2,7 @@
 //!
 //! Wraps a tip-agnostic [`Mempool`] core and an [`NfsEpochObserver`] and publishes
 //! a [`CoherentSnapshot`]: the core set made coherent with Zaino's
-//! non-finalized-state (NS) tip. Combined ChainIndex reads (`get_raw_transaction`,
+//! non-finalised-state (NS) tip. Combined ChainIndex reads (`get_raw_transaction`,
 //! `get_transaction_status`) and the raw-transaction stream consult it so they
 //! only serve the mempool when it matches the caller's NS snapshot.
 //!
@@ -36,7 +36,7 @@ mod publish;
 mod reconcile;
 mod run;
 
-/// Writer-local state for synthesizing a non-finalized epoch from the validator
+/// Writer-local state for synthesizing a non-finalised epoch from the validator
 /// tip in validator-only mode: `generation` increments only when the validator
 /// tip hash changes, giving a stable epoch for a stable tip.
 #[derive(Default)]
@@ -92,7 +92,7 @@ impl<M: Mempool> CoherenceService<M, NoNfs> {
 }
 
 impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
-    /// Spawn the coherence layer against the given non-finalized-state observer.
+    /// Spawn the coherence layer against the given non-finalised-state observer.
     pub fn spawn(
         mempool: M,
         nfs: N,

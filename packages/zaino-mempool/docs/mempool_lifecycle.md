@@ -23,7 +23,7 @@ Coherence coordinates two chain tips:
   `zaino_source::GetMempoolSourceTip` and **tags every published snapshot** with
   it (`MempoolSnapshot::source_tip`). Mempool transactions are only meaningful
   relative to the tip they are unconfirmed against.
-- **NS — the non-finalized-state tip.** Zaino's ChainIndex tip
+- **NS — the non-finalised-state tip.** Zaino's ChainIndex tip
   (`NfsEpochObserver::current_epoch`, a `(generation, best_tip)` epoch). This is the
   tip Zaino's block reads are served from. Observed only by the **coherence layer**.
 

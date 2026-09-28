@@ -176,7 +176,7 @@ impl ChainGraph for MapBackedSnapshot {
         Ok(())
     }
 
-    fn remove_finalized_blocks(&mut self, floor: Height) {
+    fn remove_finalised_blocks(&mut self, floor: Height) {
         let tip_hash = self.tip.hash();
         // The tip is never in `others`, so it is never removed here. Keeping the
         // canonical entry for a below-floor tip means we never have to re-connect

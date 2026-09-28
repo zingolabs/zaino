@@ -15,7 +15,7 @@
 //! - [`NfsEpochObserver`] / [`TipAwareMempool`] — gated behind `tip_aware_mempool`:
 //!   the NS-epoch observer the coherence layer needs, and the coherent read/stream
 //!   port it offers. These have no `zaino-source` equivalent: they describe
-//!   Zaino's own non-finalized state, not the validator's.
+//!   Zaino's own non-finalised state, not the validator's.
 
 use std::sync::Arc;
 
@@ -108,18 +108,18 @@ pub trait Mempool: Clone + Send + Sync + 'static {
     fn subscribe_updates(&self) -> broadcast::Receiver<MempoolUpdate>;
 }
 
-/// Outbound port (coherence layer): observe the current non-finalized-state epoch.
+/// Outbound port (coherence layer): observe the current non-finalised-state epoch.
 ///
-/// The mempool must not own or publish the non-finalized state; the coherence
+/// The mempool must not own or publish the non-finalised state; the coherence
 /// layer only observes its epoch to gate transaction-set coherence. In Zaino
 /// that state is the chain head subsystem, which `zaino-state` adapts onto this
-/// port. Returns `None` while there is no non-finalized state to observe.
+/// port. Returns `None` while there is no non-finalised state to observe.
 #[cfg(feature = "tip_aware_mempool")]
 pub trait NfsEpochObserver: Clone + Send + Sync + 'static {
-    /// The epoch of the currently published non-finalized snapshot, if any.
+    /// The epoch of the currently published non-finalised snapshot, if any.
     fn current_epoch(&self) -> Option<ChainStateEpoch>;
 
-    /// An optional wake signal that fires when a new non-finalized snapshot is
+    /// An optional wake signal that fires when a new non-finalised snapshot is
     /// published.
     ///
     /// Without it the coherence layer only notices an NS advance on its next

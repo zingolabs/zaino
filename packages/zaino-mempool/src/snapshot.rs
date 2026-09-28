@@ -7,7 +7,7 @@
 //! it records [`source_tip`](MempoolSnapshot::source_tip), the validator tip the
 //! set was fetched against. That tag is what lets the (optional) tip-aware
 //! coherence layer decide, without re-fetching, whether the set is coherent with
-//! Zaino's non-finalized-state tip (see the `tip` module and
+//! Zaino's non-finalised-state tip (see the `tip` module and
 //! `zaino-mempool-service`'s coherence service).
 
 use std::collections::{HashMap, HashSet};
@@ -279,7 +279,7 @@ impl MempoolSnapshot {
     /// Sourced from the same fetcher that serves the mempool data
     /// ([`GetMempoolSourceTip`](zaino_source::GetMempoolSourceTip)), so the set
     /// and this tag are a single-source pair. The tip-aware coherence layer
-    /// compares this against the non-finalized-state tip to decide coherence
+    /// compares this against the non-finalised-state tip to decide coherence
     /// *without* re-fetching — which is only sound because the tag and the data
     /// come from one consistent read.
     pub fn source_tip(&self) -> Option<BlockRef> {

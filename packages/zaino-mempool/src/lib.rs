@@ -12,7 +12,7 @@
 //! types and the ports, and depends on nothing in `zaino-state`. It reads the
 //! validator through [`zaino-source`](zaino_source)'s ports, naming the subset it
 //! needs as [`ports::MempoolSource`]; the two things `zaino-source` cannot
-//! describe — Zaino's own non-finalized-state epoch, and the read models this
+//! describe — Zaino's own non-finalised-state epoch, and the read models this
 //! crate offers — are ports declared here.
 //!
 //! Concrete *adapters* live one layer out in
@@ -20,7 +20,7 @@
 //! `MempoolService`, the `MempoolSubscriber` read handle, and the coherence
 //! layer), and `zaino-state` supplies the
 //! [`ports::NfsEpochObserver`] implementation over its
-//! non-finalized state. Dependencies always point inward: adapters know about
+//! non-finalised state. Dependencies always point inward: adapters know about
 //! this core; this core never names an adapter or a `zaino-state` type.
 //!
 //! It also names no node library. Entries hold the validator's bytes as

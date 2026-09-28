@@ -62,7 +62,7 @@ pub(crate) trait ChainGraph:
     fn rewind_to(&mut self, block: BlockRef) -> Result<(), NotOnBestChain>;
 
     /// Drops retained blocks below `floor`, keeping the tip regardless.
-    fn remove_finalized_blocks(&mut self, floor: Height);
+    fn remove_finalised_blocks(&mut self, floor: Height);
 
     /// Stamps the generation this publication carries.
     ///

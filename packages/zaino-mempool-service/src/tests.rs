@@ -1632,20 +1632,20 @@ mod coherence {
 
         let only_v = ObservedTips {
             validator: Some(v),
-            non_finalized: None,
+            non_finalised: None,
         };
         assert_eq!(only_v.agree(), None);
         assert!(!only_v.disagree());
 
         let agree = ObservedTips {
             validator: Some(v),
-            non_finalized: Some(ns_same),
+            non_finalised: Some(ns_same),
         };
         assert_eq!(agree.agree(), Some(ns_same));
 
         let disagree = ObservedTips {
             validator: Some(v),
-            non_finalized: Some(ns_diff),
+            non_finalised: Some(ns_diff),
         };
         assert_eq!(disagree.agree(), None);
         assert!(disagree.disagree());

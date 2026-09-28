@@ -294,7 +294,7 @@ pub(crate) mod properties {
             }
             Move::Trim(steps) => {
                 let floor = graph.best_tip().height.saturating_sub(u32::from(*steps));
-                graph.remove_finalized_blocks(floor);
+                graph.remove_finalised_blocks(floor);
             }
         }
     }

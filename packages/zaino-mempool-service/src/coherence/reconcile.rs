@@ -56,7 +56,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     fn observe_tips(&self, core: &MempoolSnapshot) -> ObservedTips {
         let validator = core.source_tip();
 
-        let non_finalized = match &self.nfs {
+        let non_finalised = match &self.nfs {
             // Dual-tip: the observer reports the ChainIndex epoch (`None` freezes).
             Some(observer) => observer.current_epoch(),
             // Validator-only: synthesize the epoch from the validator tip.
@@ -65,7 +65,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
 
         ObservedTips {
             validator,
-            non_finalized,
+            non_finalised,
         }
     }
 
@@ -86,7 +86,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
 
     fn classify_tip_change(previous: ObservedTips, next: ObservedTips) -> TipChange {
         let validator_changed = previous.validator != next.validator;
-        let ns_changed = previous.non_finalized != next.non_finalized;
+        let ns_changed = previous.non_finalised != next.non_finalised;
         match (validator_changed, ns_changed) {
             (false, false) => TipChange::None,
             (true, false) => TipChange::ValidatorChanged,
@@ -96,7 +96,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     }
 
     fn freeze_reason_from_tips(old_tips: ObservedTips, new_tips: ObservedTips) -> FreezeReason {
-        if new_tips.non_finalized.is_none() {
+        if new_tips.non_finalised.is_none() {
             return FreezeReason::NonFinalizedUnavailable;
         }
         if new_tips.validator.is_none() {

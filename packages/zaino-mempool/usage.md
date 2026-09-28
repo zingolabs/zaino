@@ -24,7 +24,7 @@ The core **never freezes**: it mirrors the validator's set as of the last poll a
 tags each snapshot with the validator tip it was fetched at
 (`MempoolSnapshot::source_tip`). The coherence layer layers freeze/thaw on top,
 blessing the core's set as coherent only while the validator tip (V) and Zaino's
-non-finalized-state tip (NS) agree.
+non-finalised-state tip (NS) agree.
 
 ## Ports
 
@@ -55,7 +55,7 @@ interval.
 **Outbound — Zaino's own state (you implement this):**
 
 - `NfsEpochObserver` *(feature `tip_aware_mempool`)* — reports Zaino's current
-  non-finalized-state epoch (`Option<ChainStateEpoch>`); `None` while there is
+  non-finalised-state epoch (`Option<ChainStateEpoch>`); `None` while there is
   no such state to observe. In Zaino that state is the chain head subsystem, and
   `zaino-state` adapts its subscriber onto this port — reading the epoch from
   the same handle the rest of ChainIndex serves snapshots from, so the two

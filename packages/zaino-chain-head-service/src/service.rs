@@ -386,7 +386,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             Some(watermark) => height_below(watermark, RETENTION_MARGIN),
             None => Height::GENESIS,
         };
-        graph.remove_finalized_blocks(reorg_safety_floor.min(confirmation_floor));
+        graph.remove_finalised_blocks(reorg_safety_floor.min(confirmation_floor));
 
         // Best chain is the most-work branch retained, which a reorg may have
         // left as something other than the block we just extended to.
