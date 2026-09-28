@@ -14,17 +14,13 @@
 //! then built-in defaults.
 
 use std::net::SocketAddr;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
-
-use zaino_indexer::FetchConcurrency;
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
-
 pub use zaino_common::Network;
+pub use zaino_runtime::config::{IndexerConfig, StoreConfig};
 
 use crate::error::IndexerError;
 
@@ -98,26 +94,6 @@ impl Default for SourceMode {
     }
 }
 
-/// The finalised index store (LMDB).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct StoreConfig {
-    /// Directory holding the LMDB environment (created if absent).
-    pub path: PathBuf,
-    /// Maximum on-disk size in GiB, reserved up front (LMDB requires a map size
-    /// bound at open time).
-    pub map_size_gb: usize,
-}
-
-impl Default for StoreConfig {
-    fn default() -> Self {
-        Self {
-            path: zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zaino/store"),
-            map_size_gb: 16,
-        }
-    }
-}
-
 /// The wallet-facing gRPC server.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -134,53 +110,27 @@ impl Default for ServeConfig {
     }
 }
 
-/// Index-build tuning.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct IndexerConfig {
-    /// Blocks committed per atomic batch.
-    pub batch_size: u32,
-    /// Contexts buffered between the provisioner and the engine.
-    pub channel_capacity: usize,
-    /// Depth below the tip treated as still volatile; only `tip − depth` and
-    /// below is indexed.
-    pub finalised_depth: u32,
-    /// Fetches kept in flight by the provisioner. Concurrent fetch keeps the
-    /// parallel engine fed rather than paced by a one-at-a-time loop. A
-    /// `concurrency = 0` in the config is rejected at parse time (non-zero type).
-    pub concurrency: FetchConcurrency,
-}
-
-impl Default for IndexerConfig {
-    fn default() -> Self {
-        Self {
-            batch_size: 1000,
-            channel_capacity: 256,
-            finalised_depth: MAX_BLOCK_REORG_HEIGHT,
-            concurrency: FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero")),
-        }
-    }
-}
-
-/// Which deployment shape to run.
+/// Which deployment to run.
 ///
-/// A closed set: each variant is a static use case (`zainod::use_case`) that
-/// binds a serving profile, a routing and an index set, checked by the
-/// compiler. Config selects one; it does not shape one.
+/// A closed set: each variant is a static deployment
+/// (`zaino_runtime::deployment`) that binds a use case, a routing and an
+/// index set, checked by the compiler. Config selects one; it does not shape
+/// one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
-pub enum UseCaseKind {
-    /// Lightwalletd-compatible serving over the compact-block index set.
+pub enum DeploymentKind {
+    /// The light-wallet use case over the compact-block index set, with
+    /// everything the wallet parses itself relayed to the validator.
     #[default]
-    LightWallet,
+    LightWalletPassthrough,
 }
 
 /// The zainod daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct DaemonConfig {
-    /// The deployment shape.
-    pub use_case: UseCaseKind,
+    /// Which deployment to run.
+    pub deployment: DeploymentKind,
     /// Network the validator serves.
     pub network: Network,
     /// Prometheus `/metrics` endpoint. Disabled when absent; requires the
@@ -199,11 +149,14 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            use_case: UseCaseKind::default(),
+            deployment: DeploymentKind::default(),
             network: Network::Mainnet,
             metrics_endpoint: None,
             source: SourceMode::default(),
-            store: StoreConfig::default(),
+            store: StoreConfig {
+                path: zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zaino/store"),
+                map_size_gb: StoreConfig::default_map_size_gb(),
+            },
             serve: ServeConfig::default(),
             indexer: IndexerConfig::default(),
         }
@@ -273,7 +226,7 @@ pub(crate) fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
         store_path,
     } = topology;
     DaemonConfig {
-        use_case: UseCaseKind::default(),
+        deployment: DeploymentKind::default(),
         network: Network::Regtest,
         metrics_endpoint: None,
         source: SourceMode::Direct {
@@ -403,7 +356,7 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(MAINNET_FIXTURE_MAP_SIZE_GB);
     DaemonConfig {
-        use_case: UseCaseKind::default(),
+        deployment: DeploymentKind::default(),
         network: Network::Mainnet,
         metrics_endpoint: None,
         source: SourceMode::Direct {
@@ -463,7 +416,7 @@ pub fn mainnet_rpc_fixture() -> DaemonConfig {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(MAINNET_FIXTURE_MAP_SIZE_GB);
     DaemonConfig {
-        use_case: UseCaseKind::default(),
+        deployment: DeploymentKind::default(),
         network: Network::Mainnet,
         metrics_endpoint: None,
         source: SourceMode::Rpc {
@@ -618,7 +571,7 @@ path = "/tmp/zaino-store"
             other => panic!("expected Rpc source, got {other:?}"),
         }
         // Untouched sections keep their defaults.
-        assert_eq!(config.indexer.finalised_depth, MAX_BLOCK_REORG_HEIGHT);
+        assert_eq!(config.indexer, IndexerConfig::default());
     }
 
     #[test]

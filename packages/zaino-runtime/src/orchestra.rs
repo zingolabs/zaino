@@ -45,6 +45,7 @@ pub struct OrchestraBuilder {
     statuses: Vec<Arc<dyn StatusSource + Send + Sync>>,
     watches: Vec<Arc<dyn StatusWatch + Send + Sync>>,
     signals_tx: watch::Sender<RuntimeSignals>,
+    readiness: ReadinessCriteria,
 }
 
 impl OrchestraBuilder {
@@ -62,7 +63,15 @@ impl OrchestraBuilder {
             statuses: Vec::new(),
             watches: Vec::new(),
             signals_tx,
+            readiness: ReadinessCriteria::default(),
         }
+    }
+
+    /// What "ready" requires of the booted components. Full mode (readiness
+    /// gates on sync) unless the deployment says otherwise.
+    pub fn with_readiness(mut self, criteria: ReadinessCriteria) -> Self {
+        self.readiness = criteria;
+        self
     }
 
     /// A receiver for the runtime signals, available *before* `build` so a health
@@ -148,7 +157,7 @@ impl OrchestraBuilder {
     /// Finish booting; hand back the running [`Orchestra`].
     pub fn build(mut self) -> Orchestra {
         let signals = self.signals_tx.subscribe();
-        let aggregator = spawn_signals(self.signals_tx.clone(), self.watches);
+        let aggregator = spawn_signals(self.signals_tx.clone(), self.watches, self.readiness);
         self.babysitters.push(aggregator);
         Orchestra {
             babysitters: self.babysitters,
@@ -271,12 +280,10 @@ fn snapshot(receivers: &[watch::Receiver<ComponentStatus>]) -> Vec<ComponentStat
 fn spawn_signals(
     tx: watch::Sender<RuntimeSignals>,
     watches: Vec<Arc<dyn StatusWatch + Send + Sync>>,
+    criteria: ReadinessCriteria,
 ) -> Task {
     let mut receivers: Vec<watch::Receiver<ComponentStatus>> =
         watches.iter().map(|w| w.subscribe()).collect();
-    // Config seam: full mode (readiness gates on sync) until ephemeral mode wires
-    // this from config.
-    let criteria = ReadinessCriteria::default();
 
     Task::spawn(TaskName("runtime-signals"), move |cancel| async move {
         // The startup latch: has the runtime ever reached `Serving`.

@@ -46,26 +46,11 @@ fast-test-seam = []
 # Runtime stack (config-agnostic; zainod translates its config into their typed
 # params at boot). Path deps for the ones not yet in [workspace.dependencies].
 zaino-runtime = { path = "../zaino-runtime" }
-zaino-indexer = { path = "../zaino-indexer" }
-zaino-store = { path = "../zaino-store" }
 zaino-lightserve = { path = "../zaino-lightserve" }
-zaino-persistence-codec = { path = "../zaino-persistence-codec" }
-zaino-component = { path = "../zaino-component" }
-zaino-indexes = { workspace = true }
-zaino-backend-lmdb = { workspace = true }
-zaino-persistence = { workspace = true }
 zaino-source = { workspace = true }
 zaino-source-zebra = { workspace = true }
 zaino-source-zebra-rpc = { workspace = true }
 zaino-source-zebra-readstate = { workspace = true }
-zaino-consensus = { workspace = true }
-
-# The composed serving stack: the finalised store, the non-finalised chain head,
-# and the engine that composes them behind the light-wallet serve profile.
-zaino-core = { path = "../zaino-core" }
-zaino-service = { path = "../zaino-service" }
-zaino-chain-head = { workspace = true }
-zaino-chain-head-service = { workspace = true }
 
 # Validator connection + probe.
 zaino-common = { workspace = true }

@@ -3,15 +3,31 @@ name = "zaino-runtime"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The orchestrator: composes the finalised (zaino-fs) and non-finalised (zaino-nfs) components into one running indexer, and implements zaino-service::IndexerService."
+description = "The runtime: component supervision, and the deployments — how each use case is assembled from the finalised store, the chain head and the validator, and booted under one Orchestra."
 
 [dependencies]
 zaino-component = { path = "../zaino-component" }
+zaino-async = { version = "0.1.0", path = "../zaino-async" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 futures.workspace = true
-zaino-async = { version = "0.1.0", path = "../zaino-async" }
+serde = { workspace = true, features = ["derive"] }
+
+# The indexed assembly: the LMDB-backed finalised store, its indexer, the
+# non-finalised chain head, and the engine that composes them.
+zaino-backend-lmdb = { workspace = true }
+zaino-chain-head = { workspace = true }
+zaino-chain-head-service = { workspace = true }
+zaino-consensus = { workspace = true }
+zaino-core = { path = "../zaino-core" }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-indexes = { workspace = true }
+zaino-persistence = { workspace = true }
+zaino-persistence-codec = { path = "../zaino-persistence-codec" }
+zaino-service = { path = "../zaino-service" }
+zaino-source = { workspace = true }
+zaino-store = { path = "../zaino-store" }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -20,8 +36,6 @@ zaino-status = { path = "../zaino-status" }
 zaino-service = { path = "../zaino-service", features = ["testing"] }
 zaino-lightserve = { path = "../zaino-lightserve" }
 zaino-noderpc = { path = "../zaino-noderpc" }
-zaino-indexer = { path = "../zaino-indexer" }
-zaino-indexes = { path = "../zaino-indexes" }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }

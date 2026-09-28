@@ -1,58 +1,31 @@
 //! Boots the Zaino daemon on the runtime stack.
 //!
-//! Translates the daemon [`DaemonConfig`] into the runtime stack's typed params
-//! and supervises validator → indexer → store → wallet-gRPC under one
-//! [`Orchestra`](zaino_runtime::Orchestra). The stack crates stay config-agnostic;
-//! this module is the only place daemon config crosses into them.
-//!
-//! Scope: serves the index-only compact-block slice
-//! (`GetLatestBlock`/`GetBlock`/`GetBlockRange`). Transactions, treestate,
-//! address queries, `SendTransaction`, and node JSON-RPC are not served yet.
+//! Translates the daemon [`DaemonConfig`] into the runtime's typed params:
+//! builds the one validator client every consumer shares, selects the
+//! deployment config names, and hands both to the runtime's assembly
+//! ([`zaino_runtime::boot_indexed`]) together with the serving adapter that
+//! speaks the deployment's use case. This module is the only place daemon
+//! config crosses into the stack, and the only place a runtime value becomes
+//! a type.
 
-use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
-use zaino_chain_head::ChainHeadConfig;
-use zaino_chain_head_service::{ChainHeadService, ChainHeadSubscriber};
-use zaino_component::{
-    CancellationToken, ComponentName, Managed, ReachabilityProbe, StatusSource, StatusWatch,
-};
-use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
-use zaino_indexer::{SourceSyncDriver, SyncTuning};
-use zaino_indexes::index_set::IndexSet;
-use zaino_indexes::sets::current_zaino::context_from_pre_index_compact_block;
 use zaino_lightserve::{GrpcServer, LightServe};
-use zaino_persistence::Namespace;
-use zaino_persistence_codec::reserved_namespaces;
 use zaino_rpc::{RpcClient, RpcClientConfig};
-use zaino_runtime::{
-    IndexerComponent, OrchestraBuilder, RunComponent, ServeComponent, ValidatorComponent,
-};
-use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
+use zaino_runtime::config::IndexedDeploymentConfig;
+use zaino_runtime::deployment::{LightWalletPassthrough, LightWalletSource};
+use zaino_runtime::{boot_indexed, Orchestra};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
-use zaino_store::{StoreComponent, StoreReader};
 
-use crate::config::{DaemonConfig, Network, SourceMode, UseCaseKind};
+use crate::config::{DaemonConfig, DeploymentKind, Network, SourceMode};
 use crate::error::IndexerError;
-use crate::use_case::{self, DaemonSource, Deployment, LightWalletSource};
-use zaino_service::use_cases::{Serves, UseCase};
-
-/// The engine this daemon wires for deployment `D` over the validator client
-/// `C`: the LMDB store over the deployment's index set, the chain head, and
-/// the client, under the deployment's routing.
-///
-/// The validator is the second supply axis beside the index set: a
-/// validator lacking a port the deployment's routing sends to it fails at the
-/// same `compose` bound a missing index does.
-type DaemonEngine<D, C> = use_case::DeploymentEngine<D, LmdbBackend, ChainHeadSubscriber, C>;
 
 /// Start the Zaino daemon.
 ///
@@ -108,7 +81,7 @@ pub async fn spawn_indexer(
                 )
                 .await
                 .map_err(IndexerError::TipPolling)?;
-            select_use_case(client_over(Arc::new(validator)), config).await
+            select_deployment(client_over(Arc::new(validator)), config).await
         }
         // Off-node: reach the validator over JSON-RPC alone, no co-located state
         // DB. The FS indexer sources compact blocks over RPC and the chain-head
@@ -140,7 +113,7 @@ pub async fn spawn_indexer(
                 )
                 .await
                 .map_err(IndexerError::TipPolling)?;
-            select_use_case(client_over(Arc::new(validator)), config).await
+            select_deployment(client_over(Arc::new(validator)), config).await
         }
     }
 }
@@ -221,22 +194,14 @@ fn rpc_auth(
     }
 }
 
-/// Boot the runtime over the shared `validator`: an LMDB-backed compact-block
-/// index (the FS), the self-synchronising non-finalised chain head (the NFS), the
-/// engine that composes the two into one served chain, and the wallet gRPC
-/// server — all supervised under one Orchestra (validator gated first).
-///
-/// The one `Arc<ZebraValidator>` backs both source consumers: the FS indexer
-/// wraps it in the resilient [`ValidatorClient`]; the chain-head reaches the raw
-/// one-shot ports through the `Arc` directly. The chain-head's confirmed-watermark
-/// gate is the seam owner — it trims only what the FS has committed.
 /// Select the deployment config names and boot it.
 ///
 /// The one place a runtime value becomes a type: each arm is a fully static
 /// shape, and the only thing an arm supplies beyond the deployment is the
 /// serving adapter that speaks its use case's protocol. Adding a deployment
-/// is adding an arm; the compiler checks the arm's shape at [`use_case::compose`].
-async fn select_use_case<C>(
+/// is adding an arm; the compiler checks the arm's shape at the runtime's
+/// `compose`.
+async fn select_deployment<C>(
     client: Arc<C>,
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
@@ -245,181 +210,45 @@ where
     // bundle; the demand its adapter carries then follows from the impls.
     C: LightWalletSource,
 {
-    match config.use_case {
-        UseCaseKind::LightWallet => {
-            boot::<use_case::LightWalletPassthrough, _, C>(client, config, |engine, addr| {
-                GrpcServer::new(LightServe::new(engine), addr)
+    let runtime = IndexedDeploymentConfig {
+        store: config.store.clone(),
+        indexer: config.indexer.clone(),
+    };
+    let grpc = config.serve.grpc_listen_address;
+    let orchestra = match config.deployment {
+        DeploymentKind::LightWalletPassthrough => {
+            boot_indexed::<LightWalletPassthrough, _, C>(client, &runtime, |engine| {
+                GrpcServer::new(LightServe::new(engine), grpc)
             })
-            .await
+            .await?
         }
-    }
+    };
+    info!(grpc = %grpc, "Zaino runtime booted");
+    Ok(tokio::spawn(run_until_exit(orchestra)))
 }
 
-/// Boot the runtime for deployment `D`, serving its engine through `serve`.
-///
-/// Generic over the deployment: the index set the backend opens and the
-/// indexer builds, the set the store reader is typed to, and the routing the
-/// engine composes under all come from `D`, so none of them can be paired
-/// wrongly here. `demand ⊆ supply` is checked once, at [`use_case::compose`].
-async fn boot<D, A, C>(
-    client: Arc<C>,
-    config: DaemonConfig,
-    serve: impl FnOnce(DaemonEngine<D, C>, std::net::SocketAddr) -> A,
-) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
-where
-    D: Deployment,
-    C: DaemonSource,
-    StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    DaemonEngine<D, C>: Serves<D::UseCase>,
-    RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
-{
-    // Every consumer — the FS indexer, the chain head, the engine's passthrough
-    // — reads through the one shared client; none holds a raw validator.
-    let source = client;
-
-    // LMDB must declare every namespace up front: one per index in the set, plus
-    // the engine's reserved watermark / format-version namespaces. The set is
-    // the deployment's index set — the same type the store reader is wired
-    // over below, so what is built and what is served cannot drift.
-    let namespaces: Vec<Namespace> = D::Indexes::pipelines()
-        .index_ids()
-        .into_iter()
-        .map(Namespace::from)
-        .chain(reserved_namespaces())
-        .collect();
-    let backend = LmdbBackend::open(LmdbConfig {
-        path: config.store.path.clone(),
-        map_size_bytes: config.store.map_size_gb << 30,
-        namespaces,
-    })?;
-
-    // The finalised store: the indexer writes it, the engine composes blocks on
-    // read from it. One reader, shared (Arc-backed clone). Typed to the
-    // deployment's index set: the reads it has are exactly the reads those
-    // indexes back.
-    let store_reader = StoreReader::<_, D::Indexes>::new(Arc::new(backend.clone()));
-
-    // A watermark ahead of the headers index claims heights the store cannot
-    // serve, and every read in that gap would be routed to it and answer
-    // nothing. Data outranks the stamp: correct it to the highest header held
-    // before the indexer resumes from it or the engine serves against it.
-    if let Some(repair) = store_reader
-        .repair_watermark()
-        .map_err(IndexerError::StoreWatermark)?
-    {
-        warn!(
-            claimed = u32::from(repair.claimed),
-            corrected = u32::from(repair.corrected),
-            "store watermark was ahead of its headers index; corrected to the highest header held"
-        );
-    }
-
-    // The FS indexer sources the cheap pre-index compact block and builds the
-    // deployment's index set, resuming from the backend watermark.
-    let driver = SourceSyncDriver::resuming_compact(
-        &backend,
-        D::Indexes::pipelines(),
-        Arc::clone(&source),
-        |compact_block| context_from_pre_index_compact_block(&compact_block),
-        SyncTuning {
-            batch_size: config.indexer.batch_size,
-            finalised_depth: config.indexer.finalised_depth,
-            channel_capacity: config.indexer.channel_capacity,
-            concurrency: config.indexer.concurrency,
-        },
-    )?;
-    // Capture the confirmed-watermark receiver before the driver is moved into
-    // its component — it is the chain-head's only handle onto what the FS has
-    // durably committed (confirm-before-trim).
-    let confirmed_watermark = driver.subscribe_confirmed_watermark();
-
-    // The NFS chain head, anchored over the same client: it binds the canonical
-    // ports, so retrying lives in the client and the chain head carries no
-    // ladder of its own. Its cancel is a child of the runtime's root token.
-    let runtime_cancel = CancellationToken::new();
-    let (chain_head_subscriber, chain_head_writer) = ChainHeadService::anchor(
-        Arc::clone(&source),
-        ChainHeadConfig::with_max_depth(
-            NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT).expect("the consensus reorg bound is non-zero"),
-        ),
-        confirmed_watermark,
-    )
-    .await
-    .map_err(IndexerError::ChainHeadInit)?;
-
-    // Compose FS ⊕ NFS ⊕ validator into the served engine under the
-    // deployment's routing. The passthrough side consumes the resilient ValidatorClient
-    // decorator over the shared validator — the canonical ports, never the raw
-    // one-shots, and never the concrete adapter type. That this engine serves
-    // what the use case demands is the `compose` bound.
-    let engine = use_case::compose::<D, _, _, _>(
-        store_reader.clone(),
-        chain_head_subscriber,
-        (*source).clone(),
-    );
-
-    // Reachability was already confirmed (Direct opened its state DB), so the
-    // runtime's validator gate is a formality here.
-    let validator_component = ValidatorComponent::connect(&AlreadyReachable).await?;
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
-    let store = StoreComponent::new(ComponentName("store"), store_reader);
-    // The chain-head writer is escalated and supervised exactly like the indexer.
-    let chain_head = RunComponent::new(ComponentName("chain-head"), chain_head_writer);
-    let light_serve = ServeComponent::new(
-        ComponentName(D::UseCase::NAME),
-        serve(engine, config.serve.grpc_listen_address),
-    );
-
-    // Readiness-gated order: validator, then the FS indexer (so its watermark is
-    // published before the chain-head trims against it), then the store, then the
-    // chain-head writer, then the server.
-    let mut orchestra = OrchestraBuilder::new()
-        .boot_observed(validator_component)
-        .await
-        .boot(indexer)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .boot(store)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .boot(chain_head)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .boot(light_serve)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .build();
-
-    info!(
-        grpc = %config.serve.grpc_listen_address,
-        "Zaino runtime booted; serving compact blocks over the composed FS⊕NFS chain"
-    );
-
-    Ok(tokio::spawn(async move {
-        // Run until a shutdown signal (clean exit) or a component escalation
-        // (fatal → restart). Either way, stop supervising the rest.
-        let escalation = tokio::select! {
-            signal = shutdown_signal() => {
-                info!(signal, "shutdown signal received");
-                orchestra.shutdown();
-                runtime_cancel.cancel();
-                return Ok(());
-            }
-            escalation = orchestra.next_escalation() => escalation,
-        };
-        orchestra.shutdown();
-        runtime_cancel.cancel();
-        match escalation {
-            Some(component) => {
-                error!(%component, "runtime component escalated; restarting");
-                Err(IndexerError::Restart)
-            }
-            None => {
-                info!("runtime settled");
-                Ok(())
-            }
+/// Run until a shutdown signal (clean exit) or a component escalation (fatal
+/// → restart). Either way, stop supervising the rest.
+async fn run_until_exit(mut orchestra: Orchestra) -> Result<(), IndexerError> {
+    let escalation = tokio::select! {
+        signal = shutdown_signal() => {
+            info!(signal, "shutdown signal received");
+            orchestra.shutdown();
+            return Ok(());
         }
-    }))
+        escalation = orchestra.next_escalation() => escalation,
+    };
+    orchestra.shutdown();
+    match escalation {
+        Some(component) => {
+            error!(%component, "runtime component escalated; restarting");
+            Err(IndexerError::Restart)
+        }
+        None => {
+            info!("runtime settled");
+            Ok(())
+        }
+    }
 }
 
 /// Wait for a process shutdown signal, returning which one arrived.
@@ -449,18 +278,6 @@ fn to_zebra_network(network: Network) -> zebra_chain::parameters::Network {
         Network::Mainnet => Zebra::Mainnet,
         Network::PubTestnet => Zebra::new_default_testnet(),
         Network::Regtest => Zebra::new_regtest(Default::default()),
-    }
-}
-
-/// A [`ReachabilityProbe`] that always reports reachable.
-///
-/// The daemon confirms the validator is reachable before boot (Direct opens its
-/// state DB), so the runtime's readiness gate has nothing left to check.
-struct AlreadyReachable;
-
-impl ReachabilityProbe for AlreadyReachable {
-    async fn reachable(&self) -> bool {
-        true
     }
 }
 

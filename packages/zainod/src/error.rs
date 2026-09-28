@@ -2,9 +2,8 @@
 
 /// Errors from configuring, booting, or running the Zaino daemon.
 ///
-/// Each variant keeps its cause typed (`#[from]`/`#[source]`); only the
-/// component-boot boundary is boxed, since `OrchestraBuilder::boot` is generic
-/// over each component's error type and one enum cannot name them all.
+/// Each variant keeps its cause typed (`#[from]`/`#[source]`). What the
+/// runtime's assembly can fail with is its own [`DeployError`](zaino_runtime::DeployError).
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     /// Configuration is missing, malformed, or invalid.
@@ -17,31 +16,13 @@ pub enum IndexerError {
     /// coordinates in Direct/Rpc source mode).
     #[error("building the validator JSON-RPC client failed")]
     RpcClient(#[source] zaino_rpc::RpcError),
-    /// The non-finalised chain-head could not anchor against the validator.
-    #[error("the chain-head could not anchor against the validator")]
-    ChainHeadInit(#[source] zaino_chain_head_service::ChainHeadInitError),
-
     /// The validator's tip poller could not take its first reading, so no
     /// consumer could follow the chain.
     #[error("starting the validator tip poller failed")]
     TipPolling(#[source] zaino_source::QueryError<zaino_source::GetChainTipError>),
-    /// Opening the LMDB index store failed.
+    /// The runtime could not assemble the selected deployment.
     #[error(transparent)]
-    OpenStore(#[from] zaino_persistence::OpenError),
-
-    /// The store's watermark could not be checked against, or corrected to,
-    /// what the headers index actually holds.
-    #[error("checking the store's watermark against its index failed")]
-    StoreWatermark(#[source] zaino_store::WatermarkRepairError),
-    /// Building or running the sync stack (backend, provisioner, engine) failed.
-    #[error(transparent)]
-    Sync(#[from] zaino_indexer::IndexerError),
-    /// The validator was unreachable when the runtime gated on it at boot.
-    #[error(transparent)]
-    ValidatorUnreachable(#[from] zaino_runtime::ValidatorUnreachable),
-    /// A runtime component failed to boot.
-    #[error("component failed to boot")]
-    Boot(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Deploy(#[from] zaino_runtime::DeployError),
     /// A background task panicked or was cancelled.
     #[error(transparent)]
     TokioJoinError(#[from] tokio::task::JoinError),
