@@ -10,7 +10,7 @@ use std::sync::Arc;
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
+use zaino_indexes::sets::current_zaino::{context_from_block, pipelines, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_persistence::{Backend, BackendWriter, WriteOp};
 use zaino_persistence_codec::{encode_key, watermark};
@@ -42,7 +42,7 @@ async fn indexed_store(backend: &InMemoryBackend) -> StoreComponent<InMemoryBack
     let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
     let driver = SourceSyncDriver::resuming(
         backend,
-        index_set(),
+        pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {

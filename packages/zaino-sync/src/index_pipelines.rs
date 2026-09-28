@@ -1,7 +1,7 @@
 //! Index set — declarative collection of indexes passed to the engine.
 //!
 //! The user defines indexes (descriptor + extract + merge), registers them
-//! into an `IndexSet`, and hands the set to the engine. The set handles
+//! into an `IndexPipelines`, and hands the set to the engine. The set handles
 //! DAG construction and validation internally.
 
 use crate::dag::{DagError, DependencyDag};
@@ -20,18 +20,18 @@ type BuiltIndexSet<Ctx> = (DependencyDag, Vec<Box<dyn IndexPipeline<Ctx>>>);
 /// # Example
 ///
 /// ```text
-/// let set = IndexSet::new()
+/// let set = IndexPipelines::new()
 ///     .with::<ValueIndex>()
 ///     .with::<CountIndex>()
 ///     .with::<RunningSumIndex>();
 ///
-/// let engine = SyncEngine::from_index_set(set, backend, config)?;
+/// let engine = SyncEngine::from_pipelines(set, backend, config)?;
 /// ```
-pub struct IndexSet<Ctx: Send + Sync + 'static> {
+pub struct IndexPipelines<Ctx: Send + Sync + 'static> {
     pipelines: Vec<Box<dyn IndexPipeline<Ctx>>>,
 }
 
-impl<Ctx: Send + Sync + 'static> IndexSet<Ctx> {
+impl<Ctx: Send + Sync + 'static> IndexPipelines<Ctx> {
     /// Create an empty index set.
     pub fn new() -> Self {
         Self {
@@ -83,7 +83,7 @@ impl<Ctx: Send + Sync + 'static> IndexSet<Ctx> {
     }
 }
 
-impl<Ctx: Send + Sync + 'static> Default for IndexSet<Ctx> {
+impl<Ctx: Send + Sync + 'static> Default for IndexPipelines<Ctx> {
     fn default() -> Self {
         Self::new()
     }

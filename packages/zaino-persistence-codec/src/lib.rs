@@ -86,7 +86,7 @@ const VERSION_META: Namespace = Namespace::new("_format_versions");
 /// the index namespaces.
 ///
 /// A persistent backend that declares its namespaces up front (e.g. LMDB) must
-/// open these *in addition to* the index set's own (`IndexSet::index_ids` in
+/// open these *in addition to* the index set's own (`IndexPipelines::index_ids` in
 /// `zaino-sync`). A backend that creates namespaces lazily can ignore them.
 pub fn reserved_namespaces() -> [Namespace; 2] {
     [watermark::namespace(), VERSION_META]

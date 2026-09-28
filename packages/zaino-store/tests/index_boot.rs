@@ -16,7 +16,7 @@ use std::sync::Arc;
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{
-    context_from_block, index_set, CurrentZaino, CurrentZainoContext,
+    context_from_block, pipelines, CurrentZaino, CurrentZainoContext,
 };
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{BlockSelector, Height};
@@ -54,7 +54,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
     // start. finalised_depth = 0: a non-reorging mock, so the boundary is the tip.
     let driver = SourceSyncDriver::resuming(
         &backend,
-        index_set(),
+        pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {

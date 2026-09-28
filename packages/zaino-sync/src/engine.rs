@@ -28,7 +28,7 @@ use tokio::sync::watch;
 use crate::backend::{Backend, BackendWriter, WriteOp};
 use crate::block_buffer::BlockBuffer;
 use crate::dag::DagError;
-use crate::index_set::IndexSet;
+use crate::index_pipelines::IndexPipelines;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
@@ -105,7 +105,7 @@ pub struct SyncEngine<Ctx, B: Backend> {
 }
 
 impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
-    /// Create an engine from a declarative [`IndexSet`].
+    /// Create an engine from a declarative [`IndexPipelines`].
     ///
     /// Builds the dependency DAG, constructs the scheduler, indexes
     /// pipelines by name for O(1) lookup, and hydrates pipeline state
@@ -113,8 +113,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// accumulators from previously committed data; BlockLocal
     /// pipelines have no state to load (no-op). If the backend is
     /// empty the load is a no-op for all pipelines.
-    pub fn from_index_set(
-        set: IndexSet<Ctx>,
+    pub fn from_pipelines(
+        set: IndexPipelines<Ctx>,
         backend: B,
         config: EngineConfig,
     ) -> Result<Self, SyncError> {

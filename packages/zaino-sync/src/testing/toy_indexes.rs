@@ -70,7 +70,7 @@ impl ProvideContext<cumulative_series_index::Context> for TestBlockContext {
 mod tests {
     use super::*;
     use crate::engine::{EngineConfig, SyncEngine};
-    use crate::index_set::IndexSet;
+    use crate::index_pipelines::IndexPipelines;
     use crate::primitives::BlockHeight;
     use crate::provisioner::Provisioner;
     use crate::testing::{InMemoryBackend, MockProvisioner};
@@ -98,12 +98,12 @@ mod tests {
         batch_size: u32,
         start_height: BlockHeight,
     ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
-        let set = IndexSet::new()
+        let set = IndexPipelines::new()
             .with::<ValueIndex>()
             .with::<CountIndex>()
             .with::<RunningSumIndex>();
 
-        SyncEngine::from_index_set(
+        SyncEngine::from_pipelines(
             set,
             backend,
             EngineConfig {
@@ -129,13 +129,13 @@ mod tests {
         batch_size: u32,
         start_height: BlockHeight,
     ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
-        let set = IndexSet::new()
+        let set = IndexPipelines::new()
             .with::<ValueIndex>()
             .with::<CountIndex>()
             .with::<RunningSumIndex>()
             .with::<CumulativeSumIndex>();
 
-        SyncEngine::from_index_set(
+        SyncEngine::from_pipelines(
             set,
             backend,
             EngineConfig {
@@ -161,8 +161,8 @@ mod tests {
         batch_size: u32,
         start_height: BlockHeight,
     ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
-        let set = IndexSet::new().with::<CumulativeSeriesIndex>();
-        SyncEngine::from_index_set(
+        let set = IndexPipelines::new().with::<CumulativeSeriesIndex>();
+        SyncEngine::from_pipelines(
             set,
             backend,
             EngineConfig {

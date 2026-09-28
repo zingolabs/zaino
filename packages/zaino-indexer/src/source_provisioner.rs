@@ -30,7 +30,7 @@ use zaino_source::{
 };
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
-use zaino_sync::index_set::IndexSet;
+use zaino_sync::index_pipelines::IndexPipelines;
 use zaino_sync::primitives::BlockHeight;
 
 use crate::IndexerError;
@@ -370,7 +370,7 @@ where
     /// index while loading state here.
     fn assemble_resuming(
         backend: &B,
-        index_set: IndexSet<Ctx>,
+        pipelines: IndexPipelines<Ctx>,
         source: Arc<S>,
         build: F,
         tuning: SyncTuning,
@@ -379,8 +379,8 @@ where
         B: Clone,
     {
         let start = crate::assess_start(backend)?.next_height();
-        let engine = SyncEngine::from_index_set(
-            index_set,
+        let engine = SyncEngine::from_pipelines(
+            pipelines,
             backend.clone(),
             EngineConfig {
                 batch_size: tuning.batch_size,
@@ -444,12 +444,12 @@ where
     /// `0` in tests over a non-reorging source.
     pub fn resuming(
         backend: &B,
-        index_set: IndexSet<Ctx>,
+        pipelines: IndexPipelines<Ctx>,
         source: Arc<S>,
         build: F,
         tuning: SyncTuning,
     ) -> Result<Self, IndexerError> {
-        Self::assemble_resuming(backend, index_set, source, build, tuning)
+        Self::assemble_resuming(backend, pipelines, source, build, tuning)
     }
 }
 
@@ -480,12 +480,12 @@ where
     /// trees index still gets its commitment counts from the compact block.
     pub fn resuming_compact(
         backend: &B,
-        index_set: IndexSet<Ctx>,
+        pipelines: IndexPipelines<Ctx>,
         source: Arc<S>,
         build: F,
         tuning: SyncTuning,
     ) -> Result<Self, IndexerError> {
-        Self::assemble_resuming(backend, index_set, source, build, tuning)
+        Self::assemble_resuming(backend, pipelines, source, build, tuning)
     }
 }
 

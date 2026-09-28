@@ -25,8 +25,8 @@ use zaino_chain_head::ChainHeadBlockSource;
 use zaino_core::routing::{LightRouting, Routing};
 use zaino_core::Engine;
 use zaino_indexer::CompactSource;
+use zaino_indexes::index_set::{Builds, IndexSet};
 use zaino_indexes::indexes::headers::HeadersIndex;
-use zaino_indexes::materialisation::{Builds, Materialisation};
 use zaino_indexes::sets::current_zaino::CurrentZainoContext;
 use zaino_indexes::sets::light_wallet::LightWallet as LightWalletIndexes;
 use zaino_service::use_cases::{LightWallet, Serves, UseCase};
@@ -104,7 +104,7 @@ pub trait Deployment: 'static {
     /// indexer's compact-block provisioner produces, and every one builds the
     /// headers index: the store pins its tip from it and checks its watermark
     /// against it.
-    type Indexes: Materialisation<Context = CurrentZainoContext> + Builds<HeadersIndex>;
+    type Indexes: IndexSet<Context = CurrentZainoContext> + Builds<HeadersIndex>;
 }
 
 /// The engine a deployment wires: the store over its index set, a head, a

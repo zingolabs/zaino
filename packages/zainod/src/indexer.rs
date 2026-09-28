@@ -24,7 +24,7 @@ use zaino_component::{
 };
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_indexer::{SourceSyncDriver, SyncTuning};
-use zaino_indexes::materialisation::Materialisation;
+use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::context_from_pre_index_compact_block;
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::Namespace;
@@ -281,7 +281,7 @@ where
     // the engine's reserved watermark / format-version namespaces. The set is
     // the deployment's index set — the same type the store reader is wired
     // over below, so what is built and what is served cannot drift.
-    let namespaces: Vec<Namespace> = D::Indexes::index_set()
+    let namespaces: Vec<Namespace> = D::Indexes::pipelines()
         .index_ids()
         .into_iter()
         .map(Namespace::from)
@@ -318,7 +318,7 @@ where
     // deployment's index set, resuming from the backend watermark.
     let driver = SourceSyncDriver::resuming_compact(
         &backend,
-        D::Indexes::index_set(),
+        D::Indexes::pipelines(),
         Arc::clone(&source),
         |compact_block| context_from_pre_index_compact_block(&compact_block),
         SyncTuning {

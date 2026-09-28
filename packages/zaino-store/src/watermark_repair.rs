@@ -27,8 +27,8 @@
 //!            |   top                                                    otherwise
 //! ```
 
+use zaino_indexes::index_set::Builds;
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
-use zaino_indexes::materialisation::Builds;
 use zaino_persistence::{Backend, BackendWriter, CommitError, OpenError};
 use zaino_persistence_codec::watermark;
 use zaino_primitives::types::Height;

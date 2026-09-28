@@ -21,7 +21,7 @@ use zaino_source::{
 };
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
-use zaino_sync::testing::{toy_index_set, InMemoryBackend, TestBlockContext};
+use zaino_sync::testing::{toy_pipelines, InMemoryBackend, TestBlockContext};
 
 /// A mock source whose chain grows: `extend_to` appends blocks and pushes a tip
 /// update, so a subscriber follows.
@@ -112,8 +112,8 @@ fn indexed_block_count(backend: &InMemoryBackend) -> usize {
 async fn the_indexer_follows_the_tip() {
     let source = GrowingSource::new(3); // blocks 0..=3
     let backend = InMemoryBackend::new();
-    let engine = SyncEngine::from_index_set(
-        toy_index_set(),
+    let engine = SyncEngine::from_pipelines(
+        toy_pipelines(),
         backend.clone(),
         EngineConfig {
             batch_size: 4,
@@ -177,8 +177,8 @@ async fn the_indexer_stops_at_the_finalised_boundary() {
     // finalised index's.
     let source = GrowingSource::new(6);
     let backend = InMemoryBackend::new();
-    let engine = SyncEngine::from_index_set(
-        toy_index_set(),
+    let engine = SyncEngine::from_pipelines(
+        toy_pipelines(),
         backend.clone(),
         EngineConfig {
             batch_size: 4,

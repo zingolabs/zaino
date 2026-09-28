@@ -21,7 +21,7 @@ use zaino_core::routing::LightRouting;
 use zaino_core::testing::StubNonFinalised;
 use zaino_core::Engine;
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
+use zaino_indexes::sets::current_zaino::{context_from_block, pipelines, CurrentZaino};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
@@ -85,8 +85,8 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
     }
     let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
 
-    let mut engine = SyncEngine::from_index_set(
-        index_set(),
+    let mut engine = SyncEngine::from_pipelines(
+        pipelines(),
         backend.clone(),
         EngineConfig {
             batch_size: 8,

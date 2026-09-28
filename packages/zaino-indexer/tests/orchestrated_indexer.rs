@@ -12,14 +12,14 @@ use zaino_indexer::SyncEngineDriver;
 use zaino_runtime::IndexerComponent;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
-use zaino_sync::testing::{toy_index_set, InMemoryBackend, MockProvisioner, TestBlockContext};
+use zaino_sync::testing::{toy_pipelines, InMemoryBackend, MockProvisioner, TestBlockContext};
 
 fn build_driver(
     target: u64,
 ) -> SyncEngineDriver<TestBlockContext, InMemoryBackend, MockProvisioner> {
     let backend = InMemoryBackend::new();
-    let engine = SyncEngine::from_index_set(
-        toy_index_set(),
+    let engine = SyncEngine::from_pipelines(
+        toy_pipelines(),
         backend,
         EngineConfig {
             batch_size: 8,

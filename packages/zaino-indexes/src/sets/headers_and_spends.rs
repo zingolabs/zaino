@@ -5,7 +5,7 @@
 use zaino_primitives::types::{
     Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
 };
-use zaino_sync::index_set::IndexSet;
+use zaino_sync::index_pipelines::IndexPipelines;
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ProvideContext;
 
@@ -73,8 +73,8 @@ impl ProvideContext<SpendCtx> for HeadersAndSpendsContext {
 }
 
 /// Build the headers + transparent spends index set.
-pub fn index_set() -> IndexSet<HeadersAndSpendsContext> {
-    IndexSet::new()
+pub fn pipelines() -> IndexPipelines<HeadersAndSpendsContext> {
+    IndexPipelines::new()
         .with::<HeadersIndex>()
         .with::<TransparentSpendsIndex>()
 }

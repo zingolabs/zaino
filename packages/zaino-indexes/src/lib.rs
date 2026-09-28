@@ -27,8 +27,8 @@
 //!   provisioner produces one of these per block.
 //! - **`ProvideContext` impls** — one per index in the set, projecting
 //!   the set-wide context into each index's narrow context type.
-//! - A **builder function** (`index_set()`) — registers all indexes
-//!   and returns a configured `IndexSet`.
+//! - A **builder function** (`pipelines()`) — registers all indexes
+//!   and returns the configured `IndexPipelines`.
 //!
 //! Different sets can compose the same indexes with different set-wide
 //! contexts. A "headers-only" set has a minimal context. A "full" set
@@ -36,6 +36,6 @@
 //! is the same in both; only the `ProvideContext` projection differs.
 
 pub mod capabilities;
+pub mod index_set;
 pub mod indexes;
-pub mod materialisation;
 pub mod sets;

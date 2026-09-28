@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_indexer::{CompactBlocks, FetchConcurrency, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{
-    context_from_pre_index_compact_block, index_set, CurrentZaino, CurrentZainoContext,
+    context_from_pre_index_compact_block, pipelines, CurrentZaino, CurrentZainoContext,
 };
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
@@ -186,7 +186,7 @@ pub fn open_rpc_source(addr: &str) -> Result<RpcSource, BoxError> {
 /// front — one per index in the set, plus the engine's reserved watermark /
 /// format-version namespaces.
 pub fn open_backend(db: &Path, map_size_gb: usize) -> Result<LmdbBackend, BoxError> {
-    let namespaces: Vec<Namespace> = index_set()
+    let namespaces: Vec<Namespace> = pipelines()
         .index_ids()
         .into_iter()
         .map(Namespace::from)
@@ -302,8 +302,8 @@ pub async fn run_sync<S: BenchSource>(
     ));
     let count = u32::from(to) - u32::from(resume) + 1;
 
-    let mut engine = SyncEngine::from_index_set(
-        index_set(),
+    let mut engine = SyncEngine::from_pipelines(
+        pipelines(),
         backend,
         EngineConfig {
             batch_size: batch,

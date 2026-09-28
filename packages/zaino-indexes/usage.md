@@ -2,19 +2,19 @@
 
 Zcash index definitions, the index sets that compose them, and the two things
 a finalised store needs to know about what it holds: which indexes a deployment
-builds (a **materialisation**), and which indexes each serving capability
+builds (an **index set**), and which indexes each serving capability
 composes from (a **local capability**).
 
-## Materialisations are types
+## Index sets are types
 
-`materialisation::Materialisation` names an index set as a type, and
-`Builds<I>` is type-level membership. The `materialisation!` macro declares
-one from a single index list and emits both the runtime `IndexSet` the sync
-engine builds and the `Builds` impls the type promises, so the two cannot
-drift:
+`index_set::IndexSet` names an index set as a type, and
+`Builds<I>` is type-level membership. The `index_set!` macro declares
+one from a single index list and emits both the runtime `IndexPipelines` the
+sync engine builds and the `Builds` impls the type promises, so the two
+cannot drift:
 
 ```rust,ignore
-materialisation! {
+index_set! {
     pub struct LightWallet over CurrentZainoContext {
         HeadersIndex, TxidsIndex, HashToHeightIndex, TransparentDataIndex,
         SaplingIndex, OrchardIndex, IronwoodIndex, ChainMetadataIndex,
@@ -38,7 +38,7 @@ local_capability! {
 }
 ```
 
-That one declaration yields the bound a store read puts on its materialisation
+That one declaration yields the bound a store read puts on its index set
 (`M: Backs<local::Blocks>`) and the list the serviceability manifest checks
 version stamps for (`local::Blocks::INDEXES`). The grain is per capability,
 not per index: a capability composes several indexes and one index serves

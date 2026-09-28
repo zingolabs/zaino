@@ -3,7 +3,7 @@
 //!
 //! One declaration per capability yields both facts a store needs:
 //!
-//! - the **type-level** bound a serving read puts on its materialisation —
+//! - the **type-level** bound a serving read puts on its index set —
 //!   `M: Backs<Blocks>` — so a store lacking one of the indexes does not have
 //!   the read;
 //! - the **runtime** list the serviceability manifest checks stamps for —
@@ -26,6 +26,7 @@ use zaino_service::Capability;
 use zaino_sync::primitives::IndexId;
 use zaino_sync::traits::IndexDef;
 
+use crate::index_set::{Builds, IndexSet};
 use crate::indexes::address_history::AddressHistoryIndex;
 use crate::indexes::chain_metadata::ChainMetadataIndex;
 use crate::indexes::hash_to_height::HashToHeightIndex;
@@ -37,7 +38,6 @@ use crate::indexes::transparent_data::TransparentDataIndex;
 use crate::indexes::transparent_spends::TransparentSpendsIndex;
 use crate::indexes::txid_location::TxidLocationIndex;
 use crate::indexes::txids::TxidsIndex;
-use crate::materialisation::{Builds, Materialisation};
 
 /// A capability the finalised store can back, as a type carrying the indexes
 /// it composes from.
@@ -48,11 +48,11 @@ pub trait LocalCapability: Send + Sync + 'static {
     const INDEXES: &'static [IndexId];
 }
 
-/// Type-level: the materialisation `M` builds every index `C` needs.
+/// Type-level: the index set `M` builds every index `C` needs.
 ///
 /// Blanket-implemented from the capability's declaration, so a serving read
 /// bounds on one name rather than repeating the index list.
-pub trait Backs<C: LocalCapability>: Materialisation {}
+pub trait Backs<C: LocalCapability>: IndexSet {}
 
 /// Declare a locally backed capability from its index list.
 macro_rules! local_capability {
@@ -69,7 +69,7 @@ macro_rules! local_capability {
             const INDEXES: &'static [IndexId] = &[$(<$index as IndexDef>::NAME),+];
         }
 
-        impl<M> Backs<$name> for M where M: Materialisation $(+ Builds<$index>)+ {}
+        impl<M> Backs<$name> for M where M: IndexSet $(+ Builds<$index>)+ {}
     };
 }
 

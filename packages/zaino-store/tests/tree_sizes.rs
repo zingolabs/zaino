@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
+use zaino_indexes::sets::current_zaino::{context_from_block, pipelines, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
     Block, CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
@@ -95,7 +95,7 @@ async fn indexer_computes_and_serves_cumulative_tree_sizes() {
 
     let driver = SourceSyncDriver::resuming(
         &backend,
-        index_set(),
+        pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {

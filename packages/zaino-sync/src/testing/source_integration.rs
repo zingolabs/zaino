@@ -271,7 +271,7 @@ impl EntryCodec for HeadersIndex {
 mod tests {
     use super::*;
     use crate::engine::{EngineConfig, SyncEngine};
-    use crate::index_set::IndexSet;
+    use crate::index_pipelines::IndexPipelines;
     use crate::testing::InMemoryBackend;
 
     use zaino_primitives::types::{
@@ -364,7 +364,7 @@ mod tests {
         let chain = mock_chain(5);
         let backend = InMemoryBackend::new();
 
-        let set = IndexSet::new()
+        let set = IndexPipelines::new()
             .with::<TxCountIndex>()
             .with::<HeadersIndex>();
         let config = EngineConfig {
@@ -372,7 +372,7 @@ mod tests {
             start_height: BlockHeight::new(0),
         };
         let mut engine =
-            SyncEngine::from_index_set(set, backend.clone(), config).expect("valid set");
+            SyncEngine::from_pipelines(set, backend.clone(), config).expect("valid set");
 
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         tokio::spawn(async move {
@@ -417,7 +417,7 @@ mod tests {
         let chain = mock_chain(n);
         let backend = InMemoryBackend::new();
 
-        let set = IndexSet::new()
+        let set = IndexPipelines::new()
             .with::<TxCountIndex>()
             .with::<HeadersIndex>();
         let config = EngineConfig {
@@ -425,7 +425,7 @@ mod tests {
             start_height: BlockHeight::new(0),
         };
         let mut engine =
-            SyncEngine::from_index_set(set, backend.clone(), config).expect("valid set");
+            SyncEngine::from_pipelines(set, backend.clone(), config).expect("valid set");
 
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {

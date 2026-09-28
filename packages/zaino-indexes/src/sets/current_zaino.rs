@@ -5,13 +5,13 @@
 //! one SelfCumulative×Append index, chain-metadata (per-height commitment-tree
 //! sizes, accumulated from each block's added commitments).
 //!
-//! Declared as the [`CurrentZaino`] materialisation, so the set is also a type
-//! a store can be wired over (see [`crate::materialisation`]).
+//! Declared as the [`CurrentZaino`] index set, so the set is also a type
+//! a store can be wired over (see [`crate::index_set`]).
 
 use zaino_primitives::types::{
     Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
 };
-use zaino_sync::index_set::IndexSet;
+use zaino_sync::index_pipelines::IndexPipelines;
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ProvideContext;
 
@@ -372,7 +372,7 @@ impl ProvideContext<ChainMetadataCtx> for CurrentZainoContext {
 // Index set builder
 // ---------------------------------------------------------------------------
 
-crate::materialisation! {
+crate::index_set! {
     /// The full current-zaino set: compact-block serving plus the spend and
     /// txid-location indexes.
     pub struct CurrentZaino over CurrentZainoContext {
@@ -393,6 +393,6 @@ crate::materialisation! {
 ///
 /// The same set [`CurrentZaino`] names as a type; kept as a function for
 /// callers that only need the runtime value.
-pub fn index_set() -> IndexSet<CurrentZainoContext> {
-    <CurrentZaino as crate::materialisation::Materialisation>::index_set()
+pub fn pipelines() -> IndexPipelines<CurrentZainoContext> {
+    <CurrentZaino as crate::index_set::IndexSet>::pipelines()
 }

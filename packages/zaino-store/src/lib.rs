@@ -13,7 +13,7 @@
 //!
 //! What it demonstrates today:
 //! - a [`StoreReader`] over any [`Backend`] and any
-//!   [`Materialisation`], consuming the writer's committed watermark to yield a
+//!   [`IndexSet`], consuming the writer's committed watermark to yield a
 //!   pinned [`StoreSnapshot`] (tip + serviceable range);
 //! - [`Serviceable`]: the capability manifest derived from the built index set;
 //! - [`CompactBlockRead`]: **true compact blocks composed on read** from the
@@ -25,10 +25,10 @@
 //!
 //! # Presence is in the type
 //!
-//! Every serving read is implemented **only for materialisations that build
+//! Every serving read is implemented **only for index sets that build
 //! the indexes it composes from**: `CompactBlockRead` needs the eight
 //! compact-block indexes, `AddressRead` needs `address_history`. A store over
-//! a materialisation lacking one does not have the read, so a use case that
+//! a index set lacking one does not have the read, so a use case that
 //! demands it fails where the store is wired, not per request. The store
 //! claims nothing it cannot back: reads it does not own (treestate, raw
 //! transactions, mempool, broadcast) are not stubbed here — the composer
@@ -51,6 +51,7 @@ use std::sync::Arc;
 
 use futures::stream::BoxStream;
 use zaino_indexes::capabilities::local::{self, Backs};
+use zaino_indexes::index_set::{Builds, IndexSet};
 use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
 use zaino_indexes::indexes::hash_to_height::{self, HashToHeightIndex};
@@ -60,7 +61,6 @@ use zaino_indexes::indexes::orchard::{self, OrchardIndex};
 use zaino_indexes::indexes::sapling::{self, SaplingIndex};
 use zaino_indexes::indexes::transparent_data::{self, TransparentDataIndex};
 use zaino_indexes::indexes::txids::{self, TxidsIndex};
-use zaino_indexes::materialisation::{Builds, Materialisation};
 use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{
     decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
@@ -80,7 +80,7 @@ use zaino_service::{
 use zaino_service::{Answerable, Capability, ServiceabilityManifest, ServiceableRange};
 use zaino_sync::primitives::BlockHeight;
 
-/// EXPLORATORY: a read handle over the KV backend, for the materialisation
+/// EXPLORATORY: a read handle over the KV backend, for the index set
 /// `M`. It consumes the writer's committed watermark on each snapshot — it
 /// holds no stubbed coordinates.
 ///
@@ -88,17 +88,17 @@ use zaino_sync::primitives::BlockHeight;
 /// is the static promise the serving reads bound on.
 pub struct StoreReader<B, M> {
     backend: Arc<B>,
-    materialisation: PhantomData<M>,
+    index_set: PhantomData<M>,
 }
 
 impl<B, M> StoreReader<B, M> {
-    /// A reader over `backend`, built to the materialisation `M`. The finalised
+    /// A reader over `backend`, built to the index set `M`. The finalised
     /// tip is read live from the backend's watermark at snapshot time, not
     /// passed in.
     pub fn new(backend: Arc<B>) -> Self {
         Self {
             backend,
-            materialisation: PhantomData,
+            index_set: PhantomData,
         }
     }
 }
@@ -110,12 +110,12 @@ impl<B, M> Clone for StoreReader<B, M> {
     fn clone(&self) -> Self {
         Self {
             backend: Arc::clone(&self.backend),
-            materialisation: PhantomData,
+            index_set: PhantomData,
         }
     }
 }
 
-impl<B: Backend + 'static, M: Materialisation> Serviceable for StoreReader<B, M> {
+impl<B: Backend + 'static, M: IndexSet> Serviceable for StoreReader<B, M> {
     fn serviceability(&self) -> ServiceabilityManifest {
         // Infallible by contract: a serviceability query must not be the call
         // that fails, so a backend read failure degrades to "nothing serviceable
@@ -168,7 +168,7 @@ where
                 backend: backend.clone(),
                 finalized_tip,
                 pinned_tip,
-                materialisation: PhantomData,
+                index_set: PhantomData,
             })
         }
     }
@@ -182,7 +182,7 @@ pub struct StoreSnapshot<B, M> {
     finalized_tip: Option<Height>,
     /// The finalised tip's `BlockRef`, composed from the headers index at pin time.
     pinned_tip: Option<BlockRef>,
-    materialisation: PhantomData<M>,
+    index_set: PhantomData<M>,
 }
 
 // Manual `Clone` so the bound is on `Arc<B>` (always cloneable), not `B`.
@@ -192,12 +192,12 @@ impl<B, M> Clone for StoreSnapshot<B, M> {
             backend: self.backend.clone(),
             finalized_tip: self.finalized_tip,
             pinned_tip: self.pinned_tip,
-            materialisation: PhantomData,
+            index_set: PhantomData,
         }
     }
 }
 
-impl<B: Backend + 'static, M: Materialisation> ChainSegment for StoreSnapshot<B, M> {
+impl<B: Backend + 'static, M: IndexSet> ChainSegment for StoreSnapshot<B, M> {
     fn pinned_tip(&self) -> Option<BlockRef> {
         self.pinned_tip
     }
@@ -212,7 +212,7 @@ impl<B: Backend + 'static, M: Materialisation> ChainSegment for StoreSnapshot<B,
     }
 }
 
-impl<B: Backend + 'static, M: Materialisation> Snapshot for StoreSnapshot<B, M> {
+impl<B: Backend + 'static, M: IndexSet> Snapshot for StoreSnapshot<B, M> {
     fn serviceable_range(&self) -> ServiceableRange {
         // No non-finalised window is wired, so the view answers up to the
         // finalised tip only: `tip == finalized_tip`.
@@ -513,7 +513,7 @@ where
 }
 
 /// The read exists only where the address-history index is built. A store
-/// over a materialisation without it has no local address read at all — the
+/// over a index set without it has no local address read at all — the
 /// honest shape for a deployment that passes address queries through, and the
 /// one a use case wanting them local is checked against at its wiring.
 impl<B, M> AddressRead for StoreSnapshot<B, M>

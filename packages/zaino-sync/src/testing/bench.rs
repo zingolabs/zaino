@@ -15,7 +15,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::engine::{EngineConfig, SyncEngine};
-    use crate::index_set::IndexSet;
+    use crate::index_pipelines::IndexPipelines;
     use crate::primitives::BlockHeight;
     use crate::testing::toy_indexes::count_index::CountIndex;
     use crate::testing::toy_indexes::cumulative_sum_index::CumulativeSumIndex;
@@ -49,8 +49,8 @@ mod tests {
     }
 
     /// Build the full 4-index set (3 BlockLocal + 1 SelfCumulative).
-    fn full_index_set() -> IndexSet<TestBlockContext> {
-        IndexSet::new()
+    fn full_pipelines() -> IndexPipelines<TestBlockContext> {
+        IndexPipelines::new()
             .with::<ValueIndex>()
             .with::<CountIndex>()
             .with::<RunningSumIndex>()
@@ -82,7 +82,7 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+            let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                 .expect("valid index set");
 
             let start = Instant::now();
@@ -102,7 +102,7 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+            let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                 .expect("valid index set");
 
             let blocks = (0..n).map(|h| TestBlockContext {
@@ -133,7 +133,7 @@ mod tests {
                 batch_size,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+            let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                 .expect("valid index set");
 
             let start = Instant::now();
@@ -160,7 +160,7 @@ mod tests {
                     batch_size,
                     start_height: BlockHeight::new(0),
                 };
-                let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                     .expect("valid index set");
 
                 let start = Instant::now();
@@ -188,7 +188,7 @@ mod tests {
                     batch_size,
                     start_height: BlockHeight::new(0),
                 };
-                let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                     .expect("valid index set");
 
                 let start = Instant::now();
@@ -217,7 +217,7 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+            let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                 .expect("valid index set");
 
             let (tx, rx) = tokio::sync::mpsc::channel(256);
@@ -251,7 +251,7 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+            let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                 .expect("valid index set");
 
             let (tx, rx) = tokio::sync::mpsc::channel(1_024);
@@ -289,7 +289,7 @@ mod tests {
                 batch_size,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+            let mut engine = SyncEngine::from_pipelines(full_pipelines(), backend, config)
                 .expect("valid index set");
 
             let (tx, rx) = tokio::sync::mpsc::channel(256);

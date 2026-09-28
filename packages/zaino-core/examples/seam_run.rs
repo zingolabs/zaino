@@ -40,7 +40,7 @@ use zaino_chain_head_service::ChainHeadService;
 use zaino_component::{ComponentName, ReachabilityProbe};
 use zaino_core::chain_view::ChainView;
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, index_set};
+use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, pipelines};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
@@ -208,7 +208,7 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
 
     let driver = SourceSyncDriver::resuming(
         &backend,
-        index_set(),
+        pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {

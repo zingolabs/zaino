@@ -17,7 +17,7 @@ use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
-use zaino_sync::testing::{toy_index_set, InMemoryBackend, TestBlockContext};
+use zaino_sync::testing::{toy_pipelines, InMemoryBackend, TestBlockContext};
 
 /// Project a fetched block into the toy set's context (height only).
 fn to_context(block: Block) -> TestBlockContext {
@@ -36,8 +36,8 @@ async fn the_runtime_indexes_from_a_source() {
     }
 
     let backend = InMemoryBackend::new();
-    let engine = SyncEngine::from_index_set(
-        toy_index_set(),
+    let engine = SyncEngine::from_pipelines(
+        toy_pipelines(),
         backend.clone(),
         EngineConfig {
             batch_size: 4,

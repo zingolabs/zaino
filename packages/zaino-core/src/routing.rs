@@ -124,7 +124,7 @@ pub trait Routing: Send + Sync + 'static {
 ///
 /// Address history is passthrough *for now* — it discloses queried addresses to
 /// the validator, which a local transparent index exists to avoid. Flipping
-/// it to [`Local`] is a one-line change here and a materialisation that
+/// it to [`Local`] is a one-line change here and a index set that
 /// builds `address_history`; the compiler names anything else that is
 /// missing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

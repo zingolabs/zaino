@@ -27,11 +27,11 @@ pub use zaino_persistence::in_memory::{InMemoryBackend, SlowBackend};
 /// A toy index set (three BlockLocal indexes) over [`TestBlockContext`], for
 /// driving the engine in tests without a real chain source.
 #[cfg(any(test, feature = "testing"))]
-pub fn toy_index_set() -> crate::index_set::IndexSet<TestBlockContext> {
+pub fn toy_pipelines() -> crate::index_pipelines::IndexPipelines<TestBlockContext> {
     use toy_indexes::{
         count_index::CountIndex, running_sum_index::RunningSumIndex, value_index::ValueIndex,
     };
-    crate::index_set::IndexSet::new()
+    crate::index_pipelines::IndexPipelines::new()
         .with::<ValueIndex>()
         .with::<CountIndex>()
         .with::<RunningSumIndex>()

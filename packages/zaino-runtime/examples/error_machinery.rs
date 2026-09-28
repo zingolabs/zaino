@@ -53,7 +53,7 @@ use zaino_component::{
     CancellationToken, ComponentName, ComponentStatus, Lifecycle, ReachabilityProbe, RunReporter,
 };
 use zaino_indexer::{FetchConcurrency, IndexerError, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, index_set};
+use zaino_indexes::sets::current_zaino::{context_from_block, pipelines};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{Block, BlockHash, Height};
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, RunLoop, ValidatorComponent};
@@ -179,7 +179,7 @@ where
 
     let driver = SourceSyncDriver::resuming(
         &backend,
-        index_set(),
+        pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {
