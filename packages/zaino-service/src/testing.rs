@@ -316,14 +316,8 @@ impl ChainSegment for MockSnapshot {
 }
 
 impl Snapshot for MockSnapshot {
-    fn serviceable_range(&self) -> ServiceableRange {
-        self.chain.serviceable.unwrap_or_else(|| {
-            let zero = Height::try_from(0).expect("0 is a valid height");
-            ServiceableRange {
-                finalized_tip: zero,
-                tip: zero,
-            }
-        })
+    fn serviceable_range(&self) -> Option<ServiceableRange> {
+        self.chain.serviceable
     }
 }
 

@@ -36,12 +36,24 @@ pub trait ChainSegment: Clone + Send + Sync + 'static {
     fn coverage(&self) -> Option<HeightRange>;
 }
 
-/// The heights a snapshot can answer, and the FS/NFS boundary within them.
-#[derive(Clone, Copy, Debug)]
+/// The seam within a served view: the finalised store's watermark and the
+/// served tip above it.
+///
+/// Two different kinds of height, deliberately not both called a tip. The
+/// watermark is a *level* on the store — the highest height every index has
+/// committed — and may be absent when the store holds nothing. The tip is a
+/// *position* on the chain: the block the view is pinned to.
+///
+/// ```text
+/// finalised    = [genesis, watermark]        answered by the finalised tier
+/// window       = (watermark, tip]            answered by the non-finalised head
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceableRange {
-    /// Top of append-only finalised state.
-    pub finalized_tip: Height,
-    /// Pinned best-chain tip; `finalized_tip..=tip` is the non-finalised window.
+    /// The finalised store's watermark, or `None` when it holds nothing; then
+    /// the whole served span is the non-finalised window.
+    pub watermark: Option<Height>,
+    /// The served tip: the height this view is pinned to.
     pub tip: Height,
 }
 
@@ -51,13 +63,13 @@ pub struct ServiceableRange {
 ///
 /// The served framing on top of a [`ChainSegment`]: it adds the
 /// finalised/non-finalised boundary a downstream client sees. A composed view
-/// implements this (its `serviceable_range` reports the FS watermark as the
-/// finalised tip); a bare input segment reports only neutral
+/// implements this (its `serviceable_range` reports the store's watermark and
+/// the head's tip); a bare input segment reports only neutral
 /// [`coverage`](ChainSegment::coverage).
 pub trait Snapshot: ChainSegment {
-    /// The heights this view answers and the finalised/non-finalised boundary
-    /// within them (`finalized_tip..=tip` is the non-finalised window).
-    fn serviceable_range(&self) -> ServiceableRange;
+    /// The seam within this view, or `None` when it holds nothing — the same
+    /// condition under which [`coverage`](ChainSegment::coverage) is `None`.
+    fn serviceable_range(&self) -> Option<ServiceableRange>;
 }
 
 /// The full inner driving surface — what `zaino-runtime` implements and what a

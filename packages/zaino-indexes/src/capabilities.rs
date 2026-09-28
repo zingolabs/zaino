@@ -64,21 +64,21 @@ fn index_built(reader: &dyn BackendReader, index: IndexId) -> bool {
 
 /// Derive the finalised store's serviceability manifest from the built index set.
 ///
-/// For each capability: answerable up to `finalized_tip` when every index that
+/// For each capability: answerable up to the `watermark` when every index that
 /// backs it is built; `NotYet` when built but no watermark has been committed;
 /// `Absent` when an index is missing or the capability has no local index at
 /// all. The last is *locally* absent — a composer holding a passthrough
 /// provider widens it.
 pub fn serviceability(
     reader: &dyn BackendReader,
-    finalized_tip: Option<Height>,
+    watermark: Option<Height>,
 ) -> ServiceabilityManifest {
     ServiceabilityManifest::derive(|capability| {
         let required = capability_indexes(capability);
         let built =
             !required.is_empty() && required.iter().all(|index| index_built(reader, *index));
-        match (built, finalized_tip) {
-            (true, Some(tip)) => Answerable::ToHeight(tip),
+        match (built, watermark) {
+            (true, Some(watermark)) => Answerable::ToHeight(watermark),
             (true, None) => Answerable::NotYet,
             (false, _) => Answerable::Absent,
         }

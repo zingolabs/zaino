@@ -148,7 +148,7 @@ where
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
-    fn serviceable_range(&self) -> ServiceableRange {
+    fn serviceable_range(&self) -> Option<ServiceableRange> {
         self.local.serviceable_range()
     }
 }

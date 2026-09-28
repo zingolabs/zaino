@@ -116,8 +116,8 @@ impl<B: Backend + 'static, M: IndexSet> Serviceable for StoreReader<B, M> {
         let Ok(reader) = self.backend.reader() else {
             return ServiceabilityManifest::uniform(Answerable::NotYet);
         };
-        let finalized_tip = watermark::read(&reader).ok().flatten();
-        zaino_indexes::capabilities::serviceability(&reader, finalized_tip)
+        let watermark = watermark::read(&reader).ok().flatten();
+        zaino_indexes::capabilities::serviceability(&reader, watermark)
     }
 }
 
@@ -140,11 +140,11 @@ where
             let reader = backend
                 .reader()
                 .map_err(|e| Transient(format!("open reader: {e}")))?;
-            let finalized_tip =
+            let watermark =
                 watermark::read(&reader).map_err(|e| Transient(format!("read watermark: {e}")))?;
             // Compose the tip's BlockRef on read from the headers index, so the
             // view reports a real (height, hash) rather than a bare height.
-            let pinned_tip = match finalized_tip {
+            let pinned_tip = match watermark {
                 Some(height) => {
                     read_index_value::<HeadersIndex, B>(&reader, headers::ID.into(), height)?.map(
                         |header| BlockRef {
@@ -157,7 +157,7 @@ where
             };
             Ok(StoreSnapshot {
                 backend: backend.clone(),
-                finalized_tip,
+                watermark,
                 pinned_tip,
                 index_set: PhantomData,
             })
@@ -169,9 +169,9 @@ where
 /// backend via `Arc`.
 pub struct StoreSnapshot<B, M> {
     backend: Arc<B>,
-    /// The finalised watermark this view was pinned to, read from the backend.
-    finalized_tip: Option<Height>,
-    /// The finalised tip's `BlockRef`, composed from the headers index at pin time.
+    /// The watermark this view was pinned to, read from the backend.
+    watermark: Option<Height>,
+    /// The block at the watermark, composed from the headers index at pin time.
     pinned_tip: Option<BlockRef>,
     index_set: PhantomData<M>,
 }
@@ -181,7 +181,7 @@ impl<B, M> Clone for StoreSnapshot<B, M> {
     fn clone(&self) -> Self {
         Self {
             backend: self.backend.clone(),
-            finalized_tip: self.finalized_tip,
+            watermark: self.watermark,
             pinned_tip: self.pinned_tip,
             index_set: PhantomData,
         }
@@ -194,9 +194,9 @@ impl<B: Backend + 'static, M: IndexSet> ChainSegment for StoreSnapshot<B, M> {
     }
 
     fn coverage(&self) -> Option<HeightRange> {
-        // The finalised store serves `[genesis, finalized_tip]`; an empty store
+        // The finalised store serves `[genesis, watermark]`; an empty store
         // (no watermark) covers nothing.
-        self.finalized_tip.map(|end| HeightRange {
+        self.watermark.map(|end| HeightRange {
             start: Height::GENESIS,
             end,
         })
@@ -204,14 +204,12 @@ impl<B: Backend + 'static, M: IndexSet> ChainSegment for StoreSnapshot<B, M> {
 }
 
 impl<B: Backend + 'static, M: IndexSet> Snapshot for StoreSnapshot<B, M> {
-    fn serviceable_range(&self) -> ServiceableRange {
-        // No non-finalised window is wired, so the view answers up to the
-        // finalised tip only: `tip == finalized_tip`.
-        let tip = self.finalized_tip.unwrap_or(Height::GENESIS);
-        ServiceableRange {
-            finalized_tip: tip,
-            tip,
-        }
+    fn serviceable_range(&self) -> Option<ServiceableRange> {
+        // The store alone has no window: its served tip is its watermark.
+        self.watermark.map(|watermark| ServiceableRange {
+            watermark: Some(watermark),
+            tip: watermark,
+        })
     }
 }
 

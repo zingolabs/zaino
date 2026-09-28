@@ -119,9 +119,13 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
         "store's pinned tip is the indexed tip"
     );
     assert_eq!(
-        u32::from(snapshot.serviceable_range().finalized_tip),
-        2,
-        "store is serviceable up to the finalised tip"
+        snapshot
+            .serviceable_range()
+            .expect("store holds blocks")
+            .watermark
+            .map(u32::from),
+        Some(2),
+        "store is serviceable up to its watermark"
     );
 
     // The serviceability manifest is derived from the built index set (the

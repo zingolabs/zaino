@@ -73,8 +73,7 @@ where
     pub(crate) fn new(fs: F, nfs: N) -> Self {
         // The FS covers `[genesis, w]`, so the high of its coverage *is* the
         // watermark `w` — `None` distinguishes an empty FS from a genesis-only
-        // FS (`Some(0)`), which `serviceable_range().finalized_tip`
-        // (GENESIS-on-empty) cannot.
+        // FS (`Some(0)`).
         let watermark = fs.coverage().map(|range| range.end);
         Self { fs, nfs, watermark }
     }
@@ -171,16 +170,18 @@ where
     F: ChainTier,
     N: ChainTier,
 {
-    fn serviceable_range(&self) -> ServiceableRange {
-        let finalized_tip = self.watermark.unwrap_or(Height::GENESIS);
-        // The served tip is the NFS tip height, falling back to the watermark
-        // (or genesis) when the head is empty.
+    fn serviceable_range(&self) -> Option<ServiceableRange> {
+        // The served tip is the head's tip, falling back to the watermark when
+        // the head is empty; with neither, the view holds nothing.
         let tip = self
             .nfs
             .pinned_tip()
             .map(|id| id.height)
-            .unwrap_or(finalized_tip);
-        ServiceableRange { finalized_tip, tip }
+            .or(self.watermark)?;
+        Some(ServiceableRange {
+            watermark: self.watermark,
+            tip,
+        })
     }
 }
 

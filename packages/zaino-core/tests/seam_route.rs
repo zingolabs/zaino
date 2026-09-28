@@ -121,11 +121,11 @@ async fn range_read_stitches_across_the_seam() {
     let snapshot = view.snapshot().await.expect("snapshot");
 
     // Coherence marker: composed tip is the NFS tip; the serviceable range's
-    // finalised tip is the watermark and its tip is the NFS tip.
+    // watermark is the store's and its tip is the NFS tip.
     let tip = snapshot.pinned_tip().expect("composed tip");
     assert_eq!(u32::from(tip.height), 5, "composed tip is the NFS tip");
-    let serviceable = snapshot.serviceable_range();
-    assert_eq!(u32::from(serviceable.finalized_tip), 2, "watermark");
+    let serviceable = snapshot.serviceable_range().expect("view holds blocks");
+    assert_eq!(serviceable.watermark.map(u32::from), Some(2), "watermark");
     assert_eq!(u32::from(serviceable.tip), 5, "served tip");
 
     // Heights 1,2 come from the FS; 3,4 from the NFS — in order.
@@ -159,14 +159,10 @@ async fn empty_fs_routes_everything_to_the_nfs() {
     let view = ChainView::new(empty_store(), stub_window(0, 3));
     let snapshot = view.snapshot().await.expect("snapshot");
 
-    // The serviceable range's finalised tip collapses to genesis (no watermark),
-    // while the served tip is the NFS tip.
-    let serviceable = snapshot.serviceable_range();
-    assert_eq!(
-        u32::from(serviceable.finalized_tip),
-        0,
-        "no watermark → genesis"
-    );
+    // With an empty store the seam has no watermark at all — not a genesis
+    // stand-in — while the served tip is the NFS tip.
+    let serviceable = snapshot.serviceable_range().expect("view holds blocks");
+    assert_eq!(serviceable.watermark, None, "no watermark");
     assert_eq!(u32::from(serviceable.tip), 3, "served tip is the NFS tip");
 
     let blocks: Vec<u32> = snapshot

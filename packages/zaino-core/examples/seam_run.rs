@@ -421,16 +421,22 @@ async fn main() {
     let snap = view.snapshot().await.expect("compose a pinned snapshot");
 
     let coverage = snap.coverage().expect("the composed view covers a span");
-    let serviceable = snap.serviceable_range();
+    let serviceable = snap
+        .serviceable_range()
+        .expect("the composed view holds something");
     tracing::info!(
         target: LOG,
         coverage_start = u32::from(coverage.start),
         coverage_end = u32::from(coverage.end),
-        finalized_tip = u32::from(serviceable.finalized_tip),
+        watermark = serviceable.watermark.map(u32::from),
         tip = u32::from(serviceable.tip),
         "composed snapshot: coverage = FS ∪ NFS, serviceable_range = (watermark, served tip)",
     );
-    assert_eq!(u32::from(serviceable.finalized_tip), W, "watermark is W");
+    assert_eq!(
+        serviceable.watermark.map(u32::from),
+        Some(W),
+        "watermark is W"
+    );
     assert_eq!(u32::from(serviceable.tip), T, "served tip is the NFS tip");
 
     // --- The four seam routes, each read through the real observability. ---
