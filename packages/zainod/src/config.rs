@@ -273,6 +273,7 @@ pub(crate) fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
         store_path,
     } = topology;
     DaemonConfig {
+        use_case: UseCaseKind::default(),
         network: Network::Regtest,
         metrics_endpoint: None,
         source: SourceMode::Direct {
@@ -402,6 +403,7 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(MAINNET_FIXTURE_MAP_SIZE_GB);
     DaemonConfig {
+        use_case: UseCaseKind::default(),
         network: Network::Mainnet,
         metrics_endpoint: None,
         source: SourceMode::Direct {
@@ -461,6 +463,7 @@ pub fn mainnet_rpc_fixture() -> DaemonConfig {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(MAINNET_FIXTURE_MAP_SIZE_GB);
     DaemonConfig {
+        use_case: UseCaseKind::default(),
         network: Network::Mainnet,
         metrics_endpoint: None,
         source: SourceMode::Rpc {
