@@ -198,12 +198,7 @@ pub trait ForkReconcile: Send + Sync {
     /// Every tip of the retained graph, canonical and competing.
     fn chain_tips(&self) -> Vec<ChainTip>;
 
-    /// The most recent block in `locator` that is on the canonical chain.
-    ///
-    /// What a client resyncing after a reorg asks. It offers the hashes it
-    /// believes in, most recent first, and gets back the newest one still on
-    /// the chain — the point from which to resume. `None` when it recognises
-    /// none of them, which means resyncing from further back.
+    /// The newest canonical block common to `locator` and this chain.
     fn fork_point(
         &self,
         locator: &Locator,

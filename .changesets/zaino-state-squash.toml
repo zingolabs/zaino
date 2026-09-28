@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`ForkReconcile::fork_point` resolves a retained competing-branch hash to the \
+point its branch forks from the canonical chain, via the chain head's own \
+`find_fork_point`, rather than skipping it. A client whose locator names only \
+an orphaned block now gets a resume point instead of `None`.
+"""

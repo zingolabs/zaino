@@ -676,17 +676,12 @@ where
     }
 
     async fn fork_point(&self, locator: &Locator) -> Result<Option<BlockRef>> {
-        // The locator is most-recent-first, so the first hash still on the
-        // canonical chain is the newest common ancestor — the point a client
-        // resumes from.
         for hash in locator.hashes() {
-            if let Some(block) = self.head.block_by_hash(hash) {
-                if self.head.is_on_best_chain(block.reference) {
-                    return Ok(Some(block.reference));
+            if self.head.block_by_hash(hash).is_some() {
+                match self.head.find_fork_point(hash) {
+                    Some(fork) => return Ok(Some(fork)),
+                    None => continue,
                 }
-                // Retained, but on a competing branch: the client is on a fork
-                // this view rejected, so keep looking further back.
-                continue;
             }
             if self.coverage.store_top.is_some() {
                 if let Some(height) = self.reader.block_height(*hash).await.map_err(store_err)? {

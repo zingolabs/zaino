@@ -431,6 +431,35 @@ async fn a_locator_finds_the_newest_surviving_hash() {
     );
 }
 
+/// A lone competing-branch hash resolves to where its branch forks.
+#[tokio::test]
+async fn a_competing_branch_hash_resolves_to_its_fork_point() {
+    use zaino_chain::testing::FakeHeadSnapshot;
+
+    let chain = chain();
+    let orphan = FakeHeadSnapshot::branch_block(1150, 9_999);
+    let orphan_hash = orphan.reference.hash;
+
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::new(FakeHeadSnapshot::covering(1100, 1200).with_branch_block(orphan)),
+        Arc::new(FakeSource::over(&chain)),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert_eq!(
+        snapshot
+            .fork_point(&Locator::new(vec![orphan_hash]))
+            .await
+            .expect("serviceable"),
+        Some(BlockRef {
+            hash: hash_of(1149),
+            height: height(1149)
+        })
+    );
+}
+
 /// A branch hash has no best-chain height.
 #[tokio::test]
 async fn a_competing_branch_hash_has_no_best_chain_height() {
