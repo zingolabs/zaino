@@ -40,11 +40,11 @@ use zaino_chain_head::{
     ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
 };
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
-    ChainStoreSourceError, CompactBlockRead, FrozenBlock, MigrationState, PoolFilter, Provenance,
-    SchemaVersion, SpenderRef, SpentOutputIndex, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark, StoredBlock, StoredBlockRead, StoredTx, StoredTxOut, TransactionIndex,
-    TxOutSetAccumulator, TxOutSetIndex,
+    is_unspendable, ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader,
+    ChainStoreService, ChainStoreSourceError, CompactBlockRead, FrozenBlock, MigrationState,
+    PoolFilter, Provenance, SchemaVersion, SpenderRef, SpentOutputIndex, StoreCapabilities,
+    StoreCapability, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead, StoredTx,
+    StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
@@ -648,13 +648,69 @@ fn compact_of(block: &StoredBlock) -> zaino_primitives::types::CompactBlock {
     }
 }
 
+/// The store's own index over what it holds.
+///
+/// Derived from the held blocks rather than configured, so the spend reads and
+/// the accumulator describe the same chain the block reads do. The explicit
+/// `with_transaction` and `with_spender` entries still take precedence, for
+/// tests that need an answer the chain does not hold.
+impl FakeStore {
+    fn held_transactions(&self) -> Vec<(BlockTxPosition, PreIndexCompactTx)> {
+        self.held()
+            .iter()
+            .flat_map(|block| {
+                let height = block.header.height;
+                block.transactions.iter().zip(0..).map(move |(tx, index)| {
+                    (BlockTxPosition::new(height, index), tx.compact.clone())
+                })
+            })
+            .collect()
+    }
+
+    fn held_position(&self, txid: &TransactionId) -> Option<BlockTxPosition> {
+        self.held_transactions()
+            .into_iter()
+            .find(|(_, tx)| tx.txid == *txid)
+            .map(|(position, _)| position)
+    }
+
+    fn held_spender(&self, outpoint: &Outpoint) -> Option<SpenderRef> {
+        self.held_transactions()
+            .into_iter()
+            .find_map(|(position, tx)| {
+                tx.transparent_inputs
+                    .iter()
+                    .any(|input| {
+                        input.prev_txid == outpoint.txid && input.prev_index == outpoint.index
+                    })
+                    .then(|| SpenderRef::new(position, tx.txid))
+            })
+    }
+
+    fn held_output(&self, outpoint: &Outpoint) -> Option<StoredTxOut> {
+        self.held_transactions()
+            .into_iter()
+            .find(|(_, tx)| tx.txid == outpoint.txid)
+            .and_then(|(_, tx)| {
+                tx.transparent_outputs
+                    .get(outpoint.index as usize)
+                    .map(StoredTxOut::from_output)
+            })
+    }
+}
+
 impl TransactionIndex for FakeStore {
     async fn tx_position(
         &self,
         txid: &TransactionId,
     ) -> Result<Option<BlockTxPosition>, ChainStoreError> {
         self.require(StoreCapability::Transactions)?;
-        Ok(self.inner.positions.get(&<[u8; 32]>::from(*txid)).copied())
+        Ok(self
+            .inner
+            .positions
+            .get(&<[u8; 32]>::from(*txid))
+            .copied()
+            .or_else(|| self.held_position(txid)))
     }
 
     async fn txid_at(
@@ -679,7 +735,13 @@ impl SpentOutputIndex for FakeStore {
         self.require(StoreCapability::SpentOutputs)?;
         Ok(outpoints
             .iter()
-            .map(|outpoint| self.inner.spenders.get(outpoint).copied())
+            .map(|outpoint| {
+                self.inner
+                    .spenders
+                    .get(outpoint)
+                    .copied()
+                    .or_else(|| self.held_spender(outpoint))
+            })
             .collect())
     }
 
@@ -688,30 +750,80 @@ impl SpentOutputIndex for FakeStore {
         outpoints: &[Outpoint],
     ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
         self.require(StoreCapability::SpentOutputs)?;
-        Ok(outpoints.iter().map(|_| None).collect())
+        Ok(outpoints
+            .iter()
+            .map(|outpoint| self.held_output(outpoint))
+            .collect())
     }
 
     async fn unspent_output(
         &self,
-        _outpoint: Outpoint,
+        outpoint: Outpoint,
     ) -> Result<Option<StoredTxOut>, ChainStoreError> {
         self.require(StoreCapability::SpentOutputs)?;
-        Ok(None)
+        Ok(self
+            .held_spender(&outpoint)
+            .is_none()
+            .then(|| self.held_output(&outpoint))
+            .flatten())
     }
 
     async fn transparent_outputs(
         &self,
-        _position: BlockTxPosition,
+        position: BlockTxPosition,
     ) -> Result<Option<Vec<StoredTxOut>>, ChainStoreError> {
         self.require(StoreCapability::SpentOutputs)?;
-        Ok(None)
+        Ok(self
+            .held_transactions()
+            .into_iter()
+            .find(|(held, _)| *held == position)
+            .map(|(_, tx)| {
+                tx.transparent_outputs
+                    .iter()
+                    .map(StoredTxOut::from_output)
+                    .collect()
+            }))
     }
 }
 
+/// Folded from scratch over the held chain, independently of how the composer
+/// extends it — which is what lets a test compare the two.
 impl TxOutSetIndex for FakeStore {
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
         self.require(StoreCapability::TxOutSet)?;
-        Ok(TxOutSetAccumulator::default())
+        let backend = |error: TxOutSetError| ChainStoreError::backend(error.to_string());
+        let transactions = self.held_transactions();
+        let spent: std::collections::HashSet<Outpoint> = transactions
+            .iter()
+            .flat_map(|(_, tx)| {
+                tx.transparent_inputs.iter().map(|input| Outpoint {
+                    txid: input.prev_txid,
+                    index: input.prev_index,
+                })
+            })
+            .collect();
+
+        let mut set = TxOutSetAccumulator::empty();
+        for (_, tx) in &transactions {
+            let mut holds_one = false;
+            for (output, index) in tx.transparent_outputs.iter().zip(0..) {
+                let outpoint = Outpoint {
+                    txid: tx.txid,
+                    index,
+                };
+                let output = StoredTxOut::from_output(output);
+                if spent.contains(&outpoint) || is_unspendable(&output) {
+                    continue;
+                }
+                set.apply_added_output(&outpoint, &output)
+                    .map_err(backend)?;
+                holds_one = true;
+            }
+            if holds_one {
+                set.transactions += 1;
+            }
+        }
+        Ok(set)
     }
 }
 
@@ -995,6 +1107,8 @@ impl ChainHeadSnapshot for FakeHeadSnapshot {
         )))
     }
 }
+
+impl zaino_chain_head::ChainHeadTxOutSetService for FakeHeadSnapshot {}
 
 impl ChainHeadTransactionService for FakeHeadSnapshot {
     fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {

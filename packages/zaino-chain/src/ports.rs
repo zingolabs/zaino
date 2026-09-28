@@ -284,10 +284,11 @@ pub trait SpendRead: Send + Sync {
 
 /// The unspent transparent output set's running totals.
 pub trait TxOutSetRead: Send + Sync {
-    /// The accumulator as of the finalised watermark.
+    /// The accumulator at the snapshot's tip, over the whole chain.
     ///
-    /// A partial fold, not an answer at the tip: a consumer serving
-    /// `gettxoutsetinfo` extends it with what the recent window created and
-    /// spent.
+    /// The answer `gettxoutsetinfo` serves. A composition extends the store's
+    /// accumulator with what the recent window created and spent, so it refuses
+    /// while a hole separates the two: the validator keeps no such set, and an
+    /// answer spanning a hole would be silently wrong.
     fn txout_set(&self) -> impl Future<Output = Result<TxOutSetAccumulator>> + Send;
 }

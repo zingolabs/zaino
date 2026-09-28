@@ -113,6 +113,13 @@ no spend index yields a view that does not have the trait:
 fn serve(chain: impl ChainViewSnapshot + SpendRead) { .. }   // names what it needs
 ```
 
+`TxOutSetRead::txout_set` answers at the snapshot's tip, for the whole chain:
+the store's accumulator extended by the chain head's `txout_delta` above the
+store's top, with the window's spends of older outputs resolved through the
+store's `SpentOutputIndex`. It needs the store's `TxOutSet`, `SpentOutputs` and
+`Transactions` indexes, and refuses while a hole separates the store from the
+window.
+
 That is the point of splitting them: a capability the providers cannot support
 must be absent, not present and always failing, and an impl can only be absent
 if there is a trait for it to be absent from. `ServiceabilityManifest` reports

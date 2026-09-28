@@ -23,7 +23,13 @@ use zaino_primitives::types::{
     rpc::ChainTip, BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
 };
 
-use crate::{block::ChainHeadBlock, error::ChainHeadError};
+use std::collections::HashSet;
+
+use crate::{
+    block::ChainHeadBlock,
+    error::ChainHeadError,
+    txout::{ChainHeadTxOutDelta, CreatedTxOut},
+};
 
 /// Where a transaction sits in the ChainHead graph.
 ///
@@ -255,6 +261,62 @@ pub trait ChainHeadTransactionService: ChainHeadSnapshot {
     /// ChainHead", which is not the same as unspent — the finalised state holds
     /// the rest of the chain.
     fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>>;
+}
+
+/// The canonical window's effect on the transparent UTXO set.
+///
+/// Separate from [`ChainHeadSnapshot`] so a consumer's bound names only what it
+/// uses. Derived from the canonical blocks alone, so the fold is provided here
+/// once and every snapshot answers it the same way.
+pub trait ChainHeadTxOutSetService: ChainHeadSnapshot {
+    /// What the canonical blocks from `start` up to the tip created and spent.
+    ///
+    /// A `start` above the tip is an empty delta. A `start` below the window is
+    /// refused: the blocks beneath the floor are not held, and a delta missing
+    /// them would be silently wrong.
+    fn txout_delta(&self, start: Height) -> Result<ChainHeadTxOutDelta, ChainHeadError> {
+        let tip = self.best_tip().height;
+        if start > tip {
+            return Ok(ChainHeadTxOutDelta::default());
+        }
+        let floor = self.best_chain().next().map_or(tip, ChainHeadBlock::height);
+        if start < floor {
+            return Err(ChainHeadError::BelowWindow { start, floor });
+        }
+
+        let mut created = Vec::new();
+        let mut spent = Vec::new();
+        for block in self.best_chain_blocks(start, tip)? {
+            for transaction in block.block.transactions() {
+                spent.extend(transaction.transparent.inputs.iter().map(|input| Outpoint {
+                    txid: input.prev_txid,
+                    index: input.prev_index,
+                }));
+                created.extend(transaction.transparent.outputs.iter().zip(0..).map(
+                    |(output, index)| CreatedTxOut {
+                        outpoint: Outpoint {
+                            txid: transaction.txid,
+                            index,
+                        },
+                        output: output.clone(),
+                    },
+                ));
+            }
+        }
+
+        let spent_set: HashSet<Outpoint> = spent.iter().copied().collect();
+        let created_set: HashSet<Outpoint> = created.iter().map(|out| out.outpoint).collect();
+        Ok(ChainHeadTxOutDelta {
+            created: created
+                .into_iter()
+                .filter(|out| !spent_set.contains(&out.outpoint))
+                .collect(),
+            spent_below: spent
+                .into_iter()
+                .filter(|outpoint| !created_set.contains(outpoint))
+                .collect(),
+        })
+    }
 }
 
 /// Transparent-address effects derivable from a snapshot's blocks.
