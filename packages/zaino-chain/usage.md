@@ -273,13 +273,14 @@ let view = Arc::new(ChainViewComposer::new(store, head, source, config));
 let sync = view.spawn_sync(cancel.clone());
 ```
 
-**There is no separate catch-up phase, and that is the design.** The chain head
-emits a block once it falls below the consensus seam; the store accepts one only
-at `tip + 1`. An empty store handed a block from the middle of the chain
-therefore answers `ChainStoreError::FreezeGap`, which carries the height to build
-to — and building to it *is* the initial sync. A cold start and a chain head that
-re-anchored after an outage take the same path, so that path is exercised on
-every run rather than being a startup branch nothing reaches twice.
+**On launch it builds, then follows.** The loop first builds the store up to the
+chain head's floor — its lowest canonical block — so a store comes up even on a
+chain that is not moving, where no freeze would ever arrive. Freezes sent during
+the build wait in the stream, and those the build already covered are skipped.
+After that the chain head emits a block once it falls below the consensus seam,
+and the store accepts one only at `tip + 1`. A block that does not follow the
+store answers `ChainStoreError::FreezeGap`, which carries the height to build
+to, so a chain head that re-anchored after an outage is repaired the same way.
 
 The repair runs once per batch, not until it succeeds. A second gap means the
 chain moved while the build was running; the next batch reports it again with a
@@ -303,8 +304,8 @@ lagged rather than blocking the chain head, and a chain head that re-anchors
 never emits what it skipped. Neither is handled specially, because a missed block
 becomes a gap on the next freeze and the gap repairs itself.
 
-`ChainViewSync::status()` reports `Syncing` while a gap is open, `Ready` once
-freezes are landing, and `Offline` once the loop has stopped. This is separate
+`ChainViewSync::status()` reports `Syncing` while the launch build runs or a gap
+is open, `Ready` once the store has reached the floor or freezes are landing, and `Offline` once the loop has stopped. This is separate
 from the store's own status, which says whether the *database* is healthy;
 this says whether anything is still feeding it. Cancelling the token stops the
 loop, and so does dropping the handle — `shutdown()` additionally publishes

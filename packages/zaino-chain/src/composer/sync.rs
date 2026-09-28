@@ -15,19 +15,17 @@
 //! knows where the seam between them is, and is the thing that suffers if they
 //! drift apart. So the store stays caller-driven and this is the caller.
 //!
-//! # The loop is the gap error
+//! # Build, then follow
 //!
-//! There is no separate "catch up first, then follow" phase, because the
-//! catch-up *is* the ordinary failure of the following step. The chain head
-//! emits a block once it falls below the consensus seam; the store accepts one
-//! only at `tip + 1`. An empty store handed a block from the middle of the
-//! chain therefore answers
-//! [`FreezeGap`](zaino_chain_store::ChainStoreError::FreezeGap), which carries
-//! the height to build to — and building to it is exactly the initial sync.
+//! On launch the loop builds the store up to the chain head's floor, then
+//! follows the freeze stream. The build is what brings a store up on a chain
+//! that is not moving, where no freeze would ever come.
 //!
-//! So a cold start and a chain head that re-anchored after an outage take the
-//! same path, and it is the path the tests exercise on every run rather than a
-//! startup branch nothing reaches twice.
+//! The chain head emits a block once it falls below the consensus seam; the
+//! store accepts one only at `tip + 1`. A block that does not follow the store
+//! answers [`FreezeGap`](zaino_chain_store::ChainStoreError::FreezeGap), which
+//! carries the height to build to, so a chain head that re-anchored after an
+//! outage is repaired the same way.
 //!
 //! # What this is allowed to lose
 //!
@@ -45,7 +43,9 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockService, ChainHeadFreezeEvents};
+use zaino_chain_head::{
+    ChainHeadBlock, ChainHeadBlockService, ChainHeadFreezeEvents, ChainHeadSnapshot as _,
+};
 use zaino_chain_store::{
     ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreService, FrozenBlock,
 };
@@ -96,8 +96,9 @@ pub struct ChainViewSync {
 impl ChainViewSync {
     /// How the loop is faring.
     ///
-    /// `Syncing` while a gap is being repaired, `Ready` once freezes are
-    /// landing, `Offline` once the loop has stopped. The store's own status is
+    /// `Syncing` while the launch build runs or a gap is being repaired,
+    /// `Ready` once the store has reached the floor or freezes are landing,
+    /// `Offline` once the loop has stopped. The store's own status is
     /// separate and says whether the *database* is healthy; this says whether
     /// anything is still feeding it.
     pub fn status(&self) -> ComponentStatus {
@@ -278,6 +279,30 @@ async fn run<Store, Head, Source>(
     Head: ChainHeadBlockService + ChainHeadFreezeEvents,
     Source: ChainViewSource,
 {
+    // Freezes sent meanwhile wait in `frozen`; those at or below the floor are
+    // skipped by the store.
+    let floor = composer
+        .head
+        .current()
+        .best_chain()
+        .next()
+        .map(|block| block.height());
+    if let Some(floor) = floor {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {}
+            built = composer.store.build_to(floor) => match built {
+                Ok(()) => {
+                    status.send_replace(report(Lifecycle::Ready, Health::Healthy));
+                }
+                Err(error) => {
+                    warn!(%error, %floor, "building to the chain head's floor failed");
+                    status.send_replace(report(Lifecycle::Syncing, Health::Recoverable));
+                }
+            },
+        }
+    }
+
     loop {
         let first = tokio::select! {
             biased;

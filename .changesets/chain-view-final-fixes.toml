@@ -121,3 +121,13 @@ chain head covers the height it is fetched by the hash the snapshot holds \
 there, so a reorg since the snapshot was taken cannot substitute another \
 block's trees. Only heights in a hole are still fetched by height.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`spawn_sync` builds the store up to the chain head's floor on launch, then \
+follows the freeze stream. A store previously came up only once a block was \
+frozen, so on a chain that was not moving — or when the chain head's first \
+freeze was sent before the loop subscribed — it was never built.
+"""
