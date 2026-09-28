@@ -6,7 +6,7 @@
 //! chain-info aggregate are derived from it. The raw-transaction read is the
 //! validator's on every routing — no local index holds transaction bytes — so
 //! it is implemented here unconditionally, through the live
-//! [`RemoteChainView`]. Reads whose placement is the use case's decision live
+//! [`PassthroughProvider`]. Reads whose placement is the use case's decision live
 //! in their own modules, one impl per placement.
 
 use std::marker::PhantomData;
@@ -14,11 +14,11 @@ use std::marker::PhantomData;
 use futures::stream::BoxStream;
 
 use crate::chain_view::ChainViewSnapshot;
+use crate::routing::Routing;
 use zaino_primitives::types::{
     BlockRef, BlockSelector, CompactBlock, Height, HeightRange, RawTransaction, TransactionId,
 };
 use zaino_service::error::{BlockReadError, ReadError, TxReadError};
-use zaino_service::routing::Routing;
 use zaino_service::{ChainInfo, ServiceableRange};
 use zaino_service::{
     ChainInfoRead, ChainSegment, CompactBlockRead, CompactNullifierRead, RawTransactionRead,
@@ -26,7 +26,7 @@ use zaino_service::{
 };
 use zaino_source::GetTransaction;
 
-use crate::remote::RemoteChainView;
+use crate::passthrough::PassthroughProvider;
 
 /// A pinned view over the composed chain, plus the live passthrough handle,
 /// under the routing `R`.
@@ -36,7 +36,7 @@ pub struct EngineSnapshot<F, N, Src, R> {
     /// Live passthrough reads — the validator through the source ports.
     /// Captured at snapshot time; its reads are live (not pinned), which is
     /// sound for the immutable data light clients query.
-    remote: RemoteChainView<Src>,
+    passthrough: PassthroughProvider<Src>,
     routing: PhantomData<R>,
 }
 
@@ -45,10 +45,13 @@ impl<F, N, Src, R> EngineSnapshot<F, N, Src, R> {
     /// it. Built only by the engine's [`snapshot`](crate::Engine), which
     /// captures the local sides in one shot so the pin stays coherent across
     /// the seam.
-    pub(crate) fn new(local: ChainViewSnapshot<F, N>, remote: RemoteChainView<Src>) -> Self {
+    pub(crate) fn new(
+        local: ChainViewSnapshot<F, N>,
+        passthrough: PassthroughProvider<Src>,
+    ) -> Self {
         Self {
             local,
-            remote,
+            passthrough,
             routing: PhantomData,
         }
     }
@@ -59,8 +62,8 @@ impl<F, N, Src, R> EngineSnapshot<F, N, Src, R> {
     }
 
     /// The passthrough provider.
-    pub(crate) fn remote(&self) -> &RemoteChainView<Src> {
-        &self.remote
+    pub(crate) fn passthrough(&self) -> &PassthroughProvider<Src> {
+        &self.passthrough
     }
 }
 
@@ -110,7 +113,7 @@ impl<F: Clone, N: Clone, Src: Clone, R> Clone for EngineSnapshot<F, N, Src, R> {
     fn clone(&self) -> Self {
         Self {
             local: self.local.clone(),
-            remote: self.remote.clone(),
+            passthrough: self.passthrough.clone(),
             routing: PhantomData,
         }
     }
@@ -210,7 +213,7 @@ where
     }
 }
 
-/// Always remote: no local index holds transaction bytes, and the wallet parses
+/// Always passthrough: no local index holds transaction bytes, and the wallet parses
 /// them itself, so the validator's `getrawtransaction` answer relays as is.
 impl<F, N, Src, R> RawTransactionRead for EngineSnapshot<F, N, Src, R>
 where
@@ -223,6 +226,6 @@ where
         &self,
         id: TransactionId,
     ) -> Result<Option<RawTransaction>, TxReadError> {
-        self.remote.raw_transaction(id).await
+        self.passthrough.raw_transaction(id).await
     }
 }

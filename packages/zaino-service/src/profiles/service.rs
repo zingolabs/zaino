@@ -6,7 +6,7 @@
 //! depends only on the one it needs.
 
 use crate::controls::{
-    Broadcast, MempoolContent, MempoolSubscribe, Passthrough, ReportedUpgrades, TakeSnapshot,
+    Broadcast, MempoolContent, MempoolSubscribe, NodeQueryRelay, ReportedUpgrades, TakeSnapshot,
     TipSubscribe,
 };
 use crate::profiles::read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads};
@@ -52,7 +52,7 @@ impl<T> LightServeService for T where
 /// Node-RPC / explorer serving. Composes the node read-set (incl. the chain-info
 /// aggregate) with the validator passthrough seam (mining/peers/txoutset).
 pub trait NodeRpcService:
-    TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe + Passthrough
+    TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe + NodeQueryRelay
 {
 }
 impl<T> NodeRpcService for T where
@@ -60,6 +60,6 @@ impl<T> NodeRpcService for T where
         + Broadcast
         + MempoolSubscribe
         + TipSubscribe
-        + Passthrough
+        + NodeQueryRelay
 {
 }

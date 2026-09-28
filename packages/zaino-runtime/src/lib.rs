@@ -13,7 +13,7 @@
 //!
 //! The read-serving composition over the finalised / non-finalised /
 //! validator providers lives in `zaino-core`; which provider answers
-//! each capability is the use case's `zaino_service::routing::Routing` type,
+//! each capability is the use case's `zaino_core::routing::Routing` type,
 //! not a policy table here.
 //!
 //! [`run`]: Orchestra::run

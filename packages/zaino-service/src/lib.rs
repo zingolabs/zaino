@@ -6,10 +6,11 @@
 //! them, and the split serves the *consumer* (each outer client depends only on
 //! the subset it needs), plus mocking and per-capability error mapping.
 //!
-//! Presence is type-level, reach is runtime. A composed snapshot implements a
-//! read trait only where its providers can back it under the use case's
-//! [`routing`]; a read that exists returns [`error::NotServiceable`](error)
-//! only while its backing index is still catching up.
+//! Presence is type-level, reach is runtime. An engine's snapshot implements a
+//! read trait only where its providers can back it under the routing it is
+//! composed under (a supply-side choice, made in `zaino-core`); a read that
+//! exists returns [`error::NotServiceable`](error) only while its backing
+//! index is still catching up.
 //!
 //! Async style follows the consumer stack (zallet): RPITIT (`impl Future +
 //! Send`) and `BoxStream`, driven through generics — no `async-trait`, no `dyn`
@@ -27,7 +28,6 @@ mod locator;
 mod node_query;
 mod profiles;
 mod reads;
-pub mod routing;
 mod status;
 mod upgrades;
 
@@ -40,12 +40,12 @@ pub use bundle::{ChainSegment, IndexerService, ServiceableRange, Snapshot};
 pub use capability::{Answerable, Capability, ServiceabilityManifest};
 pub use chain_info::ChainInfo;
 pub use controls::{
-    Broadcast, MempoolContent, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable,
+    Broadcast, MempoolContent, MempoolSubscribe, NodeQueryRelay, ReportedUpgrades, Serviceable,
     TakeSnapshot, TipSubscribe,
 };
 pub use events::{MempoolTx, TipEvent};
 pub use locator::{ForkPoint, Locator};
-pub use node_query::{PassthroughAnswer, PassthroughQuery};
+pub use node_query::{NodeQuery, NodeQueryAnswer};
 pub use profiles::{
     FullWalletReads, LightServeService, LightWalletReads, NodeRpcReads, NodeRpcService,
     WalletLibService, WalletReadCore,

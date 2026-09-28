@@ -2,9 +2,10 @@
 
 Zaino's **inner driving surface**: the capability trait algebra an engine
 implements and the serving adapters consume. One trait per capability, a pin
-(`TakeSnapshot`) that makes reads coherent, and two things layered on top —
-*profiles* that name what a use case demands, and *routing* that names which
-provider answers each capability for that use case.
+(`TakeSnapshot`) that makes reads coherent, and *profiles* layered on top that
+name what a use case demands. Which provider answers each capability is not a
+question this crate asks: that is routing, a choice the engine in `zaino-core`
+makes per deployment.
 
 ## Three layers of availability
 
@@ -31,34 +32,6 @@ pinned view. Service profiles (`WalletLibService`, `LightServeService`,
 `NodeRpcService`) compose a read-set with the controls. Sibling profiles share
 a core rather than inheriting from each other, so a wallet-only addition never
 leaks into the served light protocol.
-
-## Routing is placement, per use case
-
-`routing::Routing` is a type with one `Placement` — `Local`, `Remote` or
-`Withheld` — per capability whose placement is a decision. Compact blocks are
-always local and raw transactions, broadcast, mempool and the upgrade schedule
-are always remote, so they are not on it. `placement()` is exhaustive over
-`Capability`: a new variant must be classified.
-
-```rust,ignore
-pub struct LightRouting;
-impl Routing for LightRouting {
-    type Address = Remote;            // passed through, for now
-    type Treestate = Remote;
-    type Spend = Withheld;            // a node read; not offered
-    type TransactionLocation = Withheld;
-}
-```
-
-A composer (see `zaino-core`) implements each routed read trait once,
-dispatching to a per-capability *placement trait* implemented on the markers
-themselves: `Local` carries the bounds a merge across the seam needs of the two
-chain tiers, `Remote` the source ports a passthrough needs, `Withheld` nothing.
-Handlers bound on the read trait and never learn which one they got.
-
-Flipping a placement is a one-line change to the routing type. Whatever that
-placement needs and the providers lack is then a compile error at the wiring,
-naming the missing port.
 
 ## Errors
 

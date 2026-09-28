@@ -19,9 +19,8 @@ use std::sync::{Arc, Mutex};
 use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::{
-    Answerable, Capability, ChainInfo, ForkPoint, Locator, MempoolTx, PassthroughAnswer,
-    PassthroughQuery, ReportedUpgrade, ServiceabilityManifest, ServiceableRange, SpendStatus,
-    TxStatus,
+    Answerable, Capability, ChainInfo, ForkPoint, Locator, MempoolTx, NodeQuery, NodeQueryAnswer,
+    ReportedUpgrade, ServiceabilityManifest, ServiceableRange, SpendStatus, TxStatus,
 };
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
@@ -36,7 +35,7 @@ use crate::error::{
 use crate::{
     AddressRead, BlockRead, Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead,
     CompactNullifierRead, ForkReconcile, IndexerService, MempoolContent, MempoolSubscribe,
-    Passthrough, RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead,
+    NodeQueryRelay, RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead,
     TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
 };
 
@@ -153,9 +152,9 @@ impl ReportedUpgrades for MockIndexerService {
     }
 }
 
-impl Passthrough for MockIndexerService {
-    async fn passthrough(&self, query: PassthroughQuery) -> Result<PassthroughAnswer, Transient> {
-        Ok(PassthroughAnswer(format!("mock passthrough: {query:?}")))
+impl NodeQueryRelay for MockIndexerService {
+    async fn relay_node_query(&self, query: NodeQuery) -> Result<NodeQueryAnswer, Transient> {
+        Ok(NodeQueryAnswer(format!("mock passthrough: {query:?}")))
     }
 }
 

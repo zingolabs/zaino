@@ -18,7 +18,7 @@ checks together:
 - the **profile** it serves (`LightServeService`), carried as the `Serves<U>`
   bound;
 - the **routing** — which provider answers each capability
-  (`zaino_service::routing::LightRouting`);
+  (`zaino_core::routing::LightRouting`);
 - the **materialisation** — which indexes the finalised store builds
   (`zaino_indexes::sets::light_wallet::LightWallet`).
 

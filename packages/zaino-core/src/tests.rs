@@ -7,10 +7,10 @@
 //! [`ValidatorClient`] decorator exactly as the root injects it. No cluster, no
 //! validator; the routing is deterministic.
 
+use crate::routing::LightRouting;
 use crate::testing::{StubNonFinalised, stub_compact_block};
 use futures::stream::StreamExt;
 use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
-use zaino_service::routing::LightRouting;
 use zaino_service::testing::{MockChain as MockService, MockIndexerService};
 use zaino_service::{
     AddressRead, Broadcast, MempoolContent, MempoolSubscribe, RawTransactionRead, Serviceable,
@@ -129,7 +129,7 @@ async fn light_serve_conformance_over_a_provisioned_source() {
 async fn address_reads_are_remote_under_light_routing() {
     // No rejection seeded: the mock answers empty (no-match) results. An `Ok` —
     // not a `NotServiceable` stub — proves each address read routes to the
-    // passthrough provider, as `LightRouting::Address = Remote` says.
+    // passthrough provider, as `LightRouting::Address = Passthrough` says.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
@@ -224,9 +224,9 @@ async fn compact_block_nullifiers_are_served_locally() {
 
 #[tokio::test]
 async fn treestate_is_remote_under_light_routing() {
-    // No treestate seeded: the mock answers HeightNotFound, which the remote
+    // No treestate seeded: the mock answers HeightNotFound, which the passthrough
     // provider maps to a definitive read failure. Proves treestate routes to the
-    // passthrough provider, as `LightRouting::Treestate = Remote` says.
+    // passthrough provider, as `LightRouting::Treestate = Passthrough` says.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     match TreestateRead::treestate(&snapshot, height(5)).await {
@@ -267,7 +267,7 @@ fn the_manifest_is_derived_from_the_routing_and_the_store() {
         manifest.get(Capability::Blocks),
         Answerable::ToHeight(height(42))
     );
-    // Remote: live, the validator answers.
+    // Passthrough: live, the validator answers.
     assert_eq!(manifest.get(Capability::AddressHistory), Answerable::Live);
     assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
     assert_eq!(manifest.get(Capability::RawTransaction), Answerable::Live);
@@ -284,7 +284,7 @@ fn the_manifest_is_derived_from_the_routing_and_the_store() {
 fn a_store_with_no_progress_makes_local_capabilities_not_yet() {
     let manifest = engine_over_a_serviceable_store(None).serviceability();
     assert_eq!(manifest.get(Capability::Blocks), Answerable::NotYet);
-    // Remote and withheld are unaffected by the store's progress.
+    // Passthrough and withheld are unaffected by the store's progress.
     assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
     assert_eq!(manifest.get(Capability::SpendStatus), Answerable::Absent);
 }

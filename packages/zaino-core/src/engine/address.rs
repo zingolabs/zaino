@@ -2,13 +2,13 @@
 //!
 //! One [`AddressRead`] impl on the snapshot, dispatching through
 //! [`AddressPlacement`] — a trait implemented **on the placement marker**,
-//! once for [`Remote`] and once for [`Local`]. The two impls have different
+//! once for [`Passthrough`] and once for [`Local`]. The two impls have different
 //! `Self` types, so they cannot overlap; which one a use case gets is its
 //! routing's `Address` type, and a handler bound on [`AddressRead`] never
-//! learns which. [`Withheld`](zaino_service::routing::Withheld) has no impl,
+//! learns which. [`Withheld`](zaino_core::routing::Withheld) has no impl,
 //! so under a routing that withholds address history the read does not exist.
 //!
-//! **Remote** relays each read live to the validator. It discloses the queried
+//! **Passthrough** relays each read live to the validator. It discloses the queried
 //! addresses to it — the privacy cost a local transparent index exists to
 //! remove — and the validator's balance is range-less, so the caller's range
 //! is not honoured there.
@@ -21,49 +21,49 @@
 use std::future::Future;
 
 use crate::chain_view::ChainViewSnapshot;
+use crate::routing::{Local, Passthrough, Routing};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, HeightRange, Outpoint, TransactionId, TransparentAddress, Utxo,
     Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::SpendStatus;
 use zaino_service::error::{AddressReadError, SpendReadError};
-use zaino_service::routing::{Local, Remote, Routing};
 use zaino_service::{AddressRead, ChainSegment, CompactBlockRead, SpendRead};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 
 use super::EngineSnapshot;
 use super::snapshot::split_at_seam;
-use crate::remote::RemoteChainView;
+use crate::passthrough::PassthroughProvider;
 
 /// How a placement answers address history over the providers `(F, N, Src)`.
 ///
 /// Implemented on the placement marker, not on the snapshot: that is what lets
-/// `Local` and `Remote` each carry their own provider bounds without the two
+/// `Local` and `Passthrough` each carry their own provider bounds without the two
 /// impls overlapping.
 pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
     fn balance(
         local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> impl Future<Output = Result<AddressBalance, AddressReadError>> + Send;
 
     fn unspent_outpoints(
         local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
     ) -> impl Future<Output = Result<Vec<Utxo>, AddressReadError>> + Send;
 
     fn deltas(
         local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> impl Future<Output = Result<Vec<AddressDelta>, AddressReadError>> + Send;
 
     fn tx_ids(
         local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> impl Future<Output = Result<Vec<TransactionId>, AddressReadError>> + Send;
@@ -83,14 +83,14 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<AddressBalance, AddressReadError> {
-        R::Address::balance(self.local(), self.remote(), addr, range).await
+        R::Address::balance(self.local(), self.passthrough(), addr, range).await
     }
 
     async fn unspent_outpoints(
         &self,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        R::Address::unspent_outpoints(self.local(), self.remote(), addr).await
+        R::Address::unspent_outpoints(self.local(), self.passthrough(), addr).await
     }
 
     async fn deltas(
@@ -98,7 +98,7 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
-        R::Address::deltas(self.local(), self.remote(), addr, range).await
+        R::Address::deltas(self.local(), self.passthrough(), addr, range).await
     }
 
     async fn tx_ids(
@@ -106,13 +106,13 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<TransactionId>, AddressReadError> {
-        R::Address::tx_ids(self.local(), self.remote(), addr, range).await
+        R::Address::tx_ids(self.local(), self.passthrough(), addr, range).await
     }
 }
 
-// --- Remote -------------------------------------------------------------------
+// --- Passthrough -------------------------------------------------------------------
 
-impl<F, N, Src> AddressPlacement<F, N, Src> for Remote
+impl<F, N, Src> AddressPlacement<F, N, Src> for Passthrough
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
@@ -126,39 +126,39 @@ where
 {
     async fn balance(
         _local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         _range: HeightRange,
     ) -> Result<AddressBalance, AddressReadError> {
         // `getaddressbalance` is range-less: this is the balance as of the
         // validator's tip, whatever range was asked for.
-        remote.balance(addr).await
+        passthrough.balance(addr).await
     }
 
     async fn unspent_outpoints(
         _local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        remote.unspent_outpoints(addr).await
+        passthrough.unspent_outpoints(addr).await
     }
 
     async fn deltas(
         _local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
-        remote.deltas(addr, range).await
+        passthrough.deltas(addr, range).await
     }
 
     async fn tx_ids(
         _local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<TransactionId>, AddressReadError> {
-        remote.tx_ids(addr, range).await
+        passthrough.tx_ids(addr, range).await
     }
 }
 
@@ -205,7 +205,7 @@ where
 {
     async fn balance(
         local: &ChainViewSnapshot<F, N>,
-        _remote: &RemoteChainView<Src>,
+        _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<AddressBalance, AddressReadError> {
@@ -223,7 +223,7 @@ where
 
     async fn unspent_outpoints(
         local: &ChainViewSnapshot<F, N>,
-        _remote: &RemoteChainView<Src>,
+        _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
         // A store UTXO is unspent as of the watermark; the window above it may
@@ -248,7 +248,7 @@ where
 
     async fn deltas(
         local: &ChainViewSnapshot<F, N>,
-        _remote: &RemoteChainView<Src>,
+        _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
@@ -265,7 +265,7 @@ where
 
     async fn tx_ids(
         local: &ChainViewSnapshot<F, N>,
-        _remote: &RemoteChainView<Src>,
+        _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<TransactionId>, AddressReadError> {

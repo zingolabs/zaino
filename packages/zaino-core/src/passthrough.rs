@@ -1,4 +1,4 @@
-//! `RemoteChainView` — the passthrough provider.
+//! `PassthroughProvider` — the passthrough provider.
 //!
 //! One half of the local/passthrough split: the validator answered **live**,
 //! through the **canonical** `zaino-source` ports. It carries exactly the
@@ -35,11 +35,11 @@ use zaino_source::{
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
-pub struct RemoteChainView<Src> {
+pub struct PassthroughProvider<Src> {
     source: Src,
 }
 
-impl<Src: Clone> Clone for RemoteChainView<Src> {
+impl<Src: Clone> Clone for PassthroughProvider<Src> {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
@@ -47,14 +47,14 @@ impl<Src: Clone> Clone for RemoteChainView<Src> {
     }
 }
 
-impl<Src> RemoteChainView<Src> {
+impl<Src> PassthroughProvider<Src> {
     /// Wrap a resilient source handle as the passthrough provider.
     pub fn new(source: Src) -> Self {
         Self { source }
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: SendRawTransaction,
 {
@@ -112,7 +112,7 @@ fn inclusive_bounds(range: HeightRange) -> Option<(Height, Height)> {
     (range.start <= last).then_some((range.start, last))
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetAddressBalance,
 {
@@ -138,7 +138,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetAddressUtxos,
 {
@@ -159,7 +159,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetAddressTxids,
 {
@@ -189,7 +189,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetAddressDeltas,
 {
@@ -219,7 +219,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetTreestate,
 {
@@ -242,7 +242,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetTransaction,
 {
@@ -270,7 +270,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetSubtreeRoots,
 {
@@ -307,7 +307,7 @@ where
 // single-source rule: a listing, its bytes, and its coherence tip must all come
 // from the one source that serves the mempool — never a finalised secondary,
 // which holds none. The routing that enforces that lives in the source adapter.
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetMempoolTxids,
 {
@@ -328,7 +328,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetRawMempoolTransaction,
 {
@@ -352,7 +352,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetMempoolCompactTransaction,
 {
@@ -377,7 +377,7 @@ where
     }
 }
 
-impl<Src> RemoteChainView<Src>
+impl<Src> PassthroughProvider<Src>
 where
     Src: GetMempoolSourceTip,
 {

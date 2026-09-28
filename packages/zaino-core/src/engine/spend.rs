@@ -2,27 +2,27 @@
 //!
 //! Dispatched through [`SpendPlacement`] on the placement marker. Only
 //! [`Local`] implements it: the validator has no port that answers "who spent
-//! this outpoint", so `Spend = Remote` has no impl. Local merges across the
+//! this outpoint", so `Spend = Passthrough` has no impl. Local merges across the
 //! seam — the head first, since a spend in the volatile window is the newer
 //! fact, then the finalised store.
 
 use std::future::Future;
 
 use crate::chain_view::ChainViewSnapshot;
+use crate::routing::{Local, Routing};
 use zaino_primitives::types::Outpoint;
 use zaino_service::SpendStatus;
 use zaino_service::error::SpendReadError;
-use zaino_service::routing::{Local, Routing};
 use zaino_service::{ChainSegment, CompactBlockRead, SpendRead};
 
 use super::EngineSnapshot;
-use crate::remote::RemoteChainView;
+use crate::passthrough::PassthroughProvider;
 
 /// How a placement answers spend status over the providers `(F, N, Src)`.
 pub trait SpendPlacement<F, N, Src>: Send + Sync + 'static {
     fn spend_status(
         local: &ChainViewSnapshot<F, N>,
-        remote: &RemoteChainView<Src>,
+        passthrough: &PassthroughProvider<Src>,
         outpoint: Outpoint,
     ) -> impl Future<Output = Result<SpendStatus, SpendReadError>> + Send;
 }
@@ -36,7 +36,7 @@ where
     R::Spend: SpendPlacement<F, N, Src>,
 {
     async fn spend_status(&self, outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
-        R::Spend::spend_status(self.local(), self.remote(), outpoint).await
+        R::Spend::spend_status(self.local(), self.passthrough(), outpoint).await
     }
 }
 
@@ -48,7 +48,7 @@ where
 {
     async fn spend_status(
         local: &ChainViewSnapshot<F, N>,
-        _remote: &RemoteChainView<Src>,
+        _passthrough: &PassthroughProvider<Src>,
         outpoint: Outpoint,
     ) -> Result<SpendStatus, SpendReadError> {
         // The head knows spends in its window and outputs created there; for

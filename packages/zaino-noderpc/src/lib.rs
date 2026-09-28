@@ -21,7 +21,7 @@ pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
 use zaino_primitives::types::Outpoint;
-use zaino_service::PassthroughQuery;
+use zaino_service::NodeQuery;
 use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
 
 use crate::wire::{bytes_from_hex, spend_status_to_wire, to_hex, txid_from_hex};
@@ -85,10 +85,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// `getmininginfo`: not indexed — relayed to the validator through the
     /// passthrough seam and returned opaque.
     pub async fn get_mining_info(&self) -> Result<String, RpcError> {
-        let answer = self
-            .engine
-            .passthrough(PassthroughQuery::MiningInfo)
-            .await?;
+        let answer = self.engine.relay_node_query(NodeQuery::MiningInfo).await?;
         Ok(answer.0)
     }
 }

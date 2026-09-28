@@ -6032,6 +6032,7 @@ name = "zaino-core"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "strum",
  "tokio",
  "tokio-util",
  "tracing",

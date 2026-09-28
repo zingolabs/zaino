@@ -3,7 +3,7 @@
 //! Three providers, one routing type. The finalised store `Fs` and the
 //! non-finalised head `Nfs` are the local chain tiers, captured together on
 //! each pin by [`ChainView`]; the validator handle `Src` is the passthrough
-//! provider, answered live through [`RemoteChainView`]. `R` is the use case's
+//! provider, answered live through [`PassthroughProvider`]. `R` is the use case's
 //! [`Routing`]: for every capability whose placement is a decision, which of
 //! those providers answers it.
 //!
@@ -21,7 +21,7 @@
 //! ```
 //! use zaino_indexes::sets::light_wallet::LightWallet;
 //! use zaino_persistence::in_memory::InMemoryBackend;
-//! use zaino_service::routing::LightRouting;
+//! use zaino_core::routing::LightRouting;
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightServeService;
 //! use zaino_source::mock::MockChain;
@@ -45,7 +45,7 @@
 //! ```compile_fail,E0277
 //! use zaino_indexes::sets::light_wallet::LightWallet;
 //! use zaino_persistence::in_memory::InMemoryBackend;
-//! use zaino_service::routing::{Local, Remote, Routing, Withheld};
+//! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightServeService;
 //! use zaino_source::mock::MockChain;
@@ -56,7 +56,7 @@
 //! struct AddressLocal;
 //! impl Routing for AddressLocal {
 //!     type Address = Local;
-//!     type Treestate = Remote;
+//!     type Treestate = Passthrough;
 //!     type Spend = Withheld;
 //!     type TransactionLocation = Withheld;
 //! }
@@ -74,7 +74,7 @@
 //! both sides is fine — the bound is on the providers, not the placement:
 //!
 //! ```
-//! use zaino_service::routing::{Local, Remote, Routing, Withheld};
+//! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightServeService;
 //! use zaino_source::mock::MockChain;
@@ -84,7 +84,7 @@
 //! struct AddressLocal;
 //! impl Routing for AddressLocal {
 //!     type Address = Local;
-//!     type Treestate = Remote;
+//!     type Treestate = Passthrough;
 //!     type Spend = Withheld;
 //!     type TransactionLocation = Withheld;
 //! }
@@ -102,7 +102,7 @@
 //! index on any tier — is an impl that does not exist for any providers:
 //!
 //! ```compile_fail,E0277
-//! use zaino_service::routing::{Local, Remote, Routing, Withheld};
+//! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightServeService;
 //! use zaino_source::mock::MockChain;
@@ -111,7 +111,7 @@
 //!
 //! struct TreestateLocal;
 //! impl Routing for TreestateLocal {
-//!     type Address = Remote;
+//!     type Address = Passthrough;
 //!     type Treestate = Local;
 //!     type Spend = Withheld;
 //!     type TransactionLocation = Withheld;
@@ -140,23 +140,23 @@ use std::marker::PhantomData;
 use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::chain_view::ChainView;
+use crate::routing::{PlacementKind, Routing};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
-use zaino_service::routing::{PlacementKind, Routing};
 use zaino_service::{
-    Answerable, MempoolTx, PassthroughAnswer, PassthroughQuery, ReportedUpgrade,
-    ServiceabilityManifest, TipEvent,
+    Answerable, MempoolTx, NodeQuery, NodeQueryAnswer, ReportedUpgrade, ServiceabilityManifest,
+    TipEvent,
 };
 use zaino_service::{
     Broadcast, ChainSegment, CompactBlockRead, IndexerService, MempoolContent, MempoolSubscribe,
-    Passthrough, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
+    NodeQueryRelay, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
 };
 use zaino_source::{
     GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction,
     GetTreestate, SendRawTransaction,
 };
 
-use crate::remote::RemoteChainView;
+use crate::passthrough::PassthroughProvider;
 
 /// The engine: the local chain tiers and the validator, composed under the
 /// routing `R`.
@@ -168,7 +168,7 @@ use crate::remote::RemoteChainView;
 /// validator handle, bound through the canonical `zaino-source` ports.
 pub struct Engine<Fs, Nfs, Src, R> {
     view: ChainView<Fs, Nfs>,
-    remote: RemoteChainView<Src>,
+    passthrough: PassthroughProvider<Src>,
     routing: PhantomData<R>,
 }
 
@@ -176,7 +176,7 @@ impl<Fs: Clone, Nfs: Clone, Src: Clone, R> Clone for Engine<Fs, Nfs, Src, R> {
     fn clone(&self) -> Self {
         Self {
             view: self.view.clone(),
-            remote: self.remote.clone(),
+            passthrough: self.passthrough.clone(),
             routing: PhantomData,
         }
     }
@@ -196,7 +196,7 @@ where
     pub fn new(fs: Fs, nfs: Nfs, source: Src) -> Self {
         Self {
             view: ChainView::new(fs, nfs),
-            remote: RemoteChainView::new(source),
+            passthrough: PassthroughProvider::new(source),
             routing: PhantomData,
         }
     }
@@ -213,11 +213,11 @@ where
 
     async fn snapshot(&self) -> Result<Self::Snapshot, Transient> {
         // The composer captures both local sides in one shot, so the pin is
-        // coherent across the seam. The remote handle rides along for
+        // coherent across the seam. The passthrough handle rides along for
         // passthrough reads, which are live, not pinned.
         Ok(EngineSnapshot::new(
             self.view.snapshot().await?,
-            self.remote.clone(),
+            self.passthrough.clone(),
         ))
     }
 }
@@ -243,7 +243,7 @@ where
     R: Routing,
 {
     fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx> {
-        let remote = self.remote.clone();
+        let passthrough = self.passthrough.clone();
         // A snapshot of the mempool delivered as a finite stream: read the
         // coherence tip and the listing from the one source and tag each txid
         // with the tip. Passthrough has no live push — the dedicated mempool
@@ -252,8 +252,8 @@ where
         // per the infallible `MempoolTx` stream contract.
         stream::once(async move {
             match (
-                remote.mempool_source_tip().await,
-                remote.mempool_txids().await,
+                passthrough.mempool_source_tip().await,
+                passthrough.mempool_txids().await,
             ) {
                 (Ok(tip), Ok(txids)) => {
                     stream::iter(txids.into_iter().map(move |txid| MempoolTx {
@@ -283,7 +283,7 @@ where
     ) -> Result<Option<Vec<u8>>, MempoolReadError> {
         // Live passthrough to the mempool's own source — never the finalised
         // secondary, which holds no mempool. Routing lives in the source adapter.
-        self.remote.raw_mempool_transaction(txid).await
+        self.passthrough.raw_mempool_transaction(txid).await
     }
 
     async fn mempool_compact_transaction(
@@ -291,7 +291,7 @@ where
         txid: TransactionId,
     ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
         // Same live passthrough; the compact projection is done in the adapter.
-        self.remote.mempool_compact_transaction(txid).await
+        self.passthrough.mempool_compact_transaction(txid).await
     }
 }
 
@@ -305,7 +305,7 @@ where
     async fn broadcast(&self, raw_tx: Vec<u8>) -> Result<TransactionId, BroadcastRejection> {
         // Always the validator's: no local provider can relay. Not on
         // `Routing` because there is nothing to decide.
-        self.remote.broadcast(raw_tx).await
+        self.passthrough.broadcast(raw_tx).await
     }
 }
 
@@ -315,7 +315,7 @@ where
 ///
 /// ```text
 /// manifest(C) = Absent          if R::C = Withheld
-///             | Live            if R::C = Remote
+///             | Live            if R::C = Passthrough
 ///             | fs.manifest(C)  if R::C = Local
 /// ```
 ///
@@ -323,7 +323,7 @@ where
 /// capability reports the finalised tip, though compact blocks are served up to
 /// the head's tip. Serviceability sits on the engine while the head's tip is a
 /// property of the pin, so widening it means moving this port onto the
-/// snapshot — a separate decision. A remote capability reports `Live`
+/// snapshot — a separate decision. A passthrough capability reports `Live`
 /// unconditionally: the passthrough provider is always wired here; folding in
 /// the validator's reachability is where the runtime's probe joins.
 impl<Fs, Nfs, Src, R> Serviceable for Engine<Fs, Nfs, Src, R>
@@ -337,7 +337,7 @@ where
         let local = self.view.finalised().serviceability();
         ServiceabilityManifest::derive(|capability| match R::placement(capability) {
             PlacementKind::Withheld => Answerable::Absent,
-            PlacementKind::Remote => Answerable::Live,
+            PlacementKind::Passthrough => Answerable::Live,
             PlacementKind::Local => local.get(capability),
         })
     }
@@ -356,14 +356,14 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> Passthrough for Engine<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> NodeQueryRelay for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
     Src: Send + Sync + 'static,
     R: Routing,
 {
-    async fn passthrough(&self, _query: PassthroughQuery) -> Result<PassthroughAnswer, Transient> {
+    async fn relay_node_query(&self, _query: NodeQuery) -> Result<NodeQueryAnswer, Transient> {
         // Follow-up: relay to the validator.
         Err(Transient("passthrough not wired yet".into()))
     }

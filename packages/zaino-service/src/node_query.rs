@@ -8,7 +8,7 @@
 /// A node-operator query Zaino relays to the validator rather than answering
 /// from an index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PassthroughQuery {
+pub enum NodeQuery {
     /// `getmininginfo`.
     MiningInfo,
     /// `getpeerinfo`.
@@ -20,4 +20,4 @@ pub enum PassthroughQuery {
 /// The validator's answer, relayed opaque. Held as the raw payload because
 /// Zaino does not interpret it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PassthroughAnswer(pub String);
+pub struct NodeQueryAnswer(pub String);

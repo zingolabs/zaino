@@ -11,8 +11,33 @@ Engine<Fs, Nfs, Src, R>
    Fs   finalised store     TakeSnapshot, snapshot: ChainSegment + CompactBlockRead (+ index reads)
    Nfs  non-finalised head  TakeSnapshot, snapshot: ChainSegment + CompactBlockRead (+ window reads)
    Src  validator handle    the canonical, resilient zaino-source ports
-   R    routing             zaino_service::routing::Routing — who answers what
+   R    routing             zaino_core::routing::Routing — who answers what
 ```
+
+## Routing is placement, per deployment
+
+`routing::Routing` is a type with one `Placement` — `Local`, `Passthrough` or
+`Withheld` — per capability whose placement is a decision. Compact blocks are
+always local and raw transactions, broadcast, mempool and the upgrade schedule
+are always the validator's, so they are not on it. `placement()` is exhaustive
+over `Capability`: a new variant must be classified.
+
+```rust,ignore
+pub struct LightRouting;
+impl Routing for LightRouting {
+    type Address = Passthrough;       // relayed to the validator, for now
+    type Treestate = Passthrough;
+    type Spend = Withheld;            // a node read; not offered
+    type TransactionLocation = Withheld;
+}
+```
+
+Routing is a property of the deployment, not of the use case it serves: the
+demand traits in `zaino-service` say nothing about placement, so a second
+engine could serve the same use case under a different table. Flipping a
+placement is a one-line change to the routing type. Whatever that placement
+needs and the providers lack is then a compile error at the wiring, naming the
+missing port.
 
 ## What the composer decides, and what it does not
 
@@ -29,9 +54,9 @@ that capability and on the provider ports that placement needs:
 | capability | placement | needs |
 |---|---|---|
 | compact blocks, nullifier projection, chain info | always local | the two tiers' compact reads |
-| raw transaction, broadcast, mempool, upgrades | always remote | the source ports |
-| address history | `R::Address` | `Local`: both tiers `AddressRead`, head `SpendRead`; `Remote`: the four address source ports |
-| treestate, subtree roots | `R::Treestate` | `Remote` only today; a local tree index adds a `Local` impl beside it |
+| raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
+| address history | `R::Address` | `Local`: both tiers `AddressRead`, head `SpendRead`; `Passthrough`: the four address source ports |
+| treestate, subtree roots | `R::Treestate` | `Passthrough` only today; a local tree index adds a `Local` impl beside it |
 | spend status | `R::Spend` | `Local` only: both tiers `SpendRead` |
 
 A placement whose providers are missing is an impl that does not exist, so the
@@ -45,10 +70,10 @@ for any providers.
 ## The manifest follows the routing
 
 `Serviceable::serviceability()` derives from `R` and the finalised store's own
-manifest: withheld → `Absent`, remote → `Live`, local → whatever the store
+manifest: withheld → `Absent`, passthrough → `Live`, local → whatever the store
 reports for that capability. Reach through the non-finalised window is not
 folded in yet (serviceability is an engine port; the head's tip is a property
-of the pin), and a remote capability reports `Live` unconditionally until the
+of the pin), and a passthrough capability reports `Live` unconditionally until the
 validator's reachability probe is threaded through.
 
 ## Merging across the seam

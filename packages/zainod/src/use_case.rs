@@ -24,13 +24,13 @@
 //! use case *is* stays static.
 
 use zaino_chain_head::ChainHeadBlockSource;
+use zaino_core::routing::{LightRouting, Routing};
 use zaino_core::Engine;
 use zaino_indexer::CompactSource;
 use zaino_indexes::indexes::headers::HeadersIndex;
 use zaino_indexes::materialisation::{Builds, Materialisation};
 use zaino_indexes::sets::current_zaino::CurrentZainoContext;
 use zaino_indexes::sets::light_wallet::LightWallet as LightWalletIndexes;
-use zaino_service::routing::{LightRouting, Routing};
 use zaino_service::{ChainSegment, CompactBlockRead, LightServeService, TakeSnapshot};
 use zaino_source::{
     GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos,

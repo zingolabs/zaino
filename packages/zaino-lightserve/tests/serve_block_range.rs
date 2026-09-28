@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use zaino_component::{CancellationToken, RunLoop, RunReport, RunReporter};
+use zaino_core::routing::LightRouting;
 use zaino_core::testing::StubNonFinalised;
 use zaino_core::Engine;
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
@@ -29,7 +30,6 @@ use zaino_primitives::types::{
 };
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zaino_proto::proto::service::{BlockId, BlockRange, ChainSpec};
-use zaino_service::routing::LightRouting;
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::StoreReader;
