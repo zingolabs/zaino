@@ -1,4 +1,4 @@
-//! [`Composed`] — the engine, composed under a use case's routing.
+//! [`Engine`] — the engine, composed under a use case's routing.
 //!
 //! Three providers, one routing type. The finalised store `Fs` and the
 //! non-finalised head `Nfs` are the local chain tiers, captured together on
@@ -7,7 +7,7 @@
 //! [`Routing`]: for every capability whose placement is a decision, which of
 //! those providers answers it.
 //!
-//! The read surface is [`ComposedSnapshot`]. Each read trait is implemented
+//! The read surface is [`EngineSnapshot`]. Each read trait is implemented
 //! on it **once per placement**, bounded on `R`'s placement for that
 //! capability and on the provider ports that placement needs. So a read the
 //! providers cannot back under the chosen routing is not a stub that refuses
@@ -27,10 +27,10 @@
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
 //! use zaino_store::StoreReader;
-//! use zaino_store_service::Composed;
+//! use zaino_core::Engine;
 //!
 //! fn wired<S: LightServeService>() {}
-//! wired::<Composed<
+//! wired::<Engine<
 //!     StoreReader<InMemoryBackend, LightWallet>,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
@@ -51,7 +51,7 @@
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
 //! use zaino_store::StoreReader;
-//! use zaino_store_service::Composed;
+//! use zaino_core::Engine;
 //!
 //! struct AddressLocal;
 //! impl Routing for AddressLocal {
@@ -62,7 +62,7 @@
 //! }
 //!
 //! fn wired<S: LightServeService>() {}
-//! wired::<Composed<
+//! wired::<Engine<
 //!     StoreReader<InMemoryBackend, LightWallet>,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
@@ -79,7 +79,7 @@
 //! use zaino_service::LightServeService;
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
-//! use zaino_store_service::Composed;
+//! use zaino_core::Engine;
 //!
 //! struct AddressLocal;
 //! impl Routing for AddressLocal {
@@ -90,7 +90,7 @@
 //! }
 //!
 //! fn wired<S: LightServeService>() {}
-//! wired::<Composed<
+//! wired::<Engine<
 //!     MockIndexerService,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
@@ -107,7 +107,7 @@
 //! use zaino_service::LightServeService;
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
-//! use zaino_store_service::Composed;
+//! use zaino_core::Engine;
 //!
 //! struct TreestateLocal;
 //! impl Routing for TreestateLocal {
@@ -118,7 +118,7 @@
 //! }
 //!
 //! fn wired<S: LightServeService>() {}
-//! wired::<Composed<
+//! wired::<Engine<
 //!     MockIndexerService,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
@@ -131,15 +131,15 @@ mod snapshot;
 mod spend;
 mod treestate;
 
+pub use snapshot::EngineSnapshot;
 #[cfg(test)]
 pub(crate) use snapshot::split_at_seam;
-pub use snapshot::ComposedSnapshot;
 
 use std::marker::PhantomData;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
-use zaino_chainview::ChainView;
+use crate::chain_view::ChainView;
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::routing::{PlacementKind, Routing};
@@ -164,15 +164,15 @@ use crate::remote::RemoteChainView;
 /// `Fs` and `Nfs` are each a [`TakeSnapshot`] whose pin is a coherence
 /// coordinate and a compact-block read; both are captured together on each
 /// [`snapshot`](TakeSnapshot::snapshot), so a read through the returned
-/// [`ComposedSnapshot`] is coherent across the seam. `Src` is the resilient
+/// [`EngineSnapshot`] is coherent across the seam. `Src` is the resilient
 /// validator handle, bound through the canonical `zaino-source` ports.
-pub struct Composed<Fs, Nfs, Src, R> {
+pub struct Engine<Fs, Nfs, Src, R> {
     view: ChainView<Fs, Nfs>,
     remote: RemoteChainView<Src>,
     routing: PhantomData<R>,
 }
 
-impl<Fs: Clone, Nfs: Clone, Src: Clone, R> Clone for Composed<Fs, Nfs, Src, R> {
+impl<Fs: Clone, Nfs: Clone, Src: Clone, R> Clone for Engine<Fs, Nfs, Src, R> {
     fn clone(&self) -> Self {
         Self {
             view: self.view.clone(),
@@ -182,7 +182,7 @@ impl<Fs: Clone, Nfs: Clone, Src: Clone, R> Clone for Composed<Fs, Nfs, Src, R> {
     }
 }
 
-impl<Fs, Nfs, Src, R> Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> Engine<Fs, Nfs, Src, R>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
@@ -192,7 +192,7 @@ where
     /// handle under the routing `R`.
     ///
     /// Nothing here decides which provider answers what: `R` does, and the
-    /// read impls on [`ComposedSnapshot`] carry that decision as their bounds.
+    /// read impls on [`EngineSnapshot`] carry that decision as their bounds.
     pub fn new(fs: Fs, nfs: Nfs, source: Src) -> Self {
         Self {
             view: ChainView::new(fs, nfs),
@@ -202,27 +202,27 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> TakeSnapshot for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> TakeSnapshot for Engine<Fs, Nfs, Src, R>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
-    type Snapshot = ComposedSnapshot<Fs::Snapshot, Nfs::Snapshot, Src, R>;
+    type Snapshot = EngineSnapshot<Fs::Snapshot, Nfs::Snapshot, Src, R>;
 
     async fn snapshot(&self) -> Result<Self::Snapshot, Transient> {
         // The composer captures both local sides in one shot, so the pin is
         // coherent across the seam. The remote handle rides along for
         // passthrough reads, which are live, not pinned.
-        Ok(ComposedSnapshot::new(
+        Ok(EngineSnapshot::new(
             self.view.snapshot().await?,
             self.remote.clone(),
         ))
     }
 }
 
-impl<Fs, Nfs, Src, R> TipSubscribe for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> TipSubscribe for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
@@ -235,7 +235,7 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> MempoolSubscribe for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> MempoolSubscribe for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
@@ -270,7 +270,7 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> MempoolContent for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> MempoolContent for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
@@ -295,7 +295,7 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> Broadcast for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> Broadcast for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
@@ -326,7 +326,7 @@ where
 /// snapshot — a separate decision. A remote capability reports `Live`
 /// unconditionally: the passthrough provider is always wired here; folding in
 /// the validator's reachability is where the runtime's probe joins.
-impl<Fs, Nfs, Src, R> Serviceable for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> Serviceable for Engine<Fs, Nfs, Src, R>
 where
     Fs: Serviceable,
     Nfs: Send + Sync + 'static,
@@ -343,7 +343,7 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> ReportedUpgrades for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> ReportedUpgrades for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
@@ -356,7 +356,7 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> Passthrough for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> Passthrough for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
@@ -369,7 +369,7 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> IndexerService for Composed<Fs, Nfs, Src, R>
+impl<Fs, Nfs, Src, R> IndexerService for Engine<Fs, Nfs, Src, R>
 where
     Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + Serviceable + 'static,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,

@@ -1,4 +1,4 @@
-//! Composed-engine tests: the light-serve acceptance gate, the per-capability
+//! Engine-engine tests: the light-serve acceptance gate, the per-capability
 //! routing tests under `LightRouting`, the manifest derivation, and the seam
 //! split a local merge relies on.
 //!
@@ -7,8 +7,8 @@
 //! [`ValidatorClient`] decorator exactly as the root injects it. No cluster, no
 //! validator; the routing is deterministic.
 
+use crate::testing::{StubNonFinalised, stub_compact_block};
 use futures::stream::StreamExt;
-use zaino_chainview::testing::{stub_compact_block, StubNonFinalised};
 use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
 use zaino_service::routing::LightRouting;
 use zaino_service::testing::{MockChain as MockService, MockIndexerService};
@@ -25,11 +25,11 @@ use zaino_primitives::types::{
 };
 use zaino_service::{Answerable, Capability};
 
-use crate::composed::split_at_seam;
-use crate::Composed;
+use crate::Engine;
+use crate::engine::split_at_seam;
 
 type LightEngine =
-    Composed<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>, LightRouting>;
+    Engine<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>, LightRouting>;
 
 fn height(h: u32) -> Height {
     Height::try_from(h).expect("valid height")
@@ -45,7 +45,7 @@ fn range(start: u32, end: u32) -> HeightRange {
 // The engine consumes the *canonical* (resilient) source, so the mock is wrapped
 // in the ValidatorClient decorator — exactly how the root injects it.
 fn engine_with(source: MockChain) -> LightEngine {
-    Composed::new(
+    Engine::new(
         StubNonFinalised::empty(),
         StubNonFinalised::empty(),
         ValidatorClient::new(source, RetryPolicy::default()),
@@ -136,18 +136,24 @@ async fn address_reads_are_remote_under_light_routing() {
     AddressRead::balance(&snapshot, &addr, range(0, 10))
         .await
         .expect("balance served");
-    assert!(AddressRead::unspent_outpoints(&snapshot, &addr)
-        .await
-        .expect("utxos served")
-        .is_empty());
-    assert!(AddressRead::tx_ids(&snapshot, &addr, range(0, 10))
-        .await
-        .expect("txids served")
-        .is_empty());
-    assert!(AddressRead::deltas(&snapshot, &addr, range(0, 10))
-        .await
-        .expect("deltas served")
-        .is_empty());
+    assert!(
+        AddressRead::unspent_outpoints(&snapshot, &addr)
+            .await
+            .expect("utxos served")
+            .is_empty()
+    );
+    assert!(
+        AddressRead::tx_ids(&snapshot, &addr, range(0, 10))
+            .await
+            .expect("txids served")
+            .is_empty()
+    );
+    assert!(
+        AddressRead::deltas(&snapshot, &addr, range(0, 10))
+            .await
+            .expect("deltas served")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -237,7 +243,7 @@ async fn treestate_is_remote_under_light_routing() {
 /// manifest is "to the tip" once it has one.
 fn engine_over_a_serviceable_store(
     tip: Option<u32>,
-) -> Composed<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightRouting> {
+) -> Engine<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightRouting> {
     let fs = MockIndexerService::new(MockService {
         tip: tip.map(|h| BlockRef {
             height: height(h),
@@ -245,7 +251,7 @@ fn engine_over_a_serviceable_store(
         }),
         ..MockService::default()
     });
-    Composed::new(
+    Engine::new(
         fs,
         StubNonFinalised::empty(),
         ValidatorClient::new(MockChain::new(), RetryPolicy::default()),
@@ -288,11 +294,11 @@ fn a_store_with_no_progress_makes_local_capabilities_not_yet() {
 /// A finalised side covering `[0, tip]` and an empty head.
 async fn pinned_with_finalised_tip(
     tip: u32,
-) -> zaino_chainview::ChainViewSnapshot<StubNonFinalised, StubNonFinalised> {
+) -> crate::chain_view::ChainViewSnapshot<StubNonFinalised, StubNonFinalised> {
     let blocks = (0..=tip)
         .map(|h| stub_compact_block(h, 1))
         .collect::<Vec<_>>();
-    zaino_chainview::ChainView::new(
+    crate::chain_view::ChainView::new(
         StubNonFinalised::from_blocks(blocks),
         StubNonFinalised::empty(),
     )
@@ -331,7 +337,7 @@ async fn a_range_splits_at_the_watermark() {
 #[tokio::test]
 async fn with_no_watermark_the_whole_range_is_the_heads() {
     let local =
-        zaino_chainview::ChainView::new(StubNonFinalised::empty(), StubNonFinalised::empty())
+        crate::chain_view::ChainView::new(StubNonFinalised::empty(), StubNonFinalised::empty())
             .snapshot()
             .await
             .expect("snapshot");

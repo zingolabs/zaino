@@ -1,0 +1,37 @@
+[package]
+name = "zaino-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The engine every use case is served by: the finalised store, the non-finalised chain head and the validator, composed under a routing into one zaino-service IndexerService."
+
+[features]
+# The in-memory stub of the non-finalised side of the seam, for composing the
+# engine in tests without the chain-head graph. Off by default so a production
+# consumer never pulls it.
+testing = []
+
+[dependencies]
+zaino-service = { path = "../zaino-service" }
+zaino-primitives = { path = "../zaino-primitives" }
+zaino-source = { version = "0.2.0", path = "../zaino-source" }
+futures = { workspace = true }
+
+[dev-dependencies]
+zaino-core = { path = ".", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
+# The wiring proofs in the crate docs and the seam tests compose the real
+# store over a real index set, indexed by the runtime's sync stack.
+zaino-store = { path = "../zaino-store" }
+zaino-indexes = { workspace = true }
+zaino-indexer = { path = "../zaino-indexer" }
+zaino-persistence = { workspace = true, features = ["testing"] }
+zaino-runtime = { path = "../zaino-runtime" }
+zaino-component = { path = "../zaino-component" }
+zaino-chain-head = { workspace = true }
+zaino-chain-head-service = { workspace = true, features = ["testing"] }
+zaino-logging = { path = "../zaino-logging" }
+tokio-util = { workspace = true }
+tracing = { workspace = true }

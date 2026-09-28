@@ -1,4 +1,4 @@
-//! [`ComposedSnapshot`] — the pinned read surface, and the reads whose
+//! [`EngineSnapshot`] — the pinned read surface, and the reads whose
 //! placement never varies.
 //!
 //! The coherence marker, the served range, and compact-block serving delegate
@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 
 use futures::stream::BoxStream;
 
-use zaino_chainview::ChainViewSnapshot;
+use crate::chain_view::ChainViewSnapshot;
 use zaino_primitives::types::{
     BlockRef, BlockSelector, CompactBlock, Height, HeightRange, RawTransaction, TransactionId,
 };
@@ -30,7 +30,7 @@ use crate::remote::RemoteChainView;
 
 /// A pinned view over the composed chain, plus the live passthrough handle,
 /// under the routing `R`.
-pub struct ComposedSnapshot<F, N, Src, R> {
+pub struct EngineSnapshot<F, N, Src, R> {
     /// Pinned local reads — the composed FS⊕NFS view.
     local: ChainViewSnapshot<F, N>,
     /// Live passthrough reads — the validator through the source ports.
@@ -40,9 +40,9 @@ pub struct ComposedSnapshot<F, N, Src, R> {
     routing: PhantomData<R>,
 }
 
-impl<F, N, Src, R> ComposedSnapshot<F, N, Src, R> {
+impl<F, N, Src, R> EngineSnapshot<F, N, Src, R> {
     /// Pair a pinned local view with the passthrough handle riding alongside
-    /// it. Built only by the engine's [`snapshot`](crate::Composed), which
+    /// it. Built only by the engine's [`snapshot`](crate::Engine), which
     /// captures the local sides in one shot so the pin stays coherent across
     /// the seam.
     pub(crate) fn new(local: ChainViewSnapshot<F, N>, remote: RemoteChainView<Src>) -> Self {
@@ -106,7 +106,7 @@ fn non_empty(range: HeightRange) -> Option<HeightRange> {
     (range.start < range.end).then_some(range)
 }
 
-impl<F: Clone, N: Clone, Src: Clone, R> Clone for ComposedSnapshot<F, N, Src, R> {
+impl<F: Clone, N: Clone, Src: Clone, R> Clone for EngineSnapshot<F, N, Src, R> {
     fn clone(&self) -> Self {
         Self {
             local: self.local.clone(),
@@ -121,7 +121,7 @@ impl<F: Clone, N: Clone, Src: Clone, R> Clone for ComposedSnapshot<F, N, Src, R>
 // Delegated to the composed view: the pin, the coverage, and the finalised/tip
 // boundary are exactly what the composer already computes across the seam.
 
-impl<F, N, Src, R> ChainSegment for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> ChainSegment for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
@@ -137,7 +137,7 @@ where
     }
 }
 
-impl<F, N, Src, R> Snapshot for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> Snapshot for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
@@ -153,7 +153,7 @@ where
 
 /// Always local: composing compact blocks across the seam is what the two
 /// tiers exist for.
-impl<F, N, Src, R> CompactBlockRead for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> CompactBlockRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
@@ -173,7 +173,7 @@ where
 
 /// Always local: a projection of the compact block already served, reduced to
 /// its spend markers. Not a separate index.
-impl<F, N, Src, R> CompactNullifierRead for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> CompactNullifierRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
@@ -193,7 +193,7 @@ where
 }
 
 /// Always local: the aggregate is read off the composed pinned tip.
-impl<F, N, Src, R> ChainInfoRead for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> ChainInfoRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
@@ -212,7 +212,7 @@ where
 
 /// Always remote: no local index holds transaction bytes, and the wallet parses
 /// them itself, so the validator's `getrawtransaction` answer relays as is.
-impl<F, N, Src, R> RawTransactionRead for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> RawTransactionRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,

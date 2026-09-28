@@ -1,11 +1,13 @@
-# zaino-store-service
+# zaino-core
 
-The concrete inner engine: the finalised store, the non-finalised chain head
-and the validator, composed into one `zaino-service` `IndexerService` **under a
-use case's routing**.
+The engine every use case is served by: the finalised store, the non-finalised
+chain head and the validator, composed into one `zaino-service` `IndexerService`
+**under a routing**. One engine type backs every use case; what differs per
+deployment is the routing it is composed under and the store it is composed
+over, both type parameters.
 
 ```text
-Composed<Fs, Nfs, Src, R>
+Engine<Fs, Nfs, Src, R>
    Fs   finalised store     TakeSnapshot, snapshot: ChainSegment + CompactBlockRead (+ index reads)
    Nfs  non-finalised head  TakeSnapshot, snapshot: ChainSegment + CompactBlockRead (+ window reads)
    Src  validator handle    the canonical, resilient zaino-source ports
@@ -15,9 +17,10 @@ Composed<Fs, Nfs, Src, R>
 ## What the composer decides, and what it does not
 
 The composer decides *how* two chain tiers become one coherent view: both are
-captured together on each pin (`zaino-chainview`), so the seam watermark and
-the volatile window agree, and every read through the resulting
-`ComposedSnapshot` sees one instant.
+captured together on each pin (the `chain_view` module, see
+[chain_view.md](./chain_view.md)), so the seam watermark and the volatile
+window agree, and every read through the resulting `EngineSnapshot` sees one
+instant.
 
 It does **not** decide which provider answers a capability. That is `R`. Each
 read trait is implemented on the snapshot once, bounded on `R`'s placement for
@@ -33,7 +36,7 @@ that capability and on the provider ports that placement needs:
 
 A placement whose providers are missing is an impl that does not exist, so the
 use case's profile bound fails where the engine is wired. The crate docs on
-`Composed` carry four doc-tests that pin this: the light routing over a
+`Engine` carry four doc-tests that pin this: the light routing over a
 light-wallet store is the light profile; the same store with address history
 routed locally is not (compile-fail, the store lacks the index); local address
 history over providers that have it is; and treestate routed locally is not

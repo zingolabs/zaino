@@ -8,14 +8,14 @@
 
 use std::future::Future;
 
-use zaino_chainview::ChainViewSnapshot;
+use crate::chain_view::ChainViewSnapshot;
 use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, Treestate};
 use zaino_service::error::TreestateReadError;
 use zaino_service::routing::{Remote, Routing};
 use zaino_service::{ChainSegment, CompactBlockRead, TreestateRead};
 use zaino_source::{GetSubtreeRoots, GetTreestate};
 
-use super::ComposedSnapshot;
+use super::EngineSnapshot;
 use crate::remote::RemoteChainView;
 
 /// How a placement answers treestate reads over the providers `(F, N, Src)`.
@@ -35,7 +35,7 @@ pub trait TreestatePlacement<F, N, Src>: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
 }
 
-impl<F, N, Src, R> TreestateRead for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> TreestateRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,

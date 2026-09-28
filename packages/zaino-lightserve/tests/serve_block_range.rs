@@ -16,8 +16,9 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use zaino_chainview::testing::StubNonFinalised;
 use zaino_component::{CancellationToken, RunLoop, RunReport, RunReporter};
+use zaino_core::testing::StubNonFinalised;
+use zaino_core::Engine;
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
 use zaino_lightserve::{GrpcServer, LightServe};
@@ -32,7 +33,6 @@ use zaino_service::routing::LightRouting;
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::StoreReader;
-use zaino_store_service::Composed;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
 
@@ -117,7 +117,7 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
 /// empty head, and an idle validator, under the light routing. The store alone
 /// is not the light profile — it has no treestate or raw-transaction read —
 /// so it is composed exactly as the daemon composes it.
-type Engine = Composed<
+type ServedEngine = Engine<
     StoreReader<InMemoryBackend, CurrentZaino>,
     StubNonFinalised,
     ValidatorClient<MockChain>,
@@ -136,7 +136,7 @@ async fn serve(
         .local_addr()
         .expect("probe local addr");
 
-    let engine: Engine = Composed::new(
+    let engine: ServedEngine = Engine::new(
         store,
         StubNonFinalised::empty(),
         ValidatorClient::new(MockChain::new(), RetryPolicy::default()),

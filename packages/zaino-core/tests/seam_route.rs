@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 
-use zaino_chainview::ChainView;
-use zaino_chainview::testing::{StubNonFinalised, stub_compact_block};
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
+use zaino_core::chain_view::ChainView;
+use zaino_core::testing::{StubNonFinalised, stub_compact_block};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;

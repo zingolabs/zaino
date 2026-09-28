@@ -12,7 +12,7 @@
 //!   turns the first escalation into a [`RuntimeOutcome`].
 //!
 //! The read-serving composition over the finalised / non-finalised /
-//! validator providers lives in `zaino-store-service`; which provider answers
+//! validator providers lives in `zaino-core`; which provider answers
 //! each capability is the use case's `zaino_service::routing::Routing` type,
 //! not a policy table here.
 //!

@@ -21,7 +21,7 @@
 //! discovered per request.
 //!
 //! ```text
-//! reads(Composed<Fs, Nfs, Src, R>) =
+//! reads(Engine<Fs, Nfs, Src, R>) =
 //!     { C : R::C = Local  ∧ Fs, Nfs provide C }
 //!   ∪ { C : R::C = Remote ∧ Src provides C }
 //! ```

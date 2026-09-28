@@ -6,7 +6,9 @@ use std::future::Future;
 use zaino_service::error::Transient;
 use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 
-use crate::snapshot::ChainViewSnapshot;
+mod snapshot;
+
+pub use snapshot::ChainViewSnapshot;
 
 /// Composes a finalised store `Fs` and a non-finalised head `Nfs` into one
 /// served chain for compact-block serving.

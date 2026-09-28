@@ -20,19 +20,19 @@
 
 use std::future::Future;
 
-use zaino_chainview::ChainViewSnapshot;
+use crate::chain_view::ChainViewSnapshot;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, HeightRange, Outpoint, TransactionId, TransparentAddress, Utxo,
     Zatoshis, ZatoshisFlowSum,
 };
+use zaino_service::SpendStatus;
 use zaino_service::error::{AddressReadError, SpendReadError};
 use zaino_service::routing::{Local, Remote, Routing};
-use zaino_service::SpendStatus;
 use zaino_service::{AddressRead, ChainSegment, CompactBlockRead, SpendRead};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 
+use super::EngineSnapshot;
 use super::snapshot::split_at_seam;
-use super::ComposedSnapshot;
 use crate::remote::RemoteChainView;
 
 /// How a placement answers address history over the providers `(F, N, Src)`.
@@ -70,7 +70,7 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
 }
 
 /// The one impl a handler sees: dispatch on the routing's placement.
-impl<F, N, Src, R> AddressRead for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> AddressRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,

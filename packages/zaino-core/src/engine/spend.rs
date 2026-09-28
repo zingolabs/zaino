@@ -8,14 +8,14 @@
 
 use std::future::Future;
 
-use zaino_chainview::ChainViewSnapshot;
+use crate::chain_view::ChainViewSnapshot;
 use zaino_primitives::types::Outpoint;
+use zaino_service::SpendStatus;
 use zaino_service::error::SpendReadError;
 use zaino_service::routing::{Local, Routing};
-use zaino_service::SpendStatus;
 use zaino_service::{ChainSegment, CompactBlockRead, SpendRead};
 
-use super::ComposedSnapshot;
+use super::EngineSnapshot;
 use crate::remote::RemoteChainView;
 
 /// How a placement answers spend status over the providers `(F, N, Src)`.
@@ -27,7 +27,7 @@ pub trait SpendPlacement<F, N, Src>: Send + Sync + 'static {
     ) -> impl Future<Output = Result<SpendStatus, SpendReadError>> + Send;
 }
 
-impl<F, N, Src, R> SpendRead for ComposedSnapshot<F, N, Src, R>
+impl<F, N, Src, R> SpendRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,

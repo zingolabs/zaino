@@ -1,4 +1,4 @@
-# zaino-chainview
+# zaino-core::chain_view
 
 Composes a **finalised store** (FS — the durable prefix) and a **non-finalised
 head** (NFS — the volatile suffix) into **one served snapshot** for compact-block
@@ -9,8 +9,8 @@ each is a `TakeSnapshot` whose snapshot is a `ChainSegment` (coherence
 coordinate: `pinned_tip` + `coverage`) and a `CompactBlockRead` (compact-block
 reads by height or hash). The composer assigns the roles by slot — `fs` is the
 durable prefix, `nfs` the volatile suffix — so neither side describes its own
-durability. `zaino-chainview` therefore depends only on `zaino-service`; it knows
-nothing of the store or the chain-head crates.
+durability. The module names only `zaino-service` ports; it knows nothing of
+the store or the chain-head crates.
 
 The concrete segments live elsewhere: the FS segment is `zaino-store`'s
 `StoreReader`/`StoreSnapshot`; the NFS segment adapter is in
@@ -66,7 +66,7 @@ the two pinned sides through `finalised()` / `non_finalised()` and the split
 point through `watermark()`, so it routes on the coordinates this pin already
 captured rather than re-deriving them. `ChainView::finalised()` likewise
 exposes the store handle for the serviceability manifest. See
-`zaino-store-service` for the composer that does this.
+the crate's `Engine` for the composer that does this.
 
 ## Testing
 

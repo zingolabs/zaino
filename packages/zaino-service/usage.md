@@ -50,7 +50,7 @@ impl Routing for LightRouting {
 }
 ```
 
-A composer (see `zaino-store-service`) implements each routed read trait once,
+A composer (see `zaino-core`) implements each routed read trait once,
 dispatching to a per-capability *placement trait* implemented on the markers
 themselves: `Local` carries the bounds a merge across the seam needs of the two
 chain tiers, `Remote` the source ports a passthrough needs, `Withheld` nothing.

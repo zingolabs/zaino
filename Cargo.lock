@@ -5990,29 +5990,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-chainview"
-version = "0.1.0"
-dependencies = [
- "futures",
- "tokio",
- "tokio-util",
- "tracing",
- "zaino-chain-head",
- "zaino-chain-head-service",
- "zaino-chainview",
- "zaino-component",
- "zaino-indexer",
- "zaino-indexes",
- "zaino-logging",
- "zaino-persistence",
- "zaino-primitives",
- "zaino-runtime",
- "zaino-service",
- "zaino-source",
- "zaino-store",
-]
-
-[[package]]
 name = "zaino-common"
 version = "0.5.1"
 dependencies = [
@@ -6048,6 +6025,29 @@ dependencies = [
  "zaino-consensus",
  "zaino-primitives",
  "zebra-chain",
+]
+
+[[package]]
+name = "zaino-core"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-chain-head",
+ "zaino-chain-head-service",
+ "zaino-component",
+ "zaino-core",
+ "zaino-indexer",
+ "zaino-indexes",
+ "zaino-logging",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-runtime",
+ "zaino-service",
+ "zaino-source",
+ "zaino-store",
 ]
 
 [[package]]
@@ -6096,8 +6096,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonic",
- "zaino-chainview",
  "zaino-component",
+ "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-persistence",
@@ -6106,7 +6106,6 @@ dependencies = [
  "zaino-service",
  "zaino-source",
  "zaino-store",
- "zaino-store-service",
  "zaino-sync",
 ]
 
@@ -6443,21 +6442,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-store-service"
-version = "0.1.0"
-dependencies = [
- "futures",
- "tokio",
- "zaino-chainview",
- "zaino-indexes",
- "zaino-persistence",
- "zaino-primitives",
- "zaino-service",
- "zaino-source",
- "zaino-store",
-]
-
-[[package]]
 name = "zaino-sync"
 version = "0.1.0"
 dependencies = [
@@ -6503,6 +6487,7 @@ dependencies = [
  "zaino-common",
  "zaino-component",
  "zaino-consensus",
+ "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-lightserve",
@@ -6518,7 +6503,6 @@ dependencies = [
  "zaino-source-zebra-rpc",
  "zaino-status",
  "zaino-store",
- "zaino-store-service",
  "zebra-chain",
 ]
 

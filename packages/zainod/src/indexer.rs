@@ -51,7 +51,7 @@ use crate::use_case::{self, DaemonSource, LightWalletSource, Serves, UseCase};
 /// The validator is the second supply axis beside the materialisation: a
 /// validator lacking a port the use case's routing sends to it fails at the
 /// same `compose` bound a missing index does.
-type DaemonEngine<U, C> = use_case::Engine<U, LmdbBackend, ChainHeadSubscriber, C>;
+type DaemonEngine<U, C> = use_case::UseCaseEngine<U, LmdbBackend, ChainHeadSubscriber, C>;
 
 /// Start the Zaino daemon.
 ///

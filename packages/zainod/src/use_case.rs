@@ -16,7 +16,7 @@
 //! `demand ⊆ supply` once, for any use case.
 //!
 //! ```text
-//! wired(U) = Composed<StoreReader<B, U::Materialisation>, Nfs, Src, U::Routing>
+//! wired(U) = Engine<StoreReader<B, U::Materialisation>, Nfs, Src, U::Routing>
 //! ok(U)    ⟺ wired(U): Serves<U>
 //! ```
 //!
@@ -24,6 +24,7 @@
 //! use case *is* stays static.
 
 use zaino_chain_head::ChainHeadBlockSource;
+use zaino_core::Engine;
 use zaino_indexer::CompactSource;
 use zaino_indexes::indexes::headers::HeadersIndex;
 use zaino_indexes::materialisation::{Builds, Materialisation};
@@ -37,7 +38,6 @@ use zaino_source::{
     GetSubtreeRoots, GetTransaction, GetTreestate, SendRawTransaction,
 };
 use zaino_store::StoreReader;
-use zaino_store_service::Composed;
 
 /// What this daemon needs of any validator to boot at all, as one name: the
 /// chain head's source port and the compact-block indexer's, both over the
@@ -117,8 +117,8 @@ pub trait Serves<U: UseCase> {}
 
 /// The engine a use case wires: the store over the use case's materialisation,
 /// a head, a validator handle, under the use case's routing.
-pub type Engine<U, B, Nfs, Src> =
-    Composed<StoreReader<B, <U as UseCase>::Materialisation>, Nfs, Src, <U as UseCase>::Routing>;
+pub type UseCaseEngine<U, B, Nfs, Src> =
+    Engine<StoreReader<B, <U as UseCase>::Materialisation>, Nfs, Src, <U as UseCase>::Routing>;
 
 /// Compose the engine for use case `U`, checking that it serves what `U`
 /// demands.
@@ -130,14 +130,14 @@ pub fn compose<U, B, Nfs, Src>(
     store: StoreReader<B, U::Materialisation>,
     head: Nfs,
     source: Src,
-) -> Engine<U, B, Nfs, Src>
+) -> UseCaseEngine<U, B, Nfs, Src>
 where
     U: UseCase,
     StoreReader<B, U::Materialisation>: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    Engine<U, B, Nfs, Src>: Serves<U>,
+    UseCaseEngine<U, B, Nfs, Src>: Serves<U>,
 {
-    Composed::new(store, head, source)
+    Engine::new(store, head, source)
 }
 
 /// Lightwalletd-compatible serving: compact blocks composed locally from the

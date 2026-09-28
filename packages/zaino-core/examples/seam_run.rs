@@ -5,7 +5,7 @@
 //! Run it with:
 //!
 //! ```text
-//! cargo run -p zaino-chainview --example seam_run
+//! cargo run -p zaino-core --example seam_run
 //! ```
 //!
 //! It composes a genuine finalised store (`zaino-store`'s `StoreReader`, indexed
@@ -37,8 +37,8 @@ use tokio::sync::watch;
 
 use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot as _};
 use zaino_chain_head_service::ChainHeadService;
-use zaino_chainview::ChainView;
 use zaino_component::{ComponentName, ReachabilityProbe};
+use zaino_core::chain_view::ChainView;
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
