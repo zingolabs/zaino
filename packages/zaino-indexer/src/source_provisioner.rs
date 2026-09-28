@@ -597,8 +597,32 @@ where
                         let from = synced
                             .checked_add(1)
                             .expect("tip below max height has a successor");
-                        self.sync_to(&mut engine, from, tip).await?;
-                        synced = tip;
+                        match self.sync_to(&mut engine, from, tip).await {
+                            Ok(()) => synced = tip,
+                            Err(error) => {
+                                // The source could not serve part of the range —
+                                // a state cache that has not caught up to the
+                                // boundary, or a transport the fallback cannot
+                                // reach. Whatever was fetched before the failure
+                                // is committed and stamped; resume from there on
+                                // the next tip change rather than take the
+                                // runtime down for a range the next poll may
+                                // serve. Not retried here: the source has already
+                                // retried transient failures under its own policy.
+                                synced = SyncEngine::<Ctx, B>::committed_height(&self.backend)?
+                                    .and_then(|height| u32::try_from(height.value()).ok())
+                                    .and_then(|height| Height::try_from(height).ok())
+                                    .unwrap_or(synced);
+                                warn!(
+                                    %error,
+                                    from = u32::from(from),
+                                    to = u32::from(tip),
+                                    resumed_at = u32::from(synced),
+                                    "follow sync failed; the finalised index resumes from its \
+                                     committed watermark on the next tip change"
+                                );
+                            }
+                        }
                     }
                 }
             }
