@@ -40,13 +40,15 @@ use sync_bench::{
 #[command(name = "sync-bench", about, long_about = None)]
 struct Args {
     /// What to measure: `provision` (read-path ceiling), `sync` (full pipeline),
-    /// or `both` (run both over one window and attribute the bottleneck).
-    #[arg(long, value_enum, default_value_t = Mode::Sync)]
+    /// or `both` (run both over one window and attribute the bottleneck). The
+    /// cluster Job selects it through `BENCH_MODE`.
+    #[arg(long, value_enum, env = "BENCH_MODE", default_value_t = Mode::Sync)]
     mode: Mode,
 
     /// Source adapter. `readstate` opens the on-disk state DB (run on the
-    /// validator's node); `rpc` reaches the JSON-RPC endpoint.
-    #[arg(long, value_enum, default_value_t = AdapterArg::Readstate)]
+    /// validator's node); `rpc` reaches the JSON-RPC endpoint. The cluster Job
+    /// selects it through `BENCH_ADAPTER`.
+    #[arg(long, value_enum, env = "BENCH_ADAPTER", default_value_t = AdapterArg::Readstate)]
     adapter: AdapterArg,
 
     /// Zebra cache directory (the state DB lives under it, per network). Required
