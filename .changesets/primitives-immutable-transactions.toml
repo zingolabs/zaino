@@ -1,0 +1,9 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+Block.transactions is a private field read through Block::transactions(), \
+which returns the list in block order. A Block is built only through \
+Block::try_new, so its transaction list is fixed at construction and every \
+block carries at least its coinbase.
+"""
