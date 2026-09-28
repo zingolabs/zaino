@@ -42,16 +42,17 @@ use zaino_store::{StoreComponent, StoreReader};
 
 use crate::config::{DaemonConfig, Network, SourceMode, UseCaseKind};
 use crate::error::IndexerError;
-use crate::use_case::{self, DaemonSource, LightWalletSource, Serves, UseCase};
+use crate::use_case::{self, DaemonSource, Deployment, LightWalletSource};
+use zaino_service::use_cases::{Serves, UseCase};
 
-/// The engine this daemon wires for use case `U` over the validator client
-/// `C`: the LMDB store over the use case's materialisation, the chain head,
-/// and the client, under the use case's routing.
+/// The engine this daemon wires for deployment `D` over the validator client
+/// `C`: the LMDB store over the deployment's index set, the chain head, and
+/// the client, under the deployment's routing.
 ///
-/// The validator is the second supply axis beside the materialisation: a
-/// validator lacking a port the use case's routing sends to it fails at the
+/// The validator is the second supply axis beside the index set: a
+/// validator lacking a port the deployment's routing sends to it fails at the
 /// same `compose` bound a missing index does.
-type DaemonEngine<U, C> = use_case::UseCaseEngine<U, LmdbBackend, ChainHeadSubscriber, C>;
+type DaemonEngine<D, C> = use_case::DeploymentEngine<D, LmdbBackend, ChainHeadSubscriber, C>;
 
 /// Start the Zaino daemon.
 ///
@@ -229,24 +230,24 @@ fn rpc_auth(
 /// wraps it in the resilient [`ValidatorClient`]; the chain-head reaches the raw
 /// one-shot ports through the `Arc` directly. The chain-head's confirmed-watermark
 /// gate is the seam owner — it trims only what the FS has committed.
-/// Select the use case config names and boot it.
+/// Select the deployment config names and boot it.
 ///
 /// The one place a runtime value becomes a type: each arm is a fully static
-/// shape, and the only thing an arm supplies beyond the use case is the
-/// serving adapter that speaks its protocol. Adding a use case is adding an
-/// arm; the compiler checks the arm's shape at [`use_case::compose`].
+/// shape, and the only thing an arm supplies beyond the deployment is the
+/// serving adapter that speaks its use case's protocol. Adding a deployment
+/// is adding an arm; the compiler checks the arm's shape at [`use_case::compose`].
 async fn select_use_case<C>(
     client: Arc<C>,
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
 where
-    // Each arm names what its use case requires of the validator, as one
-    // bundle; the profile its adapter demands then follows from the impls.
+    // Each arm names what its deployment requires of the validator, as one
+    // bundle; the demand its adapter carries then follows from the impls.
     C: LightWalletSource,
 {
     match config.use_case {
         UseCaseKind::LightWallet => {
-            boot::<use_case::LightWallet, _, C>(client, config, |engine, addr| {
+            boot::<use_case::LightWalletPassthrough, _, C>(client, config, |engine, addr| {
                 GrpcServer::new(LightServe::new(engine), addr)
             })
             .await
@@ -254,23 +255,22 @@ where
     }
 }
 
-/// Boot the runtime for use case `U`, serving its engine through `serve`.
+/// Boot the runtime for deployment `D`, serving its engine through `serve`.
 ///
-/// Generic over the use case: the index set the backend opens and the indexer
-/// builds, the materialisation the store reader is typed to, and the routing
-/// the engine composes under all come from `U`, so none of them can be paired
+/// Generic over the deployment: the index set the backend opens and the
+/// indexer builds, the set the store reader is typed to, and the routing the
+/// engine composes under all come from `D`, so none of them can be paired
 /// wrongly here. `demand ⊆ supply` is checked once, at [`use_case::compose`].
-async fn boot<U, A, C>(
+async fn boot<D, A, C>(
     client: Arc<C>,
     config: DaemonConfig,
-    serve: impl FnOnce(DaemonEngine<U, C>, std::net::SocketAddr) -> A,
+    serve: impl FnOnce(DaemonEngine<D, C>, std::net::SocketAddr) -> A,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
 where
-    U: UseCase,
+    D: Deployment,
     C: DaemonSource,
-    StoreReader<LmdbBackend, U::Materialisation>:
-        TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    DaemonEngine<U, C>: Serves<U>,
+    StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    DaemonEngine<D, C>: Serves<D::UseCase>,
     RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
 {
     // Every consumer — the FS indexer, the chain head, the engine's passthrough
@@ -279,9 +279,9 @@ where
 
     // LMDB must declare every namespace up front: one per index in the set, plus
     // the engine's reserved watermark / format-version namespaces. The set is
-    // the use case's materialisation — the same type the store reader is wired
+    // the deployment's index set — the same type the store reader is wired
     // over below, so what is built and what is served cannot drift.
-    let namespaces: Vec<Namespace> = U::Materialisation::index_set()
+    let namespaces: Vec<Namespace> = D::Indexes::index_set()
         .index_ids()
         .into_iter()
         .map(Namespace::from)
@@ -294,10 +294,10 @@ where
     })?;
 
     // The finalised store: the indexer writes it, the engine composes blocks on
-    // read from it. One reader, shared (Arc-backed clone). Typed to the use
-    // case's materialisation: the reads it has are exactly the reads those
+    // read from it. One reader, shared (Arc-backed clone). Typed to the
+    // deployment's index set: the reads it has are exactly the reads those
     // indexes back.
-    let store_reader = StoreReader::<_, U::Materialisation>::new(Arc::new(backend.clone()));
+    let store_reader = StoreReader::<_, D::Indexes>::new(Arc::new(backend.clone()));
 
     // A watermark ahead of the headers index claims heights the store cannot
     // serve, and every read in that gap would be routed to it and answer
@@ -315,10 +315,10 @@ where
     }
 
     // The FS indexer sources the cheap pre-index compact block and builds the
-    // use case's index set, resuming from the backend watermark.
+    // deployment's index set, resuming from the backend watermark.
     let driver = SourceSyncDriver::resuming_compact(
         &backend,
-        U::Materialisation::index_set(),
+        D::Indexes::index_set(),
         Arc::clone(&source),
         |compact_block| context_from_pre_index_compact_block(&compact_block),
         SyncTuning {
@@ -347,12 +347,12 @@ where
     .await
     .map_err(IndexerError::ChainHeadInit)?;
 
-    // Compose FS ⊕ NFS ⊕ validator into the served engine under the use case's
-    // routing. The passthrough side consumes the resilient ValidatorClient
+    // Compose FS ⊕ NFS ⊕ validator into the served engine under the
+    // deployment's routing. The passthrough side consumes the resilient ValidatorClient
     // decorator over the shared validator — the canonical ports, never the raw
     // one-shots, and never the concrete adapter type. That this engine serves
     // what the use case demands is the `compose` bound.
-    let engine = use_case::compose::<U, _, _, _>(
+    let engine = use_case::compose::<D, _, _, _>(
         store_reader.clone(),
         chain_head_subscriber,
         (*source).clone(),
@@ -366,7 +366,7 @@ where
     // The chain-head writer is escalated and supervised exactly like the indexer.
     let chain_head = RunComponent::new(ComponentName("chain-head"), chain_head_writer);
     let light_serve = ServeComponent::new(
-        ComponentName(U::NAME),
+        ComponentName(D::UseCase::NAME),
         serve(engine, config.serve.grpc_listen_address),
     );
 

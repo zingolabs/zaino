@@ -11,25 +11,26 @@
 //! on it **once per placement**, bounded on `R`'s placement for that
 //! capability and on the provider ports that placement needs. So a read the
 //! providers cannot back under the chosen routing is not a stub that refuses
-//! at runtime: it is an impl that does not exist, and the use case's profile
+//! at runtime: it is an impl that does not exist, and the use case's demand
 //! bound fails where the engine is wired.
 //!
 //! # Presence is checked at the wiring
 //!
-//! The light table over the light materialisation is the light profile:
+//! The light table over the light-wallet index set serves the light-wallet
+//! use case:
 //!
 //! ```
 //! use zaino_indexes::sets::light_wallet::LightWallet;
 //! use zaino_persistence::in_memory::InMemoryBackend;
 //! use zaino_core::routing::LightRouting;
 //! use zaino_service::testing::MockIndexerService;
-//! use zaino_service::LightServeService;
+//! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
 //! use zaino_store::StoreReader;
 //! use zaino_core::Engine;
 //!
-//! fn wired<S: LightServeService>() {}
+//! fn wired<S: LightWalletService>() {}
 //! wired::<Engine<
 //!     StoreReader<InMemoryBackend, LightWallet>,
 //!     MockIndexerService,
@@ -47,7 +48,7 @@
 //! use zaino_persistence::in_memory::InMemoryBackend;
 //! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
-//! use zaino_service::LightServeService;
+//! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
 //! use zaino_store::StoreReader;
@@ -61,7 +62,7 @@
 //!     type TransactionLocation = Withheld;
 //! }
 //!
-//! fn wired<S: LightServeService>() {}
+//! fn wired<S: LightWalletService>() {}
 //! wired::<Engine<
 //!     StoreReader<InMemoryBackend, LightWallet>,
 //!     MockIndexerService,
@@ -76,7 +77,7 @@
 //! ```
 //! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
-//! use zaino_service::LightServeService;
+//! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
 //! use zaino_core::Engine;
@@ -89,7 +90,7 @@
 //!     type TransactionLocation = Withheld;
 //! }
 //!
-//! fn wired<S: LightServeService>() {}
+//! fn wired<S: LightWalletService>() {}
 //! wired::<Engine<
 //!     MockIndexerService,
 //!     MockIndexerService,
@@ -104,7 +105,7 @@
 //! ```compile_fail,E0277
 //! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
-//! use zaino_service::LightServeService;
+//! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
 //! use zaino_core::Engine;
@@ -117,7 +118,7 @@
 //!     type TransactionLocation = Withheld;
 //! }
 //!
-//! fn wired<S: LightServeService>() {}
+//! fn wired<S: LightWalletService>() {}
 //! wired::<Engine<
 //!     MockIndexerService,
 //!     MockIndexerService,

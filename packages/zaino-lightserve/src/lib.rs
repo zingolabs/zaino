@@ -1,7 +1,7 @@
 //! `zaino-lightserve` — POC lightwalletd-compatible gRPC serve adapter.
 //!
 //! Proof that the new trait algebra rebinds the serving layer cleanly. A handler
-//! bound to [`LightServeService`] alone (not the god-traits) pins a snapshot,
+//! bound to [`LightWalletService`] alone (not the god-traits) pins a snapshot,
 //! reads domain types, converts **domain -> wire in the adapter** (see
 //! [`wire`]), and maps errors by kind — a transient snapshot failure, a
 //! not-yet-serviceable chain, and a domain broadcast rejection are three
@@ -33,7 +33,7 @@ use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
 use zaino_service::MempoolTx;
 use zaino_service::{
-    AddressRead, ChainSegment, CompactBlockRead, CompactNullifierRead, LightServeService,
+    AddressRead, ChainSegment, CompactBlockRead, CompactNullifierRead, LightWalletService,
     RawTransactionRead, TreestateRead,
 };
 
@@ -51,13 +51,13 @@ fn txid_matches_a_suffix(txid: TransactionId, suffixes: &[Vec<u8>]) -> bool {
         .any(|suffix| !suffix.is_empty() && bytes.ends_with(suffix))
 }
 
-/// Lightwalletd-compatible handler over a [`LightServeService`] engine.
+/// Lightwalletd-compatible handler over a [`LightWalletService`] engine.
 #[derive(Clone)]
-pub struct LightServe<S: LightServeService> {
+pub struct LightServe<S: LightWalletService> {
     engine: S,
 }
 
-impl<S: LightServeService> LightServe<S> {
+impl<S: LightWalletService> LightServe<S> {
     pub fn new(engine: S) -> Self {
         Self { engine }
     }
@@ -356,7 +356,7 @@ mod tests {
         })
     }
 
-    /// The handler binds only `LightServeService`, pins a snapshot, and converts
+    /// The handler binds only `LightWalletService`, pins a snapshot, and converts
     /// the domain tip to a wire `BlockRef`.
     #[tokio::test]
     async fn latest_block_maps_domain_to_wire() {

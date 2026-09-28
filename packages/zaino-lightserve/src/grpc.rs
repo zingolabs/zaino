@@ -26,7 +26,7 @@ use zaino_proto::proto::service::{
     GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction, SendResponse, ShieldedProtocol,
     SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
 };
-use zaino_service::LightServeService;
+use zaino_service::LightWalletService;
 
 use crate::error::ServeError;
 use crate::LightServe;
@@ -37,11 +37,11 @@ type ServerStream<T> = BoxStream<'static, Result<T, Status>>;
 
 /// The `CompactTxStreamer` service over a light-serve handler.
 #[derive(Clone)]
-pub struct GrpcService<S: LightServeService + Clone> {
+pub struct GrpcService<S: LightWalletService + Clone> {
     handler: LightServe<S>,
 }
 
-impl<S: LightServeService + Clone> GrpcService<S> {
+impl<S: LightWalletService + Clone> GrpcService<S> {
     /// Wrap a light-serve handler as the gRPC service.
     pub fn new(handler: LightServe<S>) -> Self {
         Self { handler }
@@ -210,7 +210,7 @@ fn unix_micros() -> i64 {
 }
 
 #[tonic::async_trait]
-impl<S: LightServeService + Clone + 'static> CompactTxStreamer for GrpcService<S> {
+impl<S: LightWalletService + Clone + 'static> CompactTxStreamer for GrpcService<S> {
     // --- wired ---
 
     async fn get_latest_block(

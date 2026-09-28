@@ -1,13 +1,13 @@
 //! `zaino-wallet` — the full-wallet library adapter.
 //!
-//! A stable-DTO facade over the [`WalletLibService`] inner port. A wallet that
+//! A stable-DTO facade over the [`FullWalletService`] inner port. A wallet that
 //! embeds Zaino (zallet) holds an [`Indexer`] and speaks its DTOs; the inner
 //! surface's domain types are converted here, at the adapter, so the inner
 //! primitives can evolve without breaking the embedded consumer.
 //!
 //! The handle is named [`Indexer`] because that is what it is *from the wallet's
 //! point of view*: the thing it queries for chain data. It is bound to
-//! [`WalletLibService`] alone — not the whole inner surface — so it depends on
+//! [`FullWalletService`] alone — not the whole inner surface — so it depends on
 //! exactly the capabilities the full-wallet use case needs, and nothing else.
 //!
 //! This is the driving-adapter half of the hexagon: a public library *is* a
@@ -20,14 +20,14 @@ mod error;
 pub use dto::{WalletTip, WalletTxId};
 pub use error::WalletError;
 
-use zaino_service::{ChainSegment, WalletLibService};
+use zaino_service::{ChainSegment, FullWalletService};
 
-/// The indexer a full wallet library queries, over a [`WalletLibService`] engine.
-pub struct Indexer<W: WalletLibService> {
+/// The indexer a full wallet library queries, over a [`FullWalletService`] engine.
+pub struct Indexer<W: FullWalletService> {
     engine: W,
 }
 
-impl<W: WalletLibService> Indexer<W> {
+impl<W: FullWalletService> Indexer<W> {
     pub fn new(engine: W) -> Self {
         Self { engine }
     }
@@ -52,7 +52,7 @@ mod tests {
     use zaino_primitives::types::{BlockHash, BlockRef, Height};
     use zaino_service::testing::{MockChain, MockIndexerService};
 
-    /// The adapter binds only `WalletLibService`, pins a snapshot, and maps the
+    /// The adapter binds only `FullWalletService`, pins a snapshot, and maps the
     /// domain tip to a stable DTO.
     #[tokio::test]
     async fn tip_maps_to_dto() {

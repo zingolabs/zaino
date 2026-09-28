@@ -60,9 +60,9 @@ that capability and on the provider ports that placement needs:
 | spend status | `R::Spend` | `Local` only: both tiers `SpendRead` |
 
 A placement whose providers are missing is an impl that does not exist, so the
-use case's profile bound fails where the engine is wired. The crate docs on
+use case's demand bound fails where the engine is wired. The crate docs on
 `Engine` carry four doc-tests that pin this: the light routing over a
-light-wallet store is the light profile; the same store with address history
+light-wallet store serves the light-wallet use case; the same store with address history
 routed locally is not (compile-fail, the store lacks the index); local address
 history over providers that have it is; and treestate routed locally is not
 for any providers.

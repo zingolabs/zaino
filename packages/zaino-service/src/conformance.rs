@@ -4,12 +4,12 @@
 //! [`assert_light_wallet_reads`] drives every read the light-wallet demand
 //! pulls through a pinned view and asserts each is *serviceable* — a real
 //! answer, a domain miss (`Ok(None)`), or a real backend failure, but never the
-//! `NotServiceable` stub. [`assert_light_serve_conformance`] wraps it at the
+//! `NotServiceable` stub. [`assert_light_wallet_conformance`] wraps it at the
 //! service boundary: pin a snapshot, run the read-set through it, then exercise
 //! the controls.
 //!
-//! Bound to the [`LightWalletReads`] read-set and the [`LightServeService`]
-//! profile, so any engine claiming that profile is checked against the same
+//! Bound to the [`LightWalletReads`] read-set and the [`LightWalletService`]
+//! service, so any engine claiming that service is checked against the same
 //! battery. It greens exactly when the full read-set is wired; until then it is
 //! the red target a work-in-progress engine fails.
 
@@ -17,7 +17,7 @@ use zaino_primitives::types::{
     BlockSelector, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress,
 };
 
-use crate::{LightServeService, LightWalletReads};
+use crate::{LightWalletReads, LightWalletService};
 
 /// Panic if `$result` is the `NotServiceable` stub; any other outcome — an
 /// answer, a domain miss, or a real `Transient` / `Fatal` failure — passes. A
@@ -79,7 +79,7 @@ pub async fn assert_light_wallet_reads<Snap: LightWalletReads>(snap: &Snap) {
     );
 }
 
-/// Assert `service` conforms to the [`LightServeService`] profile at runtime:
+/// Assert `service` conforms to the [`LightWalletService`] demand at runtime:
 /// its pinned snapshot serves the full light-wallet read-set, and its controls
 /// are exercisable.
 ///
@@ -88,7 +88,7 @@ pub async fn assert_light_wallet_reads<Snap: LightWalletReads>(snap: &Snap) {
 /// variant — it either relays (`Ok`) or the validator rejects (`Err`), both a
 /// live answer — and the subscription streams contract to *yield a stream*, an
 /// empty one being a valid steady state.
-pub async fn assert_light_serve_conformance<S: LightServeService>(service: &S) {
+pub async fn assert_light_wallet_conformance<S: LightWalletService>(service: &S) {
     let snapshot = service.snapshot().await.expect("snapshot acquired");
     assert_light_wallet_reads(&snapshot).await;
 

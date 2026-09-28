@@ -86,7 +86,7 @@ pub trait ReportedUpgrades: Send + Sync {
 
 /// Relay a node-operator query Zaino does not index (mining/peers/txoutset) to
 /// the validator. A control, not a read: the answer comes from the source, not a
-/// pinned snapshot, and is returned opaque. The node-rpc profile's delta.
+/// pinned snapshot, and is returned opaque. The node-rpc use case's delta.
 pub trait NodeQueryRelay: Send + Sync {
     fn relay_node_query(
         &self,

@@ -1,27 +1,25 @@
-//! Use cases as types: the one place a deployment's demand, routing and
-//! materialisation are bound together.
+//! Deployments: how this daemon serves a use case, as types.
 //!
-//! A serving profile (`LightServeService`, `NodeRpcService`) names what a use
-//! case *demands*. A [`Routing`] names which provider answers each capability.
-//! A [`Materialisation`] names which indexes the finalised store builds. Each
-//! is a type, and each is checked by the compiler — but nothing stops a wiring
-//! from pairing the light profile with the explorer's routing except common
-//! sense, because the profile is a trait and the other two are free choices at
+//! A use case (`zaino_service::use_cases`) names what a consumer demands. A
+//! deployment names how this daemon meets it: the [`Routing`] the engine is
+//! composed under and the index set the finalised store builds. Each is a
+//! type, and each is checked by the compiler — but nothing stops a wiring from
+//! pairing the light-wallet demand with the explorer's routing except common
+//! sense, because the demand is a trait and the other two are free choices at
 //! the wiring site.
 //!
-//! [`UseCase`] removes that seam. It is a marker type with the routing and the
-//! materialisation as associated types, and [`Serves<U>`] carries the demand
-//! as a bound the wiring can name generically. The composition root names a
-//! use case, never a routing or an index set, and [`compose`] checks
-//! `demand ⊆ supply` once, for any use case.
+//! [`Deployment`] removes that seam. It is a marker type with the use case,
+//! the routing and the index set as associated types, and [`compose`] checks
+//! `demand ⊆ supply` once, for any deployment, through the use case's
+//! [`Serves`] bound.
 //!
 //! ```text
-//! wired(U) = Engine<StoreReader<B, U::Materialisation>, Nfs, Src, U::Routing>
-//! ok(U)    ⟺ wired(U): Serves<U>
+//! wired(D) = Engine<StoreReader<B, D::Indexes>, Nfs, Src, D::Routing>
+//! ok(D)    ⟺ wired(D): Serves<D::UseCase>
 //! ```
 //!
-//! Config selects a use case from a closed set; it does not shape one. What a
-//! use case *is* stays static.
+//! Config selects a deployment from a closed set; it does not shape one. What
+//! a deployment *is* stays static.
 
 use zaino_chain_head::ChainHeadBlockSource;
 use zaino_core::routing::{LightRouting, Routing};
@@ -31,7 +29,8 @@ use zaino_indexes::indexes::headers::HeadersIndex;
 use zaino_indexes::materialisation::{Builds, Materialisation};
 use zaino_indexes::sets::current_zaino::CurrentZainoContext;
 use zaino_indexes::sets::light_wallet::LightWallet as LightWalletIndexes;
-use zaino_service::{ChainSegment, CompactBlockRead, LightServeService, TakeSnapshot};
+use zaino_service::use_cases::{LightWallet, Serves, UseCase};
+use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 use zaino_source::{
     GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos,
     GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction,
@@ -47,18 +46,18 @@ use zaino_store::StoreReader;
 ///
 /// A new validator adapter implements the one-shot ports it can; the client
 /// over it satisfies this exactly when those cover what the chain head and the
-/// indexer ask, and a use case's `…Source` bundle names what else that use
-/// case sends through.
+/// indexer ask, and a deployment's `…Source` bundle names what else it sends
+/// through.
 pub trait DaemonSource: ChainHeadBlockSource + CompactSource + Clone {}
 impl<S> DaemonSource for S where S: ChainHeadBlockSource + CompactSource + Clone {}
 
-/// What the light-wallet use case requires of the validator, as one name: the
-/// daemon floor plus every port its routing's remote placements and the
-/// always-remote reads relay through.
+/// What the light-wallet passthrough deployment requires of the validator, as
+/// one name: the daemon floor plus every port its routing's passthrough
+/// placements and the always-passthrough reads relay through.
 ///
-/// Hand-kept beside the use case rather than derived, because Rust cannot
+/// Hand-kept beside the deployment rather than derived, because Rust cannot
 /// compute "the union of the source bounds of the impls this routing selects".
-/// Safe to be wrong in one direction: a port missing here fails the profile
+/// Safe to be wrong in one direction: a port missing here fails the demand
 /// bound at the wiring, naming it.
 pub trait LightWalletSource:
     DaemonSource
@@ -93,63 +92,54 @@ impl<S> LightWalletSource for S where
 {
 }
 
-/// A deployment shape: its routing and its materialisation, bound together.
-pub trait UseCase: 'static {
-    /// The name config selects it by, and the serving component's name.
-    const NAME: &'static str;
+/// One way of serving a use case: the use case, the routing the engine is
+/// composed under, and the index set the finalised store builds.
+pub trait Deployment: 'static {
+    /// The demand this deployment meets.
+    type UseCase: UseCase;
     /// Which provider answers each capability.
     type Routing: Routing;
-    /// Which indexes the finalised store builds. Every materialisation today
+    /// Which indexes the finalised store builds. Every index set today
     /// projects from the current-zaino provisioning context, which is what the
     /// indexer's compact-block provisioner produces, and every one builds the
     /// headers index: the store pins its tip from it and checks its watermark
     /// against it.
-    type Materialisation: Materialisation<Context = CurrentZainoContext> + Builds<HeadersIndex>;
+    type Indexes: Materialisation<Context = CurrentZainoContext> + Builds<HeadersIndex>;
 }
 
-/// The demand of use case `U`, as a bound.
-///
-/// One blanket impl per use case forwards to its profile trait, so a wiring
-/// can require `engine: Serves<U>` without naming the profile. Rust cannot
-/// name a trait as an associated item; this is the indirection that stands in
-/// for `type Profile`.
-pub trait Serves<U: UseCase> {}
+/// The engine a deployment wires: the store over its index set, a head, a
+/// validator handle, under its routing.
+pub type DeploymentEngine<D, B, Nfs, Src> =
+    Engine<StoreReader<B, <D as Deployment>::Indexes>, Nfs, Src, <D as Deployment>::Routing>;
 
-/// The engine a use case wires: the store over the use case's materialisation,
-/// a head, a validator handle, under the use case's routing.
-pub type UseCaseEngine<U, B, Nfs, Src> =
-    Engine<StoreReader<B, <U as UseCase>::Materialisation>, Nfs, Src, <U as UseCase>::Routing>;
-
-/// Compose the engine for use case `U`, checking that it serves what `U`
-/// demands.
+/// Compose the engine for deployment `D`, checking that it serves what `D`'s
+/// use case demands.
 ///
-/// The `where` clause is the whole point: a materialisation lacking an index
-/// the profile's reads need, or a placement no provider can take, fails here —
-/// at the one call site per use case — rather than at a request.
-pub fn compose<U, B, Nfs, Src>(
-    store: StoreReader<B, U::Materialisation>,
+/// The `where` clause is the whole point: an index set lacking an index the
+/// demand's reads need, or a placement no provider can take, fails here — at
+/// the one call site per deployment — rather than at a request.
+pub fn compose<D, B, Nfs, Src>(
+    store: StoreReader<B, D::Indexes>,
     head: Nfs,
     source: Src,
-) -> UseCaseEngine<U, B, Nfs, Src>
+) -> DeploymentEngine<D, B, Nfs, Src>
 where
-    U: UseCase,
-    StoreReader<B, U::Materialisation>: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    D: Deployment,
+    StoreReader<B, D::Indexes>: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
     Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    UseCaseEngine<U, B, Nfs, Src>: Serves<U>,
+    DeploymentEngine<D, B, Nfs, Src>: Serves<D::UseCase>,
 {
     Engine::new(store, head, source)
 }
 
-/// Lightwalletd-compatible serving: compact blocks composed locally from the
-/// light-wallet index set, wallet-parsed reads passed through to the validator,
-/// node reads withheld.
+/// The light-wallet use case served with compact blocks composed locally from
+/// the light-wallet index set and everything the wallet parses itself
+/// relayed to the validator; node reads withheld.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LightWallet;
+pub struct LightWalletPassthrough;
 
-impl UseCase for LightWallet {
-    const NAME: &'static str = "light-wallet";
+impl Deployment for LightWalletPassthrough {
+    type UseCase = LightWallet;
     type Routing = LightRouting;
-    type Materialisation = LightWalletIndexes;
+    type Indexes = LightWalletIndexes;
 }
-
-impl<S: LightServeService> Serves<LightWallet> for S {}

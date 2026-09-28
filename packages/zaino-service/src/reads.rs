@@ -137,7 +137,7 @@ pub trait ForkReconcile: Send + Sync {
 
 /// Compact blocks with spend nullifiers populated — the lightwalletd
 /// `GetBlockNullifiers` serving variant. A read *on top of* the wallet core, so
-/// it is the light-serve profile's delta, not part of `WalletReadCore`.
+/// it is the light-wallet use case's delta, not part of `WalletReadCore`.
 ///
 /// Backed by: the compact-block index plus the nullifier set.
 pub trait CompactNullifierRead: Send + Sync {
@@ -148,7 +148,7 @@ pub trait CompactNullifierRead: Send + Sync {
 }
 
 /// Aggregate chain/node info — the domain behind `getblockchaininfo`. The
-/// node-rpc profile's delta over the shared reads.
+/// node-rpc use case's delta over the shared reads.
 ///
 /// Backed by: the chain-head tip plus the validator's estimated height.
 pub trait ChainInfoRead: Send + Sync {

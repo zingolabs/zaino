@@ -26,10 +26,11 @@ pub mod error;
 mod events;
 mod locator;
 mod node_query;
-mod profiles;
+mod read_sets;
 mod reads;
 mod status;
 mod upgrades;
+pub mod use_cases;
 
 #[cfg(feature = "testing")]
 pub mod conformance;
@@ -46,13 +47,11 @@ pub use controls::{
 pub use events::{MempoolTx, TipEvent};
 pub use locator::{ForkPoint, Locator};
 pub use node_query::{NodeQuery, NodeQueryAnswer};
-pub use profiles::{
-    FullWalletReads, LightServeService, LightWalletReads, NodeRpcReads, NodeRpcService,
-    WalletLibService, WalletReadCore,
-};
+pub use read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads, WalletReadCore};
 pub use reads::{
     AddressRead, BlockRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, ForkReconcile,
     RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
 };
 pub use status::{SpendStatus, TxStatus};
 pub use upgrades::{ReportedUpgrade, UpgradeStatus};
+pub use use_cases::{FullWalletService, LightWalletService, NodeRpcService, Serves, UseCase};

@@ -116,13 +116,13 @@ async fn mempool_compact_transaction_maps_a_missing_txid_to_none() {
 }
 
 // The acceptance gate for the full light-wallet read-set: under `LightRouting`
-// the composed engine serves every read `LightServeService` demands — none
+// the composed engine serves every read `LightWalletService` demands — none
 // reporting itself `NotServiceable`. The per-cap tests below pin each
 // capability's placement.
 #[tokio::test]
 async fn light_serve_conformance_over_a_provisioned_source() {
     let engine = engine_with(MockChain::new());
-    zaino_service::conformance::assert_light_serve_conformance(&engine).await;
+    zaino_service::conformance::assert_light_wallet_conformance(&engine).await;
 }
 
 #[tokio::test]

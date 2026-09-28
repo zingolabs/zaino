@@ -30,7 +30,7 @@ macro_rules! read_error {
             /// True only for the not-yet-serviceable stub — the read's backing
             /// substrate is unwired, distinct from a real backend failure
             /// (`Transient` / `Fatal`) or a domain miss (`Ok(None)`). The
-            /// conformance kit asserts this is false across a profile's read-set:
+            /// conformance kit asserts this is false across a use case's read-set:
             /// a served capability may answer, miss, or fail, but never report
             /// itself unserviceable.
             pub fn is_not_serviceable(&self) -> bool {

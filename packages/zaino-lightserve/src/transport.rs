@@ -12,13 +12,13 @@ use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
 use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
-use zaino_service::LightServeService;
+use zaino_service::LightWalletService;
 
 use crate::grpc::GrpcService;
 use crate::LightServe;
 
 /// A tonic `CompactTxStreamer` server over a [`LightServe`] handler.
-pub struct GrpcServer<S: LightServeService + Clone> {
+pub struct GrpcServer<S: LightWalletService + Clone> {
     handler: LightServe<S>,
     bind: SocketAddr,
 }
@@ -31,14 +31,14 @@ pub enum GrpcServeError {
     Serve(String),
 }
 
-impl<S: LightServeService + Clone> GrpcServer<S> {
+impl<S: LightWalletService + Clone> GrpcServer<S> {
     /// A server exposing `handler`'s light-serve surface, bound to `bind`.
     pub fn new(handler: LightServe<S>, bind: SocketAddr) -> Self {
         Self { handler, bind }
     }
 }
 
-impl<S: LightServeService + Clone + 'static> RunLoop for GrpcServer<S> {
+impl<S: LightWalletService + Clone + 'static> RunLoop for GrpcServer<S> {
     type Error = GrpcServeError;
     const LABEL: &'static str = "serve loop";
     const RUNNING: Lifecycle = Lifecycle::Spawning;

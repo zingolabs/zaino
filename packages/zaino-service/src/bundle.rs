@@ -1,5 +1,5 @@
 //! Aggregate obligations. Fine traits are for consumers/mocks; these name the
-//! whole-engine handle. Per-use-case bundles live in [`crate::profiles`].
+//! whole-engine handle. Per-use-case bundles live in [`crate::use_cases`].
 
 use zaino_primitives::types::{BlockRef, Height, HeightRange};
 
@@ -62,8 +62,8 @@ pub trait Snapshot: ChainSegment {
 
 /// The full inner driving surface — what `zaino-runtime` implements and what a
 /// mock stands in for when testing outer clients. The runtime satisfies every
-/// capability; outer clients depend on the narrower profile bundles instead
-/// (see [`crate::profiles`]).
+/// capability; outer clients depend on the narrower use-case services instead
+/// (see [`crate::use_cases`]).
 pub trait IndexerService:
     TakeSnapshot<Snapshot: Snapshot>
     + TipSubscribe

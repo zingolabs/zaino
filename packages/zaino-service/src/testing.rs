@@ -330,16 +330,16 @@ impl Snapshot for MockSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{MockChain, MockIndexerService};
-    use crate::{BlockRead, LightServeService, NodeRpcService, TakeSnapshot, WalletLibService};
+    use crate::{BlockRead, FullWalletService, LightWalletService, NodeRpcService, TakeSnapshot};
     use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
-    /// The one concrete engine satisfies every public profile with zero
-    /// profile-specific impl code — proof the read-set + control blanket impls
+    /// The one concrete engine satisfies every use case's service with zero
+    /// use-case-specific impl code — proof the read-set + control blanket impls
     /// compose. Compile-time only; the body is a no-op.
     #[test]
-    fn mock_satisfies_all_profiles() {
-        fn assert_profiles<T: WalletLibService + LightServeService + NodeRpcService>() {}
-        assert_profiles::<MockIndexerService>();
+    fn mock_satisfies_every_use_case() {
+        fn assert_services<T: FullWalletService + LightWalletService + NodeRpcService>() {}
+        assert_services::<MockIndexerService>();
     }
 
     fn block_id(height: u32, tag: u8) -> BlockRef {

@@ -14,7 +14,7 @@
 //! [`EngineSnapshot`] is implemented once per placement, bounded on that
 //! placement and on the provider ports it needs. A capability the providers
 //! cannot back under the chosen routing is an impl that does not exist, so a
-//! use case's profile bound fails where the engine is wired — the proofs are
+//! use case's demand bound fails where the engine is wired — the proofs are
 //! in [`Engine`]'s docs.
 //!
 //! Always local: compact blocks (and their nullifier projection), chain info.
