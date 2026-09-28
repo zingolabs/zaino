@@ -53,8 +53,8 @@ use zaino_primitives::types::{
     BlockHeader, BlockRef, BlockTreeSizes, BlockTxPosition, BlockVerbose, ChainMetadata,
     ChainStateEpoch, CompactDifficulty, EquihashNonce, EquihashSolution, Height, MerkleRoot,
     Outpoint, PreIndexCompactBlock, PreIndexCompactTx, RelativeChainWork, ShieldedPool,
-    SingleBlockWork, SubtreeRoot, TransactionId, TransactionLocation, TreeRoots, TreeSize,
-    Treestate, Utxo,
+    SingleBlockWork, SubtreeRoot, Transaction, TransactionId, TransactionLocation, TreeRoots,
+    TreeSize, Treestate, Utxo,
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
@@ -140,27 +140,42 @@ pub fn empty_tree_roots() -> TreeRoots {
 
 /// A block at `h`.
 pub fn block_at(h: u32) -> Block {
-    Block {
-        header: BlockHeader {
-            hash: hash_of(h),
-            version: 4,
-            prev_hash: hash_of(h.saturating_sub(1)),
-            height: height(h),
-            time: 0,
-            merkle_root: MerkleRoot::from([0u8; 32]),
-            block_commitments: zaino_primitives::types::BlockCommitments::from([0u8; 32]),
-            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
-            nonce: EquihashNonce::from([0u8; 32]),
-            // Regtest: 36 bytes rather than 1344, so a long chain costs
-            // kilobytes instead of megabytes. Nothing here verifies work.
-            solution: EquihashSolution::Regtest([0u8; 36]),
-        },
-        transactions: Vec::new(),
-        chain_metadata: ChainMetadata {
-            sapling_tree_size: TreeSize::ZERO,
-            orchard_tree_size: TreeSize::ZERO,
-            ironwood_tree_size: TreeSize::ZERO,
-        },
+    block_with_hash(h, hash_of(h))
+}
+
+/// A block at `h` with the given hash, carrying a coinbase keyed by that hash.
+fn block_with_hash(h: u32, hash: BlockHash) -> Block {
+    let header = BlockHeader {
+        hash,
+        version: 4,
+        prev_hash: hash_of(h.saturating_sub(1)),
+        height: height(h),
+        time: 0,
+        merkle_root: MerkleRoot::from([0u8; 32]),
+        block_commitments: zaino_primitives::types::BlockCommitments::from([0u8; 32]),
+        bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+        nonce: EquihashNonce::from([0u8; 32]),
+        // Regtest: 36 bytes rather than 1344, so a long chain costs
+        // kilobytes instead of megabytes. Nothing here verifies work.
+        solution: EquihashSolution::Regtest([0u8; 36]),
+    };
+    let chain_metadata = ChainMetadata {
+        sapling_tree_size: TreeSize::ZERO,
+        orchard_tree_size: TreeSize::ZERO,
+        ironwood_tree_size: TreeSize::ZERO,
+    };
+    Block::try_new(header, vec![coinbase(hash)], chain_metadata)
+        .expect("a test block carries its coinbase")
+}
+
+/// A placeholder coinbase whose txid is its block's hash bytes.
+fn coinbase(block: BlockHash) -> Transaction {
+    Transaction {
+        txid: TransactionId::from(<[u8; 32]>::from(block)),
+        transparent: Default::default(),
+        sapling: Default::default(),
+        orchard: Default::default(),
+        ironwood: Default::default(),
     }
 }
 
@@ -188,7 +203,7 @@ fn stored_from_block(block: &Block) -> StoredBlock {
     StoredBlock {
         header: block.header.clone(),
         transactions: block
-            .transactions
+            .transactions()
             .iter()
             .map(|tx| StoredTx::transparent_only(PreIndexCompactTx::from(tx)))
             .collect(),
@@ -861,8 +876,7 @@ impl FakeHeadSnapshot {
 
     /// A block on a competing branch at `h`, distinguished by `tag`.
     pub fn branch_block(h: u32, tag: u32) -> ChainHeadBlock {
-        let mut block = block_at(h);
-        block.header.hash = hash_of(tag);
+        let block = block_with_hash(h, hash_of(tag));
         ChainHeadBlock {
             reference: BlockRef {
                 hash: block.header.hash,
@@ -987,7 +1001,7 @@ impl ChainHeadTransactionService for FakeHeadSnapshot {
         let best_chain = self.blocks.iter().find_map(|block| {
             block
                 .block
-                .transactions
+                .transactions()
                 .iter()
                 .position(|tx| tx.txid == *txid)
                 .map(|index| ChainHeadTxPosition {

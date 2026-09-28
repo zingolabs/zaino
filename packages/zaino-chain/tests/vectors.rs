@@ -133,11 +133,11 @@ async fn transactions_survive_every_provider() {
         .max_by_key(|h| {
             chain
                 .block(*h)
-                .map(|block| block.transactions.len())
+                .map(|block| block.transactions().len())
                 .unwrap_or(0)
         })
         .expect("a non-empty chain");
-    let expected = chain.block(busiest).expect("in range").transactions.len();
+    let expected = chain.block(busiest).expect("in range").transactions().len();
     assert!(expected > 0, "the vector chain has no transactions");
 
     // The same height, answered by each provider in turn. Coverage is chosen

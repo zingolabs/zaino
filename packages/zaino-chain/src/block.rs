@@ -82,7 +82,7 @@ pub(crate) fn frozen_block(block: &Block, tree_roots: TreeRoots) -> FrozenBlock 
 
 /// Every transaction in a block, as an index holds it.
 fn stored_txs(block: &Block) -> Vec<StoredTx> {
-    block.transactions.iter().map(stored_tx).collect()
+    block.transactions().iter().map(stored_tx).collect()
 }
 
 /// The indexed projection of a parsed transaction.
