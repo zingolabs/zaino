@@ -10,14 +10,16 @@ use std::sync::Arc;
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_core::Height;
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
+use zaino_indexes::indexes::headers::{self, HeadersIndex};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
-use zaino_persistence::{Backend, BackendWriter};
-use zaino_persistence_codec::watermark;
+use zaino_persistence::{Backend, BackendWriter, WriteOp};
+use zaino_persistence_codec::{encode_key, watermark};
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader, WatermarkRepair};
+use zaino_sync::primitives::BlockHeight;
 
 struct Probe(bool);
 impl ReachabilityProbe for Probe {
@@ -117,4 +119,34 @@ async fn a_watermark_ahead_of_the_index_is_re_stamped_at_the_highest_header() {
     );
     // Idempotent: a second check finds nothing to do.
     assert_eq!(store.reader().repair_watermark().expect("check runs"), None);
+}
+
+#[tokio::test]
+async fn a_hole_below_a_held_watermark_moves_the_stamp_beneath_it() {
+    let backend = InMemoryBackend::new();
+    let store = indexed_store(&backend).await;
+
+    // The other fault shape: a range that failed to index (height 1 missing)
+    // behind a later one that succeeded (height 2 present, stamp at 2).
+    backend
+        .writer()
+        .expect("writer")
+        .commit(vec![WriteOp::Delete {
+            namespace: headers::ID.into(),
+            key: encode_key::<HeadersIndex>(&BlockHeight::new(1)),
+        }])
+        .expect("delete");
+
+    assert_eq!(
+        store.reader().repair_watermark().expect("repair runs"),
+        Some(WatermarkRepair {
+            claimed: height(2),
+            corrected: height(0),
+        }),
+        "the stamp moves below the lowest hole so the indexer re-covers it"
+    );
+    assert_eq!(
+        watermark::read(&backend.reader().expect("reader")).expect("read"),
+        Some(height(0))
+    );
 }
