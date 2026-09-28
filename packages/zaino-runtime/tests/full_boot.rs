@@ -12,7 +12,7 @@ use zaino_component::{ComponentName, Health, Lifecycle};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_noderpc::{JsonRpcServer, NodeRpc};
 use zaino_runtime::{
-    Orchestra, OrchestraBuilder, ReachabilityProbe, RuntimeOutcome, ServeComponent,
+    Orchestra, OrchestraBuilder, ReachabilityProbe, RunComponent, RuntimeOutcome,
     ValidatorComponent,
 };
 use zaino_service::testing::{MockChain, MockIndexerService};
@@ -33,14 +33,14 @@ async fn boot_zaino(engine: MockIndexerService) -> (ValidatorComponent, Orchestr
         .expect("validator reachable");
 
     // Public ports, each a real server over the one engine.
-    let light_serve = ServeComponent::new(
+    let light_serve = RunComponent::new(
         ComponentName("light-serve"),
         GrpcServer::new(
             LightServe::new(engine.clone()),
             "127.0.0.1:0".parse().expect("valid addr"),
         ),
     );
-    let node_rpc = ServeComponent::new(
+    let node_rpc = RunComponent::new(
         ComponentName("node-rpc"),
         JsonRpcServer::new(
             NodeRpc::new(engine),

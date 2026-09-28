@@ -45,10 +45,3 @@ pub use signals::{classify, ReadinessCriteria, RuntimePhase, RuntimeSignals};
 pub use supervisor::{observe, supervise, supervise_step, RecoveryPolicy, SupervisionOutcome};
 pub use validator::{ValidatorComponent, ValidatorUnreachable};
 pub use zaino_component::{ReachabilityProbe, RunLoop};
-
-/// Back-compat alias: an indexer is a [`RunComponent`] over a [`RunLoop`] writer
-/// (its `RUNNING` phase is `Syncing`).
-pub type IndexerComponent<D> = RunComponent<D>;
-/// Back-compat alias: a server is a [`RunComponent`] over a [`RunLoop`] server
-/// (its `RUNNING` phase is `Spawning`).
-pub type ServeComponent<A> = RunComponent<A>;

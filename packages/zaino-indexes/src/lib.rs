@@ -22,18 +22,17 @@
 //! ## 2. Index Sets ([`sets`])
 //!
 //! Each set module defines:
-//! - A **set-wide context type** (e.g. `HeadersOnlyContext`) — the
+//! - A **set-wide context type** (e.g. `CurrentZainoContext`) — the
 //!   union of all data any index in the set might need. The
 //!   provisioner produces one of these per block.
 //! - **`ProvideContext` impls** — one per index in the set, projecting
 //!   the set-wide context into each index's narrow context type.
-//! - A **builder function** (`pipelines()`) — registers all indexes
-//!   and returns the configured `IndexPipelines`.
+//! - The **set as a type** (`index_set!`) — an [`index_set::IndexSet`] whose
+//!   `pipelines()` registers exactly the listed indexes.
 //!
 //! Different sets can compose the same indexes with different set-wide
-//! contexts. A "headers-only" set has a minimal context. A "full" set
-//! would carry transaction data too — but the HeadersIndex definition
-//! is the same in both; only the `ProvideContext` projection differs.
+//! contexts; the `HeadersIndex` definition is the same in every set, only
+//! the `ProvideContext` projection differs.
 
 pub mod capabilities;
 pub mod index_set;

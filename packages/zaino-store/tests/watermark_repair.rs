@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
+use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
-use zaino_indexes::sets::current_zaino::{context_from_block, pipelines, CurrentZaino};
+use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_persistence::{Backend, BackendWriter, WriteOp};
 use zaino_persistence_codec::{encode_key, watermark};
 use zaino_primitives::types::Height;
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::{StoreComponent, StoreReader, WatermarkRepair};
@@ -42,7 +43,7 @@ async fn indexed_store(backend: &InMemoryBackend) -> StoreComponent<InMemoryBack
     let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
     let driver = SourceSyncDriver::resuming(
         backend,
-        pipelines(),
+        CurrentZaino::pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {
@@ -53,7 +54,7 @@ async fn indexed_store(backend: &InMemoryBackend) -> StoreComponent<InMemoryBack
         },
     )
     .expect("driver builds");
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
     let store = StoreComponent::new(
         ComponentName("store"),
         StoreReader::<_, CurrentZaino>::new(Arc::new(backend.clone())),

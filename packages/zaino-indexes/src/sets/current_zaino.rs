@@ -11,7 +11,6 @@
 use zaino_primitives::types::{
     Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,
 };
-use zaino_sync::index_pipelines::IndexPipelines;
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ProvideContext;
 
@@ -387,12 +386,4 @@ crate::index_set! {
         IronwoodIndex,
         ChainMetadataIndex,
     }
-}
-
-/// Build the full current-zaino index set (10 indexes).
-///
-/// The same set [`CurrentZaino`] names as a type; kept as a function for
-/// callers that only need the runtime value.
-pub fn pipelines() -> IndexPipelines<CurrentZainoContext> {
-    <CurrentZaino as crate::index_set::IndexSet>::pipelines()
 }

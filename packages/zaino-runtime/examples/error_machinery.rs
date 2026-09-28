@@ -53,10 +53,11 @@ use zaino_component::{
     CancellationToken, ComponentName, ComponentStatus, Lifecycle, ReachabilityProbe, RunReporter,
 };
 use zaino_indexer::{FetchConcurrency, IndexerError, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, pipelines};
+use zaino_indexes::index_set::IndexSet;
+use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{Block, BlockHash, Height};
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, RunLoop, ValidatorComponent};
+use zaino_runtime::{OrchestraBuilder, RunComponent, RunLoop, ValidatorComponent};
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, NonDomainError, OneShotGetBlock,
     OneShotGetChainTip, QueryError, RetryPolicy, SubscribeChainTip, ValidatorClient,
@@ -179,7 +180,7 @@ where
 
     let driver = SourceSyncDriver::resuming(
         &backend,
-        pipelines(),
+        CurrentZaino::pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {
@@ -200,7 +201,7 @@ where
 /// Boot a validator + an indexer driven by `driver`, wait for the indexer's
 /// failure to escalate through the runtime, and report what each layer saw.
 async fn boot_and_await_failure<D: RunLoop>(driver: D) {
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
     let validator = ValidatorComponent::connect(&Probe(true))
         .await
         .expect("validator reachable");

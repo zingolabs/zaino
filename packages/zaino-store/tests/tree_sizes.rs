@@ -13,14 +13,15 @@ use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_block, pipelines, CurrentZaino};
+use zaino_indexes::index_set::IndexSet;
+use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
     Block, CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
     SaplingData, SaplingOutput, Transaction, TransactionId,
 };
 use zaino_primitives::types::{BlockSelector, Height};
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_service::{CompactBlockRead, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
@@ -95,7 +96,7 @@ async fn indexer_computes_and_serves_cumulative_tree_sizes() {
 
     let driver = SourceSyncDriver::resuming(
         &backend,
-        pipelines(),
+        CurrentZaino::pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {
@@ -106,7 +107,7 @@ async fn indexer_computes_and_serves_cumulative_tree_sizes() {
         },
     )
     .expect("driver builds");
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
     let store = StoreComponent::new(
         ComponentName("store"),
         StoreReader::<_, CurrentZaino>::new(Arc::new(backend.clone())),

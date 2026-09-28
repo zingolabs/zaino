@@ -2,7 +2,7 @@
 //!
 //! [`SyncEngineDriver`] adapts the #1402 [`SyncEngine`] to the runtime's
 //! [`RunLoop`] seam, so the Orchestra can boot and supervise index-building
-//! as an `IndexerComponent` (Syncing → Ready, escalate on failure) — the same
+//! as an `RunComponent` (Syncing → Ready, escalate on failure) — the same
 //! lifecycle every other component gets, instead of a bespoke run loop.
 //!
 //! The concrete source-backed provisioner (over dev's `zaino-source`,

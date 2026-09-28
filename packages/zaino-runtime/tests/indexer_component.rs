@@ -7,7 +7,7 @@ use std::time::Duration;
 use zaino_component::{
     CancellationToken, ComponentName, Health, Lifecycle, Managed, RunReporter, StatusWatch,
 };
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, RunLoop};
+use zaino_runtime::{OrchestraBuilder, RunComponent, RunLoop};
 
 /// A stub sync driver. `catch_up` decides whether it reaches the tip.
 struct StubSync {
@@ -38,7 +38,7 @@ impl RunLoop for StubSync {
 
 #[tokio::test]
 async fn an_indexer_reaches_ready_when_caught_up() {
-    let indexer = IndexerComponent::new(ComponentName("indexer"), StubSync { catch_up: true });
+    let indexer = RunComponent::new(ComponentName("indexer"), StubSync { catch_up: true });
     indexer.spawn().await.expect("spawn");
 
     let mut status = indexer.subscribe();
@@ -59,7 +59,7 @@ async fn an_indexer_reaches_ready_when_caught_up() {
 #[tokio::test]
 async fn a_syncing_indexer_boots_but_gates_readiness() {
     // Never catches up: stays Syncing.
-    let indexer = IndexerComponent::new(ComponentName("indexer"), StubSync { catch_up: false });
+    let indexer = RunComponent::new(ComponentName("indexer"), StubSync { catch_up: false });
     let orchestra = OrchestraBuilder::new()
         .boot(indexer)
         .await
@@ -99,7 +99,7 @@ impl RunLoop for PanicSync {
 
 #[tokio::test]
 async fn a_panicking_run_loop_goes_critical_and_escalates() {
-    let indexer = IndexerComponent::new(ComponentName("indexer"), PanicSync);
+    let indexer = RunComponent::new(ComponentName("indexer"), PanicSync);
     let mut orchestra = OrchestraBuilder::new()
         .boot(indexer)
         .await
@@ -151,7 +151,7 @@ impl RunLoop for ProgressStub {
 
 #[tokio::test]
 async fn a_component_records_reported_progress_on_its_status() {
-    let indexer = IndexerComponent::new(ComponentName("indexer"), ProgressStub);
+    let indexer = RunComponent::new(ComponentName("indexer"), ProgressStub);
     indexer.spawn().await.expect("spawn");
 
     // Deterministic: the stub reports progress immediately; wait on the status

@@ -3,7 +3,7 @@
 //! A growing mock source pushes tip updates as new blocks arrive; the
 //! `SourceSyncDriver` catches up to the initial tip (Ready), then indexes each
 //! new range as the tip advances — driven by `SubscribeChainTip`, supervised as
-//! an `IndexerComponent`.
+//! an `RunComponent`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,7 +13,7 @@ use tokio::sync::watch;
 use zaino_component::{ComponentName, Lifecycle, Managed, StatusWatch};
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner, SourceSyncDriver};
 use zaino_primitives::types::{Block, BlockHash, Height};
-use zaino_runtime::IndexerComponent;
+use zaino_runtime::RunComponent;
 use zaino_source::mock::test_block;
 use zaino_source::{
     GetBlockError, GetChainTipError, OneShotGetBlock, OneShotGetChainTip, QueryError, RetryPolicy,
@@ -136,7 +136,7 @@ async fn the_indexer_follows_the_tip() {
         16,
         backend.clone(),
     );
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
 
     indexer.spawn().await.expect("spawn");
 
@@ -201,7 +201,7 @@ async fn the_indexer_stops_at_the_finalised_boundary() {
         16,
         backend.clone(),
     );
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
 
     indexer.spawn().await.expect("spawn");
 

@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use zaino_component::ComponentName;
 use zaino_runtime::{
-    HealthServer, OrchestraBuilder, ReachabilityProbe, ServeComponent, ValidatorComponent,
+    HealthServer, OrchestraBuilder, ReachabilityProbe, RunComponent, ValidatorComponent,
 };
 
 struct Up;
@@ -50,7 +50,7 @@ async fn the_health_edge_reflects_the_runtime() {
     let builder = OrchestraBuilder::new();
     let signals = builder.signals();
     let validator = ValidatorComponent::connect(&Up).await.expect("connect");
-    let health = ServeComponent::new(ComponentName("health"), HealthServer::new(addr, signals));
+    let health = RunComponent::new(ComponentName("health"), HealthServer::new(addr, signals));
 
     let orchestra = builder
         .boot_observed(validator)

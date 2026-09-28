@@ -14,7 +14,7 @@ use zaino_component::{
 };
 use zaino_indexes::sets::current_zaino::CurrentZaino;
 use zaino_persistence::in_memory::InMemoryBackend;
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_store::{StoreComponent, StoreReader};
 
 /// A validator that is reachable.
@@ -48,7 +48,7 @@ async fn validator_indexer_store_boot_in_order() {
     let validator = ValidatorComponent::connect(&Probe(true))
         .await
         .expect("validator reachable");
-    let indexer = IndexerComponent::new(ComponentName("indexer"), NoOpDriver);
+    let indexer = RunComponent::new(ComponentName("indexer"), NoOpDriver);
     let reader = StoreReader::<_, CurrentZaino>::new(Arc::new(InMemoryBackend::new()));
     let store = StoreComponent::new(ComponentName("store"), reader);
 

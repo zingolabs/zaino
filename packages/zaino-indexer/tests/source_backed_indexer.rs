@@ -3,7 +3,7 @@
 //! End to end over a real source seam: a `MockChain` (implementing dev's
 //! `zaino-source` capability traits) feeds a `SourceProvisioner`, which streams
 //! into a real `SyncEngine` via `sync_channel`, driven by a `SourceSyncDriver`
-//! and supervised as an `IndexerComponent`. Swap `MockChain` for a zebra adapter
+//! and supervised as an `RunComponent`. Swap `MockChain` for a zebra adapter
 //! and the same driver indexes a real chain — the provisioner is generic over
 //! the source.
 
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use zaino_component::{ComponentName, Lifecycle, Managed, StatusSource, StatusWatch};
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner, SourceSyncDriver};
 use zaino_primitives::types::{Block, Height};
-use zaino_runtime::IndexerComponent;
+use zaino_runtime::RunComponent;
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_sync::engine::{EngineConfig, SyncEngine};
@@ -63,7 +63,7 @@ async fn the_runtime_indexes_from_a_source() {
         16,
         backend,
     );
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
 
     indexer.spawn().await.expect("spawn");
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 use zaino_component::{ComponentName, Health, Lifecycle};
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_runtime::{
-    OrchestraBuilder, ReachabilityProbe, RuntimeOutcome, ServeComponent, ValidatorComponent,
+    OrchestraBuilder, ReachabilityProbe, RunComponent, RuntimeOutcome, ValidatorComponent,
     ValidatorUnreachable,
 };
 use zaino_service::testing::{MockChain, MockIndexerService};
@@ -55,7 +55,7 @@ async fn the_validator_boots_before_the_servers() {
     let validator = ValidatorComponent::connect(&Probe(true))
         .await
         .expect("connect");
-    let grpc = ServeComponent::new(
+    let grpc = RunComponent::new(
         ComponentName("light-serve"),
         GrpcServer::new(
             LightServe::new(MockIndexerService::new(MockChain::default())),

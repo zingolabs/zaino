@@ -40,14 +40,15 @@ use zaino_chain_head_service::ChainHeadService;
 use zaino_component::{ComponentName, ReachabilityProbe};
 use zaino_core::chain_view::ChainView;
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, pipelines};
+use zaino_indexes::index_set::IndexSet;
+use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
     EquihashSolution, MerkleRoot, TreeRoots,
 };
 use zaino_primitives::types::{BlockSelector, CompactBlock, Height, HeightRange};
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_service::Capability;
 use zaino_service::error::{BlockReadError, ReadError};
 use zaino_service::{ChainSegment, CompactBlockRead, Snapshot, TakeSnapshot};
@@ -208,7 +209,7 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
 
     let driver = SourceSyncDriver::resuming(
         &backend,
-        pipelines(),
+        CurrentZaino::pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {
@@ -220,7 +221,7 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
     )
     .expect("sync driver builds");
 
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
     let reader = StoreReader::new(Arc::new(backend.clone()));
     let store = zaino_store::StoreComponent::new(ComponentName("store"), reader.clone());
     let validator = ValidatorComponent::connect(&Probe(true))

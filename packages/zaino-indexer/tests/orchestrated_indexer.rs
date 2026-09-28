@@ -3,13 +3,13 @@
 //! Proves the writer stack end to end at the lifecycle level: a real
 //! `SyncEngine` (toy index set + in-memory backend), fed by the mock
 //! provisioner, wrapped as a `SyncEngineDriver` (`SyncDriver`), booted and
-//! supervised as an `IndexerComponent` by the runtime. This is what the
+//! supervised as an `RunComponent` by the runtime. This is what the
 //! sync-bench crate hand-rolled as a driving loop — now it is the Orchestra's
 //! job. (The source-backed provisioner over `zaino-source` is the next slice.)
 
 use zaino_component::{ComponentName, Lifecycle, Managed, StatusSource, StatusWatch};
 use zaino_indexer::SyncEngineDriver;
-use zaino_runtime::IndexerComponent;
+use zaino_runtime::RunComponent;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::testing::{toy_pipelines, InMemoryBackend, MockProvisioner, TestBlockContext};
@@ -37,7 +37,7 @@ fn build_driver(
 
 #[tokio::test]
 async fn the_runtime_boots_the_indexer_to_ready() {
-    let indexer = IndexerComponent::new(ComponentName("indexer"), build_driver(63));
+    let indexer = RunComponent::new(ComponentName("indexer"), build_driver(63));
 
     // Boot it: it starts Syncing, then reaches Ready once caught up to target.
     indexer.spawn().await.expect("spawn");

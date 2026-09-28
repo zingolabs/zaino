@@ -10,7 +10,7 @@ use std::time::Duration;
 use zaino_component::{
     CancellationToken, ComponentName, Health, Lifecycle, RunReporter, StatusSource,
 };
-use zaino_runtime::{BootError, OrchestraBuilder, RunLoop, RuntimeOutcome, ServeComponent};
+use zaino_runtime::{BootError, OrchestraBuilder, RunComponent, RunLoop, RuntimeOutcome};
 
 /// A stub transport server with a scriptable behavior.
 enum Behavior {
@@ -57,13 +57,13 @@ impl RunLoop for StubServer {
 
 #[tokio::test]
 async fn a_serve_loop_failure_after_ready_escalates_and_is_fatal() {
-    let light = ServeComponent::new(
+    let light = RunComponent::new(
         ComponentName("light-serve"),
         StubServer {
             behavior: Behavior::ServeUntilCancel,
         },
     );
-    let node = ServeComponent::new(
+    let node = RunComponent::new(
         ComponentName("node-rpc"),
         StubServer {
             behavior: Behavior::FailAfterReady,
@@ -102,7 +102,7 @@ async fn a_serve_loop_failure_after_ready_escalates_and_is_fatal() {
 
 #[tokio::test]
 async fn a_bind_failure_fails_to_boot() {
-    let node = ServeComponent::new(
+    let node = RunComponent::new(
         ComponentName("node-rpc"),
         StubServer {
             behavior: Behavior::FailToBind,

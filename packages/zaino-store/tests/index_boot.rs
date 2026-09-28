@@ -1,7 +1,7 @@
 //! EXPLORATORY: end-to-end indexing boot.
 //!
 //! A **real** sync engine (over the CurrentZaino index set), driven by the
-//! runtime's `IndexerComponent`, indexes a mock chain into a KV backend that the
+//! runtime's `RunComponent`, indexes a mock chain into a KV backend that the
 //! `StoreComponent` reads behind — all booted by the Orchestra in dependency
 //! order. Proves the write path boots and *actually indexes* (not the no-op
 //! driver of `bringup.rs`): after boot, the shared backend holds the finalised
@@ -15,12 +15,11 @@ use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{
-    context_from_block, pipelines, CurrentZaino, CurrentZainoContext,
-};
+use zaino_indexes::index_set::IndexSet;
+use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{BlockSelector, Height};
-use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_service::{Answerable, Capability};
 use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
@@ -54,7 +53,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
     // start. finalised_depth = 0: a non-reorging mock, so the boundary is the tip.
     let driver = SourceSyncDriver::resuming(
         &backend,
-        pipelines(),
+        CurrentZaino::pipelines(),
         source,
         |block| context_from_block(&block),
         SyncTuning {
@@ -65,7 +64,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
         },
     )
     .expect("driver builds");
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
+    let indexer = RunComponent::new(ComponentName("indexer"), driver);
 
     // The store reads behind the same backend.
     let store = StoreComponent::new(
