@@ -28,6 +28,11 @@ pub enum IndexerError {
     /// Opening the LMDB index store failed.
     #[error(transparent)]
     OpenStore(#[from] zaino_persistence::OpenError),
+
+    /// The store's watermark could not be checked against, or corrected to,
+    /// what the headers index actually holds.
+    #[error("checking the store's watermark against its index failed")]
+    StoreWatermark(#[source] zaino_store::WatermarkRepairError),
     /// Building or running the sync stack (backend, provisioner, engine) failed.
     #[error(transparent)]
     Sync(#[from] zaino_indexer::IndexerError),

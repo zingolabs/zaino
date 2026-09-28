@@ -9,10 +9,18 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `use_case` config field selecting the deployment shape (`light-wallet`, the
+  only variant today); the daemon binds its routing and index set from it.
+- The daemon polls the validator's tip on the consumers' behalf, so the
+  finalised indexer follows the chain after its initial catch-up.
+- On boot the store's watermark is checked against its headers index and
+  corrected to the highest header held if it claims more, with a warning.
 ### Changed
 ### Deprecated
 ### Removed
 ### Fixed
+- The finalised indexer no longer parks at its boot catch-up height: no tip
+  subscription was ever wired on the validator, so its follow loop never woke.
 
 ## [0.9.0] - 2026-08-28
 

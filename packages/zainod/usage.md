@@ -67,3 +67,20 @@ lacks does not compile.
 5. A `UseCaseKind` variant and one arm in `select_use_case` naming the adapter.
 
 Existing use cases do not change.
+
+## Boot-time checks
+
+Two things the daemon does before the indexer resumes, both loud when they
+fire:
+
+- **Watermark repair.** The store's watermark is a stamp beside the data. If
+  it claims a height the headers index does not hold, every height in the gap
+  would be routed to the store and answered "no such block", and the indexer
+  would resume past heights it never indexed. The daemon re-stamps it at the
+  highest header held and logs a warning naming both heights.
+- **Tip polling.** Neither Zebra transport pushes tip changes, so the daemon
+  hands the validator a second RPC handle to poll every two seconds. Without
+  it the finalised indexer's follow loop has nothing to wake it and the index
+  stays at its catch-up height; the driver warns if it is ever handed a source
+  it cannot follow.
+

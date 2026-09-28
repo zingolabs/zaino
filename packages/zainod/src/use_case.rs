@@ -25,7 +25,8 @@
 
 use zaino_chain_head::ChainHeadBlockSource;
 use zaino_indexer::CompactSource;
-use zaino_indexes::materialisation::Materialisation;
+use zaino_indexes::indexes::headers::HeadersIndex;
+use zaino_indexes::materialisation::{Builds, Materialisation};
 use zaino_indexes::sets::current_zaino::CurrentZainoContext;
 use zaino_indexes::sets::light_wallet::LightWallet as LightWalletIndexes;
 use zaino_service::routing::{LightRouting, Routing};
@@ -100,8 +101,10 @@ pub trait UseCase: 'static {
     type Routing: Routing;
     /// Which indexes the finalised store builds. Every materialisation today
     /// projects from the current-zaino provisioning context, which is what the
-    /// indexer's compact-block provisioner produces.
-    type Materialisation: Materialisation<Context = CurrentZainoContext>;
+    /// indexer's compact-block provisioner produces, and every one builds the
+    /// headers index: the store pins its tip from it and checks its watermark
+    /// against it.
+    type Materialisation: Materialisation<Context = CurrentZainoContext> + Builds<HeadersIndex>;
 }
 
 /// The demand of use case `U`, as a bound.

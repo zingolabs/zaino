@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_chain_head::ChainHeadConfig;
@@ -298,6 +298,21 @@ where
     // case's materialisation: the reads it has are exactly the reads those
     // indexes back.
     let store_reader = StoreReader::<_, U::Materialisation>::new(Arc::new(backend.clone()));
+
+    // A watermark ahead of the headers index claims heights the store cannot
+    // serve, and every read in that gap would be routed to it and answer
+    // nothing. Data outranks the stamp: correct it to the highest header held
+    // before the indexer resumes from it or the engine serves against it.
+    if let Some(repair) = store_reader
+        .repair_watermark()
+        .map_err(IndexerError::StoreWatermark)?
+    {
+        warn!(
+            claimed = u32::from(repair.claimed),
+            corrected = u32::from(repair.corrected),
+            "store watermark was ahead of its headers index; corrected to the highest header held"
+        );
+    }
 
     // The FS indexer sources the cheap pre-index compact block and builds the
     // use case's index set, resuming from the backend watermark.
