@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 
 use tokio::sync::watch;
 
+use tracing::warn;
 use zaino_async::{Task, TaskName};
 use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
@@ -567,9 +568,17 @@ where
         }
         reporter.ready();
 
-        // Steady-state follow: index each new range as the tip advances. If the
-        // source does not push a tip (`None`), stay at the caught-up height.
+        // Steady-state follow: index each new range as the tip advances. A
+        // source that offers no tip subscription cannot be followed: the index
+        // stays at the caught-up height for the life of the run, which is a
+        // wiring fault (a composite synthesises the subscription by polling),
+        // so it is said loudly rather than parked on quietly.
         let Some(mut tips) = self.provisioner.subscribe_tip() else {
+            warn!(
+                synced = u32::from(synced),
+                "source offers no tip subscription; the finalised index will not advance past its \
+                 caught-up height — wire a tip poller on the validator"
+            );
             cancel.cancelled().await;
             return Ok(());
         };

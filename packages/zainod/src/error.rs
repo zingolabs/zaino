@@ -20,6 +20,11 @@ pub enum IndexerError {
     /// The non-finalised chain-head could not anchor against the validator.
     #[error("the chain-head could not anchor against the validator")]
     ChainHeadInit(#[source] zaino_chain_head_service::ChainHeadInitError),
+
+    /// The validator's tip poller could not take its first reading, so no
+    /// consumer could follow the chain.
+    #[error("starting the validator tip poller failed")]
+    TipPolling(#[source] zaino_source::QueryError<zaino_source::GetChainTipError>),
     /// Opening the LMDB index store failed.
     #[error(transparent)]
     OpenStore(#[from] zaino_persistence::OpenError),

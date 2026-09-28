@@ -95,8 +95,19 @@ pub async fn spawn_indexer(
                 user.as_deref(),
                 password.as_deref(),
             )?);
-            let validator = Arc::new(ZebraValidator::with_read_state(rpc, readstate));
-            select_use_case(client_over(validator), config).await
+            let validator = ZebraValidator::with_read_state(rpc, readstate)
+                .with_tip_polling(
+                    tip_probe(
+                        jsonrpc_address,
+                        cookie_path.as_deref(),
+                        user.as_deref(),
+                        password.as_deref(),
+                    )?,
+                    TIP_POLL_INTERVAL,
+                )
+                .await
+                .map_err(IndexerError::TipPolling)?;
+            select_use_case(client_over(Arc::new(validator)), config).await
         }
         // Off-node: reach the validator over JSON-RPC alone, no co-located state
         // DB. The FS indexer sources compact blocks over RPC and the chain-head
@@ -116,10 +127,48 @@ pub async fn spawn_indexer(
                 user.as_deref(),
                 password.as_deref(),
             )?);
-            let validator = Arc::new(ZebraValidator::rpc_only(rpc));
-            select_use_case(client_over(validator), config).await
+            let validator = ZebraValidator::rpc_only(rpc)
+                .with_tip_polling(
+                    tip_probe(
+                        jsonrpc_address,
+                        cookie_path.as_deref(),
+                        user.as_deref(),
+                        password.as_deref(),
+                    )?,
+                    TIP_POLL_INTERVAL,
+                )
+                .await
+                .map_err(IndexerError::TipPolling)?;
+            select_use_case(client_over(Arc::new(validator)), config).await
         }
     }
+}
+
+/// How often the validator is asked for its tip on behalf of the consumers
+/// that follow it through a subscription — the finalised indexer, whose
+/// steady-state loop extends the index on each observed change. Neither
+/// Zebra transport pushes tip changes, so the composite synthesises the
+/// subscription by polling; without it the indexer parks at its caught-up
+/// height for the life of the process. Blocks arrive about every 75 seconds,
+/// so a two-second cadence keeps the finalised boundary within a poll of
+/// where it should be at a negligible cost.
+const TIP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A second JSON-RPC handle onto the same validator, for the tip poller: the
+/// composite takes it separately so the poller never contends with the
+/// composite's own request path.
+fn tip_probe(
+    jsonrpc_address: &str,
+    cookie_path: Option<&Path>,
+    user: Option<&str>,
+    password: Option<&str>,
+) -> Result<ZebraRpcAdapter, IndexerError> {
+    Ok(ZebraRpcAdapter::new(rpc_client_from_config(
+        jsonrpc_address,
+        cookie_path,
+        user,
+        password,
+    )?))
 }
 
 /// The one client every consumer shares: the resilient wrapper over one shared
