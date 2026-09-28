@@ -37,6 +37,19 @@ where
     }
 }
 
+/// A validator answer from a port whose domain errors all mean an invalid
+/// request, never an absent answer.
+pub(crate) fn answered<T, E>(result: core::result::Result<T, QueryError<E>>) -> Result<T>
+where
+    E: core::fmt::Debug + core::fmt::Display,
+{
+    match result {
+        Ok(value) => Ok(value),
+        Err(QueryError::Domain(error)) => Err(ChainViewError::Rejected(error.to_string())),
+        Err(QueryError::Fetch(error)) => Err(ChainViewError::SourceUnavailable(error)),
+    }
+}
+
 /// Validator access, bounded across every client.
 pub(crate) struct Fetcher<Source> {
     source: Arc<Source>,

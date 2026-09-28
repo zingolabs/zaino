@@ -1198,6 +1198,8 @@ pub struct FakeSource {
     competing: Vec<Block>,
     /// The commitment roots reported for every block.
     tree_roots: TreeRoots,
+    /// Whether address and subtree requests are rejected as invalid.
+    rejecting: bool,
 }
 
 /// Counts one request for as long as it is in flight.
@@ -1219,7 +1221,15 @@ impl FakeSource {
             peak_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             competing: Vec::new(),
             tree_roots: empty_tree_roots(),
+            rejecting: false,
         }
+    }
+
+    /// The same validator rejecting every address and subtree request as
+    /// invalid.
+    pub fn rejecting_requests(mut self) -> Self {
+        self.rejecting = true;
+        self
     }
 
     /// The same validator reporting `roots` for every block, and a tree with
@@ -1487,7 +1497,28 @@ impl OneShotGetSubtreeRoots for FakeSource {
         _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError>> {
         self.record(SourceCall::SubtreeRoots(pool));
+        if self.rejecting {
+            return Err(QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(
+                pool,
+            )));
+        }
         Ok(Vec::new())
+    }
+}
+
+impl FakeSource {
+    /// Records an address request, rejecting it when this validator rejects.
+    fn address_request<E: core::fmt::Debug + core::fmt::Display>(
+        &self,
+        invalid_address: impl FnOnce(String) -> E,
+    ) -> Result<(), QueryError<E>> {
+        self.record(SourceCall::Address);
+        if self.rejecting {
+            return Err(QueryError::Domain(invalid_address(String::from(
+                "not an address",
+            ))));
+        }
+        Ok(())
     }
 }
 
@@ -1496,7 +1527,7 @@ impl OneShotGetAddressBalance for FakeSource {
         &self,
         _addresses: Vec<String>,
     ) -> Result<AddressBalance, QueryError<GetAddressBalanceError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressBalanceError::InvalidAddress)?;
         Ok(AddressBalance {
             balance: zaino_primitives::types::Zatoshis::ZERO,
             received: zaino_primitives::types::ZatoshisFlowSum::from_summed(0),
@@ -1509,7 +1540,7 @@ impl OneShotGetAddressUtxos for FakeSource {
         &self,
         _addresses: Vec<String>,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressUtxosError::InvalidAddress)?;
         Ok(Vec::new())
     }
 }
@@ -1521,7 +1552,7 @@ impl OneShotGetAddressTxids for FakeSource {
         _start: Height,
         _end: Height,
     ) -> Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressTxidsError::InvalidAddress)?;
         Ok(Vec::new())
     }
 }
@@ -1533,7 +1564,7 @@ impl OneShotGetAddressDeltas for FakeSource {
         _start: Height,
         _end: Height,
     ) -> Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressDeltasError::InvalidAddress)?;
         Ok(Vec::new())
     }
 }

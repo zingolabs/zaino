@@ -101,3 +101,13 @@ description = """
 leaves it unset, so the roots are read by the treestate's own block hash and \
 joined in, as `z_gettreestate` reports them.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+An invalid address or subtree request — an address that does not parse, a \
+range the validator cannot serve, a pool not yet active — is now the new \
+`ChainViewError::Rejected` rather than a zero balance or an empty list. An \
+address never paid is still an ordinary empty answer.
+"""

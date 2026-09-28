@@ -201,6 +201,7 @@ pub trait TreestateRead: Send + Sync {
     ///
     /// Indexed by subtree completion rather than by height, and the two do not
     /// correspond — a subtree completes when it fills, not on a block boundary.
+    /// An inactive pool is [`Rejected`](crate::ChainViewError::Rejected).
     fn subtree_roots(
         &self,
         pool: ShieldedPool,
@@ -236,6 +237,9 @@ pub trait ForkReconcile: Send + Sync {
 // store lacks the backing index does not get these impls at all.
 
 /// Transparent address history.
+///
+/// An address never paid is an empty answer; an invalid request is
+/// [`Rejected`](crate::ChainViewError::Rejected).
 pub trait AddressRead: Send + Sync {
     /// The total transparent balance of these addresses.
     fn address_balance(

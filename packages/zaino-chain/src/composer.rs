@@ -1231,15 +1231,15 @@ where
         // Indexed by subtree completion rather than by height, and no provider
         // keeps that index — deriving the boundaries from per-block roots means
         // walking the chain from genesis.
+        // The port's only domain error is an inactive pool, an invalid request.
         self.fetch
             .require("subtree roots need the validator, which is disabled")?;
-        Ok(fetch::miss(
+        fetch::answered(
             self.fetch
                 .source()
                 .get_subtree_roots(pool, start_index, limit)
                 .await,
-        )?
-        .unwrap_or_default())
+        )
     }
 }
 
@@ -1499,20 +1499,19 @@ where
     ///
     /// Each one refuses the same two ways before it asks anything — the
     /// deployment may withhold the capability, and the validator may be
-    /// disabled — and each treats "the validator does not know this address" as
-    /// an absent answer rather than a failure. Only the port call differs, so
-    /// it arrives as the future it returns and the rest is written once.
+    /// disabled. Only the port call differs, so it arrives as the future it
+    /// returns and the rest is written once.
+    ///
+    /// An address never paid is an ordinary answer from these ports, so every
+    /// domain error they raise is an invalid request.
     ///
     /// A caller builds that future before the guards run, which costs nothing:
     /// an `async fn` does no work until awaited, so a withheld capability still
     /// never reaches the validator.
-    ///
-    /// Returns `Option` rather than defaulting here because the callers do not
-    /// agree on what absence means: a balance is zero, a list is empty.
     async fn address_query<T, E>(
         &self,
         call: impl core::future::Future<Output = core::result::Result<T, zaino_source::QueryError<E>>>,
-    ) -> Result<Option<T>>
+    ) -> Result<T>
     where
         E: core::fmt::Debug + core::fmt::Display,
     {
@@ -1521,7 +1520,7 @@ where
         }
         self.fetch
             .require("address history needs the validator, which is disabled")?;
-        fetch::miss(call.await)
+        fetch::answered(call.await)
     }
 }
 
@@ -1537,22 +1536,13 @@ where
     // fillable — the validator runs no such index either.
 
     async fn address_balance(&self, addresses: &[TransparentAddress]) -> Result<AddressBalance> {
-        Ok(self
-            .address_query(self.fetch.source().get_address_balance(encoded(addresses)))
-            .await?
-            // An address the validator does not know has no balance, which is
-            // an answer rather than a failure.
-            .unwrap_or(AddressBalance {
-                balance: zaino_primitives::types::Zatoshis::ZERO,
-                received: zaino_primitives::types::ZatoshisFlowSum::from_summed(0),
-            }))
+        self.address_query(self.fetch.source().get_address_balance(encoded(addresses)))
+            .await
     }
 
     async fn address_utxos(&self, addresses: &[TransparentAddress]) -> Result<Vec<Utxo>> {
-        Ok(self
-            .address_query(self.fetch.source().get_address_utxos(encoded(addresses)))
-            .await?
-            .unwrap_or_default())
+        self.address_query(self.fetch.source().get_address_utxos(encoded(addresses)))
+            .await
     }
 
     async fn address_txids(
@@ -1561,14 +1551,12 @@ where
         start: Height,
         end: Height,
     ) -> Result<Vec<TransactionId>> {
-        Ok(self
-            .address_query(
-                self.fetch
-                    .source()
-                    .get_address_txids(encoded(addresses), start, end),
-            )
-            .await?
-            .unwrap_or_default())
+        self.address_query(
+            self.fetch
+                .source()
+                .get_address_txids(encoded(addresses), start, end),
+        )
+        .await
     }
 
     async fn address_deltas(
@@ -1577,14 +1565,12 @@ where
         start: Height,
         end: Height,
     ) -> Result<Vec<AddressDelta>> {
-        Ok(self
-            .address_query(
-                self.fetch
-                    .source()
-                    .get_address_deltas(encoded(addresses), start, end),
-            )
-            .await?
-            .unwrap_or_default())
+        self.address_query(
+            self.fetch
+                .source()
+                .get_address_deltas(encoded(addresses), start, end),
+        )
+        .await
     }
 }
 

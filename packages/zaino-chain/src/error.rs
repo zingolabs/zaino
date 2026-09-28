@@ -23,6 +23,10 @@ pub enum ChainViewError {
     #[error("chain view cannot service this read: {0}")]
     NotServiceable(&'static str),
 
+    /// The request was invalid, and retrying it unchanged fails the same way.
+    #[error("chain view rejected the request: {0}")]
+    Rejected(String),
+
     /// The validator could not be reached. A retry may succeed.
     ///
     /// Carries the transport [`FetchError`] as its `#[source]`, so

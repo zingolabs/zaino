@@ -10,8 +10,8 @@ use zaino_chain::testing::{
     chainwork_at, hash_of, height, Chain, FakeHead, FakeSource, FakeStore, SourceCall,
 };
 use zaino_chain::{
-    Answerable, BlockId, BlockRead as _, ChainCapability, ChainScope, ChainView as _,
-    ChainViewComposer, ChainViewConfig, ChainViewError, ChainViewSnapshot as _,
+    AddressRead as _, Answerable, BlockId, BlockRead as _, ChainCapability, ChainScope,
+    ChainView as _, ChainViewComposer, ChainViewConfig, ChainViewError, ChainViewSnapshot as _,
     CompactBlockRead as _, ForkReconcile as _, Locator, SpendRead as _, SpendStatus,
     TreestateRead as _,
 };
@@ -565,6 +565,42 @@ async fn a_treestate_by_height_is_fetched_by_height() {
             SourceCall::TreeRoots(hash_of(500)),
         ]
     );
+}
+
+/// An invalid address or subtree request is rejected, never answered empty.
+#[tokio::test]
+async fn an_invalid_request_is_rejected() {
+    let chain = chain();
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::covering(&chain, 1000, 1200),
+        Arc::new(FakeSource::over(&chain).rejecting_requests()),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert!(matches!(
+        snapshot.address_balance(&[]).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot.address_utxos(&[]).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot.address_txids(&[], height(0), height(10)).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot.address_deltas(&[], height(0), height(10)).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot
+            .subtree_roots(zaino_primitives::types::ShieldedPool::Sapling, 0, None)
+            .await,
+        Err(ChainViewError::Rejected(_))
+    ));
 }
 
 /// A treestate carries each present pool's root.
