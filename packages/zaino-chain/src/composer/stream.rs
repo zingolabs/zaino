@@ -170,8 +170,8 @@ pub(crate) fn approx_size(block: &CompactBlock) -> usize {
 /// families decode at all. There is nothing to push it into for an
 /// already-projected block, so above the store it is applied afterwards. That
 /// is a performance difference and must not become a semantic one: a caller
-/// filtering to sapling gets the same shape from every provider, including the
-/// same transactions omitted.
+/// filtering to sapling gets the same shape from every provider. Like the
+/// store's, the block keeps every transaction, since position is the index.
 pub(crate) fn compact_from_pre_index(
     pre_index: PreIndexCompactBlock,
     chain_metadata: ChainMetadata,
@@ -181,7 +181,6 @@ pub(crate) fn compact_from_pre_index(
         .transactions
         .into_iter()
         .map(|tx| filter_tx(tx, pools))
-        .filter(retains_anything)
         .collect();
 
     CompactBlock {
@@ -225,16 +224,6 @@ fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreIndexCompactTx 
         tx.ironwood_actions.clear();
     }
     tx
-}
-
-/// Whether a filtered transaction still carries anything asked for.
-fn retains_anything(tx: &PreIndexCompactTx) -> bool {
-    !tx.transparent_inputs.is_empty()
-        || !tx.transparent_outputs.is_empty()
-        || !tx.sapling_nullifiers.is_empty()
-        || !tx.sapling_outputs.is_empty()
-        || !tx.orchard_actions.is_empty()
-        || !tx.ironwood_actions.is_empty()
 }
 
 // ***** The walk *****
