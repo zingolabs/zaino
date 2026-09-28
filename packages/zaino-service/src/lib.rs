@@ -26,7 +26,7 @@ pub mod error;
 mod events;
 mod locator;
 mod node_query;
-mod read_sets;
+pub mod read_sets;
 mod reads;
 mod status;
 mod upgrades;

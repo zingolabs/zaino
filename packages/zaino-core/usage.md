@@ -23,8 +23,8 @@ are always the validator's, so they are not on it. `placement()` is exhaustive
 over `Capability`: a new variant must be classified.
 
 ```rust,ignore
-pub struct LightRouting;
-impl Routing for LightRouting {
+pub struct LightWalletRouting;
+impl Routing for LightWalletRouting {
     type Address = Passthrough;       // relayed to the validator, for now
     type Treestate = Passthrough;
     type Spend = Withheld;            // a node read; not offered

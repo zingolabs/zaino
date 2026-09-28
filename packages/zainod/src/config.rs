@@ -1,9 +1,9 @@
 //! The zainod daemon configuration.
 //!
 //! This is the **daemon-mode** config surface. The runtime stack crates
-//! ([`zaino_runtime`], [`zaino_indexer`], [`zaino_store`], [`zaino_lightserve`],
-//! the source adapters) are deliberately config-agnostic — they take typed
-//! params. This module is where operator config comes through, and
+//! ([`zaino_runtime`], [`zaino_lightserve`], the source adapters) are
+//! deliberately config-agnostic — they take typed params, and the runtime's
+//! own sections ([`StoreConfig`], [`IndexerConfig`]) are re-exported here. This module is where operator config comes through, and
 //! [`crate::indexer::spawn_indexer`] translates it into those typed params at
 //! boot. The wallet API will get its own, separate config; keeping this one
 //! self-contained keeps that boundary clean.

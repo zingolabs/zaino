@@ -18,7 +18,7 @@
 //!
 //! # One list, two facts
 //!
-//! [`index_set!`] declares an index set from a single index list and
+//! [`index_set!`](macro@crate::index_set) declares an index set from a single index list and
 //! emits both facts from it: the runtime [`IndexSet`] the sync engine builds
 //! and the `Builds` impls the type promises. They cannot drift because there is
 //! nothing to keep in step — one list is the source of both.

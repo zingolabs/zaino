@@ -22,7 +22,7 @@ index_set! {
 }
 ```
 
-`sets::light_wallet::LightWallet` is the compact-block set a lightwalletd
+`sets::compact_blocks::CompactBlocks` is the compact-block set a lightwalletd
 deployment needs; `sets::current_zaino::CurrentZaino` is the full set. A store
 reader is parametrised by one of these (`StoreReader<B, M>`), and its serving
 reads exist only where `M` builds what they compose from.

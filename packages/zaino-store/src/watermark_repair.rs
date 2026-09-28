@@ -73,7 +73,7 @@ pub enum WatermarkRepairError {
     #[error("re-stamping the watermark")]
     Commit(#[source] CommitError),
 
-    /// No header exists at the watermark or within [`MAX_SEARCH`] heights
+    /// No header exists at the watermark or within `MAX_SEARCH` heights
     /// below it: the index does not hold what the stamp claims, and by more
     /// than a stamp fault could explain.
     #[error(

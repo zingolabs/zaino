@@ -1,4 +1,4 @@
-//! The light-wallet index set: exactly the indexes compact-block serving
+//! The compact-block index set: exactly the indexes compact-block serving
 //! composes on.
 //!
 //! A lightwalletd-shaped deployment reads compact blocks locally and passes
@@ -6,8 +6,8 @@
 //! to the validator, so its finalised store builds nothing beyond the
 //! compact-block set. Address history and spend indexes are *not* built here —
 //! not as an omission but as the index set's statement: a store over
-//! [`LightWallet`] has no local address read, and a use case that wants one
-//! cannot be wired over it.
+//! [`CompactBlocks`] has no local address read, and a deployment that wants
+//! one cannot be wired over it.
 //!
 //! Provisioned from the same [`CurrentZainoContext`] as the full set — a
 //! subset of its indexes, each projecting from the same context.
@@ -26,7 +26,7 @@ use crate::indexes::txids::TxidsIndex;
 index_set! {
     /// Compact-block serving only: headers, txids, hash→height, the per-pool
     /// compact data, and the cumulative tree sizes.
-    pub struct LightWallet over CurrentZainoContext {
+    pub struct CompactBlocks over CurrentZainoContext {
         HeadersIndex,
         TxidsIndex,
         HashToHeightIndex,

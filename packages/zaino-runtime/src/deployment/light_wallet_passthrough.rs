@@ -1,8 +1,8 @@
 //! The light-wallet use case, served with everything the wallet parses itself
 //! relayed to the validator.
 
-use zaino_core::routing::LightRouting;
-use zaino_indexes::sets::light_wallet::LightWallet as LightWalletIndexes;
+use zaino_core::routing::LightWalletRouting;
+use zaino_indexes::sets::compact_blocks::CompactBlocks;
 use zaino_service::use_cases::LightWallet;
 use zaino_source::{
     GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos,
@@ -29,8 +29,8 @@ pub struct LightWalletPassthrough;
 
 impl Deployment for LightWalletPassthrough {
     type UseCase = LightWallet;
-    type Routing = LightRouting;
-    type Indexes = LightWalletIndexes;
+    type Routing = LightWalletRouting;
+    type Indexes = CompactBlocks;
 }
 
 impl RuntimePlan for LightWalletPassthrough {

@@ -128,9 +128,9 @@ pub trait Routing: Send + Sync + 'static {
 /// builds `address_history`; the compiler names anything else that is
 /// missing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LightRouting;
+pub struct LightWalletRouting;
 
-impl Routing for LightRouting {
+impl Routing for LightWalletRouting {
     type Address = Passthrough;
     type Treestate = Passthrough;
     type Spend = Withheld;
@@ -146,7 +146,7 @@ mod tests {
         use strum::IntoEnumIterator;
         for capability in Capability::iter() {
             // Exhaustiveness is rustc's; this pins the light table's shape.
-            let placement = LightRouting::placement(capability);
+            let placement = LightWalletRouting::placement(capability);
             match capability {
                 Capability::Blocks => assert_eq!(placement, PlacementKind::Local),
                 Capability::SpendStatus | Capability::TransactionLocation => {

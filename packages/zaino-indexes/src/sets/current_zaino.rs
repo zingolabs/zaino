@@ -6,7 +6,7 @@
 //! sizes, accumulated from each block's added commitments).
 //!
 //! Declared as the [`CurrentZaino`] index set, so the set is also a type
-//! a store can be wired over (see [`crate::index_set`]).
+//! a store can be wired over (see [`crate::index_set`](mod@crate::index_set)).
 
 use zaino_primitives::types::{
     Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionId,

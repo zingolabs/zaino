@@ -1,5 +1,5 @@
 //! Engine-engine tests: the light-serve acceptance gate, the per-capability
-//! routing tests under `LightRouting`, the manifest derivation, and the seam
+//! routing tests under `LightWalletRouting`, the manifest derivation, and the seam
 //! split a local merge relies on.
 //!
 //! Exercised entirely with in-crate mocks — stub views for the composed chain
@@ -7,7 +7,7 @@
 //! [`ValidatorClient`] decorator exactly as the root injects it. No cluster, no
 //! validator; the routing is deterministic.
 
-use crate::routing::LightRouting;
+use crate::routing::LightWalletRouting;
 use crate::testing::{StubNonFinalised, stub_compact_block};
 use futures::stream::StreamExt;
 use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
@@ -29,7 +29,7 @@ use crate::Engine;
 use crate::engine::split_at_seam;
 
 type LightEngine =
-    Engine<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>, LightRouting>;
+    Engine<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>, LightWalletRouting>;
 
 fn height(h: u32) -> Height {
     Height::try_from(h).expect("valid height")
@@ -115,7 +115,7 @@ async fn mempool_compact_transaction_maps_a_missing_txid_to_none() {
     assert!(answer.is_none());
 }
 
-// The acceptance gate for the full light-wallet read-set: under `LightRouting`
+// The acceptance gate for the full light-wallet read-set: under `LightWalletRouting`
 // the composed engine serves every read `LightWalletService` demands — none
 // reporting itself `NotServiceable`. The per-cap tests below pin each
 // capability's placement.
@@ -129,7 +129,7 @@ async fn light_serve_conformance_over_a_provisioned_source() {
 async fn address_reads_are_remote_under_light_routing() {
     // No rejection seeded: the mock answers empty (no-match) results. An `Ok` —
     // not a `NotServiceable` stub — proves each address read routes to the
-    // passthrough provider, as `LightRouting::Address = Passthrough` says.
+    // passthrough provider, as `LightWalletRouting::Address = Passthrough` says.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
@@ -226,7 +226,7 @@ async fn compact_block_nullifiers_are_served_locally() {
 async fn treestate_is_remote_under_light_routing() {
     // No treestate seeded: the mock answers HeightNotFound, which the passthrough
     // provider maps to a definitive read failure. Proves treestate routes to the
-    // passthrough provider, as `LightRouting::Treestate = Passthrough` says.
+    // passthrough provider, as `LightWalletRouting::Treestate = Passthrough` says.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     match TreestateRead::treestate(&snapshot, height(5)).await {
@@ -243,7 +243,7 @@ async fn treestate_is_remote_under_light_routing() {
 /// manifest is "to the tip" once it has one.
 fn engine_over_a_serviceable_store(
     tip: Option<u32>,
-) -> Engine<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightRouting> {
+) -> Engine<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightWalletRouting> {
     let fs = MockIndexerService::new(MockService {
         tip: tip.map(|h| BlockRef {
             height: height(h),

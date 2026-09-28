@@ -20,9 +20,9 @@
 //! use case:
 //!
 //! ```
-//! use zaino_indexes::sets::light_wallet::LightWallet;
+//! use zaino_indexes::sets::compact_blocks::CompactBlocks;
 //! use zaino_persistence::in_memory::InMemoryBackend;
-//! use zaino_core::routing::LightRouting;
+//! use zaino_core::routing::LightWalletRouting;
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
@@ -32,19 +32,19 @@
 //!
 //! fn wired<S: LightWalletService>() {}
 //! wired::<Engine<
-//!     StoreReader<InMemoryBackend, LightWallet>,
+//!     StoreReader<InMemoryBackend, CompactBlocks>,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
-//!     LightRouting,
+//!     LightWalletRouting,
 //! >>();
 //! ```
 //!
 //! Route address history locally instead, over the same store, and it is not —
-//! `LightWallet` does not build `address_history`, so the store has no local
+//! `CompactBlocks` does not build `address_history`, so the store has no local
 //! address read for the composer to merge with the head's:
 //!
 //! ```compile_fail,E0277
-//! use zaino_indexes::sets::light_wallet::LightWallet;
+//! use zaino_indexes::sets::compact_blocks::CompactBlocks;
 //! use zaino_persistence::in_memory::InMemoryBackend;
 //! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
@@ -64,7 +64,7 @@
 //!
 //! fn wired<S: LightWalletService>() {}
 //! wired::<Engine<
-//!     StoreReader<InMemoryBackend, LightWallet>,
+//!     StoreReader<InMemoryBackend, CompactBlocks>,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
 //!     AddressLocal,
