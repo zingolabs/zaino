@@ -48,7 +48,7 @@ use zaino_chain_store::{
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
-    rpc::{ChainTip, ChainTipStatus},
+    rpc::{BlockHeaderVerbose, ChainTip, ChainTipStatus},
     AbsoluteChainWork, AddressBalance, AddressDelta, Block, BlockConfirmations, BlockHash,
     BlockHeader, BlockRef, BlockTreeSizes, BlockTxPosition, BlockVerbose, ChainMetadata,
     ChainStateEpoch, CompactDifficulty, EquihashNonce, EquihashSolution, Height, MerkleRoot,
@@ -58,13 +58,14 @@ use zaino_primitives::types::{
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockByHashError, GetBlockError, GetBlockVerboseError, GetCommitmentTreeRootsError,
-    GetSubtreeRootsError, GetTransactionError, GetTreestateByHashError, GetTreestateError,
-    OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
-    OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetBlockVerbose,
-    OneShotGetCommitmentTreeRoots, OneShotGetPreIndexCompactBlock, OneShotGetRawBlock,
-    OneShotGetRawBlockByHash, OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate,
-    OneShotGetTreestateByHash, QueryError, TransactionResponse,
+    GetBlockByHashError, GetBlockError, GetBlockHeaderError, GetBlockVerboseError,
+    GetCommitmentTreeRootsError, GetSubtreeRootsError, GetTransactionError,
+    GetTreestateByHashError, GetTreestateError, OneShotGetAddressBalance, OneShotGetAddressDeltas,
+    OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash,
+    OneShotGetBlockHeader, OneShotGetBlockVerbose, OneShotGetCommitmentTreeRoots,
+    OneShotGetPreIndexCompactBlock, OneShotGetRawBlock, OneShotGetRawBlockByHash,
+    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate, OneShotGetTreestateByHash,
+    QueryError, TransactionResponse,
 };
 
 // ***** The chain everything draws from *****
@@ -1153,6 +1154,8 @@ pub enum SourceCall {
     Block(Height),
     /// A parsed block, by hash.
     BlockByHash(BlockHash),
+    /// A block header, by hash.
+    BlockHeader(BlockHash),
     /// Consensus bytes, by height.
     RawBlock(Height),
     /// Consensus bytes, by hash.
@@ -1191,6 +1194,8 @@ pub struct FakeSource {
     /// other test in this crate while melting a real validator under load.
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     peak_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    /// Blocks off the best chain, known by hash only.
+    competing: Vec<Block>,
 }
 
 /// Counts one request for as long as it is in flight.
@@ -1210,7 +1215,14 @@ impl FakeSource {
             calls: Arc::new(Mutex::new(Vec::new())),
             in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             peak_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            competing: Vec::new(),
         }
+    }
+
+    /// The same validator also knowing `block` off its best chain.
+    pub fn with_competing_block(mut self, block: Block) -> Self {
+        self.competing.push(block);
+        self
     }
 
     /// The most requests this validator ever had in flight at once.
@@ -1278,6 +1290,50 @@ impl OneShotGetBlockByHash for FakeSource {
         self.height_of(hash)
             .and_then(|h| self.chain.block(h).cloned())
             .ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
+    }
+}
+
+impl OneShotGetBlockHeader for FakeSource {
+    async fn get_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> Result<BlockHeaderVerbose, QueryError<GetBlockHeaderError>> {
+        let _in_flight = self.begin(SourceCall::BlockHeader(hash)).await;
+        if let Some(block) = self.height_of(hash).and_then(|h| self.chain.block(h)) {
+            let depth = self.chain.tip() - u32::from(block.header.height) + 1;
+            let confirmations = BlockConfirmations::Confirmed(
+                NonZeroU32::new(depth)
+                    .expect("a best-chain block is at least its own confirmation"),
+            );
+            return Ok(header_of(block, confirmations));
+        }
+        self.competing
+            .iter()
+            .find(|block| block.header.hash == hash)
+            .map(|block| header_of(block, BlockConfirmations::NotInBestChain))
+            .ok_or(QueryError::Domain(GetBlockHeaderError::BlockNotFound(hash)))
+    }
+}
+
+/// A block's verbose header, as the fake validator reports it.
+fn header_of(block: &Block, confirmations: BlockConfirmations) -> BlockHeaderVerbose {
+    let header = &block.header;
+    BlockHeaderVerbose {
+        hash: header.hash,
+        confirmations,
+        height: header.height,
+        version: header.version,
+        merkle_root: header.merkle_root,
+        time: header.time,
+        nonce: header.nonce,
+        solution: header.solution.as_bytes().to_vec(),
+        bits: header.bits,
+        difficulty: 1.0,
+        block_commitments: Some(header.block_commitments),
+        final_sapling_root: None,
+        chainwork: None,
+        previous_block_hash: Some(header.prev_hash),
+        next_block_hash: None,
     }
 }
 

@@ -1605,12 +1605,60 @@ impl zaino_source::OneShotGetBlockVerboseByHash for ProptestMockchain {
 impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
     async fn get_block_header(
         &self,
-        _hash: zaino_primitives::types::BlockHash,
+        hash: zaino_primitives::types::BlockHash,
     ) -> Result<
         zaino_primitives::types::rpc::BlockHeaderVerbose,
         PortError<zaino_source::GetBlockHeaderError>,
     > {
-        unimplemented!("ProptestMockchain exercises sync/reorg, not the getblockheader RPC")
+        use crate::chain_index::source::mockchain_source::{block_confirmations, verbose_header};
+
+        self.settle().await;
+        let wanted = zebra_chain::block::Hash(<[u8; 32]>::from(hash));
+        let block = self
+            .all_blocks_arb_branch_order()
+            .find(|block| block.hash() == wanted)
+            .ok_or(PortError::Domain(
+                zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+            ))?;
+
+        let best = self.best_branch();
+        let (confirmations, next_block_hash) =
+            match best.iter().position(|block| block.hash() == wanted) {
+                Some(position) => {
+                    let height = |block: &zebra_chain::block::Block| {
+                        block
+                            .coinbase_height()
+                            .map(|height| height.0)
+                            .ok_or_else(|| port_fault("proptest block has no coinbase height"))
+                    };
+                    let tip = best
+                        .last()
+                        .ok_or_else(|| port_fault("proptest chain is empty"))?;
+                    (
+                        block_confirmations(height(tip)?, height(block)?)
+                            .map_err(|e| port_fault(e.to_string()))?,
+                        best.get(position + 1)
+                            .map(|next| zaino_primitives::types::BlockHash::from(next.hash().0)),
+                    )
+                }
+                None => (
+                    zaino_primitives::types::BlockConfirmations::NotInBestChain,
+                    None,
+                ),
+            };
+
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|e| port_fault(e.to_string()))?;
+
+        verbose_header(
+            block,
+            confirmations,
+            roots.sapling.map(|info| info.root),
+            next_block_hash,
+        )
+        .map_err(port_fault)
     }
 }
 

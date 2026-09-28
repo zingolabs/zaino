@@ -662,6 +662,75 @@ async fn a_competing_branch_hash_has_no_best_chain_height() {
     );
 }
 
+/// A hash neither tier holds takes its height from the validator only when it
+/// is on the validator's best chain at a height this view does not pin.
+#[tokio::test]
+async fn a_validator_answered_height_must_be_best_chain_and_unpinned() {
+    use zaino_chain::testing::FakeHeadSnapshot;
+
+    let chain = chain();
+    let competing = FakeHeadSnapshot::branch_block(600, 9_999).block;
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 100),
+        FakeHead::covering(&chain, 1100, 1200),
+        Arc::new(FakeSource::over(&chain).with_competing_block(competing)),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert_eq!(
+        snapshot
+            .block_height(hash_of(600))
+            .await
+            .expect("serviceable"),
+        Some(height(600)),
+        "a best-chain block in the hole"
+    );
+    assert_eq!(
+        snapshot
+            .block_height(hash_of(9_999))
+            .await
+            .expect("serviceable"),
+        None,
+        "a block off the validator's best chain"
+    );
+}
+
+/// A block the validator calls best-chain at a height this view pins to a
+/// different block has no height in this view.
+#[tokio::test]
+async fn a_validator_best_chain_block_at_a_pinned_height_has_no_height() {
+    use zaino_chain::testing::FakeHeadSnapshot;
+
+    let chain = chain();
+    let viewed = Chain::from_blocks(
+        (0..=1200)
+            .map(|h| {
+                if h == 1150 {
+                    FakeHeadSnapshot::branch_block(1150, 9_999).block
+                } else {
+                    zaino_chain::testing::block_at(h)
+                }
+            })
+            .collect(),
+    );
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 100),
+        FakeHead::covering(&viewed, 1100, 1200),
+        Arc::new(FakeSource::over(&chain)),
+        ChainViewConfig::default(),
+    );
+
+    assert_eq!(
+        composer
+            .snapshot()
+            .block_height(hash_of(1150))
+            .await
+            .expect("serviceable"),
+        None
+    );
+}
+
 // ***** Reads needing Zaino's own capabilities *****
 
 /// A full-chain spend search refuses to span a hole; a finalised one does not.

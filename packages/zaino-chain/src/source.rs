@@ -28,7 +28,7 @@
 pub trait ChainViewSource:
     // Blocks, both addressings.
     zaino_source::OneShotGetBlock
-    + zaino_source::OneShotGetBlockByHash
+    + zaino_source::OneShotGetBlockHeader
     + zaino_source::OneShotGetRawBlock
     + zaino_source::OneShotGetRawBlockByHash
     // The compact projection, so filling a hole in a wallet-sync range does not
@@ -54,7 +54,7 @@ pub trait ChainViewSource:
 
 impl<T> ChainViewSource for T where
     T: zaino_source::OneShotGetBlock
-        + zaino_source::OneShotGetBlockByHash
+        + zaino_source::OneShotGetBlockHeader
         + zaino_source::OneShotGetRawBlock
         + zaino_source::OneShotGetRawBlockByHash
         + zaino_source::OneShotGetPreIndexCompactBlock

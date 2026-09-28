@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use futures::{stream, StreamExt as _, TryStreamExt as _};
 use tokio::sync::Semaphore;
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, CompactBlock, Height, TreeRoots};
+use zaino_primitives::types::{
+    rpc::BlockHeaderVerbose, Block, BlockHash, ChainMetadata, CompactBlock, Height, TreeRoots,
+};
 use zaino_source::QueryError;
 
 use crate::composer::config::ChainViewConfig;
@@ -239,9 +241,9 @@ impl<Source: ChainViewSource> Fetcher<Source> {
         .await
     }
 
-    /// A parsed block by hash, for an id-addressed read no provider covers.
-    pub(crate) async fn block_by_hash(&self, hash: BlockHash) -> Result<Option<Block>> {
-        self.permitted(async { miss(self.source.get_block_by_hash(hash).await) })
+    /// A block's header, for an id-addressed read no provider covers.
+    pub(crate) async fn block_header(&self, hash: BlockHash) -> Result<Option<BlockHeaderVerbose>> {
+        self.permitted(async { miss(self.source.get_block_header(hash).await) })
             .await
     }
 }

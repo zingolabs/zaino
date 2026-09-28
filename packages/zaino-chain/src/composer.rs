@@ -38,9 +38,9 @@ use zaino_chain_store::{
     TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex, TXOUT_SET_ENTRY_LEN,
 };
 use zaino_primitives::types::{
-    rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockHash, BlockHeader,
-    BlockRef, ChainStateEpoch, CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex,
-    SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
+    rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockConfirmations, BlockHash,
+    BlockHeader, BlockRef, ChainStateEpoch, CompactBlock, Height, Outpoint, ShieldedPool,
+    SubtreeIndex, SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 
 use crate::block::ChainBlock;
@@ -767,14 +767,22 @@ where
         // Neither holds it. During catch-up that is the ordinary case for any
         // historical hash, so ask the validator rather than reporting a block
         // that plainly exists as absent.
+        //
+        // The validator answers against its own best chain, so its answer
+        // stands only at a height no provider pins: a covered height holds a
+        // different block in this view, and one above the tip is not in it.
         if !self.fetch.enabled() {
             return Ok(None);
         }
-        Ok(self
-            .fetch
-            .block_by_hash(hash)
-            .await?
-            .map(|block| block.header.height))
+        let Some(header) = self.fetch.block_header(hash).await? else {
+            return Ok(None);
+        };
+        let canonical = header.confirmations != BlockConfirmations::NotInBestChain;
+        let unpinned = matches!(
+            self.coverage.provider_at(header.height),
+            Ok(Some(Provider::Source))
+        );
+        Ok((canonical && unpinned).then_some(header.height))
     }
 
     async fn block(&self, at: BlockId) -> Result<Option<ChainBlock>> {

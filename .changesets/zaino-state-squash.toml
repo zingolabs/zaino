@@ -80,3 +80,15 @@ Compact blocks from the chain head and the validator keep every transaction, \
 as the store's do. Dropping those left empty by the pool filter renumbered the \
 rest, so wallets read the wrong `CompactTx.index` for recent blocks.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`BlockRead::block_height` no longer reports a height for a block that is off \
+the best chain or at a height this view pins to a different block. For a hash \
+neither tier holds it asks the validator for the block's header and accepts the \
+height only if the validator places it on its best chain at a height no tier \
+covers. `ChainViewSource` now requires `OneShotGetBlockHeader` in place of \
+`OneShotGetBlockByHash`.
+"""
