@@ -32,7 +32,7 @@ use zaino_primitives::types::Height;
 use sync_bench::{
     current_tip, default_concurrency, init_logging, open_backend, open_rpc_source, open_source,
     report, report_bottleneck, resume_from_watermark, run_provision, run_sync, verify, window_end,
-    AdapterArg, BenchSource, BoxError, Mode, NetworkArg, Outcome,
+    AdapterArg, BenchSource, BoxError, Mode, NetworkArg, Outcome, Strategy, Tuning,
 };
 
 /// Benchmark the greenfield indexing stack over a bounded window.
@@ -50,6 +50,12 @@ struct Args {
     /// selects it through `BENCH_ADAPTER`.
     #[arg(long, value_enum, env = "BENCH_ADAPTER", default_value_t = AdapterArg::Readstate)]
     adapter: AdapterArg,
+
+    /// What the provisioner fetches per height: `compact` (the fork's pre-index
+    /// compact block) or `full` (whole blocks over `getblock`, which any zebra
+    /// answers). The cluster Job selects it through `BENCH_STRATEGY`.
+    #[arg(long, value_enum, env = "BENCH_STRATEGY", default_value_t = Strategy::Compact)]
+    strategy: Strategy,
 
     /// Zebra cache directory (the state DB lives under it, per network). Required
     /// for `--adapter readstate`; ignored for `rpc`. Env fallback matches the
@@ -75,7 +81,7 @@ struct Args {
     /// resumes just past the backend's committed watermark. Set it to bench a
     /// specific chain region — the cumulative indexes then count from this height,
     /// so served tree sizes are window-relative (throughput is unaffected).
-    #[arg(long)]
+    #[arg(long, env = "SYNC_START")]
     start: Option<u32>,
 
     /// Number of blocks in the window. Omitted: to the finalised boundary
@@ -138,6 +144,11 @@ async fn main() -> Result<(), BoxError> {
 /// Resolve the window and run the selected mode over `source`.
 async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), BoxError> {
     let tip = current_tip(&source).await?;
+    let tuning = Tuning {
+        concurrency: args.concurrency,
+        channel_cap: args.channel_cap,
+        batch: args.batch,
+    };
 
     match args.mode {
         Mode::Provision => {
@@ -146,12 +157,21 @@ async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), Box
             if is_empty(resume, to, tip, args.finalised_depth) {
                 return Ok(());
             }
-            announce("provisioning", resume, to, tip, args.adapter, None);
-            let out = run_provision(source, resume, to, args.concurrency, args.channel_cap).await?;
+            announce(
+                "provisioning",
+                resume,
+                to,
+                tip,
+                args.adapter,
+                args.strategy,
+                None,
+            );
+            let out = run_provision(source, args.strategy, resume, to, tuning).await?;
             report(
                 "provisioned",
                 Mode::Provision,
                 args.adapter,
+                args.strategy,
                 &out,
                 args.concurrency,
             );
@@ -167,18 +187,24 @@ async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), Box
             if is_empty(resume, to, tip, args.finalised_depth) {
                 return Ok(());
             }
-            announce("indexing", resume, to, tip, args.adapter, Some(db));
-            let out = run_sync(
-                source,
-                backend.clone(),
+            announce(
+                "indexing",
                 resume,
                 to,
+                tip,
+                args.adapter,
+                args.strategy,
+                Some(db),
+            );
+            let out = run_sync(source, args.strategy, backend.clone(), resume, to, tuning).await?;
+            report(
+                "indexed",
+                Mode::Sync,
+                args.adapter,
+                args.strategy,
+                &out,
                 args.concurrency,
-                args.channel_cap,
-                args.batch,
-            )
-            .await?;
-            report("indexed", Mode::Sync, args.adapter, &out, args.concurrency);
+            );
             if args.verify {
                 verify(&backend, resume, to).await?;
             }
@@ -199,36 +225,31 @@ async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), Box
                 to,
                 tip,
                 args.adapter,
+                args.strategy,
                 Some(db),
             );
 
-            let provision: Outcome = run_provision(
-                Arc::clone(&source),
-                resume,
-                to,
-                args.concurrency,
-                args.channel_cap,
-            )
-            .await?;
+            let provision: Outcome =
+                run_provision(Arc::clone(&source), args.strategy, resume, to, tuning).await?;
             report(
                 "provisioned",
                 Mode::Both,
                 args.adapter,
+                args.strategy,
                 &provision,
                 args.concurrency,
             );
 
-            let sync: Outcome = run_sync(
-                source,
-                backend.clone(),
-                resume,
-                to,
+            let sync: Outcome =
+                run_sync(source, args.strategy, backend.clone(), resume, to, tuning).await?;
+            report(
+                "indexed",
+                Mode::Both,
+                args.adapter,
+                args.strategy,
+                &sync,
                 args.concurrency,
-                args.channel_cap,
-                args.batch,
-            )
-            .await?;
-            report("indexed", Mode::Both, args.adapter, &sync, args.concurrency);
+            );
 
             report_bottleneck(args.adapter, &provision, &sync, args.concurrency);
             if args.verify {
@@ -279,6 +300,7 @@ fn announce(
     to: Height,
     tip: Height,
     adapter: AdapterArg,
+    strategy: Strategy,
     db: Option<&Path>,
 ) {
     let count = u32::from(to) - u32::from(resume) + 1;
@@ -287,10 +309,11 @@ fn announce(
         None => String::new(),
     };
     println!(
-        "{verb} [{}, {}] ({count} blocks) from {} tip {}{target}",
+        "{verb} [{}, {}] ({count} blocks) from {} ({} blocks) tip {}{target}",
         u32::from(resume),
         u32::from(to),
         adapter.as_str(),
+        strategy.as_str(),
         u32::from(tip),
     );
 }

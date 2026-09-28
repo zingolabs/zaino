@@ -18,10 +18,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
-use zaino_indexer::{CompactBlocks, FetchConcurrency, SourceProvisioner};
+use zaino_indexer::{CompactBlocks, FetchConcurrency, FullBlocks, SourceFetch, SourceProvisioner};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{
-    context_from_pre_index_compact_block, CurrentZaino, CurrentZainoContext,
+    context_from_block, context_from_pre_index_compact_block, CurrentZaino, CurrentZainoContext,
 };
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
@@ -30,7 +30,7 @@ use zaino_primitives::types::Height;
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_service::{CompactBlockRead, TakeSnapshot};
 use zaino_source::{
-    GetChainTip, GetPreIndexCompactBlock, RetryPolicy, SubscribeChainTip, ValidatorClient,
+    GetBlock, GetChainTip, GetPreIndexCompactBlock, RetryPolicy, SubscribeChainTip, ValidatorClient,
 };
 use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
@@ -48,17 +48,43 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// The source port the benchmarks provision through. Both run bodies are generic
 /// over this one bound, so the concrete adapter is swapped at the composition
 /// root (`--adapter`) while the measured loop stays identical — the whole point
-/// of benching over the port rather than a concrete source. The bound is the
-/// exact set [`SourceProvisioner`] requires: read the tip, follow it, and fetch
-/// pre-index compact blocks.
+/// of benching over the port rather than a concrete source. The bound is what
+/// [`SourceProvisioner`] requires under either [`Strategy`]: read the tip,
+/// follow it, and fetch either pre-index compact blocks or full blocks.
 pub trait BenchSource:
-    GetChainTip + SubscribeChainTip + GetPreIndexCompactBlock + Send + Sync + 'static
+    GetChainTip + SubscribeChainTip + GetPreIndexCompactBlock + GetBlock + Send + Sync + 'static
 {
 }
 
 impl<T> BenchSource for T where
-    T: GetChainTip + SubscribeChainTip + GetPreIndexCompactBlock + Send + Sync + 'static
+    T: GetChainTip + SubscribeChainTip + GetPreIndexCompactBlock + GetBlock + Send + Sync + 'static
 {
+}
+
+/// What the provisioner fetches per height — the two [`SourceFetch`] strategies
+/// the indexer offers, as a run-time choice.
+///
+/// `compact` asks for the pre-index compact block, which only a validator that
+/// serves it can answer (the ReadState path, or our fork's
+/// `getpreindexcompactblock` over RPC). `full` asks for the whole block and
+/// projects it here, which every validator answers over `getblock`; it is the
+/// honest number for provisioning from a stock zebra, and the slower one.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum Strategy {
+    /// Pre-index compact blocks: the fork's proof-skipping read.
+    Compact,
+    /// Full blocks over `getblock`, deserialised and projected locally.
+    Full,
+}
+
+impl Strategy {
+    /// A stable lowercase tag for the result schema.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Strategy::Compact => "compact",
+            Strategy::Full => "full",
+        }
+    }
 }
 
 /// The resilient ReadState source: reads compact blocks straight off the
@@ -239,6 +265,20 @@ pub fn window_end(
     })
 }
 
+/// The knobs a run body takes beyond its window: how many fetches stay in
+/// flight, how deep the provisioner→engine channel is, and how many blocks a
+/// batch commits. One value per run, so the two bodies and the `both` mode
+/// measure under identical settings.
+#[derive(Debug, Clone, Copy)]
+pub struct Tuning {
+    /// Fetches kept in flight by the provisioner.
+    pub concurrency: FetchConcurrency,
+    /// Contexts buffered between the provisioner and the consumer.
+    pub channel_cap: usize,
+    /// Blocks committed per atomic batch (sync only).
+    pub batch: u32,
+}
+
 /// A completed run: how many blocks over how long.
 pub struct Outcome {
     /// Blocks covered by the window.
@@ -259,16 +299,44 @@ impl Outcome {
 /// to attribute cost to — the read-path ceiling.
 pub async fn run_provision<S: BenchSource>(
     source: Arc<S>,
+    strategy: Strategy,
     resume: Height,
     to: Height,
-    concurrency: FetchConcurrency,
-    channel_cap: usize,
+    tuning: Tuning,
 ) -> Result<Outcome, BoxError> {
-    let provisioner = Arc::new(SourceProvisioner::<_, _, _, CompactBlocks>::new(
-        source,
-        |cb| context_from_pre_index_compact_block(&cb),
-        concurrency,
-    ));
+    match strategy {
+        Strategy::Compact => {
+            let provisioner = SourceProvisioner::<_, _, _, CompactBlocks>::new(
+                source,
+                |cb| context_from_pre_index_compact_block(&cb),
+                tuning.concurrency,
+            );
+            drain(provisioner, resume, to, tuning.channel_cap).await
+        }
+        Strategy::Full => {
+            let provisioner = SourceProvisioner::<_, _, _, FullBlocks>::new(
+                source,
+                |block| context_from_block(&block),
+                tuning.concurrency,
+            );
+            drain(provisioner, resume, to, tuning.channel_cap).await
+        }
+    }
+}
+
+/// The measured body of a provision run over an already-built provisioner.
+async fn drain<S, F, Fetch>(
+    provisioner: SourceProvisioner<S, CurrentZainoContext, F, Fetch>,
+    resume: Height,
+    to: Height,
+    channel_cap: usize,
+) -> Result<Outcome, BoxError>
+where
+    S: BenchSource,
+    Fetch: SourceFetch<S>,
+    F: Fn(Fetch::Item) -> CurrentZainoContext + Send + Sync + 'static,
+{
+    let provisioner = Arc::new(provisioner);
     let count = u32::from(to) - u32::from(resume) + 1;
 
     let (tx, mut rx) = mpsc::channel(channel_cap);
@@ -289,30 +357,58 @@ pub async fn run_provision<S: BenchSource>(
 /// the write-backpressured end-to-end rate.
 pub async fn run_sync<S: BenchSource>(
     source: Arc<S>,
+    strategy: Strategy,
     backend: LmdbBackend,
     resume: Height,
     to: Height,
-    concurrency: FetchConcurrency,
-    channel_cap: usize,
-    batch: u32,
+    tuning: Tuning,
 ) -> Result<Outcome, BoxError> {
-    let provisioner = Arc::new(SourceProvisioner::<_, _, _, CompactBlocks>::new(
-        source,
-        |cb| context_from_pre_index_compact_block(&cb),
-        concurrency,
-    ));
+    match strategy {
+        Strategy::Compact => {
+            let provisioner = SourceProvisioner::<_, _, _, CompactBlocks>::new(
+                source,
+                |cb| context_from_pre_index_compact_block(&cb),
+                tuning.concurrency,
+            );
+            index(provisioner, backend, resume, to, tuning).await
+        }
+        Strategy::Full => {
+            let provisioner = SourceProvisioner::<_, _, _, FullBlocks>::new(
+                source,
+                |block| context_from_block(&block),
+                tuning.concurrency,
+            );
+            index(provisioner, backend, resume, to, tuning).await
+        }
+    }
+}
+
+/// The measured body of a sync run over an already-built provisioner.
+async fn index<S, F, Fetch>(
+    provisioner: SourceProvisioner<S, CurrentZainoContext, F, Fetch>,
+    backend: LmdbBackend,
+    resume: Height,
+    to: Height,
+    tuning: Tuning,
+) -> Result<Outcome, BoxError>
+where
+    S: BenchSource,
+    Fetch: SourceFetch<S>,
+    F: Fn(Fetch::Item) -> CurrentZainoContext + Send + Sync + 'static,
+{
+    let provisioner = Arc::new(provisioner);
     let count = u32::from(to) - u32::from(resume) + 1;
 
     let mut engine = SyncEngine::from_pipelines(
         CurrentZaino::pipelines(),
         backend,
         EngineConfig {
-            batch_size: batch,
+            batch_size: tuning.batch,
             start_height: BlockHeight::new(u64::from(resume)),
         },
     )?;
 
-    let (tx, rx) = mpsc::channel(channel_cap);
+    let (tx, rx) = mpsc::channel(tuning.channel_cap);
     let feed = Arc::clone(&provisioner);
     let provision = tokio::spawn(async move { feed.provision(resume, to, tx).await });
 
@@ -332,16 +428,18 @@ pub fn report(
     kind: &str,
     mode: Mode,
     adapter: AdapterArg,
+    strategy: Strategy,
     out: &Outcome,
     concurrency: FetchConcurrency,
 ) {
     let seconds = out.elapsed.as_secs_f64();
     let per_second = out.blocks_per_second();
     println!(
-        "{kind} [{}/{}] {} blocks in {seconds:.3}s = {per_second:.1} blocks/s \
+        "{kind} [{}/{}/{}] {} blocks in {seconds:.3}s = {per_second:.1} blocks/s \
          ({:.3} ms/block, concurrency {concurrency})",
         mode.as_str(),
         adapter.as_str(),
+        strategy.as_str(),
         out.count,
         seconds * 1000.0 / f64::from(out.count),
     );
@@ -350,6 +448,7 @@ pub fn report(
         kind,
         mode = mode.as_str(),
         adapter = adapter.as_str(),
+        strategy = strategy.as_str(),
         blocks = out.count,
         elapsed_ms = out.elapsed.as_millis(),
         blocks_per_second = per_second,
