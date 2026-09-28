@@ -22,13 +22,14 @@ use zaino_chain_head::ChainHeadConfig;
 use zaino_chain_head_service::{ChainHeadInitError, ChainHeadService, ChainHeadSubscriber};
 use zaino_component::{ComponentName, Managed, ReachabilityProbe, StatusSource, StatusWatch};
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
+use zaino_core::chain_view::ChainTier;
 use zaino_indexer::{SourceSyncDriver, SyncTuning};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::context_from_pre_index_compact_block;
 use zaino_persistence::{Namespace, OpenError};
 use zaino_persistence_codec::reserved_namespaces;
 use zaino_service::use_cases::{Serves, UseCase};
-use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
+use zaino_service::TakeSnapshot;
 use zaino_store::{StoreComponent, StoreReader, WatermarkRepairError};
 
 use crate::config::IndexedDeploymentConfig;
@@ -96,7 +97,7 @@ pub async fn boot_indexed<D, A, C>(
 where
     D: RuntimePlan<Config = IndexedDeploymentConfig>,
     C: IndexedSource,
-    StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainTier>,
     IndexedEngine<D, C>: Serves<D::UseCase>,
     RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
 {

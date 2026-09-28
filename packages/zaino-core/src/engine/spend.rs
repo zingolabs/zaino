@@ -8,12 +8,13 @@
 
 use std::future::Future;
 
+use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::{Local, Routing};
 use zaino_primitives::types::Outpoint;
+use zaino_service::SpendRead;
 use zaino_service::SpendStatus;
 use zaino_service::error::SpendReadError;
-use zaino_service::{ChainSegment, CompactBlockRead, SpendRead};
 
 use super::EngineSnapshot;
 use crate::passthrough::PassthroughProvider;
@@ -29,8 +30,8 @@ pub trait SpendPlacement<F, N, Src>: Send + Sync + 'static {
 
 impl<F, N, Src, R> SpendRead for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Send + Sync + 'static,
     R: Routing,
     R::Spend: SpendPlacement<F, N, Src>,
@@ -42,8 +43,8 @@ where
 
 impl<F, N, Src> SpendPlacement<F, N, Src> for Local
 where
-    F: ChainSegment + CompactBlockRead + SpendRead,
-    N: ChainSegment + CompactBlockRead + SpendRead,
+    F: ChainTier + SpendRead,
+    N: ChainTier + SpendRead,
     Src: Send + Sync + 'static,
 {
     async fn spend_status(

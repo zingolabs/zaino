@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 
 use futures::stream::BoxStream;
 
+use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::Routing;
 use zaino_primitives::types::{
@@ -84,8 +85,8 @@ pub(crate) fn split_at_seam<F, N>(
     range: HeightRange,
 ) -> (Option<HeightRange>, Option<HeightRange>)
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
 {
     let Some(watermark) = local.watermark() else {
         return (None, non_empty(range));
@@ -126,8 +127,8 @@ impl<F: Clone, N: Clone, Src: Clone, R> Clone for EngineSnapshot<F, N, Src, R> {
 
 impl<F, N, Src, R> ChainSegment for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
@@ -142,8 +143,8 @@ where
 
 impl<F, N, Src, R> Snapshot for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
@@ -158,8 +159,8 @@ where
 /// tiers exist for.
 impl<F, N, Src, R> CompactBlockRead for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
@@ -178,8 +179,8 @@ where
 /// its spend markers. Not a separate index.
 impl<F, N, Src, R> CompactNullifierRead for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
@@ -198,8 +199,8 @@ where
 /// Always local: the aggregate is read off the composed pinned tip.
 impl<F, N, Src, R> ChainInfoRead for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
@@ -217,8 +218,8 @@ where
 /// them itself, so the validator's `getrawtransaction` answer relays as is.
 impl<F, N, Src, R> RawTransactionRead for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: GetTransaction + Send + Sync + 'static,
     R: Routing,
 {

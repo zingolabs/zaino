@@ -32,6 +32,7 @@ mod light_wallet_passthrough;
 pub use light_wallet_passthrough::{LightWalletPassthrough, LightWalletSource};
 
 use zaino_chain_head::ChainHeadBlockSource;
+use zaino_core::chain_view::ChainTier;
 use zaino_core::routing::Routing;
 use zaino_core::Engine;
 use zaino_indexer::CompactSource;
@@ -39,7 +40,7 @@ use zaino_indexes::index_set::{Builds, IndexSet};
 use zaino_indexes::indexes::headers::HeadersIndex;
 use zaino_indexes::sets::current_zaino::CurrentZainoContext;
 use zaino_service::use_cases::{Serves, UseCase};
-use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
+use zaino_service::TakeSnapshot;
 use zaino_store::StoreReader;
 
 /// What the indexed assembly needs of any validator to boot at all, as one
@@ -88,8 +89,8 @@ pub fn compose<D, B, Nfs, Src>(
 ) -> DeploymentEngine<D, B, Nfs, Src>
 where
     D: Deployment,
-    StoreReader<B, D::Indexes>: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    StoreReader<B, D::Indexes>: TakeSnapshot<Snapshot: ChainTier>,
+    Nfs: TakeSnapshot<Snapshot: ChainTier>,
     DeploymentEngine<D, B, Nfs, Src>: Serves<D::UseCase>,
 {
     Engine::new(store, head, source)

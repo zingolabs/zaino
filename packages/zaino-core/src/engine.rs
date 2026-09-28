@@ -140,6 +140,7 @@ use std::marker::PhantomData;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
+use crate::chain_view::ChainTier;
 use crate::chain_view::ChainView;
 use crate::routing::{PlacementKind, Routing};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
@@ -149,8 +150,8 @@ use zaino_service::{
     TipEvent,
 };
 use zaino_service::{
-    Broadcast, ChainSegment, CompactBlockRead, IndexerService, MempoolContent, MempoolSubscribe,
-    NodeQueryRelay, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
+    Broadcast, IndexerService, MempoolContent, MempoolSubscribe, NodeQueryRelay, ReportedUpgrades,
+    Serviceable, TakeSnapshot, TipSubscribe,
 };
 use zaino_source::{
     GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction,
@@ -185,8 +186,8 @@ impl<Fs: Clone, Nfs: Clone, Src: Clone, R> Clone for Engine<Fs, Nfs, Src, R> {
 
 impl<Fs, Nfs, Src, R> Engine<Fs, Nfs, Src, R>
 where
-    Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    Fs: TakeSnapshot<Snapshot: ChainTier>,
+    Nfs: TakeSnapshot<Snapshot: ChainTier>,
     R: Routing,
 {
     /// Compose a finalised store, a non-finalised head, and the validator
@@ -205,8 +206,8 @@ where
 
 impl<Fs, Nfs, Src, R> TakeSnapshot for Engine<Fs, Nfs, Src, R>
 where
-    Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
-    Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead>,
+    Fs: TakeSnapshot<Snapshot: ChainTier>,
+    Nfs: TakeSnapshot<Snapshot: ChainTier>,
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
@@ -372,8 +373,8 @@ where
 
 impl<Fs, Nfs, Src, R> IndexerService for Engine<Fs, Nfs, Src, R>
 where
-    Fs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + Serviceable + 'static,
-    Nfs: TakeSnapshot<Snapshot: ChainSegment + CompactBlockRead> + 'static,
+    Fs: TakeSnapshot<Snapshot: ChainTier> + Serviceable + 'static,
+    Nfs: TakeSnapshot<Snapshot: ChainTier> + 'static,
     Src: GetTreestate
         + SendRawTransaction
         + GetMempoolTxids

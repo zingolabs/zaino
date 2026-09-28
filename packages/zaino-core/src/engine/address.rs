@@ -20,6 +20,7 @@
 
 use std::future::Future;
 
+use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::{Local, Passthrough, Routing};
 use zaino_primitives::types::{
@@ -28,7 +29,7 @@ use zaino_primitives::types::{
 };
 use zaino_service::SpendStatus;
 use zaino_service::error::{AddressReadError, SpendReadError};
-use zaino_service::{AddressRead, ChainSegment, CompactBlockRead, SpendRead};
+use zaino_service::{AddressRead, SpendRead};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 
 use super::EngineSnapshot;
@@ -72,8 +73,8 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
 /// The one impl a handler sees: dispatch on the routing's placement.
 impl<F, N, Src, R> AddressRead for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Send + Sync + 'static,
     R: Routing,
     R::Address: AddressPlacement<F, N, Src>,
@@ -114,8 +115,8 @@ where
 
 impl<F, N, Src> AddressPlacement<F, N, Src> for Passthrough
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: GetAddressBalance
         + GetAddressUtxos
         + GetAddressTxids
@@ -199,8 +200,8 @@ fn spend_to_address_error(error: SpendReadError) -> AddressReadError {
 
 impl<F, N, Src> AddressPlacement<F, N, Src> for Local
 where
-    F: ChainSegment + CompactBlockRead + AddressRead,
-    N: ChainSegment + CompactBlockRead + AddressRead + SpendRead,
+    F: ChainTier + AddressRead,
+    N: ChainTier + AddressRead + SpendRead,
     Src: Send + Sync + 'static,
 {
     async fn balance(

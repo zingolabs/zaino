@@ -6,6 +6,22 @@ use std::future::Future;
 use zaino_service::error::Transient;
 use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 
+/// What a side of the seam must serve for the composer to route it: the
+/// coherence coordinate ([`ChainSegment`]) plus the reads of the capability
+/// that is always answered locally, blocks — today exactly
+/// [`CompactBlockRead`], the block representation Zaino serves.
+///
+/// Named as a role rather than as its reads so the composer, the engine and
+/// the deployments bound on the role: when the always-local capability grows
+/// a read (a full block read served from both tiers, say), it joins this
+/// bundle and every bound follows. A read that only one tier can answer, or
+/// that a routing may place elsewhere, is not a tier read; those are named
+/// per placement on the engine.
+///
+/// Blanket-implemented: a type is a tier exactly when it has the parts.
+pub trait ChainTier: ChainSegment + CompactBlockRead {}
+impl<T> ChainTier for T where T: ChainSegment + CompactBlockRead {}
+
 mod snapshot;
 
 pub use snapshot::ChainViewSnapshot;
@@ -34,9 +50,9 @@ pub struct ChainView<Fs, Nfs> {
 impl<Fs, Nfs> ChainView<Fs, Nfs>
 where
     Fs: TakeSnapshot,
-    Fs::Snapshot: ChainSegment + CompactBlockRead,
+    Fs::Snapshot: ChainTier,
     Nfs: TakeSnapshot,
-    Nfs::Snapshot: ChainSegment + CompactBlockRead,
+    Nfs::Snapshot: ChainTier,
 {
     /// Compose over a finalised store and a non-finalised head.
     pub fn new(fs: Fs, nfs: Nfs) -> Self {
@@ -69,9 +85,9 @@ impl<Fs: Clone, Nfs: Clone> Clone for ChainView<Fs, Nfs> {
 impl<Fs, Nfs> TakeSnapshot for ChainView<Fs, Nfs>
 where
     Fs: TakeSnapshot,
-    Fs::Snapshot: ChainSegment + CompactBlockRead,
+    Fs::Snapshot: ChainTier,
     Nfs: TakeSnapshot,
-    Nfs::Snapshot: ChainSegment + CompactBlockRead,
+    Nfs::Snapshot: ChainTier,
 {
     type Snapshot = ChainViewSnapshot<Fs::Snapshot, Nfs::Snapshot>;
 

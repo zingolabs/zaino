@@ -4,10 +4,11 @@ Composes a **finalised store** (FS — the durable prefix) and a **non-finalised
 head** (NFS — the volatile suffix) into **one served snapshot** for compact-block
 serving.
 
-Both sides are named only through the shared ports defined in `zaino-service`:
-each is a `TakeSnapshot` whose snapshot is a `ChainSegment` (coherence
-coordinate: `pinned_tip` + `coverage`) and a `CompactBlockRead` (compact-block
-reads by height or hash). The composer assigns the roles by slot — `fs` is the
+Both sides are named through one role, `ChainTier`: a `TakeSnapshot` whose
+snapshot is a `ChainSegment` (coherence coordinate: `pinned_tip` + `coverage`)
+plus the reads of the capability that is always answered locally, blocks,
+which today is exactly `CompactBlockRead`. The bundle is named as a role so
+the reads it carries can grow without every bound changing. The composer assigns the roles by slot — `fs` is the
 durable prefix, `nfs` the volatile suffix — so neither side describes its own
 durability. The module names only `zaino-service` ports; it knows nothing of
 the store or the chain-head crates.
@@ -15,7 +16,7 @@ the store or the chain-head crates.
 The concrete segments live elsewhere: the FS segment is `zaino-store`'s
 `StoreReader`/`StoreSnapshot`; the NFS segment adapter is in
 `zaino-chain-head-service` (`ChainHeadSubscriber: TakeSnapshot`, its
-`HeadSnapshot` a `ChainSegment + CompactBlockRead`). A production composition
+`HeadSnapshot` a `ChainTier`). A production composition
 (zainod) pairs the two.
 
 ## The seam
@@ -71,5 +72,5 @@ the crate's `Engine` for the composer that does this.
 ## Testing
 
 `testing::StubNonFinalised` (behind the `testing` feature) is an in-memory NFS
-segment implementing the same `ChainSegment + CompactBlockRead + TakeSnapshot`
+segment implementing the same `ChainTier + TakeSnapshot`
 ports, so the FS⊕NFS route can be exercised without wiring the volatile graph.

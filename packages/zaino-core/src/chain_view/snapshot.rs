@@ -1,5 +1,6 @@
 //! The composed, pinned view served across the FS⊕NFS seam.
 
+use crate::chain_view::ChainTier;
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_primitives::types::{BlockRef, BlockSelector, CompactBlock, Height, HeightRange};
@@ -63,8 +64,8 @@ enum Route {
 
 impl<F, N> ChainViewSnapshot<F, N>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
 {
     /// Compose a pinned view from a finalised store segment and a non-finalised
     /// segment captured at the same instant. The watermark is the FS's coverage
@@ -143,8 +144,8 @@ where
 
 impl<F, N> ChainSegment for ChainViewSnapshot<F, N>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
 {
     fn pinned_tip(&self) -> Option<BlockRef> {
         // The composed tip: the volatile NFS tip when present, else the
@@ -167,8 +168,8 @@ where
 
 impl<F, N> Snapshot for ChainViewSnapshot<F, N>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
 {
     fn serviceable_range(&self) -> ServiceableRange {
         let finalized_tip = self.watermark.unwrap_or(Height::GENESIS);
@@ -185,8 +186,8 @@ where
 
 impl<F, N> CompactBlockRead for ChainViewSnapshot<F, N>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
 {
     async fn compact_block(
         &self,

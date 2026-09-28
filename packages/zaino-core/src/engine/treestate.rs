@@ -8,11 +8,12 @@
 
 use std::future::Future;
 
+use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::{Passthrough, Routing};
 use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, Treestate};
+use zaino_service::TreestateRead;
 use zaino_service::error::TreestateReadError;
-use zaino_service::{ChainSegment, CompactBlockRead, TreestateRead};
 use zaino_source::{GetSubtreeRoots, GetTreestate};
 
 use super::EngineSnapshot;
@@ -37,8 +38,8 @@ pub trait TreestatePlacement<F, N, Src>: Send + Sync + 'static {
 
 impl<F, N, Src, R> TreestateRead for EngineSnapshot<F, N, Src, R>
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: Send + Sync + 'static,
     R: Routing,
     R::Treestate: TreestatePlacement<F, N, Src>,
@@ -60,8 +61,8 @@ where
 
 impl<F, N, Src> TreestatePlacement<F, N, Src> for Passthrough
 where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
+    F: ChainTier,
+    N: ChainTier,
     Src: GetTreestate + GetSubtreeRoots + Send + Sync + 'static,
 {
     async fn treestate(

@@ -8,8 +8,8 @@ over, both type parameters.
 
 ```text
 Engine<Fs, Nfs, Src, R>
-   Fs   finalised store     TakeSnapshot, snapshot: ChainSegment + CompactBlockRead (+ index reads)
-   Nfs  non-finalised head  TakeSnapshot, snapshot: ChainSegment + CompactBlockRead (+ window reads)
+   Fs   finalised store     TakeSnapshot, snapshot: ChainTier (+ index reads)
+   Nfs  non-finalised head  TakeSnapshot, snapshot: ChainTier (+ window reads)
    Src  validator handle    the canonical, resilient zaino-source ports
    R    routing             zaino_core::routing::Routing — who answers what
 ```
