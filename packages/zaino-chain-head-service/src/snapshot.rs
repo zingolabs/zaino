@@ -340,7 +340,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
         for block in self.blocks() {
             let Some((slot, _transaction)) = block
                 .block
-                .transactions
+                .transactions()
                 .iter()
                 .enumerate()
                 .find(|(_, transaction)| &transaction.txid == txid)
@@ -377,7 +377,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
             let Some(block) = self.block_by_hash(hash) else {
                 continue;
             };
-            for (slot, transaction) in block.block.transactions.iter().enumerate() {
+            for (slot, transaction) in block.block.transactions().iter().enumerate() {
                 for input in &transaction.transparent.inputs {
                     spenders.insert(
                         Outpoint {
