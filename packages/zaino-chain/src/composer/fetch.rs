@@ -121,9 +121,9 @@ impl<Source: ChainViewSource> Fetcher<Source> {
     /// Stops at the first height the validator does not have rather than
     /// leaving a hole mid-range: a caller walking heights would read a hole as
     /// "these blocks are empty".
-    async fn fill<T, F, Fut>(&self, heights: Vec<Height>, fetch: F) -> Result<Vec<T>>
+    async fn fill<K, T, F, Fut>(&self, keys: Vec<K>, fetch: F) -> Result<Vec<T>>
     where
-        F: Fn(Height) -> Fut,
+        F: Fn(K) -> Fut,
         Fut: core::future::Future<Output = Result<Option<T>>>,
     {
         let concurrency = self
@@ -132,8 +132,8 @@ impl<Source: ChainViewSource> Fetcher<Source> {
             .min(self.config.passthrough_permits)
             .max(1);
 
-        let filled: Vec<Option<T>> = stream::iter(heights)
-            .map(|height| self.permitted(fetch(height)))
+        let filled: Vec<Option<T>> = stream::iter(keys)
+            .map(|key| self.permitted(fetch(key)))
             .buffered(concurrency)
             .try_collect()
             .await?;
@@ -226,6 +226,17 @@ impl<Source: ChainViewSource> Fetcher<Source> {
     /// Fills `heights` with consensus bytes.
     pub(crate) async fn fill_raw_blocks(&self, heights: Vec<Height>) -> Result<Vec<Vec<u8>>> {
         self.fill(heights, |height| self.raw_block_at(height)).await
+    }
+
+    /// Fills `hashes` with consensus bytes.
+    pub(crate) async fn fill_raw_blocks_by_hash(
+        &self,
+        hashes: Vec<BlockHash>,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.fill(hashes, |hash| async move {
+            miss(self.source.get_raw_block_by_hash(hash).await)
+        })
+        .await
     }
 
     /// A parsed block by hash, for an id-addressed read no provider covers.

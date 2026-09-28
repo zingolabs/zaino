@@ -110,6 +110,11 @@ pub trait BlockRead: Send + Sync {
         -> impl Future<Output = Result<Option<BlockHeader>>> + Send;
 
     /// The consensus bytes of the block at `at`.
+    ///
+    /// Pinned to the snapshot: a height a local provider covers is fetched by
+    /// the hash the snapshot holds there, so the answer is the block this view
+    /// believes in even if the validator has since reorged. A pinned block the
+    /// validator no longer serves is [`ChainViewError::Transient`].
     fn raw_block(&self, at: BlockId) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
 
     /// The indexed blocks in `start..=end`, ascending, as a stream of chunks.
@@ -125,6 +130,8 @@ pub trait BlockRead: Send + Sync {
     ) -> impl Stream<Item = Result<Vec<ChainBlock>>> + Send + use<Self>;
 
     /// The consensus bytes of the blocks in `start..=end`, ascending.
+    ///
+    /// Pinned to the snapshot exactly as [`Self::raw_block`] is.
     fn stream_raw_blocks(
         &self,
         start: Height,

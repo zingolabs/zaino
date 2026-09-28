@@ -66,9 +66,13 @@ Anything addressed by a block takes a [`BlockId`] — `Height` or `Hash` — rat
 than appearing twice. That is how the chain is addressed (zebra takes a
 `HashOrHeight`), and it halves the surface without removing anything.
 
-A read is asked the way the caller asked it. A raw block wanted by height costs
-one round trip, not a hash resolution and a fetch — and still works for a height
-in a hole, where there is nothing local to resolve against.
+Every read answers for the snapshot's chain, even when the validator serves the
+bytes. A raw block wanted by height is fetched by the hash the snapshot pins at
+that height, so a reorg since the snapshot was taken cannot substitute a block
+the snapshot never saw. Only a height in a hole, where nothing local pins a
+hash, is fetched by height — and there the chain is below the reorg seam anyway.
+A pinned block the validator no longer serves is `Transient`: retry on a fresh
+snapshot.
 
 ## Ranges stream
 

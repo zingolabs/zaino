@@ -824,15 +824,22 @@ where
     }
 
     async fn raw_block(&self, at: BlockId) -> Result<Option<Vec<u8>>> {
-        // Consensus bytes: no provider retains them, so this is the validator's
-        // answer wherever the block sits — asked the way the caller asked, so a
-        // by-height request costs one round trip rather than a resolution and a
-        // fetch, and still works for a height no provider covers.
-        self.fetch
-            .require("raw blocks need the validator, which is disabled")?;
         match at {
-            BlockId::Height(height) => self.fetch.raw_block_at(height).await,
+            BlockId::Height(height) => match self
+                .coverage
+                .provider_at(height)
+                .map_err(|()| uncoverable())?
+            {
+                None => Ok(None),
+                Some(provider) => Ok(self
+                    .raw_blocks_from(provider, vec![height])
+                    .await?
+                    .into_iter()
+                    .next()),
+            },
             BlockId::Hash(hash) => {
+                self.fetch
+                    .require("raw blocks need the validator, which is disabled")?;
                 fetch::miss(self.fetch.source().get_raw_block_by_hash(hash).await)
             }
         }
@@ -859,25 +866,80 @@ where
         start: Height,
         end: Height,
     ) -> impl Stream<Item = Result<Vec<Vec<u8>>>> + Send + use<Reader, HeadSnapshot, Source> {
-        // Always the validator, so the plan is only used to bound the range at
-        // the chain tip — no provider holds consensus bytes.
         stream::walk(
             self.clone(),
             start,
             end,
-            move |snapshot, _segment, heights| {
-                Box::pin(async move {
-                    snapshot
-                        .fetch
-                        .require("raw blocks need the validator, which is disabled")?;
-                    snapshot.fetch.fill_raw_blocks(heights).await
-                })
+            move |snapshot, segment, heights| {
+                Box::pin(async move { snapshot.raw_blocks_from(segment.provider, heights).await })
             },
         )
     }
 }
 
 // ***** Per-provider batch reads, shared by the point and range paths *****
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader,
+    HeadSnapshot: ChainHeadSnapshot,
+    Source: ChainViewSource,
+{
+    /// Consensus bytes for a run of heights, pinned to this snapshot.
+    ///
+    /// No provider retains consensus bytes, so the validator serves them all.
+    /// Where a local provider covers the run, each block is fetched by the hash
+    /// this snapshot holds at that height, so a reorg since the snapshot was
+    /// taken cannot substitute a block the snapshot never saw.
+    async fn raw_blocks_from(
+        &self,
+        provider: Provider,
+        heights: Vec<Height>,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.fetch
+            .require("raw blocks need the validator, which is disabled")?;
+        let hashes = match provider {
+            Provider::Source => return self.fetch.fill_raw_blocks(heights).await,
+            Provider::Store => {
+                let mut hashes = Vec::with_capacity(heights.len());
+                for height in heights {
+                    hashes.push(
+                        self.reader
+                            .block_hash(height)
+                            .await
+                            .map_err(store_err)?
+                            .ok_or_else(|| unpinned(height))?,
+                    );
+                }
+                hashes
+            }
+            Provider::Head => heights
+                .into_iter()
+                .map(|height| {
+                    self.head_block(height)
+                        .map(ChainHeadBlock::hash)
+                        .ok_or_else(|| unpinned(height))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        };
+
+        let expected = hashes.len();
+        let blocks = self.fetch.fill_raw_blocks_by_hash(hashes).await?;
+        if blocks.len() != expected {
+            return Err(ChainViewError::Transient(String::from(
+                "the validator no longer serves a block this snapshot pins; retry with a fresh snapshot",
+            )));
+        }
+        Ok(blocks)
+    }
+}
+
+/// Coverage named a local provider for a height it holds no block at.
+fn unpinned(height: Height) -> ChainViewError {
+    ChainViewError::Fatal(format!(
+        "chain view routed height {height} to a provider holding no block there"
+    ))
+}
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
 where

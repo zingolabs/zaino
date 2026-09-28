@@ -370,6 +370,89 @@ async fn a_raw_block_by_height_is_fetched_by_height() {
     assert_eq!(source.calls(), vec![SourceCall::RawBlock(height(500))]);
 }
 
+/// A raw block at a height a local provider covers is fetched by the hash this
+/// snapshot pins there.
+#[tokio::test]
+async fn a_raw_block_at_a_covered_height_is_fetched_by_its_pinned_hash() {
+    let chain = chain();
+    for at in [50, 1150] {
+        let source = FakeSource::over(&chain);
+        let composer = ChainViewComposer::new(
+            FakeStore::covering(&chain, 100),
+            FakeHead::covering(&chain, 1100, 1200),
+            Arc::new(source.clone()),
+            ChainViewConfig::default(),
+        );
+
+        assert!(composer
+            .snapshot()
+            .raw_block(BlockId::Height(height(at)))
+            .await
+            .expect("serviceable")
+            .is_some());
+        assert_eq!(
+            source.calls(),
+            vec![SourceCall::RawBlockByHash(hash_of(at))]
+        );
+    }
+}
+
+/// A raw range fetches by pinned hash where a local provider covers it, and by
+/// height only inside the hole.
+#[tokio::test]
+async fn a_raw_range_is_pinned_wherever_a_provider_covers_it() {
+    let chain = chain();
+    let source = FakeSource::over(&chain);
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 100),
+        FakeHead::covering(&chain, 1100, 1200),
+        Arc::new(source.clone()),
+        ChainViewConfig::default(),
+    );
+
+    let blocks: Vec<Vec<u8>> = composer
+        .snapshot()
+        .stream_raw_blocks(height(99), height(1101))
+        .try_concat()
+        .await
+        .expect("serviceable");
+    assert_eq!(blocks.len(), 1101 - 99 + 1);
+
+    let calls = source.calls();
+    for at in [99, 100, 1100, 1101] {
+        assert!(calls.contains(&SourceCall::RawBlockByHash(hash_of(at))));
+    }
+    for at in [101, 1099] {
+        assert!(calls.contains(&SourceCall::RawBlock(height(at))));
+    }
+}
+
+/// A validator that no longer serves a pinned block is a transient failure,
+/// never a silently short answer.
+#[tokio::test]
+async fn a_pinned_block_the_validator_dropped_is_transient() {
+    let chain = chain();
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::covering(&chain, 1000, 1200),
+        Arc::new(FakeSource::over(&Chain::of_length(1150))),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert!(matches!(
+        snapshot.raw_block(BlockId::Height(height(1180))).await,
+        Err(ChainViewError::Transient(_))
+    ));
+    assert!(matches!(
+        snapshot
+            .stream_raw_blocks(height(1140), height(1160))
+            .try_concat()
+            .await,
+        Err(ChainViewError::Transient(_))
+    ));
+}
+
 /// A treestate by height goes straight to the validator, no resolution hop.
 #[tokio::test]
 async fn a_treestate_by_height_is_fetched_by_height() {

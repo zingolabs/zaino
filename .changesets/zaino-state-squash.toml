@@ -7,3 +7,15 @@ point its branch forks from the canonical chain, via the chain head's own \
 `find_fork_point`, rather than skipping it. A client whose locator names only \
 an orphaned block now gets a resume point instead of `None`.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+Raw blocks are pinned to the snapshot. `BlockRead::raw_block` by height and \
+`stream_raw_blocks` fetch each block the store or chain head covers by the hash \
+the snapshot holds at that height, so a reorg since the snapshot was taken can \
+no longer substitute a block the snapshot never saw. Only heights in a hole are \
+still fetched by height. A pinned block the validator no longer serves is \
+`Transient` rather than a silently short range.
+"""
