@@ -16,7 +16,7 @@
 //! - the runtime owns the loop that used to live in ChainIndex's sync worker.
 //!
 //! The block-carrying listener and `add_nonbest_block` are not here: no source
-//! ever implemented `nonfinalized_listener`, so both were unreachable.
+//! ever implemented `nonfinalised_listener`, so both were unreachable.
 //!
 //! Everything else — extending one block at a time, the reorg walk, the
 //! non-higher reorg check, best-block selection by accumulated work, and

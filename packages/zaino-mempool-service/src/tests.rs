@@ -1243,7 +1243,7 @@ mod coherence {
     }
 
     #[tokio::test]
-    async fn nonfinalized_tip_change_freezes() {
+    async fn nonfinalised_tip_change_freezes() {
         let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
         wait_for(&h.subscriber, is_live).await;
 
@@ -1318,7 +1318,7 @@ mod coherence {
     }
 
     #[tokio::test]
-    async fn missing_nonfinalized_state_stays_not_ready() {
+    async fn missing_nonfinalised_state_stays_not_ready() {
         let source = MockSource::new();
         let nfs = MockNfs::new(); // never set: NS unavailable
         source.set_tip(block_ref(100, 0xAA));
