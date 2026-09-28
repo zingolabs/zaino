@@ -194,7 +194,7 @@ pub trait TransactionRead: Send + Sync {
 
 /// Commitment tree state.
 pub trait TreestateRead: Send + Sync {
-    /// The commitment trees as of the block at `at`.
+    /// The commitment trees as of the block at `at`, each with its root.
     fn treestate(&self, at: BlockId) -> impl Future<Output = Result<Option<Treestate>>> + Send;
 
     /// Subtree roots for `pool`, from `start_index`, at most `limit`.

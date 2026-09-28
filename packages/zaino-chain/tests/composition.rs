@@ -539,7 +539,8 @@ async fn a_pinned_block_the_validator_dropped_is_transient() {
     ));
 }
 
-/// A treestate by height goes straight to the validator, no resolution hop.
+/// A treestate by height goes straight to the validator, no resolution hop;
+/// its roots are then read by the hash the treestate names.
 #[tokio::test]
 async fn a_treestate_by_height_is_fetched_by_height() {
     let chain = chain();
@@ -557,7 +558,46 @@ async fn a_treestate_by_height_is_fetched_by_height() {
         .await
         .expect("serviceable")
         .is_some());
-    assert_eq!(source.calls(), vec![SourceCall::Treestate(height(500))]);
+    assert_eq!(
+        source.calls(),
+        vec![
+            SourceCall::Treestate(height(500)),
+            SourceCall::TreeRoots(hash_of(500)),
+        ]
+    );
+}
+
+/// A treestate carries each present pool's root.
+#[tokio::test]
+async fn a_treestate_carries_its_roots() {
+    let chain = chain();
+    let sapling = zaino_primitives::types::TreeRootInfo {
+        root: zaino_primitives::types::TreeRoot::from([7; 32]),
+        size: zaino_primitives::types::TreeSize::ZERO,
+    };
+    let source = FakeSource::over(&chain).with_tree_roots(zaino_primitives::types::TreeRoots {
+        sapling: Some(sapling.clone()),
+        orchard: None,
+        ironwood: None,
+    });
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::covering(&chain, 1000, 1200),
+        Arc::new(source),
+        ChainViewConfig::default(),
+    );
+
+    let treestate = composer
+        .snapshot()
+        .treestate(BlockId::Hash(hash_of(500)))
+        .await
+        .expect("serviceable")
+        .expect("the validator holds the block");
+    assert_eq!(
+        treestate.sapling.expect("sapling has a tree").final_root,
+        Some(sapling.root)
+    );
+    assert!(treestate.orchard.is_none());
 }
 
 // ***** Fork reconciliation *****

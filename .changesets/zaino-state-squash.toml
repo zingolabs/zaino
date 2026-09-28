@@ -92,3 +92,12 @@ height only if the validator places it on its best chain at a height no tier \
 covers. `ChainViewSource` now requires `OneShotGetBlockHeader` in place of \
 `OneShotGetBlockByHash`.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`TreestateRead::treestate` carries each pool's root. The validator's tree port \
+leaves it unset, so the roots are read by the treestate's own block hash and \
+joined in, as `z_gettreestate` reports them.
+"""

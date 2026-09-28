@@ -1192,15 +1192,34 @@ where
         // A treestate carries the *serialized* commitment tree; both providers
         // keep only a root and a size per pool, and a root is not a tree. So
         // this is the validator's answer, asked the way the caller asked it —
-        // `z_gettreestate` takes either.
+        // `z_gettreestate` takes either. The tree port leaves each pool's root
+        // unset, so the roots are read by the treestate's own hash and joined in.
         self.fetch
             .require("treestates need the validator, which is disabled")?;
-        match at {
+        let treestate = match at {
             BlockId::Height(height) => fetch::miss(self.fetch.source().get_treestate(height).await),
             BlockId::Hash(hash) => {
                 fetch::miss(self.fetch.source().get_treestate_by_hash(hash).await)
             }
-        }
+        }?;
+        let Some(mut treestate) = treestate else {
+            return Ok(None);
+        };
+        let roots = fetch::miss(
+            self.fetch
+                .source()
+                .get_commitment_tree_roots(treestate.block_hash)
+                .await,
+        )?
+        .ok_or_else(|| {
+            ChainViewError::Transient(String::from(
+                "the validator no longer holds the block its treestate named",
+            ))
+        })?;
+        treestate.sapling = with_root(treestate.sapling, roots.sapling);
+        treestate.orchard = with_root(treestate.orchard, roots.orchard);
+        treestate.ironwood = with_root(treestate.ironwood, roots.ironwood);
+        Ok(Some(treestate))
     }
 
     async fn subtree_roots(
@@ -1222,6 +1241,17 @@ where
         )?
         .unwrap_or_default())
     }
+}
+
+/// A pool's treestate with its root filled in.
+fn with_root(
+    pool: Option<zaino_primitives::types::PoolTreestate>,
+    root: Option<zaino_primitives::types::TreeRootInfo>,
+) -> Option<zaino_primitives::types::PoolTreestate> {
+    pool.map(|pool| zaino_primitives::types::PoolTreestate {
+        final_root: root.map(|info| info.root),
+        ..pool
+    })
 }
 
 // ***** Optional capabilities *****

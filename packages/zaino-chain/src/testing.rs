@@ -1196,6 +1196,8 @@ pub struct FakeSource {
     peak_in_flight: Arc<std::sync::atomic::AtomicUsize>,
     /// Blocks off the best chain, known by hash only.
     competing: Vec<Block>,
+    /// The commitment roots reported for every block.
+    tree_roots: TreeRoots,
 }
 
 /// Counts one request for as long as it is in flight.
@@ -1216,7 +1218,15 @@ impl FakeSource {
             in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             peak_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             competing: Vec::new(),
+            tree_roots: empty_tree_roots(),
         }
+    }
+
+    /// The same validator reporting `roots` for every block, and a tree with
+    /// no root, as a real tree port answers, for each pool given one.
+    pub fn with_tree_roots(mut self, roots: TreeRoots) -> Self {
+        self.tree_roots = roots;
+        self
     }
 
     /// The same validator also knowing `block` off its best chain.
@@ -1406,7 +1416,7 @@ impl OneShotGetCommitmentTreeRoots for FakeSource {
         block: BlockHash,
     ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
         let _in_flight = self.begin(SourceCall::TreeRoots(block)).await;
-        Ok(empty_tree_roots())
+        Ok(self.tree_roots.clone())
     }
 }
 
@@ -1426,9 +1436,11 @@ impl OneShotGetTreestate for FakeSource {
         height: Height,
     ) -> Result<Treestate, QueryError<GetTreestateError>> {
         self.record(SourceCall::Treestate(height));
-        self.at(height).map(treestate_of).ok_or(QueryError::Domain(
-            GetTreestateError::HeightNotFound(height),
-        ))
+        self.at(height)
+            .map(|block| treestate_of(block, &self.tree_roots))
+            .ok_or(QueryError::Domain(GetTreestateError::HeightNotFound(
+                height,
+            )))
     }
 }
 
@@ -1440,22 +1452,30 @@ impl OneShotGetTreestateByHash for FakeSource {
         self.record(SourceCall::TreestateByHash(hash));
         self.height_of(hash)
             .and_then(|h| self.chain.block(h))
-            .map(treestate_of)
+            .map(|block| treestate_of(block, &self.tree_roots))
             .ok_or(QueryError::Domain(GetTreestateByHashError::BlockNotFound(
                 hash,
             )))
     }
 }
 
-/// The treestate a block leaves behind, as the fake validator reports it.
-fn treestate_of(block: &Block) -> Treestate {
+/// The treestate a block leaves behind, as the fake validator reports it: a
+/// tree without its root for each pool that has one.
+fn treestate_of(block: &Block, roots: &TreeRoots) -> Treestate {
+    let tree = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
+        root.as_ref()
+            .map(|_| zaino_primitives::types::PoolTreestate {
+                final_root: None,
+                final_state: Vec::new(),
+            })
+    };
     Treestate {
         block_hash: block.header.hash,
         height: block.header.height,
         time: block.header.time,
-        sapling: None,
-        orchard: None,
-        ironwood: None,
+        sapling: tree(&roots.sapling),
+        orchard: tree(&roots.orchard),
+        ironwood: tree(&roots.ironwood),
     }
 }
 
