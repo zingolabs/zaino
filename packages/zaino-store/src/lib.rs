@@ -1,42 +1,38 @@
-//! # zaino-store — EXPLORATORY STUB, NOT FOR PRODUCTION
+//! `zaino-store` — the finalised tier, as a provider.
 //!
-//! ⚠️ **This crate is a throwaway spike.** It exists to prove one seam: that the
-//! runtime's **finalised read component** can be a thin reader over the KV
-//! backend that *composes indexes on read* into the [`zaino_service`] read
-//! ports — with no versioned store and no migrations. It is deliberately
-//! incomplete: most read traits are unimplemented, error handling is coarse,
-//! reads run synchronously (no `spawn_blocking`), and address decoding is
-//! stubbed. **Do not build on it.** It will be superseded by the real FS serving
-//! component (and/or converged with ChainView). The `format!`-in-error and
-//! stubbed paths here are acceptable *only* because this is exploratory
-//! ([[error-propagation-rule]] is relaxed for sure-throwaway code).
+//! A thin reader over a persistence [`Backend`] and an [`IndexSet`]: it
+//! composes the `zaino-service` reads **on read** from the indexes the set
+//! builds, and pins each read to the writer's committed watermark so a
+//! [`StoreSnapshot`] is one coherent view of the finalised chain.
 //!
-//! What it demonstrates today:
-//! - a [`StoreReader`] over any [`Backend`] and any
-//!   [`IndexSet`], consuming the writer's committed watermark to yield a
-//!   pinned [`StoreSnapshot`] (tip + serviceable range);
-//! - [`Serviceable`]: the capability manifest derived from the built index set;
-//! - [`CompactBlockRead`]: **true compact blocks composed on read** from the
-//!   `Blocks` index set (headers + txids + per-pool data + chain-metadata),
-//!   with co-presence and per-tx alignment enforced (a missing companion index
-//!   is corruption, not an empty default);
-//! - [`AddressRead::tx_ids`]: address history via `read_receives` — but the
-//!   address-decode dependency is stubbed, so it reports not-serviceable for now.
+//! The crate defines no ports. What it *serves* are the shared serving ports
+//! (`ChainSegment`, `CompactBlockRead`, `Serviceable`, `TakeSnapshot`), the
+//! same ones the non-finalised head serves, so the composer in `zaino-core`
+//! names both tiers through one contract. What it *consumes* is the backend
+//! port from `zaino-persistence` and the index schemas from `zaino-indexes`.
 //!
 //! # Presence is in the type
 //!
-//! Every serving read is implemented **only for index sets that build
-//! the indexes it composes from**: `CompactBlockRead` needs the eight
-//! compact-block indexes, `AddressRead` needs `address_history`. A store over
-//! a index set lacking one does not have the read, so a use case that
-//! demands it fails where the store is wired, not per request. The store
-//! claims nothing it cannot back: reads it does not own (treestate, raw
-//! transactions, mempool, broadcast) are not stubbed here — the composer
-//! routes them to the provider that has them.
+//! Every serving read is implemented **only for index sets that build the
+//! indexes it composes from**: `CompactBlockRead` needs the compact-block
+//! capability's indexes, declared once in `zaino_indexes::capabilities::local`.
+//! A store over an index set lacking one does not have the read, so a
+//! deployment that demands it fails where the store is wired, not per
+//! request. The store claims nothing it cannot back: reads it does not own
+//! (treestate, raw transactions, mempool, broadcast, and address history
+//! until a local transparent index is served) are not stubbed here; the
+//! composer routes them to the provider that has them.
 //!
 //! ```text
 //! reads(StoreSnapshot<B, M>) = { R : indexes(R) ⊆ built(M) }
 //! ```
+//!
+//! # Known limitation
+//!
+//! Reads run on the async executor without `spawn_blocking`. An LMDB read is
+//! a memory-mapped lookup and short, so a per-height compact-block read is
+//! fine; a scan-shaped read (address history, when it lands) must move off
+//! the executor.
 #![forbid(unsafe_code)]
 
 mod component;
@@ -52,7 +48,6 @@ use std::sync::Arc;
 use futures::stream::BoxStream;
 use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::index_set::{Builds, IndexSet};
-use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
 use zaino_indexes::indexes::hash_to_height::{self, HashToHeightIndex};
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
@@ -65,19 +60,14 @@ use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{
     decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
 };
-use zaino_primitives::types::{
-    AddressBalance, AddressDelta, BlockHash, BlockRef, BlockSelector, Height, HeightRange,
-    TransactionId, TransparentAddress, Utxo,
-};
+use zaino_primitives::types::{BlockHash, BlockRef, BlockSelector, Height, HeightRange};
 use zaino_primitives::types::{
     CompactBlock, OrchardAction, PreIndexCompactTx, SaplingOutput, TransparentInput,
     TransparentOutput,
 };
-use zaino_service::error::{AddressReadError, BlockReadError, ReadError, Transient};
-use zaino_service::{
-    AddressRead, ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot,
-};
-use zaino_service::{Answerable, Capability, ServiceabilityManifest, ServiceableRange};
+use zaino_service::error::{BlockReadError, ReadError, Transient};
+use zaino_service::{Answerable, ServiceabilityManifest, ServiceableRange};
+use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_sync::primitives::BlockHeight;
 
 /// EXPLORATORY: a read handle over the KV backend, for the index set
@@ -510,76 +500,4 @@ where
             u32::from(height),
         ))
     })
-}
-
-/// The read exists only where the address-history index is built. A store
-/// over a index set without it has no local address read at all — the
-/// honest shape for a deployment that passes address queries through, and the
-/// one a use case wanting them local is checked against at its wiring.
-impl<B, M> AddressRead for StoreSnapshot<B, M>
-where
-    B: Backend + 'static,
-    M: Backs<local::AddressHistory>,
-{
-    async fn balance(
-        &self,
-        _addr: &TransparentAddress,
-        _range: HeightRange,
-    ) -> Result<AddressBalance, AddressReadError> {
-        Err(not_built())
-    }
-
-    async fn unspent_outpoints(
-        &self,
-        _addr: &TransparentAddress,
-    ) -> Result<Vec<Utxo>, AddressReadError> {
-        Err(not_built())
-    }
-
-    async fn deltas(
-        &self,
-        _addr: &TransparentAddress,
-        _range: HeightRange,
-    ) -> Result<Vec<AddressDelta>, AddressReadError> {
-        Err(not_built())
-    }
-
-    /// The one real compose-on-read path: scan `address_history`, project to
-    /// txids. EXPLORATORY: the height-window filter and de-dup are TODO (they
-    /// need `BlockHeight` ↔ `Height`), and the address decode is stubbed.
-    fn tx_ids(
-        &self,
-        addr: &TransparentAddress,
-        _range: HeightRange,
-    ) -> impl Future<Output = Result<Vec<TransactionId>, AddressReadError>> + Send {
-        let backend = self.backend.clone();
-        let decoded = decode_address(addr);
-        async move {
-            let addr_id = decoded?;
-            // Stub: synchronous read on the async path — a real reader would
-            // `spawn_blocking` around the scan.
-            let reader = backend
-                .reader()
-                .map_err(|e| AddressReadError::Fatal(format!("open reader: {e}")))?;
-            let receives = address_history::read_receives(&reader, addr_id)
-                .map_err(|e| AddressReadError::Fatal(format!("read address_history: {e}")))?;
-            // TODO(stub): filter to `range` and de-dup once the height types bridge.
-            Ok(receives.into_iter().map(|receive| receive.txid).collect())
-        }
-    }
-}
-
-/// EXPLORATORY: a read whose index this stub does not build yet reports
-/// not-serviceable rather than panicking.
-fn not_built() -> AddressReadError {
-    AddressReadError::NotServiceable(Capability::AddressHistory)
-}
-
-/// EXPLORATORY STUB. Decoding a [`TransparentAddress`] (a base58/bech32 string)
-/// into the index key [`AddrId`] (`script_type` + 20-byte hash) needs the
-/// address stack (zaino-address / librustzcash). Until that is wired, address
-/// reads report not-serviceable rather than fabricate a key — so the seam
-/// compiles and the read path is exercised the moment decoding lands.
-fn decode_address(_addr: &TransparentAddress) -> Result<AddrId, AddressReadError> {
-    Err(AddressReadError::NotServiceable(Capability::AddressHistory))
 }

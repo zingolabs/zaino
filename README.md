@@ -211,6 +211,7 @@ mistakes its design is trying to prevent.
 - [`zaino-runtime`](./packages/zaino-runtime/usage.md): deployments — how each use case is served, as types checked where the engine is composed — and the supervision they run under.
 - [`zaino-service`](./packages/zaino-service/usage.md): the inner driving surface — use cases as demand, read-sets as capability bundles, and the three layers of availability.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): materialisations as types, and each local capability declared once with the indexes it composes from.
+- [`zaino-store`](./packages/zaino-store/usage.md): the finalised tier as a provider — reads composed on read from the index set, present only where the set builds them, and the watermark repair.
 - [`zaino-core`](./packages/zaino-core/usage.md): the engine every use case is served by — the finalised store, the chain head and the validator composed under a routing, checked where the engine is wired; [`chain_view`](./packages/zaino-core/chain_view.md) covers the FS⊕NFS seam and why the initial-build gap is an explicit policy knob.
 - [`zainod`](./packages/zainod/usage.md): the composition root — use cases as types, config selects one, and how to add another.
 
