@@ -72,7 +72,11 @@ that height, so a reorg since the snapshot was taken cannot substitute a block
 the snapshot never saw. Only a height in a hole, where nothing local pins a
 hash, is fetched by height — and there the chain is below the reorg seam anyway.
 A pinned block the validator no longer serves is `Transient`: retry on a fresh
-snapshot.
+snapshot. A treestate wanted by height is pinned the same way.
+
+A treestate carries each pool's root. The validator's tree port leaves roots
+unset, so the view reads them by the treestate's own block hash and joins them
+in.
 
 ## Ranges stream
 
@@ -179,6 +183,16 @@ best-chain-only index is correct there rather than deficient.
 
 `block_height` returns `None` for a branch hash — it answers about the chain the
 caller is reading. `fork_point` is the branch question, and still finds it.
+
+For a hash neither tier holds, `block_height` asks the validator for the
+block's header, which is why `ChainViewSource` includes `OneShotGetBlockHeader`.
+The validator's height is accepted only if it places the block on its best
+chain at a height no tier covers; at a covered height the view pins a different
+block, and above the tip there is none.
+
+A miss is not a rejection. An address never paid is an empty answer, but an
+invalid request — an unparseable address, a range the validator cannot serve,
+a pool not yet active — is `ChainViewError::Rejected`, never an empty result.
 
 ## Configuration
 
