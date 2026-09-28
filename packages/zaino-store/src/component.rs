@@ -1,4 +1,4 @@
-//! The finalised store reader as a supervised component. EXPLORATORY.
+//! The finalised store reader as a supervised component.
 //!
 //! [`StoreComponent`] presents a [`StoreReader`](crate::StoreReader) to the
 //! runtime as an **owned** ([`Managed`]) component, so the Orchestra can boot it
@@ -8,8 +8,7 @@
 //! socket), the reader is **passive**: it has no run-loop, so its lifecycle is
 //! `Offline → Spawning → Ready` — ready as soon as the backend is open. It never
 //! fails on its own, so it never escalates. Boot ordering (the indexer reaching
-//! `Ready` first) is the Orchestra's job, not a wait here. EXPLORATORY STUB —
-//! see the crate docs.
+//! `Ready` first) is the Orchestra's job, not a wait here.
 
 use std::sync::Arc;
 
@@ -73,10 +72,10 @@ impl<B: Send + Sync + 'static, M: Send + Sync + 'static> StatusWatch for StoreCo
 }
 
 impl<B: Backend + 'static, M: Send + Sync + 'static> Managed for StoreComponent<B, M> {
-    // The reader is passive: opening a KV read handle does not fail in this
-    // stub, so bringup cannot fail synchronously and there is no run task whose
-    // `Err` could surface. A real store that can fail to open would carry a
-    // typed error here instead of `Infallible`.
+    // The reader is passive and the backend is already open (the runtime
+    // opened it, and repaired the watermark, before building the reader), so
+    // bringup cannot fail here and there is no run task whose `Err` could
+    // surface.
     type Error = std::convert::Infallible;
 
     async fn spawn(&self) -> Result<(), Self::Error> {

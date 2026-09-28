@@ -70,9 +70,9 @@ use zaino_service::{Answerable, ServiceabilityManifest, ServiceableRange};
 use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_sync::primitives::BlockHeight;
 
-/// EXPLORATORY: a read handle over the KV backend, for the index set
-/// `M`. It consumes the writer's committed watermark on each snapshot — it
-/// holds no stubbed coordinates.
+/// A read handle over the KV backend, for the index set `M`. It consumes the
+/// writer's committed watermark on each snapshot; it holds no coordinates of
+/// its own.
 ///
 /// `M` names the index set the backend was built with. It carries no data; it
 /// is the static promise the serving reads bound on.
@@ -133,9 +133,10 @@ where
         let backend = self.backend.clone();
         async move {
             // Consume the writer's watermark — the finalised tip this view can
-            // answer up to — and pin it. (Reads through the snapshot still hit
-            // live backend state; true read-coherence needs a backend read
-            // transaction, which the in-memory stub lacks. See the crate banner.)
+            // answer up to — and pin it. Reads through the snapshot hit live
+            // backend state rather than a read transaction; that is coherent
+            // because the finalised tier is append-only and every read is
+            // bounded by the pinned watermark, below which nothing changes.
             let reader = backend
                 .reader()
                 .map_err(|e| Transient(format!("open reader: {e}")))?;
@@ -164,8 +165,8 @@ where
     }
 }
 
-/// EXPLORATORY: an immutable pinned view over a store built to `M`. Clones
-/// share the backend via `Arc`.
+/// An immutable pinned view over a store built to `M`. Clones share the
+/// backend via `Arc`.
 pub struct StoreSnapshot<B, M> {
     backend: Arc<B>,
     /// The finalised watermark this view was pinned to, read from the backend.
@@ -245,8 +246,8 @@ where
     }
 
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
-        // EXPLORATORY: eager, not lazy — reads the whole range up front. A real
-        // reader would stream in chunks with backpressure.
+        // Eager, not lazy: the whole range is read up front. Streaming in
+        // chunks with backpressure is the known follow-up for wide ranges.
         let blocks: Vec<Result<CompactBlock, ReadError>> = match self.backend.reader() {
             Ok(reader) => (u32::from(range.start)..=u32::from(range.end))
                 .filter_map(|height| Height::try_from(height).ok())
@@ -349,7 +350,8 @@ fn resolve_hash<B: Backend>(
 /// corruption (`Fatal`), not as an empty default — the alternative silently
 /// serves a wrong compact block (zero tree sizes, dropped transactions).
 ///
-/// EXPLORATORY: synchronous reads on the async path.
+/// Synchronous on the async path: a handful of memory-mapped lookups per
+/// height, see the crate doc.
 fn read_compact_block<B: Backend>(
     reader: &B::Reader,
     height: Height,
