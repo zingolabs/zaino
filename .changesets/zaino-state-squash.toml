@@ -71,3 +71,12 @@ kind = "feature"
 description = """
 `Script::as_bytes` borrows a script's raw bytes.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+Compact blocks from the chain head and the validator keep every transaction, \
+as the store's do. Dropping those left empty by the pool filter renumbered the \
+rest, so wallets read the wrong `CompactTx.index` for recent blocks.
+"""
