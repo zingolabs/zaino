@@ -150,6 +150,92 @@ async fn a_stream_spanning_all_three_providers_is_contiguous() {
     assert_eq!(heights, (98..=1102).collect::<Vec<_>>());
 }
 
+/// Every range read streams descending when `start > end`, contiguous across
+/// all three providers.
+#[tokio::test]
+async fn every_range_streams_descending_across_all_three_providers() {
+    let chain = chain();
+    let snapshot = syncing(&chain).snapshot();
+    let expected: Vec<u32> = (98..=1102).rev().collect();
+
+    let compact: Vec<u32> = snapshot
+        .stream_compact(height(1102), height(98), PoolFilter::all())
+        .try_concat()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .map(|block| block.height)
+        .collect();
+    assert_eq!(compact, expected);
+
+    let blocks: Vec<u32> = snapshot
+        .stream_blocks(height(1102), height(98))
+        .try_concat()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .map(|block| u32::from(block.header.height))
+        .collect();
+    assert_eq!(blocks, expected);
+
+    let raw: Vec<Vec<u8>> = snapshot
+        .stream_raw_blocks(height(1102), height(98))
+        .try_concat()
+        .await
+        .expect("serviceable");
+    let raw_expected: Vec<Vec<u8>> = expected
+        .iter()
+        .map(|at| <[u8; 32]>::from(hash_of(*at)).to_vec())
+        .collect();
+    assert_eq!(raw, raw_expected);
+}
+
+/// A descending stream chunks like an ascending one, and the chunks tile the
+/// range top-down.
+#[tokio::test]
+async fn a_descending_stream_yields_multiple_chunks_that_tile_the_range() {
+    let chain = chain();
+    let chunks: Vec<Vec<_>> = caught_up(&chain)
+        .snapshot()
+        .stream_compact(height(1200), height(0), PoolFilter::all())
+        .try_collect()
+        .await
+        .expect("serviceable");
+
+    assert!(chunks.len() > 1, "expected chunking, got {}", chunks.len());
+    let heights: Vec<u32> = chunks.into_iter().flatten().map(|b| b.height).collect();
+    assert_eq!(heights, (0..=1200).rev().collect::<Vec<_>>());
+}
+
+/// A descending range starting above the tip starts at the tip.
+#[tokio::test]
+async fn a_descending_range_is_truncated_at_the_tip() {
+    let chain = chain();
+    let heights: Vec<u32> = caught_up(&chain)
+        .snapshot()
+        .stream_compact(height(1300), height(1195), PoolFilter::all())
+        .try_concat()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .map(|block| block.height)
+        .collect();
+    assert_eq!(heights, (1195..=1200).rev().collect::<Vec<_>>());
+}
+
+/// Streaming to the tip from above it is empty, never a walk back down.
+#[tokio::test]
+async fn streaming_to_the_tip_from_above_it_is_empty() {
+    let chain = chain();
+    let blocks = caught_up(&chain)
+        .snapshot()
+        .stream_blocks_to_tip(height(1300))
+        .try_concat()
+        .await
+        .expect("serviceable");
+    assert!(blocks.is_empty());
+}
+
 /// The same, for indexed blocks, and chainwork marks who answered.
 #[tokio::test]
 async fn a_block_stream_shows_where_chainwork_stops() {

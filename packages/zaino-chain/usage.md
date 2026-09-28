@@ -93,6 +93,9 @@ endpoint. Three properties matter at scale:
   the chain, so a fixed count would make memory per client swing with them. The
   walk starts small — latency to first byte — and adapts toward the budget from
   what it has seen.
+- **Either direction.** `start > end` streams descending — the order a
+  wallet scanning back from the tip wants. The walk plans the same segments
+  top-down and reverses each chunk, so it costs no more than ascending.
 - **Lazy.** A stream does no work until polled, so a slow client applies
   backpressure by not reading. A producer task filling a channel would buffer
   per client instead, which with thousands of them is the difference between

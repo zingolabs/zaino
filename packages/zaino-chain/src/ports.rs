@@ -15,6 +15,11 @@
 //! would otherwise materialise it — with thousands of clients doing so at once,
 //! that is the difference between bounded and unbounded memory.
 //!
+//! Every range runs from `start` to `end` inclusive, in either direction:
+//! ascending when `start <= end`, descending when `start > end`. Either way it
+//! is truncated at the chain tip, and a descending read costs no more memory
+//! than an ascending one.
+//!
 //! The streams are lazy, so a slow client applies backpressure by not polling
 //! rather than by filling a buffer. `use<Self>` excludes the `&self` lifetime,
 //! making them `'static` so a consumer can move one into a spawned task; an
@@ -114,10 +119,12 @@ pub trait BlockRead: Send + Sync {
     /// Pinned to the snapshot: a height a local provider covers is fetched by
     /// the hash the snapshot holds there, so the answer is the block this view
     /// believes in even if the validator has since reorged. A pinned block the
-    /// validator no longer serves is [`ChainViewError::Transient`].
+    /// validator no longer serves is
+    /// [`ChainViewError::Transient`](crate::ChainViewError::Transient).
     fn raw_block(&self, at: BlockId) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
 
-    /// The indexed blocks in `start..=end`, ascending, as a stream of chunks.
+    /// The indexed blocks from `start` to `end`, in either direction, as a stream
+    /// of chunks.
     ///
     /// May be answered by several providers at once — the store below its
     /// watermark, the validator across a range it has not built, the chain head
@@ -129,7 +136,8 @@ pub trait BlockRead: Send + Sync {
         end: Height,
     ) -> impl Stream<Item = Result<Vec<ChainBlock>>> + Send + use<Self>;
 
-    /// The consensus bytes of the blocks in `start..=end`, ascending.
+    /// The consensus bytes of the blocks from `start` to `end`, in either
+    /// direction.
     ///
     /// Pinned to the snapshot exactly as [`Self::raw_block`] is.
     fn stream_raw_blocks(
@@ -153,7 +161,8 @@ pub trait CompactBlockRead: Send + Sync {
         pools: PoolFilter,
     ) -> impl Future<Output = Result<Option<CompactBlock>>> + Send;
 
-    /// The compact blocks in `start..=end`, ascending, as a stream of chunks.
+    /// The compact blocks from `start` to `end`, in either direction, as a stream
+    /// of chunks.
     ///
     /// The wallet-sync hot path, and the read this crate is shaped around.
     fn stream_compact(

@@ -19,3 +19,15 @@ no longer substitute a block the snapshot never saw. Only heights in a hole are 
 still fetched by height. A pinned block the validator no longer serves is \
 `Transient` rather than a silently short range.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+Every range read streams in either direction. `stream_blocks`, \
+`stream_raw_blocks` and `stream_compact` run from `start` to `end` inclusive: \
+ascending when `start <= end`, descending when `start > end`, truncated at the \
+chain tip either way. A descending walk plans the same provider segments \
+top-down and reverses each chunk, so it holds no more memory than an \
+ascending one.
+"""

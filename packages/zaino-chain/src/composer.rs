@@ -700,7 +700,11 @@ where
         from: Height,
     ) -> impl Stream<Item = Result<Vec<ChainBlock>>> + Send + use<Reader, HeadSnapshot, Source>
     {
-        let end = self.coverage.chain_tip().unwrap_or(Height::GENESIS);
+        let end = self
+            .coverage
+            .chain_tip()
+            .unwrap_or(Height::GENESIS)
+            .max(from);
         self.stream_blocks(from, end)
     }
 }
