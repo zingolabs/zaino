@@ -23,13 +23,9 @@ impl BlockCount {
     }
 }
 
-
-
 /// Unit key type for the single "total" entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TotalKey;
-
-
 
 /// Counts total blocks seen in each batch.
 pub struct CountIndex;

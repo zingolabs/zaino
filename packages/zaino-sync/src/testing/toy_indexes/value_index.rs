@@ -30,8 +30,6 @@ impl BlockValue {
     }
 }
 
-
-
 /// A single height → value entry. Domain type — no serialization.
 pub struct Entry {
     /// Block height.

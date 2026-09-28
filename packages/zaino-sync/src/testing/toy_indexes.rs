@@ -497,6 +497,39 @@ mod tests {
         assert_eq!(watermark, BlockHeight::new(9));
     }
 
+    /// One engine, two channel syncs, the first ending on a partial batch: the
+    /// watermark after the second is the last height actually indexed. This is
+    /// the steady-state follow shape — catch up, then extend a few blocks per
+    /// tip change — and the stamp must come from heights, not buffer offsets,
+    /// because eviction rounds the buffer floor up to a batch boundary.
+    #[tokio::test]
+    async fn watermark_stays_a_height_across_channel_syncs() {
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine(backend.clone(), 4);
+
+        for range in [0u64..=2, 3u64..=4, 5u64..=5] {
+            let (tx, rx) = tokio::sync::mpsc::channel(16);
+            let blocks: Vec<_> = range
+                .map(|h| TestBlockContext {
+                    height: h,
+                    value: h as u32,
+                })
+                .collect();
+            tokio::spawn(async move {
+                for block in blocks {
+                    tx.send(block).await.expect("channel open");
+                }
+            });
+            engine.sync_channel(rx).await.expect("sync succeeds");
+        }
+
+        let watermark = SyncEngine::<TestBlockContext, _>::committed_height(&backend)
+            .expect("read succeeds")
+            .expect("watermark exists");
+        assert_eq!(watermark, BlockHeight::new(5));
+        assert_eq!(backend.entries(value_index::ID.into()).len(), 6);
+    }
+
     #[test]
     fn watermark_none_on_fresh_backend() {
         let backend = InMemoryBackend::new();

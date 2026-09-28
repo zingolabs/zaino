@@ -22,13 +22,9 @@ impl RunningSum {
     }
 }
 
-
-
 /// Unit key type for the single "sum" entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SumKey;
-
-
 
 /// Running sum of values across blocks in a batch.
 pub struct RunningSumIndex;

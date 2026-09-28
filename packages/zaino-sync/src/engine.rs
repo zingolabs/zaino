@@ -85,7 +85,14 @@ pub struct SyncEngine<Ctx, B: Backend> {
     pipelines: HashMap<IndexId, Box<dyn IndexPipeline<Ctx>>>,
     backend: B,
     buffer: BlockBuffer<Ctx>,
-    start_height: BlockHeight,
+    /// The absolute height of the next block pushed. Seeded from
+    /// `EngineConfig::start_height` and advanced per block, independently of
+    /// buffer offsets — eviction rounds the buffer floor up to a batch
+    /// boundary, so after a partial batch offsets and heights diverge.
+    next_height: BlockHeight,
+    /// The highest height pushed into each batch, recorded at push time so the
+    /// watermark a batch commits is a height the batch actually holds.
+    batch_last_height: HashMap<BatchIndex, BlockHeight>,
     /// Write ops waiting for an atomic batch commit. Each index's
     /// persist step pushes ops here; the actual backend write happens
     /// when all indexes have persisted for that batch.
@@ -139,7 +146,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             pipelines,
             backend,
             buffer: BlockBuffer::new(batch_size),
-            start_height: config.start_height,
+            next_height: config.start_height,
+            batch_last_height: HashMap::new(),
             pending_ops: HashMap::new(),
             evicted_through: None,
             confirmed_watermark,
@@ -212,10 +220,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             if !provisioner_done {
                 for _ in 0..self.scheduler.batch_size() {
                     match source.next() {
-                        Some(ctx) => {
-                            let offset = BlockOffset::new(self.buffer.total_pushed());
-                            self.buffer.push(offset, ctx);
-                        }
+                        Some(ctx) => self.push_block(ctx),
                         None => {
                             self.scheduler.provisioner_done(self.buffer.total_pushed());
                             provisioner_done = true;
@@ -323,8 +328,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     }
 
     /// Push a single block into the buffer and update availability.
+    /// Push one block at the next offset, recording its absolute height
+    /// against the batch it lands in.
     fn push_block(&mut self, ctx: Ctx) {
         let offset = BlockOffset::new(self.buffer.total_pushed());
+        let batch = BatchIndex::new(offset.value() / self.scheduler.batch_size());
+        self.batch_last_height.insert(batch, self.next_height);
+        self.next_height = BlockHeight::new(self.next_height.value() + 1);
         self.buffer.push(offset, ctx);
         self.scheduler
             .set_blocks_available(self.buffer.total_pushed());
@@ -497,11 +507,12 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
             let mut ops = self.pending_ops.remove(&candidate).unwrap_or_default();
 
-            // Watermark: highest committed height for this batch.
-            let batch_size = u64::from(self.scheduler.batch_size());
-            let max_offset = ((u64::from(candidate.value()) + 1) * batch_size)
-                .min(u64::from(self.buffer.total_pushed()));
-            let committed_height = BlockHeight::new(self.start_height.value() + max_offset - 1);
+            // Watermark: the highest height this batch holds, as recorded when
+            // its blocks were pushed. A batch with no recorded block has nothing
+            // to stamp and nothing to evict.
+            let Some(committed_height) = self.batch_last_height.remove(&candidate) else {
+                break;
+            };
 
             // The watermark seam speaks the domain `Height`; the engine's local
             // BlockHeight is u64, but a block height fits u32 (the protocol

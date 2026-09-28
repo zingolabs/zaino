@@ -33,13 +33,9 @@ impl CumulativeSum {
     }
 }
 
-
-
 /// Unit key type for the single "sum" entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CumSumKey;
-
-
 
 /// Cumulative sum where blocks past a threshold contribute double.
 pub struct CumulativeSumIndex;
