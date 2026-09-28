@@ -22,8 +22,8 @@ use std::sync::Arc;
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockService, ChainHeadSnapshot};
-use zaino_core::{
-    BlockId, BlockRef, ChainMetadata, CompactBlock, Height, HeightRange, PreIndexCompactBlock,
+use zaino_primitives::types::{
+    BlockRef, BlockSelector, ChainMetadata, CompactBlock, Height, HeightRange, PreIndexCompactBlock,
 };
 use zaino_service::error::{BlockReadError, ReadError, Transient};
 use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
@@ -54,10 +54,10 @@ fn to_compact(block: &ChainHeadBlock) -> CompactBlock {
 }
 
 impl ChainSegment for HeadSnapshot {
-    fn pinned_tip(&self) -> Option<BlockId> {
+    fn pinned_tip(&self) -> Option<BlockRef> {
         // The head is never empty, so it always has a tip.
         let tip = self.0.best_tip();
-        Some(BlockId {
+        Some(BlockRef {
             height: tip.height,
             hash: tip.hash,
         })
@@ -82,13 +82,13 @@ impl ChainSegment for HeadSnapshot {
 impl CompactBlockRead for HeadSnapshot {
     fn compact_block(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send {
         // All lookups are over the best chain of the retained window; a
         // competing block or an out-of-window reference is a domain absence.
         let block = match at {
-            BlockRef::Height(height) => self.0.best_block_by_height(height).map(to_compact),
-            BlockRef::Hash(hash) => self
+            BlockSelector::Height(height) => self.0.best_block_by_height(height).map(to_compact),
+            BlockSelector::Hash(hash) => self
                 .0
                 .block_by_hash(&hash)
                 .filter(|block| self.0.is_on_best_chain(block.reference))

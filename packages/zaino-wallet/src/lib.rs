@@ -49,14 +49,14 @@ impl<W: WalletLibService> Indexer<W> {
 #[cfg(test)]
 mod tests {
     use super::{Indexer, WalletTip, WalletTxId};
-    use zaino_core::{BlockHash, BlockId, Height};
+    use zaino_primitives::types::{BlockHash, BlockRef, Height};
     use zaino_service::testing::{MockChain, MockIndexerService};
 
     /// The adapter binds only `WalletLibService`, pins a snapshot, and maps the
     /// domain tip to a stable DTO.
     #[tokio::test]
     async fn tip_maps_to_dto() {
-        let tip = BlockId {
+        let tip = BlockRef {
             height: Height::try_from(42).expect("valid height"),
             hash: BlockHash::from([7u8; 32]),
         };

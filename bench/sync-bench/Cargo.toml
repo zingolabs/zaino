@@ -38,7 +38,6 @@ zaino-rpc = { workspace = true }
 # Compose-on-read verification of the served compact blocks.
 zaino-store = { path = "../../packages/zaino-store" }
 zaino-service = { path = "../../packages/zaino-service" }
-zaino-core = { path = "../../packages/zaino-core" }
 # Domain + consensus constants.
 zaino-primitives = { workspace = true }
 zaino-consensus = { workspace = true }

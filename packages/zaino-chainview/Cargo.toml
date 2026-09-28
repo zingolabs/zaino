@@ -11,7 +11,6 @@ description = "Composes the finalised store (FS) and a non-finalised view (NFS) 
 testing = []
 
 [dependencies]
-zaino-core = { path = "../zaino-core" }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-service = { path = "../zaino-service" }
 futures = { workspace = true }

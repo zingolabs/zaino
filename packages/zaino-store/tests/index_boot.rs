@@ -14,13 +14,14 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_core::{Answerable, BlockRef, Capability, Height};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{
     context_from_block, index_set, CurrentZaino, CurrentZainoContext,
 };
 use zaino_persistence::in_memory::InMemoryBackend;
+use zaino_primitives::types::{BlockSelector, Height};
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_service::{Answerable, Capability};
 use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
@@ -143,7 +144,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
     // Compose a true compact block on read from the Blocks index set: header +
     // chain_metadata + (here empty) per-tx pools, assembled by height.
     let block = snapshot
-        .compact_block(BlockRef::Height(Height::try_from(2).expect("height")))
+        .compact_block(BlockSelector::Height(Height::try_from(2).expect("height")))
         .await
         .expect("compact_block read")
         .expect("a block indexed at the tip");
@@ -158,7 +159,7 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
     );
     // Above the tip there is no block.
     let none = snapshot
-        .compact_block(BlockRef::Height(Height::try_from(99).expect("height")))
+        .compact_block(BlockSelector::Height(Height::try_from(99).expect("height")))
         .await
         .expect("compact_block read");
     assert!(none.is_none(), "no block above the finalised tip");

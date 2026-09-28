@@ -18,11 +18,12 @@ use futures::StreamExt;
 use zaino_chainview::ChainView;
 use zaino_chainview::testing::{StubNonFinalised, stub_compact_block};
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_core::{BlockHash, BlockRef, Capability, Height, HeightRange};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
+use zaino_primitives::types::{BlockHash, BlockSelector, Height, HeightRange};
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_service::Capability;
 use zaino_service::error::{BlockReadError, ReadError};
 use zaino_service::{ChainSegment, CompactBlockRead, Snapshot, TakeSnapshot};
 use zaino_source::mock::{MockChain, test_block};
@@ -136,13 +137,13 @@ async fn range_read_stitches_across_the_seam() {
 
     // Point reads: an FS height and an NFS height, each hashed by its side.
     let fs_block = snapshot
-        .compact_block(BlockRef::Height(height(2)))
+        .compact_block(BlockSelector::Height(height(2)))
         .await
         .expect("read")
         .expect("FS block at the watermark");
     assert_eq!(fs_block.hash, BlockHash::from([12; 32]), "from the FS");
     let nfs_block = snapshot
-        .compact_block(BlockRef::Height(height(4)))
+        .compact_block(BlockSelector::Height(height(4)))
         .await
         .expect("read")
         .expect("NFS block in the window");
@@ -175,7 +176,7 @@ async fn empty_fs_routes_everything_to_the_nfs() {
     assert_eq!(blocks, vec![0, 1, 2, 3], "whole range from the NFS");
 
     let block = snapshot
-        .compact_block(BlockRef::Height(height(2)))
+        .compact_block(BlockSelector::Height(height(2)))
         .await
         .expect("read")
         .expect("served from the NFS");
@@ -191,14 +192,14 @@ async fn fs_only_serves_up_to_the_watermark() {
     let snapshot = view.snapshot().await.expect("snapshot");
 
     let below = snapshot
-        .compact_block(BlockRef::Height(height(1)))
+        .compact_block(BlockSelector::Height(height(1)))
         .await
         .expect("read")
         .expect("FS block below the watermark");
     assert_eq!(below.height, 1);
 
     let above = snapshot
-        .compact_block(BlockRef::Height(height(3)))
+        .compact_block(BlockSelector::Height(height(3)))
         .await
         .expect("read");
     assert!(
@@ -215,7 +216,7 @@ async fn above_the_nfs_tip_is_none() {
     let snapshot = view.snapshot().await.expect("snapshot");
 
     let above = snapshot
-        .compact_block(BlockRef::Height(height(6)))
+        .compact_block(BlockSelector::Height(height(6)))
         .await
         .expect("read");
     assert!(above.is_none(), "above the NFS tip → None");
@@ -229,7 +230,9 @@ async fn initial_build_gap_is_not_serviceable() {
     let view = ChainView::new(indexed_store(2).await, stub_window(5, 6));
     let snapshot = view.snapshot().await.expect("snapshot");
 
-    let gap = snapshot.compact_block(BlockRef::Height(height(3))).await;
+    let gap = snapshot
+        .compact_block(BlockSelector::Height(height(3)))
+        .await;
     assert!(
         matches!(gap, Err(BlockReadError::NotServiceable(Capability::Blocks))),
         "a gap height is not serviceable, got {gap:?}"
@@ -258,21 +261,21 @@ async fn hash_reads_resolve_across_both_sides() {
     let snapshot = view.snapshot().await.expect("snapshot");
 
     let fs_hit = snapshot
-        .compact_block(BlockRef::Hash(BlockHash::from([12; 32])))
+        .compact_block(BlockSelector::Hash(BlockHash::from([12; 32])))
         .await
         .expect("read")
         .expect("FS block by hash");
     assert_eq!(fs_hit.height, 2, "resolved from the FS");
 
     let nfs_hit = snapshot
-        .compact_block(BlockRef::Hash(BlockHash::from([13; 32])))
+        .compact_block(BlockSelector::Hash(BlockHash::from([13; 32])))
         .await
         .expect("read")
         .expect("NFS block by hash");
     assert_eq!(nfs_hit.height, 3, "resolved from the NFS");
 
     let miss = snapshot
-        .compact_block(BlockRef::Hash(BlockHash::from([99; 32])))
+        .compact_block(BlockSelector::Hash(BlockHash::from([99; 32])))
         .await
         .expect("read");
     assert!(miss.is_none(), "unknown hash → None");

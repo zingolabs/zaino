@@ -7,11 +7,11 @@
 //! A *broadcast rejection* is not an error at all here: it is a domain answer
 //! carried in the `SendResponse` (see `send_transaction`).
 
-use zaino_core::Capability;
 use zaino_service::error::{
     AddressReadError, BlockReadError, MempoolReadError, ReadError, Transient, TreestateReadError,
     TxReadError,
 };
+use zaino_service::Capability;
 
 /// A light-serve handler failure.
 #[derive(Debug, thiserror::Error)]

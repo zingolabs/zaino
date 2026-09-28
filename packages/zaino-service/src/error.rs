@@ -5,7 +5,7 @@
 //! granularity" rule, applied to the driving surface. In this scaffold they
 //! share a shape; a macro keeps them DRY (a `fn` cannot define types).
 
-use zaino_core::Capability;
+use crate::Capability;
 
 /// Every read-boundary failure separates a *not-yet-serviceable* answer and a
 /// *domain* "not found" (which is `Ok(None)`, never an error) from real backend

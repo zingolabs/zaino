@@ -14,8 +14,10 @@ use std::future::Future;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
-use zaino_core::{BlockHash, BlockId, BlockRef, ChainMetadata, CompactBlock, Height, HeightRange};
 use zaino_primitives::types::CompactDifficulty;
+use zaino_primitives::types::{
+    BlockHash, BlockRef, BlockSelector, ChainMetadata, CompactBlock, Height, HeightRange,
+};
 use zaino_service::error::{BlockReadError, ReadError, Transient};
 use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 
@@ -29,7 +31,7 @@ pub struct StubNonFinalised {
     /// Best-chain compact blocks over `[floor, tip]`, keyed by height.
     blocks: BTreeMap<Height, CompactBlock>,
     /// The highest-height block's id, or `None` when empty.
-    tip: Option<BlockId>,
+    tip: Option<BlockRef>,
 }
 
 impl StubNonFinalised {
@@ -50,7 +52,7 @@ impl StubNonFinalised {
                     .map(|height| (height, block))
             })
             .collect();
-        let tip = blocks.last_key_value().map(|(height, block)| BlockId {
+        let tip = blocks.last_key_value().map(|(height, block)| BlockRef {
             height: *height,
             hash: block.hash,
         });
@@ -59,7 +61,7 @@ impl StubNonFinalised {
 }
 
 impl ChainSegment for StubNonFinalised {
-    fn pinned_tip(&self) -> Option<BlockId> {
+    fn pinned_tip(&self) -> Option<BlockRef> {
         self.tip
     }
 
@@ -73,13 +75,13 @@ impl ChainSegment for StubNonFinalised {
 impl CompactBlockRead for StubNonFinalised {
     fn compact_block(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send {
         // Best-effort over the stored window: a height maps directly, a hash
         // matches any stored block. Reads never fail in the stub.
         let block = match at {
-            BlockRef::Height(height) => self.blocks.get(&height).cloned(),
-            BlockRef::Hash(hash) => self
+            BlockSelector::Height(height) => self.blocks.get(&height).cloned(),
+            BlockSelector::Hash(hash) => self
                 .blocks
                 .values()
                 .find(|block| block.hash == hash)

@@ -4557,7 +4557,6 @@ dependencies = [
  "tracing-subscriber",
  "zaino-backend-lmdb",
  "zaino-consensus",
- "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-persistence",
@@ -5926,7 +5925,6 @@ dependencies = [
  "tracing",
  "zaino-chain-head",
  "zaino-component",
- "zaino-core",
  "zaino-primitives",
  "zaino-service",
  "zaino-source",
@@ -6003,7 +6001,6 @@ dependencies = [
  "zaino-chain-head-service",
  "zaino-chainview",
  "zaino-component",
- "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-logging",
@@ -6054,14 +6051,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-core"
-version = "0.1.0"
-dependencies = [
- "strum",
- "zaino-primitives",
-]
-
-[[package]]
 name = "zaino-encoding"
 version = "0.1.0"
 dependencies = [
@@ -6092,10 +6081,10 @@ version = "0.1.0"
 dependencies = [
  "strum",
  "thiserror 2.0.18",
- "zaino-core",
  "zaino-persistence",
  "zaino-persistence-codec",
  "zaino-primitives",
+ "zaino-service",
  "zaino-sync",
 ]
 
@@ -6109,7 +6098,6 @@ dependencies = [
  "tonic",
  "zaino-chainview",
  "zaino-component",
- "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-persistence",
@@ -6170,7 +6158,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-component",
- "zaino-core",
+ "zaino-primitives",
  "zaino-service",
 ]
 
@@ -6245,7 +6233,6 @@ dependencies = [
  "tracing",
  "zaino-async",
  "zaino-component",
- "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-lightserve",
@@ -6294,7 +6281,7 @@ dependencies = [
  "strum",
  "thiserror 2.0.18",
  "tokio",
- "zaino-core",
+ "zaino-primitives",
 ]
 
 [[package]]
@@ -6444,7 +6431,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-component",
- "zaino-core",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-persistence",
@@ -6463,9 +6449,9 @@ dependencies = [
  "futures",
  "tokio",
  "zaino-chainview",
- "zaino-core",
  "zaino-indexes",
  "zaino-persistence",
+ "zaino-primitives",
  "zaino-service",
  "zaino-source",
  "zaino-store",
@@ -6493,7 +6479,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
- "zaino-core",
+ "zaino-primitives",
  "zaino-service",
 ]
 

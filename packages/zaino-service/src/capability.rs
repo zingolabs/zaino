@@ -1,10 +1,11 @@
-//! Which capabilities are answerable now, and a snapshot's serviceable range.
+//! The capability axis, and how far each capability is answerable now.
 //!
-//! Availability is layered. *Required* is what a use case demands (the profile
-//! bounds). *Provided* is what a deployment's components can ever answer (the
-//! composed type: an impl exists or it does not). *Serviceable* is what is
-//! answerable right now, and to what height — this manifest. The manifest can
-//! only narrow what the type already permits; it never widens it.
+//! Availability is layered. *Required* is what a use case demands (its
+//! [`use_cases`](crate) bounds). *Provided* is what a deployment's components
+//! can ever answer (the composed type: an impl exists or it does not).
+//! *Serviceable* is what is answerable right now, and to what height — this
+//! manifest. The manifest can only narrow what the type already permits; it
+//! never widens it.
 
 use zaino_primitives::types::Height;
 
@@ -90,13 +91,4 @@ impl ServiceabilityManifest {
     pub fn iter(&self) -> impl Iterator<Item = (Capability, Answerable)> + '_ {
         self.entries.iter().copied()
     }
-}
-
-/// The heights a snapshot can answer, and the FS/NFS boundary within them.
-#[derive(Clone, Copy, Debug)]
-pub struct ServiceableRange {
-    /// Top of append-only finalised state.
-    pub finalized_tip: Height,
-    /// Pinned best-chain tip; `finalized_tip..=tip` is the non-finalised window.
-    pub tip: Height,
 }

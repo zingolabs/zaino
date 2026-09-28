@@ -10,14 +10,14 @@
 //! the engine by value, so a shared engine must be a cheap-clone handle (here,
 //! `MockIndexerService: Clone` is another handle to the same state).
 
-use zaino_core::{BlockHash, BlockId, Height};
 use zaino_lightserve::LightServe;
 use zaino_noderpc::NodeRpc;
+use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zaino_service::testing::{MockChain, MockIndexerService};
 
 #[tokio::test]
 async fn one_engine_drives_both_ports() {
-    let tip = BlockId {
+    let tip = BlockRef {
         height: Height::try_from(500).expect("valid height"),
         hash: BlockHash::from([0x11u8; 32]),
     };

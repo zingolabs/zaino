@@ -1,7 +1,7 @@
 //! Aggregate obligations. Fine traits are for consumers/mocks; these name the
 //! whole-engine handle. Per-use-case bundles live in [`crate::profiles`].
 
-use zaino_core::{BlockId, HeightRange, ServiceableRange};
+use zaino_primitives::types::{BlockRef, Height, HeightRange};
 
 use crate::controls::{
     Broadcast, MempoolSubscribe, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
@@ -23,7 +23,7 @@ use crate::controls::{
 pub trait ChainSegment: Clone + Send + Sync + 'static {
     /// The tip this segment is pinned to — its coherence coordinate — or `None`
     /// when it holds nothing.
-    fn pinned_tip(&self) -> Option<BlockId>;
+    fn pinned_tip(&self) -> Option<BlockRef>;
 
     /// The inclusive height span this segment can serve, or `None` when it holds
     /// nothing.
@@ -34,6 +34,15 @@ pub trait ChainSegment: Clone + Send + Sync + 'static {
     /// high are the volatile window — without either side describing what its
     /// bounds *mean*.
     fn coverage(&self) -> Option<HeightRange>;
+}
+
+/// The heights a snapshot can answer, and the FS/NFS boundary within them.
+#[derive(Clone, Copy, Debug)]
+pub struct ServiceableRange {
+    /// Top of append-only finalised state.
+    pub finalized_tip: Height,
+    /// Pinned best-chain tip; `finalized_tip..=tip` is the non-finalised window.
+    pub tip: Height,
 }
 
 /// A pinned, reorg-coherent *served* view (ADR-0003): a cheap-to-clone handle to

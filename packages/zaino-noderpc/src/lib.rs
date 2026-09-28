@@ -20,7 +20,8 @@ pub use error::RpcError;
 pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
-use zaino_core::{Outpoint, PassthroughQuery};
+use zaino_primitives::types::Outpoint;
+use zaino_service::PassthroughQuery;
 use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
 
 use crate::wire::{bytes_from_hex, spend_status_to_wire, to_hex, txid_from_hex};
@@ -95,10 +96,10 @@ impl<S: NodeRpcService> NodeRpc<S> {
 #[cfg(test)]
 mod tests {
     use super::{NodeRpc, RpcError};
-    use zaino_core::{BlockHash, BlockId, Height};
+    use zaino_primitives::types::{BlockHash, BlockRef, Height};
     use zaino_service::testing::{MockChain, MockIndexerService};
 
-    fn engine_with_tip(tip: Option<BlockId>) -> MockIndexerService {
+    fn engine_with_tip(tip: Option<BlockRef>) -> MockIndexerService {
         MockIndexerService::new(MockChain {
             tip,
             ..Default::default()
@@ -107,7 +108,7 @@ mod tests {
 
     #[tokio::test]
     async fn block_count_and_best_hash_read_the_pinned_tip() {
-        let tip = BlockId {
+        let tip = BlockRef {
             height: Height::try_from(291).expect("valid height"),
             hash: BlockHash::from([0xCDu8; 32]),
         };
@@ -148,7 +149,7 @@ mod tests {
 
     #[tokio::test]
     async fn chain_info_reads_and_mining_info_passes_through() {
-        let tip = BlockId {
+        let tip = BlockRef {
             height: Height::try_from(77).expect("valid height"),
             hash: BlockHash::from([0u8; 32]),
         };

@@ -21,12 +21,13 @@
 use std::future::Future;
 
 use zaino_chainview::ChainViewSnapshot;
-use zaino_core::{
-    AddressBalance, AddressDelta, HeightRange, Outpoint, SpendStatus, TransactionId,
-    TransparentAddress, Utxo, Zatoshis, ZatoshisFlowSum,
+use zaino_primitives::types::{
+    AddressBalance, AddressDelta, HeightRange, Outpoint, TransactionId, TransparentAddress, Utxo,
+    Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::error::{AddressReadError, SpendReadError};
 use zaino_service::routing::{Local, Remote, Routing};
+use zaino_service::SpendStatus;
 use zaino_service::{AddressRead, ChainSegment, CompactBlockRead, SpendRead};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 

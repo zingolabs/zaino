@@ -18,8 +18,8 @@
 //! to passthrough (the validator's state cannot be pinned to our view). That is
 //! sound for the immutable, historical data light clients query.
 
-use zaino_core::{
-    AddressBalance, AddressDelta, BlockId, Height, HeightRange, PreIndexCompactTx, RawTransaction,
+use zaino_primitives::types::{
+    AddressBalance, AddressDelta, BlockRef, Height, HeightRange, PreIndexCompactTx, RawTransaction,
     ShieldedPool, SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 use zaino_service::error::{
@@ -384,9 +384,9 @@ where
     /// The chain tip the mempool listing is coherent against, live. The port
     /// carries no domain error (typed `Infallible`) — only a transport failure,
     /// reported transient.
-    pub(crate) async fn mempool_source_tip(&self) -> Result<BlockId, MempoolReadError> {
+    pub(crate) async fn mempool_source_tip(&self) -> Result<BlockRef, MempoolReadError> {
         match self.source.get_mempool_source_tip().await {
-            Ok((hash, height)) => Ok(BlockId { height, hash }),
+            Ok((hash, height)) => Ok(BlockRef { height, hash }),
             Err(SourceError::Domain(never)) => match never {},
             Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
                 "validator unavailable: {cause}"

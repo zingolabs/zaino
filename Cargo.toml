@@ -5,7 +5,6 @@ members = [
     "packages/zaino-async",
     "packages/zaino-logging",
     "packages/zaino-component",
-    "packages/zaino-core",
     "packages/zaino-service",
     "packages/zaino-runtime",
     "packages/zaino-wallet",

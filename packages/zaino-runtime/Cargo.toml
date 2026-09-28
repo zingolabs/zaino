@@ -11,14 +11,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 futures.workspace = true
-zaino-core = { path = "../zaino-core" }
 zaino-async = { version = "0.1.0", path = "../zaino-async" }
 
 [dev-dependencies]
 tokio = { workspace = true }
 zaino-status = { path = "../zaino-status" }
 # Serving-composition POC: one engine driving both public ports at once.
-zaino-core = { path = "../zaino-core" }
 zaino-service = { path = "../zaino-service", features = ["testing"] }
 zaino-lightserve = { path = "../zaino-lightserve" }
 zaino-noderpc = { path = "../zaino-noderpc" }

@@ -25,12 +25,13 @@ pub use grpc::GrpcService;
 pub use transport::{GrpcServeError, GrpcServer};
 
 use futures::stream::{BoxStream, StreamExt};
-use zaino_core::{
-    BlockRef, Height, HeightRange, MempoolTx, RawTransaction, ShieldedPool, TransactionId,
+use zaino_primitives::types::{
+    BlockSelector, Height, HeightRange, RawTransaction, ShieldedPool, TransactionId,
     TransactionLocation, TransparentAddress,
 };
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
+use zaino_service::MempoolTx;
 use zaino_service::{
     AddressRead, ChainSegment, CompactBlockRead, CompactNullifierRead, LightServeService,
     RawTransactionRead, TreestateRead,
@@ -61,7 +62,7 @@ impl<S: LightServeService> LightServe<S> {
         Self { engine }
     }
 
-    /// `GetLatestBlock`: the tip of the pinned best chain, as a wire `BlockId`.
+    /// `GetLatestBlock`: the tip of the pinned best chain, as a wire `BlockRef`.
     pub async fn get_latest_block(&self) -> Result<proto::BlockId, ServeError> {
         let snapshot = self.engine.snapshot().await?;
         let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
@@ -99,7 +100,7 @@ impl<S: LightServeService> LightServe<S> {
     /// converted domain -> wire in the adapter.
     pub async fn get_block(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> Result<Option<compact::CompactBlock>, ServeError> {
         let snapshot = self.engine.snapshot().await?;
         Ok(snapshot.compact_block(at).await?.map(ToWire::to_wire))
@@ -240,7 +241,7 @@ impl<S: LightServeService> LightServe<S> {
     /// populated, or `None` when no block is indexed there.
     pub async fn get_block_nullifiers(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> Result<Option<compact::CompactBlock>, ServeError> {
         let snapshot = self.engine.snapshot().await?;
         Ok(snapshot
@@ -265,7 +266,7 @@ impl<S: LightServeService> LightServe<S> {
             let height = Height::try_from(raw_height)
                 .map_err(|e| ServeError::Internal(format!("height in range invalid: {e}")))?;
             if let Some(block) = snapshot
-                .compact_block_nullifiers(BlockRef::Height(height))
+                .compact_block_nullifiers(BlockSelector::Height(height))
                 .await?
             {
                 blocks.push(block.to_wire());
@@ -344,11 +345,11 @@ impl<S: LightServeService> LightServe<S> {
 #[cfg(test)]
 mod tests {
     use super::{LightServe, ServeError};
-    use zaino_core::{BlockHash, BlockId, Height};
+    use zaino_primitives::types::{BlockHash, BlockRef, Height};
     use zaino_proto::proto::service as proto;
     use zaino_service::testing::{MockChain, MockIndexerService};
 
-    fn engine_with_tip(tip: Option<BlockId>) -> MockIndexerService {
+    fn engine_with_tip(tip: Option<BlockRef>) -> MockIndexerService {
         MockIndexerService::new(MockChain {
             tip,
             ..Default::default()
@@ -356,10 +357,10 @@ mod tests {
     }
 
     /// The handler binds only `LightServeService`, pins a snapshot, and converts
-    /// the domain tip to a wire `BlockId`.
+    /// the domain tip to a wire `BlockRef`.
     #[tokio::test]
     async fn latest_block_maps_domain_to_wire() {
-        let tip = BlockId {
+        let tip = BlockRef {
             height: Height::try_from(808).expect("valid height"),
             hash: BlockHash::from([0xABu8; 32]),
         };
@@ -384,7 +385,7 @@ mod tests {
     /// tip — the readiness signal clients gate on.
     #[tokio::test]
     async fn lightd_info_reports_the_tip_height() {
-        let tip = BlockId {
+        let tip = BlockRef {
             height: Height::try_from(42).expect("valid height"),
             hash: BlockHash::from([0x11u8; 32]),
         };
@@ -411,7 +412,7 @@ mod tests {
     /// the read, not stubbed at the wire.
     #[tokio::test]
     async fn tree_state_delegates_to_the_snapshot_read() {
-        use zaino_core::Height;
+        use zaino_primitives::types::Height;
         let serve = LightServe::new(engine_with_tip(None));
         let height = Height::try_from(2_800_000).expect("valid height");
         assert!(matches!(
@@ -436,7 +437,7 @@ mod tests {
     /// served answer, not `unimplemented`).
     #[tokio::test]
     async fn subtree_roots_delegates_and_converts() {
-        use zaino_core::ShieldedPool;
+        use zaino_primitives::types::ShieldedPool;
         let serve = LightServe::new(engine_with_tip(None));
         let roots = serve
             .get_subtree_roots(ShieldedPool::Sapling, 0, None)
@@ -450,7 +451,7 @@ mod tests {
     /// handler is wired to the read rather than stubbed at the wire.
     #[tokio::test]
     async fn get_transaction_delegates_to_the_snapshot_read() {
-        use zaino_core::TransactionId;
+        use zaino_primitives::types::TransactionId;
         let serve = LightServe::new(engine_with_tip(None));
         let tx = serve
             .get_transaction(TransactionId::from([0x33u8; 32]))
@@ -464,8 +465,8 @@ mod tests {
     /// as the serviceability fact, not the old `unimplemented`).
     #[tokio::test]
     async fn taddress_balance_delegates_over_the_indexed_range() {
-        use zaino_core::{BlockHash, BlockId, Height, TransparentAddress};
-        let tip = BlockId {
+        use zaino_primitives::types::{BlockHash, BlockRef, Height, TransparentAddress};
+        let tip = BlockRef {
             height: Height::try_from(500).expect("valid height"),
             hash: BlockHash::from([0x44u8; 32]),
         };
@@ -481,7 +482,7 @@ mod tests {
     /// An empty chain has no tip to bound the balance range, so it is `NoBlocks`.
     #[tokio::test]
     async fn taddress_balance_no_tip_is_no_blocks() {
-        use zaino_core::TransparentAddress;
+        use zaino_primitives::types::TransparentAddress;
         let serve = LightServe::new(engine_with_tip(None));
         assert!(matches!(
             serve
@@ -495,7 +496,7 @@ mod tests {
     /// an empty set) and returns an empty wire list — a served answer.
     #[tokio::test]
     async fn address_utxos_delegates_and_converts() {
-        use zaino_core::{Height, TransparentAddress};
+        use zaino_primitives::types::{Height, TransparentAddress};
         let serve = LightServe::new(engine_with_tip(None));
         let utxos = serve
             .get_address_utxos(
@@ -512,7 +513,7 @@ mod tests {
     /// empty run) and returns no transactions — a served answer.
     #[tokio::test]
     async fn taddress_txids_delegates_and_converts() {
-        use zaino_core::{Height, HeightRange, TransparentAddress};
+        use zaino_primitives::types::{Height, HeightRange, TransparentAddress};
         let serve = LightServe::new(engine_with_tip(None));
         let range = HeightRange {
             start: Height::GENESIS,
@@ -529,10 +530,10 @@ mod tests {
     /// there) and returns `None` — a served answer, not `unimplemented`.
     #[tokio::test]
     async fn block_nullifiers_delegates_to_the_snapshot_read() {
-        use zaino_core::{BlockRef, Height};
+        use zaino_primitives::types::{BlockSelector, Height};
         let serve = LightServe::new(engine_with_tip(None));
         let block = serve
-            .get_block_nullifiers(BlockRef::Height(
+            .get_block_nullifiers(BlockSelector::Height(
                 Height::try_from(10).expect("valid height"),
             ))
             .await
@@ -568,7 +569,7 @@ mod tests {
     #[test]
     fn exclude_matches_a_txid_suffix() {
         use super::txid_matches_a_suffix;
-        use zaino_core::TransactionId;
+        use zaino_primitives::types::TransactionId;
         let mut bytes = [0u8; 32];
         bytes[30] = 0xBE;
         bytes[31] = 0xEF;

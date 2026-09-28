@@ -117,7 +117,7 @@ TransactionHash, etc.).
 The inherent-`to_wire`-on-the-business-type rule assumes the business
 type and the wire schema legitimately co-locate in one crate (the
 legacy `zaino-state` world). In the ports architecture they do **not**:
-domain types live in `zaino-core` / `zaino-primitives`, which must never
+domain types live in `zaino-primitives` / `zaino-service`, which must never
 depend on a wire schema (`zaino-proto`, jsonrpsee), because that would
 recouple the domain to a transport and defeat the seam. There, the
 serve **adapter** owns conversion:

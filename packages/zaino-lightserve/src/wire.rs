@@ -5,8 +5,8 @@
 //! naming and direction while respecting the orphan rule (foreign domain type,
 //! local trait).
 
-use zaino_core::{
-    AddressBalance, BlockId, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier,
+use zaino_primitives::types::{
+    AddressBalance, BlockRef, ChainMetadata, CompactBlock, CompactCiphertext, Nullifier,
     OrchardAction, PreIndexCompactTx, RawTransaction, SaplingOutput, SubtreeRoot,
     TransactionLocation, TransparentInput, TransparentOutput, Treestate, Utxo,
 };
@@ -18,7 +18,7 @@ pub(crate) trait ToWire {
     fn to_wire(self) -> Self::Wire;
 }
 
-impl ToWire for BlockId {
+impl ToWire for BlockRef {
     type Wire = proto::BlockId;
 
     fn to_wire(self) -> proto::BlockId {
@@ -248,8 +248,8 @@ pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{hex_bytes, ToWire};
-    use zaino_core::{BlockHash, Height, SubtreeRoot, Treestate};
-    // `PoolTreestate`/`TreeRoot` are domain component types the `zaino-core`
+    use zaino_primitives::types::{BlockHash, Height, SubtreeRoot, Treestate};
+    // `PoolTreestate`/`TreeRoot` are domain component types the `zaino-primitives`
     // facade does not re-export; the production conversions never name them, only
     // these tests construct them, so they come straight from primitives here.
     use zaino_primitives::types::{PoolTreestate, TreeRoot};
@@ -308,7 +308,7 @@ mod tests {
     /// An address balance maps its current balance to the signed wire value.
     #[test]
     fn address_balance_maps_to_wire() {
-        use zaino_core::AddressBalance;
+        use zaino_primitives::types::AddressBalance;
         use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum};
         let balance = AddressBalance {
             balance: Zatoshis::new(123_456).expect("valid amount"),
@@ -321,8 +321,8 @@ mod tests {
     /// i32), script bytes, value, and height.
     #[test]
     fn utxo_maps_to_wire() {
-        use zaino_core::{Height, Script, TransactionId, TransparentAddress, Utxo};
         use zaino_primitives::types::Zatoshis;
+        use zaino_primitives::types::{Height, Script, TransactionId, TransparentAddress, Utxo};
         let utxo = Utxo {
             address: TransparentAddress::new("t1example".to_string()),
             txid: TransactionId::from([0x22u8; 32]),
@@ -346,7 +346,7 @@ mod tests {
     /// non-best fork, and `0` in the mempool.
     #[test]
     fn raw_transaction_height_encodes_location() {
-        use zaino_core::{Height, RawTransaction, TransactionLocation};
+        use zaino_primitives::types::{Height, RawTransaction, TransactionLocation};
         let at = |loc| {
             RawTransaction {
                 data: vec![0xde, 0xad],

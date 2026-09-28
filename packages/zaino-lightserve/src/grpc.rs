@@ -14,8 +14,8 @@
 use futures::stream::{BoxStream, StreamExt};
 use tonic::{Request, Response, Status};
 
-use zaino_core::{
-    BlockHash, BlockRef, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress,
+use zaino_primitives::types::{
+    BlockHash, BlockSelector, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress,
 };
 
 use zaino_proto::proto::compact_formats::{CompactBlock, CompactTx};
@@ -66,15 +66,15 @@ fn to_status(err: ServeError) -> Status {
 /// Wire -> domain for a block reference: a 32-byte hash if present, else the
 /// height. This is the external-input validation step (`invalid_argument` on a
 /// malformed hash or an out-of-range height), owned by the adapter.
-fn block_ref_from_wire(id: BlockId) -> Result<BlockRef, Status> {
+fn block_ref_from_wire(id: BlockId) -> Result<BlockSelector, Status> {
     if id.hash.is_empty() {
-        return Ok(BlockRef::Height(height_from_wire(id.height)?));
+        return Ok(BlockSelector::Height(height_from_wire(id.height)?));
     }
     let bytes: [u8; 32] = id
         .hash
         .try_into()
         .map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
-    Ok(BlockRef::Hash(BlockHash::from(bytes)))
+    Ok(BlockSelector::Hash(BlockHash::from(bytes)))
 }
 
 /// Wire -> domain for an inclusive height range. Both bounds must be present and

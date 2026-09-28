@@ -7,7 +7,7 @@ description = "Full-wallet library adapter: a stable-DTO facade over the WalletL
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
-zaino-core = { path = "../zaino-core" }
+zaino-primitives = { path = "../zaino-primitives" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

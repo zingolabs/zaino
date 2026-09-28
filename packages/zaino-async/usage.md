@@ -4,7 +4,7 @@ Low-level async/tokio building blocks shared across Zaino, one layer **below**
 the component and supervision model (`zaino-component`). Domain-free: no Zcash, no
 indexing — only concurrency plumbing. Depending on `tokio` here is intended; the
 rule it upholds is that the tokio dependency stays confined to infrastructure
-crates and never reaches the domain layer (`zaino-primitives`, `zaino-core`).
+crates and never reaches the domain layer (`zaino-primitives`, `zaino-service`).
 
 ## `Task<T = ()>`
 

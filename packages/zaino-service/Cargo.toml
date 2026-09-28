@@ -6,7 +6,8 @@ publish = false
 description = "Zaino's inner driving surface: the segregated capability trait algebra the runtime implements and the outer clients consume."
 
 [dependencies]
-zaino-core = { path = "../zaino-core" }
+zaino-primitives = { path = "../zaino-primitives" }
+strum = { workspace = true, features = ["derive"] }
 futures = "0.3"
 thiserror.workspace = true
 
@@ -17,4 +18,3 @@ testing = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
-strum = { workspace = true }

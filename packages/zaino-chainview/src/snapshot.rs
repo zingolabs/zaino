@@ -2,10 +2,9 @@
 
 use futures::stream::{self, BoxStream, StreamExt};
 
-use zaino_core::{
-    BlockId, BlockRef, Capability, CompactBlock, Height, HeightRange, ServiceableRange,
-};
+use zaino_primitives::types::{BlockRef, BlockSelector, CompactBlock, Height, HeightRange};
 use zaino_service::error::{BlockReadError, ReadError};
+use zaino_service::{Capability, ServiceableRange};
 use zaino_service::{ChainSegment, CompactBlockRead, Snapshot};
 
 /// A pinned, reorg-coherent view over the composed chain — the finalised store
@@ -134,8 +133,8 @@ where
     /// *initial-build* gap is a separate decision left open here.
     async fn read_routed(&self, height: Height) -> Result<Option<CompactBlock>, BlockReadError> {
         match self.route(height) {
-            Route::Finalised => self.fs.compact_block(BlockRef::Height(height)).await,
-            Route::Volatile => self.nfs.compact_block(BlockRef::Height(height)).await,
+            Route::Finalised => self.fs.compact_block(BlockSelector::Height(height)).await,
+            Route::Volatile => self.nfs.compact_block(BlockSelector::Height(height)).await,
             Route::InitialBuildGap => Err(BlockReadError::NotServiceable(Capability::Blocks)),
             Route::AboveTip => Ok(None),
         }
@@ -147,7 +146,7 @@ where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
 {
-    fn pinned_tip(&self) -> Option<BlockId> {
+    fn pinned_tip(&self) -> Option<BlockRef> {
         // The composed tip: the volatile NFS tip when present, else the
         // finalised tip the FS is pinned to.
         self.nfs.pinned_tip().or_else(|| self.fs.pinned_tip())
@@ -189,16 +188,21 @@ where
     F: ChainSegment + CompactBlockRead,
     N: ChainSegment + CompactBlockRead,
 {
-    async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
+    async fn compact_block(
+        &self,
+        at: BlockSelector,
+    ) -> Result<Option<CompactBlock>, BlockReadError> {
         match at {
-            BlockRef::Height(height) => self.read_routed(height).await,
+            BlockSelector::Height(height) => self.read_routed(height).await,
             // A hash is not seam-routable (no height until resolved), so resolve
             // it as `FS ∪ NFS`: the finalised store first, then the volatile
             // window.
-            BlockRef::Hash(hash) => match self.fs.compact_block(BlockRef::Hash(hash)).await? {
-                Some(block) => Ok(Some(block)),
-                None => self.nfs.compact_block(BlockRef::Hash(hash)).await,
-            },
+            BlockSelector::Hash(hash) => {
+                match self.fs.compact_block(BlockSelector::Hash(hash)).await? {
+                    Some(block) => Ok(Some(block)),
+                    None => self.nfs.compact_block(BlockSelector::Hash(hash)).await,
+                }
+            }
         }
     }
 

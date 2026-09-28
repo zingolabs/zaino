@@ -50,10 +50,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
-use zaino_core::{
-    AddressBalance, AddressDelta, Answerable, BlockHash, BlockId, BlockRef, Capability, Height,
-    HeightRange, ServiceabilityManifest, ServiceableRange, TransactionId, TransparentAddress, Utxo,
-};
 use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::indexes::address_history::{self, AddrId};
 use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
@@ -70,6 +66,10 @@ use zaino_persistence_codec::{
     decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
 };
 use zaino_primitives::types::{
+    AddressBalance, AddressDelta, BlockHash, BlockRef, BlockSelector, Height, HeightRange,
+    TransactionId, TransparentAddress, Utxo,
+};
+use zaino_primitives::types::{
     CompactBlock, OrchardAction, PreIndexCompactTx, SaplingOutput, TransparentInput,
     TransparentOutput,
 };
@@ -77,6 +77,7 @@ use zaino_service::error::{AddressReadError, BlockReadError, ReadError, Transien
 use zaino_service::{
     AddressRead, ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot,
 };
+use zaino_service::{Answerable, Capability, ServiceabilityManifest, ServiceableRange};
 use zaino_sync::primitives::BlockHeight;
 
 /// EXPLORATORY: a read handle over the KV backend, for the materialisation
@@ -150,12 +151,12 @@ where
                 .map_err(|e| Transient(format!("open reader: {e}")))?;
             let finalized_tip =
                 watermark::read(&reader).map_err(|e| Transient(format!("read watermark: {e}")))?;
-            // Compose the tip's BlockId on read from the headers index, so the
+            // Compose the tip's BlockRef on read from the headers index, so the
             // view reports a real (height, hash) rather than a bare height.
             let pinned_tip = match finalized_tip {
                 Some(height) => {
                     read_index_value::<HeadersIndex, B>(&reader, headers::ID.into(), height)?.map(
-                        |header| BlockId {
+                        |header| BlockRef {
                             height,
                             hash: header.hash,
                         },
@@ -179,8 +180,8 @@ pub struct StoreSnapshot<B, M> {
     backend: Arc<B>,
     /// The finalised watermark this view was pinned to, read from the backend.
     finalized_tip: Option<Height>,
-    /// The finalised tip's `BlockId`, composed from the headers index at pin time.
-    pinned_tip: Option<BlockId>,
+    /// The finalised tip's `BlockRef`, composed from the headers index at pin time.
+    pinned_tip: Option<BlockRef>,
     materialisation: PhantomData<M>,
 }
 
@@ -197,7 +198,7 @@ impl<B, M> Clone for StoreSnapshot<B, M> {
 }
 
 impl<B: Backend + 'static, M: Materialisation> ChainSegment for StoreSnapshot<B, M> {
-    fn pinned_tip(&self) -> Option<BlockId> {
+    fn pinned_tip(&self) -> Option<BlockRef> {
         self.pinned_tip
     }
 
@@ -233,7 +234,7 @@ where
 {
     fn compact_block(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send {
         let backend = self.backend.clone();
         async move {
@@ -241,8 +242,8 @@ where
                 .reader()
                 .map_err(|e| BlockReadError::Fatal(format!("open reader: {e}")))?;
             let height = match at {
-                BlockRef::Height(height) => Some(height),
-                BlockRef::Hash(hash) => {
+                BlockSelector::Height(height) => Some(height),
+                BlockSelector::Hash(hash) => {
                     resolve_hash::<B>(&reader, hash).map_err(|t| BlockReadError::Transient(t.0))?
                 }
             };

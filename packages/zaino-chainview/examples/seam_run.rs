@@ -39,7 +39,6 @@ use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSna
 use zaino_chain_head_service::ChainHeadService;
 use zaino_chainview::ChainView;
 use zaino_component::{ComponentName, ReachabilityProbe};
-use zaino_core::{BlockRef, Capability, CompactBlock, Height, HeightRange};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block, index_set};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -47,7 +46,9 @@ use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
     EquihashSolution, MerkleRoot, TreeRoots,
 };
+use zaino_primitives::types::{BlockSelector, CompactBlock, Height, HeightRange};
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
+use zaino_service::Capability;
 use zaino_service::error::{BlockReadError, ReadError};
 use zaino_service::{ChainSegment, CompactBlockRead, Snapshot, TakeSnapshot};
 use zaino_source::mock::{MockChain, test_block};
@@ -313,7 +314,9 @@ async fn read_and_log(
     region: &str,
     h: u32,
 ) -> Result<Option<CompactBlock>, BlockReadError> {
-    let result = snapshot.compact_block(BlockRef::Height(height(h))).await;
+    let result = snapshot
+        .compact_block(BlockSelector::Height(height(h)))
+        .await;
     match &result {
         Ok(Some(block)) => tracing::info!(
             target: LOG,

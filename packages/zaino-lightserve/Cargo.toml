@@ -7,7 +7,7 @@ description = "POC: lightwalletd-compatible gRPC serve adapter over the LightSer
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
-zaino-core = { path = "../zaino-core" }
+zaino-primitives = { path = "../zaino-primitives" }
 zaino-proto = { path = "../zaino-proto" }
 thiserror = { workspace = true }
 zaino-component = { path = "../zaino-component" }

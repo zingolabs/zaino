@@ -8,13 +8,13 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_core::Height;
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_persistence::{Backend, BackendWriter, WriteOp};
 use zaino_persistence_codec::{encode_key, watermark};
+use zaino_primitives::types::Height;
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};

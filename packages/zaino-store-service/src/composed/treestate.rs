@@ -9,7 +9,7 @@
 use std::future::Future;
 
 use zaino_chainview::ChainViewSnapshot;
-use zaino_core::{Height, ShieldedPool, SubtreeRoot, Treestate};
+use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, Treestate};
 use zaino_service::error::TreestateReadError;
 use zaino_service::routing::{Remote, Routing};
 use zaino_service::{ChainSegment, CompactBlockRead, TreestateRead};

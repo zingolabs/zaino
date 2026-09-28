@@ -18,8 +18,8 @@
 //!               | Absent       otherwise
 //! ```
 
-use zaino_core::{Answerable, Capability, ServiceabilityManifest};
 use zaino_primitives::types::{Height, IndexId};
+use zaino_service::{Answerable, Capability, ServiceabilityManifest};
 use zaino_sync::backend::BackendReader;
 
 pub mod local;

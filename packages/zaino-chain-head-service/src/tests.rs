@@ -840,7 +840,7 @@ async fn the_subscriber_observes_status_transitions() {
 /// size there is `0`, and non-zero above.
 #[tokio::test]
 async fn head_serves_the_validators_tree_sizes_not_a_false_zero() {
-    use zaino_core::BlockRef;
+    use zaino_primitives::types::BlockSelector;
     use zaino_primitives::types::TreeSize;
     use zaino_service::{CompactBlockRead, TakeSnapshot};
 
@@ -856,7 +856,7 @@ async fn head_serves_the_validators_tree_sizes_not_a_false_zero() {
 
     for h in 0..5u32 {
         let compact = snapshot
-            .compact_block(BlockRef::Height(height(h)))
+            .compact_block(BlockSelector::Height(height(h)))
             .await
             .expect("in-window read is infallible")
             .expect("block is present in the window");

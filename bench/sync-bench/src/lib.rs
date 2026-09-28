@@ -18,13 +18,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
-use zaino_core::BlockRef;
 use zaino_indexer::{CompactBlocks, FetchConcurrency, SourceProvisioner};
 use zaino_indexes::sets::current_zaino::{
     context_from_pre_index_compact_block, index_set, CurrentZaino, CurrentZainoContext,
 };
 use zaino_persistence::Namespace;
 use zaino_persistence_codec::reserved_namespaces;
+use zaino_primitives::types::BlockSelector;
 use zaino_primitives::types::Height;
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_service::{CompactBlockRead, TakeSnapshot};
@@ -458,7 +458,7 @@ pub async fn verify(backend: &LmdbBackend, from: Height, to: Height) -> Result<(
     let mut prev: Option<(u32, u32, u32)> = None;
     for height in heights {
         let block = snapshot
-            .compact_block(BlockRef::Height(Height::try_from(height)?))
+            .compact_block(BlockSelector::Height(Height::try_from(height)?))
             .await?
             .ok_or_else(|| format!("no composed compact block served at height {height}"))?;
         let sapling = u32::from(block.chain_metadata.sapling_tree_size);

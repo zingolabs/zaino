@@ -7,7 +7,7 @@ description = "The concrete inner engine: the finalised store, the non-finalised
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
-zaino-core = { path = "../zaino-core" }
+zaino-primitives = { path = "../zaino-primitives" }
 zaino-chainview = { path = "../zaino-chainview" }
 futures = "0.3"
 zaino-source = { version = "0.2.0", path = "../zaino-source" }

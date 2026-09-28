@@ -19,10 +19,11 @@ use zaino_service::{
 use zaino_source::mock::MockChain;
 use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
 
-use zaino_core::{
-    Answerable, BlockId, Capability, Height, HeightRange, RawTransaction, ShieldedPool,
-    TransactionId, TransactionLocation, TransparentAddress,
+use zaino_primitives::types::{
+    BlockRef, Height, HeightRange, RawTransaction, ShieldedPool, TransactionId,
+    TransactionLocation, TransparentAddress,
 };
+use zaino_service::{Answerable, Capability};
 
 use crate::composed::split_at_seam;
 use crate::Composed;
@@ -204,12 +205,12 @@ async fn subtree_roots_are_remote_under_light_routing() {
 
 #[tokio::test]
 async fn compact_block_nullifiers_are_served_locally() {
-    use zaino_core::BlockRef;
+    use zaino_primitives::types::BlockSelector;
     use zaino_service::CompactNullifierRead;
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let got =
-        CompactNullifierRead::compact_block_nullifiers(&snapshot, BlockRef::Height(height(0)))
+        CompactNullifierRead::compact_block_nullifiers(&snapshot, BlockSelector::Height(height(0)))
             .await
             .expect("served");
     assert!(got.is_none());
@@ -238,7 +239,7 @@ fn engine_over_a_serviceable_store(
     tip: Option<u32>,
 ) -> Composed<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightRouting> {
     let fs = MockIndexerService::new(MockService {
-        tip: tip.map(|h| BlockId {
+        tip: tip.map(|h| BlockRef {
             height: height(h),
             hash: [0u8; 32].into(),
         }),

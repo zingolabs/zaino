@@ -22,7 +22,7 @@
 //! capability does this index enable" has no single answer — "which indexes
 //! does this capability need" does.
 
-use zaino_core::Capability;
+use zaino_service::Capability;
 use zaino_sync::primitives::IndexId;
 use zaino_sync::traits::IndexDef;
 

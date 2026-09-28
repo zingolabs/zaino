@@ -18,22 +18,34 @@
 #![forbid(unsafe_code)]
 
 mod bundle;
+mod capability;
+mod chain_info;
 mod controls;
 pub mod error;
+mod events;
+mod locator;
+mod node_query;
 mod profiles;
 mod reads;
 pub mod routing;
+mod status;
+mod upgrades;
 
 #[cfg(feature = "testing")]
 pub mod conformance;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use bundle::{ChainSegment, IndexerService, Snapshot};
+pub use bundle::{ChainSegment, IndexerService, ServiceableRange, Snapshot};
+pub use capability::{Answerable, Capability, ServiceabilityManifest};
+pub use chain_info::ChainInfo;
 pub use controls::{
     Broadcast, MempoolContent, MempoolSubscribe, Passthrough, ReportedUpgrades, Serviceable,
     TakeSnapshot, TipSubscribe,
 };
+pub use events::{MempoolTx, TipEvent};
+pub use locator::{ForkPoint, Locator};
+pub use node_query::{PassthroughAnswer, PassthroughQuery};
 pub use profiles::{
     FullWalletReads, LightServeService, LightWalletReads, NodeRpcReads, NodeRpcService,
     WalletLibService, WalletReadCore,
@@ -42,3 +54,5 @@ pub use reads::{
     AddressRead, BlockRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, ForkReconcile,
     RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
 };
+pub use status::{SpendStatus, TxStatus};
+pub use upgrades::{ReportedUpgrade, UpgradeStatus};

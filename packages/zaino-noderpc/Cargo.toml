@@ -7,7 +7,7 @@ description = "POC: Zcash node JSON-RPC serve adapter over the NodeRpcService in
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
-zaino-core = { path = "../zaino-core" }
+zaino-primitives = { path = "../zaino-primitives" }
 thiserror = { workspace = true }
 zaino-component = { path = "../zaino-component" }
 jsonrpsee = { workspace = true }

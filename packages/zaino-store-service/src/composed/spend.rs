@@ -9,9 +9,10 @@
 use std::future::Future;
 
 use zaino_chainview::ChainViewSnapshot;
-use zaino_core::{Outpoint, SpendStatus};
+use zaino_primitives::types::Outpoint;
 use zaino_service::error::SpendReadError;
 use zaino_service::routing::{Local, Routing};
+use zaino_service::SpendStatus;
 use zaino_service::{ChainSegment, CompactBlockRead, SpendRead};
 
 use super::ComposedSnapshot;

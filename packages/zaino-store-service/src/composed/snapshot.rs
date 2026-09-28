@@ -14,12 +14,12 @@ use std::marker::PhantomData;
 use futures::stream::BoxStream;
 
 use zaino_chainview::ChainViewSnapshot;
-use zaino_core::{
-    BlockId, BlockRef, ChainInfo, CompactBlock, Height, HeightRange, RawTransaction,
-    ServiceableRange, TransactionId,
+use zaino_primitives::types::{
+    BlockRef, BlockSelector, CompactBlock, Height, HeightRange, RawTransaction, TransactionId,
 };
 use zaino_service::error::{BlockReadError, ReadError, TxReadError};
 use zaino_service::routing::Routing;
+use zaino_service::{ChainInfo, ServiceableRange};
 use zaino_service::{
     ChainInfoRead, ChainSegment, CompactBlockRead, CompactNullifierRead, RawTransactionRead,
     Snapshot,
@@ -128,7 +128,7 @@ where
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
-    fn pinned_tip(&self) -> Option<BlockId> {
+    fn pinned_tip(&self) -> Option<BlockRef> {
         self.local.pinned_tip()
     }
 
@@ -160,7 +160,10 @@ where
     Src: Clone + Send + Sync + 'static,
     R: Routing,
 {
-    async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
+    async fn compact_block(
+        &self,
+        at: BlockSelector,
+    ) -> Result<Option<CompactBlock>, BlockReadError> {
         self.local.compact_block(at).await
     }
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
@@ -179,7 +182,7 @@ where
 {
     async fn compact_block_nullifiers(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> Result<Option<CompactBlock>, BlockReadError> {
         Ok(self
             .local

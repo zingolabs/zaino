@@ -18,12 +18,15 @@ use std::sync::{Arc, Mutex};
 
 use futures::stream::{self, BoxStream, StreamExt};
 
-use zaino_core::{
-    AddressBalance, AddressDelta, Answerable, Block, BlockHash, BlockHeader, BlockId, BlockRef,
-    Capability, ChainInfo, CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx,
-    Outpoint, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, RawTransaction,
-    ReportedUpgrade, ServiceabilityManifest, ServiceableRange, ShieldedPool, SpendStatus,
-    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus, Utxo,
+use crate::{
+    Answerable, Capability, ChainInfo, ForkPoint, Locator, MempoolTx, PassthroughAnswer,
+    PassthroughQuery, ReportedUpgrade, ServiceabilityManifest, ServiceableRange, SpendStatus,
+    TxStatus,
+};
+use zaino_primitives::types::{
+    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
+    CompactBlock, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool,
+    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -41,7 +44,7 @@ use crate::{
 /// enough to prove wiring and the pin semantics.
 #[derive(Clone, Default)]
 pub struct MockChain {
-    pub tip: Option<BlockId>,
+    pub tip: Option<BlockRef>,
     pub serviceable: Option<ServiceableRange>,
     pub mempool: Vec<MempoolTx>,
 }
@@ -94,9 +97,9 @@ impl TakeSnapshot for MockIndexerService {
 }
 
 impl TipSubscribe for MockIndexerService {
-    fn subscribe_tip(&self) -> BoxStream<'_, zaino_core::TipEvent> {
+    fn subscribe_tip(&self) -> BoxStream<'_, crate::TipEvent> {
         let tip = self.current().tip;
-        stream::iter(tip.map(|tip| zaino_core::TipEvent { tip })).boxed()
+        stream::iter(tip.map(|tip| crate::TipEvent { tip })).boxed()
     }
 }
 
@@ -161,15 +164,18 @@ impl IndexerService for MockIndexerService {}
 // --- reads (on the snapshot) ---
 
 impl BlockRead for MockSnapshot {
-    async fn tip(&self) -> Result<BlockId, BlockReadError> {
+    async fn tip(&self) -> Result<BlockRef, BlockReadError> {
         self.chain
             .tip
             .ok_or(BlockReadError::NotServiceable(Capability::Blocks))
     }
-    async fn block(&self, _at: BlockRef) -> Result<Option<Block>, BlockReadError> {
+    async fn block(&self, _at: BlockSelector) -> Result<Option<Block>, BlockReadError> {
         Ok(None)
     }
-    async fn block_header(&self, _at: BlockRef) -> Result<Option<BlockHeader>, BlockReadError> {
+    async fn block_header(
+        &self,
+        _at: BlockSelector,
+    ) -> Result<Option<BlockHeader>, BlockReadError> {
         Ok(None)
     }
     async fn block_height(&self, _hash: BlockHash) -> Result<Option<Height>, BlockReadError> {
@@ -181,7 +187,10 @@ impl BlockRead for MockSnapshot {
 }
 
 impl CompactBlockRead for MockSnapshot {
-    async fn compact_block(&self, _at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
+    async fn compact_block(
+        &self,
+        _at: BlockSelector,
+    ) -> Result<Option<CompactBlock>, BlockReadError> {
         Ok(None)
     }
     fn stream_compact(
@@ -272,7 +281,7 @@ impl ForkReconcile for MockSnapshot {
 impl CompactNullifierRead for MockSnapshot {
     async fn compact_block_nullifiers(
         &self,
-        _at: BlockRef,
+        _at: BlockSelector,
     ) -> Result<Option<CompactBlock>, BlockReadError> {
         Ok(None)
     }
@@ -293,7 +302,7 @@ impl ChainInfoRead for MockSnapshot {
 }
 
 impl ChainSegment for MockSnapshot {
-    fn pinned_tip(&self) -> Option<BlockId> {
+    fn pinned_tip(&self) -> Option<BlockRef> {
         self.chain.tip
     }
 
@@ -323,7 +332,7 @@ impl Snapshot for MockSnapshot {
 mod tests {
     use super::{MockChain, MockIndexerService};
     use crate::{BlockRead, LightServeService, NodeRpcService, TakeSnapshot, WalletLibService};
-    use zaino_core::{BlockHash, BlockId, Height};
+    use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
     /// The one concrete engine satisfies every public profile with zero
     /// profile-specific impl code — proof the read-set + control blanket impls
@@ -334,8 +343,8 @@ mod tests {
         assert_profiles::<MockIndexerService>();
     }
 
-    fn block_id(height: u32, tag: u8) -> BlockId {
-        BlockId {
+    fn block_id(height: u32, tag: u8) -> BlockRef {
+        BlockRef {
             height: Height::try_from(height).expect("valid height"),
             hash: BlockHash::from([tag; 32]),
         }

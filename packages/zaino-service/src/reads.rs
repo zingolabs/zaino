@@ -5,11 +5,11 @@ use std::future::Future;
 
 use futures::stream::BoxStream;
 
-use zaino_core::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, ChainInfo,
-    CompactBlock, ForkPoint, Height, HeightRange, Locator, Outpoint, RawTransaction, ShieldedPool,
-    SpendStatus, SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, TxStatus,
-    Utxo,
+use crate::{ChainInfo, ForkPoint, Locator, SpendStatus, TxStatus};
+use zaino_primitives::types::{
+    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
+    CompactBlock, Height, HeightRange, Outpoint, RawTransaction, ShieldedPool, SubtreeRoot,
+    Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -18,14 +18,14 @@ use crate::error::{
 
 /// Backed by: headers + block-bytes indexes.
 pub trait BlockRead: Send + Sync {
-    fn tip(&self) -> impl Future<Output = Result<BlockId, BlockReadError>> + Send;
+    fn tip(&self) -> impl Future<Output = Result<BlockRef, BlockReadError>> + Send;
     fn block(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> impl Future<Output = Result<Option<Block>, BlockReadError>> + Send;
     fn block_header(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> impl Future<Output = Result<Option<BlockHeader>, BlockReadError>> + Send;
     fn block_height(
         &self,
@@ -39,7 +39,7 @@ pub trait BlockRead: Send + Sync {
 pub trait CompactBlockRead: Send + Sync {
     fn compact_block(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send;
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>>;
 }
@@ -143,7 +143,7 @@ pub trait ForkReconcile: Send + Sync {
 pub trait CompactNullifierRead: Send + Sync {
     fn compact_block_nullifiers(
         &self,
-        at: BlockRef,
+        at: BlockSelector,
     ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send;
 }
 

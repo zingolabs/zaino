@@ -6,10 +6,11 @@ use std::future::Future;
 
 use futures::stream::BoxStream;
 
-use zaino_core::{
-    MempoolTx, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, ReportedUpgrade,
-    ServiceabilityManifest, TipEvent, TransactionId,
+use crate::{
+    MempoolTx, PassthroughAnswer, PassthroughQuery, ReportedUpgrade, ServiceabilityManifest,
+    TipEvent,
 };
+use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 
 use crate::bundle::ChainSegment;
 use crate::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};

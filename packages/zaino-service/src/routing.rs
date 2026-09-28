@@ -36,7 +36,7 @@
 //! do. The manifest and the reads consult one declaration, so they cannot
 //! disagree.
 
-use zaino_core::Capability;
+use crate::Capability;
 
 /// Where a capability is answered: from the local chain tiers, from the
 /// validator, or nowhere (withheld by the deployment).

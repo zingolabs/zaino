@@ -13,7 +13,9 @@
 //! battery. It greens exactly when the full read-set is wired; until then it is
 //! the red target a work-in-progress engine fails.
 
-use zaino_core::{BlockRef, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress};
+use zaino_primitives::types::{
+    BlockSelector, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress,
+};
 
 use crate::{LightServeService, LightWalletReads};
 
@@ -43,7 +45,7 @@ macro_rules! assert_serviceable {
 /// yet wired.
 pub async fn assert_light_wallet_reads<Snap: LightWalletReads>(snap: &Snap) {
     let height = Height::GENESIS;
-    let block_ref = BlockRef::Height(height);
+    let block_ref = BlockSelector::Height(height);
     let range = HeightRange {
         start: height,
         end: height,

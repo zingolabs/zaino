@@ -7,7 +7,7 @@
 //! local transform over the compact block the store already produces, not a
 //! separate index.
 
-use zaino_core::{CompactBlock, CompactCiphertext, OrchardAction};
+use zaino_primitives::types::{CompactBlock, CompactCiphertext, OrchardAction};
 
 /// Reduce a compact block to its spend markers: keep the sapling nullifiers and
 /// each shielded action's nullifier; clear all outputs (transparent, sapling)
@@ -39,7 +39,7 @@ fn nullifier_only(action: &OrchardAction) -> OrchardAction {
 #[cfg(test)]
 mod tests {
     use super::strip_to_nullifiers;
-    use zaino_core::{
+    use zaino_primitives::types::{
         ChainMetadata, CompactBlock, CompactCiphertext, CompactDifficulty, OrchardAction,
         PreIndexCompactTx,
     };

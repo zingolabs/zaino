@@ -140,12 +140,13 @@ use std::marker::PhantomData;
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_chainview::ChainView;
-use zaino_core::{
-    Answerable, MempoolTx, PassthroughAnswer, PassthroughQuery, PreIndexCompactTx, ReportedUpgrade,
-    ServiceabilityManifest, TipEvent, TransactionId,
-};
+use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::routing::{PlacementKind, Routing};
+use zaino_service::{
+    Answerable, MempoolTx, PassthroughAnswer, PassthroughQuery, ReportedUpgrade,
+    ServiceabilityManifest, TipEvent,
+};
 use zaino_service::{
     Broadcast, ChainSegment, CompactBlockRead, IndexerService, MempoolContent, MempoolSubscribe,
     Passthrough, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,

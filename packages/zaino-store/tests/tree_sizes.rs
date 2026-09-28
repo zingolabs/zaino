@@ -12,7 +12,6 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_core::{BlockRef, Height};
 use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
 use zaino_indexes::sets::current_zaino::{context_from_block, index_set, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -20,6 +19,7 @@ use zaino_primitives::types::{
     Block, CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
     SaplingData, SaplingOutput, Transaction, TransactionId,
 };
+use zaino_primitives::types::{BlockSelector, Height};
 use zaino_runtime::{IndexerComponent, OrchestraBuilder, ValidatorComponent};
 use zaino_service::{CompactBlockRead, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
@@ -138,7 +138,9 @@ async fn indexer_computes_and_serves_cumulative_tree_sizes() {
         [(0u32, 2u32, 1u32, 0u32), (1, 5, 1, 2), (2, 5, 3, 3)]
     {
         let block = snapshot
-            .compact_block(BlockRef::Height(Height::try_from(height).expect("height")))
+            .compact_block(BlockSelector::Height(
+                Height::try_from(height).expect("height"),
+            ))
             .await
             .expect("compact_block read")
             .expect("a block at this height");
