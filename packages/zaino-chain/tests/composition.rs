@@ -539,32 +539,36 @@ async fn a_pinned_block_the_validator_dropped_is_transient() {
     ));
 }
 
-/// A treestate by height goes straight to the validator, no resolution hop;
-/// its roots are then read by the hash the treestate names.
+/// A treestate by height is fetched by the hash this snapshot pins where a
+/// provider covers the height, and by height only in the hole; its roots are
+/// then read by the hash the treestate names.
 #[tokio::test]
-async fn a_treestate_by_height_is_fetched_by_height() {
+async fn a_treestate_by_height_is_pinned_where_a_provider_covers_it() {
     let chain = chain();
-    let source = FakeSource::over(&chain);
-    let composer = ChainViewComposer::new(
-        FakeStore::covering(&chain, 1000),
-        FakeHead::covering(&chain, 1000, 1200),
-        Arc::new(source.clone()),
-        ChainViewConfig::default(),
-    );
+    for (at, fetched) in [
+        (50, SourceCall::TreestateByHash(hash_of(50))),
+        (500, SourceCall::Treestate(height(500))),
+        (1150, SourceCall::TreestateByHash(hash_of(1150))),
+    ] {
+        let source = FakeSource::over(&chain);
+        let composer = ChainViewComposer::new(
+            FakeStore::covering(&chain, 100),
+            FakeHead::covering(&chain, 1100, 1200),
+            Arc::new(source.clone()),
+            ChainViewConfig::default(),
+        );
 
-    assert!(composer
-        .snapshot()
-        .treestate(BlockId::Height(height(500)))
-        .await
-        .expect("serviceable")
-        .is_some());
-    assert_eq!(
-        source.calls(),
-        vec![
-            SourceCall::Treestate(height(500)),
-            SourceCall::TreeRoots(hash_of(500)),
-        ]
-    );
+        assert!(composer
+            .snapshot()
+            .treestate(BlockId::Height(height(at)))
+            .await
+            .expect("serviceable")
+            .is_some());
+        assert_eq!(
+            source.calls(),
+            vec![fetched, SourceCall::TreeRoots(hash_of(at))]
+        );
+    }
 }
 
 /// An invalid address or subtree request is rejected, never answered empty.

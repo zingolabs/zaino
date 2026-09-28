@@ -907,6 +907,17 @@ where
     HeadSnapshot: ChainHeadSnapshot,
     Source: ChainViewSource,
 {
+    /// The hash this snapshot holds at `height`, or `None` where no local
+    /// provider covers it.
+    async fn pinned_hash(&self, provider: Provider, height: Height) -> Result<Option<BlockHash>> {
+        let hash = match provider {
+            Provider::Source => return Ok(None),
+            Provider::Store => self.reader.block_hash(height).await.map_err(store_err)?,
+            Provider::Head => self.head_block(height).map(ChainHeadBlock::hash),
+        };
+        hash.map(Some).ok_or_else(|| unpinned(height))
+    }
+
     /// Consensus bytes for a run of heights, pinned to this snapshot.
     ///
     /// No provider retains consensus bytes, so the validator serves them all.
@@ -920,30 +931,17 @@ where
     ) -> Result<Vec<Vec<u8>>> {
         self.fetch
             .require("raw blocks need the validator, which is disabled")?;
-        let hashes = match provider {
-            Provider::Source => return self.fetch.fill_raw_blocks(heights).await,
-            Provider::Store => {
-                let mut hashes = Vec::with_capacity(heights.len());
-                for height in heights {
-                    hashes.push(
-                        self.reader
-                            .block_hash(height)
-                            .await
-                            .map_err(store_err)?
-                            .ok_or_else(|| unpinned(height))?,
-                    );
-                }
-                hashes
-            }
-            Provider::Head => heights
-                .into_iter()
-                .map(|height| {
-                    self.head_block(height)
-                        .map(ChainHeadBlock::hash)
-                        .ok_or_else(|| unpinned(height))
-                })
-                .collect::<Result<Vec<_>>>()?,
-        };
+        if provider == Provider::Source {
+            return self.fetch.fill_raw_blocks(heights).await;
+        }
+        let mut hashes = Vec::with_capacity(heights.len());
+        for height in heights {
+            hashes.push(
+                self.pinned_hash(provider, height)
+                    .await?
+                    .ok_or_else(|| unpinned(height))?,
+            );
+        }
 
         let expected = hashes.len();
         let blocks = self.fetch.fill_raw_blocks_by_hash(hashes).await?;
@@ -1191,31 +1189,38 @@ where
     async fn treestate(&self, at: BlockId) -> Result<Option<Treestate>> {
         // A treestate carries the *serialized* commitment tree; both providers
         // keep only a root and a size per pool, and a root is not a tree. So
-        // this is the validator's answer, asked the way the caller asked it —
-        // `z_gettreestate` takes either. The tree port leaves each pool's root
-        // unset, so the roots are read by the treestate's own hash and joined in.
+        // this is the validator's answer: by the hash this snapshot pins where
+        // a provider covers the height, by height only in a hole. The tree port
+        // leaves each pool's root unset, so the roots are read by the
+        // treestate's own hash and joined in.
         self.fetch
             .require("treestates need the validator, which is disabled")?;
+        let source = self.fetch.source();
         let treestate = match at {
-            BlockId::Height(height) => fetch::miss(self.fetch.source().get_treestate(height).await),
-            BlockId::Hash(hash) => {
-                fetch::miss(self.fetch.source().get_treestate_by_hash(hash).await)
+            BlockId::Hash(hash) => fetch::miss(source.get_treestate_by_hash(hash).await),
+            BlockId::Height(height) => {
+                let Some(provider) = self
+                    .coverage
+                    .provider_at(height)
+                    .map_err(|()| uncoverable())?
+                else {
+                    return Ok(None);
+                };
+                match self.pinned_hash(provider, height).await? {
+                    Some(hash) => fetch::miss(source.get_treestate_by_hash(hash).await),
+                    None => fetch::miss(source.get_treestate(height).await),
+                }
             }
         }?;
         let Some(mut treestate) = treestate else {
             return Ok(None);
         };
-        let roots = fetch::miss(
-            self.fetch
-                .source()
-                .get_commitment_tree_roots(treestate.block_hash)
-                .await,
-        )?
-        .ok_or_else(|| {
-            ChainViewError::Transient(String::from(
-                "the validator no longer holds the block its treestate named",
-            ))
-        })?;
+        let roots = fetch::miss(source.get_commitment_tree_roots(treestate.block_hash).await)?
+            .ok_or_else(|| {
+                ChainViewError::Transient(String::from(
+                    "the validator no longer holds the block its treestate named",
+                ))
+            })?;
         treestate.sapling = with_root(treestate.sapling, roots.sapling);
         treestate.orchard = with_root(treestate.orchard, roots.orchard);
         treestate.ironwood = with_root(treestate.ironwood, roots.ironwood);

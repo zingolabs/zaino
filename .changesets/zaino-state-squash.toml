@@ -111,3 +111,13 @@ range the validator cannot serve, a pool not yet active — is now the new \
 `ChainViewError::Rejected` rather than a zero balance or an empty list. An \
 address never paid is still an ordinary empty answer.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+A treestate asked for by height is pinned to the snapshot: where the store or \
+chain head covers the height it is fetched by the hash the snapshot holds \
+there, so a reorg since the snapshot was taken cannot substitute another \
+block's trees. Only heights in a hole are still fetched by height.
+"""
