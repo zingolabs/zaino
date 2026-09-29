@@ -9,6 +9,14 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.6.0] - 2026-09-11
+
+### Added
+### Changed
 - The vendored `lightwallet-protocol` subtree is pulled to upstream **v0.5.0**
   (`ac7cee05`) — it had been stuck at v0.4.0 with later releases hand-copied in.
   The subtree is also re-recorded at its real prefix

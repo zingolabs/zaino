@@ -3,6 +3,9 @@ name = "zaino-index-transparent-address"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 description = "Transparent-address index: receives and spends as two immutable sorted-run projections"
 

@@ -14,6 +14,24 @@ and this crate adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.10.0] - 2026-09-11
+
+### Added
+- Metric descriptions for `zaino.db.read_seconds`, the finalised-database
+  read latency labelled by `op` (the wallet-sync path is
+  `op="compact_chunk"`), and `zaino.db.corrupt_rows_total`. The
+  `prometheus` feature is off by default.
+- A test-only `fast-test-seam` feature, forwarding to zaino-state's, which
+  shrinks the non-finalised depth for the live tests.
+### Changed
+### Deprecated
+### Removed
+- **Breaking** — the `zcashd_support` feature. Zaino no longer supports
+  zcashd as a backing validator.
+- Descriptions for `zaino.mempool.transactions` and
+  `zaino.mempool.tip_changes_total`, which no crate emits.
+### Fixed
+
 ## [0.9.0] - 2026-08-28
 
 ### Added

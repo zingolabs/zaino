@@ -76,6 +76,26 @@ in plaintext; it links no TLS stack. Expose it beyond a trusted network only
 behind a TLS-terminating proxy. The validator connection is plain HTTP JSON-RPC
 to `[source] jsonrpc_address`.
 
+The optional admin listener (`metrics_endpoint`, feature `prometheus`) serves
+`/metrics` and `/livez` without authentication or encryption. It publishes the
+chain tip, sync progress, request volumes and process memory. zainod warns at
+startup when it binds a non-private address; restrict it to loopback, a private
+interface, or the scraper's network. See [`zainod`'s guide](./packages/zainod/usage.md).
+
+## Container image
+
+`Dockerfile`: `rust:<pin>` build → `debian-slim` runtime, non-root `container_user`.
+
+| Build arg        | Values                                    | Default   |
+| ---------------- | ----------------------------------------- | --------- |
+| `CARGO_FEATURES` | comma-separated, e.g. `prometheus` | empty (default set) |
+| `CARGO_PROFILE`  | `release`, `profiling` (+ line tables & frame pointers, for sampling profilers) | `release` |
+
+```sh
+docker build -t zainod --build-arg CARGO_FEATURES=prometheus .
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod  # local profiling build
+```
+
 ## Running tests
 
 ```sh
@@ -125,7 +145,7 @@ prevents.
 - [`zaino-index-tree-state`](./packages/zaino-index-tree-state/usage.md): the retained-node commitment-tree index — why reconstruction needs no hashing, and why subtree roots share its fold.
 - [`zaino-index-transparent-address`](./packages/zaino-index-transparent-address/usage.md): the t-address RPCs as two pure projections, why the fold performs no lookups, and what an empty result means.
 - [`zaino-grpc`](./packages/zaino-grpc/usage.md): the index/validator split, why the router writes bytes rather than messages, and which status code a client must read as "retry".
-- [`zainod`](./packages/zainod/usage.md): `zainod verify` (the read-only page-checksum scrub, its JSON report and exit status), the failure policy, and logging.
+- [`zainod`](./packages/zainod/usage.md): `zainod verify` (the read-only page-checksum scrub, its JSON report and exit status), the failure policy, logging, and the admin listener (`/metrics`, `/livez`).
 
 ## Security disclosure
 

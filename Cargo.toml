@@ -27,6 +27,14 @@ repository = "https://github.com/zingolabs"
 homepage = "https://www.zingolabs.org/"
 edition = "2021"
 license = "Apache-2.0"
+# Publish metadata shared by every published crate, inherited via
+# `readme.workspace = true` etc. crates.io requires `description` + `license`;
+# `readme`/`keywords`/`categories` round out what `clippy::cargo_common_metadata`
+# checks (see the `clippy` task in tools/makefiles/lints.toml). `readme` is
+# resolved from the workspace root.
+readme = "README.md"
+keywords = ["zcash", "blockchain", "indexer", "lightwallet"]
+categories = ["cryptography::cryptocurrencies"]
 
 
 [workspace.dependencies]
@@ -62,6 +70,9 @@ time = { version = "0.3", features = ["macros", "formatting"] }
 unicode-ellipsis = "0.6"
 # Plain HTTP only (validator JSON-RPC)
 reqwest = { version = "0.13", default-features = false }
+# Admin listener (/metrics, /livez)
+hyper = "1.10"
+hyper-util = "0.1"
 tonic = { version = "0.14" }
 prost = "0.14"
 # Route dispatch and raw response bodies for the gRPC router.
@@ -74,6 +85,7 @@ futures = "0.3.30"
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+metrics-process = "2.4"
 
 # Utility
 bytes = "1.12"
@@ -91,15 +103,15 @@ dirs = "6"
 # Test
 tempfile = "3.2"
 # Domain vocabulary (heights, hashes, blocks, transactions)
-zaino-primitives = { path = "packages/zaino-primitives", version = "0.2.0" }
+zaino-primitives = { path = "packages/zaino-primitives", version = "0.2.1" }
 zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
 # Driven port traits for validator access: one trait per question a consumer can
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
-zaino-source = { path = "packages/zaino-source", version = "0.2.0" }
+zaino-source = { path = "packages/zaino-source", version = "0.2.1" }
 # ChainHead: the in-memory non-final window of the best chain (reorg replay without refetch)
-zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.5.0" }
+zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.1" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.6.0" }
 # CompactBlockIndex's storage engine: gRPC-framed records in append-only files,
 # served as contiguous mmap spans.
 zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.1.0" }
@@ -141,3 +153,10 @@ zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev
 zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
 zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
 equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
+
+# Release codegen a profiler can attribute to source lines (`release` stays lean)
+# - Frame pointers = other half, no Cargo key for them: pass
+#   `-C force-frame-pointers=yes` via RUSTFLAGS alongside `--profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"

@@ -32,6 +32,11 @@ The ZingoLabs [Matrix channel](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.or
 - Every PR that changes a released crate carries a changeset; see
   [changeset format](./docs/release/changeset-format.md).
 - All CI checks must pass. Review happens in public on the PR.
+- A PR from a fork does not dispatch the `zcash/integration-tests` suite,
+  because GitHub withholds repository secrets from fork PRs. Its
+  `Trigger integration tests` check is skipped, and a skipped check does not
+  mean the suite passed. The suite first runs when the change merges to `dev`,
+  unless a maintainer pushes the branch to `zingolabs/zaino` first.
 - A PR is written by one developer, reviewed in detail by a second, and merged
   by a third. Experienced maintainers may waive this case by case.
 - Signed (verified) commits are encouraged; see GitHub's

@@ -9,6 +9,8 @@ use crate::error::IndexerError;
 use crate::indexer::start_indexer;
 use tracing::{error, info, Instrument as _};
 
+#[cfg(feature = "prometheus")]
+mod admin;
 mod chainview;
 pub mod cli;
 pub mod config;
@@ -39,6 +41,14 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     #[cfg(feature = "prometheus")]
     if let Some(endpoint) = config.metrics_endpoint {
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
+    }
+    #[cfg(not(feature = "prometheus"))]
+    if config.metrics_endpoint.is_some() {
+        tracing::warn!(
+            "`metrics_endpoint` is configured but this binary was built without the \
+             `prometheus` feature, so no /metrics listener will start. Rebuild with \
+             `--features prometheus` to enable it."
+        );
     }
 
     let running = start_indexer(config).await.inspect_err(|error| {

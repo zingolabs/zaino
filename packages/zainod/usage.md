@@ -1,7 +1,25 @@
 # `zainod` — usage
 
-The daemon binary: its offline disk check, failure policy and logging.
+The daemon binary: its offline disk check, failure policy, logging and admin listener.
 Configuration and running the daemon are in [`docs/running.md`](../../docs/running.md).
+
+## The admin listener
+
+With the `prometheus` feature and `metrics_endpoint` set, zainod serves an admin listener on
+its own thread and current-thread runtime. A probe answered from a saturated serving runtime
+would measure that runtime's queue, and a timed-out liveness probe gets the pod killed.
+
+| Path       | Answers                                | Fails when                     |
+| ---------- | -------------------------------------- | ------------------------------ |
+| `/metrics` | Prometheus exposition, process metrics | render panic (`500`)           |
+| `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)   |
+
+- A supervised task on the serving runtime republishes the heartbeat every 100ms.
+- The listener binds before the recorder installs, so a bind failure fails startup.
+- At most 32 admin connections are served at once; the rest wait in the accept backlog.
+- A non-private `metrics_endpoint` logs a warning at startup, because `/metrics` is
+  unauthenticated.
+- The build gauge keeps its released name, `zainod_build_info`, with the version as a label.
 
 ## `zainod verify`
 

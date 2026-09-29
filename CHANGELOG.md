@@ -426,6 +426,19 @@ and this library adheres to Rust's notion of
 - An index that is still building now answers `FailedPrecondition`, not
   `Unimplemented`. `Unimplemented` tells a client the method will never work, so
   it retires it permanently rather than retrying once the index catches up.
+- `z_gettreestate` wrote the Orchard and Ironwood `finalRoot` byte-reversed. The
+  reversal that turns a Sapling root into display order is Sapling's alone — a
+  Pallas root's `to_repr` is already display order — so both pools named a root
+  no chain ever had.
+- `getrawtransaction` in verbose mode omitted `time` and `blocktime`. Both come
+  from the containing block's header, which the index already holds.
+- The read-state backend's `getblockchaininfo` reported only `sprout`, `sapling`
+  and `orchard`, leaving `transparent`, `lockbox` and `ironwood` reading as
+  empty pools — so the Ironwood pool appeared to hold nothing across NU6.3
+  activation. It also reported `chainSupply` as the transparent balance rather
+  than the total over every pool.
+- `chainSupply` was rendered as zero on every backend: the wire conversion
+  recognised the unnamed total but discarded its value.
 - `GetBlock` and `GetBlockNullifiers` served every pool unconditionally, while
   `GetBlockRange`/`GetBlockRangeNullifiers` honoured the request's `poolTypes`
   and default to the legacy shielded-only set. The same height therefore came
