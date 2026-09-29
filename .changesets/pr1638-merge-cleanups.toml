@@ -1,0 +1,4 @@
+[[changes]]
+crate = "zainod"
+kind = "internal"
+description = "Both metrics_endpoint warnings come from one config method, called before the admin listener binds, and the metrics exporter no longer builds its unused HTTP listener."

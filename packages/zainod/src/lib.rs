@@ -37,18 +37,11 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
 async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     info!(version = env!("CARGO_PKG_VERSION"), "Starting");
     let config = load_config(&config_path)?;
+    config.warn_about_metrics_endpoint();
 
     #[cfg(feature = "prometheus")]
     if let Some(endpoint) = config.metrics_endpoint {
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
-    }
-    #[cfg(not(feature = "prometheus"))]
-    if config.metrics_endpoint.is_some() {
-        tracing::warn!(
-            "`metrics_endpoint` is configured but this binary was built without the \
-             `prometheus` feature, so no /metrics listener will start. Rebuild with \
-             `--features prometheus` to enable it."
-        );
     }
 
     let running = start_indexer(config).await.inspect_err(|error| {
