@@ -1,0 +1,13 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f8a7-78f3-835e-574efc6c0754"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-address"
+kind = "internal"
+description = "The packaged lockfile picks up the workspace's minor and patch dependency updates."
+
+[[changes]]
+crate = "zaino-common"
+kind = "internal"
+description = "The packaged lockfile picks up the workspace's minor and patch dependency updates."

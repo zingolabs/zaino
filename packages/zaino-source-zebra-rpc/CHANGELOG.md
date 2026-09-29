@@ -13,6 +13,20 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.2] - 2026-09-26
+### Changed
+- dependency `zaino-convert-zebra` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-rpc` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Fixed
+- A signed zatoshi value outside `-supply ..= supply` in a validator reply fails as a typed parse error.
+- Confirmation counts from the validator are parsed into the exact confirmation states and rejected when invalid.
+- Transparent addresses from the validator are validated, with a typed error for an invalid one.
+- The unnamed `chainSupply` total in a `getblockchaininfo` reply keeps its value.
+- The chainwork fields of getblockheader, getblock, and getblockchaininfo are no longer parsed and read as None; Zebra omits or zeroes them, and a reply without the key no longer fails.
+### Internal
+- Adapter call helpers take `&'static str` method names, following `zaino-rpc`.
+
 ## [0.2.1] - 2026-09-11
 
 ### Added
