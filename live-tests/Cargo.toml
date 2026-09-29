@@ -3,6 +3,7 @@ members = [
     "zaino-testutils",
     "clientless",
     "e2e",
+    "non-finalized-state",
 ]
 resolver = "2"
 
@@ -16,17 +17,9 @@ version = "0.2.0"
 
 [workspace.dependencies]
 zaino-testutils = { path = "zaino-testutils" }
-ztest = "0.1"
+# TODO: back to a crates.io version once ztest releases the rewritten zainod backend (the same
+# unreleased ztest `sync/` builds against; git rev once pushed)
+ztest = { path = "../../ztest" }
 tokio = { version = "1.38", features = ["full"] }
 anyhow = "1.0"
 serde_json = { version = "1.0", features = ["preserve_order"] }
-rstest = "0.23"
-
-# `legacy_parser` (the independent second parser the transaction vectors compare
-# against) and the vectors it parses. Path deps into packages/ are limited to
-# `zaino-proto`, whose generated compact-format types the parser renders into.
-zaino-proto = { path = "../packages/zaino-proto", default-features = false }
-zebra-chain = "12.0"
-prost = "0.14"
-thiserror = "2.0"
-wire_serialized_transaction_test_data = "1.0.0"

@@ -15,25 +15,9 @@ publish = false
 # launcher and Zaino's in-process service subscribers).
 ztest = { workspace = true }
 
-# `anyhow::Result` on the parity helpers; JSON-RPC response comparison in the
-# `json` / `rpc` parity helpers.
 anyhow = { workspace = true }
-serde_json = { workspace = true }
-
-# `legacy_parser` only. It is the independent second parser the transaction
-# vectors compare against, so it renders into the same compact-format types the
-# server serves. `default-features = false` keeps the `heavy` feature — and with
-# it zebra-state and rocksdb — out of the live-test dependency graph.
-zaino-proto = { workspace = true, default-features = false }
-zebra-chain = { workspace = true }
-prost = { workspace = true }
-thiserror = { workspace = true }
 
 # The hex codec behind the `hex` module.
 hex = "0.4"
 # Polling clock behind the `finalised` gate.
 tokio = { workspace = true }
-
-[dev-dependencies]
-# Drives `legacy_parser::transaction`'s own round-trip tests.
-wire_serialized_transaction_test_data = { workspace = true }

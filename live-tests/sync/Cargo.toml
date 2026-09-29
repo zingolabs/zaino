@@ -1,0 +1,29 @@
+# Standalone workspace, not a member of the root one or of `live-tests`
+#
+# - Links no Zaino production code: drives zainod out-of-process (a pod) over gRPC + JSON-RPC
+# - Its tree (ztest's wallet backends: librustzcash + zingolib) stays out of every production lock
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "sync"
+description = "Chain-sync profiles with Zaino as the system under test: zainod builds its index to the mainnet tip, then a zingolib wallet syncs through it. Each is a `#[ztest::sync_test]` launched via `ztest sync start`."
+version = "0.3.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+# Each profile carries its own probes and oracles (live-tests/CLAUDE.md: no shared assertions)
+[dev-dependencies]
+# TODO: crates.io once ztest ships phases, pod exec/kill and the zingolib backend (path-only:
+# pepper-sync + zingolib are unpublished at the versions it needs → `../zingolib` beside ztest)
+ztest = { path = "../../../ztest", features = ["zingolib"] }
+tokio = { version = "1.38", features = ["full"] }
+serde_json = "1.0"
+# Same major as ztest's: downcasting `RpcError`'s boxed source needs the one `tonic::Status` type
+tonic = "0.14"
+
+# pepper-sync's proto crate: ironwood fields exist only at this rev (needs protoc at build time)
+[patch.crates-io]
+lightwallet-protocol = { git = "https://github.com/zingolabs/lightwallet-protocol-rust", rev = "9bdfdc77eb283f2a3d26c27100cc2ac90148cd93" }
