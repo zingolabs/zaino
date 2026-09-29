@@ -51,6 +51,7 @@ mod send_raw_transaction;
 mod subscribe_blocks;
 mod subscribe_chain_tip;
 
+pub mod quorum;
 pub mod validator_client;
 
 pub use error::{FailureMode, NonDomainError, QueryError, SourceError, UnavailableError};
@@ -94,6 +95,7 @@ pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHa
 pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
 pub use lifecycle::SourceLifecycle;
 pub use polled_chain_tip::PolledChainTip;
+pub use quorum::{Quorum, QuorumBuildError, QuorumConfig, QuorumConfigError};
 pub use send_raw_transaction::{
     OneShotSendRawTransaction, SendRawTransaction, SendRawTransactionError,
 };

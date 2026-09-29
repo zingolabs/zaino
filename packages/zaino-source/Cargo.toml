@@ -13,12 +13,16 @@ zaino-primitives = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 zaino-source-macros.workspace = true
+futures.workspace = true
+tracing.workspace = true
+serde = { workspace = true, features = ["derive"] }
 
 [features]
 testing = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+toml.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

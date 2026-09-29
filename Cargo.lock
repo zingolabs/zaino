@@ -6296,8 +6296,12 @@ dependencies = [
 name = "zaino-source"
 version = "0.2.0"
 dependencies = [
+ "futures",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
+ "tracing",
  "zaino-primitives",
  "zaino-source-macros",
 ]
