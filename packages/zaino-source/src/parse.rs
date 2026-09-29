@@ -1,0 +1,426 @@
+//! JSON-RPC `result` → zaino-primitives types, one parser per method
+//!
+//! - Strict where Zaino acts on a value (an unknown upgrade status fails the parse: a short
+//!   schedule would put Zaino on other consensus rules than its validator)
+//! - Absent / `null` optional field = `None`; present but malformed = error ("inactive" and
+//!   "garbled" are different facts)
+
+use zaino_primitives::types::{
+    BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, NetworkUpgradeInfo,
+    NetworkUpgradeStatus, PeerInfo, TransactionId, TransactionLocation, Zatoshis,
+};
+
+use zcash_protocol::consensus::BranchId;
+
+use crate::{MempoolListed, TransactionResponse};
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ParseError {
+    #[error("hex decode: {0}")]
+    Hex(String),
+    #[error("expected {expected}, got {got}")]
+    UnexpectedType { expected: &'static str, got: String },
+    #[error("expected {expected} bytes, got {got}")]
+    WrongLength { expected: usize, got: usize },
+    #[error("value {0} overflows target type")]
+    Overflow(u64),
+    #[error("invalid height: {0}")]
+    Height(String),
+    #[error("missing field `{0}`")]
+    MissingField(&'static str),
+    #[error("unknown network upgrade status `{0}`")]
+    UpgradeStatus(String),
+    #[error("upgrade schedule has no Sapling entry")]
+    NoSapling,
+    #[error("mempool listing too large: {len} entries > {max}")]
+    ListingTooLarge { len: usize, max: usize },
+    #[error("ZEC amount {0} outside the money supply")]
+    Zec(f64),
+}
+
+impl ParseError {
+    fn unexpected(expected: &'static str, value: &serde_json::Value) -> Self {
+        let got = format!("{value}").chars().take(64).collect();
+        Self::UnexpectedType { expected, got }
+    }
+}
+
+/// Required field (the error names it, not the whole object)
+fn field<'a>(
+    value: &'a serde_json::Value,
+    name: &'static str,
+) -> Result<&'a serde_json::Value, ParseError> {
+    value.get(name).ok_or(ParseError::MissingField(name))
+}
+
+/// Omitted and `null` alike = absent
+fn opt_field<'a>(
+    value: &'a serde_json::Value,
+    name: &'static str,
+) -> Option<&'a serde_json::Value> {
+    value.get(name).filter(|v| !v.is_null())
+}
+
+fn as_str(value: &serde_json::Value) -> Result<&str, ParseError> {
+    value.as_str().ok_or_else(|| ParseError::unexpected("string", value))
+}
+
+fn as_u64(value: &serde_json::Value) -> Result<u64, ParseError> {
+    value.as_u64().ok_or_else(|| ParseError::unexpected("u64", value))
+}
+
+fn as_i64(value: &serde_json::Value) -> Result<i64, ParseError> {
+    value.as_i64().ok_or_else(|| ParseError::unexpected("i64", value))
+}
+
+fn as_bool(value: &serde_json::Value) -> Result<bool, ParseError> {
+    value.as_bool().ok_or_else(|| ParseError::unexpected("bool", value))
+}
+
+fn as_array(value: &serde_json::Value) -> Result<&Vec<serde_json::Value>, ParseError> {
+    value.as_array().ok_or_else(|| ParseError::unexpected("array", value))
+}
+
+fn as_height(value: &serde_json::Value) -> Result<Height, ParseError> {
+    let n = as_u64(value)?;
+    let h = u32::try_from(n).map_err(|_| ParseError::Overflow(n))?;
+    Height::try_from(h).map_err(|e| ParseError::Height(e.to_string()))
+}
+
+fn hex(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
+    hex_str(as_str(value)?)
+}
+
+fn hex_str(hex: &str) -> Result<Vec<u8>, ParseError> {
+    const_hex::decode(hex).map_err(|e| ParseError::Hex(e.to_string()))
+}
+
+/// 32 bytes written byte-reversed (RPC display order: block hashes, txids)
+fn reversed(hex: &str) -> Result<[u8; 32], ParseError> {
+    let mut le: [u8; 32] = hex_str(hex)?
+        .try_into()
+        .map_err(|b: Vec<u8>| ParseError::WrongLength { expected: 32, got: b.len() })?;
+    le.reverse();
+    Ok(le)
+}
+
+pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TransactionId, ParseError> {
+    reversed(as_str(value)?).map(TransactionId::from)
+}
+
+fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
+    reversed(as_str(value)?).map(BlockHash::from)
+}
+
+/// Hex-string `result` decoded straight off the body (borrowed `&str`, one const-hex pass)
+pub(crate) struct HexBytes(pub(crate) Vec<u8>);
+
+impl<'de> serde::Deserialize<'de> for HexBytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = HexBytes;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a hex string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, hex: &str) -> Result<HexBytes, E> {
+                const_hex::decode(hex).map(HexBytes).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(Visitor)
+    }
+}
+
+/// `getbestblockheightandhash`
+///
+/// - `hash` = JSON array of 32 bytes, internal order (zebra derives `Serialize` on
+///   `block::Hash([u8; 32])`), not the display hex every other method sends
+pub(crate) fn parse_best_tip(value: &serde_json::Value) -> Result<(BlockHash, Height), ParseError> {
+    Ok((byte_array_hash(field(value, "hash")?)?, as_height(field(value, "height")?)?))
+}
+
+fn byte_array_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
+    let bytes = as_array(value)?;
+    let mut hash = [0u8; 32];
+    if bytes.len() != hash.len() {
+        return Err(ParseError::WrongLength { expected: hash.len(), got: bytes.len() });
+    }
+    for (slot, byte) in hash.iter_mut().zip(bytes) {
+        let n = as_u64(byte)?;
+        *slot = u8::try_from(n).map_err(|_| ParseError::Overflow(n))?;
+    }
+    Ok(BlockHash::from(hash))
+}
+
+/// `getblockchaininfo`: the tip + the upgrade schedule (a consensus input: strict); every other
+/// field ignored (never read, so never a reason to fail)
+pub(crate) fn parse_blockchain_info(
+    value: &serde_json::Value,
+) -> Result<BlockchainInfo, ParseError> {
+    let consensus = field(value, "consensus")?;
+    let upgrades = parse_upgrades(field(value, "upgrades")?)?;
+    let sapling = ConsensusBranchId::new(u32::from(BranchId::Sapling));
+    let sapling_activation = upgrades
+        .iter()
+        .find(|upgrade| upgrade.branch_id == sapling)
+        .ok_or(ParseError::NoSapling)?
+        .activation_height;
+    Ok(BlockchainInfo {
+        blocks: as_height(field(value, "blocks")?)?,
+        estimated_height: as_height(field(value, "estimatedheight")?)?,
+        best_block_hash: as_block_hash(field(value, "bestblockhash")?)?,
+        sapling_activation,
+        upgrades,
+        consensus: ConsensusBranchIds {
+            chain_tip: parse_branch_id(as_str(field(consensus, "chaintip")?)?)?,
+            next_block: parse_branch_id(as_str(field(consensus, "nextblock")?)?)?,
+        },
+    })
+}
+
+fn parse_branch_id(s: &str) -> Result<ConsensusBranchId, ParseError> {
+    u32::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)
+        .map(ConsensusBranchId::new)
+        .map_err(|e| ParseError::Hex(format!("consensus branch id `{s}`: {e}")))
+}
+
+/// Keyed by consensus branch id (the upgrade's identity; the name is a label)
+fn parse_upgrades(value: &serde_json::Value) -> Result<Vec<NetworkUpgradeInfo>, ParseError> {
+    let map = value.as_object().ok_or_else(|| ParseError::unexpected("object", value))?;
+
+    map.iter()
+        .map(|(branch_id, info)| {
+            Ok(NetworkUpgradeInfo {
+                branch_id: parse_branch_id(branch_id)?,
+                name: as_str(field(info, "name")?)?.to_owned(),
+                activation_height: as_height(field(info, "activationheight")?)?,
+                status: match as_str(field(info, "status")?)? {
+                    "active" => NetworkUpgradeStatus::Active,
+                    "pending" => NetworkUpgradeStatus::Pending,
+                    other => return Err(ParseError::UpgradeStatus(other.to_owned())),
+                },
+            })
+        })
+        .collect()
+}
+
+/// Entries accepted from one `getrawmempool` (a ZIP-401 node holds ~8k; this only trips on a
+/// hostile node, before a million raw-transaction fetches follow)
+const MAX_MEMPOOL_LISTING_ENTRIES: usize = 1_000_000;
+
+/// `getrawmempool true` (`{txid: {fee, ..}}`), refused on its count before any entry is decoded
+pub(crate) fn parse_mempool_listing(
+    value: &serde_json::Value,
+) -> Result<Vec<MempoolListed>, ParseError> {
+    let entries = value.as_object().ok_or_else(|| ParseError::unexpected("object", value))?;
+    if entries.len() > MAX_MEMPOOL_LISTING_ENTRIES {
+        return Err(ParseError::ListingTooLarge {
+            len: entries.len(),
+            max: MAX_MEMPOOL_LISTING_ENTRIES,
+        });
+    }
+    entries
+        .iter()
+        .map(|(txid, entry)| {
+            Ok(MempoolListed {
+                txid: TransactionId::from(reversed(txid)?),
+                fee: as_zec(field(entry, "fee")?)?,
+            })
+        })
+        .collect()
+}
+
+/// Decimal ZEC (zebra's `f64`) → zatoshis
+///
+/// - Exact: every in-supply count < 2^53, so `zats / 1e8` then `× 1e8` lands within 0.25 zat
+fn as_zec(value: &serde_json::Value) -> Result<Zatoshis, ParseError> {
+    let zec = value.as_f64().ok_or_else(|| ParseError::unexpected("number", value))?;
+    let zats = (zec * 100_000_000.0).round();
+    if !(0.0..=Zatoshis::MAX.as_u64() as f64).contains(&zats) {
+        return Err(ParseError::Zec(zec));
+    }
+    Zatoshis::new(zats as u64).map_err(|_| ParseError::Zec(zec))
+}
+
+/// `getrawtransaction <txid> 0`: a bare hex string
+pub(crate) fn parse_raw_transaction(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
+    hex(value)
+}
+
+/// `getrawtransaction <txid> 1`: `height` absent = mempool, `-1` = side chain, `>= 0` = best
+/// chain; any other negative refused (undefined, never folded into side chain)
+pub(crate) fn parse_transaction(
+    value: &serde_json::Value,
+) -> Result<TransactionResponse, ParseError> {
+    let location = match opt_field(value, "height").map(as_i64).transpose()? {
+        None => TransactionLocation::Mempool,
+        Some(-1) => TransactionLocation::NonBestChain,
+        Some(_) => TransactionLocation::BestChain(as_height(field(value, "height")?)?),
+    };
+    Ok(TransactionResponse { bytes: hex(field(value, "hex")?)?, location })
+}
+
+/// `getpeerinfo`
+pub(crate) fn parse_peer_info(value: &serde_json::Value) -> Result<Vec<PeerInfo>, ParseError> {
+    as_array(value)?
+        .iter()
+        .map(|peer| {
+            Ok(PeerInfo {
+                addr: as_str(field(peer, "addr")?)?.to_owned(),
+                inbound: as_bool(field(peer, "inbound")?)?,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Reads differently forwards and backwards (a mirrored decode cannot pass by coincidence)
+    const ASYMMETRIC_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01";
+
+    /// Hashes reverse on the wire (zebra's `FromHex`); the tip reads both halves and names a
+    /// missing field
+    #[test]
+    fn hashes_reverse_and_the_tip_carries_them() {
+        let mut reversed_bytes = [0u8; 32];
+        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
+        reversed_bytes.reverse();
+
+        let internal: Vec<u8> = (0u8..32).collect();
+        let hash = BlockHash::from(<[u8; 32]>::try_from(internal.as_slice()).expect("32"));
+        let height = Height::try_from(3_100_000).expect("h");
+        let tip = parse_best_tip(&json!({ "height": 3_100_000, "hash": internal })).expect("tip");
+        assert_eq!(tip, (hash, height), "zebra tip hash = internal-order byte array, as is");
+
+        use ParseError::{MissingField, UnexpectedType, WrongLength};
+        let hex = parse_best_tip(&json!({ "height": 1, "hash": ASYMMETRIC_HEX }));
+        assert!(matches!(hex, Err(UnexpectedType { expected: "array", .. })));
+        let short = parse_best_tip(&json!({ "height": 1, "hash": vec![0u8; 31] }));
+        assert!(matches!(short, Err(WrongLength { expected: 32, got: 31 })));
+        let no_height = parse_best_tip(&json!({ "hash": internal }));
+        assert!(matches!(no_height, Err(MissingField("height"))));
+    }
+
+    /// Zebra's verbose listing (`fee` = lossy `f64` ZEC): each key reversed into a txid, each fee
+    /// back to its exact zatoshis (ZIP-317 minimum, sub-zat float noise, the whole supply); a
+    /// negative or past-supply fee, a missing one and an over-cap listing refused
+    #[test]
+    fn mempool_listing_reads_each_txid_and_its_exact_fee() {
+        let mut reversed_bytes = [0u8; 32];
+        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
+        reversed_bytes.reverse();
+        let listed = |fee: serde_json::Value| {
+            parse_mempool_listing(&json!({ ASYMMETRIC_HEX: { "size": 250, "fee": fee } }))
+        };
+
+        for (fee, zats) in [
+            (json!(0.0001), 10_000),
+            (json!(0.00015), 15_000),
+            (json!(1e-8), 1),
+            (json!(0.1 + 0.2), 30_000_000),
+            (json!(21_000_000.0), 2_100_000_000_000_000),
+            (json!(0), 0),
+        ] {
+            let txid = TransactionId::from(reversed_bytes);
+            let expected = MempoolListed { txid, fee: Zatoshis::new(zats).expect("in supply") };
+            assert_eq!(listed(fee.clone()).expect("listing"), vec![expected], "fee {fee}");
+        }
+        for fee in [json!(-0.0001), json!(21_000_000.00000001 + 1.0), json!("0.0001")] {
+            assert!(listed(fee.clone()).is_err(), "fee {fee}");
+        }
+        let no_fee = parse_mempool_listing(&json!({ ASYMMETRIC_HEX: { "size": 250 } }));
+        assert!(matches!(no_fee, Err(ParseError::MissingField("fee"))));
+
+        let oversized: serde_json::Map<String, serde_json::Value> = (0
+            ..=MAX_MEMPOOL_LISTING_ENTRIES)
+            .map(|n| (format!("{n:064x}"), json!({ "fee": 0.0001 })))
+            .collect();
+        let oversized = parse_mempool_listing(&serde_json::Value::Object(oversized));
+        assert!(matches!(oversized, Err(ParseError::ListingTooLarge { .. })));
+    }
+
+    /// The fields read reach the domain (hash reversed, schedule keyed by branch id, Sapling's
+    /// activation lifted out); fields never read (lossy pool floats: the old mainnet-boot crash)
+    /// cannot fail the parse; an unknown status, a missing name or no Sapling entry fails it
+    #[test]
+    fn blockchain_info_reads_the_tip_and_schedule_and_ignores_the_rest() {
+        let info = json!({
+            "chain": "main",
+            "blocks": 3_451_543,
+            "estimatedheight": 3_451_544,
+            "bestblockhash": ASYMMETRIC_HEX,
+            "chainSupply": { "chainValue": "not even a number" },
+            "valuePools": [{ "id": "sapling", "chainValue": 529_544.04149098 }],
+            "upgrades": {
+                "76b809bb": { "name": "Sapling", "activationheight": 419_200, "status": "active" },
+                "c2d6d0b4": { "name": "NU5", "activationheight": 1_687_104, "status": "active" },
+            },
+            "consensus": { "chaintip": "c2d6d0b4", "nextblock": "c2d6d0b4" },
+        });
+        let mut reversed_bytes = [0u8; 32];
+        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
+        reversed_bytes.reverse();
+        let height = |h: u32| Height::try_from(h).expect("h");
+        let nu5 = ConsensusBranchId::new(0xc2d6_d0b4);
+
+        let expected = BlockchainInfo {
+            blocks: height(3_451_543),
+            estimated_height: height(3_451_544),
+            best_block_hash: BlockHash::from(reversed_bytes),
+            sapling_activation: height(419_200),
+            upgrades: vec![
+                NetworkUpgradeInfo {
+                    branch_id: ConsensusBranchId::new(0x76b8_09bb),
+                    name: "Sapling".to_owned(),
+                    activation_height: height(419_200),
+                    status: NetworkUpgradeStatus::Active,
+                },
+                NetworkUpgradeInfo {
+                    branch_id: nu5,
+                    name: "NU5".to_owned(),
+                    activation_height: height(1_687_104),
+                    status: NetworkUpgradeStatus::Active,
+                },
+            ],
+            consensus: ConsensusBranchIds { chain_tip: nu5, next_block: nu5 },
+        };
+        assert_eq!(parse_blockchain_info(&info).expect("well-formed"), expected);
+
+        let mut unknown = info.clone();
+        unknown["upgrades"]["c2d6d0b4"]["status"] = json!("disabled");
+        let unknown = parse_blockchain_info(&unknown);
+        assert!(matches!(unknown, Err(ParseError::UpgradeStatus(status)) if status == "disabled"));
+        let mut unnamed = info.clone();
+        unnamed["upgrades"]["c2d6d0b4"].as_object_mut().expect("object").remove("name");
+        assert!(matches!(parse_blockchain_info(&unnamed), Err(ParseError::MissingField("name"))));
+        let mut no_sapling = info;
+        no_sapling["upgrades"].as_object_mut().expect("object").remove("76b809bb");
+        assert!(matches!(parse_blockchain_info(&no_sapling), Err(ParseError::NoSapling)));
+    }
+
+    /// All three placements pinned (a side-chain tx reported as unmined reads as still
+    /// pending); an undefined negative height is refused; verbosity 0 is a bare string
+    #[test]
+    fn transactions_place_themselves_and_raw_bytes_are_a_bare_string() {
+        use TransactionLocation::{BestChain, Mempool, NonBestChain};
+        let location = |value| parse_transaction(&value).map(|tx| tx.location);
+        let mined = location(json!({ "hex": "00", "height": 12345 })).expect("mined");
+        let side = location(json!({ "hex": "00", "height": -1 })).expect("side chain");
+        let mempool = location(json!({ "hex": "00" })).expect("mempool");
+        let height = Height::try_from(12345).expect("h");
+        assert_eq!((mined, side, mempool), (BestChain(height), NonBestChain, Mempool));
+        assert!(location(json!({ "hex": "00", "height": -7 })).is_err());
+
+        let raw = parse_raw_transaction(&json!("deadbeef")).expect("hex");
+        assert_eq!(raw, [0xde, 0xad, 0xbe, 0xef]);
+        let object = parse_raw_transaction(&json!({ "hex": "deadbeef" }));
+        assert!(matches!(object, Err(ParseError::UnexpectedType { .. })));
+    }
+}

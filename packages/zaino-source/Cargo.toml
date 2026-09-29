@@ -1,6 +1,6 @@
 [package]
 name = "zaino-source"
-description = "Driven-port traits for Zcash validator access, backing the Zaino indexer's source adapters."
+description = "Zaino's validator source: one driven-port trait per chain question, answered over the validator's JSON-RPC."
 version = "0.2.0"
 edition.workspace = true
 authors.workspace = true
@@ -10,16 +10,32 @@ license.workspace = true
 
 [dependencies]
 zaino-primitives = { workspace = true }
+metrics = { workspace = true, optional = true }
+orchard = { workspace = true }
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
-zaino-source-macros.workspace = true
+futures = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
+zcash_encoding = "0.4"
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+const-hex = "1.19.3"
 
 [features]
-testing = []
+testing = ["zaino-primitives/testing"]
+# Validator JSON-RPC call metrics
+prometheus = ["dep:metrics"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+proptest.workspace = true
+sha2 = "0.10"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "test-util"] }
+zcash_primitives = { workspace = true, features = ["test-dependencies"] }
+zaino-primitives = { workspace = true, features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"
