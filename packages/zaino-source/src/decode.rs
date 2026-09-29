@@ -231,7 +231,7 @@ fn orchard_shaped(bundle: Option<&OrchardBytes>) -> Result<OrchardData, DecodeEr
                     nullifier: Nullifier::from(action.nullifier().to_bytes()),
                     cmx: NoteCommitment::from(action.cmx().to_bytes()),
                     ephemeral_key: EphemeralKey::from(note.epk_bytes),
-                    enc_ciphertext: CompactCiphertext::prefix_of(&note.enc_ciphertext),
+                    enc_ciphertext: CompactCiphertext::prefix_of(&note.enc_ciphertext.0),
                 })
             })
             .collect::<Result<Vec<_>, DecodeError>>()?,

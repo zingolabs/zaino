@@ -142,17 +142,22 @@ debug = true
 # Lazy point decompression stack (`CompressedTransaction`: block decode w/o curve arithmetic)
 # - orchard = zcash/orchard#562 + perf/merkle-crh-weighted, sapling-crypto = zcash/sapling-crypto#204
 #   + perf/pedersen-windowed, incrementalmerkletree = perf/combine-pairs (batched tree hashing),
-#   librustzcash = elicbarbieri/librustzcash pr/lazy-point-decompression-v2 (on
-#   pr/vector-read-bytes; pinned by rev); drop each once released
+#   librustzcash = elicbarbieri/librustzcash pr/lazy-point-decompression-v3 (on upstream main)
+# - Forks based on librustzcash main's pins; halo2, zip32 = its git pins (ff 0.14 releases pending)
+# - drop each once released
 [patch.crates-io]
-incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "61325f3795048031a6941db591cd6773f774e724" }
-orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "e4f1e2c89e13c8f2fe0e5263a8e2df6a40cb4a4e" }
-sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "95bb788bc302e43703baca9c07f8e5b6296a8e44" }
-zcash_primitives = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
-zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
-zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
-zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
-equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "7f985adaa915668264b68ff6d5de7b8d85bff8bc" }
+halo2_gadgets = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
+halo2_poseidon = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
+halo2_proofs = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
+zip32 = { git = "https://github.com/zcash/zip32.git", rev = "0399cd62dae9b3abe5dc8d5e761b8ef11b57b12a" }
+incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19" }
+orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "8c8e8ae802e93c786ca858c205b1e1012609a2e8" }
+sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "9dd80432983fc183d628f53ab7f9852ddcc9dada" }
+zcash_primitives = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
 
 # Release codegen a profiler can attribute to source lines (`release` stays lean)
 # - Frame pointers = other half, no Cargo key for them: pass
