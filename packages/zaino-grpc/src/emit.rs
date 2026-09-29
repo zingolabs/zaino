@@ -1,6 +1,4 @@
 //! Serve-path metrics, one call site per measurement
-//!
-//! - No-op without `prometheus` (caps, permits, admission enforced either way)
 
 use std::time::Duration;
 
@@ -8,33 +6,19 @@ use tonic::Code;
 
 use crate::admission::Class;
 
-#[cfg(feature = "prometheus")]
 const REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
-#[cfg(feature = "prometheus")]
 const FIRST_MESSAGE_SECONDS: &str = "zaino.grpc.first_message_seconds";
-#[cfg(feature = "prometheus")]
 const DURATION_SECONDS: &str = "zaino.grpc.duration_seconds";
-#[cfg(feature = "prometheus")]
 const STREAM_MESSAGES: &str = "zaino.grpc.stream_messages";
-#[cfg(feature = "prometheus")]
 const SENT_BYTES_TOTAL: &str = "zaino.grpc.sent_bytes_total";
-#[cfg(feature = "prometheus")]
 const ACTIVE_STREAMS: &str = "zaino.grpc.active_streams";
-#[cfg(feature = "prometheus")]
 const ADMISSION_REJECTED_TOTAL: &str = "zaino.grpc.admission_rejected_total";
-#[cfg(feature = "prometheus")]
 const ACTIVE_SUBSCRIPTIONS: &str = "zaino.grpc.active_subscriptions";
-#[cfg(feature = "prometheus")]
 const SUBSCRIPTIONS_REJECTED_TOTAL: &str = "zaino.grpc.subscriptions_rejected_total";
-#[cfg(feature = "prometheus")]
 const ACCEPT_ERRORS_TOTAL: &str = "zaino.grpc.accept_errors_total";
-#[cfg(feature = "prometheus")]
 const DISK_READ_WAIT_SECONDS: &str = "zaino.grpc.disk_read_wait_seconds";
-#[cfg(feature = "prometheus")]
 const CONNECTIONS_ACTIVE: &str = "zaino.grpc.connections_active";
-#[cfg(feature = "prometheus")]
 const CONNECTIONS_REJECTED_TOTAL: &str = "zaino.grpc.connections_rejected_total";
-#[cfg(feature = "prometheus")]
 const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 
 /// Every `CompactTxStreamer` method, then `unknown` (any other path): the `method` label set
@@ -79,7 +63,6 @@ impl Method {
 }
 
 /// `Code`'s `Debug` spelling by value (the `code` label, never formatted per request)
-#[cfg(feature = "prometheus")]
 const CODES: [&str; 17] = [
     "Ok",
     "Cancelled",
@@ -102,7 +85,6 @@ const CODES: [&str; 17] = [
 
 /// One method's series, registered on first use (the recorder is installed at boot, before the
 /// server binds: a handle taken earlier would be a no-op forever)
-#[cfg(feature = "prometheus")]
 struct MethodSeries {
     first_message: metrics::Histogram,
     duration: metrics::Histogram,
@@ -111,7 +93,6 @@ struct MethodSeries {
     requests: [std::sync::OnceLock<metrics::Counter>; CODES.len()],
 }
 
-#[cfg(feature = "prometheus")]
 fn series(method: Method) -> &'static MethodSeries {
     static SERIES: [std::sync::OnceLock<MethodSeries>; METHODS.len()] =
         [const { std::sync::OnceLock::new() }; METHODS.len()];
@@ -131,7 +112,6 @@ fn series(method: Method) -> &'static MethodSeries {
 /// `(metric, bucket edges)` for the exporter
 ///
 /// - Per metric (defaults span one decade: RAM hit = µs, cold mmap = 10s of ms, stream = minutes)
-#[cfg(feature = "prometheus")]
 pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
     (
         FIRST_MESSAGE_SECONDS,
@@ -143,7 +123,6 @@ pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
 ];
 
 /// `# HELP` registrations for every metric this crate emits
-#[cfg(feature = "prometheus")]
 pub fn describe_metrics() {
     use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
@@ -184,32 +163,26 @@ pub fn describe_metrics() {
 }
 
 pub(crate) fn connection_opened() {
-    #[cfg(feature = "prometheus")]
     metrics::gauge!(CONNECTIONS_ACTIVE).increment(1.0);
 }
 
 pub(crate) fn connection_closed() {
-    #[cfg(feature = "prometheus")]
     metrics::gauge!(CONNECTIONS_ACTIVE).decrement(1.0);
 }
 
 /// A connection closed for holding unread data past the stall timeout
 pub(crate) fn connection_stalled() {
-    #[cfg(feature = "prometheus")]
     metrics::counter!(STALLED_CONNECTIONS_TOTAL).increment(1);
 }
 
 pub(crate) fn accept_failed() {
-    #[cfg(feature = "prometheus")]
     metrics::counter!(ACCEPT_ERRORS_TOTAL).increment(1);
 }
 
 pub(crate) fn connection_rejected() {
-    #[cfg(feature = "prometheus")]
     metrics::counter!(CONNECTIONS_REJECTED_TOTAL).increment(1);
 }
 
-#[cfg(feature = "prometheus")]
 fn active(class: Class) -> &'static str {
     match class {
         Class::Work => ACTIVE_STREAMS,
@@ -217,42 +190,31 @@ fn active(class: Class) -> &'static str {
     }
 }
 
-#[cfg_attr(not(feature = "prometheus"), allow(unused_variables))]
 pub(crate) fn stream_admitted(class: Class) {
-    #[cfg(feature = "prometheus")]
     metrics::gauge!(active(class)).increment(1.0);
 }
 
-#[cfg_attr(not(feature = "prometheus"), allow(unused_variables))]
 pub(crate) fn stream_released(class: Class) {
-    #[cfg(feature = "prometheus")]
     metrics::gauge!(active(class)).decrement(1.0);
 }
 
-#[cfg_attr(not(feature = "prometheus"), allow(unused_variables))]
 pub(crate) fn stream_rejected(class: Class) {
-    #[cfg(feature = "prometheus")]
     match class {
         Class::Work => metrics::counter!(ADMISSION_REJECTED_TOTAL).increment(1),
         Class::Subscription => metrics::counter!(SUBSCRIPTIONS_REJECTED_TOTAL).increment(1),
     }
 }
 
-#[cfg_attr(not(feature = "prometheus"), allow(unused_variables))]
 pub(crate) fn disk_read_waited(lane: crate::limits::Lane, waited: Duration) {
-    #[cfg(feature = "prometheus")]
     metrics::histogram!(DISK_READ_WAIT_SECONDS, "lane" => lane.label())
         .record(waited.as_secs_f64());
 }
 
-#[cfg_attr(not(feature = "prometheus"), allow(unused_variables))]
 pub(crate) fn first_message(method: Method, elapsed: Duration) {
-    #[cfg(feature = "prometheus")]
     series(method).first_message.record(elapsed.as_secs_f64());
 }
 
 /// One stream's close-out (recorded where the body drops)
-#[cfg_attr(not(feature = "prometheus"), allow(unused_variables))]
 pub(crate) fn stream_finished(
     method: Method,
     code: Code,
@@ -260,10 +222,9 @@ pub(crate) fn stream_finished(
     messages: u64,
     sent: u64,
 ) {
-    #[cfg(feature = "prometheus")]
     {
         let series = series(method);
-        // `Code` = the 17 gRPC codes, discriminants 0..=16
+        // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)
         let at = code as usize;
         series.requests[at]
             .get_or_init(|| {

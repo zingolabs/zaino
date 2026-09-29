@@ -5,21 +5,23 @@
 //! written down (`docs/design/sync.md`):
 //!
 //! ```text
-//!   validators ──▶ ChainView ── quorum tip ──▶ Producer ──▶ BlockSink ─┬─▶ IndexFollower(compact_block) ◀┐
-//!   validators ──▶ BlockFetchPool ───────────────┘                     ├─▶ IndexFollower(value_balance)  │
-//!                                                                      │     └─▶ ValueBalanceSink (fees) ┘
+//!   validators ──▶ ChainView ── quorum tip ──▶ Producer ──▶ BlockSink ─┬─▶ IndexFollower(compact_block) ◀┐ Zip
+//!   validators ──▶ BlockFetchPool ───────────────┘                     ├─▶ IndexFollower(value_balance)  │ (lockstep)
+//!                                                                      │     └─▶ FeeSink ────────────────┘
 //!                                                                      ├─▶ IndexFollower(block_hash)
 //!                                                                      ├─▶ IndexFollower(tree_state)
 //!                                                                      ├─▶ IndexFollower(transparent_address)
 //!                                                                      └─▶ (further indexes subscribe here)
 //!
-//!   pre-commit + files ──▶ CompactBlockService       ──┐
-//!   pre-commit + files ──▶ BlockHashService          ──┤ (by-hash locator for the other two)
-//!   pre-commit + files ──▶ TreeStateService          ──┼─▶ Router
-//!   pre-commit + runs  ──▶ TransparentAddressService ──┘
+//!   non-finalized + files ──▶ CompactBlockService       ──┐
+//!   non-finalized + files ──▶ BlockHashService          ──┤ (by-hash locator for the other two)
+//!   non-finalized + files ──▶ TreeStateService          ──┼─▶ Router
+//!   non-finalized + runs  ──▶ TransparentAddressService ──┘
 //! ```
 //!
 //! - Stage → stage = a channel, wired here by hand (no scheduler, no dependency graph)
+//! - Every `IndexFollower` also reads the quorum tip (serving gate, bulk / follow switch); the
+//!   sink carries blocks only
 //! - Every stage = one plain task in a `JoinSet`; fallible setup awaited before any spawn
 //! - Scope: compact-block, block-hash, tree-state, transparent-address slices from their indexes,
 //!   plus `SendTransaction`/`GetLightdInfo` off the validator
@@ -27,10 +29,12 @@
 use std::future::Future;
 use std::sync::Arc;
 
+use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument as _, Span};
 
+use zaino_chainview::QuorumTip;
 use zaino_grpc::{GrpcLimits, GrpcServer, TrustedProxies, ValidatorHandler};
 use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockService, CompactBlockStore};
 use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressService};
@@ -40,7 +44,7 @@ use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_primitives::types::{Block, ReorgDepth};
 use zaino_source::{BlockFetchPool, FetchRoute, ZebraRpcAdapter};
-use zaino_sync::{BlockSinkBuilder, IndexFollower, IndexWriter, Producer, ValueBalanceSinkBuilder};
+use zaino_sync::{BlockSink, FeeSink, IndexFollower, IndexWriter, Producer, Zip};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::config::{DaemonConfig, SourceConfig, ZainoIndexConfig};
@@ -94,39 +98,55 @@ async fn boot(
     validator: Arc<ZebraRpcAdapter>,
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    // --- the chain view: quorum tip, mempool and broadcast fan-out, over every validator
+    let chainview_span = crate::logging::component("ChainView");
+    let chainview = crate::chainview::connect(Arc::clone(&validator), &config)
+        .instrument(chainview_span.clone())
+        .await?;
+    let tips = chainview.handles.view.subscribe_tip();
+
     // --- the indexes: each its own files, its own finalised height, its own sink subscription
     //
     // `enabled = false` → store unopened, unsubscribed, no task, routes unclaimed (validator
     // fallback). compact-block not optional (`DaemonConfig::validate`)
-    let mut blocks = BlockSinkBuilder::new(ReorgDepth::new(config.fetch.finalised_depth));
+    let depth = ReorgDepth::new(config.fetch.finalised_depth);
+    let mut block_sink = BlockSink::new("blocks");
     let fs = RealFs::shared();
 
-    // compact-block pairs each block with its fees off value-balance's sink: subscribed first,
-    // so the sink starts at compact-block's durable extent, then sealed into its publisher
-    let mut balances = ValueBalanceSinkBuilder::new(ReorgDepth::new(config.fetch.finalised_depth));
+    // compact-block reads its blocks and value-balance's republished fees in lockstep: both
+    // subscribed before value-balance's follower takes the fee sink
+    let mut fee_sink = FeeSink::new("fees");
     let (index, fees) = (&config.index.compact_block, &config.index.value_balance);
     let (compact_block_span, store) = open_index(CompactBlockIndexWriter::NAME, index, || {
         Ok(CompactBlockStore::open(Arc::clone(&fs), &index.path, config.network)?)
     })?;
-    let for_compact_block = balances.subscribe(
-        CompactBlockIndexWriter::NAME,
-        fees.queue_bytes(),
-        store.finalized_height(),
+    let feed = Zip::new(
+        block_sink.subscribe(CompactBlockIndexWriter::NAME, index.queue_bytes()),
+        fee_sink.subscribe(CompactBlockIndexWriter::NAME, fees.queue_bytes()),
     );
-    let compact_block =
-        follow(&mut blocks, CompactBlockIndexWriter::new(store, for_compact_block), index);
+    let writer = CompactBlockIndexWriter::new(store);
+    let compact_block = IndexFollower::new(writer, feed, tips.clone(), index.batch_bytes(), depth);
     let (value_balance_span, writer) = open_index(ValueBalanceIndexWriter::NAME, fees, || {
-        let (fs, network) = (Arc::clone(&fs), config.network);
-        Ok(ValueBalanceIndexWriter::open(fs, &fees.path, network, balances.seal())?)
+        Ok(ValueBalanceIndexWriter::open(Arc::clone(&fs), &fees.path, config.network)?)
     })?;
-    let value_balance = follow(&mut blocks, writer, fees);
+    let sink = &mut block_sink;
+    let value_balance = follow(sink, writer, fees, &tips, depth).publishing(fee_sink);
     let (index, network) = (&config.index, config.network);
     let block_hash = open_block_hash(&fs, &index.block_hash, network)?
-        .map(|(span, writer)| (span, follow(&mut blocks, writer, &index.block_hash)));
+        .map(|(span, writer)| (span, follow(sink, writer, &index.block_hash, &tips, depth)));
     let tree_state = open_tree_state(&fs, &index.tree_state, network)?
-        .map(|(span, writer)| (span, follow(&mut blocks, writer, &index.tree_state)));
-    let transparent = open_transparent_address(&fs, &index.transparent_address, network)?
-        .map(|(span, writer)| (span, follow(&mut blocks, writer, &index.transparent_address)));
+        .map(|(span, writer)| (span, follow(sink, writer, &index.tree_state, &tips, depth)));
+    let transparent = open_transparent_address(&fs, &index.transparent_address, network)?.map(
+        |(span, writer)| (span, follow(sink, writer, &index.transparent_address, &tips, depth)),
+    );
+    // every subscriber's durable tip (production starts after the rearmost)
+    let durable = [
+        Some(compact_block.writer().finalized_height()),
+        Some(value_balance.writer().finalized_height()),
+        block_hash.as_ref().map(|(_, follower)| follower.writer().finalized_height()),
+        tree_state.as_ref().map(|(_, follower)| follower.writer().finalized_height()),
+        transparent.as_ref().map(|(_, follower)| follower.writer().finalized_height()),
+    ];
 
     let compact_block_service = CompactBlockService::new(compact_block.served())
         .with_max_range(config.serve.max_block_range);
@@ -140,19 +160,13 @@ async fn boot(
             .with_max_rows(config.serve.max_address_rows)
     });
 
-    // --- the chain view: the mempool and the broadcast fan-out, over every configured validator
-    let chainview_span = crate::logging::component("ChainView");
-    let chainview = crate::chainview::connect(Arc::clone(&validator), &config)
-        .instrument(chainview_span.clone())
-        .await?;
-
     // --- the producer: bulk over every validator (or the primary), then chainview's quorum tip
     let pool = BlockFetchPool::new(
         chainview.sources.clone(),
         config.primary_validator_index().map_or(FetchRoute::Spread, FetchRoute::Primary),
         config.fetch.concurrency,
     );
-    let producer = Producer::new(blocks.seal(), pool, chainview.handles.view.subscribe_tip());
+    let producer = Producer::new(block_sink, pool, tips, depth, durable.into_iter().flatten());
 
     // --- serving: index first, validator behind it; bound here (EADDRINUSE = boot failure)
     let mut server = GrpcServer::new(
@@ -186,34 +200,32 @@ async fn boot(
         )
     });
 
-    #[cfg(feature = "prometheus")]
-    {
-        crate::metrics::track_index(&compact_block);
-        crate::metrics::track_index(&value_balance);
-        if let Some((_, follower)) = &block_hash {
-            crate::metrics::track_index(follower);
-        }
-        if let Some((_, follower)) = &tree_state {
-            crate::metrics::track_index(follower);
-        }
-        if let Some((_, follower)) = &transparent {
-            crate::metrics::track_index(follower);
-        }
+    crate::metrics::track_index(&compact_block);
+    crate::metrics::track_index(&value_balance);
+    if let Some((_, follower)) = &block_hash {
+        crate::metrics::track_index(follower);
+    }
+    if let Some((_, follower)) = &tree_state {
+        crate::metrics::track_index(follower);
+    }
+    if let Some((_, follower)) = &transparent {
+        crate::metrics::track_index(follower);
     }
 
     // --- run: nothing fallible left, every stage one task
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
-    spawn(&mut tasks, "compact-block", compact_block_span, compact_block.run());
-    spawn(&mut tasks, "value-balance", value_balance_span, value_balance.run());
+    // followers: the root token (a failure cancels everything), stopped by the producer's Shutdown
+    spawn(&mut tasks, "compact-block", compact_block_span, compact_block.run(cancel.clone()));
+    spawn(&mut tasks, "value-balance", value_balance_span, value_balance.run(cancel.clone()));
     if let Some((span, follower)) = block_hash {
-        spawn(&mut tasks, "block-hash", span, follower.run());
+        spawn(&mut tasks, "block-hash", span, follower.run(cancel.clone()));
     }
     if let Some((span, follower)) = tree_state {
-        spawn(&mut tasks, "tree-state", span, follower.run());
+        spawn(&mut tasks, "tree-state", span, follower.run(cancel.clone()));
     }
     if let Some((span, follower)) = transparent {
-        spawn(&mut tasks, "transparent-address", span, follower.run());
+        spawn(&mut tasks, "transparent-address", span, follower.run(cancel.clone()));
     }
     for poller in chainview.pollers {
         spawn(&mut tasks, "chainview", chainview_span.clone(), poller.run(cancel.child_token()));
@@ -221,7 +233,6 @@ async fn boot(
     let sync_span = crate::logging::component("ZainoSync");
     spawn(&mut tasks, "producer", sync_span, producer.run(cancel.child_token()));
     spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
-    #[cfg(feature = "prometheus")]
     spawn(
         &mut tasks,
         "heartbeat",
@@ -232,29 +243,37 @@ async fn boot(
     Ok(tokio::spawn(supervise(tasks, cancel)))
 }
 
-/// Signal → `Ok(())`; the first task to end → its failure (ending cleanly before shutdown is one)
+/// Signal → `Ok(())`; else the first failure (ending cleanly before shutdown is one)
 ///
 /// - Either way: cancel the rest, then wait for them (followers flush what is final)
+/// - Failed follower = cancel, its error joined once the producer's `Shutdown` reaches it
 async fn supervise(
     mut tasks: JoinSet<TaskExit>,
     cancel: CancellationToken,
 ) -> Result<(), IndexerError> {
-    let outcome = tokio::select! {
+    let mut failure = tokio::select! {
         signal = shutdown_signal() => {
             info!(signal, "Shutdown signal received");
-            Ok(())
+            None
         }
-        Some(exit) = tasks.join_next() => Err(first_failure(exit)),
+        () = cancel.cancelled() => None,
+        Some(exit) = tasks.join_next() => Some(first_failure(exit)),
     };
     cancel.cancel();
     while let Some(exit) = tasks.join_next().await {
         match exit {
             Ok((task, Ok(()))) => debug!(task, "Task stopped"),
-            Ok((task, Err(error))) => error!(task, %error, "Task failed while stopping"),
-            Err(error) => error!(%error, "Task panicked while stopping"),
+            Ok((task, Err(error))) => {
+                error!(task, %error, "Task failed");
+                failure.get_or_insert(error);
+            }
+            Err(error) => {
+                error!(%error, "Task panicked");
+                failure.get_or_insert(IndexerError::TokioJoinError(error));
+            }
         }
     }
-    outcome
+    failure.map_or(Ok(()), Err)
 }
 
 /// A task ended before any shutdown signal: always a fault
@@ -336,15 +355,16 @@ fn open_transparent_address(
         .transpose()
 }
 
-/// `writer`'s own queue off `blocks`, resuming at its own finalised height, committing per
-/// `config.batch_mib`
+/// `writer`'s own queue off `block_sink`, committing per `config.batch_mib`
 fn follow<W: IndexWriter<Input = Block>>(
-    blocks: &mut BlockSinkBuilder,
+    block_sink: &mut BlockSink,
     writer: W,
     config: &ZainoIndexConfig,
+    tips: &watch::Receiver<Option<QuorumTip>>,
+    depth: ReorgDepth,
 ) -> IndexFollower<W> {
-    let subscription = blocks.subscribe(W::NAME, config.queue_bytes(), writer.finalized_height());
-    IndexFollower::new(writer, subscription, config.batch_bytes())
+    let subscription = block_sink.subscribe(W::NAME, config.queue_bytes());
+    IndexFollower::new(writer, subscription, tips.clone(), config.batch_bytes(), depth)
 }
 
 /// Wait for a process shutdown signal, returning which one arrived.

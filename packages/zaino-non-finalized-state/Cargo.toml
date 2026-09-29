@@ -1,5 +1,5 @@
 [package]
-name = "zaino-chain-head"
+name = "zaino-non-finalized-state"
 description = "Zaino's in-memory non-final window of the best chain: follows the quorum tip, resolves reorgs, replays without refetching."
 authors = { workspace = true }
 repository = { workspace = true }

@@ -1,19 +1,19 @@
-//! [`IndexWriter`]: one fold per block into the nonfinalised tier, written out on `finalize`
+//! [`IndexWriter`]: one fold per block into the non-finalized tier, written out on `finalize`
 //!
 //! - two carries: `applied` moved by [`apply`](TreeStateIndexWriter::apply), `durable` by
 //!   [`finalize`](TreeStateIndexWriter::finalize)
 //! - `reset` = `applied = durable.clone()` (no reverse fold, no disk read)
-//! - `finalize` folds whatever `apply` never saw (bulk sync skips the nonfinalised tier)
+//! - `finalize` folds whatever `apply` never saw (bulk sync skips the non-finalized tier)
 //! - fold → `compute` (Merkle hashing, every core), write → `blocking`
 //!
-//! Tiering: `docs/design/precommit-state.md`
+//! Tiering: `docs/design/non-finalized-state.md`
 
 use std::sync::Arc;
 
 use incrementalmerkletree::Hashable;
 use orchard::tree::MerkleHashOrchard;
 use zaino_primitives::types::{
-    Block, BlockHash, Extent, Height, PerPool, ShieldedPool, TreeSize, TreeSizes,
+    Block, BlockRef, Height, PerPool, ShieldedPool, TreeSize, TreeSizes,
 };
 use zaino_sync::{IndexWriter, Offloaded};
 use zcash_primitives::merkle_tree::HashSer;
@@ -103,7 +103,7 @@ impl Carries {
                 )
             },
         );
-        out.end = Extent::through(last.header().height);
+        out.tip = Some(last.header().height);
 
         Ok(())
     }
@@ -150,7 +150,7 @@ impl<H: HashSer> PoolBatch<H> {
     }
 }
 
-/// Everything a fold owns: both carries + the nonfinalised tier
+/// Everything a fold owns: both carries + the non-finalized tier
 #[derive(Debug)]
 struct Folds {
     durable: Carries,
@@ -158,27 +158,27 @@ struct Folds {
     non_finalized: NonFinalizedTrees,
 }
 
-/// Finalised batch, folded: `chunk` goes to disk; `durable` + the tier above `cut` replace the
-/// writer's state once it is there
+/// Finalised batch, folded: `chunk` goes to disk; `durable` + the tier above `cut` (the batch's
+/// last height, inclusive) replace the writer's state once it is there
 struct Landing {
     chunk: NonFinalizedTrees,
-    cut: Extent,
+    cut: Height,
     sizes: PoolSizes,
     durable: Carries,
 }
 
 impl Folds {
-    /// Folds what the nonfinalised tier lacks from `blocks`, takes the batch through `cut` as
-    /// the chunk to write (the tier keeps it until the write lands)
+    /// Folds what the non-finalized tier lacks from `blocks`, takes the batch through `cut`
+    /// (inclusive) as the chunk to write (the tier keeps it until the write lands)
     ///
     /// - `durable` = the carry at `cut`, from the chunk over what is already on disk (no read-back)
     fn land(
         &mut self,
         blocks: &[Arc<Block>],
-        cut: Extent,
+        cut: Height,
         on_disk: &Snapshot,
     ) -> Result<Landing, IndexWriterError> {
-        // nonfinalised covers a prefix (applied); the rest never went through `apply` (bulk sync)
+        // non-finalized covers a prefix (applied); the rest never went through `apply` (bulk sync)
         let applied = blocks
             .iter()
             .take_while(|block| self.non_finalized.heights.contains_key(&block.header().height))
@@ -190,8 +190,7 @@ impl Folds {
         }
         self.applied.fold(&blocks[applied..], &mut self.non_finalized)?;
 
-        let last = cut.last().expect("a landing covers at least one block");
-        let sizes = self.non_finalized.heights[&last].positions();
+        let sizes = self.non_finalized.heights[&cut].positions();
         let (chunk, _) = self.non_finalized.split(cut, sizes);
         let durable = Carries::seed(&chunk, on_disk, sizes)?;
         Ok(Landing { chunk, cut, sizes, durable })
@@ -201,7 +200,7 @@ impl Folds {
 /// A finished `finalize` write: the store back, and the landing it wrote
 pub struct Written {
     store: TreeStateStore,
-    cut: Extent,
+    cut: Height,
     sizes: PoolSizes,
     durable: Carries,
 }
@@ -212,20 +211,20 @@ pub struct TreeStateIndexWriter {
     folds: Offloaded<Folds>,
     store: Offloaded<TreeStateStore>,
     durable: Durable,
-    /// Nonfinalised tier as last published (what [`view`](IndexWriter::view) pins)
+    /// Non-finalized tier as last published (what [`view`](IndexWriter::view) pins)
     view: NonFinalizedTrees,
 }
 
-/// What the store committed, pinned at a landing
+/// What the store committed, pinned at a landing (`tip` = last committed block, inclusive;
+/// `None` = nothing committed)
 struct Durable {
-    extent: Extent,
-    tip: Option<BlockHash>,
+    tip: Option<BlockRef>,
     snapshot: Arc<Snapshot>,
 }
 
 impl Durable {
     fn of(store: &TreeStateStore) -> Self {
-        Self { extent: store.finalized_height(), tip: store.tip_hash(), snapshot: store.snapshot() }
+        Self { tip: store.finalized_tip(), snapshot: store.snapshot() }
     }
 }
 
@@ -234,7 +233,7 @@ impl TreeStateIndexWriter {
     pub fn new(store: TreeStateStore) -> Result<Self, IndexWriterError> {
         let finalized = store.finalized_height();
         let snapshot = store.snapshot();
-        let sizes = match finalized.last() {
+        let sizes = match finalized {
             None => PoolSizes::default(),
             Some(last) => {
                 snapshot.height(last).expect("a store holds its committed tip record").positions()
@@ -265,25 +264,22 @@ impl IndexWriter for TreeStateIndexWriter {
 
     const NAME: &'static str = "tree_state";
 
-    fn finalized_height(&self) -> Extent {
-        self.durable.extent
-    }
-
-    fn finalized_tip(&self) -> Option<BlockHash> {
+    fn finalized_tip(&self) -> Option<BlockRef> {
         self.durable.tip
     }
 
-    fn applied_height(&self) -> Extent {
-        self.view.end
+    fn applied_height(&self) -> Option<Height> {
+        self.view.tip
     }
 
-    /// Nonfinalised + committed, pinned at one consistent moment
+    /// Non-finalized + committed, pinned at one consistent moment
     fn view(&self) -> ReadView {
         ReadView::new(self.view.clone(), Arc::clone(&self.durable.snapshot))
     }
 
     async fn apply(&mut self, block: &Arc<Block>) -> Result<(), IndexWriterError> {
-        let (height, expected) = (block.header().height, self.applied_height().next());
+        let expected = self.applied_height().map_or(Height::GENESIS, Height::next);
+        let height = block.header().height;
         assert_eq!(height, expected, "tree_state: blocks must arrive contiguously");
 
         let block = Arc::clone(block);
@@ -304,9 +300,11 @@ impl IndexWriter for TreeStateIndexWriter {
         let mut reached = self.finalized_height();
         for block in blocks {
             let height = block.header().height;
-            assert_eq!(height, reached.next(), "tree_state: batch off the committed height");
-            reached = Extent::through(height);
+            let next = reached.map_or(Height::GENESIS, Height::next);
+            assert_eq!(height, next, "tree_state: batch off the committed height");
+            reached = Some(height);
         }
+        let reached = reached.expect("tree_state: finalize with no blocks");
 
         let (blocks, on_disk) = (blocks.to_vec(), Arc::clone(&self.durable.snapshot));
         let Landing { chunk, cut, sizes, durable } =
@@ -325,7 +323,7 @@ impl IndexWriter for TreeStateIndexWriter {
         self.durable = Durable::of(&store);
         self.store.restore(store);
 
-        // written prefix leaves the nonfinalised tier only once durable (split now, not at
+        // written prefix leaves the non-finalized tier only once durable (split now, not at
         // `finalize`: blocks applied while the write was out stay above the cut)
         let folds = self.folds.get_mut();
         folds.durable = durable;
@@ -501,7 +499,7 @@ mod tests {
         for state in states {
             let label = &state.label;
             let mut writer = open(&state.fs).unwrap_or_else(|error| panic!("{label}: {error}"));
-            let count = u64::from(writer.finalized_height());
+            let count = writer.finalized_height().map_or(0, |tip| u64::from(tip) + 1);
             let acked = [committed_after(state.tag), committed_after(state.tag + 1)];
             assert!(acked.contains(&count), "{label}: recovered {count}");
             if count > 0 {
@@ -553,7 +551,7 @@ mod tests {
         assert!(matches!(torn, Some(Store(Page(Tail { path }))) if path.ends_with(L00)));
 
         let resumed = reopen(surplus).expect("surplus is not an error");
-        assert_eq!(u64::from(resumed.finalized_height()), 5, "resumes where it stopped");
+        assert_eq!(resumed.finalized_height(), Some(h(4)), "resumes where it stopped");
         assert_eq!(fs.contents(&leaves).expect("leaves"), committed, "surplus truncated");
     }
 
@@ -628,10 +626,10 @@ mod tests {
         let fs = SimFs::new();
         let mut writer = open(&fs).expect("open");
         for (at, step) in steps.iter().enumerate() {
-            let (applied, finalized) = (
-                u64::from(writer.applied_height()) as usize,
-                u64::from(writer.finalized_height()) as usize,
-            );
+            // block counts from genesis (= index of the next block to apply / finalize)
+            let count = |tip: Option<Height>| tip.map_or(0, |h| u32::from(h) as usize + 1);
+            let (applied, finalized) =
+                (count(writer.applied_height()), count(writer.finalized_height()));
             match *step {
                 Step::Apply if applied < chain.len() => {
                     writer.apply(&chain[applied]).await.expect("apply");
@@ -656,19 +654,20 @@ mod tests {
 
             let view = writer.view();
             let (applied, finalized) = (writer.applied_height(), writer.finalized_height());
-            assert_eq!(view.extent(), applied, "step {at} {step:?}");
+            assert_eq!(view.tip(), applied, "step {at} {step:?}");
             assert!(finalized <= applied, "step {at} {step:?}: durable past applied");
             if matches!(step, Step::Reset | Step::Reopen) {
                 assert_eq!(applied, finalized, "step {at} {step:?}: nothing buffered survives");
             }
-            for height in 0..u64::from(applied) as u32 {
+            for height in applied.into_iter().flat_map(|tip| Height::GENESIS.up_to(tip)) {
+                let height = u32::from(height);
                 let served = view.treestate(h(height));
                 let served = served.unwrap_or_else(|error| panic!("step {at} {step:?}: {error}"));
                 let trees = (served.sapling, served.orchard, served.ironwood);
                 let expected = trees_through(height as usize);
                 assert_eq!(trees, expected, "step {at} {step:?}: trees at {height}");
             }
-            let past = h(u64::from(applied) as u32);
+            let past = applied.map_or(Height::GENESIS, Height::next);
             let absent = Err(ServeError::NotFound { height: past });
             assert_eq!(view.treestate(past), absent, "step {at} {step:?}: past applied");
         }
@@ -693,7 +692,7 @@ mod tests {
     }
 
     /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
-    /// height, named by that block, from the nonfinalised tier and after the split to disk alike;
+    /// height, named by that block, from the non-finalized tier and after the split to disk alike;
     /// resumable from any `start_index` (`start_index == count` = empty, pepper-sync's probe); a
     /// reopen appends the next boundary after the ones on disk
     #[tokio::test]
@@ -739,7 +738,7 @@ mod tests {
         }
         let buffered = writer.view();
         let roots = buffered.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
-        assert_eq!(roots, expected(&buffered), "nonfinalised: two boundaries, completing blocks");
+        assert_eq!(roots, expected(&buffered), "non-finalized: two boundaries, completing blocks");
 
         zaino_sync::finalize_now(&mut writer, &blocks[..2]).await.expect("finalize");
         let split = writer.view();

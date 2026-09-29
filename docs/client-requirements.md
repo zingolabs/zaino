@@ -137,7 +137,8 @@ path lands.
 
 Two details copied from lightwalletd's behaviour rather than its schema:
 coinbase `vin` is omitted (a client detects coinbase by `CompactTx.index == 0`),
-and `fee` is left unset.
+and a coinbase's `fee` is left unset. Unlike lightwalletd, every other mined
+transaction's `fee` is filled.
 
 One hard operational rule falls out:
 

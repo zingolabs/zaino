@@ -1,4 +1,4 @@
-//! Nonfinalised map + committed segments, pinned together once per request
+//! Non-finalized map + committed segments, pinned together once per request
 
 use std::sync::Arc;
 

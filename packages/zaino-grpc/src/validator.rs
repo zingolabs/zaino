@@ -218,7 +218,7 @@ impl<S: ValidatorPorts> ValidatorHandler<S> {
     pub async fn lightd_info(&self) -> Result<LightdInfo, Status> {
         let chain = self.chain_info().await?;
         // empty index: 0 (the proto has no "none")
-        let block_height = self.served.extent().last().map_or(0, u64::from);
+        let block_height = self.served.tip().map_or(0, u64::from);
 
         Ok(with_validator_view(
             LightdInfo {

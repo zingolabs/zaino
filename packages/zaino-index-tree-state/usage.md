@@ -13,8 +13,8 @@ use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateSt
 
 let store = TreeStateStore::open(fs, &path, network)?;
 let writer = TreeStateIndexWriter::new(store)?;
-let subscription = blocks.subscribe(TreeStateIndexWriter::NAME, queue, writer.finalized_height());
-let follower = IndexFollower::new(writer, subscription, batch_bytes);
+let subscription = block_sink.subscribe(TreeStateIndexWriter::NAME, queue);
+let follower = IndexFollower::new(writer, subscription, tips, batch_bytes, depth);
 let service = TreeStateService::new(follower.served(), network);
 ```
 
@@ -22,7 +22,7 @@ let service = TreeStateService::new(follower.served(), network);
   View = ReadView>` (`NAME` = `"tree_state"`), subscribed to the
   `zaino_sync::BlockSink` (`blocks`). `new` is fallible: it reseeds the running
   frontiers from disk on every boot.
-- `ReadView` binds the nonfinalised tier and the committed snapshot into one publication:
+- `ReadView` binds the non-finalized tier and the committed snapshot into one publication:
   a request loads it once, so the seam between them cannot move under it.
   `treestate(height)`, `latest()` and `subtree_roots(..)` answer from it, with no
   `synced` gate; `TreeStateService` adds the gate. `writer.view()` is the only
@@ -38,12 +38,12 @@ let service = TreeStateService::new(follower.served(), network);
 | Method | Returns |
 |---|---|
 | `treestate(height)` | `Treestate` with all three pools |
-| `latest()` | `treestate` at the highest applied height (nonfinalised included) |
+| `latest()` | `treestate` at the highest applied height (non-finalized included) |
 | `subtree_roots(pool, start_index, max_entries)` | `Vec<SubtreeRoot>` |
 
 - While `synced` reads `false`, `treestate(height)` still answers any committed
   height (final: the answer never changes); everything else, and any height
-  above the committed extent, is `ServeError::Syncing` (gRPC `UNAVAILABLE`): one
+  above the committed tip, is `ServeError::Syncing` (gRPC `UNAVAILABLE`): one
   answer, no height or progress. `latest()` on an index holding no blocks is
   `Empty` (also `UNAVAILABLE`). A height with no record is `NotFound`; stored
   nodes that will not rebuild are `Inconsistent` (a fold bug).
@@ -62,7 +62,7 @@ let service = TreeStateService::new(follower.served(), network);
   height and the router confirms the hash it holds there.
 - `pin()` → the latest synced publication (`Arc<ReadView>`, one per
   publication), with the same `treestate`, `latest` and `subtree_roots` on it.
-  `is_nonfinalized(h)` names the ~1000 heights every synced wallet asks about.
+  `is_non_finalized(h)` names the ~1000 heights every synced wallet asks about.
   `zaino-grpc` keys its per-publication memos on the `Arc`: tip tree states and
   whole root lists are framed once per block, not once per wallet.
 
@@ -101,15 +101,16 @@ Every file carries page checksums (`zaino_persistence::pages`).
 - `heights.idx` and `subtrees.dat` records are fixed arrays with
   `encode`/`decode` beside their golden-bytes tests (`heights.rs`, `subtrees.rs`).
 
-## Nonfinalised tier and reorgs
+## Non-finalized tier and reorgs
 
 `apply` folds into an `imbl` `NonFinalizedTrees`, and `finalize(blocks)` lands
-a contiguous batch starting at `finalized_height`, reusing nonfinalised folds
-where they exist and folding the rest (bulk sync skips the nonfinalised tier
+a contiguous batch starting after `finalized_height` (the last durable height,
+inclusive; `None` = empty), reusing non-finalized folds
+where they exist and folding the rest (bulk sync skips the non-finalized tier
 entirely). `reset()` restores the
 applied carry from the durable one: no reverse fold, no disk read. Nothing
 reorg-able is ever fsynced. See
-[`docs/design/precommit-state.md`](../../docs/design/precommit-state.md).
+[`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
 
 The fold (Merkle hashing) runs under `zaino_sync::compute`, reading note
 commitments straight off the sink's shared `Arc<Block>`s; the write runs under

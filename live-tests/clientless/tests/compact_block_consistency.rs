@@ -17,7 +17,7 @@ use ztest::prelude::*;
 const READY: Duration = Duration::from_secs(120);
 
 /// The mid-chain NU6.3 (Ironwood) activation height for the transition fixture:
-/// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
+/// an Orchard era from height 2 inclusive to 6 exclusive that flips to Ironwood at height 6.
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
 /// The pool a coinbase reward lands in. One per network-upgrade era, and the

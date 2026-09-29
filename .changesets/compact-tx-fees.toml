@@ -4,11 +4,11 @@ kind = "breaking"
 section = "Changed"
 description = """
 `CompactTx.fee` is filled: every mined transaction's fee, from the value-balance \
-index. `CompactBlockIndexWriter::new(store, batch, balances)` takes a \
-`ValueBalanceSink` subscription; `encode_compact_block(block, balances, sizes)` \
-and `compact_tx(index, tx, fee)` take the fees. A coinbase, or a fee of 2^32 \
-zatoshis or more, writes 0 (`uint32`, not provided). `testing::block` also \
-returns the block's balances.
+index. The writer's input is `BlockWithFees` (each block with its fees, read in \
+lockstep off the block and value-balance streams by a `Zip` feed); \
+`encode_compact_block(block, fees, sizes)` and `compact_tx(index, tx, fee)` \
+take the fees. A coinbase, or a fee of 2^32 zatoshis or more, writes 0 \
+(`uint32`, not provided). `testing::block` also returns the block's fees.
 """
 
 [[changes]]
@@ -18,9 +18,12 @@ section = "Added"
 description = """
 New value-balance index: every transparent output's value, append-only \
 (`outputs/` segments, `txid ‖ vout → value`). `ValueBalanceIndexWriter` \
-resolves each transaction's inputs and publishes one `BlockValueBalances` per \
-block into a `ValueBalanceSink`. `committed_files(dir, network)` lists the \
-sealed segments.
+resolves each transaction's fee (transparent in − out plus the Sprout, \
+Sapling, Orchard and Ironwood value balances; protocol §3.4) into one \
+`BlockFees` per block (`Derives`), which its follower republishes into a \
+`FeeSink` step for step. A negative fee on a non-coinbase transaction is \
+consensus-invalid and stops the index (`IndexWriterError::NegativeFee`). \
+`committed_files(dir, network)` lists the sealed segments.
 """
 
 [[changes]]
@@ -28,9 +31,9 @@ crate = "zaino-primitives"
 kind = "breaking"
 section = "Added"
 description = """
-`Transaction::sprout` (`SproutData { value_balance }`). `ValueBalance` (what a \
-transaction moves out of each pool; `fee()` sums them, `None` for a coinbase) \
-and `BlockValueBalances { height, hash, balances }`.
+`Transaction::sprout` (`SproutData { value_balance }`) and \
+`TransparentData::coinbase`. `Fee` (`Coinbase`, or `Paid(Zatoshis)`) and \
+`BlockFees { height, hash, fees }`.
 """
 
 [[changes]]
@@ -38,10 +41,11 @@ crate = "zaino-source"
 kind = "breaking"
 section = "Changed"
 description = """
-Decoding reads each transaction's Sprout JoinSplit value balance. \
-`GetMempoolTxids` is replaced by `GetMempoolListing` (`getrawmempool true`), \
-which returns `MempoolListed { txid, fee }`, the fee the validator computed \
-admitting the transaction (parsed from ZEC to exact zatoshis).
+Decoding reads each transaction's Sprout JoinSplit value balance and whether \
+it is the coinbase. `GetMempoolTxids` is replaced by `GetMempoolListing` \
+(`getrawmempool true`), which returns `MempoolListed { txid, fee }`, the fee \
+the validator computed admitting the transaction (parsed from ZEC to exact \
+zatoshis).
 """
 
 [[changes]]
@@ -49,13 +53,12 @@ crate = "zaino-sync"
 kind = "breaking"
 section = "Changed"
 description = """
-Every subscriber is fed from the rearmost durable extent, so an index ahead of \
-others sees blocks it already holds. New `IndexWriter::deliver(block)` runs for \
-every delivered block before it is staged or applied (default: nothing, which \
-is how an index skips what it holds). The follower checks that a block replayed \
-at its durable tip is the one it committed (`FollowError::Diverged`). \
-`Subscription::from` is removed. New `IndexerDataSink::finalize_through`, \
-`ValueBalanceSink` and `Subscription::balances_for(&block)`.
+Every subscriber is fed from after the rearmost durable tip, so an index ahead \
+of others sees blocks it already holds. New `IndexWriter::deliver(blocks)` runs \
+for every delivered block before it is staged or applied (default: nothing, \
+which is how an index skips what it holds). The follower checks that a block \
+replayed at its durable tip is the one it committed (`FollowError::Diverged`). \
+`Subscription::from` is removed. New `FeeSink` and `BlockWithFees`.
 """
 
 [[changes]]
@@ -75,6 +78,6 @@ section = "Added"
 description = """
 `[index.value_balance]` (`<data>/value-balance`) stores every transparent \
 output's value so `CompactTx.fee` is filled; it cannot be disabled, and \
-`zainod verify` scrubs it. Mempool fees (`GetMempoolTx`, `GetMempoolStream`) \
-come from the validator's `getrawmempool true`.
+`zainod verify` scrubs it. Mempool fees (`GetMempoolTx`) come from the \
+validator's `getrawmempool true`.
 """

@@ -1,11 +1,11 @@
-//! Outputs delivered above the durable extent, staged and nonfinalised alike
+//! Outputs delivered above the durable tip, staged and non-finalized alike
 //!
 //! - filled by `deliver` (before the harness stages or applies the block), drained once a
 //!   `finalize` write lands (a resolve meanwhile still finds its outputs here)
 //! - `imbl`: a resolve pins a copy in O(1) while delivery keeps inserting
 
 use imbl::OrdMap;
-use zaino_primitives::types::{Block, Extent, Height, OutPoint, Zatoshis};
+use zaino_primitives::types::{Block, Height, OutPoint, Zatoshis};
 
 use crate::key::OutputRow;
 
@@ -29,11 +29,12 @@ impl Pending {
         self.outputs.get(key).map(|(_, value)| *value)
     }
 
-    /// Every output of a block inside `end` (what a commit makes durable), kept until it lands
-    pub(crate) fn rows_below(&self, end: Extent) -> Vec<OutputRow> {
+    /// Every output of a block at or below `tip` (last height, inclusive; `None` = none; what a
+    /// commit makes durable), kept until it lands
+    pub(crate) fn rows_through(&self, tip: Option<Height>) -> Vec<OutputRow> {
         self.outputs
             .iter()
-            .filter(|(_, (height, _))| end.contains(*height))
+            .filter(|(_, (height, _))| Some(*height) <= tip)
             .map(|(key, (_, value))| OutputRow { key: *key, value: *value })
             .collect()
     }

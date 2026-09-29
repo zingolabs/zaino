@@ -26,11 +26,8 @@ const ALL_POOLS: [i32; 4] = [1, 2, 3, 4];
 async fn deepest_legal_reorg_never_rewrites_durable_data() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH),
-    );
+    let indexer =
+        env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH));
     env.build().await?;
 
     let (warm, _) = validator.tip().await?;
@@ -98,10 +95,7 @@ async fn reorg_below_the_window_halts_instead_of_serving() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH)
-            .restartable(),
+        dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH).restartable(),
     );
     env.build().await?;
 

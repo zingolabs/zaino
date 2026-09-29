@@ -10,7 +10,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 
 use proptest::prelude::*;
-use zaino_chain_head::{Advance, AdvanceError, ChainHead};
+use zaino_non_finalized_state::{Advance, AdvanceError, ChainHead};
 use zaino_primitives::types::{
     Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
 };
@@ -115,8 +115,8 @@ async fn run(moves: Vec<Move>, lagging_first: bool, concurrency: usize) {
         hash: *chain.last().expect("genesis kept"),
         height: height(chain.len() - 1),
     };
-    let window = |head: &ChainHead, from: usize| -> Vec<BlockHash> {
-        head.best_chain_from(height(from)).map(|block| block.header().hash).collect()
+    let window = |head: &ChainHead, start: usize| -> Vec<BlockHash> {
+        head.best_chain_from(height(start)).map(|block| block.header().hash).collect()
     };
     let filled = head.advance(tip_of(&best), &pool).await.expect("fill the window");
     assert_eq!(filled, Advance::Extended, "anchor → pre-mined tip");

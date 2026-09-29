@@ -1789,7 +1789,9 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.16.1",
+ "indexmap 2.14.0",
  "metrics",
+ "ordered-float",
  "quanta",
  "rand 0.9.4",
  "rand_xoshiro",
@@ -1954,6 +1956,15 @@ dependencies = [
  "zcash_note_encryption",
  "zcash_spec",
  "zip32",
+]
+
+[[package]]
+name = "ordered-float"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -3743,18 +3754,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-chain-head"
-version = "0.1.1"
-dependencies = [
- "futures",
- "proptest",
- "thiserror 2.0.18",
- "tokio",
- "zaino-primitives",
- "zaino-source",
-]
-
-[[package]]
 name = "zaino-chainview"
 version = "0.1.0"
 dependencies = [
@@ -3890,10 +3889,23 @@ dependencies = [
  "proptest",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "zaino-persistence",
  "zaino-primitives",
  "zaino-sync",
  "zcash_protocol",
+]
+
+[[package]]
+name = "zaino-non-finalized-state"
+version = "0.1.1"
+dependencies = [
+ "futures",
+ "proptest",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+ "zaino-source",
 ]
 
 [[package]]
@@ -3965,14 +3977,15 @@ dependencies = [
  "arc-swap",
  "futures",
  "metrics",
+ "metrics-util",
  "proptest",
  "rayon",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
- "zaino-chain-head",
  "zaino-chainview",
+ "zaino-non-finalized-state",
  "zaino-primitives",
  "zaino-source",
 ]

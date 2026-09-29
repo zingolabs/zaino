@@ -9,7 +9,6 @@ use crate::error::IndexerError;
 use crate::indexer::start_indexer;
 use tracing::{error, info, Instrument as _};
 
-#[cfg(feature = "prometheus")]
 mod admin;
 mod chainview;
 pub mod cli;
@@ -18,7 +17,6 @@ pub mod error;
 mod fd_limit;
 pub mod indexer;
 pub mod logging;
-#[cfg(feature = "prometheus")]
 mod metrics;
 pub mod paths;
 pub mod verify;
@@ -39,7 +37,6 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     let config = load_config(&config_path)?;
     config.warn_about_metrics_endpoint();
 
-    #[cfg(feature = "prometheus")]
     if let Some(endpoint) = config.metrics_endpoint {
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
     }

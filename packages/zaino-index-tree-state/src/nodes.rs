@@ -25,7 +25,7 @@ pub(crate) fn retained_nodes(level: u8, size: u64) -> u64 {
     }
 }
 
-/// `(level, slot)`: a node's place in the per-level files (same key in the nonfinalised tier)
+/// `(level, slot)`: a node's place in the per-level files (same key in the non-finalized tier)
 pub(crate) type Slot = (u8, u64);
 
 /// Materialised by a fold, not yet fsynced
@@ -43,7 +43,7 @@ pub(crate) fn slot(addr: Address) -> Option<Slot> {
     }
 }
 
-/// One pool's tree of `size` commitments, nonfinalised nodes over durable: what
+/// One pool's tree of `size` commitments, non-finalized nodes over durable: what
 /// [`frontier_at`](crate::fold::frontier_at) walks
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NodeView<'a> {

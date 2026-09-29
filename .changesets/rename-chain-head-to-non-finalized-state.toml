@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-non-finalized-state"
+kind = "breaking"
+section = "Changed"
+description = """
+Renamed from `zaino-chain-head` (import path `zaino_non_finalized_state`); \
+`ChainHead`, `Advance` and `AdvanceError` are unchanged.
+"""

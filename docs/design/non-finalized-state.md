@@ -1,6 +1,6 @@
-# The non-finalised window is pre-commit state
+# The non-finalized state
 
-Sync is `f(old_state, blocks)`. The non-finalised window is that same `f`,
+Sync is `f(old_state, blocks)`. The non-finalized state is that same `f`,
 applied and not yet committed: not a second structure, a second fold, or a
 second subsystem. The trait lives in `zaino-sync`; each index's `usage.md` says
 how that index realises it.
@@ -8,28 +8,28 @@ how that index realises it.
 ## 1. One fold, two watermarks
 
 ```
-applied_height     pre-commit extends to here  (tip)
-finalized_height   durable to here             (tip - finalised_depth)
+applied_height     non-finalized state extends to here  (tip)
+finalized_height   durable to here                      (tip - finalised_depth)
 ```
 
-- **`apply(block)`** extends pre-commit.
+- **`apply(block)`** extends the non-finalized state.
 - **`finalize(blocks)`** prepares `blocks` for durable storage and returns the
   `write` that appends them; **`committed(done)`** lands it. They sit below
   `tip - finalised_depth`, so nothing reorg-able is ever fsynced. A block here
   need not have been applied: during bulk sync everything arrives already final
-  and skips pre-commit, so a catching-up node folds each block **once**. The
-  write runs off the follower (one at a time) while delivery and `apply` carry
-  on; every tier change lands in `committed`, so readers see a block in exactly
-  one tier.
-- **`reset()`** drops *all* pre-commit state, returning to the last durable
-  extent. Memory only: **durable structures never delete**, which is what keeps
+  and skips the non-finalized state, so a catching-up node folds each block
+  **once**. The write runs off the follower (one at a time) while delivery and
+  `apply` carry on; every tier change lands in `committed`, so readers see a
+  block in exactly one tier.
+- **`reset()`** drops *all* non-finalized state, returning to the durable tip.
+  Memory only: **durable structures never delete**, which is what keeps
   both storage shapes ([index-data-structures.md](./index-data-structures.md))
   append-only.
-- **`view()`** publishes an immutable snapshot of pre-commit state; readers pin
-  it through `ArcSwap` and consult it before the durable structures.
+- **`view()`** publishes an immutable snapshot of the non-finalized state;
+  readers pin it through `ArcSwap` and consult it before the durable structures.
 
-A reorg is `reset()` then re-apply the winning chain. A restart is "pre-commit is
-empty, re-apply from `finalized_height`". **They are the same operation**, so
+A reorg is `reset()` then re-apply the winning chain. A restart is "the
+non-finalized state is empty, re-apply from `finalized_height`". **They are the same operation**, so
 the rare reorg path is the path that runs on every boot.
 
 ### Why `reset()` carries no height
@@ -49,7 +49,7 @@ re-folding up to `finalised_depth` blocks on an event that is rare by design.
 
 ## 2. Per index
 
-| Index               | Pre-commit state (`imbl`)                                          | Carry                 |
+| Index               | Non-finalized state (`imbl`)                                       | Carry                 |
 | ------------------- | ------------------------------------------------------------------ | --------------------- |
 | compact block       | `OrdMap<height, Bytes>` of encoded records, plus hashes            | cumulative tree sizes |
 | tree state          | retained nodes by `(level, slot)`, per-height sizes, subtree roots | frontier              |
@@ -58,10 +58,10 @@ re-folding up to `finalised_depth` blocks on an event that is rare by design.
 An index with a carry keeps it twice, after the last *applied* block and after the
 last *finalised* one, so `reset` is an assignment rather than a read off disk.
 
-Reads merge pre-commit then durable, in one pinned view per request (the
-compact-block `ReadView::block` is the pattern).
+Reads merge the non-finalized state then durable, in one pinned view per request
+(the compact-block `ReadView::block` is the pattern).
 
-Pre-commit spans `finalised_depth` blocks (`MAX_BLOCK_REORG_HEIGHT` = 1000 by
+The non-finalized state spans `finalised_depth` blocks (`MAX_BLOCK_REORG_HEIGHT` = 1000 by
 default), one persistent-structure clone per published block.
 
 ## 3. The trait
@@ -74,9 +74,10 @@ pub trait IndexWriter: Send + 'static {
     type Done: Send + 'static;                  // a finished write, back to `committed`
     const NAME: &'static str;
 
-    fn finalized_height(&self) -> Extent;        // durable extent, the resume point
-    fn finalized_tip(&self) -> Option<BlockHash>;
-    fn applied_height(&self) -> Extent;          // next height `apply` expects
+    // tips = last height, inclusive; None = nothing held
+    fn finalized_tip(&self) -> Option<BlockRef>;     // last durable block, the resume point
+    fn finalized_height(&self) -> Option<Height>;    // provided: finalized_tip()'s height
+    fn applied_height(&self) -> Option<Height>;      // last applied; `apply` expects the next
     fn view(&self) -> Self::View;
 
     async fn deliver(&mut self, blocks: &[Arc<Self::Input>]) -> Result<(), Self::Error>;
@@ -94,7 +95,7 @@ the same path as a block and cannot race it:
 ```rust
 pub enum Step<T> {
     Apply { height: u64, data: Arc<T> },
-    Reset,        // no height: the index returns to its own durable extent
+    Reset,        // no height: the index returns to its own durable tip
 }
 ```
 

@@ -97,11 +97,11 @@ and this library adheres to Rust's notion of
   in ≤ 33 mmap reads with no hashing, rather than replayed from a checkpoint at
   ~150 ms per request. Serves `GetTreeState`, `GetLatestTreeState` and
   `GetSubtreeRoots`; subtree roots are a byproduct of the same fold, because an
-  odd-indexed subtree root never appears as a frontier ommer. Pre-commit state is
-  the non-finalised window: `apply` folds into `imbl` maps of retained nodes and
+  odd-indexed subtree root never appears as a frontier ommer. In the
+  non-finalized state `apply` folds into `imbl` maps of retained nodes and
   per-height sizes, `finalize` lands a finalised run (folding whatever never
-  entered pre-commit), and `reset` swaps the pre-commit carry for the durable one
-  — so reads inside `tip − 1000` are answered rather than refused, and durable
+  entered the non-finalized state), and `reset` swaps the non-finalized carry
+  for the durable one — so reads inside `tip − 1000` are answered rather than refused, and durable
   structures never delete. Both blocking hops move state by value through `spawn_blocking`,
   syncing only the level files that grew. Carries a `usage.md`.
 
@@ -111,8 +111,7 @@ and this library adheres to Rust's notion of
   outpoint→address map, no UTXO set, nothing mutable. Serves `GetAddressUtxos`,
   `GetTaddressBalance` and `GetTaddressTransactions` by composing the two, and
   reports an unbuilt height as `FailedPrecondition` rather than an empty answer.
-  Pre-commit state is the non-finalised window: the same fold, buffered in
-  `imbl` maps above the runs and consulted before them, so queries inside
+  The non-finalized state is the same fold, buffered in `imbl` maps above the runs and consulted before them, so queries inside
   `tip − 1000` are answered rather than refused, and a reorg is map truncation
   that never touches the append-only runs. Carries a `usage.md`.
 
@@ -142,7 +141,7 @@ and this library adheres to Rust's notion of
 - **Two more crates for the chain head subsystem** (ADR-0011), replacing
   `zaino-state`'s `non_finalised_state` module:
   - `zaino-chain-head` — the domain types and ports for the bounded,
-    non-finalised head of the chain. No runtime and no data structures: the
+    non-finalized head of the chain. No runtime and no data structures: the
     graph's representation belongs to whoever publishes it.
   - `zaino-chain-head-service` — the runtime: the writer task that keeps the
     graph reconciled with the validator, and the snapshots it publishes.
@@ -407,8 +406,8 @@ and this library adheres to Rust's notion of
 ### Fixed
 - **An index no longer panics when an initial sync reaches the tip.** Blocks
   below the finality boundary are staged for a batched write, and the tip's
-  blocks are applied to pre-commit. The follower handed `apply` the first
-  pre-commit block while a partial batch was still staged beneath it, so the
+  blocks are applied to the non-finalized state. The follower handed `apply` the
+  first non-finalized block while a partial batch was still staged beneath it, so the
   sink's contiguity assertion fired unless the bulk span was an exact multiple
   of `batch`. The follower now writes the staged blocks first.
 - **A caught-up index now serves when it reaches the tip, not ~`batch` blocks

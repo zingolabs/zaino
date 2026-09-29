@@ -9,7 +9,7 @@ license.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Value-balance index: every transparent output's value, resolving each transaction's fee for the ValueBalanceSink"
+description = "Value-balance index: every transparent output's value, resolving each transaction's fee for the FeeSink"
 
 [dependencies]
 imbl.workspace = true
@@ -21,6 +21,7 @@ zcash_protocol.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio-util.workspace = true
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }

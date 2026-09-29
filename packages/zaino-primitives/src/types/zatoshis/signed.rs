@@ -4,7 +4,7 @@ use core::fmt;
 
 use super::MAX_ZATOSHIS;
 
-/// `-supply ..= supply` (positive = gained, negative = lost)
+/// `-supply` to `supply`, both inclusive (positive = gained, negative = lost)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignedZatoshis(i64);
 

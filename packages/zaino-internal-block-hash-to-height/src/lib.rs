@@ -15,12 +15,12 @@
 //!
 //! - LSM minus everything mutable data needs: a finalised block's height never changes → no
 //!   memtable, no WAL, no tombstones, no versions, no dedup on merge
-//! - memtable role = [`ReadView`]'s nonfinalised map (reorgable blocks, RAM only, never persisted)
+//! - memtable role = [`ReadView`]'s non-finalized map (reorgable blocks, RAM only, never persisted)
 //!
 //! # Lookup (`ReadView::height_of_hash`)
 //!
 //! ```text
-//! nonfinalised map ──hit──▶ height
+//! non-finalized map ──hit──▶ height
 //!    │ miss
 //!    ▼
 //! each segment:  filter ──"absent"──▶ next segment      (every segment but ≤ 1, for a real hash)
@@ -41,7 +41,7 @@ use zaino_persistence::{
     pages::CommittedFiles,
     StoreError,
 };
-use zaino_primitives::types::{BlockHash, Extent, Height};
+use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
 
 use by_hash::{HashKey, HashRow};
@@ -74,7 +74,7 @@ impl LsmIndex for BlockHashIndex {
 
     fn check(committed: &Committed, lists: &[Vec<SegmentMeta>]) -> Result<(), ManifestError> {
         let rows: u64 = lists.iter().flatten().map(|segment| segment.records).sum();
-        if rows != u64::from(committed.extent) {
+        if rows != committed.count() {
             return Err(ManifestError::Body("segment rows disagree with the committed count"));
         }
         Ok(())
@@ -93,7 +93,7 @@ pub struct BlockHashReader {
 }
 
 impl BlockHashReader {
-    /// Committed segments alone, no nonfinalised blocks
+    /// Committed segments alone, no non-finalized blocks
     pub fn pin(&self) -> ReadView {
         ReadView::new(imbl::HashMap::new(), self.segments.pin())
     }
@@ -114,31 +114,29 @@ impl BlockHashStore {
         BlockHashReader { segments: self.segments.sets() }
     }
 
-    pub(crate) fn finalized_height(&self) -> Extent {
-        self.segments.committed().extent
-    }
-
-    pub(crate) fn tip_hash(&self) -> Option<BlockHash> {
+    /// Last committed block, inclusive (`None` = nothing committed)
+    pub(crate) fn finalized_tip(&self) -> Option<BlockRef> {
         self.segments.committed().tip
     }
 
     /// Makes `blocks` durable and visible as one new segment
     ///
-    /// - `blocks` contiguous from the committed extent (asserted)
+    /// - `blocks` contiguous from the height after the committed tip (asserted)
     pub fn commit(&mut self, blocks: &[(Height, [u8; HASH])]) -> Result<(), StoreError> {
-        let Some(&(_, tip)) = blocks.last() else {
+        let Some(&(height, hash)) = blocks.last() else {
             return Ok(());
         };
-        let mut reached = self.finalized_height();
+        let mut reached = self.finalized_tip().map(|tip| tip.height);
         let rows = blocks
             .iter()
             .map(|&(height, hash)| {
-                assert_eq!(height, reached.next(), "block-hash commit out of order");
-                reached = Extent::through(height);
+                let next = reached.map_or(Height::GENESIS, Height::next);
+                assert_eq!(height, next, "block-hash commit out of order");
+                reached = Some(height);
                 HashRow { hash: HashKey(hash), height: u32::from(height) }
             })
             .collect();
-        self.segments.commit(rows, reached, BlockHash::from(tip))
+        self.segments.commit(rows, BlockRef { hash: BlockHash::from(hash), height })
     }
 }
 
@@ -160,8 +158,9 @@ mod tests {
         out
     }
 
-    fn blocks(from: u32, to: u32) -> Vec<(Height, [u8; HASH])> {
-        (from..=to).map(|n| (h(n), hash(h(n)))).collect()
+    /// Heights `start` to `end`, both inclusive, each with its hash
+    fn blocks(start: u32, end: u32) -> Vec<(Height, [u8; HASH])> {
+        (start..=end).map(|n| (h(n), hash(h(n)))).collect()
     }
 
     /// Three commits crashed after every operation: each state reopens to an acknowledged or
@@ -178,11 +177,12 @@ mod tests {
                 fs.set_tag(acked);
             }
         }
-        let count_after = |commits_done: u64| match commits_done {
-            0 => Extent::ZERO,
-            1 => Extent::through(h(2)),
-            2 => Extent::through(h(4)),
-            _ => Extent::through(h(5)),
+        // last committed height (inclusive) once `commits_done` commits landed
+        let tip_after = |commits_done: u64| match commits_done {
+            0 => None,
+            1 => Some(h(2)),
+            2 => Some(h(4)),
+            _ => Some(h(5)),
         };
 
         let states = fs.crash_states();
@@ -191,18 +191,19 @@ mod tests {
             let label = &state.label;
             let mut store = BlockHashStore::open(state.fs, path, NET)
                 .unwrap_or_else(|error| panic!("{label}: {error}"));
-            let count = store.finalized_height();
-            let acked = [count_after(state.tag), count_after(state.tag + 1)];
-            assert!(acked.contains(&count), "{label}: recovered {count} heights");
+            let tip = store.finalized_tip().map(|tip| tip.height);
+            let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
+            assert!(acked.contains(&tip), "{label}: recovered through {tip:?}");
             let view = store.reader().pin();
-            for height in count.last().into_iter().flat_map(|last| h(0).up_to(last)) {
+            for height in tip.into_iter().flat_map(|last| h(0).up_to(last)) {
                 assert_eq!(view.height_of_hash(&hash(height)), Some(height), "{label}: {height}");
             }
-            let tip = count.last().map(|tip| BlockHash::from(hash(tip)));
-            assert_eq!(store.tip_hash(), tip, "{label}");
-            assert_eq!(view.height_of_hash(&hash(count.next())), None, "{label}: past the end");
+            let expected =
+                tip.map(|height| BlockRef { hash: BlockHash::from(hash(height)), height });
+            assert_eq!(store.finalized_tip(), expected, "{label}");
+            let next = tip.map_or(Height::GENESIS, Height::next);
+            assert_eq!(view.height_of_hash(&hash(next)), None, "{label}: past the end");
 
-            let next = count.next();
             store.commit(&[(next, hash(next))]).expect("commit after recovery");
             let located = store.reader().pin().height_of_hash(&hash(next));
             assert_eq!(located, Some(next), "{label}: commits continue at the recovered end");
@@ -246,7 +247,7 @@ mod tests {
         drop((store, before));
         let store = BlockHashStore::open(fs, path, NET).expect("reopen");
         let reopened = (lookup(&store, &twin_b), lookup(&store, &hash(h(7))));
-        assert_eq!(store.finalized_height(), Extent::through(h(21)));
+        assert_eq!(store.finalized_tip().map(|tip| tip.height), Some(h(21)));
         assert_eq!(reopened, (Some(h(21)), Some(h(7))));
     }
 }

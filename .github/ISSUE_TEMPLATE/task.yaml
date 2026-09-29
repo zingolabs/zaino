@@ -66,7 +66,7 @@ body:
         - zaino-index-transparent-address
         - zaino-persistence
         - zaino-persistence-macros
-        - zaino-chain-head
+        - zaino-non-finalized-state
         - zaino-source
         - zaino-source-macros
         - zaino-source-zebra-rpc

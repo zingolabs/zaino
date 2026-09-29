@@ -46,7 +46,6 @@ pub enum IndexerError {
     #[error(transparent)]
     TokioJoinError(#[from] tokio::task::JoinError),
     /// Metrics endpoint error.
-    #[cfg(feature = "prometheus")]
     #[error("metrics error: {0}")]
     MetricsError(String),
     /// A runtime task ended cleanly before any shutdown signal (never expected: a fault)

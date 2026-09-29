@@ -115,8 +115,10 @@ dir.commit(&new_body)?;   // MANIFEST.next → fsync → rename → fsync dir
 
 - The header checks magic, CRC, index kind, format version and network; any
   mismatch is a `ManifestError`.
-- Every body starts with `Committed { extent, tip }`; `BodyReader` reads the
-  rest with bounds checks, and `finish()` refuses trailing bytes.
+- Every body starts with `Committed { tip: Option<BlockRef> }` (the last
+  committed block, inclusive; `None` = nothing committed), stored as the block
+  count from genesis then the tip hash; `BodyReader` reads the rest with bounds
+  checks, and `finish()` refuses trailing bytes.
 - `ensure_empty` / `ensure_empty_dir` refuse data in a directory with no
   manifest (`Unmanifested`): a crash never produces it, because the first
   commit precedes any data write.
@@ -133,8 +135,8 @@ lists committed segments as `SegmentMeta { id, records, sealed }`; a segment it 
 list is uncommitted and removed at open.
 
 An index stored this way implements `LsmIndex` on a marker type and lets
-`LsmStore` own its directory: the manifest (committed extent, tip hash, one
-segment list per set), the fresh-directory sequence, and the commit.
+`LsmStore` own its directory: the manifest (committed tip, one segment list per
+set), the fresh-directory sequence, and the commit.
 
 ```rust
 use zaino_persistence::lsm::{LsmIndex, LsmStore, SegmentLog};
@@ -150,8 +152,8 @@ impl LsmIndex for MyIndex {
 
 let mut store = LsmStore::<MyIndex>::open(fs, path, network)?; // unlisted segments removed
 let set = store.sets();                                        // read handles (shared)
-store.commit(rows, extent, tip)?;  // segment per set → MANIFEST (commit point) → published
-let committed = store.committed(); // Committed { extent, tip }
+store.commit(rows, tip)?;          // tip: BlockRef; segment per set → MANIFEST → published
+let committed = store.committed(); // Committed { tip: Option<BlockRef> }
 lsm::committed_files::<MyIndex>(path, network)?;               // for `zainod verify`
 ```
 
@@ -161,7 +163,7 @@ Failures are `zaino_persistence::StoreError` (`Io`, `Manifest`, `Page`,
 - A `commit` that returns `Err` ends the store: any later `commit` panics (an
   `fsync` error is never retried; `docs/design/durability.md` §6). Drop it and
   reopen; recovery lands on the last durable manifest.
-- `commit` asserts `extent` past the committed one, and runs `LsmIndex::check`
+- `commit` asserts `tip` above the committed one, and runs `LsmIndex::check`
   on the lists it is about to write as well as on the lists it reads at open.
 
 The pieces underneath, for a store with a different layout:
@@ -176,10 +178,10 @@ let listed = log.batch(rows)?; // sorted, written, sealed, linked + finished mer
 // commit the manifest carrying `listed`, then:
 log.committed()?;              // publish, unlink merged-away inputs, launch merges
 
-let rows: Vec<MyRow> = set.pin().range(&from, &to); // [from, to), ascending
-let row: Option<MyRow> = set.pin().get(&key);       // exact key: filter first
+let rows: Vec<MyRow> = set.pin().range(&start, &end); // start inclusive, end exclusive; ascending
+let row: Option<MyRow> = set.pin().get(&key);         // exact key: filter first
 let rows: Vec<Option<MyRow>> = set.pin().get_many(&keys); // a batch, in `keys`' order
-let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&from, &to, limit); // None = > limit rows
+let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // None = > limit rows
 ```
 
 - `range_at_most` stops scanning at row `limit + 1` and answers `None` (never a
@@ -233,7 +235,7 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&from, &to, limit); // No
 - Errors surface at the next `batch()`, and a merge panic (a corrupt input
   page) resumes there. Dropping the log cancels and joins every merge; a
   cancelled output is unlisted, so the next open removes it.
-- Feature `prometheus` publishes `zaino_lsm_*` metrics labelled by `set` (the
+- Publishes `zaino_lsm_*` metrics labelled by `set` (the
   segment directory's name). They cover segments and running merges per size
   tier, the stall count, rows batched and merged (their ratio is write
   amplification), merge bytes, and merge and stall durations. Register them with

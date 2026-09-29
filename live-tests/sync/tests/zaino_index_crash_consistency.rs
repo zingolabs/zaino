@@ -1,6 +1,7 @@
 //! Crash consistency: zaino SIGKILLed mid-build, three times, over a frozen mainnet chain.
 //!
-//! - Durable = fsynced before published → a kill may lose pre-commit, never a durable height
+//! - Durable = fsynced before published → a kill may lose the non-finalized state, never a
+//!   durable height
 //! - Each restart resumes from its durable extent and replays; the files must stay valid
 //!   (`zainod verify`) and the served answers must stay zebra's
 //! - Frozen chain (peerless zebra at `ORCHARD_MAINNET`) → at rest the durable extent is exact:
@@ -29,7 +30,7 @@ const TICK: Duration = secs(15);
 const RUN_CAP: Duration = hours(24);
 /// Kills land well inside the build (first minutes = pod start + zebrad opening its state)
 const KILLS: [Duration; 3] = [mins(10), mins(25), mins(45)];
-/// Kubelet crash backoff doubles per kill (10 s → 20 s → 40 s) + replay of the pre-commit window
+/// Kubelet crash backoff doubles per kill (10 s → 20 s → 40 s) + replay of the non-finalized state
 const STALL_WINDOW: Duration = mins(15);
 const READY_WINDOW: Duration = mins(20);
 const TERMINAL_WINDOW: Duration = mins(30);
@@ -77,18 +78,13 @@ async fn zaino_index_crash_consistency(mut run: SyncRunner) -> SyncOutcome {
                 .resources(Cpu::cores(2), Mem::gib(4)),
             );
             let zaino = t.add_indexer(
-                dev!(
-                    Indexer::Zainod,
-                    "../../Dockerfile",
-                    context = "../..",
-                    features = ["prometheus"]
-                )
-                .named(ZAINO)
-                .restartable()
-                .snapshot(ORCHARD_MAINNET)
-                .finalised_depth(FINALISED_DEPTH)
-                .disk(Disk::gib(INDEX_DISK_GIB))
-                .resources(Cpu::cores(4), Mem::gib(16)),
+                dev!(Indexer::Zainod, "../../Dockerfile", context = "../..")
+                    .named(ZAINO)
+                    .restartable()
+                    .snapshot(ORCHARD_MAINNET)
+                    .finalised_depth(FINALISED_DEPTH)
+                    .disk(Disk::gib(INDEX_DISK_GIB))
+                    .resources(Cpu::cores(4), Mem::gib(16)),
             );
             (zebra, zaino)
         })
@@ -206,7 +202,7 @@ async fn zaino_index_crash_consistency(mut run: SyncRunner) -> SyncOutcome {
 
 // ── safety ────────────────────────────────────────────────────────────────────────────────────
 
-/// Durable = fsynced before published → a SIGKILL can take pre-commit, never this
+/// Durable = fsynced before published → a SIGKILL can take the non-finalized state, never this
 async fn durable_extents_never_shrink(
     zaino: &ZainoIndexer,
     seen: &[AtomicU32; ZainoIndex::ALL.len()],
@@ -247,7 +243,7 @@ async fn watermarks_within_the_pin(zaino: &ZainoIndexer, pin: u32) -> Verdict {
     Verdict::Satisfied
 }
 
-/// synced = false ⇒ the index answers UNAVAILABLE (after a restart too: pre-commit replays first)
+/// synced = false ⇒ the index answers UNAVAILABLE (after a restart too: the non-finalized state replays first)
 ///
 /// - Answered while unsynced → re-read the gate (may have opened mid-call) before judging
 async fn a_syncing_index_refuses(zaino: &ZainoIndexer, seen: &AtomicBool) -> Verdict {

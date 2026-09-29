@@ -3,7 +3,7 @@
 How Zaino derives everything it serves from one input, so no derived read
 forwards to the validator. This covers *shape*, what each fold retains;
 [persistence-architecture.md](./persistence-architecture.md) measures the
-substrate, [precommit-state.md](./precommit-state.md) covers the volatile tip,
+substrate, [non-finalized-state.md](./non-finalized-state.md) covers the volatile tip,
 [boundaries.md](./boundaries.md) decides which side of the boundary a method is
 answered from.
 
@@ -121,13 +121,13 @@ outpoint map, no carry, no mutable structure. Queries compose the two:
 - `GetTaddressTransactions(addr, range)`: `receives` gives the paying txids;
   probing `spent` for those outpoints gives the spending txids and heights.
 
-|                   | Maintained UTXO set                          | Pure fold             |
-| ----------------- | -------------------------------------------- | --------------------- |
-| Write path        | lookup + insert + delete per input           | append only           |
-| Carry             | ~1.4 GB resident, or a mutable on-disk index | none                  |
-| Reorg unwind      | must undo deletes                            | drop pre-commit state |
-| `GetAddressUtxos` | `O(unspent)`                                 | `O(received)`         |
-| Storage engines   | two                                          | one                   |
+|                   | Maintained UTXO set                          | Pure fold                |
+| ----------------- | -------------------------------------------- | ------------------------ |
+| Write path        | lookup + insert + delete per input           | append only              |
+| Carry             | ~1.4 GB resident, or a mutable on-disk index | none                     |
+| Reorg unwind      | must undo deletes                            | drop non-finalized state |
+| `GetAddressUtxos` | `O(unspent)`                                 | `O(received)`            |
+| Storage engines   | two                                          | one                      |
 
 `O(received)` against `O(unspent)` only matters for a heavily reused address (an
 exchange hot wallet), not for a light wallet's own mostly single-use receivers
@@ -146,7 +146,7 @@ So a fold *must* look up `outpoint → value` once per transparent input.
 move: **it never deletes**. `outputs (txid, vout) → value` keeps spent outputs
 too, so it is a probed Shape B set like `spent`:
 
-- append-only: reorg = drop pre-commit, no undo; a commit is one segment
+- append-only: reorg = drop the non-finalized state, no undo; a commit is one segment
 - any height re-resolves identically, so an index downstream that is behind
   it replays through the same lookups with no rewind
 - every probe hits (a valid spend's prevout exists): the filter picks the one
@@ -154,9 +154,9 @@ too, so it is a probed Shape B set like `spent`:
 - mainnet ≈ 190M outputs × 44 B ≈ 8.4 GB, against ~1.4 GB resident plus a
   delete path for a maintained UTXO set
 
-Its output is not served. Each block's per-transaction `ValueBalance` goes into
-a `ValueBalanceSink`, which the compact-block index pairs with the block by
-height and hash (`docs/design/sync.md`).
+Its output is not served. Each block's per-transaction `Fee` goes into a
+`FeeSink`, which the compact-block index pairs with the block by height and
+hash (`docs/design/sync.md`).
 
 Mempool fees are not a fold: an unconfirmed transaction may spend another
 unconfirmed one, and the validator already resolved both admitting them, so the
@@ -182,7 +182,7 @@ records are lossy, and full transaction bytes already live in the validator
 Durable storage stops at `tip − finalised_depth`, but clients ask inside that
 window constantly (librustzcash's `GetTreeState` during steady-state polling,
 pepper-sync's address queries over the last ~100 blocks). The window is the same
-fold, applied and not yet committed ([precommit-state.md](./precommit-state.md)):
+fold, applied and not yet committed ([non-finalized-state.md](./non-finalized-state.md)):
 reorgs are absorbed in memory and never reach disk, which is what lets Shapes A
 and B exist.
 

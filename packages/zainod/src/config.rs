@@ -350,8 +350,7 @@ pub struct DaemonConfig {
     /// `getblockchaininfo`, so a validator-derived value mislabels every regtest deployment.
     #[serde(with = "NetworkDef")]
     pub network: NetworkType,
-    /// Prometheus `/metrics` endpoint. Disabled when absent; requires the
-    /// `prometheus` feature.
+    /// Prometheus `/metrics` endpoint. Disabled when absent.
     pub metrics_endpoint: Option<SocketAddr>,
     /// The validator blocks are sourced from.
     pub source: SourceConfig,
@@ -427,21 +426,13 @@ impl DaemonConfig {
         Ok(())
     }
 
-    /// Logs a warning when `metrics_endpoint` cannot start in this build or binds a non-private address.
+    /// Logs a warning when `metrics_endpoint` binds a non-private address.
     pub(crate) fn warn_about_metrics_endpoint(&self) {
         let Some(endpoint) = self.metrics_endpoint else {
             return;
         };
-        #[cfg(not(feature = "prometheus"))]
-        tracing::warn!(
-            %endpoint,
-            "`metrics_endpoint` is configured but this binary was built without the \
-             `prometheus` feature, so no /metrics listener will start. Rebuild with \
-             `--features prometheus` to enable it."
-        );
         // Public bind publishes chain tip, sync progress, request volumes & RSS.
         // Warn, not reject: read-only telemetry, and containers bind 0.0.0.0 by norm
-        #[cfg(feature = "prometheus")]
         if !is_private_listen_addr(&endpoint) {
             tracing::warn!(
                 %endpoint,
@@ -465,7 +456,6 @@ impl DaemonConfig {
 }
 
 /// Whether `addr` binds only loopback or a private-network interface.
-#[cfg(feature = "prometheus")]
 fn is_private_listen_addr(addr: &SocketAddr) -> bool {
     match addr.ip() {
         std::net::IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback(),

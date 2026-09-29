@@ -7,12 +7,8 @@ use super::{
 
 /// A transaction within a block.
 ///
-/// A transaction carries no position field. Its slot in the block — and so
-/// whether it is the coinbase (position 0) — is a property of the
-/// [`Block`](super::Block) that holds it, read from the order of
-/// [`Block::transactions`](super::Block::transactions), never restated here.
-/// A `Transaction` outside a block (a mempool transaction) has no position at
-/// all, so there is no value to invent for one.
+/// - No position field (its slot = the order of [`Block::transactions`](super::Block::transactions);
+///   a mempool transaction has none)
 #[derive(Debug, Clone)]
 pub struct Transaction {
     /// Transaction id.
@@ -60,7 +56,10 @@ impl Transaction {
 /// Transparent pool data within a transaction.
 #[derive(Debug, Clone, Default)]
 pub struct TransparentData {
-    /// Transparent inputs, each = the outpoint it spends (coinbase inputs elided at decode)
+    /// Its one input is the coinbase input (null prevout; protocol.pdf#coinbasetransactions §3.11):
+    /// elided from `inputs`, it spends nothing
+    pub coinbase: bool,
+    /// Transparent inputs, each = the outpoint it spends
     pub inputs: Vec<OutPoint>,
     /// Transparent outputs.
     pub outputs: Vec<TransparentOutput>,
@@ -85,7 +84,8 @@ pub struct TransparentOutput {
 /// Sprout pool data within a transaction (value only: no compact-format fields)
 #[derive(Debug, Clone, Default)]
 pub struct SproutData {
-    /// Σ `vpub_new` − Σ `vpub_old` over the JoinSplits (positive = value flows out of the pool)
+    /// Σ `vpub_new` − Σ `vpub_old` over the JoinSplits, v2–v4 only (+ = into the transparent
+    /// transaction value pool; protocol.pdf#joinsplitbalance §4.12)
     pub value_balance: SignedZatoshis,
 }
 
@@ -96,7 +96,8 @@ pub struct SaplingData {
     pub spends: Vec<SaplingSpend>,
     /// Sapling outputs.
     pub outputs: Vec<SaplingOutput>,
-    /// Net value balance (positive = value flows out of the pool).
+    /// `valueBalanceSapling` (+ = into the transparent transaction value pool;
+    /// protocol.pdf#saplingbalance §4.13)
     pub value_balance: SignedZatoshis,
 }
 
@@ -123,7 +124,8 @@ pub struct SaplingOutput {
 pub struct OrchardData {
     /// Orchard actions (each is both a spend and an output).
     pub actions: Vec<OrchardAction>,
-    /// Net value balance (positive = value flows out of the pool).
+    /// `valueBalanceOrchard` / `valueBalanceIronwood` (+ = into the transparent transaction value
+    /// pool; protocol.pdf#orchardbalance §4.14, zip-0229)
     pub value_balance: SignedZatoshis,
 }
 

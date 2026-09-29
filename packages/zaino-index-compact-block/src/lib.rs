@@ -15,20 +15,23 @@
 //!
 //! - no keys stored: offset = h × 8, one read per bound
 //! - records = wire bytes: serving = byte movement (no decode, no re-encode)
-//! - nonfinalised tier = `NonFinalizedState` (applied records, same bytes, `imbl`, RAM only)
+//! - non-finalized tier = `NonFinalizedState` (applied records, same bytes, `imbl`, RAM only)
 //! - hash → height = `zaino-internal-block-hash-to-height` (record's own `hash` confirms a hit)
 //!
 //! # Lookup (`ReadView::block`, `ReadView::span_from`)
 //!
 //! ```text
-//! height h ──▶ nonfinalised map ──hit──▶ record
+//! height h ──▶ non-finalized map ──hit──▶ record
 //!    │ miss
 //!    ▼
 //! offsets.idx[h - 1], offsets.idx[h] ──▶ blocks.dat[start..end]   (a slice of the mapping)
 //!
-//! from..=to ──▶ offsets.idx[from - 1] .. offsets.idx[k] ──▶ one contiguous blocks.dat span
-//!               (k = last record inside the window budget; next window starts at k + 1)
+//! heights start..=end ──▶ offsets.idx[start - 1] .. offsets.idx[k] ──▶ one contiguous span
+//!                         (k = last record inside the window budget; next window starts at k + 1)
 //! ```
+//!
+//! - Byte offsets: `start` inclusive, `end` exclusive
+//! - Heights: `start` to `end`, both inclusive
 //!
 //! Page format and commit protocol: `zaino_persistence::{pages, dir}`,
 //! `docs/design/index-data-structures.md` §3
@@ -44,7 +47,7 @@ use zaino_persistence::{
     pages::{CommittedFiles, PagedFile, Pages, Sealed},
     StoreError,
 };
-use zaino_primitives::types::{BlockHash, Extent, Height, TreeSize, TreeSizes};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, TreeSize, TreeSizes};
 use zcash_protocol::consensus::NetworkType;
 
 mod build;
@@ -116,7 +119,7 @@ impl Body {
         let offsets = Sealed::decode(&mut body)?;
         body.finish()?;
 
-        if offsets.len != u64::from(committed.extent) * OFFSET as u64 {
+        if offsets.len != committed.count() * OFFSET as u64 {
             return Err(ManifestError::Body("offsets.idx disagrees with the committed count"));
         }
         Ok(Self { committed, sizes, blocks, offsets })
@@ -130,17 +133,18 @@ pub fn committed_files(dir: &Path, network: NetworkType) -> io::Result<Committed
         None => Body::EMPTY,
     };
     Ok(CommittedFiles {
-        heights: body.committed.extent,
+        tip: body.committed.height(),
         files: vec![(BLOCKS.to_owned(), body.blocks), (OFFSETS.to_owned(), body.offsets)],
     })
 }
 
-/// A consistent read view of the committed files
+/// A consistent read view of the committed files; `tip` = last committed height, inclusive
+/// (`None` = empty)
 #[derive(Debug)]
 pub(crate) struct Snapshot {
     blocks: Pages,
     offsets: Pages,
-    end: Extent,
+    tip: Option<Height>,
 }
 
 /// File index of a committed height
@@ -149,9 +153,10 @@ fn slot(height: Height) -> usize {
 }
 
 impl Snapshot {
-    /// Byte range of a committed height's record in `blocks.dat`
+    /// Byte range of a committed height's record in `blocks.dat` (`start` inclusive, `end`
+    /// exclusive)
     fn record(&self, height: Height) -> Option<Range<usize>> {
-        if !self.end.contains(height) {
+        if Some(height) > self.tip {
             return None;
         }
         let end_of = |height: usize| {
@@ -171,7 +176,8 @@ impl Snapshot {
         Some(self.blocks.bytes(self.record(height)?))
     }
 
-    /// Record-aligned prefix of `from ..= to`, plus the heights it reaches
+    /// Record-aligned prefix of heights `start` to `end`, both inclusive, plus the last height it
+    /// reaches (inclusive)
     ///
     /// - window bounded by `budget`, not by the range (unbounded range != unbounded work)
     /// - always >= 1 record, so a caller looping on the reach makes progress
@@ -179,29 +185,29 @@ impl Snapshot {
     /// - a **slice** of the mapping: the window costs no allocation and no copy
     pub(crate) fn span_from(
         &self,
-        from: Height,
-        to: Height,
+        start: Height,
+        end: Height,
         budget: usize,
-    ) -> Option<(Bytes, Extent)> {
-        assert!(from <= to, "span {from}..={to} reversed");
-        let Range { start, mut end } = self.record(from)?;
-        let mut last = from;
+    ) -> Option<(Bytes, Height)> {
+        assert!(start <= end, "span {start}..={end} reversed");
+        let Range { start: byte_start, end: mut byte_end } = self.record(start)?;
+        let mut last = start;
 
-        for next in from.next().up_to(to) {
+        for next in start.next().up_to(end) {
             let Some(record) = self.record(next) else {
                 break;
             };
-            if record.end - start > budget {
+            if record.end - byte_start > budget {
                 break;
             }
-            end = record.end;
+            byte_end = record.end;
             last = next;
         }
 
         // one readahead per window: faults here on the blocking step, not on a runtime worker
         // (4.3x cold, docs/design/persistence-architecture.md)
-        self.blocks.will_need(start..end);
-        Some((self.blocks.bytes(start..end), Extent::through(last)))
+        self.blocks.will_need(byte_start..byte_end);
+        Some((self.blocks.bytes(byte_start..byte_end), last))
     }
 }
 
@@ -213,9 +219,8 @@ pub struct CompactBlockStore {
     offsets: PagedFile,
     snapshot: Arc<ArcSwap<Snapshot>>,
     committed: Body,
-    appended: Extent,
-    /// Last appended block's hash (`None` iff nothing appended since the last commit)
-    appended_tip: Option<BlockHash>,
+    /// Last appended block, inclusive (= the committed tip until an append; `None` = empty)
+    appended: Option<BlockRef>,
 }
 
 /// Cloneable read handle onto the committed records
@@ -225,7 +230,7 @@ pub struct CompactBlockReader {
 }
 
 impl CompactBlockReader {
-    /// Committed records alone, no nonfinalised tier above them
+    /// Committed records alone, no non-finalized tier above them
     pub fn pin(&self) -> ReadView {
         self.pin_with(NonFinalizedState::default())
     }
@@ -268,15 +273,14 @@ impl CompactBlockStore {
         let snapshot = Snapshot {
             blocks: blocks.pages(committed.blocks, None)?,
             offsets: offsets.pages(committed.offsets, None)?,
-            end: committed.committed.extent,
+            tip: committed.committed.height(),
         };
         Ok(Self {
             dir,
             blocks,
             offsets,
             snapshot: Arc::new(ArcSwap::from_pointee(snapshot)),
-            appended: committed.committed.extent,
-            appended_tip: None,
+            appended: committed.committed.tip,
             committed,
         })
     }
@@ -286,18 +290,20 @@ impl CompactBlockStore {
         CompactBlockReader { snapshot: Arc::clone(&self.snapshot) }
     }
 
-    /// Committed plus appended heights ([`append`](Self::append) continues at `.next()`)
-    pub fn appended(&self) -> Extent {
-        self.appended
+    /// Last appended height, inclusive, committed or not (`None` = empty; [`append`](Self::append)
+    /// continues at the height after it)
+    pub fn appended(&self) -> Option<Height> {
+        self.appended.map(|tip| tip.height)
     }
 
-    /// One past the highest committed height (what readers can be served)
-    pub fn finalized_height(&self) -> Extent {
-        self.committed.committed.extent
-    }
-
-    pub fn tip_hash(&self) -> Option<BlockHash> {
+    /// Last committed block, inclusive (what readers can be served; `None` = empty)
+    pub fn finalized_tip(&self) -> Option<BlockRef> {
         self.committed.committed.tip
+    }
+
+    /// [`finalized_tip`](Self::finalized_tip)'s height
+    pub fn finalized_height(&self) -> Option<Height> {
+        self.committed.committed.height()
     }
 
     /// Tree sizes after the committed tip, as committed with it
@@ -310,7 +316,8 @@ impl CompactBlockStore {
     /// - neither durable nor visible until [`commit`](Self::commit)
     /// - heights address the files directly: sequential, asserted
     pub fn append(&mut self, height: Height, hash: [u8; HASH], framed: &[u8]) -> Result<()> {
-        assert_eq!(height, self.appended().next(), "compact store append out of order");
+        let next = self.appended().map_or(Height::GENESIS, Height::next);
+        assert_eq!(height, next, "compact store append out of order");
         assert_eq!(
             record::framed_len(framed),
             Some(framed.len()),
@@ -319,27 +326,26 @@ impl CompactBlockStore {
 
         self.blocks.append(framed)?;
         self.offsets.append(&self.blocks.len().to_le_bytes())?;
-        self.appended = Extent::through(height);
-        self.appended_tip = Some(BlockHash::from(hash));
+        self.appended = Some(BlockRef { hash: BlockHash::from(hash), height });
         Ok(())
     }
 
     /// Makes every appended record durable and visible; `sizes` = tree sizes after the last one
     ///
     /// - files sealed (fsync) → manifest → records published
+    /// - nothing appended since the last commit = no-op
     pub fn commit(&mut self, sizes: TreeSizes) -> Result<()> {
-        let Some(tip) = self.appended_tip else {
+        if self.appended == self.committed.committed.tip {
             return Ok(());
-        };
+        }
         let body = Body {
-            committed: Committed::new(self.appended, Some(tip)),
+            committed: Committed { tip: self.appended },
             sizes,
             blocks: self.blocks.seal()?,
             offsets: self.offsets.seal()?,
         };
         self.dir.commit(&body.encode())?;
         self.committed = body;
-        self.appended_tip = None;
         self.publish()
     }
 
@@ -350,7 +356,7 @@ impl CompactBlockStore {
         self.snapshot.store(Arc::new(Snapshot {
             blocks: self.blocks.pages(body.blocks, Some(&old.blocks))?,
             offsets: self.offsets.pages(body.offsets, Some(&old.offsets))?,
-            end: body.committed.extent,
+            tip: body.committed.height(),
         }));
         Ok(())
     }
@@ -398,20 +404,19 @@ mod tests {
         let path = Path::new("/cb");
 
         let mut store = CompactBlockStore::open(fs.clone(), path, NET).expect("open");
-        assert_eq!(store.finalized_height(), Extent::ZERO);
-        assert_eq!(store.tip_hash(), None);
+        assert_eq!(store.finalized_tip(), None);
         assert!(store.reader().pin().block(h(0)).is_none(), "empty store serves nothing");
 
         for height in h(0).up_to(h(7)) {
             store.append(height, hash(height), &framed(height)).expect("append");
         }
-        assert_eq!(store.appended(), Extent::through(h(7)), "writer advanced");
-        assert_eq!(store.finalized_height(), Extent::ZERO, "nothing visible before commit");
+        assert_eq!(store.appended(), Some(h(7)), "writer advanced");
+        assert_eq!(store.finalized_tip(), None, "nothing visible before commit");
         assert!(store.reader().pin().block(h(3)).is_none(), "uncommitted record is not served");
 
         store.commit(sizes(h(7))).expect("commit");
-        assert_eq!(store.finalized_height(), Extent::through(h(7)));
-        assert_eq!(store.tip_hash(), Some(BlockHash::from(hash(h(7)))));
+        let tip_7 = BlockRef { hash: BlockHash::from(hash(h(7))), height: h(7) };
+        assert_eq!(store.finalized_tip(), Some(tip_7));
         assert_eq!(store.sizes(), sizes(h(7)));
 
         let reader = store.reader();
@@ -420,21 +425,22 @@ mod tests {
         let snapshot = reader.snapshot.load();
         let (window, reach) = snapshot.span_from(h(2), h(5), usize::MAX).expect("span");
         let expected: Vec<u8> = h(2).up_to(h(5)).flat_map(framed).collect();
-        assert_eq!((window.as_ref(), reach), (&expected[..], Extent::through(h(5))));
+        assert_eq!((window.as_ref(), reach), (&expected[..], h(5)));
         let (window, reach) = snapshot.span_from(h(2), h(5), 1).expect("budget-bound span");
-        let one = (&framed(h(2))[..], Extent::through(h(2)));
+        let one = (&framed(h(2))[..], h(2));
         assert_eq!((window.as_ref(), reach), one, "always one record");
         assert!(snapshot.span_from(h(8), h(9), usize::MAX).is_none(), "past the tail");
         drop(snapshot);
 
         drop(store);
         let mut reopened = CompactBlockStore::open(fs, path, NET).expect("reopen");
-        assert_eq!(reopened.finalized_height(), Extent::through(h(7)));
+        assert_eq!(reopened.finalized_tip(), Some(tip_7));
         assert_eq!(reopened.sizes(), sizes(h(7)));
         assert_eq!(reopened.reader().pin().block(h(3)).as_deref(), Some(&framed(h(3))[..]));
+        reopened.commit(sizes(h(7))).expect("nothing appended: no-op");
         reopened.append(h(8), hash(h(8)), &framed(h(8))).expect("append after reopen");
         reopened.commit(sizes(h(8))).expect("commit");
-        assert_eq!(reopened.finalized_height(), Extent::through(h(8)));
+        assert_eq!(reopened.finalized_height(), Some(h(8)));
         assert_eq!(reopened.reader().pin().block(h(8)).as_deref(), Some(&framed(h(8))[..]));
     }
 
@@ -455,11 +461,12 @@ mod tests {
                 fs.set_tag(acked);
             }
         }
-        let count_after = |commits_done: u64| match commits_done {
-            0 => Extent::ZERO,
-            1 => Extent::through(h(2)),
-            2 => Extent::through(h(4)),
-            _ => Extent::through(h(5)),
+        // last committed height, inclusive, after `commits_done` commits (`None` = empty)
+        let tip_after = |commits_done: u64| match commits_done {
+            0 => None,
+            1 => Some(h(2)),
+            2 => Some(h(4)),
+            _ => Some(h(5)),
         };
 
         let states = fs.crash_states();
@@ -468,18 +475,19 @@ mod tests {
             let label = &state.label;
             let mut store = CompactBlockStore::open(state.fs, path, NET)
                 .unwrap_or_else(|error| panic!("{label}: {error}"));
-            let count = store.finalized_height();
-            let acked = [count_after(state.tag), count_after(state.tag + 1)];
-            assert!(acked.contains(&count), "{label}: recovered {count} heights");
+            let tip = store.finalized_height();
+            let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
+            assert!(acked.contains(&tip), "{label}: recovered tip {tip:?}");
             let pinned = store.reader().pin();
-            for height in count.last().into_iter().flat_map(|last| h(0).up_to(last)) {
+            for height in tip.into_iter().flat_map(|last| h(0).up_to(last)) {
                 let served = pinned.block(height).map(Vec::from);
                 assert_eq!(served, Some(framed(height)), "{label}: {height}");
             }
-            let tip = count.last().map(|tip| BlockHash::from(hash(tip)));
-            assert_eq!(store.tip_hash(), tip, "{label}");
+            let expected =
+                tip.map(|height| BlockRef { hash: BlockHash::from(hash(height)), height });
+            assert_eq!(store.finalized_tip(), expected, "{label}");
 
-            let next = count.next();
+            let next = tip.map_or(Height::GENESIS, Height::next);
             store.append(next, hash(next), &framed(next)).expect("append");
             store.commit(sizes(next)).expect("commit after recovery");
             let served = store.reader().pin().block(next).map(Vec::from);
@@ -520,7 +528,7 @@ mod tests {
         let fs = populated();
         fs.corrupt(&path.join(BLOCKS), |bytes| bytes.extend_from_slice(&[0xa5; 64]));
         let store = CompactBlockStore::open(fs.clone(), path, NET).expect("open");
-        assert_eq!(store.finalized_height(), Extent::through(h(3)));
+        assert_eq!(store.finalized_height(), Some(h(3)));
         let on_disk = fs.contents(&path.join(BLOCKS)).expect("blocks").len() as u64;
         assert_eq!(on_disk, data_len, "uncommitted tail truncated");
 

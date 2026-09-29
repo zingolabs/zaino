@@ -12,7 +12,7 @@ members = [
     "packages/zaino-primitives",
     "packages/zaino-sync",
     "packages/zaino-source",
-    "packages/zaino-chain-head",
+    "packages/zaino-non-finalized-state",
     "packages/zainod",
     "packages/zaino-proto",
     # live-tests/ = standalone workspace (ztest harness, links no production crate)
@@ -110,7 +110,7 @@ zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
 # adapter that cannot answer a question simply does not implement it.
 zaino-source = { path = "packages/zaino-source", version = "0.2.1" }
 # ChainHead: the in-memory non-final window of the best chain (reorg replay without refetch)
-zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.1" }
+zaino-non-finalized-state = { path = "packages/zaino-non-finalized-state", version = "0.1.1" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.0" }
 # CompactBlockIndex's storage engine: gRPC-framed records in append-only files,
 # served as contiguous mmap spans.

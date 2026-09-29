@@ -29,7 +29,7 @@ already holds for consensus reasons, or a write.
 | ------------------------------------------------------- | ----------------- | ------------------------------------------------ |
 | `GetBlock`, `GetBlockRange`, `GetLatestBlock`           | index             | derived (compact projection)                     |
 | `CompactTx.fee` in a mined block                        | index             | derived (value-balance: Σ spent prevouts)        |
-| `CompactTx.fee` in `GetMempoolTx` / `GetMempoolStream`  | validator         | its admission computed it (`getrawmempool true`) |
+| `CompactTx.fee` in `GetMempoolTx`                       | validator         | its admission computed it (`getrawmempool true`) |
 | `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | index             | derived (commitment-tree fold)                   |
 | `GetAddressUtxos`, `GetTaddressBalance`                 | index             | derived (address rollup)                         |
 | `SendTransaction`                                       | validator         | a write                                          |
@@ -71,6 +71,11 @@ transparent output's value, so it resolves the one term a block does not carry
 It may spend another unconfirmed transaction's output, which no index holds,
 and the validator already priced it to admit it. So the mempool fee is read off
 the validator's own listing rather than re-derived, the same way
-`GetTransaction` bytes are. `CompactTx.fee` is only a `uint32`, so a fee that
-is unknown (a coinbase, our own broadcast not yet listed) or ≥ 2^32 zatoshis is
-sent as 0, which the protocol defines as "not provided".
+`GetTransaction` bytes are. Zebra lists the actual fee (`miner_fee`), not the
+ZIP 317 conventional one. `GetMempoolStream` sends `RawTransaction`s, so it
+carries no fee at all.
+
+`CompactTx.fee` is a `uint32` with no presence bit ("present if server can
+provide"). As a Zaino policy, a coinbase (which pays no fee), a mempool
+transaction not yet priced, and a fee of 2^32 zatoshis or more are all sent as
+0 rather than a saturated wrong value.

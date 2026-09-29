@@ -9,7 +9,6 @@ mod error;
 mod probe;
 
 pub use client::{RpcClient, RpcClientConfig};
-#[cfg(feature = "prometheus")]
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use error::RpcError;
 pub use probe::ProbeError;

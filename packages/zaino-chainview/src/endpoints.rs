@@ -45,6 +45,22 @@ impl EndpointSet {
     pub fn is_empty(&self) -> bool {
         self.0 == 0
     }
+
+    /// Positions in the configured endpoint list, ascending
+    pub fn positions(self) -> impl Iterator<Item = usize> {
+        (0..Self::MAX).filter(move |position| self.0 & (1u64 << position) != 0)
+    }
+
+    /// Endpoints at `positions` in the configured list (each `< MAX`, asserted)
+    pub fn at(positions: impl IntoIterator<Item = usize>) -> Self {
+        positions
+            .into_iter()
+            .map(|position| {
+                EndpointIndex::new(position)
+                    .unwrap_or_else(|| panic!("endpoint {position} past {}", Self::MAX))
+            })
+            .collect()
+    }
 }
 
 impl FromIterator<EndpointIndex> for EndpointSet {

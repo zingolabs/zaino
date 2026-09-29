@@ -5,7 +5,7 @@ Configuration and running the daemon are in [`docs/running.md`](../../docs/runni
 
 ## The admin listener
 
-With the `prometheus` feature and `metrics_endpoint` set, zainod serves an admin listener on
+With `metrics_endpoint` set, zainod serves an admin listener on
 its own thread and current-thread runtime. A probe answered from a saturated serving runtime
 would measure that runtime's queue, and a timed-out liveness probe gets the pod killed.
 

@@ -38,7 +38,7 @@ packages/                          Cargo workspace members
   zaino-index-tree-state/            TreeStateIndex: commitment-tree frontiers and subtree roots
   zaino-index-transparent-address/   TransparentAddressIndex: receives and spends as sorted segments
   zaino-persistence/                 Storage core: sorted segments, verify report types
-  zaino-chain-head/                  Non-final window of the best chain, in memory: reorg replay
+  zaino-non-finalized-state/         Non-final window of the best chain, in memory: reorg replay
   # validator source
   zaino-source/                      Driven ports + the Zebra JSON-RPC adapter, block decode, fetch pool
   # vocabulary
@@ -76,7 +76,7 @@ in plaintext; it links no TLS stack. Expose it beyond a trusted network only
 behind a TLS-terminating proxy. The validator connection is plain HTTP JSON-RPC
 to `[source] jsonrpc_address`.
 
-The optional admin listener (`metrics_endpoint`, feature `prometheus`) serves
+The optional admin listener (`metrics_endpoint`) serves
 `/metrics` and `/livez` without authentication or encryption. It publishes the
 chain tip, sync progress, request volumes and process memory. zainod warns at
 startup when it binds a non-private address; restrict it to loopback, a private
@@ -88,11 +88,10 @@ interface, or the scraper's network. See [`zainod`'s guide](./packages/zainod/us
 
 | Build arg        | Values                                    | Default   |
 | ---------------- | ----------------------------------------- | --------- |
-| `CARGO_FEATURES` | comma-separated, e.g. `prometheus` | empty (default set) |
 | `CARGO_PROFILE`  | `release`, `profiling` (+ line tables & frame pointers, for sampling profilers) | `release` |
 
 ```sh
-docker build -t zainod --build-arg CARGO_FEATURES=prometheus .
+docker build -t zainod .
 RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod  # local profiling build
 ```
 
@@ -118,7 +117,7 @@ Operating it:
 
 How it is built, and why:
 - [Where data lives](./docs/design/boundaries.md): the consensus / keys / everything-else rule that decides what Zaino indexes.
-- [The non-finalised window is pre-commit state](./docs/design/precommit-state.md): one fold, two watermarks, and why a reorg is the same operation as a restart.
+- [The non-finalized state](./docs/design/non-finalized-state.md): one fold, two watermarks, and why a reorg is the same operation as a restart.
 - [Index data structures](./docs/design/index-data-structures.md): the two storage shapes every index is an instance of.
 - [Persistence architecture](./docs/design/persistence-architecture.md): the measurements behind append-only files and mmap, and the mmap hazards.
 - [Durability](./docs/design/durability.md): the manifest commit point, page checksums (the one disk check every index shares), crash testing, and why zainod dies rather than serve a state it cannot vouch for.
@@ -136,7 +135,7 @@ prevents.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on nothing.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, `ValidatorClient`, and the ordered multi-validator `BlockFetchPool`.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N validators — the two-layer model, quorum and failing closed, and why `ours` is the exception.
-- [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the in-memory non-final window, how `advance` resolves an extension or a reorg, and why a reorg replays without fetching.
+- [`zaino-non-finalized-state`](./packages/zaino-non-finalized-state/usage.md): the in-memory non-final window, how `advance` resolves an extension or a reorg, and why a reorg replays without fetching.
 - [`zaino-sync`](./packages/zaino-sync/usage.md): the one producer (bulk, then the quorum tip), why every index is fed from the rearmost resume point, derived sinks, the `IndexWriter` contract, and what the committed height promises.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the on-disk record boundary, immutable sorted segments, and the report vocabulary every index verifier shares.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.

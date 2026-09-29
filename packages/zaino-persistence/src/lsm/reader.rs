@@ -62,9 +62,9 @@ pub struct Snapshot<K> {
 }
 
 impl<K: Key> Snapshot<K> {
-    /// Every record whose key is in `[from, to)`, ascending, across all segments
-    pub fn range<R: Record<Key = K>>(&self, from: &K, to: &K) -> Vec<R> {
-        self.range_at_most(from, to, usize::MAX).expect("no range holds usize::MAX rows")
+    /// Every record keyed `start` inclusive to `end` exclusive, ascending, across all segments
+    pub fn range<R: Record<Key = K>>(&self, start: &K, end: &K) -> Vec<R> {
+        self.range_at_most(start, end, usize::MAX).expect("no range holds usize::MAX rows")
     }
 
     /// [`range`](Self::range), or `None` once more than `limit` rows match across all segments
@@ -73,17 +73,17 @@ impl<K: Key> Snapshot<K> {
     ///   how many rows the range holds)
     pub fn range_at_most<R: Record<Key = K>>(
         &self,
-        from: &K,
-        to: &K,
+        start: &K,
+        end: &K,
         limit: usize,
     ) -> Option<Vec<R>> {
-        let (from, to) = (from.encode(), to.encode());
+        let (start, end) = (start.encode(), end.encode());
         let mut found = Vec::new();
 
         for mapped in &self.segments {
             let file = &mapped.file;
-            for slot in file.seek(&from)..file.records() {
-                if file.key(slot) >= to.as_slice() {
+            for slot in file.seek(&start)..file.records() {
+                if file.key(slot) >= end.as_slice() {
                     break;
                 }
                 if found.len() == limit {

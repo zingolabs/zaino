@@ -22,7 +22,7 @@ values never belong here.
 ## Modules
 
 ```rust
-use zaino_primitives::protocol::{COINBASE_MATURITY, MAX_BLOCK_REORG_HEIGHT, MAX_NONFINALISED_DEPTH};
+use zaino_primitives::protocol::{MAX_BLOCK_BYTES, MAX_BLOCK_REORG_HEIGHT};
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
 use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 ```
@@ -30,9 +30,10 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 - `types` — the chain: `Block` (the one decoded block every index
   consumes, off `zaino_sync::BlockSink`), `BlockHeader`, `ChainMetadata` (cumulative tree sizes, derived by
   the compact-block index), `Transaction` (and `types::transaction` parts,
-  Sprout's value balance included), `ValueBalance` (what a transaction moves
-  out of each pool; `fee()` = their sum, `None` for a coinbase) and
-  `BlockValueBalances` (one per transaction, named by block hash), `OutPoint`
+  Sprout's value balance included; `TransparentData::coinbase` marks the
+  coinbase), `Fee` (`Coinbase`, or `Paid` = what the transaction leaves in the
+  transparent pool) and `BlockFees` (one `Fee` per transaction, named by block
+  hash), `OutPoint`
   (`txid` + `vout`: a transparent input is the outpoint it spends, and the key
   both transparent indexes store under),
   `BlockHash`, `TransactionId`, `Height`, `BlockRef`, `TreeSize`, `TreeRoot`,
@@ -42,10 +43,9 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   (`BlockDeltas`, `BlockHeaderVerbose`, `BlockSubsidy`, `ChainTip`,
   `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`, …). Only named,
   typed fields; `Option` means "the validator may not report it".
-- `protocol` — `COINBASE_MATURITY` (100), `MAX_BLOCK_REORG_HEIGHT` (1000),
-  `MAX_NONFINALISED_DEPTH` (1001). Stated as protocol facts, not borrowed from
-  a node; `zaino-source-zebra-rpc`'s `consensus_agreement` tests check them
-  against Zebra. Restating them elsewhere is a bug.
+- `protocol` — `MAX_BLOCK_REORG_HEIGHT` (1000) and `MAX_BLOCK_BYTES`
+  (2,000,000, the spec's `MAX_BLOCK_SIZE`). Stated as protocol facts, not
+  borrowed from a node. Restating them elsewhere is a bug.
 
 ## Invariants live in constructors
 
@@ -67,11 +67,11 @@ let c = CompactCiphertext::try_new(&bytes)?;          // exactly 52 bytes
 
 ## Zatoshi family
 
-| Type | Range | Is |
+| Type | Range (both ends inclusive) | Is |
 |---|---|---|
-| `Zatoshis` | `0 ..= supply` | an amount: balance, UTXO value, one movement |
-| `ZatoshisFlowSum` | `0 ..= u128::MAX` | a sum of movements (not supply-bounded) |
-| `SignedZatoshis` | `-supply ..= supply` | a signed movement or difference |
+| `Zatoshis` | `0` to `supply` | an amount: balance, UTXO value, one movement |
+| `ZatoshisFlowSum` | `0` to `u128::MAX` | a sum of movements (not supply-bounded) |
+| `SignedZatoshis` | `-supply` to `supply` | a signed movement or difference |
 
 ```rust
 let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?; // None only past u128::MAX

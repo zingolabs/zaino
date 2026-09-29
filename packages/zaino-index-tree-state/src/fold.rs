@@ -4,7 +4,7 @@
 //!   `MerkleHashOrchard`)
 //! - hashing = `Frontier::append_batch_visiting`: one `Hashable::combine_pairs` per level (the node
 //!   types split wide levels across cores)
-//! - folds into the nonfinalised tier only (no file access)
+//! - folds into the non-finalized tier only (no file access)
 
 use incrementalmerkletree::{
     frontier::{Frontier, NonEmptyFrontier},
@@ -23,7 +23,7 @@ use crate::{
 /// Level whose completion = one `GetSubtreeRoots` entry (2^16 leaves, the protocol's shard)
 pub(crate) const SUBTREE_LEVEL: u8 = 16;
 
-/// Frontier of `nodes`' tree, nonfinalised nodes then durable
+/// Frontier of `nodes`' tree, non-finalized nodes then durable
 ///
 /// - no hashing: every ommer = a retained left sibling, leaf = `node(0, position)`
 /// - `None` = a node missing or non-canonical (the stored tree is corrupt)

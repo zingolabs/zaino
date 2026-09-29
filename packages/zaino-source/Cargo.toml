@@ -13,7 +13,7 @@ categories.workspace = true
 
 [dependencies]
 zaino-primitives = { workspace = true }
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 orchard = { workspace = true }
 reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -29,8 +29,6 @@ const-hex = "1.19.3"
 
 [features]
 testing = ["zaino-primitives/testing"]
-# Validator JSON-RPC call metrics
-prometheus = ["dep:metrics"]
 
 [dev-dependencies]
 proptest.workspace = true

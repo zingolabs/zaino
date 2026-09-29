@@ -1,9 +1,9 @@
 //! Reads that cross zaino's final / non-final boundary.
 //!
 //! Heights below `tip + 1 − finalised_depth` are served from the durable index, everything
-//! above from pre-commit. A range spanning the boundary is stitched from both, so the seam is
-//! a real join in the code — the only place a served chain can acquire a gap, a duplicate, or
-//! two mismatched halves.
+//! above from the non-finalized state. A range spanning the boundary is stitched from both, so
+//! the seam is a real join in the code — the only place a served chain can acquire a gap, a
+//! duplicate, or two mismatched halves.
 //!
 //! The shipped depth (1000) is out of any regtest fixture's reach, so ztest configures
 //! regtest zainod at `REGTEST_FINALISED_DEPTH` (100).
@@ -29,9 +29,7 @@ const FAST_SEAM: u32 = ztest::backends::zainod::REGTEST_FINALISED_DEPTH;
 async fn finalised_index_advances_past_the_seam() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"]).regtest(),
-    );
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
     let tip = validator.generate_blocks(CHAIN_LEN).await?;
@@ -56,9 +54,7 @@ async fn finalised_index_advances_past_the_seam() -> Result<()> {
 async fn range_across_the_seam_is_one_unbroken_chain() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"]).regtest(),
-    );
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
     let tip = validator.generate_blocks(CHAIN_LEN).await?;
@@ -89,9 +85,7 @@ async fn range_across_the_seam_is_one_unbroken_chain() -> Result<()> {
 async fn seam_blocks_are_identical_whichever_side_serves_them() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"]).regtest(),
-    );
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
     let tip = validator.generate_blocks(CHAIN_LEN).await?;
@@ -124,9 +118,7 @@ async fn seam_blocks_are_identical_whichever_side_serves_them() -> Result<()> {
 async fn descending_range_across_the_seam_reverses_the_ascending_one() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"]).regtest(),
-    );
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
     let tip = validator.generate_blocks(CHAIN_LEN).await?;
@@ -153,9 +145,7 @@ async fn descending_range_across_the_seam_reverses_the_ascending_one() -> Result
 async fn served_blocks_match_the_validator_on_both_sides_of_the_seam() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"]).regtest(),
-    );
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
     let tip = validator.generate_blocks(CHAIN_LEN).await?;

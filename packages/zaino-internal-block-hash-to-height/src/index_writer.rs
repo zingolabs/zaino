@@ -4,29 +4,30 @@ use std::sync::Arc;
 
 use imbl::HashMap;
 use zaino_persistence::{lsm, StoreError};
-use zaino_primitives::types::{Block, BlockHash, Extent, Height};
+use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{IndexWriter, Offloaded};
 
 use crate::{by_hash::HashKey, BlockHashStore, ReadView, HASH};
 
-/// - `durable`, `tip`, `segments` = the store as of the last `committed` (answered without the
-///   store while a write has it)
+/// - `durable`, `segments` = the store as of the last `committed` (answered without the store
+///   while a write has it)
+/// - `durable` = last committed block, `applied` = last applied height (both inclusive; `None` =
+///   none)
 pub struct BlockHashIndexWriter {
     store: Offloaded<BlockHashStore>,
-    durable: Extent,
-    tip: Option<BlockHash>,
+    durable: Option<BlockRef>,
     segments: Arc<lsm::Snapshot<HashKey>>,
-    applied: Extent,
+    applied: Option<Height>,
     non_finalized: HashMap<[u8; HASH], Height>,
 }
 
 impl BlockHashIndexWriter {
     pub fn new(store: BlockHashStore) -> Self {
+        let durable = store.finalized_tip();
         Self {
-            durable: store.finalized_height(),
-            tip: store.tip_hash(),
+            durable,
             segments: store.reader().pin_segments(),
-            applied: store.finalized_height(),
+            applied: durable.map(|tip| tip.height),
             store: Offloaded::new(store),
             non_finalized: HashMap::new(),
         }
@@ -42,15 +43,11 @@ impl IndexWriter for BlockHashIndexWriter {
 
     const NAME: &'static str = "block_hash";
 
-    fn finalized_height(&self) -> Extent {
+    fn finalized_tip(&self) -> Option<BlockRef> {
         self.durable
     }
 
-    fn finalized_tip(&self) -> Option<BlockHash> {
-        self.tip
-    }
-
-    fn applied_height(&self) -> Extent {
+    fn applied_height(&self) -> Option<Height> {
         self.applied
     }
 
@@ -60,9 +57,10 @@ impl IndexWriter for BlockHashIndexWriter {
 
     async fn apply(&mut self, block: &Arc<Block>) -> Result<(), StoreError> {
         let height = block.header().height;
-        assert_eq!(height, self.applied.next(), "block_hash: blocks must arrive contiguously");
+        let next = self.applied.map_or(Height::GENESIS, Height::next);
+        assert_eq!(height, next, "block_hash: blocks must arrive contiguously");
         self.non_finalized.insert(block.header().hash.into(), height);
-        self.applied = Extent::through(height);
+        self.applied = Some(height);
         Ok(())
     }
 
@@ -82,23 +80,24 @@ impl IndexWriter for BlockHashIndexWriter {
     }
 
     async fn committed(&mut self, (store, written): Self::Done) -> Result<(), StoreError> {
-        (self.durable, self.tip) = (store.finalized_height(), store.tip_hash());
+        self.durable = store.finalized_tip();
         self.segments = store.reader().pin_segments();
         self.store.restore(store);
         for hash in &written {
             self.non_finalized.remove(hash);
         }
 
-        // nonfinalised entry at or below the new tip = another branch's hash at a now-final height
-        let stale = self.non_finalized.values().any(|height| self.durable.contains(*height));
-        assert!(!stale, "block_hash: finalised over another branch's nonfinalised block");
-        self.applied = self.applied.max(self.durable);
+        // non-finalized entry at or below the new tip = another branch's hash at a now-final height
+        let durable = self.finalized_height();
+        let stale = self.non_finalized.values().any(|&height| Some(height) <= durable);
+        assert!(!stale, "block_hash: finalised over another branch's non-finalized block");
+        self.applied = self.applied.max(durable);
         Ok(())
     }
 
     async fn reset(&mut self) -> Result<(), StoreError> {
         self.non_finalized = HashMap::new();
-        self.applied = self.durable;
+        self.applied = self.finalized_height();
         Ok(())
     }
 }
@@ -108,7 +107,7 @@ mod tests {
     use std::path::Path;
 
     use zaino_persistence::fs::SimFs;
-    use zaino_primitives::types::{BlockHeader, Transaction, TransactionId};
+    use zaino_primitives::types::{BlockHash, BlockHeader, Transaction, TransactionId};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
@@ -146,8 +145,8 @@ mod tests {
             .expect("bulk finalize");
         writer.apply(&block(2, 12)).await.expect("apply");
         writer.apply(&block(3, 0xee)).await.expect("losing branch");
-        let through = |n| Extent::through(h(n));
-        let tip_12 = Some(BlockHash::from([12; 32]));
+        let through = |n| Some(h(n));
+        let tip_12 = Some(BlockRef { hash: BlockHash::from([12; 32]), height: h(2) });
         assert_eq!((writer.finalized_height(), writer.applied_height()), (through(1), through(3)));
         let located = [10, 11, 12, 0xee].map(|hash| writer.view().height_of_hash(&[hash; 32]));
         assert_eq!(located, [Some(h(0)), Some(h(1)), Some(h(2)), Some(h(3))], "both tiers locate");
@@ -160,7 +159,7 @@ mod tests {
         let done = write().expect("written");
         assert_eq!(writer.finalized_height(), through(1), "durable moves only on landing");
         let unlanded = writer.view().height_of_hash(&[12; 32]);
-        assert_eq!(unlanded, Some(h(2)), "written, not landed: still pre-commit");
+        assert_eq!(unlanded, Some(h(2)), "written, not landed: still non-finalized");
         writer.committed(done).await.expect("landed");
         let located = [12, 13, 0xee].map(|hash| writer.view().height_of_hash(&[hash; 32]));
         assert_eq!(located, [Some(h(2)), Some(h(3)), None], "losing branch gone");
@@ -171,6 +170,6 @@ mod tests {
         let resumed = (writer.applied_height(), writer.finalized_tip());
         assert_eq!(resumed, (through(2), tip_12), "resumes at the durable tip");
         let located = [10, 11, 12, 13].map(|hash| writer.view().height_of_hash(&[hash; 32]));
-        assert_eq!(located, [Some(h(0)), Some(h(1)), Some(h(2)), None], "nonfinalised gone");
+        assert_eq!(located, [Some(h(0)), Some(h(1)), Some(h(2)), None], "non-finalized gone");
     }
 }

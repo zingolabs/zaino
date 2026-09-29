@@ -6,9 +6,8 @@
 //! - Phase `index`: durable extents never shrink, watermarks ordered, a syncing index refuses,
 //!   zebra leaves its snapshot, committed trees = zebra's every 5 s; at completion every index
 //!   held to zebra + `zainod verify` in-pod
-//! - Phase `follow`: [`FOLLOW_BLOCKS`] live blocks through pre-commit; served tip tracks zebra,
-//!   committed trees = zebra's every 5 s, top-of-chain answers
-//!   held to zebra again
+//! - Phase `follow`: [`FOLLOW_BLOCKS`] live blocks through the non-finalized state; served tip
+//!   tracks zebra, committed trees = zebra's every 5 s, top-of-chain answers held to zebra again
 //! - Phase `serve`: simulated light wallets ramped against the built index ([`Plan::mainnet`]);
 //!   every served block byte-consistent, a sample of every answer held to zebra, capacity per
 //!   stage in the report
@@ -127,7 +126,7 @@ const FETCHED_OPS: [Op; 6] = [
 #[ztest::needs(IRONWOOD_MAINNET)]
 #[ztest::sync_test(
     name = "zaino_index_construction",
-    description = "light-wallet indexes built from empty to the live mainnet tip, followed through pre-commit, then a funded zingolib wallet synced through them",
+    description = "light-wallet indexes built from empty to the live mainnet tip, followed through the non-finalized state, then a funded zingolib wallet synced through them",
     subject = indexer,
     timeout = "60h",
     qos = sync,
@@ -152,19 +151,14 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                 .resources(Cpu::cores(6), Mem::gib(10)),
             );
             let zaino = t.add_indexer(
-                dev!(
-                    Indexer::Zainod,
-                    "../../Dockerfile",
-                    context = "../..",
-                    features = ["prometheus"]
-                )
-                .snapshot(IRONWOOD_MAINNET)
-                .finalised_depth(FINALISED_DEPTH)
-                .fetch_concurrency(FETCH_CONCURRENCY)
-                .serve_caps(SERVE_CAPS)
-                .max_address_rows(MAX_ADDRESS_ROWS)
-                .disk(Disk::gib(INDEX_DISK_GIB))
-                .resources(Cpu::cores(8), Mem::gib(10)),
+                dev!(Indexer::Zainod, "../../Dockerfile", context = "../..")
+                    .snapshot(IRONWOOD_MAINNET)
+                    .finalised_depth(FINALISED_DEPTH)
+                    .fetch_concurrency(FETCH_CONCURRENCY)
+                    .serve_caps(SERVE_CAPS)
+                    .max_address_rows(MAX_ADDRESS_ROWS)
+                    .disk(Disk::gib(INDEX_DISK_GIB))
+                    .resources(Cpu::cores(8), Mem::gib(10)),
             );
             let wallet = t.add_wallet(
                 Wallet::zingolib()
@@ -730,7 +724,7 @@ async fn served_tip_is_the_validator_tip(zaino: &ZainoIndexer, zebra: &ZebraVali
 
 /// Every served index vs zebra over one ladder (activations ±1, both ends, dense near the top)
 ///
-/// - Top of the ladder < `FINALISED_DEPTH` below the tip → pre-commit answers, not only files
+/// - Top of the ladder < `FINALISED_DEPTH` below the tip → the non-finalized state answers, not only files
 async fn indexes_agree_with_zebra(zaino: &ZainoIndexer, zebra: &ZebraValidator) -> Verdict {
     let top = match (zaino.latest_block_height().await, zebra.chain_height().await) {
         (Ok(s), Ok(t)) => u32::from(s).min(u32::from(t)).saturating_sub(REORG_MARGIN),
@@ -802,7 +796,7 @@ async fn index_files_verify_clean(zaino: &ZainoIndexer, cx: &SyncCtx) -> Verdict
 
 // ── phase `follow` ────────────────────────────────────────────────────────────────────────────
 
-/// Pre-commit serves each new block within motion slack of zebra, never ahead of it
+/// The non-finalized state serves each new block within motion slack of zebra, never ahead of it
 async fn served_tip_tracks_zebra(zaino: &ZainoIndexer, zebra: &ZebraValidator) -> Verdict {
     let (served, tip) = match (zaino.latest_block_height().await, zebra.chain_height().await) {
         (Ok(s), Ok(t)) => (u32::from(s), u32::from(t)),

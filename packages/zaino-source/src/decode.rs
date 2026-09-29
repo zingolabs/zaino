@@ -155,7 +155,9 @@ fn transparent(tx: &CompressedTransaction) -> Result<TransparentData, DecodeErro
     let Some(bundle) = tx.transparent_bundle() else {
         return Ok(TransparentData::default());
     };
-    let inputs = match bundle.is_coinbase() {
+    let coinbase = bundle.is_coinbase();
+    // coinbase input: null prevout, no value (protocol.pdf#coinbasetransactions §3.11)
+    let inputs = match coinbase {
         true => Vec::new(),
         false => bundle
             .vin
@@ -176,13 +178,14 @@ fn transparent(tx: &CompressedTransaction) -> Result<TransparentData, DecodeErro
             })
         })
         .collect::<Result<Vec<_>, DecodeError>>()?;
-    Ok(TransparentData { inputs, outputs })
+    Ok(TransparentData { coinbase, inputs, outputs })
 }
 
 fn sprout(tx: &CompressedTransaction) -> Result<SproutData, DecodeError> {
     let Some(bundle) = tx.sprout_bundle() else {
         return Ok(SproutData::default());
     };
+    // Σ net_value, net_value = vpub_new − vpub_old (protocol.pdf#joinsplit §3.5)
     let balance = bundle.value_balance().ok_or(DecodeError::SproutBalance)?;
     Ok(SproutData { value_balance: signed(balance)? })
 }
@@ -208,6 +211,7 @@ fn sapling(tx: &CompressedTransaction) -> Result<SaplingData, DecodeError> {
                 })
             })
             .collect::<Result<Vec<_>, DecodeError>>()?,
+        // v4 without spends or outputs → 0 (protocol.pdf#txnconsensus; zip-0225)
         value_balance: signed(*bundle.value_balance())?,
     })
 }

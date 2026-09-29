@@ -46,12 +46,11 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      # `zainod/prometheus` also compiles the recorder, admin listener & metric registration tests
-      - run: cargo nextest run --locked --workspace --features zainod/prometheus --no-fail-fast
+      - run: cargo nextest run --locked --workspace --no-fail-fast
 
   features:
     name: Each feature compiles
-    # dev only (~77 checks); --feature-powerset = 412, over the 6h hosted-runner cap
+    # dev only; each package ≤ 1 feature (`testing`) → --each-feature = --feature-powerset
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

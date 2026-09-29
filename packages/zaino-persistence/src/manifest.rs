@@ -6,7 +6,7 @@
 //!
 //! - little-endian throughout; CRC-32 (IEEE) over everything before it
 
-use zaino_primitives::types::{BlockHash, Extent};
+use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
 
 const MAGIC: [u8; 8] = *b"ZAINOMF\0";
@@ -129,39 +129,46 @@ pub fn read(dir: &std::path::Path, identity: Identity) -> std::io::Result<Option
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
-/// Committed extent + its tip hash: every body's first 40 bytes
+/// Committed tip (`None` = nothing committed): every body's first 40 bytes, as the block count
+/// from genesis ‖ the tip hash (zeros when empty)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Committed {
-    pub extent: Extent,
-    pub tip: Option<BlockHash>,
+    pub tip: Option<BlockRef>,
 }
 
 impl Committed {
-    pub const EMPTY: Self = Self { extent: Extent::ZERO, tip: None };
+    pub const EMPTY: Self = Self { tip: None };
 
-    /// Tip present iff the extent is non-empty
-    pub fn new(extent: Extent, tip: Option<BlockHash>) -> Self {
-        let (non_empty, has_tip) = (extent.last().is_some(), tip.is_some());
-        assert_eq!(non_empty, has_tip, "committed tip hash iff extent non-empty");
-        Self { extent, tip }
+    /// Last committed height, inclusive (`None` = nothing committed)
+    pub fn height(&self) -> Option<Height> {
+        self.tip.map(|tip| tip.height)
+    }
+
+    /// Blocks committed from genesis (what a file sized per height is checked against)
+    pub fn count(&self) -> u64 {
+        self.height().map_or(0, |height| u64::from(height) + 1)
     }
 
     pub fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&u64::from(self.extent).to_le_bytes());
-        out.extend_from_slice(&self.tip.map_or([0; 32], <[u8; 32]>::from));
+        out.extend_from_slice(&self.count().to_le_bytes());
+        out.extend_from_slice(&self.tip.map_or([0; 32], |tip| <[u8; 32]>::from(tip.hash)));
     }
 
     pub fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
         let count = body.u64()?;
-        let tip = body.array::<32>()?;
-        let extent = Extent::from_count(count)
-            .map_err(|_| ManifestError::Body("committed count past the height ceiling"))?;
+        let hash = body.array::<32>()?;
         // presence = count > 0 (a zero hash is a hash, not a sentinel)
-        match extent.last() {
-            None if tip == [0; 32] => Ok(Self::EMPTY),
-            None => Err(ManifestError::Body("tip hash with nothing committed")),
-            Some(_) => Ok(Self { extent, tip: Some(BlockHash::from(tip)) }),
-        }
+        let Some(last) = count.checked_sub(1) else {
+            return match hash == [0; 32] {
+                true => Ok(Self::EMPTY),
+                false => Err(ManifestError::Body("tip hash with nothing committed")),
+            };
+        };
+        let height = u32::try_from(last)
+            .ok()
+            .and_then(|last| Height::try_from(last).ok())
+            .ok_or(ManifestError::Body("committed count past the height ceiling"))?;
+        Ok(Self { tip: Some(BlockRef { hash: BlockHash::from(hash), height }) })
     }
 }
 
@@ -239,14 +246,22 @@ mod tests {
         assert!(matches!(network, Err(Network { expected: NetworkType::Main, found: 1 })));
     }
 
-    /// Tip presence follows the count on both sides of the codec; a zero hash is still a tip
+    /// Tip presence follows the count on both sides of the codec; a zero hash is still a tip; on
+    /// disk = block count from genesis (tip height + 1) ‖ hash
     #[test]
     fn committed_round_trips_and_refuses_a_tip_with_nothing_committed() {
-        for committed in [
-            Committed::EMPTY,
-            Committed::new(Extent::from_count(3).expect("3"), Some([7; 32].into())),
-            Committed::new(Extent::from_count(1).expect("1"), Some([0; 32].into())),
-        ] {
+        let tip = |height: u32, hash: u8| Committed {
+            tip: Some(BlockRef {
+                hash: [hash; 32].into(),
+                height: Height::try_from(height).expect("h"),
+            }),
+        };
+        let golden = [3u64.to_le_bytes().as_slice(), &[7; 32]].concat();
+        let mut bytes = Vec::new();
+        tip(2, 7).encode(&mut bytes);
+        assert_eq!(bytes, golden, "tip at 2 = count 3 on disk");
+
+        for committed in [Committed::EMPTY, tip(2, 7), tip(0, 0)] {
             let mut bytes = Vec::new();
             committed.encode(&mut bytes);
             let mut body = BodyReader::new(&bytes);

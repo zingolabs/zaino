@@ -27,7 +27,6 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "prometheus")]
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use log::SegmentLog;
 pub use meta::{decode_list, encode_list, SegmentMeta};

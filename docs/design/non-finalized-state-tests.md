@@ -1,9 +1,9 @@
-# Non-finalised state: test design
+# Non-finalized state: test design
 
 `live-tests/non-finalized-state/` holds the live suite for everything above
-`tip − finalised_depth`: the pre-commit window, reorg detection and replay, the
+`tip − finalised_depth`: the non-finalized state, reorg detection and replay, the
 serving gate, and every RPC whose answer depends on the tip. The machinery is
-described in [precommit-state.md](./precommit-state.md). This document covers
+described in [non-finalized-state.md](./non-finalized-state.md). This document covers
 what the suite asserts, and why it asserts it that way.
 
 ## Principles
@@ -24,15 +24,15 @@ what the suite asserts, and why it asserts it that way.
    and Bitcoin Core's index-vs-fresh parity tests:
    - A reorged index equals the oracle.
    - A reorg to A → B → A restores A byte for byte.
-   - A restarted index, which rebuilds pre-commit from scratch, equals the index
-     that lived through the reorg.
+   - A restarted index, which rebuilds its non-finalized state from scratch,
+     equals the index that lived through the reorg.
 4. **Deterministic injection.** `ValidatorBackend::reorg(depth, len, miner)` is
    `invalidateblock` on the first orphan, then waiting for the tip to retreat,
    then `generate`. It is the same recipe Zebra's own `force_zebra_reorg` uses.
    There is no second miner and no network partition. `reconsiderblock` brings a
    branch back, which gives the round-trip tests.
 5. **A small window.** Each test sets `finalised_depth` explicitly, small enough
-   that the durable/pre-commit seam and the window floor are both inside every
+   that the durable/non-finalized seam and the window floor are both inside every
    fixture. The boundary tests then land exactly on `depth` and `depth + 1`.
 6. **Hash-aware convergence.** Tests wait with `IndexerBackend::wait_for_tip`,
    which checks height *and* hash and rides out the UNAVAILABLE gate. Waiting on

@@ -48,8 +48,8 @@ const READY: Duration = Duration::from_secs(120);
 const SEND_AMOUNT: u64 = 250_000;
 /// zingolib's ZIP-317 fee for a single-note shield round under regtest.
 const SHIELD_FEE: u64 = 15_000;
-/// The mid-chain NU6.3 (Ironwood) activation height: heights `[2, 6)` are
-/// Orchard era, height 6 onward is Ironwood era.
+/// The mid-chain NU6.3 (Ironwood) activation height: heights 2 inclusive to 6
+/// exclusive are Orchard era, height 6 onward is Ironwood era.
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
 mod zebrad {

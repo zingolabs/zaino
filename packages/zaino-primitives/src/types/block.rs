@@ -104,6 +104,7 @@ mod tests {
         let tx = Transaction {
             txid: TransactionId::from([9; 32]),
             transparent: TransparentData {
+                coinbase: false,
                 inputs: vec![OutPoint { txid: TransactionId::from([8; 32]), vout: 0 }; 2],
                 outputs: vec![TransparentOutput {
                     value: Zatoshis::new(5).expect("in supply"),

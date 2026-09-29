@@ -14,22 +14,19 @@ description = "Zaino's index sync pipeline: one producer into one block sink, su
 [dependencies]
 arc-swap.workspace = true
 futures.workspace = true
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 rayon.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing.workspace = true
-zaino-chain-head.workspace = true
 zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
+zaino-non-finalized-state.workspace = true
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 
-[features]
-# Producer metrics (tip, reorgs, per-block fetch counters)
-prometheus = ["dep:metrics"]
-
 [dev-dependencies]
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 zaino-primitives = { workspace = true, features = ["testing"] }

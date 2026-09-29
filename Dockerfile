@@ -13,9 +13,6 @@ FROM docker.io/library/rust:1.98.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
-# Comma-separated; empty = default feature set (e.g. "prometheus")
-ARG CARGO_FEATURES=""
-
 # `release` or `profiling` (adds line tables + frame pointers, set below)
 ARG CARGO_PROFILE=release
 
@@ -47,7 +44,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       export RUSTFLAGS="-C force-frame-pointers=yes"; \
     fi; \
     cargo install --locked --path packages/zainod --bin zainod --root /out \
-      --profile "${CARGO_PROFILE}" --features "${CARGO_FEATURES}"
+      --profile "${CARGO_PROFILE}"
 
 ############################
 # Runtime

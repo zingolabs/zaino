@@ -35,7 +35,7 @@ zcash_protocol = { workspace = true }
 prost.workspace = true
 http-body = "1.1.0"
 zaino-source = { version = "0.2.0", path = "../zaino-source" }
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
 tokio-util.workspace = true
 ppp = "2.3"
@@ -54,8 +54,3 @@ zaino-sync = { workspace = true }
 arc-swap = { workspace = true }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
-
-[features]
-# Prometheus emission from the serve path. Observability only: caps, permits and
-# admission are enforced either way.
-prometheus = ["dep:metrics"]

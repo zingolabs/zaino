@@ -145,10 +145,10 @@ The answers every synced wallet asks for right after each block never queue:
 | Answer | Why it needs no read |
 |---|---|
 | `GetLatestBlock` | tip height + hash resolved when the view was published |
-| `GetBlock` by height, nonfinalised | RAM record |
-| `GetBlockRange`, nonfinalised, default pools | projection stored at apply (zero-copy) |
+| `GetBlock` by height, non-finalized | RAM record |
+| `GetBlockRange`, non-finalized, default pools | projection stored at apply (zero-copy) |
 | `GetMempoolStream` snapshot | framed once per chain-view publication |
-| `GetTreeState` (nonfinalised heights), `GetLatestTreeState` | framed once per publication |
+| `GetTreeState` (non-finalized heights), `GetLatestTreeState` | framed once per publication |
 | `GetSubtreeRoots` | each pool's list framed once per publication; a request = one slice |
 
 The per-publication memos (`memo::PerView`) are keyed on the pinned view's

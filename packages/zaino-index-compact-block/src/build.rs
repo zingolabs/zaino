@@ -1,5 +1,4 @@
-//! Domain [`Block`] + derived [`TreeSizes`] + [`BlockValueBalances`] → the wire bytes the store
-//! holds
+//! Domain [`Block`] + derived [`TreeSizes`] + [`BlockFees`] → the wire bytes the store holds
 //!
 //! - encoded once at index time (serving never decodes a record)
 //! - lives here, not on the domain types (`zaino-primitives` !→ `zaino-proto`)
@@ -7,7 +6,7 @@
 use bytes::Bytes;
 use prost::Message;
 use zaino_primitives::types::{
-    Block, BlockValueBalances, CompactCiphertext, OrchardAction, Transaction, TreeSizes, Zatoshis,
+    Block, BlockFees, CompactCiphertext, Fee, OrchardAction, Transaction, TreeSizes, Zatoshis,
 };
 use zaino_proto::proto::compact_formats as cf;
 
@@ -15,16 +14,16 @@ use crate::record::{frame_into, FRAME_HEADER, HASH};
 
 /// `block` → gRPC-framed `CompactBlock` bytes, every pool included (`project` prunes on read)
 ///
-/// - `balances` = `block`'s own (asserted), one per tx: each `CompactTx.fee`
+/// - `fees` = `block`'s own (asserted), one per tx: each `CompactTx.fee`
 /// - `sizes` = cumulative tree sizes after `block` (`CompactBlockIndexWriter` derives)
-pub fn encode_compact_block(
-    block: &Block,
-    balances: &BlockValueBalances,
-    sizes: &TreeSizes,
-) -> Bytes {
+pub fn encode_compact_block(block: &Block, fees: &BlockFees, sizes: &TreeSizes) -> Bytes {
     let header = &block.header();
     let height = header.height;
-    assert!(balances.belongs_to(block), "{height} encoded with another block's value balances");
+    assert!(fees.belongs_to(block), "{height} encoded with another block's fees");
+    let paid = |fee: &Fee| match fee {
+        Fee::Coinbase => None,
+        Fee::Paid(fee) => Some(*fee),
+    };
     let compact = cf::CompactBlock {
         height: height.into(),
         hash: <[u8; HASH]>::from(header.hash).to_vec(),
@@ -35,9 +34,9 @@ pub fn encode_compact_block(
         vtx: block
             .transactions()
             .iter()
-            .zip(&balances.balances)
+            .zip(&fees.fees)
             .zip(0..)
-            .map(|((tx, balance), index)| compact_tx(index, tx, balance.fee()))
+            .map(|((tx, fee), index)| compact_tx(index, tx, paid(fee)))
             .collect(),
         chain_metadata: Some(cf::ChainMetadata {
             sapling_commitment_tree_size: u32::from(sizes.sapling),
@@ -54,7 +53,8 @@ pub fn encode_compact_block(
 /// `tx` → `CompactTx`
 ///
 /// - `index` = position in block (mempool: stream slot)
-/// - Option<`fee`> in zatoshis (protocol specifies that 0 is "not provided" or >= 2^32 zatoshis)
+/// - `fee` = `None` (coinbase, unpriced mempool tx) or >= 2^32 → 0 (zaino policy: `uint32`
+///   "present if the server can provide it", no presence bit)
 pub fn compact_tx(index: u64, tx: &Transaction, fee: Option<Zatoshis>) -> cf::CompactTx {
     // Orchard + Ironwood share one action shape
     let action = |action: &OrchardAction| cf::CompactOrchardAction {
@@ -116,8 +116,8 @@ mod tests {
 
     #[test]
     fn a_record_decodes_back_to_every_pool_it_was_built_from() {
-        let (block, balances, sizes) = block(1);
-        let framed = encode_compact_block(&block, &balances, &sizes);
+        let (block, fees, sizes) = block(1);
+        let framed = encode_compact_block(&block, &fees, &sizes);
         let prefix = u32::from_be_bytes(framed[1..5].try_into().expect("len")) as usize;
         assert_eq!(prefix, framed.len() - FRAME_HEADER, "gRPC length prefix");
         let decoded = cf::CompactBlock::decode(&framed[FRAME_HEADER..]).expect("decodes as proto");
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!(metadata.orchard_commitment_tree_size, 20);
         assert_eq!(metadata.ironwood_commitment_tree_size, 30);
 
-        assert_eq!(tx.fee, 5_000, "fee from the tx's value balance");
+        assert_eq!(tx.fee, 5_000, "fee from the block's BlockFees");
     }
 
     /// Wire `fee` = `uint32`, no presence: unknown (coinbase, unpriced mempool tx) and past
@@ -174,10 +174,10 @@ mod tests {
         }
     }
 
-    /// Balances paired by hash: another block's (a reorg's stale item) = a bug, not a fee
+    /// Fees paired by hash: another block's (a reorg's stale item) = a bug, not a fee
     #[test]
-    #[should_panic(expected = "encoded with another block's value balances")]
-    fn encoding_with_another_blocks_balances_panics() {
+    #[should_panic(expected = "encoded with another block's fees")]
+    fn encoding_with_another_blocks_fees_panics() {
         let (block, _, sizes) = block(1);
         let (_, stranger, _) = crate::testing::block(2);
         let _ = encode_compact_block(&block, &stranger, &sizes);
@@ -189,8 +189,8 @@ mod tests {
     fn projection_drops_only_the_pools_not_requested() {
         use crate::{project::project, Pools};
 
-        let (block, balances, sizes) = block(0);
-        let stored = encode_compact_block(&block, &balances, &sizes);
+        let (block, fees, sizes) = block(0);
+        let stored = encode_compact_block(&block, &fees, &sizes);
         let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decode");
 
         // every pool requested: the stored bytes, untouched

@@ -8,7 +8,7 @@
 use std::{num::NonZeroU32, sync::Arc};
 
 use bytes::Bytes;
-use zaino_primitives::types::{Extent, Height};
+use zaino_primitives::types::Height;
 use zaino_sync::Served;
 
 use crate::{project::project, project::record_hash, view::ReadView, Pools, HASH};
@@ -51,7 +51,7 @@ pub enum ServeError {
     Malformed { height: Height },
 }
 
-/// Two tiers, one surface: files up to the finalised tip, the nonfinalised tier above it
+/// Two tiers, one surface: files up to the finalised tip, the non-finalized tier above it
 ///
 /// - a request pins **both at once** ([`ReadView`], one load): the seam cannot move mid-stream
 #[derive(Debug, Clone)]
@@ -78,9 +78,9 @@ impl CompactBlockService {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 
-    /// Every height any tier can serve, synced or not (nonfinalised included: what
-    /// `GetLatestBlock` answers once synced)
-    pub fn extent(&self) -> Extent {
+    /// Last height any tier can serve, inclusive, synced or not (non-finalized included: what
+    /// `GetLatestBlock` answers once synced; `None` = nothing held)
+    pub fn tip(&self) -> Option<Height> {
         self.served.pin_any().tip()
     }
 
@@ -90,7 +90,7 @@ impl CompactBlockService {
         self.pin()?.block(height).ok_or(ServeError::NotFound { height })
     }
 
-    /// [`block`](Self::block) when the nonfinalised tier holds it (RAM, no page read: a transport
+    /// [`block`](Self::block) when the non-finalized tier holds it (RAM, no page read: a transport
     /// may answer inline); `Ok(None)` = ask [`block`](Self::block)
     pub fn resident_block(&self, height: Height) -> Result<Option<Bytes>, ServeError> {
         Ok(self.pin()?.resident_block(height))
@@ -120,89 +120,95 @@ impl CompactBlockService {
         }
     }
 
-    /// `GetBlockRange`, as a cursor over both tiers
+    /// `GetBlockRange` of heights `start` to `end`, both inclusive, as a cursor over both tiers
     ///
-    /// - `from <= to` (callers refuse a reversed request)
+    /// - `start <= end` (callers refuse a reversed request)
     /// - no read here (the first file window = the cursor's first blocking step)
-    pub fn range(&self, from: Height, to: Height, pools: Pools) -> Result<RangeCursor, ServeError> {
-        self.range_with_budget(from, to, pools, SPAN_BUDGET)
+    pub fn range(
+        &self,
+        start: Height,
+        end: Height,
+        pools: Pools,
+    ) -> Result<RangeCursor, ServeError> {
+        self.range_with_budget(start, end, pools, SPAN_BUDGET)
     }
 
     /// [`range`](Self::range) with an explicit window size (a test forces a refill)
     pub(crate) fn range_with_budget(
         &self,
-        from: Height,
-        to: Height,
+        start: Height,
+        end: Height,
         pools: Pools,
         budget: usize,
     ) -> Result<RangeCursor, ServeError> {
-        assert!(from <= to, "reversed range {from:?}..={to:?} past the request boundary");
+        assert!(start <= end, "reversed range {start:?}..={end:?} past the request boundary");
         let view = self.pin()?;
-        let tip = view.tip();
-        let Some(tip_height) = tip.last().filter(|_| tip.contains(from)) else {
-            return Err(ServeError::NotFound { height: from });
+        let Some(tip) = view.tip().filter(|&tip| start <= tip) else {
+            return Err(ServeError::NotFound { height: start });
         };
 
         // clamp, never refuse (a wallet asking past the tip wants what exists)
-        let end = Extent::through(to.min(tip_height));
+        let served_end = end.min(tip);
 
-        // measured after the clamp (an open-ended `to` over a short chain = a small request)
+        // measured after the clamp (an open-ended `end` over a short chain = a small request)
         // still over = refused, never truncated (a short answer reads as the chain's end)
-        let asked = u64::from(end) - u64::from(from);
+        let asked = u64::from(served_end) - u64::from(start) + 1;
         if asked > u64::from(self.max_range.get()) {
             return Err(ServeError::RangeTooLarge { asked, limit: self.max_range.get() });
         }
 
         Ok(RangeCursor {
-            finalized_through: view.finalized_through().min(end),
+            finalized_tip: view.finalized_tip().min(Some(served_end)),
             view,
             budget,
             pools,
-            served: Extent::before(from),
-            end,
+            served: start.checked_sub(1),
+            end: served_end,
         })
     }
 }
 
-/// `GetBlockRange` walked one chunk at a time: a file window below the seam, one nonfinalised
+/// `GetBlockRange` walked one chunk at a time: a file window below the seam, one non-finalized
 /// record above it
 ///
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
 /// - `view` pinned for the whole stream: every tier + the seam between them frozen
+/// - `served`, `finalized_tip`, `end` = last heights, inclusive (`served` `None` = nothing yet;
+///   `finalized_tip` `None` = no file heights in range)
 #[derive(Debug)]
 pub struct RangeCursor {
     view: Arc<ReadView>,
     budget: usize,
     pools: Pools,
-    served: Extent,
-    finalized_through: Extent,
-    end: Extent,
+    served: Option<Height>,
+    finalized_tip: Option<Height>,
+    end: Height,
 }
 
 impl RangeCursor {
     /// Next chunk reads the files (a cold window faults: the blocking pool's step)
     pub fn next_touches_disk(&self) -> bool {
-        self.served < self.finalized_through
+        self.served < self.finalized_tip
     }
 
     /// Next wire chunk (framed records back to back, projected to the cursor's pools), `None`
     /// once the range is spent
     pub fn next_chunk(&mut self) -> Option<Result<Bytes, ServeError>> {
-        if self.served >= self.end {
+        if self.served >= Some(self.end) {
             return None;
         }
 
-        let height = self.served.next();
-        let Some(last) = self.finalized_through.last().filter(|_| self.next_touches_disk()) else {
-            // nonfinalised: projected at apply for the default pools (every synced wallet's ask)
-            self.served = Extent::through(height);
+        let height = self.served.map_or(Height::GENESIS, Height::next);
+        let Some(last) = self.finalized_tip.filter(|_| self.next_touches_disk()) else {
+            // non-finalized: projected at apply for the default pools (every synced wallet's ask)
+            self.served = Some(height);
             let projected = self.view.resident_projected(height, self.pools);
             return Some(projected.ok_or(ServeError::NotFound { height }));
         };
-        let Some((records, through)) = self.view.span_from(height, last, self.budget) else {
+        let Some((records, reached)) = self.view.span_from(height, last, self.budget) else {
             return Some(Err(ServeError::NotFound { height }));
         };
-        self.served = through;
+        self.served = Some(reached);
 
         Some(project(&records, self.pools).ok_or(ServeError::Malformed { height }))
     }
@@ -310,7 +316,7 @@ mod tests {
     /// order, no duplicate or gap at the boundary
     #[test]
     fn a_range_spans_the_file_store_and_the_window_without_a_seam() {
-        // finalised 0..=3, nonfinalised from 4
+        // finalized 0 to 3 (both inclusive), non-finalized from 4
         let reader = committed(4);
         let mut non_finalized = NonFinalizedState::default();
         for height in 4..7u32 {
@@ -325,18 +331,18 @@ mod tests {
         let window = Arc::new(arc_swap::ArcSwap::from_pointee(reader.pin_with(non_finalized)));
         let (_follower, synced) = tokio::sync::watch::channel(true);
         let service = CompactBlockService::new(Served::new(Arc::clone(&window), synced));
-        assert_eq!(service.extent(), Extent::through(h(6)), "window extends the tip");
+        assert_eq!(service.tip(), Some(h(6)), "window extends the tip");
 
         // single read resolves on either side of the seam
         let single = |height| decode(&service.block(h(height)).expect("block"))[0].height;
         assert_eq!((single(2), single(5)), (2, 5));
         assert_eq!(service.latest_id().expect("latest").0, h(6), "latest comes from the window");
 
-        // files → one window; nonfinalised → one chunk per record
+        // files → one window; non-finalized → one chunk per record
         let chunks = drain(service.range(h(2), h(6), Pools::ALL).expect("range"));
         assert_eq!(heights(&chunks), [2, 3, 4, 5, 6], "no gap or repeat at the seam");
         let per_chunk: Vec<usize> = chunks.iter().map(|chunk| decode(chunk).len()).collect();
-        assert_eq!(per_chunk, [2, 1, 1, 1], "file span whole, nonfinalised per block");
+        assert_eq!(per_chunk, [2, 1, 1, 1], "file span whole, non-finalized per block");
 
         let above = drain(service.range(h(5), h(6), Pools::ALL).expect("window only"));
         let below = drain(service.range(h(0), h(1), Pools::ALL).expect("finalised only"));
@@ -355,16 +361,16 @@ mod tests {
         assert!(service.block_at_hash(h(5), &[5u8; HASH]).is_ok(), "window hash");
 
         // stream pinned before a reorg keeps serving its branch (reorg = the writer's `reset`:
-        // the whole nonfinalised tier goes, the files stay)
+        // the whole non-finalized tier goes, the files stay)
         let pinned = service.range(h(4), h(6), Pools::ALL).expect("range");
         window.store(Arc::new(reader.pin()));
         assert_eq!(heights(&drain(pinned)), [4, 5, 6], "pinned view survives the reorg");
 
         // fresh request: the files alone
-        assert_eq!(service.extent(), Extent::through(h(3)), "durable tip");
+        assert_eq!(service.tip(), Some(h(3)), "durable tip");
         assert!(service.block(h(3)).is_ok(), "finalised blocks are untouched");
         let gone = Err(ServeError::NotFound { height: h(4) });
-        assert_eq!(service.block(h(4)), gone, "every nonfinalised block gone, not only a fork's");
+        assert_eq!(service.block(h(4)), gone, "every non-finalized block gone, not only a fork's");
     }
 
     #[test]

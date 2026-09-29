@@ -90,7 +90,7 @@ section = "Removed"
 description = "The unused `grpc_proxy_server` feature (a prost/tonic re-export) is removed."
 
 [[changes]]
-crate = "zaino-chain-head"
+crate = "zaino-non-finalized-state"
 kind = "breaking"
 section = "Removed"
 description = """
@@ -112,13 +112,14 @@ crate = "zaino-sync"
 kind = "breaking"
 description = """
 Absorbs `zaino-indexer`. One `Producer` owns the `BlockSink` \
-(`IndexerDataSink<Block>`, SPMC keyed by height, finality in-band): it bulk-syncs \
+(`IndexerDataSink<Block>`, a byte-bounded broadcast queue; the producer decides \
+start, finality and resets and sends them as in-band steps): it bulk-syncs \
 through `zaino_source::BlockFetchPool`, then follows chainview's quorum tip \
-through `zaino_chain_head::ChainHead`; a reorg resets every subscriber and \
+through `zaino_non_finalized_state::ChainHead`; a reorg resets every subscriber and \
 replays from the in-memory window without refetching. Indexes implement \
 `IndexWriter`, driven by `IndexFollower`. `BlockFetcher`, `SourceProvisioner`, \
-`FanOut`, `FetchConcurrency` and `FetchError` are removed. The new `prometheus` \
-feature emits `zaino_best_tip`, `zaino_reorgs_total` (published at 0 from boot), \
+`FanOut`, `FetchConcurrency` and `FetchError` are removed. It emits \
+`zaino_best_tip`, `zaino_reorgs_total` (published at 0 from boot), \
 `zaino_fetch_height` and the per-block `zaino_fetch_*_total` counters.
 """
 
@@ -127,12 +128,11 @@ crate = "zaino-source"
 kind = "feature"
 description = """
 Absorbs `zaino-rpc` as a private transport module; `RpcClient`, \
-`RpcClientConfig`, `RpcError`, `ProbeError` and (behind the new `prometheus` \
-feature) `metric_names` are re-exported.
+`RpcClientConfig`, `RpcError` and `ProbeError` are re-exported.
 """
 
 [[changes]]
-crate = "zaino-chain-head"
+crate = "zaino-non-finalized-state"
 kind = "breaking"
 section = "Removed"
 description = """
@@ -260,7 +260,7 @@ kind = "breaking"
 section = "Changed"
 description = """
 `fetch.finalised_depth` must be non-zero (non-final blocks are served from \
-pre-commit, so depth 0 bought nothing and could not survive a reorg). \
+the non-finalized state, so depth 0 bought nothing and could not survive a reorg). \
 `fetch.concurrency` defaults to \
 32 (was 16: the ordered stream's throughput = fetches in flight / the validator's \
 tail latency). New `fetch.primary_validator` \
@@ -404,7 +404,7 @@ section = "Changed"
 description = """
 `TreeStateStore::open(fs, path, network)`. Height records (48 B), subtree \
 entries (36 B) and node files are page-checked; open reads lengths and tail \
-pages only. `View = ReadView` (pre-commit + committed snapshot, one \
+pages only. `View = ReadView` (non-finalized state + committed snapshot, one \
 publication); `TreeStateService::new(view, synced, network)`. \
 `treestate(height)` answers committed heights while the index is syncing. \
 `subtree_roots` fills each root's completing block hash. `verify` is removed; \
@@ -449,7 +449,7 @@ a break is the fatal `FollowError::Unlinked`. `FollowError` is an enum \
 """
 
 [[changes]]
-crate = "zaino-chain-head"
+crate = "zaino-non-finalized-state"
 kind = "fix"
 section = "Fixed"
 description = """
@@ -492,10 +492,13 @@ kind = "breaking"
 section = "Changed"
 description = """
 Heights are typed: `append`, `block`, `hash_at` and `NonFinalizedState` take \
-`Height`; extents (`finalized_height`, `ReadView::tip`, `span_from`'s reach) are \
-`Extent`; `latest_id` returns `(Height, hash)`; `ServeError::{NotFound, \
-Malformed}` carry a `Height`. `CompactBlockStore::next_height` is replaced by \
-`appended() -> Extent`; `NonFinalizedState::best_chain` is removed.
+`Height`; tips are the last height, inclusive (`ReadView::{tip, finalized_tip}` \
+and `CompactBlockService::tip` return `Option<Height>`, `None` = empty; \
+`CompactBlockStore::finalized_tip` returns `Option<BlockRef>`; `span_from` \
+returns the last height it reached); `latest_id` returns `(Height, hash)`; \
+`ServeError::{NotFound, Malformed}` carry a `Height`. \
+`CompactBlockStore::next_height` is replaced by `appended() -> Option<Height>`, \
+and `tip_hash` by `finalized_tip`; `NonFinalizedState::best_chain` is removed.
 """
 
 [[changes]]
@@ -503,8 +506,10 @@ crate = "zaino-index-tree-state"
 kind = "breaking"
 section = "Changed"
 description = """
-`TreeStateReader`/`TreeStateStore::finalized_height` return `Extent`; \
-`ServeError::{NotFound, Inconsistent}` and `StoreError::Commitment` carry a `Height`.
+`TreeStateStore::finalized_tip` returns the last committed block \
+(`Option<BlockRef>`), and `ReadView::tip` the last held height, inclusive \
+(`Option<Height>`); `ServeError::{NotFound, Inconsistent}` and \
+`StoreError::Commitment` carry a `Height`.
 """
 
 [[changes]]
@@ -513,14 +518,20 @@ kind = "breaking"
 section = "Changed"
 description = """
 `Treestate`'s trees are `CommitmentTreeBytes` (never empty; `as_bytes()`). \
-Added `Height::next` and `From<Extent> for u32`.
+Added `Height::next`.
 """
 
 [[changes]]
 crate = "zaino-persistence"
 kind = "breaking"
 section = "Changed"
-description = "`CommittedFiles::heights` is an `Extent`."
+description = """
+A manifest's committed state is `Committed { tip: Option<BlockRef> }` (the last \
+committed block, inclusive; `height()`, `count()`), so the height and hash can \
+no longer disagree; the bytes on disk are unchanged (block count, then hash). \
+`LsmStore::commit(rows, tip)` takes that `BlockRef`, and `CommittedFiles::tip` \
+is the last committed height (`Option<Height>`).
+"""
 
 [[changes]]
 crate = "zaino-grpc"
@@ -571,7 +582,7 @@ crate = "zaino-index-transparent-address"
 kind = "feature"
 section = "Changed"
 description = """
-Projection and the pre-commit drain run under `compute` (a batch's blocks \
+Projection and the non-finalized state drain run under `compute` (a batch's blocks \
 projected across every core), the run writes under `blocking`.
 """
 
@@ -607,11 +618,11 @@ crate = "zaino-persistence"
 kind = "feature"
 section = "Added"
 description = """
-`prometheus` feature: LSM metrics labelled by `set`. `zaino_lsm_segments` and \
+LSM metrics labelled by `set`. `zaino_lsm_segments` and \
 `zaino_lsm_merging` per size `tier`, `zaino_lsm_stall_at`, \
 `zaino_lsm_{batch,merge}_rows_total`, `zaino_lsm_merge_bytes_total`, and \
 `zaino_lsm_{merge,stall}_duration_seconds` histograms (`METRIC_BUCKETS`, \
-`describe_metrics`). zainod's `prometheus` feature enables it.
+`describe_metrics`).
 """
 
 [[changes]]
@@ -631,7 +642,7 @@ kind = "breaking"
 section = "Changed"
 description = """
 Subscriber queues are bounded in bytes, not steps. \
-`SinkBuilder::subscribe(name, budget, from)` takes a byte budget, and the sink \
+`IndexerDataSink::subscribe(name, budget)` takes a byte budget, and the sink \
 requires `T: Weight` (the bytes an item holds; `Block` weighs its \
 `footprint()`). A step heavier than the whole budget passes alone once the \
 queue drains.
@@ -769,7 +780,7 @@ kind = "breaking"
 section = "Changed"
 description = """
 Commit batches are sized in bytes, not blocks. `IndexFollower::new(writer, \
-subscription, batch_bytes)` finalizes once the staged items' `Weight` \
+feed, tips, batch_bytes, depth)` finalizes once the staged items' `Weight` \
 reaches `batch_bytes`, so a commit stays one steady size from 1 KB \
 early-chain blocks to 2 MB full ones. `IndexWriter::batch()` is removed, \
 and `IndexWriter::Input` now requires `Weight`.
@@ -845,8 +856,8 @@ the finished write. `finalize_now` does all three in one await. \
 migration = """
 Implement `type Done` and `committed`; move store writes into the closure \
 `finalize` returns (lend the store, hand it back through `Done`), and every \
-in-memory tier change into `committed`. Answer `finalized_height`, \
-`finalized_tip` and `view` without the store (state as of the last landing).
+in-memory tier change into `committed`. Answer `finalized_tip`, \
+`applied_height` and `view` without the store (state as of the last landing).
 """
 
 [[changes]]
@@ -982,7 +993,7 @@ The answers every synced wallet asks for after each block are computed once \
 per block instead of once per wallet and served without a blocking-pool hop: \
 `GetLatestBlock`, `GetBlock` and default-pools `GetBlockRange` above the \
 finalised seam (zero-copy), `GetLatestTreeState`, `GetTreeState` at \
-nonfinalised heights, and `GetSubtreeRoots` (one pre-framed list per pool, \
+non-finalized heights, and `GetSubtreeRoots` (one pre-framed list per pool, \
 sliced per request). Per-request metric bookkeeping no longer allocates.
 """
 
@@ -991,9 +1002,9 @@ crate = "zaino-index-compact-block"
 kind = "feature"
 section = "Added"
 description = """
-`CompactBlockService::resident_block` answers from the nonfinalised tier \
+`CompactBlockService::resident_block` answers from the non-finalized tier \
 without a page read; `latest_id` is resolved when each view is published. \
-Nonfinalised records are also held projected to the default pools, so tip \
+Non-finalized records are also held projected to the default pools, so tip \
 ranges in that shape are zero-copy.
 """
 

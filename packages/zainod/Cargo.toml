@@ -19,23 +19,6 @@ path = "src/main.rs"
 name = "zainodlib"
 path = "src/lib.rs"
 
-[features]
-default = []
-
-# Admin listener: Prometheus /metrics scrape endpoint and /livez probe.
-prometheus = [
-    "dep:metrics",
-    "dep:metrics-exporter-prometheus",
-    "dep:metrics-process",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:http-body-util",
-    "zaino-source/prometheus",
-    "zaino-sync/prometheus",
-    "zaino-grpc/prometheus",
-    "zaino-persistence/prometheus",
-]
-
 [dependencies]
 # Runtime stack (config-agnostic; zainod translates its config into their typed
 # params at boot). Path deps for the ones not yet in [workspace.dependencies].
@@ -65,13 +48,13 @@ serde = { workspace = true, features = ["derive"] }
 toml = { workspace = true }
 config = { workspace = true }
 
-# Metrics (behind "prometheus" feature)
-metrics = { workspace = true, optional = true }
-metrics-exporter-prometheus = { workspace = true, optional = true }
-metrics-process = { workspace = true, optional = true }
-hyper = { workspace = true, features = ["server", "http1"], optional = true }
-hyper-util = { workspace = true, features = ["tokio"], optional = true }
-http-body-util = { workspace = true, optional = true }
+# Admin listener: Prometheus /metrics scrape endpoint and /livez probe
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+metrics-process = { workspace = true }
+hyper = { workspace = true, features = ["server", "http1"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+http-body-util = { workspace = true }
 
 # Utility
 thiserror = { workspace = true }

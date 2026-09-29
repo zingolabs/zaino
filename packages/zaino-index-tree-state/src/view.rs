@@ -1,4 +1,4 @@
-//! Nonfinalised tier (the fold applied, not yet fsynced) and the [`ReadView`] over both tiers
+//! Non-finalized tier (the fold applied, not yet fsynced) and the [`ReadView`] over both tiers
 //!
 //! - `imbl` throughout: `view()` = a pointer copy, a reader pins a consistent instant
 //! - split by *tree size*, not height (retention = pure function of size, [`retained_nodes`]):
@@ -10,7 +10,7 @@ use imbl::OrdMap;
 use incrementalmerkletree::{frontier::CommitmentTree, Hashable};
 use orchard::tree::MerkleHashOrchard;
 use zaino_primitives::types::{
-    BlockRef, CommitmentTreeBytes, Extent, Height, PerPool, ShieldedPool, SubtreeRoot, Treestate,
+    BlockRef, CommitmentTreeBytes, Height, PerPool, ShieldedPool, SubtreeRoot, Treestate,
 };
 use zcash_primitives::merkle_tree::{write_commitment_tree, HashSer};
 
@@ -52,20 +52,21 @@ impl NonFinalizedPool {
     }
 }
 
-/// Nonfinalised tier, all three pools (read before the store)
+/// Non-finalized tier, all three pools (read before the store)
 ///
-/// - `end` = applied extent (= committed extent when nothing is buffered)
+/// - `tip` = last applied height, inclusive (= committed tip when nothing is buffered; `None` =
+///   nothing held)
 #[derive(Debug, Clone, Default)]
 pub struct NonFinalizedTrees {
     pub(crate) heights: OrdMap<Height, TreeStateHeight>,
     pub(crate) pools: PerPool<NonFinalizedPool>,
-    pub(crate) end: Extent,
+    pub(crate) tip: Option<Height>,
 }
 
 impl NonFinalizedTrees {
-    /// Empty, sitting on a durable `end`
-    pub(crate) fn empty_at(end: Extent) -> Self {
-        Self { end, ..Self::default() }
+    /// Empty, sitting on a durable `tip` (last height, inclusive; `None` = empty)
+    pub(crate) fn empty_at(tip: Option<Height>) -> Self {
+        Self { tip, ..Self::default() }
     }
 
     /// `pool`'s tree of `size` commitments, these nodes over `durable`'s
@@ -82,11 +83,11 @@ impl NonFinalizedTrees {
         }
     }
 
-    /// Splits at `cut` (`sizes` = trees after its last height)
+    /// Splits after `cut` (last height the left half keeps, inclusive; `sizes` = trees after it)
     ///
     /// - left = the batch `finalize` writes
     /// - right = what stays buffered
-    pub(crate) fn split(&self, cut: Extent, sizes: PoolSizes) -> (Self, Self) {
+    pub(crate) fn split(&self, cut: Height, sizes: PoolSizes) -> (Self, Self) {
         let first_above = cut.next();
         let (heights_below, at_cut, mut heights_above) =
             self.heights.clone().split_lookup(&first_above);
@@ -99,14 +100,14 @@ impl NonFinalizedTrees {
             Self {
                 heights: heights_below,
                 pools: halves.clone().map(|(below, _)| below),
-                end: cut,
+                tip: Some(cut),
             },
-            Self { heights: heights_above, pools: halves.map(|(_, above)| above), end: self.end },
+            Self { heights: heights_above, pools: halves.map(|(_, above)| above), tip: self.tip },
         )
     }
 }
 
-/// Nonfinalised + committed, one publication (one load per request: the seam cannot move under it)
+/// Non-finalized + committed, one publication (one load per request: seam cannot move under it)
 #[derive(Debug, Clone)]
 pub struct ReadView {
     non_finalized: NonFinalizedTrees,
@@ -116,25 +117,26 @@ pub struct ReadView {
 impl ReadView {
     pub(crate) fn new(non_finalized: NonFinalizedTrees, durable: Arc<Snapshot>) -> Self {
         if let Some(&(first, _)) = non_finalized.heights.get_min() {
-            assert_eq!(first, durable.end.next(), "nonfinalised must start where the files end");
+            let after_files = durable.tip.map_or(Height::GENESIS, Height::next);
+            assert_eq!(first, after_files, "non-finalized must start where the files end");
         }
         Self { non_finalized, durable }
     }
 
-    /// Every height either tier can answer
-    pub(crate) fn extent(&self) -> Extent {
-        self.non_finalized.end.max(self.durable.end)
+    /// Last height either tier can answer, inclusive (`None` = nothing held)
+    pub(crate) fn tip(&self) -> Option<Height> {
+        self.non_finalized.tip.max(self.durable.tip)
     }
 
-    /// Committed heights alone
-    pub(crate) fn finalized(&self) -> Extent {
-        self.durable.end
+    /// Last committed height, inclusive (`None` = nothing committed)
+    pub(crate) fn finalized(&self) -> Option<Height> {
+        self.durable.tip
     }
 
     /// `at` held above the committed files: reorg-able, and among the ~1000 heights every synced
     /// wallet asks about (bounded: a per-publication memo keyed on these stays small)
-    pub fn is_nonfinalized(&self, at: Height) -> bool {
-        self.extent().contains(at) && !self.finalized().contains(at)
+    pub fn is_non_finalized(&self, at: Height) -> bool {
+        Some(at) <= self.tip() && Some(at) > self.finalized()
     }
 
     /// Tree state after `at`: all three pools, always, as the real tree's serialization
@@ -163,10 +165,10 @@ impl ReadView {
 
     /// Tree state at the highest height either tier holds
     pub fn latest(&self) -> Result<Treestate, ServeError> {
-        self.treestate(self.extent().last().ok_or(ServeError::Empty)?)
+        self.treestate(self.tip().ok_or(ServeError::Empty)?)
     }
 
-    /// `at`'s height record, nonfinalised first
+    /// `at`'s height record, non-finalized first
     fn record(&self, at: Height) -> Result<TreeStateHeight, ServeError> {
         match self.non_finalized.heights.get(&at) {
             Some(record) => Ok(*record),
@@ -174,8 +176,9 @@ impl ReadView {
         }
     }
 
-    /// Completed subtree roots `[start, start + max_entries)`, `max_entries == 0` = to the end;
-    /// `start == count` = an empty list, never an error (pepper-sync's probe pass)
+    /// Completed subtree roots `start_index` inclusive to `start_index + max_entries` exclusive;
+    /// `max_entries == 0` = to the last root; `start_index == count` = an empty list, never an
+    /// error (pepper-sync's probe pass)
     ///
     /// - completing block's hash = its height's record (a subtree completes at a held height)
     pub fn subtree_roots(

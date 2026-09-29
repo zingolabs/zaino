@@ -135,11 +135,11 @@ fn pools(raw: &[i32]) -> Result<Pools, Status> {
     Ok(pools)
 }
 
-/// `from ..= to`, refused when reversed (services take ordered ranges)
-fn ordered(from: Height, to: Height) -> Result<(Height, Height), Status> {
-    match from <= to {
-        true => Ok((from, to)),
-        false => Err(Status::invalid_argument(format!("range start {from} is above end {to}"))),
+/// `(start, end)`, both inclusive, refused when reversed (services take ordered ranges)
+fn ordered(start: Height, end: Height) -> Result<(Height, Height), Status> {
+    match start <= end {
+        true => Ok((start, end)),
+        false => Err(Status::invalid_argument(format!("range start {start} is above end {end}"))),
     }
 }
 
@@ -691,7 +691,7 @@ mod compact_block {
             // spawning for those would cost a task per *block* on a projected range — putting a
             // bounded pool in front of the highest-volume RPC before the disk is even reached.
             let (cursor, chunk) = if cursor.next_touches_disk() {
-                // Range lane, per disk step (not per request): a stream reading the nonfinalised
+                // Range lane, per disk step (not per request): a stream reading the non-finalized
                 // tier never queues, and no range queues a point read or a scan.
                 let _permit = reads.acquire(Lane::Range).await;
 
@@ -797,20 +797,20 @@ mod compact_block {
         request: &proto::BlockRange,
         pools: Pools,
     ) -> Result<RangeCursor, Status> {
-        let from = request
+        let start = request
             .start
             .as_ref()
             .map(|id| id.height)
             .ok_or_else(|| Status::invalid_argument("range has no start"))?;
-        let to = request
+        let end = request
             .end
             .as_ref()
             .map(|id| id.height)
             .ok_or_else(|| Status::invalid_argument("range has no end"))?;
-        let (from, to) =
-            super::ordered(super::height(from, "range start")?, super::height(to, "range end")?)?;
+        let (start, end) =
+            super::ordered(super::height(start, "range start")?, super::height(end, "range end")?)?;
 
-        service.range(from, to, pools).map_err(to_status)
+        service.range(start, end, pools).map_err(to_status)
     }
 
     // =============================================================================================
@@ -910,7 +910,7 @@ mod tree_state {
     use crate::memo::PerView;
     use crate::ReadLanes;
 
-    /// Framed answers per publication: the nonfinalised heights every synced wallet asks, the
+    /// Framed answers per publication: the non-finalized heights every synced wallet asks, the
     /// tip, and each pool's whole root list (sliced per request)
     #[derive(Default)]
     pub(super) struct Memos {
@@ -973,16 +973,17 @@ mod tree_state {
             Self { framed: Bytes::from(framed), ends }
         }
 
-        /// Roots `[start, start + max)`, `max == 0` = to the end (`start ≥ count` = none)
+        /// Roots `start` inclusive to `start + max` exclusive; `max == 0` = to the last root
+        /// (`start ≥ count` = none)
         fn slice(&self, start: u16, max: u16) -> Bytes {
             let count = self.ends.len();
-            let first = usize::from(start).min(count);
-            let last = match max {
+            let start = usize::from(start).min(count);
+            let end = match max {
                 0 => count,
-                max => count.min(first + usize::from(max)),
+                max => count.min(start + usize::from(max)),
             };
             let offset = |roots: usize| roots.checked_sub(1).map_or(0, |at| self.ends[at]);
-            self.framed.slice(offset(first)..offset(last))
+            self.framed.slice(offset(start)..offset(end))
         }
     }
 
@@ -1035,7 +1036,7 @@ mod tree_state {
     /// A hash, when given, wins (it names one block across a reorg): the block-hash index locates
     /// its height, this index answers there only if it holds that same block
     ///
-    /// - by height, nonfinalised (the synced wallets' tip asks): once per publication
+    /// - by height, non-finalized (the synced wallets' tip asks): once per publication
     async fn treestate<B>(answering: Answering, body: B) -> Result<Bytes, Status>
     where
         B: http_body::Body,
@@ -1046,7 +1047,7 @@ mod tree_state {
         if id.hash.is_empty() {
             let height = super::height(id.height, "height")?;
             if let Ok(view) = answering.service.pin() {
-                if view.is_nonfinalized(height) {
+                if view.is_non_finalized(height) {
                     let network = answering.service.network();
                     return once(
                         |memos| &memos.states,
@@ -1173,8 +1174,9 @@ mod tree_state {
         use zaino_primitives::types::{BlockRef, SubtreeRoot};
         use zaino_proto::proto::service as proto;
 
-        /// Any `[start, start + max)` of the pre-framed list = exactly those roots, framed as one
-        /// per record; past the end = empty (pepper-sync's probe), never a panic
+        /// Any `start` inclusive to `start + max` exclusive of the pre-framed list = exactly those
+        /// roots, framed as one per record; past the last root = empty (pepper-sync's probe), never
+        /// a panic
         #[test]
         fn a_root_request_is_one_slice_of_the_framed_list() {
             let roots: Vec<SubtreeRoot> = (0..5u8)
@@ -1570,14 +1572,16 @@ mod transparent_address {
         let address = transparent_address(&request.address, service.network())?;
         let range = request.range.ok_or_else(|| Status::invalid_argument("range is required"))?;
 
-        let height = |end: Option<proto::BlockId>, field: &str| {
-            end.ok_or_else(|| Status::invalid_argument(format!("range.{field} is required")))
+        let height = |bound: Option<proto::BlockId>, field: &str| {
+            bound
+                .ok_or_else(|| Status::invalid_argument(format!("range.{field} is required")))
                 .and_then(|at| super::height(at.height, field))
         };
-        let (from, to) = super::ordered(height(range.start, "start")?, height(range.end, "end")?)?;
+        let (start, end) =
+            super::ordered(height(range.start, "start")?, height(range.end, "end")?)?;
 
         let found =
-            reads.read(Lane::Scan, move || service.transactions(&address, from, to)).await?;
+            reads.read(Lane::Scan, move || service.transactions(&address, start, end)).await?;
 
         Ok(found.map_err(to_status)?.into_iter().map(|found| found.txid).collect())
     }
@@ -2470,6 +2474,7 @@ mod tests {
                 vec![Transaction {
                     txid: TransactionId::from([tag; 32]),
                     transparent: TransparentData {
+                        coinbase: false,
                         inputs: Vec::new(),
                         outputs: outputs
                             .into_iter()
@@ -2736,6 +2741,7 @@ mod tests {
             vec![Transaction {
                 txid: TransactionId::from([0x10; 32]),
                 transparent: TransparentData {
+                    coinbase: false,
                     inputs: Vec::new(),
                     outputs: vec![TransparentOutput {
                         value: Zatoshis::new(500).expect("in supply"),

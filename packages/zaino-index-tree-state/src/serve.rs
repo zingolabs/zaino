@@ -1,6 +1,6 @@
 //! RPC surface: `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots`
 //!
-//! - one `ArcSwap` load per request pins a [`ReadView`] (nonfinalised + committed files)
+//! - one `ArcSwap` load per request pins a [`ReadView`] (non-finalized + committed files)
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
@@ -59,13 +59,13 @@ impl TreeStateService {
     /// it); anything above it only once synced
     pub fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
         let view = self.served.pin_any();
-        match view.finalized().contains(at) {
+        match Some(at) <= view.finalized() {
             true => view.treestate(at),
             false => self.pin()?.treestate(at),
         }
     }
 
-    /// `GetLatestTreeState`, nonfinalised included (tracks the tip, not the fsync)
+    /// `GetLatestTreeState`, non-finalized included (tracks the tip, not the fsync)
     pub fn latest(&self) -> Result<Treestate, ServeError> {
         self.pin()?.latest()
     }
@@ -96,7 +96,7 @@ mod tests {
     use super::*;
     use crate::{TreeStateIndexWriter, TreeStateStore};
 
-    /// Syncing: a committed height answers (final); a nonfinalised height, the tip and a pool
+    /// Syncing: a committed height answers (final); a non-finalized height, the tip and a pool
     /// scan refused alike (never a partial answer); once synced all answer
     #[tokio::test]
     async fn an_unsynced_index_serves_committed_heights_only_and_everything_once_synced() {
@@ -144,7 +144,7 @@ mod tests {
         let h = |n: u32| Height::try_from(n).expect("h");
 
         assert_eq!(service.treestate(h(0)).expect("committed").height, h(0));
-        assert_eq!(service.treestate(h(1)), Err(ServeError::Syncing), "nonfinalised");
+        assert_eq!(service.treestate(h(1)), Err(ServeError::Syncing), "non-finalized");
         assert_eq!(service.treestate(h(2)), Err(ServeError::Syncing), "not yet held");
         assert_eq!(service.latest(), Err(ServeError::Syncing));
         assert_eq!(service.subtree_roots(ShieldedPool::Sapling, 0, 0), Err(ServeError::Syncing));
@@ -152,7 +152,7 @@ mod tests {
         follower.send(true).expect("service holds the receiver");
 
         assert_eq!(service.latest().expect("tip").height, h(1));
-        assert!(service.treestate(h(1)).expect("nonfinalised").sapling.as_bytes().len() > 1);
+        assert!(service.treestate(h(1)).expect("non-finalized").sapling.as_bytes().len() > 1);
         assert_eq!(service.subtree_roots(ShieldedPool::Sapling, 0, 0), Ok(Vec::new()));
         // Above the index = absent, never a progress report
         assert_eq!(service.treestate(h(2)), Err(ServeError::NotFound { height: h(2) }));

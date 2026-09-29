@@ -1,20 +1,21 @@
-//! `IndexerDataSink<T>`: one producer, N subscribers, one byte-bounded queue each, keyed by
-//! block height
+//! `IndexerDataSink<T>`: one publisher, N subscribers, one byte-bounded queue each
 //!
-//! - `add(height, T)` shares one `Arc<T>` across every queue (freed when the last subscriber pops)
-//! - One resume point: every subscriber is fed from the rearmost durable extent (an index ahead
-//!   skips what it already holds: `IndexWriter::deliver`)
-//! - Backpressure = the slowest subscriber's byte budget ([`Weight`]; a budget, not a depth, so
-//!   slack holds steady from 1 KB to 2 MB blocks)
-//! - Finality decided here (`ReorgDepth` below the highest tip), in-band: an `Apply` says whether
-//!   it is final, and a `Finalized` follows each non-final one once the tip buries it
-//! - Reorg = [`Step::Reset`] in the same queue as the data (cannot overtake or trail an apply)
-//! - Two phases: [`SinkBuilder`] takes subscriptions, [`SinkBuilder::seal`] fixes the start
+//! - `send(step)` = the same step to every queue, in order (one `Arc<T>` shared across them,
+//!   freed when the last subscriber pops)
+//! - Backpressure = the slowest subscriber's byte budget ([`Weight`]): a full queue makes `send`
+//!   wait
+//! - Decides nothing: start, finality and resets are the publisher's steps
+//! - Blocks only, no chain tip (a follower reads that off chainview's quorum tip)
+//! - Stop = [`Step::Shutdown`], last in every queue ([`shutdown`](IndexerDataSink::shutdown)
+//!   consumes the sink); a subscriber holds its queue until it pops it (dropped before = panic)
 
 use std::{num::NonZeroUsize, sync::Arc};
 
-use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
-use zaino_primitives::types::{Extent, Height, ReorgDepth};
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
+
+use zaino_primitives::types::Height;
+
+use crate::emit::QueueBytes;
 
 /// Bytes an item holds in memory, heap included: the unit a subscriber's queue budget counts
 pub trait Weight {
@@ -24,15 +25,18 @@ pub trait Weight {
 /// One instruction for a subscriber, in stream order
 #[derive(Debug)]
 pub enum Step<T> {
-    /// Block `height`'s data; `finalized` = below the reorg bound (durable-bound, skips pre-commit)
+    /// Block `height`'s data; `finalized` = below the reorg bound (durable-bound, skips the
+    /// non-finalized state)
     Apply { height: Height, finalized: bool, data: Arc<T> },
-    /// An earlier non-final `Apply` at `height` is now below the reorg bound (oldest first)
+    /// The chain tip moved, and an applied block at `height` is now finalized and can be durable
     Finalized { height: Height },
-    /// A branch won: drop **all** pre-commit state, then expect applies from the durable tip
+    /// A branch won: drop **all** non-finalized state, then re-apply blocks from the durable tip
     ///
     /// - No fork height (no reverse fold to disagree about; the reorg bound keeps every fork above
     ///   the durable tip)
     Reset,
+    /// Last step: persist what is final, forward it to any downstream sink, stop
+    Shutdown,
 }
 
 impl<T: Weight> Weight for Step<T> {
@@ -40,7 +44,7 @@ impl<T: Weight> Weight for Step<T> {
         size_of::<Self>()
             + match self {
                 Self::Apply { data, .. } => data.weight(),
-                Self::Finalized { .. } | Self::Reset => 0,
+                Self::Finalized { .. } | Self::Reset | Self::Shutdown => 0,
             }
     }
 }
@@ -53,220 +57,137 @@ impl<T> Clone for Step<T> {
             }
             Self::Finalized { height } => Self::Finalized { height: *height },
             Self::Reset => Self::Reset,
+            Self::Shutdown => Self::Shutdown,
         }
     }
 }
 
-/// A subscriber's receiver went away, so the sink can no longer feed every consumer
-#[derive(Debug, thiserror::Error)]
-#[error("subscriber {subscriber} stopped receiving")]
-pub struct SinkGone {
-    pub subscriber: &'static str,
-}
-
-/// A step and the share of its queue's budget it holds until popped
+/// A step and the share of its queue's budget it holds until popped (`None` = `Shutdown`: budget
+/// bypassed, a full queue never holds back the stop)
 pub(crate) struct Queued<T> {
     step: Step<T>,
-    _held: OwnedSemaphorePermit,
+    _held: Option<OwnedSemaphorePermit>,
 }
 
-/// One consumer's end: its queue and the tip (serving gate)
+/// One consumer's end: its queue, in stream order
 pub struct Subscription<T> {
-    pub(crate) steps: mpsc::UnboundedReceiver<Queued<T>>,
-    pub(crate) tip: watch::Receiver<Option<Height>>,
-    pub(crate) depth: ReorgDepth,
+    rx: mpsc::UnboundedReceiver<Queued<T>>,
+    queued: QueueBytes,
+    shut_down: bool,
 }
 
 impl<T> Subscription<T> {
-    /// Next step, its bytes returned to the budget; `None` = producer dropped (drain + stop)
-    pub async fn next(&mut self) -> Option<Step<T>> {
-        self.steps.recv().await.map(|queued| queued.step)
+    /// Next step, its bytes returned to the budget; `Shutdown` again on every call after it
+    pub async fn next(&mut self) -> Step<T> {
+        let queued = self.rx.recv().await;
+        self.popped(queued)
+    }
+
+    /// Every step through `Shutdown`, discarded (a consumer that stopped using the queue)
+    pub async fn skip_to_shutdown(&mut self) {
+        while !matches!(self.next().await, Step::Shutdown) {}
     }
 
     /// Next step if one is already queued (never waits)
     pub(crate) fn try_next(&mut self) -> Option<Step<T>> {
-        self.steps.try_recv().ok().map(|queued| queued.step)
+        let queued = self.rx.try_recv().ok()?;
+        Some(self.popped(Some(queued)))
     }
 
-    /// Next step, or [`Woke::Tip`] when the tip moves with none queued (a lowered tip sends no
-    /// step); `None` = producer dropped
-    pub(crate) async fn next_or_tip(&mut self) -> Option<Woke<T>> {
-        tokio::select! {
-            biased;
-            step = self.steps.recv() => step.map(|queued| Woke::Step(queued.step)),
-            Ok(()) = self.tip.changed() => Some(Woke::Tip),
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rx.is_empty()
+    }
+
+    /// - Closed after `Shutdown` = sink consumed by it
+    /// - Closed before = sink dropped (its publisher panicked)
+    fn popped(&mut self, queued: Option<Queued<T>>) -> Step<T> {
+        match queued {
+            Some(Queued { step, _held }) => {
+                if let Some(held) = _held {
+                    self.queued.popped(held.num_permits());
+                }
+                self.shut_down |= matches!(step, Step::Shutdown);
+                step
+            }
+            None if self.shut_down => Step::Shutdown,
+            None => panic!("sink dropped without Shutdown"),
         }
     }
 }
 
-/// What ended a subscriber's wait
-pub(crate) enum Woke<T> {
-    Step(Step<T>),
-    Tip,
-}
-
 /// Budget = semaphore permits (1 per byte) over an unbounded channel: the byte-bounded queue
 /// tokio lacks
-///
-/// - dropped receiver → channel drops its queue → permits freed → `send` fails, never hangs
 struct Subscriber<T> {
     name: &'static str,
     tx: mpsc::UnboundedSender<Queued<T>>,
+    queued: QueueBytes,
     budget: Arc<Semaphore>,
     /// Largest acquire: a step heavier than the whole budget waits for an empty queue
     capacity: u32,
 }
 
-impl<T: Weight> Subscriber<T> {
-    async fn send(&self, step: Step<T>) -> Result<(), SinkGone> {
-        let permits = u32::try_from(step.weight()).map_or(self.capacity, |w| w.min(self.capacity));
-        let held = Arc::clone(&self.budget)
-            .acquire_many_owned(permits)
-            .await
-            .expect("queue budget never closed");
-        self.tx.send(Queued { step, _held: held }).map_err(|_| SinkGone { subscriber: self.name })
-    }
-}
-
-/// Subscriptions before the first block (a subscriber joining mid-stream would see a gap)
-pub struct SinkBuilder<T> {
-    subscribers: Vec<Subscriber<T>>,
-    tip: watch::Sender<Option<Height>>,
-    depth: ReorgDepth,
-    /// Rearmost durable extent subscribed so far
-    start: Option<Extent>,
-    furthest_durable: Extent,
-}
-
-impl<T> SinkBuilder<T> {
-    pub fn new(depth: ReorgDepth) -> Self {
-        Self {
-            subscribers: Vec::new(),
-            tip: watch::Sender::new(None),
-            depth,
-            start: None,
-            furthest_durable: Extent::ZERO,
+impl<T> Subscriber<T> {
+    fn push(&self, queued: Queued<T>) {
+        if self.tx.send(queued).is_err() {
+            panic!("subscriber {} dropped its queue before Shutdown", self.name);
         }
     }
+}
 
-    /// `durable` = the subscriber's durable extent (production starts at the rearmost one);
-    /// `budget` = bytes its queue may hold ([`Weight`])
-    pub fn subscribe(
-        &mut self,
-        name: &'static str,
-        budget: NonZeroUsize,
-        durable: Extent,
-    ) -> Subscription<T> {
-        let (tx, steps) = mpsc::unbounded_channel();
+/// Per-block data `T`, published once and consumed by every subscriber
+///
+/// - Subscribed before it is handed to its publisher (taken by value: no subscriber joins
+///   mid-stream)
+/// - Ends with [`shutdown`](Self::shutdown) (dropped without it = subscribers panic)
+pub struct IndexerDataSink<T> {
+    name: &'static str,
+    subscribers: Vec<Subscriber<T>>,
+}
+
+impl<T> IndexerDataSink<T> {
+    /// `name` = its `sink` label on `zaino.sink.queue_bytes`
+    pub fn new(name: &'static str) -> Self {
+        Self { name, subscribers: Vec::new() }
+    }
+
+    /// `budget` = bytes the queue may hold ([`Weight`])
+    pub fn subscribe(&mut self, name: &'static str, budget: NonZeroUsize) -> Subscription<T> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let queued = QueueBytes::new(self.name, name);
         let budget = budget.get().min(Semaphore::MAX_PERMITS);
         self.subscribers.push(Subscriber {
             name,
             tx,
+            queued: queued.clone(),
             budget: Arc::new(Semaphore::new(budget)),
             capacity: u32::try_from(budget).unwrap_or(u32::MAX),
         });
-        self.start = Some(self.start.map_or(durable, |start| start.min(durable)));
-        self.furthest_durable = self.furthest_durable.max(durable);
-        Subscription { steps, tip: self.tip.subscribe(), depth: self.depth }
+        Subscription { rx, queued, shut_down: false }
     }
 
-    /// Final from the start through the furthest durable extent (durable = was final under some
-    /// earlier tip, so a lower tip after a restart cannot un-finalise what an index holds)
-    pub fn seal(self) -> IndexerDataSink<T> {
-        let start = self.start.expect("sink sealed with no subscriber");
-        IndexerDataSink {
-            subscribers: self.subscribers,
-            tip: self.tip,
-            depth: self.depth,
-            final_extent: self.furthest_durable,
-            announced: start,
-            next: start,
+    /// `Shutdown` last in every queue; never waits (budget bypassed)
+    pub fn shutdown(self) {
+        for subscriber in &self.subscribers {
+            subscriber.push(Queued { step: Step::Shutdown, _held: None });
         }
     }
-}
-
-/// Per-block data `T`, produced once and consumed by every subscriber
-///
-/// - Dropping it closes every queue (how subscribers are told to drain and stop)
-pub struct IndexerDataSink<T> {
-    subscribers: Vec<Subscriber<T>>,
-    tip: watch::Sender<Option<Height>>,
-    depth: ReorgDepth,
-    /// Final under the highest tip seen (monotone: a lower winning tip never un-finalises)
-    final_extent: Extent,
-    /// Delivered and announced final (`== next` = none pending)
-    announced: Extent,
-    /// Delivered so far: the next `add` is `next.next()`
-    next: Extent,
 }
 
 impl<T: Weight> IndexerDataSink<T> {
-    /// Next height `add` accepts
-    pub fn next(&self) -> Height {
-        self.next.next()
-    }
-
-    pub fn depth(&self) -> ReorgDepth {
-        self.depth
-    }
-
-    pub fn final_extent(&self) -> Extent {
-        self.final_extent
-    }
-
-    /// New tip → a `Finalized` for every delivered non-final height it buries
-    ///
-    /// - A lower tip (shorter winning branch) keeps the boundary where it was
-    pub async fn set_tip(&mut self, tip: Height) -> Result<(), SinkGone> {
-        self.tip.send_replace(Some(tip));
-        self.finalize_through(self.depth.final_extent(tip)).await
-    }
-
-    /// Everything inside `extent` final, without a tip (a producer that learns finality from its
-    /// own upstream); monotone like [`set_tip`](Self::set_tip)
-    pub async fn finalize_through(&mut self, extent: Extent) -> Result<(), SinkGone> {
-        self.final_extent = self.final_extent.max(extent);
-        while self.announced < self.final_extent.min(self.next) {
-            let height = self.announced.next();
-            self.broadcast(Step::Finalized { height }).await?;
-            self.announced = Extent::through(height);
-        }
-        Ok(())
-    }
-
-    /// Hands block `height`'s data to every subscriber
-    ///
-    /// - Serial: a full queue delays the rest (what bounds memory)
-    /// - Producer contiguity asserted: `next()`, then +1 each, rewound by reset
-    pub async fn add(&mut self, height: Height, data: Arc<T>) -> Result<(), SinkGone> {
-        assert_eq!(height, self.next(), "sink add out of order");
-        let finalized = self.final_extent.contains(height);
-        if finalized {
-            assert_eq!(self.announced, self.next, "final block {height} above non-final ones");
-        }
-        self.broadcast(Step::Apply { height, finalized, data }).await?;
-        self.next = Extent::through(height);
-        if finalized {
-            self.announced = self.next;
-        }
-        Ok(())
-    }
-
-    /// A branch won: every subscriber writes what is final, drops pre-commit, and is replayed
-    /// from the first non-final height (final is final: nothing below it is re-sent)
-    ///
-    /// Returns where the producer resumes
-    pub async fn reset(&mut self) -> Result<Height, SinkGone> {
-        self.broadcast(Step::Reset).await?;
-        self.next = self.announced;
-        Ok(self.next())
-    }
-
-    async fn broadcast(&self, step: Step<T>) -> Result<(), SinkGone> {
+    /// `step` to every queue, serially (a full queue delays the rest: what bounds memory)
+    pub async fn send(&self, step: Step<T>) {
+        assert!(!matches!(step, Step::Shutdown), "Shutdown ends the sink: `shutdown`, not `send`");
         for subscriber in &self.subscribers {
-            subscriber.send(step.clone()).await?;
+            let step = step.clone();
+            let permits = u32::try_from(step.weight())
+                .map_or(subscriber.capacity, |weight| weight.min(subscriber.capacity));
+            let held = Arc::clone(&subscriber.budget)
+                .acquire_many_owned(permits)
+                .await
+                .expect("queue budget never closed");
+            subscriber.queued.pushed(permits);
+            subscriber.push(Queued { step, _held: Some(held) });
         }
-        Ok(())
     }
 }
 
@@ -274,117 +195,8 @@ impl<T: Weight> IndexerDataSink<T> {
 mod tests {
     use super::*;
 
-    impl Weight for Height {
-        fn weight(&self) -> usize {
-            0
-        }
-    }
-
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
-    }
-
-    fn depth(n: u32) -> ReorgDepth {
-        ReorgDepth::new(std::num::NonZeroU32::new(n).expect("nz"))
-    }
-
-    /// `A(h, final)` / `F(h)` / `R` per step, height checked against its data
-    fn drain(sub: &mut Subscription<Height>) -> Vec<String> {
-        std::iter::from_fn(|| sub.steps.try_recv().ok())
-            .map(|queued| match queued.step {
-                Step::Apply { height, finalized, data } => {
-                    assert_eq!(height, *data, "height travels with its data");
-                    format!("A{height}{}", if finalized { "f" } else { "" })
-                }
-                Step::Finalized { height } => format!("F{height}"),
-                Step::Reset => "R".to_owned(),
-            })
-            .collect()
-    }
-
-    fn steps(spec: &str) -> Vec<String> {
-        spec.split_whitespace().map(str::to_owned).collect()
-    }
-
-    /// Depth 2, tip 12: 10 is final on arrival, 11 and 12 are pre-commit; each tip advance then
-    /// finalises exactly the height it buries, never one not yet delivered
-    #[tokio::test]
-    async fn finality_is_marked_on_arrival_and_announced_as_the_tip_buries_each_block() {
-        let mut builder = SinkBuilder::<Height>::new(depth(2));
-        let mut sub = builder.subscribe(
-            "one",
-            NonZeroUsize::new(1 << 20).expect("nz"),
-            Extent::before(h(10)),
-        );
-        let mut sink = builder.seal();
-
-        sink.set_tip(h(12)).await.expect("tip");
-        for height in 10..=12 {
-            sink.add(h(height), Arc::new(h(height))).await.expect("add");
-        }
-        assert_eq!(drain(&mut sub), steps("A10f A11 A12"));
-
-        sink.set_tip(h(13)).await.expect("tip");
-        sink.add(h(13), Arc::new(h(13))).await.expect("add");
-        assert_eq!(drain(&mut sub), steps("F11 A13"), "tip 13 buries 11 only");
-
-        sink.set_tip(h(20)).await.expect("tip jump");
-        assert_eq!(drain(&mut sub), steps("F12 F13"), "jump finalises buried deliveries only");
-        for height in 14..=20 {
-            sink.add(h(height), Arc::new(h(height))).await.expect("add");
-        }
-        assert_eq!(drain(&mut sub), steps("A14f A15f A16f A17f A18f A19 A20"));
-
-        sink.finalize_through(Extent::through(h(19))).await.expect("tipless finality");
-        sink.finalize_through(Extent::through(h(15))).await.expect("lower extent");
-        assert_eq!(drain(&mut sub), steps("F19"), "tipless: same announcement, never back");
-    }
-
-    /// Depth 2, subscribers durable at 9 and 11: both fed from the rearmost (10) and both see the
-    /// same stream; tip 12 first leaves 11 final all the same (the ahead index holds it durable);
-    /// tip 15 buries 12 and 13; a reset rewinds to the first non-final height (14), final is
-    /// final, and the producer resumes there
-    #[tokio::test]
-    async fn every_subscriber_is_fed_from_the_rearmost_resume_point_and_replays_the_same_window() {
-        let mut builder = SinkBuilder::<Height>::new(depth(2));
-        let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let mut behind = builder.subscribe("behind", queue, Extent::before(h(10)));
-        let mut ahead = builder.subscribe("ahead", queue, Extent::before(h(12)));
-        let mut sink = builder.seal();
-        assert_eq!(sink.next(), h(10), "production starts at the rearmost");
-        assert_eq!(sink.final_extent(), Extent::before(h(12)), "final through the furthest");
-
-        sink.set_tip(h(12)).await.expect("tip");
-        for height in 10..=12 {
-            sink.add(h(height), Arc::new(h(height))).await.expect("add");
-        }
-        sink.set_tip(h(15)).await.expect("tip");
-        for height in 13..=15 {
-            sink.add(h(height), Arc::new(h(height))).await.expect("add");
-        }
-        assert_eq!(sink.reset().await.expect("reset"), h(14));
-        for height in 14..=15 {
-            sink.add(h(height), Arc::new(h(height))).await.expect("replay");
-        }
-
-        let expected = steps("A10f A11f A12 F12 A13f A14 A15 R A14 A15");
-        assert_eq!(drain(&mut behind), expected);
-        assert_eq!(drain(&mut ahead), expected, "an index ahead sees what it holds");
-
-        drop(behind);
-        let gone = sink.add(h(16), Arc::new(h(16))).await;
-        assert!(matches!(gone, Err(SinkGone { subscriber: "behind" })));
-    }
-
-    /// The producer's own order is asserted: a skipped height is a bug, not a gap to tolerate
-    #[tokio::test]
-    #[should_panic(expected = "sink add out of order")]
-    async fn a_skipped_height_panics() {
-        let mut builder = SinkBuilder::<Height>::new(depth(1));
-        let _sub = builder.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz"), Extent::ZERO);
-        let mut sink = builder.seal();
-        sink.add(h(0), Arc::new(h(0))).await.expect("first");
-        let _ = sink.add(h(2), Arc::new(h(2))).await;
     }
 
     struct Blob(usize);
@@ -395,50 +207,165 @@ mod tests {
         }
     }
 
-    /// Budget = three 100-byte steps: a fourth waits for a pop; a step over the whole budget
-    /// passes alone once the queue drains; a subscriber dropped under a full queue fails the
-    /// waiting add instead of hanging it
-    #[tokio::test]
-    async fn a_byte_budget_bounds_the_queue_and_never_deadlocks() {
-        let step = size_of::<Step<Blob>>() + 100;
-        let oversize = 10 * 3 * step;
-        let mut builder = SinkBuilder::<Blob>::new(depth(1));
-        let budget = NonZeroUsize::new(3 * step).expect("nz");
-        let mut sub = builder.subscribe("one", budget, Extent::ZERO);
-        let mut sink = builder.seal();
-        sink.set_tip(h(100)).await.expect("tip");
-        let popped = |step: Option<Step<Blob>>| match step {
-            Some(Step::Apply { height, .. }) => height,
+    fn apply(height: u32, weight: usize) -> Step<Blob> {
+        Step::Apply { height: h(height), finalized: true, data: Arc::new(Blob(weight)) }
+    }
+
+    fn popped(step: Step<Blob>) -> Height {
+        match step {
+            Step::Apply { height, .. } => height,
             _ => panic!("expected an apply"),
+        }
+    }
+
+    /// Two subscribers see the same steps in the same order; `Shutdown` lands last and stays popped
+    #[tokio::test]
+    async fn every_subscriber_sees_the_same_steps_then_shutdown_forever() {
+        let mut sink = IndexerDataSink::<Blob>::new("test");
+        let queue = NonZeroUsize::new(1 << 20).expect("nz");
+        let (mut one, mut two) = (sink.subscribe("one", queue), sink.subscribe("two", queue));
+        sink.send(apply(7, 1)).await;
+        sink.send(Step::Finalized { height: h(7) }).await;
+        sink.send(Step::Reset).await;
+        sink.shutdown();
+
+        for sub in [&mut one, &mut two] {
+            assert_eq!(popped(sub.next().await), h(7));
+            assert!(matches!(sub.next().await, Step::Finalized { height } if height == h(7)));
+            assert!(matches!(sub.next().await, Step::Reset));
+            assert!(matches!(sub.next().await, Step::Shutdown));
+            assert!(matches!(sub.next().await, Step::Shutdown), "closed queue past Shutdown");
+        }
+    }
+
+    /// A subscriber holds its queue through `Shutdown`: dropping it sooner is a bug upstream
+    #[tokio::test]
+    #[should_panic(expected = "subscriber one dropped its queue before Shutdown")]
+    async fn a_queue_dropped_before_shutdown_panics_the_sink() {
+        let mut sink = IndexerDataSink::<Blob>::new("test");
+        drop(sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz")));
+        sink.send(apply(0, 1)).await;
+    }
+
+    /// A sink ends with `Shutdown`: one dropped without it (its publisher panicked) is no clean stop
+    #[tokio::test]
+    #[should_panic(expected = "sink dropped without Shutdown")]
+    async fn a_sink_dropped_without_shutdown_panics_the_subscriber() {
+        let mut sink = IndexerDataSink::<Blob>::new("test");
+        let mut sub = sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz"));
+        drop(sink);
+        sub.next().await;
+    }
+
+    /// `zaino.sink.queue_bytes` = bytes each queue holds, per (sink, subscriber):
+    /// - up on send, down on pop, back to 0 once drained
+    /// - a step over the budget counts as the budget (what it holds); `Shutdown` counts nothing
+    /// - same subscriber name on two sinks = two gauges (compact-block reads blocks and fees)
+    #[tokio::test]
+    async fn queue_bytes_tracks_what_each_queue_holds_per_sink_and_subscriber() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let step = size_of::<Step<Blob>>() + 100;
+        let budget = NonZeroUsize::new(3 * step).expect("nz");
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let (mut blocks, mut fees) = (IndexerDataSink::new("blocks"), IndexerDataSink::new("fees"));
+        // gauge handles bind to the recorder at subscribe
+        let (mut one, mut two, mut fees_one) = metrics::with_local_recorder(&recorder, || {
+            let one = blocks.subscribe("one", budget);
+            (one, blocks.subscribe("two", budget), fees.subscribe("one", budget))
+        });
+        // snapshot swaps each gauge to 0 → running sum = current value (only ever += / −=)
+        let totals = std::cell::RefCell::new(std::collections::BTreeMap::new());
+        let queued = || -> Vec<(String, String, f64)> {
+            let mut totals = totals.borrow_mut();
+            for (key, _, _, value) in snapshotter.snapshot().into_vec() {
+                let DebugValue::Gauge(bytes) = value else { continue };
+                let label = |name: &str| -> String {
+                    let mut labels = key.key().labels();
+                    labels.find(|label| label.key() == name).expect(name).value().into()
+                };
+                *totals.entry((label("sink"), label("subscriber"))).or_insert(0.0) += bytes.0;
+            }
+            totals.iter().map(|((sink, sub), bytes)| (sink.clone(), sub.clone(), *bytes)).collect()
+        };
+        let row = |sink: &str, subscriber: &str, bytes: usize| {
+            (sink.to_owned(), subscriber.to_owned(), bytes as f64)
         };
 
+        blocks.send(apply(0, 100)).await;
+        blocks.send(apply(1, 100)).await;
+        fees.send(apply(0, 100)).await;
+        assert_eq!(popped(one.next().await), h(0));
+        assert_eq!(
+            queued(),
+            [row("blocks", "one", step), row("blocks", "two", 2 * step), row("fees", "one", step)]
+        );
+
+        // drain: one holds 1, two holds 2, fees one holds 1
+        assert_eq!(popped(one.next().await), h(1));
+        assert_eq!((popped(two.next().await), popped(two.next().await)), (h(0), h(1)));
+        assert_eq!(popped(fees_one.next().await), h(0));
+        blocks.send(apply(2, 10 * budget.get())).await;
+        assert_eq!(
+            queued(),
+            [row("blocks", "one", 3 * step), row("blocks", "two", 3 * step), row("fees", "one", 0)],
+            "an oversize step holds the whole budget"
+        );
+
+        blocks.shutdown();
+        fees.shutdown();
+        for sub in [&mut one, &mut two, &mut fees_one] {
+            sub.skip_to_shutdown().await;
+        }
+        assert_eq!(
+            queued(),
+            [row("blocks", "one", 0), row("blocks", "two", 0), row("fees", "one", 0)],
+            "drained through Shutdown"
+        );
+    }
+
+    /// Budget = three 100-byte steps: a fourth waits for a pop; a step over the whole budget
+    /// passes alone once the queue drains; `Shutdown` queues behind a full budget, never waits
+    #[tokio::test]
+    async fn a_byte_budget_bounds_the_queue_and_never_holds_back_shutdown() {
+        let step = size_of::<Step<Blob>>() + 100;
+        let oversize = 10 * 3 * step;
+        let mut sink = IndexerDataSink::<Blob>::new("test");
+        let mut sub = sink.subscribe("one", NonZeroUsize::new(3 * step).expect("nz"));
+
         for height in 0..3 {
-            sink.add(h(height), Arc::new(Blob(100))).await.expect("fits");
+            sink.send(apply(height, 100)).await;
         }
         {
-            let fourth = sink.add(h(3), Arc::new(Blob(100)));
+            let fourth = sink.send(apply(3, 100));
             tokio::pin!(fourth);
             assert!(futures::poll!(fourth.as_mut()).is_pending(), "budget full");
             assert_eq!(popped(sub.next().await), h(0));
-            fourth.await.expect("one pop frees one step");
+            fourth.await;
         }
 
         for height in 1..=3 {
             assert_eq!(popped(sub.next().await), h(height));
         }
-        sink.add(h(4), Arc::new(Blob(oversize))).await.expect("oversize passes an empty queue");
+        sink.send(apply(4, oversize)).await;
         {
-            let small = sink.add(h(5), Arc::new(Blob(100)));
+            let small = sink.send(apply(5, 100));
             tokio::pin!(small);
             assert!(futures::poll!(small.as_mut()).is_pending(), "oversize holds all");
             assert_eq!(popped(sub.next().await), h(4));
-            small.await.expect("fits once the oversize step pops");
+            small.await;
         }
 
-        let heavy = sink.add(h(6), Arc::new(Blob(oversize)));
-        tokio::pin!(heavy);
-        assert!(futures::poll!(heavy.as_mut()).is_pending(), "waits for an empty queue");
-        drop(sub);
-        assert!(matches!(heavy.await, Err(SinkGone { subscriber: "one" })));
+        {
+            let heavy = sink.send(apply(6, oversize));
+            tokio::pin!(heavy);
+            assert!(futures::poll!(heavy.as_mut()).is_pending(), "waits for an empty queue");
+            assert_eq!(popped(sub.next().await), h(5));
+            heavy.await;
+        }
+        sink.shutdown();
+        assert_eq!(popped(sub.next().await), h(6));
+        assert!(matches!(sub.next().await, Step::Shutdown), "queued past the full budget");
     }
 }

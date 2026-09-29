@@ -1,23 +1,23 @@
 //! What an index must do to be driven by [`IndexFollower`](crate::IndexFollower).
 //!
-//! Sync is `f(old_state, blocks)`. The non-finalised window is that same `f`, applied and not
-//! yet finalised — so an index has **two** extents, not one:
+//! Sync is `f(old_state, blocks)`. The non-finalized state is that same `f`, applied and not
+//! yet finalised — so an index has **two** tips, not one (each a last height, inclusive):
 //!
-//! - [`applied_height`](IndexWriter::applied_height) — pre-commit, reaches the chain tip
-//! - [`finalized_height`](IndexWriter::finalized_height) — durable, lags by `finalised_depth`
+//! - [`applied_height`](IndexWriter::applied_height) — non-finalized, reaches the chain tip
+//! - [`finalized_tip`](IndexWriter::finalized_tip) — durable, lags by `finalised_depth`
 //!
-//! A reorg drops pre-commit and re-applies; a restart finds pre-commit empty and re-applies.
+//! A reorg drops the non-finalized state and re-applies; a restart finds it empty and re-applies.
 //! **Same operation**, which matters more than the code it saves: the reorg path is rare and
 //! therefore under-tested, and this makes it the path that runs on every boot.
 //!
 //! Nothing here knows about storage. The index owns its files, its cumulative state, its write
 //! cadence and both its heights; the harness owns the loop.
 //!
-//! See `docs/design/precommit-state.md`.
+//! See `docs/design/non-finalized-state.md`.
 
 use std::{future::Future, sync::Arc};
 
-use zaino_primitives::types::{Block, BlockHash, Extent, Height};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
 
 /// What the harness reads off a delivered item to prove the chain it builds links up
 pub trait Linked {
@@ -58,7 +58,7 @@ pub trait IndexWriter: Send + 'static {
     /// The [`IndexerDataSink`](crate::IndexerDataSink) item this index subscribes to
     type Input: Linked + crate::Weight + Send + Sync + 'static;
 
-    /// Immutable snapshot of pre-commit state, pinned by readers.
+    /// Immutable snapshot of the non-finalized state, pinned by readers.
     ///
     /// Published after every apply, so it must be cheap to clone — a persistent structure
     /// (`imbl`) sharing with the snapshot it came from, never a deep copy.
@@ -74,32 +74,34 @@ pub trait IndexWriter: Send + 'static {
     /// Names the index in logs, status and metrics.
     const NAME: &'static str;
 
-    /// Durable extent: one past the highest height on disk.
+    /// Last durable block, as committed (inclusive; `None` = nothing on disk)
     ///
-    /// The resume point, and what anything downstream gates on. Never moves backwards.
-    fn finalized_height(&self) -> Extent;
+    /// - Resume point, and what anything downstream gates on; never moves backwards
+    /// - Chain identity the next delivered block must link onto (`FollowError::Unlinked`)
+    fn finalized_tip(&self) -> Option<BlockRef>;
 
-    /// Hash of the durable tip (`finalized_height().last()`), as committed; `None` iff empty
-    ///
-    /// The chain identity the next delivered block must link onto (`FollowError::Unlinked`).
-    fn finalized_tip(&self) -> Option<BlockHash>;
+    /// [`finalized_tip`](Self::finalized_tip)'s height
+    fn finalized_height(&self) -> Option<Height> {
+        self.finalized_tip().map(|tip| tip.height)
+    }
 
-    /// Pre-commit extent: the height the next [`apply`](Self::apply) expects.
+    /// Last applied height, inclusive (`None` = nothing applied): the next
+    /// [`apply`](Self::apply) expects the height after it
     ///
     /// Moves backwards only on [`reset`](Self::reset), and only to
     /// [`finalized_height`](Self::finalized_height).
-    fn applied_height(&self) -> Extent;
+    fn applied_height(&self) -> Option<Height>;
 
-    /// Pre-commit state, for readers to pin. Serving consults this *before* durable state.
+    /// Non-finalized state, for readers to pin. Serving consults this *before* durable state.
     fn view(&self) -> Self::View;
 
     /// Every delivered block, in order, before the harness stages or applies any of `blocks`
     ///
     /// - `blocks` = a contiguous run of the steps already queued (one block when following the
     ///   tip, up to a batch's bytes in bulk): per-block work batches across it
-    /// - Heights inside [`finalized_height`](Self::finalized_height) arrive here and nowhere else
+    /// - Heights at or below [`finalized_height`](Self::finalized_height) arrive here and nowhere
+    ///   else
     ///   (the sink feeds every index from the rearmost resume point): skipping them = the default
-    /// - An index feeding another sink publishes from here (one item per block, at every stage)
     fn deliver(
         &mut self,
         blocks: &[Arc<Self::Input>],
@@ -108,14 +110,14 @@ pub trait IndexWriter: Send + 'static {
         async { Ok(()) }
     }
 
-    /// Folds one block into pre-commit state. Not durable until
+    /// Folds one block into the non-finalized state. Not durable until
     /// [`finalize`](Self::finalize).
     fn apply(
         &mut self,
         block: &Arc<Self::Input>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Prepares `blocks` for durable storage, contiguous and ascending from
+    /// Prepares `blocks` for durable storage, contiguous and ascending from the height after
     /// [`finalized_height`](Self::finalized_height); the returned `write` stores them.
     ///
     /// These are final — below `MAX_BLOCK_REORG_HEIGHT`, so no [`reset`](Self::reset) can reach
@@ -134,8 +136,8 @@ pub trait IndexWriter: Send + 'static {
     /// [`reset`](Self::reset).
     ///
     /// A block here need **not** have been through [`apply`](Self::apply): during bulk sync
-    /// everything arrives already final and skips pre-commit entirely, and only the reorg
-    /// window pays for both.
+    /// everything arrives already final and skips the non-finalized state entirely, and only the
+    /// reorg window pays for both.
     fn finalize(
         &mut self,
         blocks: &[Arc<Self::Input>],
@@ -147,20 +149,20 @@ pub trait IndexWriter: Send + 'static {
     > + Send;
 
     /// Lands a finished `write`: the store returns, [`finalized_height`](Self::finalized_height)
-    /// moves, the written blocks leave pre-commit, downstream is told.
+    /// moves, the written blocks leave the non-finalized state, downstream is told.
     ///
     /// **Advances [`applied_height`](Self::applied_height) too**, to at least the new
     /// `finalized_height`. `applied < finalized` is incoherent — an index that only moved its
-    /// durable extent would fold the next `apply` onto stale carry.
+    /// durable tip would fold the next `apply` onto stale carry.
     ///
     /// Every tier change lands here in one step: readers see a written block in exactly one tier
-    /// (pre-commit until now, durable after), never both and never neither.
+    /// (non-finalized until now, durable after), never both and never neither.
     fn committed(
         &mut self,
         done: Self::Done,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Drops **all** pre-commit state, the reorg move. After this,
+    /// Drops **all** non-finalized state, the reorg move. After this,
     /// `applied_height() == finalized_height()`.
     ///
     /// Takes no height: state only ever moves forward from a durable point, so no index owns a
@@ -171,6 +173,20 @@ pub trait IndexWriter: Send + 'static {
     /// **Never touches durable state.** The harness finalises `MAX_BLOCK_REORG_HEIGHT` behind
     /// the tip, so nothing a reorg can reach was ever fsynced.
     fn reset(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+}
+
+/// An index whose every delivered block derives one item for another sink
+/// ([`IndexFollower::publishing`](crate::IndexFollower::publishing) republishes it)
+pub trait Derives: IndexWriter {
+    type Item: crate::Weight + Send + Sync + 'static;
+
+    /// One item per block of `blocks`, in order: the run just passed to
+    /// [`deliver`](IndexWriter::deliver), durable heights included (a downstream index behind
+    /// this one still pairs them)
+    fn derive(
+        &mut self,
+        blocks: &[Arc<Self::Input>],
+    ) -> impl Future<Output = Result<Vec<Self::Item>, Self::Error>> + Send;
 }
 
 /// [`finalize`](IndexWriter::finalize) → its write → [`committed`](IndexWriter::committed), in

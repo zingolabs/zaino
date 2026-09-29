@@ -1,10 +1,10 @@
 # zaino-internal-value-balance
 
 The value-balance index. Serves no RPC itself: it resolves every transaction's
-[`ValueBalance`](../zaino-primitives/usage.md) (what the transaction moves out
-of each pool, whose sum is its fee) and publishes one `BlockValueBalances` per
-block into a `zaino_sync::ValueBalanceSink` for downstream indexes. The
-compact-block index reads it to fill `CompactTx.fee`.
+[`Fee`](../zaino-primitives/usage.md) and derives one `BlockFees` per block,
+which its follower forwards into a `zaino_sync::FeeSink` for downstream
+indexes. The compact-block index reads it, in lockstep with its own
+block stream, to fill `CompactTx.fee`.
 
 The only term a block does not carry is what each transparent input spends, so
 the index keeps one
@@ -21,43 +21,42 @@ append-only), so any height re-resolves identically.
 
 ```rust
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
-use zaino_sync::{IndexFollower, ValueBalanceSinkBuilder};
+use zaino_sync::{FeeSink, IndexFollower};
 
-let mut balances = ValueBalanceSinkBuilder::new(depth);
-let for_compact = balances.subscribe("compact_block", queue, compact_durable);
-let writer = ValueBalanceIndexWriter::open(fs, &path, network, balances.seal())?;
-let follower = IndexFollower::new(writer, blocks.subscribe(NAME, queue, durable), batch_bytes);
-
-// downstream, once per block, in its own `deliver`
-let balances = for_compact.balances_for(&block).await; // None = the publisher stopped
+let mut fee_sink = FeeSink::new("fees");
+let for_compact = fee_sink.subscribe("compact_block", queue); // before `publishing`
+let writer = ValueBalanceIndexWriter::open(fs, &path, network)?;
+let subscription = block_sink.subscribe(NAME, queue);
+let follower =
+    IndexFollower::new(writer, subscription, tips, batch_bytes, depth).publishing(fee_sink);
 ```
 
-- `ValueBalanceIndexWriter` implements `zaino_sync::IndexWriter<Input = Block>`,
-  subscribed to the `BlockSink` like any index.
-- Seal the `ValueBalanceSink` after every consumer subscribes: it starts at
-  their rearmost durable extent, and the writer publishes from there.
-- A consumer pairs each block with its balances by height and hash
-  (`Subscription::balances_for`), so after a reorg it skips items still
-  queued from the losing branch.
+- `ValueBalanceIndexWriter` implements `zaino_sync::IndexWriter<Input = Block>`
+  and `zaino_sync::Derives<Item = BlockFees>`, subscribed to the
+  `BlockSink` like any index.
+- The follower forwards every step it follows into the sink, 1:1, `Shutdown`
+  last (clean stop and failure alike): the stream is the block stream's, step
+  for step, from the same start. A consumer reads it beside its own block
+  subscription through `zaino_sync::Zip`.
 
-## Everything happens in `deliver`
+## Resolved per delivered run
 
-`deliver` records the block's outputs, resolves its inputs against those and
-everything recorded before, and publishes, for every block: bulk, replay and
-tip alike. Resolving at commit time instead would deadlock, since the consumer
-waits on balances block by block while a commit waits for a whole batch.
-`apply` only moves the nonfinalised extent; `finalize` writes the outputs
-`deliver` recorded; `reset` drops them and resets the sink.
+`deliver` records the run's outputs; `derive` resolves each block's inputs
+against those and everything recorded before, for every block: bulk, replay
+and tip alike. Resolving at commit time instead would deadlock, since the
+consumer waits on fees block by block while a commit waits for a whole
+batch. `apply` only moves the applied tip (last applied height, inclusive); `finalize` writes the
+outputs `deliver` recorded; `reset` drops them.
 
 A block's prevouts not held in memory are resolved in one
 `Snapshot::get_many` (sorted, parallel, newest segment first). A sandblast
 transaction spends thousands of outputs, and one random lookup each is one cold
 page fault each.
 
-| Height delivered | Outputs | Published |
+| Height delivered | Outputs | Derived + forwarded |
 |---|---|---|
-| inside this index's durable extent | already stored | if a consumer needs it |
-| above it | recorded (`Pending`) | if a consumer needs it |
+| at or below this index's durable tip | already stored | yes (a consumer behind this index pairs it) |
+| above it | recorded (`Pending`) | yes |
 
 A spend of an output the index never recorded is fatal
 (`IndexWriterError::MissingPrevout`): the index runs from genesis, so it means
@@ -65,8 +64,26 @@ a foreign directory or a bug, never a gap to work around.
 
 ## Fees
 
-`ValueBalance::fee()` sums the transparent, Sprout, Sapling, Orchard and
-Ironwood flows, the same terms as librustzcash's `fee_paid`. It is `None` for a
-coinbase, whose sum is negative (issuance). Mempool fees do not come from here:
+A transaction's fee is the value it leaves in the transparent transaction
+value pool
+([protocol §3.4](https://zips.z.cash/protocol/protocol.pdf#transactions)):
+
+```text
+fee = Σ transparent inputs − Σ transparent outputs
+    + Sprout Σ(vpub_new − vpub_old)   (§4.12)
+    + valueBalanceSapling             (§4.13)
+    + valueBalanceOrchard             (§4.14)
+    + valueBalanceIronwood            (§4.14, ZIP 229)
+```
+
+These are the same terms as librustzcash's `fee_paid`.
+
+- A coinbase transaction (decoded as `TransparentData::coinbase`) pays no fee
+  (§3.11), so it is `Fee::Coinbase`, never a computed sum.
+- A negative sum is consensus-invalid for any other transaction (§3.4: "MUST
+  be nonnegative"), so it is fatal (`IndexWriterError::NegativeFee`), never
+  clamped. So is a sum past the money supply (`ValueOverflow`, ZIP 209).
+
+Mempool fees do not come from here:
 the validator lists them (`getrawmempool true`), since it resolved those
 prevouts itself when admitting the transaction.

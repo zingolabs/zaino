@@ -50,9 +50,9 @@ impl Height {
         Self(self.0.saturating_sub(delta))
     }
 
-    /// `self..=last`, ascending (empty when `last < self`)
-    pub fn up_to(self, last: Height) -> impl Iterator<Item = Height> + Send + 'static {
-        (self.0..=last.0).map(Self)
+    /// `self` to `end`, both inclusive, ascending (empty when `end < self`)
+    pub fn up_to(self, end: Height) -> impl Iterator<Item = Height> + Send + 'static {
+        (self.0..=end.0).map(Self)
     }
 }
 

@@ -1,14 +1,11 @@
-//! LSM metrics, labelled `set` = the segment set's directory name (no-op without `prometheus`)
+//! LSM metrics, labelled `set` = the segment set's directory name
 //!
 //! - write amplification = `merge_rows_total / batch_rows_total`
-
-#![cfg_attr(not(feature = "prometheus"), allow(unused_variables))]
 
 use std::time::Duration;
 
 use super::SegmentMeta;
 
-#[cfg(feature = "prometheus")]
 mod names {
     pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
     pub(super) const MERGING: &str = "zaino.lsm.merging";
@@ -21,7 +18,6 @@ mod names {
 }
 
 /// `(metric, bucket edges)` for the exporter (ms tier-0 merges → tens of minutes at the top)
-#[cfg(feature = "prometheus")]
 pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
     (
         names::MERGE_DURATION_SECONDS,
@@ -31,7 +27,6 @@ pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
 ];
 
 /// `# HELP` registrations for every metric this module emits
-#[cfg(feature = "prometheus")]
 pub fn describe_metrics() {
     use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 
@@ -73,7 +68,6 @@ pub fn describe_metrics() {
 ///
 /// - every tier re-sent, zeros included (an emptied tier never keeps a stale count)
 pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
-    #[cfg(feature = "prometheus")]
     for (tier, &(segments, merging)) in shape.iter().enumerate() {
         let labels = [("set", set.to_owned()), ("tier", tier.to_string())];
         metrics::gauge!(names::SEGMENTS, &labels).set(segments as f64);
@@ -82,18 +76,15 @@ pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
 }
 
 pub(super) fn stall_at(set: &str, segments: usize) {
-    #[cfg(feature = "prometheus")]
     metrics::gauge!(names::STALL_AT, "set" => set.to_owned()).set(segments as f64);
 }
 
 pub(super) fn batched(set: &str, segment: &SegmentMeta) {
-    #[cfg(feature = "prometheus")]
     metrics::counter!(names::BATCH_ROWS_TOTAL, "set" => set.to_owned()).increment(segment.records);
 }
 
 /// `tier` = the inputs' tier (output lands one above)
 pub(super) fn merged(set: &str, tier: u32, segment: &SegmentMeta, took: Duration) {
-    #[cfg(feature = "prometheus")]
     {
         let set = set.to_owned();
         metrics::counter!(names::MERGE_ROWS_TOTAL, "set" => set.clone()).increment(segment.records);
@@ -105,6 +96,5 @@ pub(super) fn merged(set: &str, tier: u32, segment: &SegmentMeta, took: Duration
 }
 
 pub(super) fn stalled(set: &str, took: Duration) {
-    #[cfg(feature = "prometheus")]
     metrics::histogram!(names::STALL_DURATION_SECONDS, "set" => set.to_owned()).record(took);
 }

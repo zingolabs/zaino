@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
 };
 
-use zaino_primitives::types::{BlockHash, Extent};
+use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::NetworkType;
 
 use super::{
@@ -43,7 +43,7 @@ pub trait LsmIndex: 'static {
     /// `SegmentLog<Row>` per set: one alone, or a pair
     type Logs: SegmentLogs;
 
-    /// Index-specific agreement between the committed extent and the segment lists
+    /// Index-specific agreement between the committed tip and the segment lists
     fn check(_committed: &Committed, _lists: &[Vec<SegmentMeta>]) -> Result<(), ManifestError> {
         Ok(())
     }
@@ -197,21 +197,21 @@ impl<I: LsmIndex> LsmStore<I> {
     /// `rows` as one segment per set, then the manifest listing them (the commit point), then
     /// readers see them (never a height not on disk)
     ///
-    /// - `extent` past the committed one (asserted)
+    /// - `tip` above the committed one (asserted)
     /// - an `Err` = this store is done: drop it, reopen (recovery = the last durable manifest)
     pub fn commit(
         &mut self,
         rows: <I::Logs as SegmentLogs>::Rows,
-        extent: Extent,
-        tip: BlockHash,
+        tip: BlockRef,
     ) -> Result<(), StoreError> {
         assert!(!self.failed, "LSM commit after a failed one (fsync errors are never retried)");
         assert!(
-            extent > self.committed.extent,
-            "LSM commit to {extent} from {}",
-            self.committed.extent
+            Some(tip.height) > self.committed.height(),
+            "LSM commit to height {}, not above the committed {:?}",
+            tip.height,
+            self.committed.height()
         );
-        let committed = Committed::new(extent, Some(tip));
+        let committed = Committed { tip: Some(tip) };
         let lists = self.logs.batch(rows).inspect_err(|_| self.failed = true)?;
         I::check(&committed, &lists).expect("commit satisfies its own manifest check");
         self.dir.commit(&encode(&committed, &lists)).inspect_err(|_| self.failed = true)?;
@@ -227,11 +227,11 @@ pub fn committed_files<I: LsmIndex>(
     network: NetworkType,
 ) -> io::Result<CommittedFiles> {
     let Some(body) = manifest::read(path, identity::<I>(network))? else {
-        return Ok(CommittedFiles { heights: Extent::ZERO, files: Vec::new() });
+        return Ok(CommittedFiles { tip: None, files: Vec::new() });
     };
     let (committed, lists) = decode::<I>(&body).map_err(io::Error::other)?;
     let files = I::SETS.iter().zip(&lists).flat_map(|(set, list)| segment_files(set, list));
-    Ok(CommittedFiles { heights: committed.extent, files: files.collect() })
+    Ok(CommittedFiles { tip: committed.height(), files: files.collect() })
 }
 
 fn identity<I: LsmIndex>(network: NetworkType) -> Identity {

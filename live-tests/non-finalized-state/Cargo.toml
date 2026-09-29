@@ -1,6 +1,6 @@
 [package]
 name = "non-finalized-state"
-description = "Live tests for Zaino's non-finalised window: reorgs, the serving gate, and every tip-dependent RPC, against a regtest zebrad on the ztest k8s harness."
+description = "Live tests for Zaino's non-finalized state: reorgs, the serving gate, and every tip-dependent RPC, against a regtest zebrad on the ztest k8s harness."
 publish = false
 authors.workspace = true
 repository.workspace = true

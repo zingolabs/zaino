@@ -1,6 +1,6 @@
 //! Restart = replay from durable: identical to living through the reorg, and follows one missed
 //!
-//! - Pre-commit memory only → a restart rebuilds the window from the validator's current chain
+//! - Non-finalized state in memory only → a restart rebuilds it from the validator's current chain
 //! - Down across a reorg = `freeze` then kill (kubelet restarts a first crash at once)
 //! - Contracts C10, C13 in `docs/design/non-finalized-state-tests.md`
 
@@ -32,10 +32,7 @@ async fn restart_after_a_reorg_serves_identically() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH)
-            .restartable(),
+        dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH).restartable(),
     );
     env.build().await?;
 
@@ -83,10 +80,7 @@ async fn reorg_while_down_is_followed_on_restart() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH)
-            .restartable(),
+        dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH).restartable(),
     );
     env.build().await?;
 
@@ -132,10 +126,7 @@ async fn reorg_below_durable_while_down_halts_on_restart() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH)
-            .restartable(),
+        dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH).restartable(),
     );
     env.build().await?;
 

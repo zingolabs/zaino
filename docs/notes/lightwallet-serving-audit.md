@@ -280,7 +280,7 @@ pruned from every wallet answer, but it is still read from disk and page cache
 
 **Workload W3: mobile reconnect after 1 day** [est]
 
-- ~1,152 blocks, all inside the 1,000-block non-finalised window or just below it. Tip
+- ~1,152 blocks, all inside the 1,000-block non-finalized state or just below it. Tip
   compact-block size is assumed at 5–20 KB.
 - Plus ~20 small requests.
 - Total: 6–23 MB per reconnect.
@@ -336,7 +336,7 @@ call sites are statically disabled under the default filter (`zainod/src/logging
           the kept fields into it.
         - Then it copies that `Vec` into `out` (`project.rs:110`).
         - **Two userland copies of every retained byte, one allocation per transaction.**
-   - **Above the seam** (the 1,000-block non-finalised window, i.e. every steady-state and
+   - **Above the seam** (the 1,000-block non-finalized state, i.e. every steady-state and
      reconnect request): inline on the runtime worker, **one record per chunk**. Each record
      is projected again for every request (`serve.rs:186-196`).
 3. **hyper `PipeToSendStream`** (hyper-1.10.1 `proto/h2/mod.rs:130-230`) polls a chunk,
@@ -374,7 +374,7 @@ off a warm mapping]:
   key + length + spans straight into `out`. That halves the memcpy and removes the
   per-transaction malloc.
 - **B2. Tip ranges re-project the same blocks for every wallet.**
-  - The non-finalised records are stored full (`non_finalized.rs:52-57`), so every
+  - The non-finalized records are stored full (`non_finalized.rs:52-57`), so every
     steady-state request projects every block again.
   - Store the default projection next to the full record at `apply` (one extra `Bytes` per
     block, 1,000 blocks). The common request then becomes zero-copy.
@@ -419,7 +419,7 @@ off a warm mapping]:
   zero-copy record (`serve.rs:89-91`). Fine. pepper-sync uses it for reorg checks at the tip.
 - **`GetLatestBlock`:** a permit plus `spawn_blocking` (`router.rs:681-688`) for
   `latest_id()` (`serve.rs:107-112`).
-  - At the tip that is a RAM read of the non-finalised `OrdMap` and a framing walk to the hash.
+  - At the tip that is a RAM read of the non-finalized `OrdMap` and a framing walk to the hash.
   - So a ~1 µs answer pays a ~10–30 µs hop plus two context switches [est], and **queues behind
     any heavy read** holding the 16 permits.
   - The answer is a pure function of the published view: precompute the framed `BlockID` once
@@ -428,7 +428,7 @@ off a warm mapping]:
 ### 2.4 Tree state
 
 - **`GetTreeState`** (`router.rs:893-951`, `zaino-index-tree-state/src/view.rs:138-155`):
-  - Reads up to 33 nodes per pool across the non-finalised `OrdMap` and the mmap: 3.02 µs warm
+  - Reads up to 33 nodes per pool across the non-finalized `OrdMap` and the mmap: 3.02 µs warm
     first touch, 296 µs cold [measured], `persistence-architecture.md` §4.
   - Then `from_frontier` and `write_commitment_tree` per pool (no hashing), and **hex encoding**
     of three ~1 KB trees plus `String` allocations.
@@ -517,7 +517,7 @@ off a warm mapping]:
      The queue then grows without bound until `max_streams`, and pepper-sync's 10 s unary
      timeout fires [est].
   2. **Hops for RAM answers.** Tip `BlockID`, tip tree state and tip ranges live in the
-     non-finalised tier.
+     non-finalized tier.
   3. **Caps warm-read CPU parallelism at 16**, whatever the core count (arbei has 72c).
   4. **tokio's blocking pool** is a mutex-guarded queue plus a condvar wake per task. That is
      fine at 10k/s, but at 100k/s bursts it is a global serialization point with thread churn.
@@ -672,7 +672,7 @@ metric. Every item states its expected gain; confirm it before moving to the nex
 |---|---|---|---|---|---|
 | 7 | Lanes instead of one FIFO: `point` (block, tree state, by-hash; ~2 × cores), `range` (window steps; 16–64), `scan` (address history; small, e.g. 4). Each is its own semaphore and wait histogram. | `limits.rs` (`DiskReadPermits` → per-lane), `router.rs` (each dispatch picks its lane) | Heavy scans cannot stall tip reads; warm-read CPU scales with cores | Tuning; more config surface (keep defaults derived from core count) | `disk_read_wait_seconds{lane}` p99 under the mixed scenario with an adversarial hot address |
 | 8 | Work budget for address scans: a row cap per request → `RESOURCE_EXHAUSTED` naming the limit. Longer term, a spend-by-address-and-height key so `GetTaddressTransactions` scans only its range. | `zaino-index-transparent-address/src/serve.rs` (`transactions`, `unspent`), `view.rs` | Bounds the worst request from ~seconds to ms | A client with a legitimately huge address gets an error (exchanges, not light wallets). The index change is a design change. | hot-address latency; permit hold time |
-| 9 | Precompute per published view (lazy `OnceLock` inside the pinned view, so no invalidation logic): framed tip `BlockID`; a `TreeState` cache for heights in the non-finalised window; a pre-framed subtree-roots buffer per pool (append-only, sliced by `startIndex`); the default-pools projection of each non-finalised record, stored at `apply` (B2). Serve these **inline, no hop**. | `zaino-index-compact-block/src/{serve.rs,non_finalized.rs,view.rs}`, `zaino-index-tree-state/src/{serve.rs,view.rs}`, `router.rs` (`latest`, `tree_state::dispatch`, `subtree_roots`) | Per-block burst CPU for these methods down ~5–10× [est]; tip ranges zero-copy; no hop for tip answers | Memory: +1 projected `Bytes` per window block (~1,000 × tip size); correctness across reorg (the view is immutable, so the cache dies with it) | burst-drain time per block at N wallets; CPU-seconds per burst |
+| 9 | Precompute per published view (lazy `OnceLock` inside the pinned view, so no invalidation logic): framed tip `BlockID`; a `TreeState` cache for heights in the non-finalized state; a pre-framed subtree-roots buffer per pool (append-only, sliced by `startIndex`); the default-pools projection of each non-finalized record, stored at `apply` (B2). Serve these **inline, no hop**. | `zaino-index-compact-block/src/{serve.rs,non_finalized.rs,view.rs}`, `zaino-index-tree-state/src/{serve.rs,view.rs}`, `router.rs` (`latest`, `tree_state::dispatch`, `subtree_roots`) | Per-block burst CPU for these methods down ~5–10× [est]; tip ranges zero-copy; no hop for tip answers | Memory: +1 projected `Bytes` per window block (~1,000 × tip size); correctness across reorg (the view is immutable, so the cache dies with it) | burst-drain time per block at N wallets; CPU-seconds per burst |
 | 10 | Mempool fan-out: frame each entry once (store the framed `RawTransaction` in `MempoolEntry`); send the snapshot as one coalesced chunk; give tails their own action channel (`Admitted`/`TipAdvanced`/`QuorumLost` only) | `zaino-chainview/src/{snapshot.rs,view.rs}` (`tail`, `MempoolTail::next`), `router.rs:1116-1140` | O(N × mempool) memcpy per block → refcount bumps; wakeups only on relevant actions | Channel split must keep the "never miss a tip move" rule (lag → re-anchor) | CPU and bytes per block with N tails |
 | 11 | Metrics: a static per-method handle table (`Counter`/`Histogram` resolved once per `(method, code)`); no per-request `String` | `emit.rs`, `observe.rs` | −3–6 µs and ~7 allocations per request [est] | None | `perf` diff; req/s at fixed CPU |
 | 12 | Stall and idle policy: reset streams that make no flow-control progress for T minutes; a per-IP cap on concurrent work streams | `admission.rs` (timer on the `Admitted` body), config | Closes permit-holding slowloris | T must exceed pepper-sync's legitimate scan stalls (measure the p99 stall) | adversarial: permits recover |
@@ -683,7 +683,7 @@ metric. Every item states its expected gain; confirm it before moving to the nex
 |---|---|---|---|---|---|
 | 13 | Bound heap per stream: projected chunks ≤128–256 KiB while advising 1 MiB ahead; or a global projected-bytes-in-flight budget | `serve.rs` (`SPAN_BUDGET`, `next_chunk`), `lib.rs` (`span_from`: separate advice and slice sizes) | RSS from ~2 MiB to ~0.5 MiB per slow stream (≈4 GiB → 1 GiB at 2k streams) | 4–8× more hops per MB (~2k/s at NIC rate: fine) | RSS vs N slow streams |
 | 14 | Single-copy projection (size pass, then write key + length + spans into `out`; no per-transaction `Vec`) | `project.rs:96-137` | ~2× less memcpy on the hottest path; no per-transaction malloc | Varint-length patching bugs (covered by the existing prost-decode projection tests) | criterion MB/s of `project` |
-| 15 | Coalesce small frames: non-finalised records into ≥64 KiB chunks; `streamed_response` concatenates into one `Bytes` | `serve.rs` (`next_chunk` above the seam), `router.rs:193-209` | 3–10× fewer syscalls on tip ranges and roots/UTXO streams [est] | First-message latency (tiny) | syscalls per MB (`perf trace -s`) |
+| 15 | Coalesce small frames: non-finalized records into ≥64 KiB chunks; `streamed_response` concatenates into one `Bytes` | `serve.rs` (`next_chunk` above the seam), `router.rs:193-209` | 3–10× fewer syscalls on tip ranges and roots/UTXO streams [est] | First-message latency (tiny) | syscalls per MB (`perf trace -s`) |
 | 16 | `get_many`: sequential below a key threshold; never the global rayon pool on the serve path | `zaino-persistence/src/lsm/reader.rs:94-108` | −10–30 µs per address request; no interference with the sync fold | Large lists lose intra-request parallelism (the lanes handle that) | address-query p50 |
 | 17 | Map once, grow in place (no per-commit remap) | `zaino-persistence/src/{pages.rs,fs/real.rs}` | Warm page tables across commits; no `munmap` shootdowns | The SIGBUS invariants of `persistence-architecture.md` §5.2 must hold exactly (reads already gated on the sealed length) | `perf stat -e minor-faults,tlb:tlb_flush` at the tip |
 | 18 | Default-projection file (`shielded.dat` + offsets), only if disk or page cache binds | `zaino-index-compact-block` (writer + serve) | Zero-copy for every wallet range; smaller hot set; no read amplification | +40–60% disk [est]; a second artefact to verify (must stay byte-identical to the projection of `blocks.dat`) | page-cache hit %, disk MB/s at a fixed restore mix |

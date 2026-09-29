@@ -31,11 +31,8 @@ async fn orphaned_transaction_leaves_every_index_and_returns_where_remined(
 ) -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH),
-    );
+    let indexer =
+        env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH));
     let wallet = env.add_wallet(Wallet::librustzcash());
     env.build().await?;
 

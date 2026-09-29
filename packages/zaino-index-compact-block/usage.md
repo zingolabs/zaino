@@ -32,32 +32,32 @@ offsets.idx   8 bytes per height: where its record ends in blocks.dat   (OFFSET)
 
 ## Building
 
-`CompactBlockIndexWriter::new(store: CompactBlockStore, balances:
-Subscription<BlockValueBalances>)` implements `IndexWriter<Input =
-Block, View = ReadView>` (`NAME` = `"compact_block"`), subscribed to the
-`zaino_sync::BlockSink`.
+`CompactBlockIndexWriter::new(store: CompactBlockStore)` implements
+`IndexWriter<Input = BlockWithFees, View = ReadView>` (`NAME` =
+`"compact_block"`).
 
-- `balances` = its subscription to the value-balance index's
-  `ValueBalanceSink`, taken at `store.finalized_height()` before that sink is
-  sealed ([`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md)).
-  `deliver` pulls each block's balances (`balances_for`, paired by hash, so
-  items a reorg left queued are skipped) and holds them until the block is
-  encoded. Every `CompactTx.fee` comes from them.
+- Its follower's feed = `zaino_sync::Zip` of its `BlockSink` subscription (at
+  `store.finalized_height()`) and its subscription to the value-balance index's
+  `FeeSink`
+  ([`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md)):
+  both streams read in lockstep, each block arriving with its fees
+  (`BlockWithFees { upstream, derived }`). Every `CompactTx.fee` comes from
+  them.
 
 - It derives each block's commitment-tree sizes (`chainMetadata`) as the
   previous block's plus this block's commitments, so blocks must be contiguous
   (`apply` asserts it). Resume reseeds the carry from the manifest's sizes.
-- Applied blocks sit in a `NonFinalizedState` (the nonfinalised tier: readable,
+- Applied blocks sit in a `NonFinalizedState` (the non-finalized tier: readable,
   not yet fsynced) until `finalize` writes them to the files. See
-  [`docs/design/precommit-state.md`](../../docs/design/precommit-state.md).
+  [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
 - Encoding runs inline on the writer task (a byte copy, not compute). `finalize`
-  encodes each block in order, reusing the nonfinalised record for an applied
+  encodes each block in order, reusing the non-finalized record for an applied
   block. The appends, fsyncs and manifest run under `zaino_sync::blocking`.
 - `finalized_tip()` is the committed tip hash the follower links the next
   delivered block onto.
-- `encode_compact_block(&Block, &BlockValueBalances, &TreeSizes)` returns the
+- `encode_compact_block(&Block, &BlockFees, &TreeSizes)` returns the
   framed record bytes. The block carries neither fees nor tree sizes, so the
-  caller supplies its balances (asserted to be that block's) and the cumulative
+  caller supplies its fees (asserted to be that block's) and the cumulative
   `TreeSizes`.
 
 ## Serving
@@ -73,37 +73,37 @@ let service = CompactBlockService::new(follower.served())
 - A test with no follower serves the files alone with
   `Served::fixed(store.reader().pin())` (the committed-only `ReadView`).
 - `block(h)` returns one framed record with every pool; `latest_id()` = the
-  tip's `(height, hash)`; `extent()` = the published `Extent`, synced or not.
+  tip's `(height, hash)`; `tip()` = the published tip, last height inclusive (`None` = nothing held), synced or not.
 - RAM-only answers, for a transport to serve inline (no page read):
   `latest_id()`, whose tip is resolved when each view is published (on the
   writer's thread), and `resident_block(h)` → `Ok(Some(record))` when the
-  nonfinalised tier holds `h` (`Ok(None)` = ask `block`).
+  non-finalized tier holds `h` (`Ok(None)` = ask `block`).
 - `block_at_hash(h, hash)` = `GetBlock` by hash, `h` located by the block-hash
   index. It serves the record only if that record's own `hash` field is `hash`,
   and otherwise returns `HashNotFound`. The two indexes publish independently,
   so a reorg can land between the locate and the read.
-- `range(from, to, pools)` returns a `RangeCursor`: `from <= to` is asserted
-  (the caller orders; `zaino-grpc` parses client heights into `Height` at the
-  router), `to` is clamped to the tip, a clamped span over `max_range` (default
+- `range(start, end, pools)` (heights, both inclusive) returns a `RangeCursor`:
+  `start <= end` is asserted (the caller orders; `zaino-grpc` parses client
+  heights into `Height` at the router), `end` is clamped to the tip, a clamped span over `max_range` (default
   `DEFAULT_MAX_BLOCK_RANGE` = 131 072) is `RangeTooLarge`, never truncated.
 - `Pools::default()` = the shielded set (no transparent), matching an empty
   `poolTypes`; `Pools::ALL` = every pool. Pruning walks each record's framing,
   without a decode; `Pools::ALL` serves the stored bytes untouched.
 
-Each request pins one `ReadView` (nonfinalised tier + durable mapping) for its
-whole life, so a commit landing mid-stream cannot move the nonfinalised/file seam.
+Each request pins one `ReadView` (non-finalized tier + durable mapping) for its
+whole life, so a commit landing mid-stream cannot move the non-finalized/file seam.
 A record's `hash` field is read by walking its framing; the walk stops before
 `vtx`, so it never touches the transactions.
 
 Reads are zero-copy: a served record or unprojected range window is a
 refcounted `Bytes` slice of the mmap. `RangeCursor::next_chunk()` yields one
-file window (projected as a whole) below the seam, and one nonfinalised record
+file window (projected as a whole) below the seam, and one non-finalized record
 above it. `next_touches_disk()` says whether the next chunk reads the files;
 only that step belongs on the blocking pool (behind a range-lane permit). Each
 window is at most 1 MiB and is preceded by `MADV_WILLNEED`. There is no RAM
 cache for the files; the page cache is the cache.
 
-Each nonfinalised block is also held projected to `Pools::default()`, computed
+Each non-finalized block is also held projected to `Pools::default()`, computed
 once at `apply`, since every synced wallet asks each tip block in that shape.
 A tip range in the default pools is therefore zero-copy. When the record holds
 nothing to prune, the projection is the record's own `Bytes`, so it costs no
@@ -120,8 +120,8 @@ write 0, "not provided", rather than a saturated wrong value.
 
 ## Features
 
-`testing` exposes `testing::block(height) -> (Block, BlockValueBalances,
-TreeSizes)`, a sample block carrying every pool, its balances (one tx, fee
-5 000) and its tree sizes, for consumers that test against a real index
+`testing` exposes `testing::block(height) -> (Block, BlockFees, TreeSizes)`,
+a sample block carrying every pool, its fees (one tx, fee 5 000) and its tree
+sizes, for consumers that test against a real index
 (`encode_compact_block` it, `append` the record, `commit`). It enables
 `zaino-primitives/testing` for `BlockHeader::for_tests`.

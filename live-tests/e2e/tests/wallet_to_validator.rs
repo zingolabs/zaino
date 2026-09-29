@@ -215,11 +215,11 @@ mod wallet {
     }
 
     /// A transparent send returns the same address txids from the
-    /// non-finalised chain and again after a seam-deep advance lands it in
+    /// non-finalized state and again after a seam-deep advance lands it in
     /// the finalised DB.
     ///
     /// - at the shipped depth (1000) `SEAM_ADVANCE` buries nothing → both reads come from
-    ///   pre-commit, compare passes vacuously
+    ///   the non-finalized state, compare passes vacuously
     /// - `wait_for_finalised` = the loud check against exactly that
     /// - Advance mined to `FILLER_ADDRESS`: on this file's `FUND` coinbase it is
     ///   `SEAM_ADVANCE` halo2 proofs, past the tier's cap on the two cores it reserves
@@ -229,10 +229,7 @@ mod wallet {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let validator =
             env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
-        // `prometheus` publishes the gauge `wait_for_finalised` polls
-        let indexer = env.add_indexer(
-            dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"]).regtest(),
-        );
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
@@ -243,7 +240,7 @@ mod wallet {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // The send's block, queried while it is still in the non-finalised window.
+        // The send's block, queried while it is still in the non-finalized state.
         let height = indexer.latest_block_height().await?;
         let unfinalised_txs = indexer.get_taddress_txids(taddr.clone(), height, height).await?;
 
@@ -253,7 +250,7 @@ mod wallet {
         indexer.wait_for_block_num(tip, READY).await?;
 
         // Without this the test is vacuous: it would compare two reads that
-        // both came from the non-finalised cache. `index_frontier` is the
+        // both came from the non-finalized state. `index_frontier` is the
         // only observable that says the finalised writer committed the
         // send's block — a served height proves nothing, because below the
         // seam zaino can answer straight from the validator it proxies.
@@ -1009,8 +1006,8 @@ mod zebrad {
         Ok(())
     }
 
-    /// Drain [1, 106] on a 100-block chain → the 100 available blocks, then an error (not a
-    /// clean end)
+    /// Drain 1 to 106 (both inclusive) on a 100-block chain → the 100 available blocks, then an
+    /// error (not a clean end)
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_out_of_range_upper_bound() -> Result<()> {
@@ -1036,7 +1033,7 @@ mod zebrad {
         Ok(())
     }
 
-    /// Drain inverted range [106, 1] → no blocks, then an error (not a clean end)
+    /// Drain inverted range 106 to 1 (both inclusive) → no blocks, then an error (not a clean end)
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_out_of_range_lower_bound() -> Result<()> {

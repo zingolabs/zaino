@@ -20,16 +20,16 @@ use zaino_index_transparent_address::{TransparentAddressIndexWriter, Transparent
 use zcash_transparent::address::TransparentAddress;
 
 let writer = TransparentAddressIndexWriter::open(fs, &path, network)?;
-let follower = IndexFollower::new(writer, subscription, batch_bytes);
+let follower = IndexFollower::new(writer, subscription, tips, batch_bytes, depth);
 let service = TransparentAddressService::new(follower.served(), network);
 
 let address = TransparentAddress::PublicKeyHash(hash160);
-let unspent = service.utxos(&address, from)?;            // from: Height; oldest first
-let balance = service.balance(&address)?;                // Zatoshis
-let touched = service.transactions(&address, from, to)?; // from <= to, asserted
+let unspent = service.utxos(&address, start)?;              // start (inclusive) to the tip; oldest first
+let balance = service.balance(&address)?;                   // Zatoshis
+let touched = service.transactions(&address, start, end)?; // both inclusive; start <= end, asserted
 
 // many addresses, one view and one batched spend lookup (answers in `addresses` order)
-let per_address = service.utxos_of(&addresses, from)?;   // Vec<Vec<AddressUtxo>>
+let per_address = service.utxos_of(&addresses, start)?;     // Vec<Vec<AddressUtxo>>
 let balances = service.balances(&addresses)?;            // Vec<Zatoshis>
 ```
 
@@ -68,25 +68,27 @@ sets: scan `receives` for the address, probe `spent` per outpoint; unspent = the
 probes that miss. Cost is `O(received)` per address. See
 [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §5.
 
-`transactions(from, to)` scans all of history (an in-range spend consumes an
+`transactions(start, end)` (both inclusive) scans all of history (an in-range spend consumes an
 output received at any height) and reports both receipts and spends in range.
 
 ## Applied vs finalised
 
+Both are tips: the last height held, inclusive (`None` = nothing held).
+
 | | covers | moved by |
 |---|---|---|
-| `applied_height()` | nonfinalised tier, reaches the tip | `apply`, `finalize`, `reset` |
-| `finalized_height()` | durable segments | `finalize` |
+| `applied_height()` | non-finalized tier, reaches the tip | `apply`, `finalize`, `reset` |
+| `finalized_tip()` / `finalized_height()` | durable segments | `finalize` |
 
 - `apply` folds a block into in-memory `imbl` maps (`NonFinalizedRows`) inline;
   no I/O.
-- `finalize(blocks)` takes one contiguous slice from `finalized_height()`. It
-  drains the nonfinalised rows and projects every block they never saw inline,
+- `finalize(blocks)` takes one contiguous slice from the height after `finalized_height()`. It
+  drains the non-finalized rows and projects every block they never saw inline,
   then writes one segment per set under `zaino_sync::blocking`.
-- `reset()` drops all nonfinalised rows; no segment is touched. A reorg and a restart
+- `reset()` drops all non-finalized rows; no segment is touched. A reorg and a restart
   are the same operation: re-apply from the durable tip. See
-  [`docs/design/precommit-state.md`](../../docs/design/precommit-state.md).
-- Reads pin one `ReadView`: the nonfinalised rows and both segment sets, taken
+  [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
+- Reads pin one `ReadView`: the non-finalized rows and both segment sets, taken
   together by the writer (a row sits in exactly one tier), answering up to
   `applied_height()`.
 - `apply` asserts contiguous heights from genesis: a gap would leave spent
@@ -113,7 +115,7 @@ output received at any height) and reports both receipts and spends in range.
   merges them on a background thread (`zaino_persistence::lsm::SegmentLog`). The
   output lands in the next commit's manifest in place of its inputs, and the
   inputs are unlinked only after it. So the listed segments never share a row, and
-  reads need no dedupe beyond nonfinalised vs segments. A commit waits on a merge
+  reads need no dedupe beyond non-finalized vs segments. A commit waits on a merge
   only when that tier falls behind (bounded segment count).
 - A spend probe asks each `spent` segment's filter first; a miss costs no read.
 - `committed_files(dir, network)` = every listed segment and its seal, for

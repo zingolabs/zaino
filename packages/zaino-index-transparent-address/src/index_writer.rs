@@ -2,7 +2,7 @@
 //!
 //! - `apply` touches no storage, reads nothing back
 //! - spend recorded under its outpoint (already in the block): `outpoint → address` never resolved
-//! - `finalize` re-derives what never reached the nonfinalised tier (bulk sync skips `apply`)
+//! - `finalize` re-derives what never reached the non-finalized tier (bulk sync skips `apply`)
 
 use std::{path::Path, sync::Arc};
 
@@ -12,7 +12,7 @@ use zaino_persistence::{
     manifest::Committed,
     StoreError,
 };
-use zaino_primitives::types::{Block, BlockHash, Extent, OutPoint};
+use zaino_primitives::types::{Block, BlockRef, Height, OutPoint};
 use zaino_sync::{IndexWriter, Offloaded};
 use zcash_protocol::consensus::NetworkType;
 
@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// - `durable` = the store as of the last landing (answered without the store while a write has
-///   it; a view never pins a segment whose rows still sit in the nonfinalised tier)
+///   it; a view never pins a segment whose rows still sit in the non-finalized tier)
 pub struct TransparentAddressIndexWriter {
     segments: Offloaded<LsmStore<TransparentAddressIndex>>,
     durable: Durable,
@@ -54,7 +54,7 @@ impl TransparentAddressIndexWriter {
     /// Opens `path` at its committed state (every listed segment proven, every other one removed)
     pub fn open(fs: Arc<dyn Fs>, path: &Path, network: NetworkType) -> Result<Self, StoreError> {
         let segments = LsmStore::<TransparentAddressIndex>::open(fs, path, network)?;
-        let non_finalized = NonFinalizedRows::empty_at(segments.committed().extent);
+        let non_finalized = NonFinalizedRows::empty_at(segments.committed().height());
         Ok(Self {
             durable: Durable::of(&segments),
             segments: Offloaded::new(segments),
@@ -99,15 +99,11 @@ impl IndexWriter for TransparentAddressIndexWriter {
 
     const NAME: &'static str = "transparent_address";
 
-    fn finalized_height(&self) -> Extent {
-        self.durable.committed.extent
-    }
-
-    fn finalized_tip(&self) -> Option<BlockHash> {
+    fn finalized_tip(&self) -> Option<BlockRef> {
         self.durable.committed.tip
     }
 
-    fn applied_height(&self) -> Extent {
+    fn applied_height(&self) -> Option<Height> {
         self.non_finalized.applied()
     }
 
@@ -122,7 +118,8 @@ impl IndexWriter for TransparentAddressIndexWriter {
     }
 
     async fn apply(&mut self, block: &Arc<Block>) -> Result<(), StoreError> {
-        let (height, expected) = (block.header().height, self.non_finalized.applied().next());
+        let height = block.header().height;
+        let expected = self.non_finalized.applied().map_or(Height::GENESIS, Height::next);
         assert_eq!(height, expected, "transparent_address: blocks must arrive contiguously");
 
         let (receives, spent) = project(block);
@@ -146,19 +143,18 @@ impl IndexWriter for TransparentAddressIndexWriter {
         let mut reached = self.finalized_height();
         for block in blocks {
             let height = block.header().height;
-            assert_eq!(height, reached.next(), "transparent_address: batch off the committed end");
-            reached = Extent::through(height);
+            let next = reached.map_or(Height::GENESIS, Height::next);
+            assert_eq!(height, next, "transparent_address: batch off the committed end");
+            reached = Some(height);
         }
-        let tip = blocks.last().expect("finalize asserted non-empty").header().hash;
+        let last = blocks.last().expect("finalize asserted non-empty").header();
+        let tip = BlockRef { hash: last.hash, height: last.height };
 
         let applied = self.non_finalized.applied();
-        let (mut receives, mut spent) = self.non_finalized.rows_below(reached);
-        // above the nonfinalised extent = never through `apply` (bulk sync)
-        let unapplied: Vec<Arc<Block>> = blocks
-            .iter()
-            .filter(|block| !applied.contains(block.header().height))
-            .cloned()
-            .collect();
+        let (mut receives, mut spent) = self.non_finalized.rows_through(reached);
+        // above the applied tip = never through `apply` (bulk sync)
+        let unapplied: Vec<Arc<Block>> =
+            blocks.iter().filter(|block| Some(block.header().height) > applied).cloned().collect();
         let mut segments = self.segments.lend();
         Ok(move || {
             for block in &unapplied {
@@ -167,7 +163,7 @@ impl IndexWriter for TransparentAddressIndexWriter {
                 spent.extend(block_spent);
             }
             // segment writes, fsyncs, the manifest and any merges
-            segments.commit((receives, spent), reached, tip)?;
+            segments.commit((receives, spent), tip)?;
             Ok(Landing { segments })
         })
     }
@@ -175,7 +171,7 @@ impl IndexWriter for TransparentAddressIndexWriter {
     async fn committed(&mut self, Landing { segments }: Landing) -> Result<(), StoreError> {
         self.durable = Durable::of(&segments);
         self.segments.restore(segments);
-        self.non_finalized.land_below(self.durable.committed.extent);
+        self.non_finalized.land_through(self.durable.committed.height());
         Ok(())
     }
 
@@ -219,18 +215,18 @@ mod tests {
         TransactionId::from([tag; 32])
     }
 
-    /// `(finalized, applied)`
-    fn extents(writer: &TransparentAddressIndexWriter) -> (u64, u64) {
-        (u64::from(writer.finalized_height()), u64::from(writer.applied_height()))
+    /// `(finalized, applied)` tips: each a last height, inclusive (`None` = none)
+    fn tips(writer: &TransparentAddressIndexWriter) -> (Option<Height>, Option<Height>) {
+        (writer.finalized_height(), writer.applied_height())
     }
 
-    /// `(height, txid)` of every transaction touching `address` in `[0, to]`
+    /// `(height, txid)` of every transaction touching `address`, genesis to `end`, both inclusive
     fn touching(
         service: &TransparentAddressService,
         address: &TransparentAddress,
-        to: u32,
+        end: u32,
     ) -> Vec<(u32, TransactionId)> {
-        let found = service.transactions(address, h(0), h(to)).expect("transactions");
+        let found = service.transactions(address, h(0), h(end)).expect("transactions");
         found.into_iter().map(|found| (found.height, found.txid)).collect()
     }
 
@@ -254,6 +250,7 @@ mod tests {
         Transaction {
             txid: TransactionId::from([tag; 32]),
             transparent: TransparentData {
+                coinbase: false,
                 inputs: inputs
                     .into_iter()
                     .map(|(prev, vout)| OutPoint { txid: TransactionId::from([prev; 32]), vout })
@@ -324,7 +321,8 @@ mod tests {
             let label = &state.label;
             let mut writer =
                 open(Arc::clone(&state.fs)).unwrap_or_else(|error| panic!("{label}: {error}"));
-            let count = u64::from(writer.finalized_height());
+            // one block per commit: blocks held = commits recovered
+            let count = writer.finalized_height().map_or(0, |tip| u64::from(tip) + 1);
             let acked = [state.tag, (state.tag + 1).min(10)];
             assert!(acked.contains(&count), "{label}: recovered {count}");
             let (receives, spent) = segments(&writer);
@@ -436,6 +434,7 @@ mod tests {
                 vec![Transaction {
                     txid: txid(height),
                     transparent: TransparentData {
+                        coinbase: false,
                         inputs: inputs
                             .iter()
                             .map(|&(txid, vout)| OutPoint { txid, vout })
@@ -486,10 +485,10 @@ mod tests {
         };
         let mut writer = open();
         for (at, step) in steps.iter().enumerate() {
-            let (applied, finalized) = (
-                u64::from(writer.applied_height()) as usize,
-                u64::from(writer.finalized_height()) as usize,
-            );
+            // blocks held from genesis = index of the next chain block
+            let next = |tip: Option<Height>| tip.map_or(0, |tip| u32::from(tip) as usize + 1);
+            let (applied, finalized) =
+                (next(writer.applied_height()), next(writer.finalized_height()));
             match *step {
                 Step::Apply if applied < chain.len() => {
                     writer.apply(&chain[applied]).await.expect("apply");
@@ -512,7 +511,7 @@ mod tests {
                 _ => {}
             }
 
-            let applied = u64::from(writer.applied_height()) as u32;
+            let applied = writer.applied_height().map_or(0, |tip| u32::from(tip) + 1);
             let service = served(&writer);
             for tag in 0..3u8 {
                 let (utxos, balance, touched) = expected(tag, applied);
@@ -574,9 +573,9 @@ mod tests {
         let mut writer =
             TransparentAddressIndexWriter::open(fs.clone(), Path::new("/ta"), NetworkType::Regtest)
                 .expect("open");
-        assert_eq!(u64::from(writer.applied_height()), 0, "an empty index starts at genesis");
+        assert_eq!(writer.applied_height(), None, "an empty index starts at genesis");
 
-        // segment 0, heights 0..=1: alice paid twice, bob once, + one opaque output
+        // segment 0, heights 0 and 1: alice paid twice, bob once, + one opaque output
         let segment_0 = [
             Arc::new(block(
                 0,
@@ -589,13 +588,17 @@ mod tests {
             Arc::new(block(1, vec![tx(0x11, vec![], vec![(p2pkh(0xa1), 300)])])),
         ];
         zaino_sync::finalize_now(&mut writer, &segment_0).await.expect("finalize segment 0");
-        assert_eq!(extents(&writer), (2, 2), "skipping the nonfinalised tier carries both extents");
+        assert_eq!(
+            tips(&writer),
+            (Some(h(1)), Some(h(1))),
+            "skipping the non-finalized tier carries both tips"
+        );
 
         let balance = served(&writer).balance(&alice).expect("balance");
         assert_eq!(balance, zat(800), "both receives unspent");
 
         // segment 1, height 2: alice's first output spent, paying bob
-        // applied first → drained out of the nonfinalised tier, not re-projected
+        // applied first → drained out of the non-finalized tier, not re-projected
         let spend = Arc::new(block(2, vec![tx(0x20, vec![(0x10, 0)], vec![(p2pkh(0xb0), 490)])]));
         writer.apply(&spend).await.expect("apply 2");
         zaino_sync::finalize_now(&mut writer, &[spend]).await.expect("finalize segment 1");
@@ -620,7 +623,7 @@ mod tests {
         let mut resumed =
             TransparentAddressIndexWriter::open(fs.clone(), Path::new("/ta"), NetworkType::Regtest)
                 .expect("reopen");
-        assert_eq!(extents(&resumed), (3, 3), "resumes where it committed");
+        assert_eq!(tips(&resumed), (Some(h(2)), Some(h(2))), "resumes where it committed");
 
         let balances = |service: &TransparentAddressService| {
             (service.balance(&alice).expect("alice"), service.balance(&bob).expect("bob"))
@@ -644,10 +647,10 @@ mod tests {
         assert_eq!(recent, 1, "start_height filters the reply, not the spend resolution");
     }
 
-    /// Receives and spends above the committed extent answer from the nonfinalised tier alone;
+    /// Receives and spends above the committed tip answer from the non-finalized tier alone;
     /// `reset` drops all of it (segments untouched); answers then follow the re-applied branch
     #[tokio::test]
-    async fn non_finalized_answers_above_the_committed_extent_and_a_reset_drops_only_it() {
+    async fn non_finalized_answers_above_the_committed_tip_and_a_reset_drops_only_it() {
         let fs = SimFs::new();
         let alice = TransparentAddress::PublicKeyHash([0xa1; 20]);
         let bob = TransparentAddress::PublicKeyHash([0xb0; 20]);
@@ -656,7 +659,7 @@ mod tests {
             TransparentAddressIndexWriter::open(fs.clone(), Path::new("/ta"), NetworkType::Regtest)
                 .expect("open");
 
-        // height 0 alone durable, everything after it nonfinalised
+        // height 0 alone durable, everything after it non-finalized
         let genesis = Arc::new(block(0, vec![tx(0xc0, vec![], vec![(p2pkh(0xa1), 500)])]));
         writer.apply(&genesis).await.expect("apply 0");
         zaino_sync::finalize_now(&mut writer, &[genesis]).await.expect("finalize height 0");
@@ -672,9 +675,9 @@ mod tests {
         let balances = |service: &TransparentAddressService| {
             (service.balance(&alice).expect("alice"), service.balance(&bob).expect("bob"))
         };
-        assert_eq!(extents(&writer), (1, 3));
+        assert_eq!(tips(&writer), (Some(h(0)), Some(h(2))));
 
-        // committed receive, nonfinalised spend: the probe crosses the boundary
+        // committed receive, non-finalized spend: the probe crosses the boundary
         // bob: a receive nothing has committed is still an answer
         let service = served(&writer);
         assert_eq!(balances(&service), (zat(200), zat(490)));
@@ -683,9 +686,9 @@ mod tests {
         let expected = vec![(0, txid(0xc0)), (1, txid(0xd1)), (2, txid(0xd2))];
         assert_eq!(touching(&service, &alice, 2), expected);
 
-        // branch loses: nonfinalised tier dropped whole, no segment touched, no fork height named
+        // branch loses: non-finalized tier dropped whole, no segment touched, no fork height named
         writer.reset().await.expect("reset");
-        assert_eq!(extents(&writer), (1, 1));
+        assert_eq!(tips(&writer), (Some(h(0)), Some(h(0))));
         let service = served(&writer);
         assert_eq!(balances(&service), (zat(500), zat(0)), "only durable height 0 survives");
         assert_eq!(touching(&service, &alice, 2), vec![(0, txid(0xc0))], "dropped: no rows");
@@ -708,11 +711,11 @@ mod tests {
         // landed, its rows are on disk and still buffered, and each is counted once
         let write = writer.finalize(&winner).await.expect("finalize the winner");
         let done = write().expect("written");
-        assert_eq!(extents(&writer), (1, 3), "durable moves only on landing");
+        assert_eq!(tips(&writer), (Some(h(0)), Some(h(2))), "durable moves only on landing");
         let unlanded = balances(&served(&writer));
         assert_eq!(unlanded, (zat(500), zat(190)), "written, not landed: one tier");
         writer.committed(done).await.expect("landed");
-        assert_eq!(extents(&writer), (3, 3));
+        assert_eq!(tips(&writer), (Some(h(2)), Some(h(2))));
         let (applied, committed) = (balances(&service), balances(&served(&writer)));
         assert_eq!(applied, (zat(500), zat(190)), "view pinned before the commit");
         assert_eq!(committed, applied, "same answers from the segments");

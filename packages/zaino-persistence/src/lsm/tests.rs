@@ -8,7 +8,7 @@ use std::{
 };
 
 use proptest::{prelude::*, strategy::Union};
-use zaino_primitives::types::{BlockHash, Extent};
+use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
 
 use super::{
@@ -137,10 +137,10 @@ fn row(owner: u8, seq: u32) -> Row {
     Row { at: OwnerAt { owner: [owner; 4], seq }, value: u64::from(seq) * 1000 + u64::from(owner) }
 }
 
-/// Commit `n` covers heights `0..n`, tipped by `[n; 32]`
-fn commit_point(n: usize) -> (Extent, BlockHash) {
-    let extent = Extent::from_count(n as u64).expect("small extent");
-    (extent, BlockHash::from([n as u8; 32]))
+/// Commit `n` (from 1) covers heights 0 to `n - 1`, both inclusive, tipped by `[n; 32]`
+fn commit_point(n: usize) -> BlockRef {
+    let height = Height::try_from(n as u32 - 1).expect("small height");
+    BlockRef { hash: BlockHash::from([n as u8; 32]), height }
 }
 
 const EVERY_OWNER: (OwnerAt, OwnerAt) =
@@ -243,15 +243,17 @@ struct Model {
 }
 
 impl Model {
-    /// `owner` + `raw` seq reduced into `0..=seq + 1` (lands on, between and past issued rows)
+    /// `owner` + `raw` seq reduced into `0` to `seq + 1`, both inclusive (lands on, between and past
+    /// issued rows)
     fn bound(&self, (owner, raw): (u8, u32)) -> OwnerAt {
         OwnerAt { owner: [owner; 4], seq: raw % (self.seq + 2) }
     }
 
-    /// `[from, to)`, empty when `from >= to` (`BTreeMap::range` panics there)
-    fn scan(&self, from: OwnerAt, to: OwnerAt) -> Vec<Row> {
-        match from < to {
-            true => self.scanned.range(from..to).map(|(_, row)| *row).collect(),
+    /// `start` inclusive to `end` exclusive, empty when `start >= end` (`BTreeMap::range` panics
+    /// there)
+    fn scan(&self, start: OwnerAt, end: OwnerAt) -> Vec<Row> {
+        match start < end {
+            true => self.scanned.range(start..end).map(|(_, row)| *row).collect(),
             false => Vec::new(),
         }
     }
@@ -302,13 +304,8 @@ fn assert_store<const FANOUT: usize>(
     files: bool,
     label: &str,
 ) {
-    let (extent, tip) = commit_point(model.commits);
-    let committed = store.committed();
-    assert_eq!(
-        (committed.extent, committed.tip),
-        (extent, (model.commits > 0).then_some(tip)),
-        "{label}"
-    );
+    let expected = (model.commits > 0).then(|| commit_point(model.commits));
+    assert_eq!(store.committed().tip, expected, "{label}");
 
     let logs = store.logs();
     let sets = [
@@ -361,8 +358,8 @@ fn random_history<const FANOUT: usize>(steps: &[Step]) {
                     .collect();
                 let fresh: Vec<IdRow> =
                     (model.ids..model.ids + u32::from(*ids)).map(id_row).collect();
-                let (extent, tip) = commit_point(model.commits + 1);
-                store.commit((rows.clone(), fresh.clone()), extent, tip).expect("commit");
+                let tip = commit_point(model.commits + 1);
+                store.commit((rows.clone(), fresh.clone()), tip).expect("commit");
                 model.commits += 1;
                 model.seq += rows.len() as u32;
                 model.ids += u32::from(*ids);
@@ -449,8 +446,7 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
         for (acked, rows) in (1u64..).zip(&commits) {
             store.logs().0.settle();
             store.logs().1.settle();
-            let (extent, tip) = commit_point(acked as usize);
-            store.commit(rows.clone(), extent, tip).expect("commit");
+            store.commit(rows.clone(), commit_point(acked as usize)).expect("commit");
             fs.set_tag(acked);
         }
         let merged = (store.logs().0.segments().len(), store.logs().1.segments().len());
@@ -463,10 +459,10 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
         let label = &state.label;
         let mut store = LsmStore::<TestIndex<2>>::open(state.fs.clone(), root, NET)
             .unwrap_or_else(|error| panic!("{label}: {error}"));
-        let recovered = usize::try_from(u64::from(store.committed().extent)).expect("small");
+        let recovered = store.committed().count() as usize;
         let acked = usize::try_from(state.tag).expect("small");
         assert!(recovered == acked || recovered == acked + 1, "{label}: recovered {recovered}");
-        assert_eq!(store.committed().tip, (recovered > 0).then(|| commit_point(recovered).1));
+        assert_eq!(store.committed().tip, (recovered > 0).then(|| commit_point(recovered)));
 
         // recovered commits' rows all present, every later commit's rows all absent
         let (scanned, probed) = store.sets();
@@ -500,9 +496,8 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
             assert!(within, "{label}: {set}: {files} files, {listed} listed, {merging} merging");
         }
 
-        let (extent, tip) = commit_point(recovered + 1);
         store
-            .commit((vec![row(9, 99)], vec![id_row(99)]), extent, tip)
+            .commit((vec![row(9, 99)], vec![id_row(99)]), commit_point(recovered + 1))
             .expect("commit after recovery");
         let next = store.sets().1.pin().get::<IdRow>(&id_row(99).id);
         assert_eq!(next, Some(id_row(99)), "{label}: commits continue at the recovered end");
@@ -532,8 +527,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
                 for (at, rows) in commits.iter().enumerate() {
                     store.logs().0.settle();
                     store.logs().1.settle();
-                    let (extent, tip) = commit_point(at + 1);
-                    match store.commit(rows.clone(), extent, tip) {
+                    match store.commit(rows.clone(), commit_point(at + 1)) {
                         Ok(()) => acked = at + 1,
                         Err(error) => {
                             failed = Some(error);
@@ -550,15 +544,13 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
                             break;
                         }
                         // op `fail_at` hit a merge the last commit launched: surfaces next commit
-                        let (extent, tip) = commit_point(acked + 1);
-                        let next = store.commit((vec![], vec![]), extent, tip);
+                        let next = store.commit((vec![], vec![]), commit_point(acked + 1));
                         next.expect_err("a failed background merge surfaces at the next commit")
                     }
                 };
-                let (extent, tip) = commit_point(acked + 2);
-                let retried = catch_unwind(AssertUnwindSafe(|| {
-                    store.commit(commits[0].clone(), extent, tip)
-                }));
+                let tip = commit_point(acked + 2);
+                let retried =
+                    catch_unwind(AssertUnwindSafe(|| store.commit(commits[0].clone(), tip)));
                 let message =
                     panic_message(retried.expect_err("commit after a failed one refused"));
                 assert!(message.contains("after a failed one"), "op {fail_at}: {message}");
@@ -571,7 +563,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
         let fs = fs.restarted();
         let mut store = LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET)
             .unwrap_or_else(|error| panic!("op {fail_at}: reopen: {error}"));
-        let recovered = usize::try_from(u64::from(store.committed().extent)).expect("small");
+        let recovered = store.committed().count() as usize;
         assert!(
             recovered == acked || recovered == acked + 1,
             "op {fail_at}: recovered {recovered}"
@@ -585,13 +577,14 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
             rows,
             "op {fail_at}"
         );
-        let (extent, tip) = commit_point(recovered + 1);
-        store.commit((vec![row(9, 99)], vec![]), extent, tip).expect("commit after restart");
+        store
+            .commit((vec![row(9, 99)], vec![]), commit_point(recovered + 1))
+            .expect("commit after restart");
     }
     assert!(failures > 40, "only {failures} failure points exercised");
 }
 
-/// Duplicate key in a batch, a key in two segments (read + merge), a non-advancing extent (RocksDB:
+/// Duplicate key in a batch, a key in two segments (read + merge), a non-advancing tip (RocksDB:
 /// a check never seen firing = not known to work)
 #[test]
 fn invariant_checks_fire_on_the_bugs_they_guard() {
@@ -603,15 +596,13 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
         || LsmStore::<TestIndex<2>>::open(SimFs::new(), Path::new("/idx"), NET).expect("open");
 
     fires("strictly ascending", &|| {
-        let (extent, tip) = commit_point(1);
-        let _ = open().commit((vec![row(1, 0), row(1, 0)], vec![]), extent, tip);
+        let _ = open().commit((vec![row(1, 0), row(1, 0)], vec![]), commit_point(1));
     });
 
     fires("a key listed in two committed segments", &|| {
         let mut store = open();
         for n in 1..=2 {
-            let (extent, tip) = commit_point(n);
-            store.commit((vec![row(1, 0)], vec![]), extent, tip).expect("commit");
+            store.commit((vec![row(1, 0)], vec![]), commit_point(n)).expect("commit");
         }
         store.sets().0.pin().range::<Row>(&EVERY_OWNER.0, &EVERY_OWNER.1);
     });
@@ -620,19 +611,16 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
     fires("strictly ascending", &|| {
         let mut store = open();
         for n in 1..=2 {
-            let (extent, tip) = commit_point(n);
-            store.commit((vec![row(1, 0)], vec![]), extent, tip).expect("commit");
+            store.commit((vec![row(1, 0)], vec![]), commit_point(n)).expect("commit");
         }
         store.logs().0.settle();
-        let (extent, tip) = commit_point(3);
-        let _ = store.commit((vec![], vec![]), extent, tip);
+        let _ = store.commit((vec![], vec![]), commit_point(3));
     });
 
-    fires("LSM commit to 1 from 1", &|| {
+    fires("LSM commit to height 0, not above the committed Some(Height(0))", &|| {
         let mut store = open();
-        let (extent, tip) = commit_point(1);
-        store.commit((vec![row(1, 0)], vec![]), extent, tip).expect("commit");
-        let _ = store.commit((vec![row(1, 1)], vec![]), extent, tip);
+        store.commit((vec![row(1, 0)], vec![]), commit_point(1)).expect("commit");
+        let _ = store.commit((vec![row(1, 1)], vec![]), commit_point(1));
     });
 }
 

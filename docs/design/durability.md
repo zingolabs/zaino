@@ -51,7 +51,7 @@ offset  bytes  field
 11      1      network     0 main, 1 test, 2 regtest
 12      4      body_len    u32 LE
 16      n      body        index-owned layout (§4)
-16+n    4      crc         CRC-32 (IEEE) over bytes [0, 16+n)
+16+n    4      crc         CRC-32 (IEEE) over bytes 0 inclusive to 16+n exclusive
 ```
 
 Every body starts with the chain identity of the committed tip (height count
@@ -206,7 +206,7 @@ deletes them).
   every later commit, and a restart must recover an acknowledged or the
   attempted commit.
 - **Planted bugs**: each LSM invariant check is fed the bug it guards against
-  (duplicate key, a key in two segments, a non-advancing extent) and must fire;
+  (duplicate key, a key in two segments, a non-advancing tip) and must fire;
   a check never seen firing is not known to work (RocksDB).
 - **Model-based** (proptest over generated operation sequences): apply,
   finalize, reset and reopen against a naive model per index: summed tree sizes

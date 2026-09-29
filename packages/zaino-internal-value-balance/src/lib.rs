@@ -1,6 +1,5 @@
-//! Transparent outpoint → value; block → per-tx
-//! [`ValueBalance`](zaino_primitives::types::ValueBalance) for the
-//! [`ValueBalanceSink`](zaino_sync::ValueBalanceSink)
+//! Transparent outpoint → value; block → per-tx [`Fee`](zaino_primitives::types::Fee) for the
+//! [`FeeSink`](zaino_sync::FeeSink)
 //!
 //! # Data structure: size-tiered LSM-Tree of immutable sorted segments (`zaino_persistence::lsm`)
 //!
@@ -19,7 +18,7 @@
 //!   WAL, no tombstones (any height re-resolves identically: a downstream index behind this one
 //!   replays through `deliver`, no rewind)
 //! - memtable role = `pending::Pending` (every output delivered above the durable tip, staged and
-//!   nonfinalised alike, RAM only)
+//!   non-finalized alike, RAM only)
 //! - one item published per block from `deliver` (bulk, replay and tip alike)
 //!
 //! # Lookup (`index_writer::resolve`, per transparent input)

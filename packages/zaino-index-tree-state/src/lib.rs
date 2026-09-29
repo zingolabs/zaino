@@ -21,17 +21,17 @@
 //!   ommers come from (ommer = left sibling = even) → ≈48 B per commitment (32 leaf + ≈16 internal)
 //! - positional: no keys stored, offset = slot × stride, one mmap read per node
 //! - read-heavy (librustzcash asks 1:1 with `GetBlockRange`) → no replay per read, no hashing
-//! - nonfinalised tier = [`NonFinalizedTrees`] (same fold above the manifest, `imbl`, RAM only)
+//! - non-finalized tier = [`NonFinalizedTrees`] (same fold above the manifest, `imbl`, RAM only)
 //!
 //! # Lookup (`ReadView::treestate`)
 //!
 //! ```text
-//! height h ──▶ heights.idx[h] ──▶ hash, time, size s per pool        (nonfinalised record first)
+//! height h ──▶ heights.idx[h] ──▶ hash, time, size s per pool        (non-finalized record first)
 //!                                     │ per pool, position p = s - 1
 //!                                     ▼
 //!              leaf     l00[p]
 //!              ommers   each set bit ℓ of p: node (ℓ, (p >> ℓ) - 1)  (≤ 32 reads, no hashing,
-//!                         ℓ = 0 → l00[p - 1]                          nonfinalised nodes first)
+//!                         ℓ = 0 → l00[p - 1]                          non-finalized nodes first)
 //!                         ℓ ≥ 1 → lℓ[((p >> ℓ) - 1) / 2]
 //!                                     │
 //!                                     ▼
@@ -53,7 +53,7 @@ use zaino_persistence::{
     pages::{CommittedFiles, PagedFile, Pages, Sealed},
     StoreError,
 };
-use zaino_primitives::types::{BlockHash, Extent, Height, PerPool, ShieldedPool};
+use zaino_primitives::types::{BlockRef, Height, PerPool, ShieldedPool};
 use zcash_protocol::consensus::NetworkType;
 
 mod fold;
@@ -154,7 +154,7 @@ impl Body {
             Ok::<_, ManifestError>(seals)
         })?;
         body.finish()?;
-        if heights.len != u64::from(committed.extent) * RECORD as u64 {
+        if heights.len != committed.count() * RECORD as u64 {
             return Err(ManifestError::Body("heights.idx disagrees with the committed count"));
         }
         Ok(Self { committed, heights, pools })
@@ -175,7 +175,7 @@ pub fn committed_files(dir: &Path, network: NetworkType) -> io::Result<Committed
         }
         files.push((format!("{pool}/{SUBTREES}"), seals.subtrees));
     }
-    Ok(CommittedFiles { heights: body.committed.extent, files })
+    Ok(CommittedFiles { tip: body.committed.height(), files })
 }
 
 /// One pool's published read view
@@ -189,14 +189,15 @@ pub(crate) struct PoolView {
 #[derive(Debug)]
 pub(crate) struct Snapshot {
     heights: Pages,
-    end: Extent,
+    /// Last committed height, inclusive (`None` = nothing committed)
+    tip: Option<Height>,
     pools: PerPool<PoolView>,
 }
 
 impl Snapshot {
-    /// `None` past the committed extent
+    /// `None` above the committed tip
     fn height(&self, height: Height) -> Option<TreeStateHeight> {
-        if !self.end.contains(height) {
+        if Some(height) > self.tip {
             return None;
         }
         let at = usize::try_from(u32::from(height)).expect("heights fit usize") * RECORD;
@@ -257,7 +258,7 @@ impl PoolFiles {
     }
 }
 
-/// Append-only, single-writer store (lands already-folded nonfinalised chunks)
+/// Append-only, single-writer store (lands already-folded non-finalized chunks)
 #[derive(Debug)]
 pub struct TreeStateStore {
     dir: IndexDir,
@@ -294,7 +295,7 @@ impl TreeStateStore {
 
         let snapshot = Snapshot {
             heights: heights.pages(committed.heights, None)?,
-            end: committed.committed.extent,
+            tip: committed.committed.height(),
             pools: PerPool::try_from_fn(|pool| pools.get(pool).snapshot(None))?,
         };
         Ok(Self {
@@ -306,12 +307,14 @@ impl TreeStateStore {
         })
     }
 
-    pub(crate) fn finalized_height(&self) -> Extent {
-        self.committed.committed.extent
+    /// Last committed block, inclusive (`None` = nothing committed)
+    pub(crate) fn finalized_tip(&self) -> Option<BlockRef> {
+        self.committed.committed.tip
     }
 
-    pub(crate) fn tip_hash(&self) -> Option<BlockHash> {
-        self.committed.committed.tip
+    /// [`finalized_tip`](Self::finalized_tip)'s height
+    pub(crate) fn finalized_height(&self) -> Option<Height> {
+        self.committed.committed.height()
     }
 
     /// Committed state as published (what readers pin)
@@ -326,8 +329,9 @@ impl TreeStateStore {
         else {
             return Ok(());
         };
-        assert_eq!(start, self.finalized_height().next(), "chunk off the committed end");
-        assert_eq!(chunk.end, Extent::through(last_height), "chunk ends at its last record");
+        let next = self.finalized_height().map_or(Height::GENESIS, Height::next);
+        assert_eq!(start, next, "chunk off the committed tip");
+        assert_eq!(chunk.tip, Some(last_height), "chunk ends at its last record");
 
         for record in chunk.heights.values() {
             self.heights.append(&heights::encode(record))?;
@@ -337,7 +341,7 @@ impl TreeStateStore {
         }
 
         let body = Body {
-            committed: Committed::new(chunk.end, Some(last.hash)),
+            committed: Committed { tip: Some(BlockRef { hash: last.hash, height: last_height }) },
             heights: self.heights.seal()?,
             pools: PerPool::try_from_fn(|pool| self.pools.get_mut(pool).seal())?,
         };
@@ -354,7 +358,7 @@ impl TreeStateStore {
             PerPool::try_from_fn(|pool| self.pools.get(pool).snapshot(Some(old.pools.get(pool))))?;
         self.snapshot.store(Arc::new(Snapshot {
             heights: self.heights.pages(self.committed.heights, Some(&old.heights))?,
-            end: self.finalized_height(),
+            tip: self.finalized_height(),
             pools,
         }));
         Ok(())

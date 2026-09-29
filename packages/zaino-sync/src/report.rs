@@ -40,11 +40,11 @@ impl Progress {
         self.0.lock().expect("progress lock never held across a panic")
     }
 
-    /// Bulk pass `from ..= target` begins
-    pub(crate) fn start(&self, from: Height, target: Height, tip: Height) {
+    /// Bulk pass from `start` to `target`, both inclusive, begins
+    pub(crate) fn start(&self, start: Height, target: Height, tip: Height) {
         let mut tally = self.tally();
         tally.pass = Some(Pass { target, started: Instant::now(), blocks: tally.blocks });
-        info!(%from, %target, %tip, "Syncing to finalized target");
+        info!(%start, %target, %tip, "Syncing to finalized target");
     }
 
     /// Quorum tip moved mid-pass (next summary measures against the raised target)

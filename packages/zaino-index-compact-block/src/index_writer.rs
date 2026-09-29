@@ -5,17 +5,15 @@
 //! - derived: size at `h` = size at `h - 1` + what `h` commits → block order non-negotiable (a gap
 //!   silently mis-sizes every later block; [`apply`](CompactBlockIndexWriter::apply) asserts first)
 //! - resume seeds the carry from the manifest (sizes committed with the tip)
-//! - fees: each block's [`BlockValueBalances`] pulled from the value-balance sink in `deliver`
-//!   (paired by hash), held until the block is encoded
+//! - fees: each block arrives with its [`BlockFees`](zaino_primitives::types::BlockFees)
+//!   ([`BlockWithFees`], read in lockstep off the block and value-balance streams)
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use zaino_persistence::StoreError;
-use zaino_primitives::types::{
-    Block, BlockHash, BlockValueBalances, Extent, Height, TreeSizeOutOfRange, TreeSizes,
-};
-use zaino_sync::{IndexWriter, Offloaded, Subscription};
+use zaino_primitives::types::{BlockRef, Height, TreeSizeOutOfRange, TreeSizes};
+use zaino_sync::{BlockWithFees, IndexWriter, Offloaded};
 
 use crate::{encode_compact_block, CompactBlockStore, NonFinalizedState, ReadView, Snapshot, HASH};
 
@@ -27,14 +25,10 @@ pub enum IndexWriterError {
     /// Pool's cumulative size left the compact protocol's `u32` range (#549)
     #[error("commitment tree size out of range: {0}")]
     TreeSize(#[from] TreeSizeOutOfRange),
-
-    /// Value-balance index stopped publishing (it failed; zainod reports its own error)
-    #[error("value-balance stream closed before block {height}'s balances arrived")]
-    BalancesGone { height: Height },
 }
 
 /// - `non_finalized` = records applied, encoded and readable, not yet fsynced (no second fold,
-///   `docs/design/precommit-state.md`)
+///   `docs/design/non-finalized-state.md`)
 /// - `carry` = cumulative tree sizes after the last applied block (`durable`'s = after the last
 ///   finalised one, what [`reset`](IndexWriter::reset) restores)
 /// - `durable` = the store as of the last landing (answered without the store while a write has
@@ -44,16 +38,12 @@ pub struct CompactBlockIndexWriter {
     durable: Durable,
     non_finalized: NonFinalizedState,
     carry: TreeSizes,
-    balances: Subscription<BlockValueBalances>,
-    /// Delivered blocks' balances, taken when the block is encoded (`apply`, or `finalize` for
-    /// one never applied)
-    resolved: BTreeMap<Height, Arc<BlockValueBalances>>,
 }
 
-/// What the store committed, pinned at a landing
+/// What the store committed, pinned at a landing; `tip` = last committed block, inclusive
+/// (`None` = empty)
 struct Durable {
-    extent: Extent,
-    tip: Option<BlockHash>,
+    tip: Option<BlockRef>,
     sizes: TreeSizes,
     snapshot: Arc<Snapshot>,
 }
@@ -61,8 +51,7 @@ struct Durable {
 impl Durable {
     fn of(store: &CompactBlockStore) -> Self {
         Self {
-            extent: store.finalized_height(),
-            tip: store.tip_hash(),
+            tip: store.finalized_tip(),
             sizes: store.sizes(),
             snapshot: store.reader().snapshot(),
         }
@@ -77,83 +66,53 @@ pub struct Landing {
 /// One finalised block's record: encoded at `apply`, or encoded by the write
 enum Pending {
     Encoded(Bytes),
-    Unencoded { block: Arc<Block>, balances: Arc<BlockValueBalances>, sizes: TreeSizes },
+    Unencoded { pair: Arc<BlockWithFees>, sizes: TreeSizes },
 }
 
 impl CompactBlockIndexWriter {
     /// Opens over `store`, reseeding the carry from its manifest
-    ///
-    /// - `balances` subscribed at this store's durable extent (`ValueBalanceSink`)
-    pub fn new(store: CompactBlockStore, balances: Subscription<BlockValueBalances>) -> Self {
+    pub fn new(store: CompactBlockStore) -> Self {
         Self {
             carry: store.sizes(),
             durable: Durable::of(&store),
             store: Offloaded::new(store),
             non_finalized: NonFinalizedState::default(),
-            balances,
-            resolved: BTreeMap::new(),
         }
-    }
-
-    fn take_balances(&mut self, height: Height) -> Arc<BlockValueBalances> {
-        let delivered = self.resolved.remove(&height);
-        delivered.unwrap_or_else(|| panic!("compact_block: {height} encoded before delivered"))
     }
 }
 
 impl IndexWriter for CompactBlockIndexWriter {
-    type Input = Block;
+    type Input = BlockWithFees;
     type View = ReadView;
     type Error = IndexWriterError;
     type Done = Landing;
 
     const NAME: &'static str = "compact_block";
 
-    fn finalized_height(&self) -> Extent {
-        self.durable.extent
-    }
-
-    fn finalized_tip(&self) -> Option<BlockHash> {
+    fn finalized_tip(&self) -> Option<BlockRef> {
         self.durable.tip
     }
 
-    fn applied_height(&self) -> Extent {
-        self.non_finalized.tip_height().map_or(self.finalized_height(), Extent::through)
+    fn applied_height(&self) -> Option<Height> {
+        self.non_finalized.tip_height().or(self.finalized_height())
     }
 
-    /// Nonfinalised + durable as one value, taken at one consistent moment (a reader resolves
+    /// Non-finalized + durable as one value, taken at one consistent moment (a reader resolves
     /// both tiers from one load)
     fn view(&self) -> ReadView {
         ReadView::new(self.non_finalized.clone(), Arc::clone(&self.durable.snapshot))
     }
 
-    async fn deliver(&mut self, blocks: &[Arc<Block>]) -> Result<(), IndexWriterError> {
-        for block in blocks {
-            let height = block.header().height;
-            // durable = already encoded (the sink starts past it, so nothing to pull)
-            if self.finalized_height().contains(height) {
-                continue;
-            }
-            let balances = self
-                .balances
-                .balances_for(block)
-                .await
-                .ok_or(IndexWriterError::BalancesGone { height })?;
-            self.resolved.insert(height, balances);
-        }
-        Ok(())
-    }
-
-    async fn apply(&mut self, block: &Arc<Block>) -> Result<(), IndexWriterError> {
+    async fn apply(&mut self, pair: &Arc<BlockWithFees>) -> Result<(), IndexWriterError> {
+        let block = &pair.upstream;
         let height = block.header().height;
         // gap = every later commitment tree silently mis-sized
-        let next = self.applied_height().next();
+        let next = self.applied_height().map_or(Height::GENESIS, Height::next);
         assert_eq!(height, next, "compact_block: blocks must arrive contiguously");
 
-        let balances = self.take_balances(height);
         let carry = self.carry.advance(block)?;
         // encoded once, here: serving reads these bytes, and so does the commit
-        let record = encode_compact_block(block, &balances, &carry);
+        let record = encode_compact_block(block, &pair.derived, &carry);
         self.carry = carry;
         self.non_finalized.apply(height, block.header().hash.into(), record);
 
@@ -163,31 +122,28 @@ impl IndexWriter for CompactBlockIndexWriter {
     /// Blocks never applied (bulk) are encoded by the write, off the follower
     async fn finalize(
         &mut self,
-        blocks: &[Arc<Block>],
+        pairs: &[Arc<BlockWithFees>],
     ) -> Result<impl FnOnce() -> Result<Landing, IndexWriterError> + Send + 'static, IndexWriterError>
     {
         let mut reached = self.finalized_height();
         let mut sizes = self.durable.sizes;
-        let mut records = Vec::with_capacity(blocks.len());
-        for block in blocks {
-            let height = block.header().height;
-            assert_eq!(height, reached.next(), "compact_block: finalised blocks not contiguous");
-            reached = Extent::through(height);
-            sizes = sizes.advance(block)?;
+        let mut records = Vec::with_capacity(pairs.len());
+        for pair in pairs {
+            let height = pair.upstream.header().height;
+            let next = reached.map_or(Height::GENESIS, Height::next);
+            assert_eq!(height, next, "compact_block: finalised blocks not contiguous");
+            reached = Some(height);
+            sizes = sizes.advance(&pair.upstream)?;
 
-            let hash: [u8; HASH] = block.header().hash.into();
-            // applied block = already encoded (same carry, its balances consumed by `apply`)
+            let hash: [u8; HASH] = pair.upstream.header().hash.into();
+            // applied block = already encoded (same carry, same fees)
             let record = match self.non_finalized.block(height) {
                 Some(record) => {
                     let held = self.non_finalized.hash_at(height);
                     assert_eq!(held, Some(hash), "compact_block: {height} over another branch");
                     Pending::Encoded(record)
                 }
-                None => Pending::Unencoded {
-                    block: Arc::clone(block),
-                    balances: self.take_balances(height),
-                    sizes,
-                },
+                None => Pending::Unencoded { pair: Arc::clone(pair), sizes },
             };
             records.push((height, hash, record));
         }
@@ -197,8 +153,8 @@ impl IndexWriter for CompactBlockIndexWriter {
             for (height, hash, record) in records {
                 let framed = match record {
                     Pending::Encoded(record) => record,
-                    Pending::Unencoded { block, balances, sizes } => {
-                        encode_compact_block(&block, &balances, &sizes)
+                    Pending::Unencoded { pair, sizes } => {
+                        encode_compact_block(&pair.upstream, &pair.derived, &sizes)
                     }
                 };
                 store.append(height, hash, &framed)?;
@@ -213,11 +169,11 @@ impl IndexWriter for CompactBlockIndexWriter {
         self.store.restore(store);
 
         // durable now: no second copy in RAM
-        if let Some(through) = self.durable.extent.last() {
+        if let Some(through) = self.finalized_height() {
             self.non_finalized.finalize_through(through);
         }
 
-        // empty nonfinalised tier = `applied_height == finalized_height` → the two carries must
+        // empty non-finalized tier = `applied_height == finalized_height` → the two carries must
         // agree (bulk sync, never applied, reaches `apply` again only through here)
         if self.non_finalized.is_empty() {
             self.carry = self.durable.sizes;
@@ -228,8 +184,6 @@ impl IndexWriter for CompactBlockIndexWriter {
 
     async fn reset(&mut self) -> Result<(), IndexWriterError> {
         self.non_finalized = NonFinalizedState::default();
-        // the harness flushed what was staged: anything left belonged to the dropped branch
-        self.resolved.clear();
         // no disk read: the durable carry = what the applied carry returns to
         self.carry = self.durable.sizes;
 
@@ -241,72 +195,43 @@ impl IndexWriter for CompactBlockIndexWriter {
 mod tests {
     use std::path::Path;
 
-    use std::num::NonZeroUsize;
-
     use proptest::strategy::Strategy as _;
     use prost::Message as _;
     use zaino_persistence::fs::SimFs;
     use zaino_primitives::types::{
-        BlockHeader, CompactCiphertext, OrchardAction, OrchardData, ReorgDepth, SaplingData,
-        SaplingOutput, SignedZatoshis, Transaction, TransactionId, ValueBalance,
+        Block, BlockFees, BlockHeader, CompactCiphertext, Fee, Height, OrchardAction, OrchardData,
+        SaplingData, SaplingOutput, Transaction, TransactionId, TransparentData, Zatoshis,
     };
     use zaino_proto::proto::compact_formats as cf;
-    use zaino_sync::{ValueBalanceSink, ValueBalanceSinkBuilder};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
     use crate::{record::FRAME_HEADER, CompactBlockReader};
 
-    /// Fee the feed prices every tx of block `height` at (a pairing slip shows as a wrong fee)
+    /// Fee block `height`'s paying tx carries (distinct per height: a pairing slip = a wrong fee)
     fn fee_at(height: u32) -> u32 {
         1_000 * (height + 1)
     }
 
-    /// Writer over `/cb` + the value-balance stream it pulls from, both at the store's durable
-    /// extent (the sink stands in for the value-balance index)
-    fn writer(fs: &Arc<SimFs>) -> (CompactBlockIndexWriter, ValueBalanceSink) {
-        let store = open(fs);
-        let mut balances = ValueBalanceSinkBuilder::new(ReorgDepth::CONSENSUS);
-        let subscription = balances.subscribe(
-            "compact_block",
-            NonZeroUsize::new(1 << 20).expect("non-zero"),
-            store.finalized_height(),
-        );
-        (CompactBlockIndexWriter::new(store, subscription), balances.seal())
+    fn writer(fs: &Arc<SimFs>) -> CompactBlockIndexWriter {
+        CompactBlockIndexWriter::new(open(fs))
     }
 
-    /// Publishes `block`'s balances, then delivers it (the harness's order)
-    async fn deliver(
-        writer: &mut CompactBlockIndexWriter,
-        feed: &mut ValueBalanceSink,
-        block: &Arc<Block>,
-    ) {
+    /// `block` with its fees (what the lockstep feed hands `apply`): coinbase, then [`fee_at`]
+    /// - stated, not derived (value-balance's job)
+    fn paired(block: Block) -> Arc<BlockWithFees> {
         let height = block.header().height;
-        let fee = i64::from(fee_at(u32::from(height)));
-        let balances = BlockValueBalances {
+        let paid = Zatoshis::new(fee_at(u32::from(height)).into()).expect("in supply");
+        let fees = BlockFees {
             height,
             hash: block.header().hash,
-            balances: block
-                .transactions()
-                .iter()
-                .map(|_| ValueBalance {
-                    sapling: SignedZatoshis::new(fee).expect("in supply"),
-                    ..Default::default()
-                })
-                .collect(),
+            fees: vec![Fee::Coinbase, Fee::Paid(paid)],
         };
-        feed.add(height, Arc::new(balances)).await.expect("fed");
-        writer.deliver(std::slice::from_ref(block)).await.expect("deliver");
+        Arc::new(BlockWithFees { upstream: Arc::new(block), derived: Arc::new(fees) })
     }
 
-    /// The harness's reset: the value-balance index rewinds its stream to its durable tip too
-    async fn reset(writer: &mut CompactBlockIndexWriter, feed: &mut ValueBalanceSink) {
-        writer.reset().await.expect("reset");
-        feed.finalize_through(writer.finalized_height()).await.expect("fed");
-        feed.reset().await.expect("fed");
-    }
-
-    /// Block at `height` committing `sapling` outputs, `orchard` and `ironwood` actions
+    /// Block at `height`: coinbase, then one tx committing `sapling` outputs, `orchard` and
+    /// `ironwood` actions
     fn block(height: u32, sapling: usize, orchard: usize, ironwood: usize) -> Block {
         let out = SaplingOutput {
             cmu: [1u8; 32].into(),
@@ -327,17 +252,27 @@ mod tests {
                 [height.wrapping_sub(1) as u8; 32],
                 1_700_000_000 + height,
             ),
-            vec![Transaction {
-                txid: TransactionId::from([height as u8; 32]),
-                transparent: Default::default(),
-                sprout: Default::default(),
-                sapling: SaplingData { outputs: vec![out; sapling], ..Default::default() },
-                orchard: OrchardData {
-                    actions: vec![action.clone(); orchard],
-                    ..Default::default()
+            vec![
+                Transaction {
+                    txid: TransactionId::from([0xcb; 32]),
+                    transparent: TransparentData { coinbase: true, ..Default::default() },
+                    sprout: Default::default(),
+                    sapling: Default::default(),
+                    orchard: Default::default(),
+                    ironwood: Default::default(),
                 },
-                ironwood: OrchardData { actions: vec![action; ironwood], ..Default::default() },
-            }],
+                Transaction {
+                    txid: TransactionId::from([height as u8; 32]),
+                    transparent: Default::default(),
+                    sprout: Default::default(),
+                    sapling: SaplingData { outputs: vec![out; sapling], ..Default::default() },
+                    orchard: OrchardData {
+                        actions: vec![action.clone(); orchard],
+                        ..Default::default()
+                    },
+                    ironwood: OrchardData { actions: vec![action; ironwood], ..Default::default() },
+                },
+            ],
         )
     }
 
@@ -366,51 +301,47 @@ mod tests {
     async fn tree_sizes_accumulate_and_survive_a_restart() {
         let fs = SimFs::new();
 
-        let (mut writer, mut feed) = writer(&fs);
-        assert_eq!(writer.applied_height(), Extent::ZERO);
+        let mut writer = writer(&fs);
+        let h = |n: u32| Height::try_from(n).expect("h");
+        let tip = |n: u32| BlockRef { hash: [n as u8; 32].into(), height: h(n) };
+        assert_eq!(writer.applied_height(), None);
         assert_eq!(writer.finalized_tip(), None);
 
         // 0, 1 straight to `finalize` (bulk-sync path, below the reorg bound); 2 via `apply` first
-        let bulk: Vec<Arc<Block>> = [(0u32, 2, 1, 0), (1, 3, 2, 1)]
+        let bulk: Vec<Arc<BlockWithFees>> = [(0u32, 2, 1, 0), (1, 3, 2, 1)]
             .into_iter()
-            .map(|(height, s, o, i)| Arc::new(block(height, s, o, i)))
+            .map(|(height, s, o, i)| paired(block(height, s, o, i)))
             .collect();
-        for block in &bulk {
-            deliver(&mut writer, &mut feed, block).await;
-        }
         zaino_sync::finalize_now(&mut writer, &bulk).await.expect("finalize");
-        assert!(!writer.view().has_non_finalized(), "bulk sync never touches nonfinalised");
-        assert_eq!(writer.finalized_tip(), Some(BlockHash::from([1; 32])));
+        assert!(!writer.view().has_non_finalized(), "bulk sync never touches non-finalized");
+        assert_eq!(writer.finalized_tip(), Some(tip(1)));
 
-        let two = Arc::new(block(2, 0, 0, 4));
-        deliver(&mut writer, &mut feed, &two).await;
+        let two = paired(block(2, 0, 0, 4));
         writer.apply(&two).await.expect("apply");
-        assert_eq!(writer.applied_height(), Extent::counted(3));
-        assert_eq!(writer.finalized_height(), Extent::counted(2), "applied is not durable");
+        assert_eq!(writer.applied_height(), Some(h(2)));
+        assert_eq!(writer.finalized_height(), Some(h(1)), "applied is not durable");
 
         zaino_sync::finalize_now(&mut writer, &[two]).await.expect("finalize");
-        assert!(!writer.view().has_non_finalized(), "finalised block leaves nonfinalised");
+        assert!(!writer.view().has_non_finalized(), "finalised block leaves non-finalized");
 
         let reader = writer.store.get().reader();
         let stored = [0, 1, 2].map(|height| stored_sizes(&reader, height));
         assert_eq!(stored, [(2, 1, 0), (5, 3, 1), (5, 3, 5)], "cumulative, not per-block");
 
-        drop((writer, feed));
-        let (mut resumed, mut feed) = self::writer(&fs);
-        assert_eq!(resumed.applied_height(), Extent::counted(3), "resumes where it stopped");
-        assert_eq!(resumed.finalized_tip(), Some(BlockHash::from([2; 32])));
+        drop(writer);
+        let mut resumed = self::writer(&fs);
+        assert_eq!(resumed.applied_height(), Some(h(2)), "resumes where it stopped");
+        assert_eq!(resumed.finalized_tip(), Some(tip(2)));
 
         // losing branch at 3, then a reorg: `reset` drops it, rewinds the carry to durable (no
         // disk read) → the winning branch folds onto the right totals
-        let losing = Arc::new(block(3, 9, 9, 9));
-        deliver(&mut resumed, &mut feed, &losing).await;
+        let losing = paired(block(3, 9, 9, 9));
         resumed.apply(&losing).await.expect("losing");
-        reset(&mut resumed, &mut feed).await;
+        resumed.reset().await.expect("reset");
         assert!(!resumed.view().has_non_finalized(), "losing branch gone");
         assert_eq!(resumed.applied_height(), resumed.finalized_height());
 
-        let winning = Arc::new(block(3, 1, 1, 1));
-        deliver(&mut resumed, &mut feed, &winning).await;
+        let winning = paired(block(3, 1, 1, 1));
         resumed.apply(&winning).await.expect("apply");
         zaino_sync::finalize_now(&mut resumed, &[winning]).await.expect("finalize");
         // carry survived restart + reorg: not zero, not the losing branch's 9s
@@ -456,9 +387,9 @@ mod tests {
     }
 
     async fn random_history(counts: Vec<(usize, usize, usize)>, steps: Vec<Step>) {
-        let chain: Vec<Arc<Block>> = (0u32..)
+        let chain: Vec<Arc<BlockWithFees>> = (0u32..)
             .zip(&counts)
-            .map(|(height, &(s, o, i))| Arc::new(block(height, s, o, i)))
+            .map(|(height, &(s, o, i))| paired(block(height, s, o, i)))
             .collect();
         let sizes_through = |height: usize| {
             counts[..=height].iter().fold((0u32, 0u32, 0u32), |(s, o, i), &(ds, d_o, di)| {
@@ -472,7 +403,7 @@ mod tests {
             let applied = writer.applied_height();
             assert_eq!(view.tip(), applied, "{case}");
             let mut expected_span = Vec::new();
-            for height in applied.last().into_iter().flat_map(|last| Height::GENESIS.up_to(last)) {
+            for height in applied.into_iter().flat_map(|last| Height::GENESIS.up_to(last)) {
                 let record =
                     view.block(height).unwrap_or_else(|| panic!("{case}: no record at {height}"));
                 let decoded = cf::CompactBlock::decode(&record[FRAME_HEADER..]).expect("decodes");
@@ -487,47 +418,42 @@ mod tests {
                 let record_case = format!("{case}: record {height}");
                 assert_eq!(decoded.hash, [n as u8; 32].to_vec(), "{record_case}");
                 assert_eq!(sizes, sizes_through(n as usize), "{record_case}");
-                assert_eq!(fees, vec![fee_at(n)], "{record_case}: its own fees");
+                assert_eq!(fees, vec![0, fee_at(n)], "{record_case}: coinbase unset, its own fee");
                 expected_span.extend_from_slice(&record);
             }
 
             let finalized = writer.finalized_height();
-            if let Some(last) = finalized.last() {
+            if let Some(last) = finalized {
                 let (span, reach) =
                     view.span_from(Height::GENESIS, last, usize::MAX).expect("durable span");
-                assert_eq!(reach, finalized, "{case}");
+                assert_eq!(reach, last, "{case}");
                 let expected = &expected_span[..span.len()];
                 assert_eq!(span.as_ref(), expected, "{case}: records in order");
             }
         };
 
         let fs = SimFs::new();
-        let (mut writer, mut feed) = writer(&fs);
+        let mut writer = writer(&fs);
         for (at, step) in steps.iter().enumerate() {
-            let (applied, finalized) = (
-                u64::from(writer.applied_height()) as usize,
-                u64::from(writer.finalized_height()) as usize,
-            );
+            // block counts from genesis (= index of the next block in `chain`)
+            let count = |tip: Option<Height>| tip.map_or(0, |h| u32::from(h) as usize + 1);
+            let (applied, finalized) =
+                (count(writer.applied_height()), count(writer.finalized_height()));
             match *step {
                 Step::Apply if applied < chain.len() => {
-                    deliver(&mut writer, &mut feed, &chain[applied]).await;
                     writer.apply(&chain[applied]).await.expect("apply");
                 }
                 Step::Finalize(count) if finalized < chain.len() => {
                     let end = (finalized + count).min(chain.len());
-                    // applied ones delivered then, the rest now (bulk: final on arrival)
-                    for block in &chain[applied.clamp(finalized, end)..end] {
-                        deliver(&mut writer, &mut feed, block).await;
-                    }
                     let write = writer.finalize(&chain[finalized..end]).await.expect("finalize");
                     let done = write().expect("written");
                     check(&writer, &format!("step {at} {step:?}, written, not landed"));
                     writer.committed(done).await.expect("landed");
                 }
-                Step::Reset => reset(&mut writer, &mut feed).await,
+                Step::Reset => writer.reset().await.expect("reset"),
                 Step::Reopen => {
-                    drop((writer, feed));
-                    (writer, feed) = self::writer(&fs);
+                    drop(writer);
+                    writer = self::writer(&fs);
                 }
                 _ => {}
             }
@@ -540,11 +466,9 @@ mod tests {
     #[should_panic(expected = "blocks must arrive contiguously")]
     async fn a_gap_in_the_block_stream_panics() {
         let fs = SimFs::new();
-        let (mut writer, mut feed) = writer(&fs);
+        let mut writer = writer(&fs);
 
-        let zero = Arc::new(block(0, 1, 1, 1));
-        deliver(&mut writer, &mut feed, &zero).await;
-        writer.apply(&zero).await.expect("apply");
-        let _ = writer.apply(&Arc::new(block(2, 1, 1, 1))).await;
+        writer.apply(&paired(block(0, 1, 1, 1))).await.expect("apply");
+        let _ = writer.apply(&paired(block(2, 1, 1, 1))).await;
     }
 }

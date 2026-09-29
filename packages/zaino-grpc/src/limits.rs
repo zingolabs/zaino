@@ -63,7 +63,6 @@ pub(crate) enum Lane {
 }
 
 impl Lane {
-    #[cfg(feature = "prometheus")]
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Point => "point",

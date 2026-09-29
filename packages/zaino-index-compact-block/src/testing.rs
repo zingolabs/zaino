@@ -3,9 +3,9 @@
 //! - behind the `testing` feature (never compiled into a served binary)
 
 use zaino_primitives::types::{
-    Block, BlockHeader, BlockValueBalances, CompactCiphertext, OrchardAction, OrchardData,
-    OutPoint, SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransparentData,
-    TransparentOutput, TreeSize, TreeSizes, ValueBalance, Zatoshis,
+    Block, BlockFees, BlockHeader, CompactCiphertext, Fee, OrchardAction, OrchardData, OutPoint,
+    SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransparentData,
+    TransparentOutput, TreeSize, TreeSizes, Zatoshis,
 };
 
 use crate::HASH;
@@ -27,15 +27,16 @@ fn action(seed: u8) -> OrchardAction {
     }
 }
 
-/// Block at `height` carrying every pool (dropped pool = missing field), its value balances and
-/// its tree sizes
+/// Block at `height` carrying every pool (dropped pool = missing field), its fees and its tree
+/// sizes
 ///
 /// - hash = `[height as u8; 32]` (predictable by-hash lookup); sizes = 10 / 20 / 30
-/// - its one tx spends 17 345 zat, pays out 12 345: fee 5 000
-pub fn block(height: u32) -> (Block, BlockValueBalances, TreeSizes) {
+/// - its one tx priced at 5 000 zat (value-balance's job to derive, stated here)
+pub fn block(height: u32) -> (Block, BlockFees, TreeSizes) {
     let tx = Transaction {
         txid: bytes32(0x11).into(),
         transparent: TransparentData {
+            coinbase: false,
             inputs: vec![OutPoint { txid: bytes32(0x22).into(), vout: 7 }],
             outputs: vec![TransparentOutput {
                 value: Zatoshis::new(12_345).expect("in range"),
@@ -55,8 +56,6 @@ pub fn block(height: u32) -> (Block, BlockValueBalances, TreeSizes) {
         orchard: OrchardData { actions: vec![action(0x77)], ..Default::default() },
         ironwood: OrchardData { actions: vec![action(0x88), action(0x99)], ..Default::default() },
     };
-    let balance =
-        ValueBalance::of(&tx, Zatoshis::new(17_345).expect("in range")).expect("in supply");
     let block = Block::new(
         BlockHeader::for_tests(
             height,
@@ -66,15 +65,15 @@ pub fn block(height: u32) -> (Block, BlockValueBalances, TreeSizes) {
         ),
         vec![tx],
     );
-    let balances = BlockValueBalances {
+    let fees = BlockFees {
         height: block.header().height,
         hash: block.header().hash,
-        balances: vec![balance],
+        fees: vec![Fee::Paid(Zatoshis::new(5_000).expect("in range"))],
     };
     let sizes = TreeSizes {
         sapling: TreeSize::from(10),
         orchard: TreeSize::from(20),
         ironwood: TreeSize::from(30),
     };
-    (block, balances, sizes)
+    (block, fees, sizes)
 }

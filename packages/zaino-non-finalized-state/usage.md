@@ -1,11 +1,11 @@
-# `zaino-chain-head` — usage
+# `zaino-non-finalized-state` — usage
 
 The non-final window of the best chain, held in memory as `Arc<Block>`s: what
 `zaino-sync`'s `Producer` follows the quorum tip with, and replays a reorg from
 without fetching again. A library, not a task: its one caller drives it.
 
 ```rust,ignore
-use zaino_chain_head::{Advance, ChainHead};
+use zaino_non_finalized_state::{Advance, ChainHead};
 
 let mut head = ChainHead::new(anchor, depth); // anchor: Arc<Block>, depth: finalised depth
 
@@ -22,7 +22,7 @@ match head.advance(quorum_tip, &pool).await? { // quorum_tip: BlockRef, pool: &B
 |---|---|
 | `ChainHead::new(anchor, depth)` | a window of one block; `depth` > 0 |
 | `advance(tip, &pool)` | follow `tip`, fetching what the window lacks |
-| `best_chain_from(height)` | canonical blocks `height ..= tip`; `height` ≥ `floor()` |
+| `best_chain_from(start)` | canonical blocks `start` to the tip, both inclusive; `start` ≥ `floor()` |
 | `tip()` / `floor()` | ends of the window |
 | `Advance` | `Unchanged`, `Extended`, `Reorg { fork }` (heights ≥ `fork` replaced, or dropped on a retreat) |
 | `AdvanceError` | `FetchHeight` / `FetchHash` (validators failed after retries), `BelowWindow` |
@@ -32,7 +32,7 @@ match head.advance(quorum_tip, &pool).await? { // quorum_tip: BlockRef, pool: &B
 - `tip` = the held tip → `Unchanged`
 - `tip` = a held ancestor → a retreat: window cut back onto it, `Reorg { fork:
   tip + 1 }` with nothing new to read (onto the floor itself included)
-- clean extension → one concurrent fetch of `ours + 1 ..= tip` by height through
+- clean extension → one concurrent fetch of `ours + 1` to `tip` (both inclusive) by height through
   the pool, kept only if it links onto the held tip and ends on `tip`'s hash
 - anything else → walk back by `prev_hash` from `tip`'s hash (`block_by_hash`,
   primary validator first) to the window block it links onto; that parent being

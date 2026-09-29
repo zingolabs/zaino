@@ -44,18 +44,35 @@ impl<S: GetBlock + GetBlockByHash + 'static> BlockFetchPool<S> {
         Self { sources, route, concurrency }
     }
 
-    /// Blocks `from..=to`, ascending; the first error ends the stream (nothing after it is sent)
+    /// Only the sources at `positions` (e.g. validators agreeing on one tip)
+    /// - `Primary` kept when among them, else `Spread` over them (its chain is not theirs)
+    pub fn among(&self, positions: impl IntoIterator<Item = usize>) -> Self {
+        let positions: Vec<usize> = positions.into_iter().collect();
+        let sources = positions.iter().map(|&position| Arc::clone(&self.sources[position]));
+        let route = match self.route {
+            FetchRoute::Primary(primary) => positions
+                .iter()
+                .position(|&position| position == primary)
+                .map_or(FetchRoute::Spread, FetchRoute::Primary),
+            FetchRoute::Spread => FetchRoute::Spread,
+        };
+        Self::new(sources.collect(), route, self.concurrency)
+    }
+
+    /// Blocks `start` to `end`, both inclusive, ascending
+    ///
+    /// - First error ends the stream (nothing after it is sent)
     pub fn blocks(
         &self,
-        from: Height,
-        to: Height,
+        start: Height,
+        end: Height,
     ) -> impl Stream<Item = Result<Block, QueryError<GetBlockError>>> + Send + 'static {
-        assert!(from <= to, "empty fetch range {from:?}..={to:?}");
+        assert!(start <= end, "empty fetch range {start:?}..={end:?}");
         let sources = self.sources.clone();
         let route = self.route;
         let mut failed = false;
 
-        stream::iter(from.up_to(to))
+        stream::iter(start.up_to(end))
             .map(move |height| {
                 let candidates = match route {
                     FetchRoute::Primary(index) => vec![Arc::clone(&sources[index])],

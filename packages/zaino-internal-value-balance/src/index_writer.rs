@@ -1,9 +1,8 @@
-//! [`IndexWriter`]: each delivered block's outputs recorded, its inputs resolved, its balances
-//! published
+//! [`IndexWriter`]: each delivered block's outputs recorded, its inputs resolved into its fees
 //!
-//! - `deliver` does all three for its run (called before the harness stages or applies, bulk
-//!   included: one item per block published, resolved a run at a time)
-//! - `apply` only moves the nonfinalised extent
+//! - `deliver` records the run's outputs; [`Derives::derive`] resolves its fees (the follower
+//!   forwards them, one per block, into the [`FeeSink`](zaino_sync::FeeSink))
+//! - `apply` only moves the non-finalized extent
 //! - `finalize` writes the outputs `deliver` recorded; they leave `pending` once it lands
 
 use std::{collections::HashMap, path::Path, sync::Arc};
@@ -15,10 +14,10 @@ use zaino_persistence::{
     StoreError,
 };
 use zaino_primitives::types::{
-    Block, BlockHash, BlockValueBalances, Extent, Height, OutPoint, OutputIndex, TransactionId,
-    ValueBalance, Zatoshis,
+    Block, BlockFees, BlockRef, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId,
+    Zatoshis,
 };
-use zaino_sync::{blocking, IndexWriter, Offloaded, SinkGone, ValueBalanceSink};
+use zaino_sync::{blocking, Derives, IndexWriter, Offloaded};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::{key::OutputRow, pending::Pending, ValueBalanceIndex};
@@ -38,23 +37,21 @@ pub enum IndexWriterError {
     #[error("block {height} tx {txid}: value sums past the money supply")]
     ValueOverflow { height: Height, txid: TransactionId },
 
-    #[error(transparent)]
-    Downstream(#[from] SinkGone),
+    #[error("block {height} tx {txid}: takes more from the transparent pool than it puts in")]
+    NegativeFee { height: Height, txid: TransactionId },
 }
 
-/// Records every transparent output and publishes one [`BlockValueBalances`] per block
+/// Records every transparent output and derives one [`BlockFees`] per block
 ///
-/// - `sink` starts where its subscribers' durable extents end; heights below it are recorded
-///   but not published (downstream holds them)
 /// - `committed` = the store's as of the last landing (answered without the store while a
 ///   write has it)
+/// - `applied` = last applied height, inclusive (`None` = none)
 pub struct ValueBalanceIndexWriter {
     outputs: SegmentSet<OutPoint>,
     store: Offloaded<LsmStore<ValueBalanceIndex>>,
     committed: Committed,
-    applied: Extent,
+    applied: Option<Height>,
     pending: Pending,
-    sink: ValueBalanceSink,
 }
 
 /// A finished `finalize` write: the store back, plus the outpoints it now holds
@@ -69,21 +66,19 @@ impl ValueBalanceIndexWriter {
         fs: Arc<dyn Fs>,
         path: &Path,
         network: NetworkType,
-        sink: ValueBalanceSink,
     ) -> Result<Self, IndexWriterError> {
         let store = LsmStore::open(fs, path, network)?;
         Ok(Self {
             committed: store.committed(),
-            applied: store.committed().extent,
+            applied: store.committed().height(),
             outputs: store.sets(),
             store: Offloaded::new(store),
             pending: Pending::default(),
-            sink,
         })
     }
 }
 
-/// Each of `blocks`' balances, every prevout found in `pending` (the whole run's outputs
+/// Each of `blocks`' fees, every prevout found in `pending` (the whole run's outputs
 /// included) or `durable`
 ///
 /// - durable prevouts of the whole run resolved in one `get_many` (sorted keys, probed in
@@ -94,7 +89,7 @@ fn resolve(
     blocks: &[Arc<Block>],
     pending: &Pending,
     durable: &Snapshot<OutPoint>,
-) -> Result<Vec<BlockValueBalances>, IndexWriterError> {
+) -> Result<Vec<BlockFees>, IndexWriterError> {
     let prevouts =
         blocks.iter().flat_map(|block| block.transactions()).flat_map(|tx| &tx.transparent.inputs);
     let mut values: HashMap<OutPoint, Zatoshis> = HashMap::new();
@@ -108,35 +103,54 @@ fn resolve(
     let rows = durable.get_many::<OutputRow>(&unheld);
     values.extend(unheld.iter().zip(rows).filter_map(|(key, row)| Some((*key, row?.value))));
 
-    blocks.iter().map(|block| balances(block, &values)).collect()
+    blocks
+        .iter()
+        .map(|block| {
+            let height = block.header().height;
+            let fees = block
+                .transactions()
+                .iter()
+                .map(|tx| fee(height, tx, &values))
+                .collect::<Result<_, _>>()?;
+            Ok(BlockFees { height, hash: block.header().hash, fees })
+        })
+        .collect()
 }
 
-/// `block`'s balances, every prevout's value already in `values`
-fn balances(
-    block: &Block,
+/// `tx`'s value left in the transparent transaction value pool (protocol.pdf#transactions §3.4)
+///
+/// - Σ transparent inputs − Σ transparent outputs + each shielded pool's value balance
+fn fee(
+    height: Height,
+    tx: &Transaction,
     values: &HashMap<OutPoint, Zatoshis>,
-) -> Result<BlockValueBalances, IndexWriterError> {
-    let height = block.header().height;
-    let balances = block
-        .transactions()
-        .iter()
-        .map(|tx| {
-            let overflow = || IndexWriterError::ValueOverflow { height, txid: tx.txid };
-            let spent =
-                tx.transparent.inputs.iter().try_fold(Zatoshis::ZERO, |spent, prevout| {
-                    let value = values.get(prevout).ok_or(IndexWriterError::MissingPrevout {
-                        height,
-                        txid: tx.txid,
-                        spent: prevout.txid,
-                        vout: prevout.vout,
-                    })?;
-                    spent.checked_add(*value).ok_or_else(overflow)
-                })?;
-            ValueBalance::of(tx, spent).map_err(|_| overflow())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+) -> Result<Fee, IndexWriterError> {
+    if tx.transparent.coinbase {
+        return Ok(Fee::Coinbase);
+    }
+    let overflow = || IndexWriterError::ValueOverflow { height, txid: tx.txid };
+    let spent = tx.transparent.inputs.iter().try_fold(Zatoshis::ZERO, |spent, prevout| {
+        let value = values.get(prevout).ok_or(IndexWriterError::MissingPrevout {
+            height,
+            txid: tx.txid,
+            spent: prevout.txid,
+            vout: prevout.vout,
+        })?;
+        spent.checked_add(*value).ok_or_else(overflow)
+    })?;
+    let paid = Zatoshis::sum_balances(tx.transparent.outputs.iter().map(|out| out.value))
+        .ok_or_else(overflow)?;
 
-    Ok(BlockValueBalances { height, hash: block.header().hash, balances })
+    // every term within ±MAX_MONEY (zip-0209) → Σ of six fits i64
+    let remaining = spent.as_i64() - paid.as_i64()
+        + i64::from(tx.sprout.value_balance)
+        + i64::from(tx.sapling.value_balance)
+        + i64::from(tx.orchard.value_balance)
+        + i64::from(tx.ironwood.value_balance);
+    // MUST be nonnegative (protocol.pdf#transactions §3.4 consensus rule)
+    let remaining = u64::try_from(remaining)
+        .map_err(|_| IndexWriterError::NegativeFee { height, txid: tx.txid })?;
+    Ok(Fee::Paid(Zatoshis::new(remaining).map_err(|_| overflow())?))
 }
 
 impl IndexWriter for ValueBalanceIndexWriter {
@@ -147,48 +161,33 @@ impl IndexWriter for ValueBalanceIndexWriter {
 
     const NAME: &'static str = "value_balance";
 
-    fn finalized_height(&self) -> Extent {
-        self.committed.extent
-    }
-
-    fn finalized_tip(&self) -> Option<BlockHash> {
+    fn finalized_tip(&self) -> Option<BlockRef> {
         self.committed.tip
     }
 
-    fn applied_height(&self) -> Extent {
+    fn applied_height(&self) -> Option<Height> {
         self.applied
     }
 
     fn view(&self) {}
 
+    /// Every output of the run first: a later block may spend an earlier one's
     async fn deliver(&mut self, blocks: &[Arc<Block>]) -> Result<(), IndexWriterError> {
-        // every output of the run first: a later block may spend an earlier one's
+        let durable = self.finalized_height();
         for block in blocks {
             // durable = outputs already on disk (a replay for a downstream index behind this one)
-            if !self.finalized_height().contains(block.header().height) {
+            if Some(block.header().height) > durable {
                 self.pending.insert(block);
             }
-        }
-        let next = self.sink.next();
-        let unpublished: Vec<Arc<Block>> =
-            blocks.iter().filter(|block| block.header().height >= next).cloned().collect();
-        if unpublished.is_empty() {
-            return Ok(());
-        }
-
-        // durable prevouts = segment probes (a cold page fault each): the blocking pool's step
-        let (pending, durable) = (self.pending.clone(), self.outputs.pin());
-        let resolved = blocking(move || resolve(&unpublished, &pending, &durable)).await?;
-        for balances in resolved {
-            self.sink.add(balances.height, Arc::new(balances)).await?;
         }
         Ok(())
     }
 
     async fn apply(&mut self, block: &Arc<Block>) -> Result<(), IndexWriterError> {
         let height = block.header().height;
-        assert_eq!(height, self.applied.next(), "value_balance: blocks must arrive contiguously");
-        self.applied = Extent::through(height);
+        let next = self.applied.map_or(Height::GENESIS, Height::next);
+        assert_eq!(height, next, "value_balance: blocks must arrive contiguously");
+        self.applied = Some(height);
         Ok(())
     }
 
@@ -202,16 +201,18 @@ impl IndexWriter for ValueBalanceIndexWriter {
         let mut reached = self.finalized_height();
         for block in blocks {
             let height = block.header().height;
-            assert_eq!(height, reached.next(), "value_balance: finalize batch not contiguous");
-            reached = Extent::through(height);
+            let next = reached.map_or(Height::GENESIS, Height::next);
+            assert_eq!(height, next, "value_balance: finalize batch not contiguous");
+            reached = Some(height);
         }
-        let tip = blocks.last().expect("value_balance: finalize with no blocks").header().hash;
+        let last = blocks.last().expect("value_balance: finalize with no blocks").header();
+        let tip = BlockRef { hash: last.hash, height: last.height };
 
-        let rows = self.pending.rows_below(reached);
+        let rows = self.pending.rows_through(reached);
         let landing: Vec<OutPoint> = rows.iter().map(|row| row.key).collect();
         let mut store = self.store.lend();
         Ok(move || {
-            store.commit(rows, reached, tip)?;
+            store.commit(rows, tip)?;
             Ok(Landing { store, landed: landing })
         })
     }
@@ -225,9 +226,7 @@ impl IndexWriter for ValueBalanceIndexWriter {
         // durable segments answer for these now (published by the write, before this)
         self.pending.remove(&landed);
 
-        let reached = self.committed.extent;
-        self.applied = self.applied.max(reached);
-        self.sink.finalize_through(reached).await?;
+        self.applied = self.applied.max(self.committed.height());
         Ok(())
     }
 
@@ -235,9 +234,18 @@ impl IndexWriter for ValueBalanceIndexWriter {
         // segments untouched (commits are final-only); the harness flushed what was staged
         self.pending = Pending::default();
         self.applied = self.finalized_height();
-        self.sink.finalize_through(self.applied).await?;
-        self.sink.reset().await?;
         Ok(())
+    }
+}
+
+impl Derives for ValueBalanceIndexWriter {
+    type Item = BlockFees;
+
+    /// Durable prevouts = segment probes (a cold page fault each): the blocking pool's step
+    async fn derive(&mut self, blocks: &[Arc<Block>]) -> Result<Vec<BlockFees>, IndexWriterError> {
+        let (blocks, pending, durable) =
+            (blocks.to_vec(), self.pending.clone(), self.outputs.pin());
+        blocking(move || resolve(&blocks, &pending, &durable)).await
     }
 }
 
@@ -245,12 +253,14 @@ impl IndexWriter for ValueBalanceIndexWriter {
 mod tests {
     use std::num::{NonZeroU32, NonZeroUsize};
 
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
     use zaino_persistence::fs::SimFs;
     use zaino_primitives::types::{
         BlockHeader, OrchardData, ReorgDepth, SaplingData, Script, SignedZatoshis, SproutData,
         Transaction, TransparentData, TransparentOutput,
     };
-    use zaino_sync::{FollowError, IndexFollower, SinkBuilder, Subscription};
+    use zaino_sync::{BlockSink, FeeSink, FollowError, IndexFollower, Step};
 
     use super::*;
 
@@ -291,6 +301,7 @@ mod tests {
         Transaction {
             txid: TransactionId::from([tag; 32]),
             transparent: TransparentData {
+                coinbase: false,
                 inputs: spends
                     .iter()
                     .map(|&(prev, vout)| OutPoint { txid: TransactionId::from([prev; 32]), vout })
@@ -310,38 +321,49 @@ mod tests {
         }
     }
 
-    fn coinbase(tag: u8) -> Transaction {
-        tx(tag, &[], &[625_000_000], [0; 4])
+    fn coinbase(tag: u8, value: u64) -> Transaction {
+        let mut tx = tx(tag, &[], &[value], [0; 4]);
+        tx.transparent.coinbase = true;
+        tx
     }
 
     /// Per tx fee, in zats (`None` = coinbase)
-    fn fees(balances: &BlockValueBalances) -> Vec<Option<u64>> {
-        balances.balances.iter().map(|balance| balance.fee().map(Zatoshis::as_u64)).collect()
+    fn fees(block_fees: &BlockFees) -> Vec<Option<u64>> {
+        let paid = |fee: &Fee| match fee {
+            Fee::Coinbase => None,
+            Fee::Paid(fee) => Some(fee.as_u64()),
+        };
+        block_fees.fees.iter().map(paid).collect()
     }
 
-    async fn next_for(
-        balances: &mut Subscription<BlockValueBalances>,
-        block: &Block,
-    ) -> Arc<BlockValueBalances> {
-        balances
-            .balances_for(block)
-            .await
-            .unwrap_or_else(|| panic!("no balances for block {:?}", block.header().height))
+    /// `A<h>[f]` / `F<h>` / `R` / `S`: a step's position in the stream, data aside
+    fn label<T>(step: &Step<T>) -> String {
+        match step {
+            Step::Apply { height, finalized, .. } => {
+                format!("A{height}{}", if *finalized { "f" } else { "" })
+            }
+            Step::Finalized { height } => format!("F{height}"),
+            Step::Reset => "R".to_owned(),
+            Step::Shutdown => "S".to_owned(),
+        }
     }
 
-    /// Depth 2, tip 4 (0..=2 final, committed one per batch; 3, 4 nonfinalised): every prevout
-    /// resolves wherever it lives
+    /// Depth 2, tip 4 (0 to 2 final, both inclusive, committed one per batch; 3, 4
+    /// non-finalized): every prevout resolves wherever it lives
     /// - 1: spends 0's output (durable) and one from earlier in its own block (staged)
     /// - 3: spends 1's outputs (durable) with value leaving sprout
-    /// - 4: spends 3's output (nonfinalised) and enters ironwood
+    /// - 4: spends 3's output (non-finalized) and enters ironwood
     ///
-    /// Restart with a downstream index durable at 0 (BlockSink starts there): 0..=2 replay
-    /// through durable storage alone, 3.. are recorded again, and every item is identical
+    /// Restart with a downstream index durable at 0 (BlockSink starts at 1): 1 to 2 (both
+    /// inclusive) replay through durable storage alone, 3 onward recorded again, and every item is
+    /// identical
+    ///
+    /// Derived stream = the block stream step for step (same heights, flags, `Shutdown` last)
     ///
     /// Both batch sizes: 1 byte = one block per `deliver`; 1 MiB = the queued chain as one run
     /// (1's spend of 0's output then resolves inside the run, not from a committed segment)
     #[tokio::test]
-    async fn balances_resolve_every_prevout_wherever_it_lives_and_a_replay_republishes_them() {
+    async fn fees_resolve_every_prevout_wherever_it_lives_and_a_replay_republishes_them() {
         for batch in [NonZeroUsize::MIN, QUEUE] {
             resolve_every_prevout_and_replay(batch).await;
         }
@@ -349,24 +371,29 @@ mod tests {
 
     async fn resolve_every_prevout_and_replay(batch: NonZeroUsize) {
         let chain = [
-            block(0, 0, 0, vec![tx(0x10, &[], &[100_000], [0; 4])]),
+            block(0, 0, 0, vec![coinbase(0x10, 100_000)]),
             block(
                 1,
                 0,
                 0,
                 vec![
-                    coinbase(0x11),
+                    coinbase(0x11, 625_000_000),
                     tx(0x21, &[(0x10, 0)], &[60_000, 39_000], [0; 4]),
                     tx(0x22, &[(0x21, 1)], &[30_000], [0, -8_000, 0, 0]),
                 ],
             ),
-            block(2, 0, 0, vec![coinbase(0x12), tx(0x23, &[(0x21, 0)], &[], [0, 0, -59_000, 0])]),
+            block(
+                2,
+                0,
+                0,
+                vec![coinbase(0x12, 625_000_000), tx(0x23, &[(0x21, 0)], &[], [0, 0, -59_000, 0])],
+            ),
             block(
                 3,
                 0,
                 0,
                 vec![
-                    coinbase(0x13),
+                    coinbase(0x13, 625_000_000),
                     tx(0x24, &[(0x22, 0), (0x11, 0)], &[625_029_500], [500, 0, 0, 0]),
                 ],
             ),
@@ -374,7 +401,10 @@ mod tests {
                 4,
                 0,
                 0,
-                vec![coinbase(0x14), tx(0x25, &[(0x24, 0)], &[625_000_000], [0, 0, 0, -29_000])],
+                vec![
+                    coinbase(0x14, 625_000_000),
+                    tx(0x25, &[(0x24, 0)], &[625_000_000], [0, 0, 0, -29_000]),
+                ],
             ),
         ];
         let expected_fees = [
@@ -387,143 +417,220 @@ mod tests {
         let fs = SimFs::new();
 
         let mut first_boot = Vec::new();
-        for (boot, downstream) in [("first", Extent::ZERO), ("restart", Extent::through(h(0)))] {
-            let mut balances = SinkBuilder::<BlockValueBalances>::new(depth(2));
-            let mut consumer = balances.subscribe("consumer", QUEUE, downstream);
-            let writer = ValueBalanceIndexWriter::open(
-                fs.clone(),
-                Path::new("/vb"),
-                NetworkType::Regtest,
-                balances.seal(),
-            )
-            .expect("open");
+        for (boot, downstream) in [("first", None), ("restart", Some(h(0)))] {
+            let writer =
+                ValueBalanceIndexWriter::open(fs.clone(), Path::new("/vb"), NetworkType::Regtest)
+                    .expect("open");
             let durable = writer.finalized_height();
-            let mut blocks = SinkBuilder::<Block>::new(depth(2));
-            let subscription = blocks.subscribe("value_balance", QUEUE, durable);
-            let follower = IndexFollower::new(writer, subscription, batch);
-            let _downstream = blocks.subscribe("downstream", QUEUE, downstream);
+            let mut block_sink = BlockSink::new("blocks");
+            let mut fee_sink = FeeSink::new("fees");
+            let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+            let subscription = block_sink.subscribe("value_balance", QUEUE);
+            let (_tips, tips) = watch::channel(None);
+            let follower = IndexFollower::new(writer, subscription, tips, batch, depth(2))
+                .publishing(fee_sink);
+            let mut blocks = block_sink.subscribe("downstream", QUEUE);
             let finalized = follower.subscribe_finalized();
-            let mut sink = blocks.seal();
-            let running = tokio::spawn(follower.run());
+            let running = tokio::spawn(follower.run(CancellationToken::new()));
 
-            sink.set_tip(h(4)).await.expect("tip");
-            for block in &chain[u32::from(sink.next()) as usize..] {
-                sink.add(block.header().height, Arc::clone(block)).await.expect("queued");
+            // tip 4, depth 2: final through 2; from after the rearmost durable tip
+            let start = durable.min(downstream).map_or(0, |tip| u32::from(tip) as usize + 1);
+            for block in &chain[start..] {
+                let height = block.header().height;
+                let (finalized, data) = (height <= h(2), Arc::clone(block));
+                block_sink.send(Step::Apply { height, finalized, data }).await;
             }
-
-            let mut published = Vec::new();
-            for block in &chain[u32::from(downstream.next()) as usize..] {
-                published.push(next_for(&mut consumer, block).await);
-            }
-            drop(sink);
+            block_sink.shutdown();
             running.await.expect("joined").expect("clean stop");
+
+            let (mut block_steps, mut derived_steps, mut published) = (vec![], vec![], vec![]);
+            loop {
+                let step = blocks.next().await;
+                block_steps.push(label(&step));
+                if matches!(step, Step::Shutdown) {
+                    break;
+                }
+            }
+            loop {
+                let step = consumer.next().await;
+                derived_steps.push(label(&step));
+                match step {
+                    Step::Apply { data, .. } => published.push(data),
+                    Step::Shutdown => break,
+                    Step::Finalized { .. } | Step::Reset => {}
+                }
+            }
+            assert_eq!(derived_steps, block_steps, "{boot}: derived mirrors the block stream");
 
             match boot {
                 "first" => {
-                    assert_eq!(durable, Extent::ZERO, "fresh directory");
+                    assert_eq!(durable, None, "fresh directory");
+                    let expected = ["A0f", "A1f", "A2f", "A3", "A4", "S"];
+                    assert_eq!(block_steps, expected, "{boot}");
                     let published_fees: Vec<_> = published.iter().map(|b| fees(b)).collect();
                     assert_eq!(published_fees, expected_fees, "fees per tx");
                     first_boot = published;
                 }
                 _ => {
-                    assert_eq!(durable, Extent::through(h(2)), "0..=2 committed");
-                    assert_eq!(published, first_boot[1..], "replay republishes identical balances");
+                    assert_eq!(durable, Some(h(2)), "0 to 2 (both inclusive) committed");
+                    assert_eq!(block_steps, ["A1f", "A2f", "A3", "A4", "S"], "{boot}");
+                    assert_eq!(published, first_boot[1..], "replay republishes identical fees");
                 }
             }
             let finalized = *finalized.borrow();
-            assert_eq!(finalized, Extent::through(h(2)), "{boot}: final durable, nonfinalised not");
+            assert_eq!(finalized, Some(h(2)), "{boot}: final durable, non-finalized not");
         }
     }
 
-    /// Depth 2, tip 3 on fork 0 (2, 3 nonfinalised), then fork 1 wins from 2 (its 3 spends an
-    /// output only its own 2 created): the consumer, pairing late, skips fork 0's queued items and
-    /// gets fork 1's, resolved against fork 1's outputs
+    /// Depth 2, tip 3 on fork 0 (2, 3 non-finalized), then fork 1 wins from 2 (its 3 spends an
+    /// output only its own 2 created): the derived stream carries the `Reset` where the block
+    /// stream did, then fork 1's items, resolved against fork 1's outputs
     #[tokio::test]
     async fn a_reorg_drops_the_losing_branch_outputs_and_republishes_the_winner() {
-        let genesis = block(0, 0, 0, vec![tx(0x10, &[], &[100_000], [0; 4])]);
-        let one = block(1, 0, 0, vec![coinbase(0x11)]);
+        let genesis = block(0, 0, 0, vec![coinbase(0x10, 100_000)]);
+        let one = block(1, 0, 0, vec![coinbase(0x11, 625_000_000)]);
         let losing = [
-            block(2, 0, 0, vec![coinbase(0x12), tx(0x20, &[(0x10, 0)], &[99_000], [0; 4])]),
-            block(3, 0, 0, vec![coinbase(0x13), tx(0x30, &[(0x20, 0)], &[98_000], [0; 4])]),
+            block(
+                2,
+                0,
+                0,
+                vec![coinbase(0x12, 625_000_000), tx(0x20, &[(0x10, 0)], &[99_000], [0; 4])],
+            ),
+            block(
+                3,
+                0,
+                0,
+                vec![coinbase(0x13, 625_000_000), tx(0x30, &[(0x20, 0)], &[98_000], [0; 4])],
+            ),
         ];
         let winning = [
-            block(2, 1, 0, vec![coinbase(0x42), tx(0x60, &[(0x10, 0)], &[90_000], [0; 4])]),
-            block(3, 1, 1, vec![coinbase(0x43), tx(0x70, &[(0x60, 0)], &[80_000], [0; 4])]),
+            block(
+                2,
+                1,
+                0,
+                vec![coinbase(0x42, 625_000_000), tx(0x60, &[(0x10, 0)], &[90_000], [0; 4])],
+            ),
+            block(
+                3,
+                1,
+                1,
+                vec![coinbase(0x43, 625_000_000), tx(0x70, &[(0x60, 0)], &[80_000], [0; 4])],
+            ),
         ];
 
-        let mut balances = SinkBuilder::<BlockValueBalances>::new(depth(2));
-        let mut consumer = balances.subscribe("consumer", QUEUE, Extent::ZERO);
-        let writer = ValueBalanceIndexWriter::open(
-            SimFs::new(),
-            Path::new("/vb"),
-            NetworkType::Regtest,
-            balances.seal(),
-        )
-        .expect("open");
-        let mut blocks = SinkBuilder::<Block>::new(depth(2));
-        let subscription = blocks.subscribe("value_balance", QUEUE, Extent::ZERO);
-        let follower = IndexFollower::new(writer, subscription, NonZeroUsize::MIN);
-        let mut sink = blocks.seal();
-        let running = tokio::spawn(follower.run());
+        let writer =
+            ValueBalanceIndexWriter::open(SimFs::new(), Path::new("/vb"), NetworkType::Regtest)
+                .expect("open");
+        let mut block_sink = BlockSink::new("blocks");
+        let mut fee_sink = FeeSink::new("fees");
+        let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+        let subscription = block_sink.subscribe("value_balance", QUEUE);
+        let (_tips, tips) = watch::channel(None);
+        let follower = IndexFollower::new(writer, subscription, tips, NonZeroUsize::MIN, depth(2))
+            .publishing(fee_sink);
+        let running = tokio::spawn(follower.run(CancellationToken::new()));
 
-        sink.set_tip(h(3)).await.expect("tip");
+        // tip 3, depth 2: 0 and 1 final, 2 and 3 not; reset → 2 and 3 again, from fork 1
+        let apply = |block: &Arc<Block>| {
+            let height = block.header().height;
+            Step::Apply { height, finalized: height <= h(1), data: Arc::clone(block) }
+        };
         for block in [&genesis, &one].into_iter().chain(&losing) {
-            sink.add(block.header().height, Arc::clone(block)).await.expect("queued");
+            block_sink.send(apply(block)).await;
         }
-        assert_eq!(sink.reset().await.expect("reset"), h(2));
+        block_sink.send(Step::Reset).await;
         for block in &winning {
-            sink.add(block.header().height, Arc::clone(block)).await.expect("queued");
+            block_sink.send(apply(block)).await;
         }
-
-        let paired: Vec<_> = [&genesis, &one]
-            .into_iter()
-            .chain(&winning)
-            .map(|block| (u32::from(block.header().height), block))
-            .collect();
-        for (height, block) in paired {
-            let balances = next_for(&mut consumer, block).await;
-            assert_eq!(balances.hash, block.header().hash, "{height}: its own branch");
-            let expected = match height {
-                0 => vec![None],
-                1 => vec![None],
-                2 => vec![None, Some(10_000)],
-                _ => vec![None, Some(10_000)],
-            };
-            assert_eq!(fees(&balances), expected, "{height}");
-        }
-        drop(sink);
+        block_sink.shutdown();
         running.await.expect("joined").expect("clean stop");
+
+        let mut derived = Vec::new();
+        loop {
+            let step = consumer.next().await;
+            let seen = match &step {
+                Step::Apply { data, .. } => format!("{} {:?}", label(&step), fees(data)),
+                _ => label(&step),
+            };
+            derived.push(seen);
+            if matches!(step, Step::Shutdown) {
+                break;
+            }
+        }
+        assert_eq!(
+            derived,
+            [
+                "A0f [None]",
+                "A1f [None]",
+                "A2 [None, Some(1000)]",
+                "A3 [None, Some(1000)]",
+                "R",
+                "A2 [None, Some(10000)]",
+                "A3 [None, Some(10000)]",
+                "S",
+            ],
+            "losing branch, the reset where the block stream had it, then the winner's own fees"
+        );
     }
 
-    /// A spend of an outpoint never recorded (a foreign directory, a gap): fatal, both txids named
+    /// Tx 0x20 of block 0 unresolvable or consensus-invalid: fatal, named; the pipeline is
+    /// cancelled, and `Shutdown` still reaches the downstream consumer
     #[tokio::test]
-    async fn a_spend_of_an_unrecorded_output_stops_the_index() {
-        let mut balances = SinkBuilder::<BlockValueBalances>::new(depth(2));
-        let _consumer = balances.subscribe("consumer", QUEUE, Extent::ZERO);
-        let writer = ValueBalanceIndexWriter::open(
-            SimFs::new(),
-            Path::new("/vb"),
-            NetworkType::Regtest,
-            balances.seal(),
-        )
-        .expect("open");
-        let mut blocks = SinkBuilder::<Block>::new(depth(2));
-        let subscription = blocks.subscribe("value_balance", QUEUE, Extent::ZERO);
-        let follower = IndexFollower::new(writer, subscription, NonZeroUsize::MIN);
-        let mut sink = blocks.seal();
-        let running = tokio::spawn(follower.run());
-
-        sink.set_tip(h(0)).await.expect("tip");
-        let orphan = block(0, 0, 0, vec![coinbase(0x10), tx(0x20, &[(0x99, 3)], &[1], [0; 4])]);
-        sink.add(h(0), orphan).await.expect("queued");
-
-        let stopped = running.await.expect("joined");
-        let Err(FollowError::Index { index, source }) = &stopped else { panic!("{stopped:?}") };
-        let IndexWriterError::MissingPrevout { height, txid, spent, vout } = source else {
-            panic!("{source:?}")
-        };
+    async fn an_unrecorded_prevout_or_a_negative_fee_stops_the_index() {
         let id = |byte| TransactionId::from([byte; 32]);
-        assert_eq!(*index, "value_balance");
-        assert_eq!((*height, *txid, *spent, *vout), (h(0), id(0x20), id(0x99), 3));
+        let cases = [
+            // spends an outpoint never recorded (a foreign directory, a gap)
+            (
+                tx(0x20, &[(0x99, 3)], &[1], [0; 4]),
+                IndexWriterError::MissingPrevout {
+                    height: h(0),
+                    txid: id(0x20),
+                    spent: id(0x99),
+                    vout: 3,
+                },
+            ),
+            // transparent outputs > inputs
+            (
+                tx(0x20, &[(0x10, 0)], &[100_001], [0; 4]),
+                IndexWriterError::NegativeFee { height: h(0), txid: id(0x20) },
+            ),
+            // value into sapling from nothing
+            (
+                tx(0x20, &[], &[], [0, -1, 0, 0]),
+                IndexWriterError::NegativeFee { height: h(0), txid: id(0x20) },
+            ),
+        ];
+
+        for (invalid, expected) in cases {
+            let writer =
+                ValueBalanceIndexWriter::open(SimFs::new(), Path::new("/vb"), NetworkType::Regtest)
+                    .expect("open");
+            let mut block_sink = BlockSink::new("blocks");
+            let mut fee_sink = FeeSink::new("fees");
+            let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+            let subscription = block_sink.subscribe("value_balance", QUEUE);
+            let (_tips, tips) = watch::channel(None);
+            let follower =
+                IndexFollower::new(writer, subscription, tips, NonZeroUsize::MIN, depth(2))
+                    .publishing(fee_sink);
+            let shutdown = CancellationToken::new();
+            let running = tokio::spawn(follower.run(shutdown.clone()));
+
+            let data = block(0, 0, 0, vec![coinbase(0x10, 100_000), invalid]);
+            block_sink.send(Step::Apply { height: h(0), finalized: false, data }).await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), shutdown.cancelled())
+                .await
+                .expect("the failure cancels the pipeline");
+            block_sink.shutdown();
+
+            let stopped = running.await.expect("joined");
+            assert!(
+                matches!(consumer.next().await, Step::Shutdown),
+                "{expected}: nothing derived for the failed block, then Shutdown"
+            );
+            let Err(FollowError::Index { index, source }) = &stopped else { panic!("{stopped:?}") };
+            assert_eq!(*index, "value_balance");
+            assert_eq!(format!("{source:?}"), format!("{expected:?}"));
+        }
     }
 }

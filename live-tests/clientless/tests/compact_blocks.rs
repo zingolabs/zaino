@@ -7,7 +7,7 @@
 //! the composed compact blocks the harness streams back.
 //!
 //! Runs the shipped reorg depth (1000), so every regtest block is non-final and
-//! served from the indexes' pre-commit.
+//! served from the indexes' non-finalized state.
 //!
 //! Scope is the served slice only — heights and compact-block shape. Treestate,
 //! transactions, address queries and per-tx ironwood actions are out of the

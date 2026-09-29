@@ -17,11 +17,11 @@ use tokio::{sync::watch, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use zaino_chainview::{EndpointSet, QuorumTip};
 use zaino_primitives::types::{
-    Block, BlockHash, BlockHeader, BlockRef, Extent, Height, ReorgDepth, Transaction,
+    Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
 };
 use zaino_source::{mock::MockChain, BlockFetchPool, FetchRoute};
 use zaino_sync::{
-    FollowError, IndexFollower, IndexWriter, ProduceError, Producer, SinkBuilder, Weight,
+    BlockSink, FollowError, IndexFollower, IndexWriter, ProduceError, Producer, Weight,
 };
 
 const DEPTH: u32 = 4;
@@ -34,7 +34,7 @@ struct Chain {
     highest: usize,
 }
 
-/// What one index holds: committed hashes, and applied ones (committed prefix + pre-commit)
+/// What one index holds: committed hashes, and applied ones (committed prefix + non-finalized)
 #[derive(Debug, Default)]
 struct Held {
     durable: Vec<BlockHash>,
@@ -54,28 +54,33 @@ impl Recorder {
     }
 }
 
+/// Last height of `hashes` held from genesis, inclusive (`None` = none held)
+fn tip_of(hashes: &[BlockHash]) -> Option<Height> {
+    let last = u32::try_from(hashes.len()).expect("small chain").checked_sub(1)?;
+    Some(Height::try_from(last).expect("small chain"))
+}
+
 impl IndexWriter for Recorder {
     type Input = Block;
-    type View = Extent;
+    type View = Option<Height>;
     type Error = std::convert::Infallible;
     type Done = Vec<BlockHash>;
     const NAME: &'static str = "recorder";
 
-    fn finalized_height(&self) -> Extent {
-        Extent::counted(self.held().durable.len() as u64)
+    fn finalized_tip(&self) -> Option<BlockRef> {
+        let held = self.held();
+        let hash = held.durable.last().copied()?;
+        Some(BlockRef { hash, height: tip_of(&held.durable)? })
     }
-    fn finalized_tip(&self) -> Option<BlockHash> {
-        self.held().durable.last().copied()
+    fn applied_height(&self) -> Option<Height> {
+        tip_of(&self.held().applied)
     }
-    fn applied_height(&self) -> Extent {
-        Extent::counted(self.held().applied.len() as u64)
-    }
-    fn view(&self) -> Extent {
+    fn view(&self) -> Option<Height> {
         self.applied_height()
     }
     async fn apply(&mut self, block: &Arc<Block>) -> Result<(), Self::Error> {
         let mut held = self.held();
-        assert_eq!(block.header().height, Extent::counted(held.applied.len() as u64).next());
+        assert_eq!(block.header().height.checked_sub(1), tip_of(&held.applied));
         held.applied.push(block.header().hash);
         Ok(())
     }
@@ -275,13 +280,17 @@ struct Running {
     followers: Vec<JoinHandle<Result<(), FollowError<std::convert::Infallible>>>>,
 }
 
-fn quorum(best: &[BlockHash]) -> Option<QuorumTip> {
+/// `best`'s tip, agreed by the two current validators (the lagging one serves the last chain)
+fn quorum(validators: &Validators, best: &[BlockHash]) -> Option<QuorumTip> {
+    let current = |mock: &Arc<MockChain>| !Arc::ptr_eq(mock, &validators.lagging);
     Some(QuorumTip {
         block: BlockRef {
             hash: *best.last().expect("non-empty"),
             height: Height::try_from(best.len() as u32 - 1).expect("h"),
         },
-        agreed_by: EndpointSet::default(),
+        agreed_by: EndpointSet::at(
+            (0..).zip(&validators.order).filter(|(_, mock)| current(mock)).map(|(at, _)| at),
+        ),
     })
 }
 
@@ -293,25 +302,29 @@ fn start(
     concurrency: usize,
 ) -> Running {
     let weight = block(0, hash(0, 0), hash(0, 0)).weight();
-    let mut sinks = SinkBuilder::new(ReorgDepth::new(NonZeroU32::new(DEPTH).expect("depth")));
-    let mut spawned = Vec::new();
+    let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("depth"));
+    let mut block_sink = BlockSink::new("blocks");
+    let (tips, tips_rx) = watch::channel(quorum(validators, &chain.lock().expect("lock").best));
+    let (mut spawned, mut durable) = (Vec::new(), Vec::new());
     for (held, follower) in held.iter().zip(followers) {
-        let durable = Extent::counted(held.lock().expect("lock").durable.len() as u64);
+        durable.push(tip_of(&held.lock().expect("lock").durable));
         let budget = NonZeroUsize::new(follower.budget * (weight + 64)).expect("> 0");
-        let subscription = sinks.subscribe("recorder", budget, durable);
+        let subscription = block_sink.subscribe("recorder", budget);
         let recorder = Recorder { held: Arc::clone(held), chain: Arc::clone(chain) };
         let batch = NonZeroUsize::new(follower.batch * weight).expect("> 0");
-        spawned.push(IndexFollower::new(recorder, subscription, batch));
+        let follower = IndexFollower::new(recorder, subscription, tips_rx.clone(), batch, depth);
+        spawned.push(follower);
     }
-    let (tips, tips_rx) = watch::channel(quorum(&chain.lock().expect("lock").best));
     let pool = BlockFetchPool::new(
         validators.order.clone(),
         FetchRoute::Spread,
         NonZeroUsize::new(concurrency).expect("1..=4"),
     );
     let cancel = CancellationToken::new();
-    let producer = tokio::spawn(Producer::new(sinks.seal(), pool, tips_rx).run(cancel.clone()));
-    let followers = spawned.into_iter().map(|follower| tokio::spawn(follower.run())).collect();
+    let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
+    let producer = tokio::spawn(producer.run(cancel.clone()));
+    let followers =
+        spawned.into_iter().map(|follower| tokio::spawn(follower.run(cancel.clone()))).collect();
     Running { tips, cancel, producer, followers }
 }
 
@@ -386,7 +399,7 @@ async fn run(moves: Vec<Move>, followers: Vec<Follower>, lagging_at: usize, conc
         match change {
             Move::Chain { change, yields } => {
                 validators.apply(&chain, change);
-                running.tips.send_replace(quorum(&chain.lock().expect("lock").best));
+                running.tips.send_replace(quorum(&validators, &chain.lock().expect("lock").best));
                 match yields {
                     None => settle(&mut running, &chain, &held, &followers, &context).await,
                     Some(count) => {

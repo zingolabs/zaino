@@ -106,7 +106,8 @@ where
     }
 }
 
-/// `-22` unparseable, `-25..=-27` declined: answers about the transaction, reason kept
+/// `-22` unparseable, `-25` to `-27` (both inclusive) declined: answers about the transaction,
+/// reason kept
 fn submission_rejection(error: &NonDomainError) -> Option<SendRawTransactionError> {
     match error.mode {
         FailureMode::RpcError(-22) => {

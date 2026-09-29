@@ -22,11 +22,8 @@ const REPLACEMENT: u32 = 6;
 async fn address_index_moves_orphaned_coinbase_to_the_winning_miner() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH),
-    );
+    let indexer =
+        env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH));
     env.build().await?;
 
     let (warm, _) = validator.tip().await?;

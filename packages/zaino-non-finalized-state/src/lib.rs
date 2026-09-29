@@ -59,11 +59,11 @@ impl ChainHead {
         self.front().header().height
     }
 
-    /// Canonical blocks `from..=tip`, ascending (`from = tip + 1` = none)
-    pub fn best_chain_from(&self, from: Height) -> impl Iterator<Item = &Arc<Block>> {
+    /// Canonical blocks `start` to the tip, both inclusive, ascending (`start` = tip + 1 → none)
+    pub fn best_chain_from(&self, start: Height) -> impl Iterator<Item = &Arc<Block>> {
         let end = self.tip().height.checked_add(1).expect("tip below the height maximum");
-        assert!(from <= end, "{from:?} past the window tip + 1 ({end:?})");
-        self.window.range(self.offset(from)..)
+        assert!(start <= end, "{start:?} past the window tip + 1 ({end:?})");
+        self.window.range(self.offset(start)..)
     }
 
     /// Follows the quorum tip; `tip` at most `depth` above ours (the producer bulk-fetches wider
@@ -102,7 +102,8 @@ impl ChainHead {
         Ok(outcome)
     }
 
-    /// Fast path: `ours + 1 ..= tip` by height, concurrently; `None` = does not link (a reorg)
+    /// Fast path: `ours + 1` to `tip`, both inclusive, by height, concurrently; `None` = does not
+    /// link (a reorg)
     async fn extension<S>(
         &self,
         tip: BlockRef,
@@ -231,7 +232,8 @@ mod tests {
 
     use super::*;
 
-    /// Depth 3 over two validators, `a` on branch A (0..=6), `b` forking after A4 (B5..=B7), `c`
+    /// Depth 3 over two validators, `a` on branch A (0 to 6, both inclusive), `b` forking after A4
+    /// (B5 to B7, both inclusive), `c`
     /// forking after A2: extension (incl. a spread fetch that straddles branches), a reorg up, a
     /// reorg back down that keeps the floor, retreats onto and below it, and a fork below the window
     #[tokio::test]
@@ -278,8 +280,8 @@ mod tests {
             height: block.header().height,
         };
         let height = |h: u32| Height::try_from(h).expect("h");
-        let chain = |head: &ChainHead, from: u32| -> Vec<u8> {
-            head.best_chain_from(height(from))
+        let chain = |head: &ChainHead, start: u32| -> Vec<u8> {
+            head.best_chain_from(height(start))
                 .map(|block| <[u8; 32]>::from(block.header().hash)[0])
                 .collect()
         };

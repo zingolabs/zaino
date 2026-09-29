@@ -2,7 +2,7 @@
 //!
 //! - scan `receives`, then one batched `spent` lookup over every outpoint (unspent = a miss)
 //! - synchronous: mmapped pages and segment walks, so a transport runs these off its async workers
-//! - nonfinalised rows reach the tip (a synced wallet's `tip - 1000` queries answer)
+//! - non-finalized rows reach the tip (a synced wallet's `tip - 1000` queries answer)
 
 use std::num::NonZeroUsize;
 
@@ -81,13 +81,13 @@ impl TransparentAddressService {
         self.network
     }
 
-    /// `GetAddressUtxos`: unspent receives at or above `from`, oldest first
+    /// `GetAddressUtxos`: unspent receives from height `start` (inclusive) to the tip, oldest first
     pub fn utxos(
         &self,
         address: &TransparentAddress,
-        from: Height,
+        start: Height,
     ) -> Result<Vec<AddressUtxo>, ServeError> {
-        let mut utxos = self.utxos_of(std::slice::from_ref(address), from)?;
+        let mut utxos = self.utxos_of(std::slice::from_ref(address), start)?;
         Ok(utxos.pop().expect("one list per address"))
     }
 
@@ -96,12 +96,12 @@ impl TransparentAddressService {
     pub fn utxos_of(
         &self,
         addresses: &[TransparentAddress],
-        from: Height,
+        start: Height,
     ) -> Result<Vec<Vec<AddressUtxo>>, ServeError> {
         let keys: Vec<AddressKey> = addresses.iter().map(AddressKey::from).collect();
         let unspent = self
             .pin()?
-            .unspent(&keys, u32::from(from), self.max_rows.get())
+            .unspent(&keys, u32::from(start), self.max_rows.get())
             .ok_or_else(|| self.too_many())?;
         Ok(unspent
             .into_iter()
@@ -147,19 +147,20 @@ impl TransparentAddressService {
             .collect()
     }
 
-    /// `GetTaddressTransactions`: txs in `[from, to]` paying the address or spending from it
+    /// `GetTaddressTransactions`: txs from height `start` to `end`, both inclusive, paying the
+    /// address or spending from it
     ///
     /// - scanned over all of history, not the range (an in-range spend consumes an output received
     ///   at any earlier height; the outpoint = all the block carried)
     pub fn transactions(
         &self,
         address: &TransparentAddress,
-        from: Height,
-        to: Height,
+        start: Height,
+        end: Height,
     ) -> Result<Vec<TransactionRef>, ServeError> {
-        assert!(from <= to, "range {from}..={to} reversed (ordered at the router)");
+        assert!(start <= end, "range {start}..={end} reversed (ordered at the router)");
         let pinned = self.pin()?;
-        let (from, to) = (u32::from(from), u32::from(to));
+        let (start, end) = (u32::from(start), u32::from(end));
 
         let received = pinned
             .receives(address.into(), 0, self.max_rows.get())
@@ -167,14 +168,14 @@ impl TransparentAddressService {
         let keys: Vec<_> = received.iter().map(|row| row.key).collect();
         let mut found = Vec::new();
         for (row, spend) in received.iter().zip(pinned.spends_of(&keys)) {
-            if (from..=to).contains(&row.key.height) {
+            if (start..=end).contains(&row.key.height) {
                 found.push(TransactionRef { height: row.key.height, txid: row.key.txid });
             }
 
             let Some(spend) = spend else {
                 continue;
             };
-            if (from..=to).contains(&spend.height) {
+            if (start..=end).contains(&spend.height) {
                 found.push(TransactionRef { height: spend.height, txid: spend.spender });
             }
         }
@@ -230,7 +231,7 @@ mod tests {
             zcash_protocol::consensus::NetworkType::Regtest,
         );
 
-        // unsynced: every method refuses alike, none naming a height or an extent
+        // unsynced: every method refuses alike, none naming a height or a tip
         assert_eq!(service.balance(&address), Err(ServeError::Syncing));
         assert_eq!(service.utxos(&address, h(0)), Err(ServeError::Syncing));
         assert_eq!(service.transactions(&address, h(0), h(10)), Err(ServeError::Syncing));
@@ -251,7 +252,7 @@ mod tests {
             };
             let transactions = vec![Transaction {
                 txid: TransactionId::from([txid; 32]),
-                transparent: TransparentData { inputs: Vec::new(), outputs },
+                transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
                 sprout: Default::default(),
                 sapling: Default::default(),
                 orchard: Default::default(),
@@ -274,9 +275,13 @@ mod tests {
         view.store(Arc::new(writer.view()));
         follower.send(true).expect("service holds the receiver");
 
-        // applied, uncommitted: nonfinalised served (same answer either side of a commit)
+        // applied, uncommitted: non-finalized served (same answer either side of a commit)
         let paid = Zatoshis::new(42).expect("in supply");
-        assert_eq!(service.balance(&address), Ok(paid), "nonfinalised rows = answers, not a batch");
+        assert_eq!(
+            service.balance(&address),
+            Ok(paid),
+            "non-finalized rows = answers, not a batch"
+        );
 
         zaino_sync::finalize_now(&mut writer, &blocks).await.expect("finalize");
         view.store(Arc::new(writer.view()));
@@ -317,7 +322,8 @@ mod tests {
             zcash_protocol::consensus::NetworkType::Regtest,
         )
         .expect("open");
-        // heights 0..=2 durable, 3 nonfinalised: `first` paid at 1, 2 and 3, `second` at 2
+        // heights 0 to 2 (both inclusive) durable, 3 non-finalized: `first` paid at 1, 2 and 3,
+        // `second` at 2
         let mut blocks = Vec::new();
         for height in 0..4u32 {
             let outputs = match height {
@@ -334,7 +340,7 @@ mod tests {
                 ),
                 vec![Transaction {
                     txid: TransactionId::from([0x70 + height as u8; 32]),
-                    transparent: TransparentData { inputs: Vec::new(), outputs },
+                    transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
                     sprout: Default::default(),
                     sapling: Default::default(),
                     orchard: Default::default(),
@@ -354,7 +360,7 @@ mod tests {
         let over = |rows: usize| Some(ServeError::TooManyRows { limit: rows });
         let both = [first, second];
 
-        // `first` alone = 3 rows (2 durable + 1 nonfinalised); both = 4
+        // `first` alone = 3 rows (2 durable + 1 non-finalized); both = 4
         let at = budget(3);
         assert_eq!(at.balance(&first), Ok(Zatoshis::new(30).expect("in supply")));
         assert_eq!(at.utxos(&first, h(0)).map(|rows| rows.len()), Ok(3));

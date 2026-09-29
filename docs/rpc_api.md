@@ -83,5 +83,6 @@ and pruned on read, so any requested subset is answerable.
   [client-requirements.md](./client-requirements.md)).
 - `GetTransaction` answers only `TxFilter`'s `hash` arm; the `(block, index)`
   positional arm is `INVALID_ARGUMENT`.
-- `CompactTx.fee` is unset, as in lightwalletd — computing it needs the values
-  of outputs spent in prior blocks.
+- `CompactTx.fee` is filled, unlike lightwalletd: the value-balance index
+  resolves the values of outputs spent in prior blocks. It is 0 for a coinbase
+  and for a fee of 2^32 zatoshis or more ([design/boundaries.md](./design/boundaries.md)).

@@ -23,7 +23,6 @@ pub use queries::{
     GetRawMempoolTransaction, GetRawMempoolTransactionError, GetTransaction, GetTransactionError,
     MempoolListed, SendRawTransaction, SendRawTransactionError, SourceTip, TransactionResponse,
 };
-#[cfg(feature = "prometheus")]
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{ProbeError, RpcClient, RpcClientConfig, RpcError};
 

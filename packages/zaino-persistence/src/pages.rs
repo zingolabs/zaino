@@ -22,7 +22,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use zaino_primitives::types::Extent;
+use zaino_primitives::types::Height;
 
 use crate::{
     fs::{Access, FileHandle, Fs, Mapping},
@@ -362,11 +362,11 @@ impl Pages {
     }
 }
 
-/// What an index directory's manifest commits: heights, and every file it seals (paths relative
-/// to the directory)
+/// What an index directory's manifest commits: its tip (last height, inclusive; `None` = empty),
+/// and every file it seals (paths relative to the directory)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommittedFiles {
-    pub heights: Extent,
+    pub tip: Option<Height>,
     pub files: Vec<(String, Sealed)>,
 }
 

@@ -127,6 +127,10 @@ moves.
 count, so it answers *which* nodes: propagation (`1/5 → 4/5`), which no single
 node can report. Nothing streams it yet.
 
+`QuorumTip::agreed_by` is the same bitset. `positions()` yields each member's
+position in the configured list (the same order as the fetch pool's sources),
+and `EndpointSet::at(positions)` builds one from positions.
+
 ## `GetMempoolStream`: snapshot, then tail, ending on a block
 
 ```rust

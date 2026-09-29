@@ -1,7 +1,6 @@
 # Container image
 
-Built from the repo-root `Dockerfile` (`--build-arg CARGO_FEATURES=prometheus`
-for the metrics endpoint). The image:
+Built from the repo-root `Dockerfile`. The image:
 
 - runs `zainod start` as `container_user` (UID/GID 1000)
 - reads its config from `/app/config/zainod.toml`, the same file and schema as

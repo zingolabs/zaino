@@ -42,11 +42,8 @@ async fn reorg_across_nu6_3_activation_matches_the_validator(
         .build();
     let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH),
-    );
+    let indexer =
+        env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH));
     env.build().await?;
 
     let (warm, _) = validator.tip().await?;

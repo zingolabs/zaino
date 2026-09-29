@@ -1,7 +1,7 @@
 [[changes]]
 crate = "zainod"
 kind = "feature"
-description = "The admin listener (`metrics_endpoint`, feature `prometheus`) runs on its own thread and runtime and serves `/livez` beside `/metrics`; `/livez` fails once the serving runtime has not republished its heartbeat for 30s."
+description = "The admin listener (`metrics_endpoint`) runs on its own thread and runtime and serves `/livez` beside `/metrics`; `/livez` fails once the serving runtime has not republished its heartbeat for 30s."
 
 [[changes]]
 crate = "zainod"
@@ -11,7 +11,7 @@ description = "`/metrics` carries process metrics (`process_cpu_seconds_total`, 
 [[changes]]
 crate = "zainod"
 kind = "fix"
-description = "A `metrics_endpoint` configured on a binary built without `prometheus` now logs a warning instead of being silently ignored, and a non-private `metrics_endpoint` logs a warning that the listener is unauthenticated."
+description = "A non-private `metrics_endpoint` logs a warning that the listener is unauthenticated."
 
 [[changes]]
 crate = "zainod"

@@ -41,7 +41,7 @@ body:
       description: Which modules, files, or components are affected?
       placeholder: |
         - `packages/zaino-sync/src/...`
-        - `zaino_chain_head::...`
+        - `zaino_non_finalized_state::...`
     validations:
       required: true
 

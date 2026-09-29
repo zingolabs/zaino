@@ -21,7 +21,6 @@ mod transport;
 mod validator;
 
 pub use client::TrustedProxies;
-#[cfg(feature = "prometheus")]
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use grpc::GrpcService;
 pub use limits::{GrpcLimits, ReadLanes};

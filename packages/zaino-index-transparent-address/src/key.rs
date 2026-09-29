@@ -148,7 +148,7 @@ impl Record for ReceiveRow {
     }
 }
 
-/// What spent an outpoint (the nonfinalised map's value, a `spent` row's payload)
+/// What spent an outpoint (the non-finalized map's value, a `spent` row's payload)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Spend {
     pub(crate) height: u32,

@@ -136,9 +136,9 @@ fn project_tx(tx: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<()> {
     Some(())
 }
 
-/// One whole field (key + value) copied verbatim
-fn copy_field(bytes: &[u8], from: usize, to: usize, out: &mut Vec<u8>) -> Option<()> {
-    out.extend_from_slice(bytes.get(from..to)?);
+/// One whole field (key + value) copied verbatim: bytes `start` inclusive to `end` exclusive
+fn copy_field(bytes: &[u8], start: usize, end: usize, out: &mut Vec<u8>) -> Option<()> {
+    out.extend_from_slice(bytes.get(start..end)?);
     Some(())
 }
 

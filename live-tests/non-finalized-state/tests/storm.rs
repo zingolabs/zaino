@@ -22,11 +22,8 @@ const STORM: [(u32, u32); 8] = [(3, 4), (2, 3), (4, 2), (1, 2), (5, 6), (2, 3), 
 async fn reorg_storm_during_catch_up_converges_on_the_validators_chain() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
-    let indexer = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile", features = ["prometheus"])
-            .regtest()
-            .finalised_depth(DEPTH),
-    );
+    let indexer =
+        env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest().finalised_depth(DEPTH));
     env.build().await?;
 
     let (warm, _) = validator.tip().await?;

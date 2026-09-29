@@ -74,8 +74,10 @@ fn describe_zainod() {
     );
 }
 
-/// Mirrors one follower's durable extent + sync gate, labelled `S::NAME`
-pub(crate) fn track_index<S: zaino_sync::IndexWriter>(follower: &zaino_sync::IndexFollower<S>) {
+/// Mirrors one follower's durable tip + sync gate, labelled `S::NAME`
+pub(crate) fn track_index<S: zaino_sync::IndexWriter, F, D>(
+    follower: &zaino_sync::IndexFollower<S, F, D>,
+) {
     let index = S::NAME;
     let mut finalized = follower.subscribe_finalized();
     let mut synced = follower.subscribe_synced();
@@ -99,9 +101,9 @@ pub(crate) fn track_index<S: zaino_sync::IndexWriter>(follower: &zaino_sync::Ind
     });
 }
 
-/// Gauge = highest durable height (unset while empty)
-fn publish_finalized(index: &'static str, durable: zaino_primitives::types::Extent) {
-    if let Some(height) = durable.last() {
+/// Gauge = durable tip height, inclusive (unset while empty)
+fn publish_finalized(index: &'static str, durable: Option<zaino_primitives::types::Height>) {
+    if let Some(height) = durable {
         metrics::gauge!(names::INDEX_FINALIZED_HEIGHT, "index" => index)
             .set(f64::from(u32::from(height)));
     }

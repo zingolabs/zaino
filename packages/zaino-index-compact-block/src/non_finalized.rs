@@ -1,4 +1,4 @@
-//! Blocks applied above the finalised tip: the nonfinalised tier
+//! Blocks applied above the finalised tip: the non-finalized tier
 //!
 //! - holds what is **applied**, never what is finalised: [`apply`](NonFinalizedState::apply)
 //!   extends it, [`finalize_through`](NonFinalizedState::finalize_through) hands its root to the
@@ -73,7 +73,7 @@ impl NonFinalizedState {
     /// - `record` = this index's own encoding: a projection failing = an encoder bug
     pub(crate) fn apply(&mut self, height: Height, hash: [u8; HASH], record: Bytes) {
         if let Some(tip) = self.tip_height() {
-            assert_eq!(height, tip.next(), "nonfinalised apply out of order");
+            assert_eq!(height, tip.next(), "non-finalized apply out of order");
         }
         let shielded = project(&record, Pools::default())
             .expect("a record this index just encoded walks its own framing");
@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "nonfinalised apply out of order")]
+    #[should_panic(expected = "non-finalized apply out of order")]
     fn a_gap_panics() {
         let mut state = NonFinalizedState::default();
         let record = |height| {

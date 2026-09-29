@@ -14,8 +14,6 @@ description = "The storage core every Zaino index shares: the file layer, manife
 [features]
 # `fs::SimFs`: crash-state enumeration for index tests
 testing = []
-# LSM metrics (segments per tier, merge throughput and latency, write stalls)
-prometheus = ["dep:metrics"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -28,7 +26,7 @@ crc32fast.workspace = true
 zcash_protocol.workspace = true
 xorf.workspace = true
 rayon.workspace = true
-metrics = { workspace = true, optional = true }
+metrics = { workspace = true }
 tracing.workspace = true
 
 [dev-dependencies]

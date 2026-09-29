@@ -12,8 +12,8 @@ use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService
 
 let store = BlockHashStore::open(fs, &path, network)?;
 let writer = BlockHashIndexWriter::new(store);
-let subscription = blocks.subscribe(BlockHashIndexWriter::NAME, queue, writer.finalized_height());
-let follower = IndexFollower::new(writer, subscription, batch_bytes);
+let subscription = block_sink.subscribe(BlockHashIndexWriter::NAME, queue);
+let follower = IndexFollower::new(writer, subscription, tips, batch_bytes, depth);
 let service = BlockHashService::new(follower.served());
 router = router.with_block_hash(service);
 ```
@@ -38,7 +38,7 @@ router = router.with_block_hash(service);
 - There is no height → hash lookup. Heights are every index's native key, and
   the hash at a height comes from the answering index's own records.
 - `ReadView` (pinned once per request) answers `height_of_hash(&hash)`. It
-  checks the unfinalised map first, then the committed segments.
+  checks the non-finalized map first, then the committed segments.
 - A test with no follower serves the committed segments alone with
   `BlockHashService::new(Served::fixed(store.reader().pin()))`.
 

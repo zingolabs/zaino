@@ -26,12 +26,12 @@
 //! # Lookup ([`TransparentAddressService::utxos`])
 //!
 //! ```text
-//! address ──▶ receives:  nonfinalised rows in [from, tip]
-//!                        + each segment: fences → block of (address, from) → walk rows while
+//! address ──▶ receives:  non-finalized rows, start to tip (both inclusive)
+//!                        + each segment: fences → block of (address, start) → walk rows while
 //!                          the address matches                    (one contiguous range per segment)
 //!                           │ merge, sort, dedupe by key
 //!                           ▼
-//! each received outpoint ──▶ spent:  nonfinalised map ──hit──▶ spent
+//! each received outpoint ──▶ spent:  non-finalized map ──hit──▶ spent
 //!                                       │ miss
 //!                                       ▼
 //!                                    each segment: filter ──"absent"──▶ next segment

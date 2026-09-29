@@ -86,7 +86,8 @@ fn verify(config: &DaemonConfig) -> Result<Verification, VerifyError> {
                     .map(|(path, sealed)| scrub(&index.path, path, *sealed))
                     .collect::<io::Result<_>>()
                     .map_err(failed)?;
-                Ok::<_, VerifyError>(IndexReport { heights: u64::from(committed.heights), files })
+                let heights = committed.tip.map_or(0, |tip| u64::from(tip) + 1);
+                Ok::<_, VerifyError>(IndexReport { heights, files })
             })
             .transpose()
     };
@@ -164,7 +165,7 @@ impl Verification {
 mod tests {
     use super::*;
 
-    use std::{num::NonZeroUsize, sync::Arc};
+    use std::sync::Arc;
 
     use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockStore};
     use zaino_index_transparent_address::TransparentAddressIndexWriter;
@@ -173,10 +174,10 @@ mod tests {
     use zaino_internal_value_balance::ValueBalanceIndexWriter;
     use zaino_persistence::fs::RealFs;
     use zaino_primitives::types::{
-        Block, BlockHeader, CompactCiphertext, Extent, ReorgDepth, SaplingData, SaplingOutput,
-        Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
+        Block, BlockHeader, CompactCiphertext, SaplingData, SaplingOutput, Script, Transaction,
+        TransactionId, TransparentData, TransparentOutput, Zatoshis,
     };
-    use zaino_sync::{IndexWriter as _, ValueBalanceSinkBuilder};
+    use zaino_sync::{BlockWithFees, Derives as _, IndexWriter as _};
 
     /// All five indexes from one chain, scrubbed through the daemon's own config: clean = 0, a
     /// flipped committed byte = its page named + 1, a lost file = 1, disabled = skipped, no
@@ -198,6 +199,7 @@ mod tests {
                     vec![Transaction {
                         txid: TransactionId::from([0xa0 + height as u8; 32]),
                         transparent: TransparentData {
+                            coinbase: true,
                             inputs: Vec::new(),
                             outputs: vec![TransparentOutput {
                                 value: Zatoshis::new(500).expect("in supply"),
@@ -230,24 +232,22 @@ mod tests {
             root.path().join("ta"),
         );
         let (fs, net) = (RealFs::shared(), NetworkType::Main);
-        let mut balances = ValueBalanceSinkBuilder::new(ReorgDepth::CONSENSUS);
-        let for_compact = balances.subscribe(
-            "compact_block",
-            NonZeroUsize::new(1 << 20).expect("non-zero"),
-            Extent::ZERO,
-        );
         let mut compact = CompactBlockIndexWriter::new(
             CompactBlockStore::open(fs.clone(), &cb, net).expect("cb"),
-            for_compact,
         );
-        let mut fees = ValueBalanceIndexWriter::open(fs.clone(), &vb, net, balances.seal())
-            .expect("vb writer");
+        let mut fees = ValueBalanceIndexWriter::open(fs.clone(), &vb, net).expect("vb writer");
+        let mut paired = Vec::new();
         for block in &blocks {
             fees.deliver(std::slice::from_ref(block)).await.expect("vb deliver");
-            compact.deliver(std::slice::from_ref(block)).await.expect("cb deliver");
+            let [block_fees] = <[_; 1]>::try_from(
+                fees.derive(std::slice::from_ref(block)).await.expect("vb derive"),
+            )
+            .expect("one item per block");
+            let (upstream, derived) = (Arc::clone(block), Arc::new(block_fees));
+            paired.push(Arc::new(BlockWithFees { upstream, derived }));
         }
         zaino_sync::finalize_now(&mut fees, &blocks).await.expect("vb finalize");
-        zaino_sync::finalize_now(&mut compact, &blocks).await.expect("cb finalize");
+        zaino_sync::finalize_now(&mut compact, &paired).await.expect("cb finalize");
         let mut hashes =
             BlockHashIndexWriter::new(BlockHashStore::open(fs.clone(), &bh, net).expect("bh"));
         zaino_sync::finalize_now(&mut hashes, &blocks).await.expect("bh finalize");

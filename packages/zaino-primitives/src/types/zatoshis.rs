@@ -1,7 +1,7 @@
 //! Zcash monetary quantities in zatoshis
 //!
-//! - [`Zatoshis`]: an amount, `0 ..= supply`
-//! - [`SignedZatoshis`]: a movement or difference, `-supply ..= supply`
+//! - [`Zatoshis`]: an amount, `0` to `supply`, both inclusive
+//! - [`SignedZatoshis`]: a movement or difference, `-supply` to `supply`, both inclusive
 
 mod amount;
 mod signed;
