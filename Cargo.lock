@@ -3812,7 +3812,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-non-finalized-state"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures",
  "proptest",
@@ -3845,14 +3845,14 @@ dependencies = [
 
 [[package]]
 name = "zaino-primitives"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "zaino-proto"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "prost",
  "tonic",
@@ -3863,7 +3863,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "const-hex",
  "futures",
@@ -3906,7 +3906,7 @@ dependencies = [
 
 [[package]]
 name = "zainod"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "clap",
  "config",

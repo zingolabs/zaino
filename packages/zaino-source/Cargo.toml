@@ -1,7 +1,7 @@
 [package]
 name = "zaino-source"
 description = "Zaino's validator source: one driven-port trait per chain question, answered over the validator's JSON-RPC."
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true

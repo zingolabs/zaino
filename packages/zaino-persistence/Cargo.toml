@@ -17,7 +17,7 @@ testing = []
 
 [dependencies]
 thiserror = { workspace = true }
-zaino-primitives = { version = "0.2.0", path = "../zaino-primitives" }
+zaino-primitives = { version = "0.3.0", path = "../zaino-primitives" }
 serde = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 memmap2 = { workspace = true }
