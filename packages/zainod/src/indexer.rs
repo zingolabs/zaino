@@ -19,7 +19,7 @@ use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_runtime::config::IndexedDeploymentConfig;
 use zaino_runtime::deployment::{LightWalletPassthrough, LightWalletSource};
 use zaino_runtime::{boot_indexed, Orchestra};
-use zaino_source::{RetryPolicy, ValidatorClient};
+use zaino_source::{QuorumBuildError, RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
@@ -84,33 +84,40 @@ pub async fn spawn_indexer(
             select_deployment(client_over(Arc::new(validator)), config).await
         }
         // Off-node: reach the validator over JSON-RPC alone, no co-located state
-        // DB. The FS indexer sources compact blocks over RPC and the chain-head
-        // polls the tip over the same transport, so this follows the chain — it is
+        // DB. The FS indexer sources blocks over RPC and the chain-head polls
+        // the tip over the same transport, so this follows the chain — it is
         // not catch-up-only. It trades the state DB's disk-speed reads for
         // per-block RPC round-trips.
-        SourceMode::Rpc {
-            jsonrpc_address,
-            cookie_path,
-            user,
-            password,
-        } => {
-            info!(rpc = %jsonrpc_address, "connecting validator JSON-RPC (Rpc)");
-            let rpc = ZebraRpcAdapter::new(rpc_client_from_config(
-                jsonrpc_address,
-                cookie_path.as_deref(),
-                user.as_deref(),
-                password.as_deref(),
-            )?);
-            let validator = ZebraValidator::rpc_only(rpc)
-                .with_tip_polling(
-                    tip_probe(
-                        jsonrpc_address,
-                        cookie_path.as_deref(),
-                        user.as_deref(),
-                        password.as_deref(),
-                    )?,
-                    TIP_POLL_INTERVAL,
-                )
+        //
+        // The validator is a quorum: one endpoint by default, several when
+        // configured. Either way one source is built here and one client is
+        // handed up; how many validators stand behind it is the source's own
+        // business.
+        SourceMode::Rpc { .. } => {
+            let validators = config.source.rpc_validators().ok_or_else(|| {
+                IndexerError::ConfigError("an Rpc source names its validators".into())
+            })?;
+            info!(
+                members = validators.members.len(),
+                quorum = validators.quorum().get(),
+                "connecting validator JSON-RPC (Rpc)"
+            );
+            let validator = validators
+                .build(|endpoint| {
+                    Ok::<_, IndexerError>(ZebraValidator::rpc_only(ZebraRpcAdapter::new(
+                        rpc_client_from_config(
+                            &endpoint.jsonrpc_address,
+                            endpoint.cookie_path.as_deref(),
+                            endpoint.user.as_deref(),
+                            endpoint.password.as_deref(),
+                        )?,
+                    )))
+                })
+                .map_err(|error| match error {
+                    QuorumBuildError::Config(config) => IndexerError::ValidatorQuorum(config),
+                    QuorumBuildError::Connect(connect) => connect,
+                })?
+                .with_tip_polling(TIP_POLL_INTERVAL)
                 .await
                 .map_err(IndexerError::TipPolling)?;
             select_deployment(client_over(Arc::new(validator)), config).await
@@ -121,16 +128,16 @@ pub async fn spawn_indexer(
 /// How often the validator is asked for its tip on behalf of the consumers
 /// that follow it through a subscription — the finalised indexer, whose
 /// steady-state loop extends the index on each observed change. Neither
-/// Zebra transport pushes tip changes, so the composite synthesises the
+/// Zebra transport pushes tip changes, so the source synthesises the
 /// subscription by polling; without it the indexer parks at its caught-up
 /// height for the life of the process. Blocks arrive about every 75 seconds,
 /// so a two-second cadence keeps the finalised boundary within a poll of
 /// where it should be at a negligible cost.
 const TIP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// A second JSON-RPC handle onto the same validator, for the tip poller: the
-/// composite takes it separately so the poller never contends with the
-/// composite's own request path.
+/// A second JSON-RPC handle onto the same validator, for the Direct source's
+/// tip poller: the composite takes it separately so the poller never contends
+/// with the composite's own request path.
 fn tip_probe(
     jsonrpc_address: &str,
     cookie_path: Option<&Path>,

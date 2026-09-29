@@ -20,6 +20,10 @@ pub enum IndexerError {
     /// consumer could follow the chain.
     #[error("starting the validator tip poller failed")]
     TipPolling(#[source] zaino_source::QueryError<zaino_source::GetChainTipError>),
+    /// The validator quorum section names no members, or more agreeing
+    /// members than it has.
+    #[error("validator quorum configuration")]
+    ValidatorQuorum(#[source] zaino_source::QuorumConfigError),
     /// The runtime could not assemble the selected deployment.
     #[error(transparent)]
     Deploy(#[from] zaino_runtime::DeployError),

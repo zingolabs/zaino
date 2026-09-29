@@ -14,10 +14,12 @@
 //! then built-in defaults.
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use tracing::info;
+use zaino_source::QuorumConfig;
 
 pub use zaino_common::Network;
 pub use zaino_runtime::config::{FetchStrategy, IndexerConfig, StoreConfig};
@@ -66,6 +68,29 @@ pub enum SourceMode {
         password: Option<String>,
     },
     /// Zebra JSON-RPC.
+    ///
+    /// One validator by default, named by the fields below. A `quorum` section
+    /// names several instead: its members replace the single endpoint, and the
+    /// daemon still hands the runtime one validator — the members are an
+    /// internal detail of the source it builds.
+    ///
+    /// ```toml
+    /// [source]
+    /// mode = "rpc"
+    /// jsonrpc_address = "127.0.0.1:8232"   # unused once `quorum` is set
+    ///
+    /// [source.quorum]
+    /// quorum = 2
+    ///
+    /// [[source.quorum.members]]
+    /// jsonrpc_address = "zebra-a:8232"
+    ///
+    /// [[source.quorum.members]]
+    /// jsonrpc_address = "zebra-b:8232"
+    ///
+    /// [[source.quorum.members]]
+    /// jsonrpc_address = "zebra-c:8232"
+    /// ```
     Rpc {
         /// The validator's JSON-RPC listen address (`host:port`).
         jsonrpc_address: String,
@@ -78,7 +103,54 @@ pub enum SourceMode {
         /// JSON-RPC basic-auth password, if configured.
         #[serde(default)]
         password: Option<String>,
+        /// Several validators in place of the one above, and how many of them
+        /// must agree on the chain tip.
+        #[serde(default)]
+        quorum: Option<QuorumConfig<RpcEndpoint>>,
     },
+}
+
+/// One validator's JSON-RPC coordinates: a member of an RPC quorum.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RpcEndpoint {
+    /// The validator's JSON-RPC listen address (`host:port`).
+    pub jsonrpc_address: String,
+    /// Path to the validator's auth cookie, if it uses cookie auth.
+    #[serde(default)]
+    pub cookie_path: Option<PathBuf>,
+    /// JSON-RPC basic-auth user, if configured.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// JSON-RPC basic-auth password, if configured.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl SourceMode {
+    /// The validators an `Rpc` source connects to: the `quorum` section when
+    /// there is one, else the single endpoint as a quorum of one. `None` for
+    /// `Direct`, which reads the state database of the one validator it is
+    /// co-located with.
+    pub(crate) fn rpc_validators(&self) -> Option<QuorumConfig<RpcEndpoint>> {
+        match self {
+            SourceMode::Direct { .. } => None,
+            SourceMode::Rpc {
+                jsonrpc_address,
+                cookie_path,
+                user,
+                password,
+                quorum,
+            } => Some(quorum.clone().unwrap_or_else(|| {
+                QuorumConfig::majority(vec![RpcEndpoint {
+                    jsonrpc_address: jsonrpc_address.clone(),
+                    cookie_path: cookie_path.clone(),
+                    user: user.clone(),
+                    password: password.clone(),
+                }])
+            })),
+        }
+    }
 }
 
 impl Default for SourceMode {
@@ -90,6 +162,7 @@ impl Default for SourceMode {
             cookie_path: None,
             user: None,
             password: None,
+            quorum: None,
         }
     }
 }
@@ -168,7 +241,8 @@ impl DaemonConfig {
     ///
     /// Kept minimal: `Direct` needs an existing cache directory (a missing one
     /// is a misconfiguration worth naming at startup rather than a cryptic
-    /// database-open failure later). Socket addresses are already typed, so
+    /// database-open failure later), and an `Rpc` quorum section must name a
+    /// quorum its members can reach. Socket addresses are already typed, so
     /// they need no re-parsing here.
     pub fn validate(&self) -> Result<(), IndexerError> {
         if let SourceMode::Direct {
@@ -181,6 +255,11 @@ impl DaemonConfig {
                     zebra_cache_dir.display(),
                 )));
             }
+        }
+        if let Some(validators) = self.source.rpc_validators() {
+            validators
+                .validate()
+                .map_err(IndexerError::ValidatorQuorum)?;
         }
         Ok(())
     }
@@ -309,6 +388,48 @@ pub const TEST_FIXTURE_STORE_ENV: &str = "ZAINO_TEST_STORE_DIR";
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_MAP_SIZE_ENV: &str = "ZAINO_TEST_MAP_SIZE_GB";
 
+/// Env var handing the mainnet Rpc fixture how many of its validators must
+/// agree on the chain tip, when [`TEST_FIXTURE_JSONRPC_ENV`] names several
+/// (comma-separated). Optional; defaults to a majority. An unparsable value is
+/// reported and the default kept.
+#[cfg(feature = "ztest-fixture")]
+pub const TEST_FIXTURE_QUORUM_ENV: &str = "ZAINO_TEST_QUORUM";
+
+/// The validators the mainnet Rpc fixture connects to, from the env: one
+/// endpoint, or a comma-separated list read as a quorum.
+#[cfg(feature = "ztest-fixture")]
+fn fixture_rpc_validators(endpoints: &str) -> Option<QuorumConfig<RpcEndpoint>> {
+    let members: Vec<RpcEndpoint> = endpoints
+        .split(',')
+        .map(str::trim)
+        .filter(|address| !address.is_empty())
+        .map(|address| RpcEndpoint {
+            jsonrpc_address: address.to_string(),
+            cookie_path: None,
+            user: None,
+            password: None,
+        })
+        .collect();
+    if members.len() < 2 {
+        return None;
+    }
+    let quorum = match std::env::var(TEST_FIXTURE_QUORUM_ENV) {
+        Ok(raw) => match raw.parse::<NonZeroUsize>() {
+            Ok(quorum) => Some(quorum),
+            Err(_) => {
+                tracing::warn!(
+                    env = TEST_FIXTURE_QUORUM_ENV,
+                    value = raw,
+                    "unparsable quorum size; keeping the majority default"
+                );
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    Some(QuorumConfig { members, quorum })
+}
+
 /// Env var selecting what the mainnet Rpc fixture's indexer fetches per height:
 /// `compact` (the fork's pre-index compact block, the default) or `full` (whole
 /// blocks over the standard read, which any validator answers — see
@@ -422,7 +543,9 @@ pub const MAINNET_RPC_FIXTURE_ENV: &str = "ZAINO_MAINNET_RPC_FIXTURE";
 /// reindexing.
 ///
 /// Topology arrives by env so one image serves any cluster:
-/// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`.
+/// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`, or a
+///   comma-separated list of them read as a quorum.
+/// - [`TEST_FIXTURE_QUORUM_ENV`]: how many of a list must agree on the tip.
 /// - [`TEST_FIXTURE_STORE_ENV`]: the writable FS-store directory.
 /// - [`TEST_FIXTURE_MAP_SIZE_ENV`]: the LMDB map size in GiB (store ceiling).
 /// - [`TEST_FIXTURE_FETCH_ENV`]: `compact` or `full` — what the indexer fetches
@@ -434,8 +557,15 @@ pub const MAINNET_RPC_FIXTURE_ENV: &str = "ZAINO_MAINNET_RPC_FIXTURE";
 /// activation.
 #[cfg(feature = "ztest-fixture")]
 pub fn mainnet_rpc_fixture() -> DaemonConfig {
-    let jsonrpc_address = std::env::var(TEST_FIXTURE_JSONRPC_ENV)
+    let endpoints = std::env::var(TEST_FIXTURE_JSONRPC_ENV)
         .unwrap_or_else(|_| "zebra.golden-zebra-state.svc:8232".to_string());
+    let quorum = fixture_rpc_validators(&endpoints);
+    let jsonrpc_address = endpoints
+        .split(',')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let store_path = std::env::var_os(TEST_FIXTURE_STORE_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/home/zaino/.cache/zaino/store"));
@@ -452,6 +582,7 @@ pub fn mainnet_rpc_fixture() -> DaemonConfig {
             cookie_path: None,
             user: None,
             password: None,
+            quorum,
         },
         store: StoreConfig {
             path: store_path,
@@ -656,9 +787,11 @@ path = "/tmp/zaino-store"
                 cookie_path,
                 user,
                 password,
+                quorum,
             } => {
                 assert_eq!(jsonrpc_address, "zebra.golden-zebra-state.svc:8232");
                 assert!(cookie_path.is_none() && user.is_none() && password.is_none());
+                assert!(quorum.is_none(), "one endpoint is one validator");
             }
             other => panic!("expected Rpc source, got {other:?}"),
         }
@@ -689,5 +822,112 @@ path = "/tmp/zaino-store"
             }
             other => panic!("expected Rpc source, got {other:?}"),
         }
+    }
+
+    /// A comma-separated endpoint list reaches the Rpc fixture as a quorum,
+    /// with the agreement size from its own env var.
+    #[cfg(feature = "ztest-fixture")]
+    #[test]
+    fn mainnet_rpc_fixture_reads_an_endpoint_list_as_a_quorum() {
+        std::env::set_var(
+            super::TEST_FIXTURE_JSONRPC_ENV,
+            "zebra-a.svc:8232, zebra-b.svc:8232,zebra-c.svc:8232",
+        );
+        std::env::set_var(super::TEST_FIXTURE_QUORUM_ENV, "3");
+        let config = super::mainnet_rpc_fixture();
+        std::env::remove_var(super::TEST_FIXTURE_JSONRPC_ENV);
+        std::env::remove_var(super::TEST_FIXTURE_QUORUM_ENV);
+
+        let validators = config
+            .source
+            .rpc_validators()
+            .expect("an Rpc source names its validators");
+        let addresses: Vec<&str> = validators
+            .members
+            .iter()
+            .map(|member| member.jsonrpc_address.as_str())
+            .collect();
+        assert_eq!(
+            addresses,
+            ["zebra-a.svc:8232", "zebra-b.svc:8232", "zebra-c.svc:8232"]
+        );
+        assert_eq!(validators.quorum().get(), 3);
+        config.validate().expect("three of three is reachable");
+    }
+
+    /// The `[source.quorum]` section parses, validates, and replaces the single
+    /// endpoint as the validators the daemon connects to.
+    #[test]
+    fn rpc_quorum_section_parses_and_names_the_validators() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let toml = r#"
+network = "Mainnet"
+
+[source]
+mode = "rpc"
+jsonrpc_address = "unused:8232"
+
+[source.quorum]
+quorum = 2
+
+[[source.quorum.members]]
+jsonrpc_address = "zebra-a:8232"
+
+[[source.quorum.members]]
+jsonrpc_address = "zebra-b:8232"
+user = "reader"
+password = "secret"
+
+[[source.quorum.members]]
+jsonrpc_address = "zebra-c:8232"
+
+[store]
+path = "/tmp/zaino-store"
+"#;
+        let path = write(&dir, "quorum.toml", toml);
+        let config = load_config(&path).expect("load");
+        config.validate().expect("two of three is reachable");
+
+        let validators = config.source.rpc_validators().expect("Rpc source");
+        assert_eq!(validators.members.len(), 3);
+        assert_eq!(validators.quorum().get(), 2);
+        assert_eq!(validators.members[1].user.as_deref(), Some("reader"));
+
+        // Without the section, the single endpoint is a quorum of one.
+        let single = SourceMode::default().rpc_validators().expect("Rpc source");
+        assert_eq!(single.members.len(), 1);
+        assert_eq!(single.quorum().get(), 1);
+    }
+
+    /// A quorum its members cannot reach is a configuration error at startup.
+    #[test]
+    fn rpc_quorum_larger_than_its_members_is_rejected() {
+        let config = DaemonConfig {
+            source: SourceMode::Rpc {
+                jsonrpc_address: "unused:8232".to_string(),
+                cookie_path: None,
+                user: None,
+                password: None,
+                quorum: Some(zaino_source::QuorumConfig {
+                    members: vec![RpcEndpoint {
+                        jsonrpc_address: "zebra-a:8232".to_string(),
+                        cookie_path: None,
+                        user: None,
+                        password: None,
+                    }],
+                    quorum: NonZeroUsize::new(2),
+                }),
+            },
+            ..DaemonConfig::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(IndexerError::ValidatorQuorum(
+                zaino_source::QuorumConfigError::QuorumExceedsMembers {
+                    quorum: 2,
+                    members: 1
+                }
+            ))
+        ));
     }
 }
