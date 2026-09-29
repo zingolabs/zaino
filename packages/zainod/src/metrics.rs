@@ -12,43 +12,28 @@ use tracing::info;
 
 use crate::error::IndexerError;
 
-/// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
+/// Dotted here, `_`-joined once scraped (`zaino.index.synced` → `zaino_index_synced`)
 mod names {
-    pub(super) const BUILD_INFO: &str = "zaino.build_info";
+    pub(super) const BUILD_INFO: &str = "zainod.build_info";
     pub(super) const INDEX_FINALIZED_HEIGHT: &str = "zaino.index.finalized_height";
     pub(super) const INDEX_SYNCED: &str = "zaino.index.synced";
 }
 
-/// Installs the global recorder + HTTP listener (before it, every emit site no-ops)
-///
-/// - listener on its own thread + current-thread runtime: a scrape answers however busy the
-///   serving and sync workers are
+/// Installs the global recorder and serves it from [`crate::admin`], whose own thread answers a scrape or probe however busy the workers are.
 pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
+    // Bind first: a recorder installed before its listener exists would record
+    // samples that nothing drains, so a bind failure fails startup instead
+    let listener = crate::admin::bind(endpoint)?;
     let builder = zaino_grpc::METRIC_BUCKETS
         .iter()
         .chain(zaino_source::METRIC_BUCKETS)
         .chain(zaino_persistence::lsm::METRIC_BUCKETS)
-        .try_fold(
-            PrometheusBuilder::new().with_http_listener(endpoint),
-            |builder, (metric, edges)| {
-                builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
-            },
-        )
+        .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
+            builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
+        })
         .map_err(|e| IndexerError::MetricsError(format!("setting histogram buckets: {e}")))?;
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| IndexerError::MetricsError(format!("building its runtime: {e}")))?;
-    let (recorder, exporter) = {
-        let _entered = runtime.enter();
-        builder.build().map_err(|e| IndexerError::MetricsError(format!("building: {e}")))?
-    };
-    std::thread::Builder::new()
-        .name("metrics".to_owned())
-        .spawn(move || runtime.block_on(exporter))
-        .map_err(|e| IndexerError::MetricsError(format!("spawning its thread: {e}")))?;
-    metrics::set_global_recorder(recorder)
+    let handle = builder
+        .install_recorder()
         .map_err(|e| IndexerError::MetricsError(format!("installing the recorder: {e}")))?;
 
     zaino_grpc::describe_metrics();
@@ -58,8 +43,21 @@ pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
     describe_zainod();
     metrics::gauge!(names::BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
+    crate::admin::spawn(listener, handle)?;
     info!(%endpoint, "Listening");
     Ok(())
+}
+
+/// Samples process CPU, memory, and file descriptors on each scrape, so the sample is as old as the answer.
+pub(crate) fn collect_process_metrics() {
+    static COLLECTOR: std::sync::OnceLock<metrics_process::Collector> = std::sync::OnceLock::new();
+    COLLECTOR
+        .get_or_init(|| {
+            let collector = metrics_process::Collector::default();
+            collector.describe();
+            collector
+        })
+        .collect();
 }
 
 fn describe_zainod() {

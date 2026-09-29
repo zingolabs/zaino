@@ -221,6 +221,13 @@ async fn boot(
     let sync_span = crate::logging::component("ZainoSync");
     spawn(&mut tasks, "producer", sync_span, producer.run(cancel.child_token()));
     spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
+    #[cfg(feature = "prometheus")]
+    spawn(
+        &mut tasks,
+        "heartbeat",
+        crate::logging::component("Metrics"),
+        crate::admin::beat(cancel.child_token()),
+    );
 
     Ok(tokio::spawn(supervise(tasks, cancel)))
 }

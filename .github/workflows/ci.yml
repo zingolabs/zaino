@@ -48,6 +48,9 @@ jobs:
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
 
+      # Recorder, admin listener & metric registration contracts compile only under `prometheus`
+      - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
+
   features:
     name: Each feature compiles
     # dev only (~77 checks); --feature-powerset = 412, over the 6h hosted-runner cap

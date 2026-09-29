@@ -416,6 +416,19 @@ impl DaemonConfig {
                 )));
             }
         }
+        // Public bind publishes chain tip, sync progress, request volumes & RSS.
+        // Warn, not reject: read-only telemetry, and containers bind 0.0.0.0 by norm
+        #[cfg(feature = "prometheus")]
+        if let Some(endpoint) = self.metrics_endpoint {
+            if !is_private_listen_addr(&endpoint) {
+                tracing::warn!(
+                    %endpoint,
+                    "metrics_endpoint binds a non-private address; /metrics is \
+                     unauthenticated and exposes operational detail. Restrict it to \
+                     loopback, a private interface, or a network only the scraper reaches."
+                );
+            }
+        }
         let depth = self.fetch.finalised_depth.get();
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
             return Err(IndexerError::ConfigError(format!(
@@ -436,6 +449,15 @@ impl DaemonConfig {
     pub(crate) fn primary_validator_index(&self) -> Option<usize> {
         let primary = self.fetch.primary_validator.as_ref()?;
         self.validators().position(|validator| &validator.jsonrpc_address == primary)
+    }
+}
+
+/// Whether `addr` binds only loopback or a private-network interface.
+#[cfg(feature = "prometheus")]
+fn is_private_listen_addr(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        std::net::IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback(),
+        std::net::IpAddr::V6(ipv6) => ipv6.is_unique_local() || ipv6.is_loopback(),
     }
 }
 

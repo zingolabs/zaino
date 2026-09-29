@@ -6,6 +6,9 @@ repository.workspace = true
 homepage.workspace = true
 edition.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Value-balance index: every transparent output's value, resolving each transaction's fee for the ValueBalanceSink"
 
 [dependencies]

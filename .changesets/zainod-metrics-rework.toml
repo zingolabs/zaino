@@ -1,0 +1,19 @@
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = "The admin listener (`metrics_endpoint`, feature `prometheus`) runs on its own thread and runtime and serves `/livez` beside `/metrics`; `/livez` fails once the serving runtime has not republished its heartbeat for 30s."
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = "`/metrics` carries process metrics (`process_cpu_seconds_total`, `process_resident_memory_bytes`, file descriptors, threads), sampled on each scrape, and the admin listener serves at most 32 connections at once."
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = "A `metrics_endpoint` configured on a binary built without `prometheus` now logs a warning instead of being silently ignored, and a non-private `metrics_endpoint` logs a warning that the listener is unauthenticated."
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+description = "A `metrics_endpoint` that fails to bind now fails startup with the error, because the listener is bound before the recorder is installed."

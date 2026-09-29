@@ -3,6 +3,9 @@ name = "zaino-index-tree-state"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 repository.workspace = true
 description = "Retained-node commitment tree index: tree states and subtree roots"
 
