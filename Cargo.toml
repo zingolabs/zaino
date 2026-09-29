@@ -11,6 +11,7 @@ members = [
     "packages/zaino-lightserve",
     "packages/zaino-noderpc",
     "packages/zaino-core",
+    "packages/zaino-block-decode",
     "packages/zaino-store",
     "packages/zaino-persistence-macros",
     "packages/zaino-persistence-codec",
