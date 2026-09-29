@@ -75,4 +75,7 @@ a resilient port still holds exactly one retry contract.
   validator gate sees one source that seeded its tip subscription or did not.
 - No new error kind. Below quorum is a non-domain failure with a typed cause
   naming the count; consumers already react to non-domain failures.
-- No configuration in this crate: the endpoint list and `k` are the daemon's.
+- The section that names the members and `k`, `QuorumConfig<M>`, lives here
+  so every composition root reuses it; it is generic over the per-member
+  endpoint type and knows nothing about files, env or defaults. Those, and the
+  choice of which adapters are on offer, stay with the daemon.
