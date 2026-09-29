@@ -35,36 +35,12 @@ pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 
 /// Where the daemon sources blocks from the validator.
 ///
-/// `Direct` reads the validator's on-disk state database in-process (fastest;
-/// must be co-located with the validator). `Rpc` talks JSON-RPC (works off-node,
-/// no state DB). Both follow the live tip: the chain-head polls the tip over the
-/// configured transport. `Rpc` trades the state DB's disk-speed reads for
-/// per-block RPC round-trips.
+/// `Rpc` talks JSON-RPC (works off-node, no state DB) and follows the live tip:
+/// the chain-head polls the tip over the same transport. It is the only source
+/// mode.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum SourceMode {
-    /// Direct Zebra `ReadState`: reads the on-disk state DB under `zebra_cache_dir`.
-    ///
-    /// The JSON-RPC coordinates are still required: the state database serves
-    /// finalised blocks (the compact-serving fast path) but cannot answer the
-    /// mempool or passthrough RPCs, which reach the validator no other way. The
-    /// auth fields mirror [`SourceMode::Rpc`].
-    Direct {
-        /// Root of the validator's Zebra cache directory (the state DB lives
-        /// under it, keyed by network).
-        zebra_cache_dir: PathBuf,
-        /// The validator's JSON-RPC listen address (`host:port`).
-        jsonrpc_address: String,
-        /// Path to the validator's auth cookie, if it uses cookie auth.
-        #[serde(default)]
-        cookie_path: Option<PathBuf>,
-        /// JSON-RPC basic-auth user, if configured.
-        #[serde(default)]
-        user: Option<String>,
-        /// JSON-RPC basic-auth password, if configured.
-        #[serde(default)]
-        password: Option<String>,
-    },
     /// Zebra JSON-RPC.
     Rpc {
         /// The validator's JSON-RPC listen address (`host:port`).
@@ -166,144 +142,28 @@ impl Default for DaemonConfig {
 impl DaemonConfig {
     /// Validate cross-field invariants that parsing alone cannot.
     ///
-    /// Kept minimal: `Direct` needs an existing cache directory (a missing one
-    /// is a misconfiguration worth naming at startup rather than a cryptic
-    /// database-open failure later). Socket addresses are already typed, so
-    /// they need no re-parsing here.
+    /// The typed fields (socket addresses, the tagged source mode) already carry
+    /// their own validation, so there are currently no further cross-field
+    /// invariants to check. Kept as the extension point config validation hangs
+    /// off, and as the stable call site in [`load_config_with_env`].
     pub fn validate(&self) -> Result<(), IndexerError> {
-        if let SourceMode::Direct {
-            zebra_cache_dir, ..
-        } = &self.source
-        {
-            if !zebra_cache_dir.is_dir() {
-                return Err(IndexerError::ConfigError(format!(
-                    "source.mode = \"direct\" but zebra_cache_dir {} is not an existing directory",
-                    zebra_cache_dir.display(),
-                )));
-            }
-        }
         Ok(())
     }
 }
 
-/// The env var that activates the ztest regtest Direct fixture (only with the
-/// `ztest-fixture` feature). Its presence — any value — triggers it.
-#[cfg(feature = "ztest-fixture")]
-pub const TEST_FIXTURE_ENV: &str = "ZAINO_TEST_REGTEST_DIRECT_FIXTURE";
-
-/// Topology bindings for the [`direct_regtest`] profile: the values that depend
-/// on *where* the daemon runs, not *what* it serves. A deployer supplies these —
-/// the ztest e2e today, a `generate-config` emitter later — while the profile
-/// bakes everything else (tuning, network, retention).
-#[cfg(feature = "ztest-fixture")]
-pub(crate) struct DirectRegtestTopology {
-    /// Zebra's regtest state DB, opened as a RocksDB secondary — the Direct source.
-    pub(crate) zebra_cache_dir: PathBuf,
-    /// The validator's JSON-RPC `host:port`; the NFS (chain-head) dials it.
-    pub(crate) jsonrpc_address: String,
-    /// Where the daemon listens for the CompactTxStreamer gRPC.
-    pub(crate) grpc_listen_address: SocketAddr,
-    /// The finalised-store (FS) database directory.
-    pub(crate) store_path: PathBuf,
-}
-
-/// The `direct-regtest` serving profile: a Direct/`ReadState` source feeding the
-/// FS⊕NFS composition, serving compact blocks on regtest. Binds the supplied
-/// [`DirectRegtestTopology`] and bakes the tuning a regtest chain needs — index
-/// to the tip with no reorg margin, small map — so a handful of mined blocks are
-/// actually served.
-///
-/// This is the single definition of the profile. Its only caller today is
-/// [`regtest_direct_fixture`]; a `generate-config` emitter will later map
-/// topology flags onto this same function (and both ungate then). One spine
-/// means the fixture and the real emitter cannot drift.
-#[cfg(feature = "ztest-fixture")]
-pub(crate) fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
-    let DirectRegtestTopology {
-        zebra_cache_dir,
-        jsonrpc_address,
-        grpc_listen_address,
-        store_path,
-    } = topology;
-    DaemonConfig {
-        deployment: DeploymentKind::default(),
-        network: Network::Regtest,
-        metrics_endpoint: None,
-        source: SourceMode::Direct {
-            zebra_cache_dir,
-            jsonrpc_address,
-            cookie_path: None,
-            user: None,
-            password: None,
-        },
-        store: StoreConfig {
-            path: store_path,
-            map_size_gb: 4,
-        },
-        serve: ServeConfig {
-            grpc_listen_address,
-        },
-        indexer: IndexerConfig {
-            // A regtest chain is a handful of blocks; index right to the tip
-            // (no reorg margin) so the mined blocks are actually served.
-            finalised_depth: 0,
-            ..IndexerConfig::default()
-        },
-    }
-}
-
-/// TEST-ONLY: the [`direct_regtest`] profile bound to ztest's container topology.
-///
-/// ztest 0.1.21 mounts a *legacy*-schema `zainod.toml` this greenfield config
-/// cannot parse (and injects no `ZAINO_` env). Rather than couple the config to
-/// that legacy schema, the e2e sets [`TEST_FIXTURE_ENV`] and zainod boots this
-/// instead — ignoring the mounted `--config`. Topology that varies per run (the
-/// shared zebra volume, the validator's in-cluster JSON-RPC) arrives by env; the
-/// rest matches ztest's container layout (writable root `/var/lib/zaino`, gRPC on
-/// `0.0.0.0:8137`, regtest).
-///
-/// NEVER for production: gated behind BOTH the `ztest-fixture` build feature and
-/// the runtime env var, and its activation logs a loud warning.
-#[cfg(feature = "ztest-fixture")]
-pub fn regtest_direct_fixture() -> DaemonConfig {
-    // ztest's shared zebra volume mounts at a harness-chosen path, not a fixed
-    // one, so the e2e passes it via `TEST_FIXTURE_ZEBRA_ENV`; fall back to the
-    // default container path when unset.
-    let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/lib/zaino/zebra-db"));
-    // In the ztest cluster the regtest validator's JSON-RPC lives on the
-    // validator pod, not localhost, so the e2e passes its in-cluster address via
-    // `TEST_FIXTURE_JSONRPC_ENV`; a plain local run falls back to the regtest
-    // default. The NFS (chain-head) anchors here.
-    let jsonrpc_address =
-        std::env::var(TEST_FIXTURE_JSONRPC_ENV).unwrap_or_else(|_| "127.0.0.1:18232".to_string());
-    direct_regtest(DirectRegtestTopology {
-        zebra_cache_dir,
-        jsonrpc_address,
-        grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
-        store_path: PathBuf::from("/var/lib/zaino/db"),
-    })
-}
-
-/// Env var the e2e uses to hand the fixture the shared zebra volume's mount
-/// path (see [`regtest_direct_fixture`]).
-#[cfg(feature = "ztest-fixture")]
-pub const TEST_FIXTURE_ZEBRA_ENV: &str = "ZAINO_TEST_ZEBRA_CACHE_DIR";
-
-/// Env var the e2e uses to hand the fixture the validator's in-cluster JSON-RPC
-/// address (`host:port`), which the NFS (chain-head) dials for non-final blocks
-/// (see [`regtest_direct_fixture`]).
+/// Env var handing the mainnet Rpc fixture the validator's JSON-RPC address
+/// (`host:port`), which the source dials for blocks, tip, mempool and
+/// passthrough (see [`mainnet_rpc_fixture`]).
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_JSONRPC_ENV: &str = "ZAINO_TEST_ZEBRA_JSONRPC";
 
-/// Env var handing the mainnet state fixture the writable FS-store directory
-/// (see [`mainnet_direct_state_fixture`]). Optional; defaults to a cache path.
+/// Env var handing the mainnet Rpc fixture the writable FS-store directory
+/// (see [`mainnet_rpc_fixture`]). Optional; defaults to a cache path.
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_STORE_ENV: &str = "ZAINO_TEST_STORE_DIR";
 
-/// Env var handing the mainnet state fixture the LMDB map size in GiB — the
-/// reserved store ceiling (see [`mainnet_direct_state_fixture`]). Optional;
+/// Env var handing the mainnet Rpc fixture the LMDB map size in GiB — the
+/// reserved store ceiling (see [`mainnet_rpc_fixture`]). Optional;
 /// defaults to a mainnet-safe value. Tune it per deploy without a rebuild, and
 /// keep it below the backing volume's capacity.
 #[cfg(feature = "ztest-fixture")]
@@ -335,91 +195,25 @@ fn fixture_fetch_strategy() -> FetchStrategy {
     }
 }
 
-/// Default LMDB map size (GiB) for the mainnet state fixture. A full mainnet
+/// Default LMDB map size (GiB) for the mainnet Rpc fixture. A full mainnet
 /// index far exceeds a regtest chain's, so this is generous headroom over what
 /// the index actually occupies; the deploy caps it under the volume size.
 #[cfg(feature = "ztest-fixture")]
 const MAINNET_FIXTURE_MAP_SIZE_GB: usize = 64;
 
-/// The env var that activates the mainnet Direct/state fixture (only with the
-/// `ztest-fixture` feature). Its presence — any value — triggers it.
-///
-/// The deploy-time analogue of [`TEST_FIXTURE_ENV`]: it lets the greenfield
-/// daemon boot a Direct/state config against a cluster's shared read-only zebra
-/// state cache when the surrounding deploy still mounts a legacy-schema
-/// `zainod.toml` this loader cannot parse.
-#[cfg(feature = "ztest-fixture")]
-pub const MAINNET_STATE_FIXTURE_ENV: &str = "ZAINO_MAINNET_DIRECT_STATE_FIXTURE";
-
-/// TEST/DEPLOY-ONLY: a mainnet Direct/state [`DaemonConfig`] built entirely from
-/// env-supplied topology, for booting the greenfield daemon in a cluster's
-/// state-mode deploy — a shared read-only zebra state cache (the Direct source)
-/// plus the validator's JSON-RPC (tip / mempool / passthrough) — whose chart
-/// still mounts a legacy-schema config this loader rejects.
-///
-/// Topology arrives by env so one image serves any cluster:
-/// - [`TEST_FIXTURE_ZEBRA_ENV`]: the RO-mounted zebra cache root (Direct source).
-/// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`.
-/// - [`TEST_FIXTURE_STORE_ENV`]: the writable FS-store directory.
-/// - [`TEST_FIXTURE_MAP_SIZE_ENV`]: the LMDB map size in GiB (store ceiling).
-///
-/// The serving policy (mainnet, reorg-margin finalised depth, gRPC on
-/// `0.0.0.0:8137`) is baked. NEVER for production: gated behind BOTH the
-/// `ztest-fixture` build feature and the runtime env var, with a loud warning on
-/// activation.
-#[cfg(feature = "ztest-fixture")]
-pub fn mainnet_direct_state_fixture() -> DaemonConfig {
-    let zebra_cache_dir = std::env::var_os(TEST_FIXTURE_ZEBRA_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/var/cache/zebrad-cache"));
-    let jsonrpc_address = std::env::var(TEST_FIXTURE_JSONRPC_ENV)
-        .unwrap_or_else(|_| "zebra.golden-zebra-state.svc:8232".to_string());
-    let store_path = std::env::var_os(TEST_FIXTURE_STORE_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/home/zaino/.cache/zaino/store"));
-    let map_size_gb = std::env::var(TEST_FIXTURE_MAP_SIZE_ENV)
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .unwrap_or(MAINNET_FIXTURE_MAP_SIZE_GB);
-    DaemonConfig {
-        deployment: DeploymentKind::default(),
-        network: Network::Mainnet,
-        metrics_endpoint: None,
-        source: SourceMode::Direct {
-            zebra_cache_dir,
-            jsonrpc_address,
-            cookie_path: None,
-            user: None,
-            password: None,
-        },
-        store: StoreConfig {
-            path: store_path,
-            map_size_gb,
-        },
-        serve: ServeConfig {
-            grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
-        },
-        indexer: IndexerConfig::default(),
-    }
-}
-
 /// The env var that activates the mainnet **Rpc** fixture (only with the
 /// `ztest-fixture` feature). Its presence — any value — triggers it.
 ///
-/// The Rpc analogue of [`MAINNET_STATE_FIXTURE_ENV`]: it boots the greenfield
-/// daemon against the validator's JSON-RPC alone (no on-disk state DB), so the
-/// RPC source adapter can be exercised under a real deploy. When both this and
-/// [`MAINNET_STATE_FIXTURE_ENV`] are set, the Direct/state fixture wins (see the
-/// boot wiring in `lib.rs`) — set only one.
+/// It boots the greenfield daemon against the validator's JSON-RPC (the only
+/// source), so the daemon can run under a real deploy whose chart still mounts a
+/// legacy-schema `zainod.toml` this loader cannot parse.
 #[cfg(feature = "ztest-fixture")]
 pub const MAINNET_RPC_FIXTURE_ENV: &str = "ZAINO_MAINNET_RPC_FIXTURE";
 
 /// TEST/DEPLOY-ONLY: a mainnet **Rpc** [`DaemonConfig`] built entirely from
 /// env-supplied topology, for booting the greenfield daemon against the
-/// validator's JSON-RPC only (no state DB) — the Rpc counterpart of
-/// [`mainnet_direct_state_fixture`]. It keeps the SAME store path so an Rpc-mode
-/// deploy reuses an existing index PVC (the index is source-agnostic) rather than
-/// reindexing.
+/// validator's JSON-RPC. The store path defaults so an Rpc-mode deploy can reuse
+/// an existing index PVC (the index is source-agnostic) rather than reindexing.
 ///
 /// Topology arrives by env so one image serves any cluster:
 /// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`.
@@ -539,43 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn direct_source_parses() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // Direct requires an existing cache dir; point it at the tempdir itself.
-        let toml = format!(
-            r#"
-network = "Mainnet"
-
-[source]
-mode = "direct"
-zebra_cache_dir = "{}"
-jsonrpc_address = "127.0.0.1:18232"
-
-[store]
-path = "/tmp/zaino-store"
-
-[serve]
-grpc_listen_address = "127.0.0.1:8137"
-"#,
-            dir.path().display(),
-        );
-        let path = write(&dir, "direct.toml", &toml);
-        let config = load_config(&path).expect("load");
-        match config.source {
-            SourceMode::Direct {
-                jsonrpc_address,
-                cookie_path,
-                ..
-            } => {
-                assert_eq!(jsonrpc_address, "127.0.0.1:18232");
-                assert!(cookie_path.is_none());
-            }
-            other => panic!("expected Direct source, got {other:?}"),
-        }
-        assert_eq!(config.network, Network::Mainnet);
-    }
-
-    #[test]
     fn rpc_source_parses_with_optional_auth_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
@@ -662,15 +419,15 @@ path = "/tmp/zaino-store"
             }
             other => panic!("expected Rpc source, got {other:?}"),
         }
-        // Serving policy is baked; store path matches the Direct fixture so an
-        // Rpc-mode deploy reuses the same index PVC.
+        // Serving policy is baked; the default store path is the one an Rpc-mode
+        // deploy reuses its existing index PVC at.
         assert_eq!(
             config.serve.grpc_listen_address,
             "0.0.0.0:8137".parse().expect("valid addr"),
         );
         assert_eq!(
             config.store.path,
-            super::mainnet_direct_state_fixture().store.path
+            PathBuf::from("/home/zaino/.cache/zaino/store")
         );
     }
 

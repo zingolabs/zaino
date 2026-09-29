@@ -19,12 +19,9 @@
 //! chain to advance within the timeout, so run that arm against a regtest node
 //! you can mine on.
 //!
-//! Deliberately *not* covered here: the finalised-only ReadState adapter. It is a
-//! boot-time snapshot sub-source that by design fails `assert_follows_to_tip` (it
-//! never advances past its finalised tip) — conforming it standalone would be
-//! wrong. The `ZebraValidator` *composite* (readstate ⊕ rpc) is what should
-//! conform end-to-end; this test covers its RPC arm, the one that must serve the
-//! volatile top.
+//! This covers the JSON-RPC adapter directly. `zaino-source-zebra` wraps it as
+//! the `ZebraValidator` source (adding the synthesised tip subscription), which
+//! conforms end-to-end over the same RPC path.
 
 use std::time::Duration;
 

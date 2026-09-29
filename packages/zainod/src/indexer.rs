@@ -21,10 +21,9 @@ use zaino_runtime::deployment::{LightWalletPassthrough, LightWalletSource};
 use zaino_runtime::{boot_indexed, Orchestra};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 
-use crate::config::{DaemonConfig, DeploymentKind, Network, SourceMode};
+use crate::config::{DaemonConfig, DeploymentKind, SourceMode};
 use crate::error::IndexerError;
 
 /// Start the Zaino daemon.
@@ -40,82 +39,44 @@ pub async fn start_indexer(
     spawn_indexer(config).await
 }
 
-/// Build the validator per configured mode, then boot the runtime.
+/// Build the validator from the configured coordinates, then boot the runtime.
 ///
-/// Direct mode assembles a [`ZebraValidator`] over both transports: the state
-/// database (the finalised-block fast path the indexer and chain-head source
-/// through) and JSON-RPC (required for the mempool/passthrough seam, even though
-/// the compact-serving slice stubs those). The two are shared behind one `Arc`.
+/// The validator is reached over JSON-RPC: the FS indexer sources compact blocks
+/// over RPC and the chain-head polls the tip over the same transport, so the
+/// daemon follows the chain rather than catching up once. The mempool and
+/// passthrough RPCs are reachable no other way. The validator handle is shared
+/// behind one `Arc`.
 pub async fn spawn_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.validate()?;
-    let network = to_zebra_network(config.network);
 
-    match &config.source {
-        SourceMode::Direct {
-            zebra_cache_dir,
-            jsonrpc_address,
-            cookie_path,
-            user,
-            password,
-        } => {
-            info!(cache = %zebra_cache_dir.display(), "opening validator ReadState (Direct)");
-            let readstate = ZebraReadStateAdapter::open(zebra_cache_dir, &network)
-                .map_err(IndexerError::OpenReadState)?;
-            let rpc = ZebraRpcAdapter::new(rpc_client_from_config(
+    let SourceMode::Rpc {
+        jsonrpc_address,
+        cookie_path,
+        user,
+        password,
+    } = &config.source;
+    info!(rpc = %jsonrpc_address, "connecting validator JSON-RPC (Rpc)");
+    let rpc = ZebraRpcAdapter::new(rpc_client_from_config(
+        jsonrpc_address,
+        cookie_path.as_deref(),
+        user.as_deref(),
+        password.as_deref(),
+    )?);
+    let validator = ZebraValidator::rpc_only(rpc)
+        .with_tip_polling(
+            tip_probe(
                 jsonrpc_address,
                 cookie_path.as_deref(),
                 user.as_deref(),
                 password.as_deref(),
-            )?);
-            let validator = ZebraValidator::with_read_state(rpc, readstate)
-                .with_tip_polling(
-                    tip_probe(
-                        jsonrpc_address,
-                        cookie_path.as_deref(),
-                        user.as_deref(),
-                        password.as_deref(),
-                    )?,
-                    TIP_POLL_INTERVAL,
-                )
-                .await
-                .map_err(IndexerError::TipPolling)?;
-            select_deployment(client_over(Arc::new(validator)), config).await
-        }
-        // Off-node: reach the validator over JSON-RPC alone, no co-located state
-        // DB. The FS indexer sources compact blocks over RPC and the chain-head
-        // polls the tip over the same transport, so this follows the chain — it is
-        // not catch-up-only. It trades the state DB's disk-speed reads for
-        // per-block RPC round-trips.
-        SourceMode::Rpc {
-            jsonrpc_address,
-            cookie_path,
-            user,
-            password,
-        } => {
-            info!(rpc = %jsonrpc_address, "connecting validator JSON-RPC (Rpc)");
-            let rpc = ZebraRpcAdapter::new(rpc_client_from_config(
-                jsonrpc_address,
-                cookie_path.as_deref(),
-                user.as_deref(),
-                password.as_deref(),
-            )?);
-            let validator = ZebraValidator::rpc_only(rpc)
-                .with_tip_polling(
-                    tip_probe(
-                        jsonrpc_address,
-                        cookie_path.as_deref(),
-                        user.as_deref(),
-                        password.as_deref(),
-                    )?,
-                    TIP_POLL_INTERVAL,
-                )
-                .await
-                .map_err(IndexerError::TipPolling)?;
-            select_deployment(client_over(Arc::new(validator)), config).await
-        }
-    }
+            )?,
+            TIP_POLL_INTERVAL,
+        )
+        .await
+        .map_err(IndexerError::TipPolling)?;
+    select_deployment(client_over(Arc::new(validator)), config).await
 }
 
 /// How often the validator is asked for its tip on behalf of the consumers
@@ -268,16 +229,6 @@ async fn shutdown_signal() -> &'static str {
     {
         let _ = tokio::signal::ctrl_c().await;
         "ctrl-c"
-    }
-}
-
-/// Map the daemon's network to zebra's network parameters.
-fn to_zebra_network(network: Network) -> zebra_chain::parameters::Network {
-    use zebra_chain::parameters::Network as Zebra;
-    match network {
-        Network::Mainnet => Zebra::Mainnet,
-        Network::PubTestnet => Zebra::new_default_testnet(),
-        Network::Regtest => Zebra::new_regtest(Default::default()),
     }
 }
 

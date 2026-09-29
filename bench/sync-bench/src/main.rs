@@ -12,12 +12,11 @@
 //! - `both` — provision then sync over the *same* window in one warm run, then
 //!   attribute the bottleneck (read-bound vs engine/write-bound).
 //!
-//! `--adapter` swaps the source between the on-disk ReadState DB (run on the
-//! validator's node) and the validator's JSON-RPC endpoint (`--rpc-addr`); the
-//! measured loop is identical over either — it runs over the [`BenchSource`] port.
+//! The source is the validator's JSON-RPC endpoint (`--rpc-addr`); the measured
+//! loop runs over the [`BenchSource`] port.
 //!
-//! The binary is a thin dispatch: it builds the selected source, resolves the
-//! window, and calls the run bodies in [`sync_bench`].
+//! The binary is a thin dispatch: it builds the source, resolves the window, and
+//! calls the run bodies in [`sync_bench`].
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
@@ -30,9 +29,9 @@ use zaino_indexer::FetchConcurrency;
 use zaino_primitives::types::Height;
 
 use sync_bench::{
-    current_tip, default_concurrency, init_logging, open_backend, open_rpc_source, open_source,
-    report, report_bottleneck, resume_from_watermark, run_provision, run_sync, verify, window_end,
-    AdapterArg, BenchSource, BoxError, Mode, NetworkArg, Outcome, Strategy, Tuning,
+    current_tip, default_concurrency, init_logging, open_backend, open_rpc_source, report,
+    report_bottleneck, resume_from_watermark, run_provision, run_sync, verify, window_end,
+    BenchSource, BoxError, Mode, Outcome, Strategy, Tuning,
 };
 
 /// Benchmark the greenfield indexing stack over a bounded window.
@@ -45,31 +44,15 @@ struct Args {
     #[arg(long, value_enum, env = "BENCH_MODE", default_value_t = Mode::Sync)]
     mode: Mode,
 
-    /// Source adapter. `readstate` opens the on-disk state DB (run on the
-    /// validator's node); `rpc` reaches the JSON-RPC endpoint. The cluster Job
-    /// selects it through `BENCH_ADAPTER`.
-    #[arg(long, value_enum, env = "BENCH_ADAPTER", default_value_t = AdapterArg::Readstate)]
-    adapter: AdapterArg,
-
     /// What the provisioner fetches per height: `compact` (the fork's pre-index
     /// compact block) or `full` (whole blocks over `getblock`, which any zebra
     /// answers). The cluster Job selects it through `BENCH_STRATEGY`.
     #[arg(long, value_enum, env = "BENCH_STRATEGY", default_value_t = Strategy::Compact)]
     strategy: Strategy,
 
-    /// Zebra cache directory (the state DB lives under it, per network). Required
-    /// for `--adapter readstate`; ignored for `rpc`. Env fallback matches the
-    /// value the cluster Job mounts the state at.
-    #[arg(long, env = "ZEBRA_STATE_DIR")]
-    zebra_cache: Option<PathBuf>,
-
-    /// Validator JSON-RPC endpoint (`host:port`). Used by `--adapter rpc`.
+    /// Validator JSON-RPC endpoint (`host:port`).
     #[arg(long, env = "ZEBRA_RPC_ADDR", default_value = "127.0.0.1:8232")]
     rpc_addr: String,
-
-    /// Network the validator serves.
-    #[arg(long, value_enum, default_value_t = NetworkArg::Mainnet)]
-    network: NetworkArg,
 
     /// LMDB directory to build the indexes into (created if absent). Required for
     /// `--mode sync` and `--mode both`; unused by `provision`. Reuse it across
@@ -122,23 +105,11 @@ async fn main() -> Result<(), BoxError> {
     init_logging();
     let args = Args::parse();
 
-    // Branch on the adapter to build the concrete source, then run the identical
-    // generic dispatch over it. This is the only place a concrete adapter appears;
-    // everything downstream is over the `BenchSource` port.
-    match args.adapter {
-        AdapterArg::Readstate => {
-            let cache = args
-                .zebra_cache
-                .as_deref()
-                .ok_or("--adapter readstate requires --zebra-cache (or ZEBRA_STATE_DIR)")?;
-            let source = open_source(cache, &args.network.to_zebra())?;
-            dispatch(source, &args).await
-        }
-        AdapterArg::Rpc => {
-            let source = open_rpc_source(&args.rpc_addr)?;
-            dispatch(source, &args).await
-        }
-    }
+    // Build the source from the validator's JSON-RPC endpoint, then run the
+    // generic dispatch over it. This is the only place a concrete adapter
+    // appears; everything downstream is over the `BenchSource` port.
+    let source = open_rpc_source(&args.rpc_addr)?;
+    dispatch(source, &args).await
 }
 
 /// Resolve the window and run the selected mode over `source`.
@@ -157,20 +128,11 @@ async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), Box
             if is_empty(resume, to, tip, args.finalised_depth) {
                 return Ok(());
             }
-            announce(
-                "provisioning",
-                resume,
-                to,
-                tip,
-                args.adapter,
-                args.strategy,
-                None,
-            );
+            announce("provisioning", resume, to, tip, args.strategy, None);
             let out = run_provision(source, args.strategy, resume, to, tuning).await?;
             report(
                 "provisioned",
                 Mode::Provision,
-                args.adapter,
                 args.strategy,
                 &out,
                 args.concurrency,
@@ -187,20 +149,11 @@ async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), Box
             if is_empty(resume, to, tip, args.finalised_depth) {
                 return Ok(());
             }
-            announce(
-                "indexing",
-                resume,
-                to,
-                tip,
-                args.adapter,
-                args.strategy,
-                Some(db),
-            );
+            announce("indexing", resume, to, tip, args.strategy, Some(db));
             let out = run_sync(source, args.strategy, backend.clone(), resume, to, tuning).await?;
             report(
                 "indexed",
                 Mode::Sync,
-                args.adapter,
                 args.strategy,
                 &out,
                 args.concurrency,
@@ -219,22 +172,13 @@ async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), Box
             if is_empty(resume, to, tip, args.finalised_depth) {
                 return Ok(());
             }
-            announce(
-                "provisioning+indexing",
-                resume,
-                to,
-                tip,
-                args.adapter,
-                args.strategy,
-                Some(db),
-            );
+            announce("provisioning+indexing", resume, to, tip, args.strategy, Some(db));
 
             let provision: Outcome =
                 run_provision(Arc::clone(&source), args.strategy, resume, to, tuning).await?;
             report(
                 "provisioned",
                 Mode::Both,
-                args.adapter,
                 args.strategy,
                 &provision,
                 args.concurrency,
@@ -245,13 +189,12 @@ async fn dispatch<S: BenchSource>(source: Arc<S>, args: &Args) -> Result<(), Box
             report(
                 "indexed",
                 Mode::Both,
-                args.adapter,
                 args.strategy,
                 &sync,
                 args.concurrency,
             );
 
-            report_bottleneck(args.adapter, &provision, &sync, args.concurrency);
+            report_bottleneck(&provision, &sync, args.concurrency);
             if args.verify {
                 verify(&backend, resume, to).await?;
             }
@@ -299,7 +242,6 @@ fn announce(
     resume: Height,
     to: Height,
     tip: Height,
-    adapter: AdapterArg,
     strategy: Strategy,
     db: Option<&Path>,
 ) {
@@ -309,10 +251,9 @@ fn announce(
         None => String::new(),
     };
     println!(
-        "{verb} [{}, {}] ({count} blocks) from {} ({} blocks) tip {}{target}",
+        "{verb} [{}, {}] ({count} blocks) from rpc ({} blocks) tip {}{target}",
         u32::from(resume),
         u32::from(to),
-        adapter.as_str(),
         strategy.as_str(),
         u32::from(tip),
     );

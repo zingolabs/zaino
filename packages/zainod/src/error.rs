@@ -9,11 +9,8 @@ pub enum IndexerError {
     /// Configuration is missing, malformed, or invalid.
     #[error("configuration error: {0}")]
     ConfigError(String),
-    /// Opening the Zebra ReadState database failed (Direct source mode).
-    #[error("opening the validator ReadState database failed")]
-    OpenReadState(#[source] zaino_source_zebra_readstate::OpenReadStateError),
     /// Building the validator JSON-RPC client failed (from the configured
-    /// coordinates in Direct/Rpc source mode).
+    /// coordinates in the Rpc source mode).
     #[error("building the validator JSON-RPC client failed")]
     RpcClient(#[source] zaino_rpc::RpcError),
     /// The validator's tip poller could not take its first reading, so no

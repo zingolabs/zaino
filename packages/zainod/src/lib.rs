@@ -30,25 +30,11 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     info!(version = env!("CARGO_PKG_VERSION"), "zainod started");
 
     // TEST-ONLY: under the `ztest-fixture` feature AND the runtime env var, boot
-    // an in-process regtest Direct config, ignoring `--config`. The ztest e2e
-    // mounts a legacy-schema config this greenfield loader can't parse; this is
-    // the bridge. Inert in any build without both the feature and the env var.
+    // an in-process mainnet Rpc config, ignoring `--config`. The ztest e2e mounts
+    // a legacy-schema config this greenfield loader can't parse; this is the
+    // bridge. Inert in any build without both the feature and the env var.
     #[cfg(feature = "ztest-fixture")]
-    let config = if std::env::var_os(crate::config::TEST_FIXTURE_ENV).is_some() {
-        warn!(
-            "TEST FIXTURE CONFIG active ({}) — NOT FOR PRODUCTION; ignoring --config {}",
-            crate::config::TEST_FIXTURE_ENV,
-            config_path.display(),
-        );
-        crate::config::regtest_direct_fixture()
-    } else if std::env::var_os(crate::config::MAINNET_STATE_FIXTURE_ENV).is_some() {
-        warn!(
-            "MAINNET DIRECT/STATE FIXTURE CONFIG active ({}) — NOT FOR PRODUCTION; ignoring --config {}",
-            crate::config::MAINNET_STATE_FIXTURE_ENV,
-            config_path.display(),
-        );
-        crate::config::mainnet_direct_state_fixture()
-    } else if std::env::var_os(crate::config::MAINNET_RPC_FIXTURE_ENV).is_some() {
+    let config = if std::env::var_os(crate::config::MAINNET_RPC_FIXTURE_ENV).is_some() {
         warn!(
             "MAINNET RPC FIXTURE CONFIG active ({}) — NOT FOR PRODUCTION; ignoring --config {}",
             crate::config::MAINNET_RPC_FIXTURE_ENV,

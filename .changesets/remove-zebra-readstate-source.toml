@@ -1,0 +1,25 @@
+# Note: like `remove-legacy-indexer-crates.toml`, this records a crate
+# retirement that `relman changeset check` has no dedicated path for — the
+# retired crate is no longer a governed target. The entries follow that file's
+# style for consistency; retirement tooling in relman is out of scope here.
+
+[[changes]]
+crate = "zaino-source-zebra-readstate"
+kind = "breaking"
+section = "Removed"
+description = "Crate removed. The Zebra ReadState (on-disk finalised state) source path is retired; the RPC adapter (zaino-source-zebra-rpc), including the fork's `getpreindexcompactblock` compact read, is the only validator source."
+migration = "Depend on zaino-source-zebra-rpc (composed by zaino-source-zebra) instead of zaino-source-zebra-readstate; reach the validator over JSON-RPC."
+
+[[changes]]
+crate = "zaino-source-zebra"
+kind = "breaking"
+section = "Changed"
+description = "ZebraValidator is now RPC-only. The `with_read_state` constructor and the `read_state`/`state` accessors are removed; `rpc_only` is the sole constructor. Tip subscription is unchanged (the synthesised poller via `with_tip_polling`). The `test_dependencies` feature is removed."
+migration = "Construct with `ZebraValidator::rpc_only`; drop any use of `with_read_state`/`read_state`."
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = "The `direct` source mode (Zebra ReadState, keyed by `zebra_cache_dir`) is removed from the daemon config; `rpc` is the only source mode. The Direct-based fixtures and their env vars (ZAINO_TEST_REGTEST_DIRECT_FIXTURE, ZAINO_MAINNET_DIRECT_STATE_FIXTURE, ZAINO_TEST_ZEBRA_CACHE_DIR) are removed."
+migration = "Change `source.mode = \"direct\"` to `source.mode = \"rpc\"` and drop `zebra_cache_dir`; the JSON-RPC coordinates and auth fields are unchanged."

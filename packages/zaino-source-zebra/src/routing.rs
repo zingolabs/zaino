@@ -1,4 +1,4 @@
-//! The routing table: which transport answers each question.
+//! The Zebra validator source: every query answered over JSON-RPC.
 
 use std::time::Duration;
 
@@ -9,15 +9,10 @@ use zaino_primitives::types::{
     TransactionId, TreeRoots, Treestate, Utxo,
 };
 use zaino_source::*;
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 
-use crate::fallback::retry_over_fetch;
-
 /// Normalise a sub-adapter's own non-domain error to the seam type, so the
-/// composite presents one `QueryError<E>` regardless of which transport answered.
-/// The state path (read-state) owns `ReadStateError`; the fetch path (RPC) already
-/// speaks the seam.
+/// source presents one `QueryError<E>` regardless of which handle answered.
 fn to_seam<
     E: core::fmt::Debug + core::fmt::Display,
     N: std::error::Error + Into<NonDomainError>,
@@ -30,57 +25,31 @@ fn to_seam<
     }
 }
 
-/// A Zebra validator reached over one or both of its transports.
+/// A Zebra validator reached over its JSON-RPC interface.
+///
+/// JSON-RPC answers every query — blocks, the mempool, the passthrough RPCs, and
+/// the derived queries the validator computes — at the cost of a request/response
+/// round-trip per call. It is the only transport this source speaks.
 pub struct ZebraValidator {
-    /// Always present: the mempool and the passthrough RPCs are reachable no
-    /// other way.
+    /// The JSON-RPC handle every query routes through.
     rpc: ZebraRpcAdapter,
-    /// The state path: direct database access, when this deployment has it.
-    readstate: Option<ZebraReadStateAdapter>,
     /// Synthesised tip subscription, present once `with_tip_polling` is called.
     tip: Option<PolledChainTip>,
 }
 
 impl ZebraValidator {
-    /// A validator reached over JSON-RPC alone.
+    /// A validator reached over JSON-RPC.
     pub fn rpc_only(rpc: ZebraRpcAdapter) -> Self {
-        Self {
-            rpc,
-            readstate: None,
-            tip: None,
-        }
-    }
-
-    /// A validator whose state database is also readable directly.
-    ///
-    /// The JSON-RPC adapter is still required: it serves the mempool and the
-    /// passthrough RPCs, which the state database cannot answer at all.
-    pub fn with_read_state(rpc: ZebraRpcAdapter, readstate: ZebraReadStateAdapter) -> Self {
-        Self {
-            rpc,
-            readstate: Some(readstate),
-            tip: None,
-        }
+        Self { rpc, tip: None }
     }
 
     /// Add a tip subscription, polling `source` every `interval`.
     ///
-    /// Opt-in and fallible, rather than part of construction, for two reasons.
-    /// Seeding a subscription takes one live read, so folding it into
-    /// construction would make a validator handle impossible to build while the
-    /// validator is down — exactly when an indexer most wants to start and
-    /// retry. And polling a validator nobody is watching is pure cost, so the
-    /// caller says when it wants the capability.
-    ///
-    /// The poll task owns its source for its lifetime and so cannot borrow this
-    /// composite; the caller passes a second handle to the same validator.
-    /// Anything that can answer [`GetChainTip`] will do, which also lets a test
-    /// drive the subscription without a validator.
-    ///
-    /// Zebra's read-only state handle exposes no native tip stream, so this is
-    /// currently the only way to obtain one over either transport. If that
-    /// changes, [`SubscribeChainTip`] prefers the native stream and this
-    /// becomes the fallback.
+    /// Fallible and opt-in: seeding takes one live read, so a caller building a
+    /// handle while the validator is down defers this until it is up. The poll
+    /// task owns `source` for its lifetime, so the caller passes a second handle
+    /// to the same validator; anything answering [`GetChainTip`] will do, which
+    /// also lets a test drive the subscription without one.
     pub async fn with_tip_polling<S>(
         mut self,
         source: S,
@@ -96,50 +65,6 @@ impl ZebraValidator {
         );
         Ok(self)
     }
-
-    /// The state adapter, when this deployment has one.
-    fn state(&self) -> Option<&ZebraReadStateAdapter> {
-        self.readstate.as_ref()
-    }
-
-    /// The state adapter, exposed for tests that read the database directly.
-    #[cfg(feature = "test_dependencies")]
-    pub fn read_state(&self) -> Option<&ZebraReadStateAdapter> {
-        self.readstate.as_ref()
-    }
-}
-
-/// Route a query to the state service, falling back to JSON-RPC on a domain
-/// miss.
-///
-/// Used only where the state path is *semantically* narrower than the fetch one —
-/// side-chain blocks and unmined transactions — not as a general availability
-/// fallback. See [`retry_over_fetch`].
-///
-/// A macro rather than a function because a function cannot express it: the
-/// call has to dispatch the same method name across two unrelated types and
-/// return a future that borrows the receiver, which no closure signature in
-/// stable Rust can name.
-macro_rules! state_then_fetch {
-    ($self:ident, $method:ident $(, $arg:expr)*) => {{
-        if let Some(state) = $self.state() {
-            let result = state.$method($($arg),*).await.map_err(to_seam);
-            if !retry_over_fetch(&result) {
-                return result;
-            }
-        }
-        $self.rpc.$method($($arg),*).await
-    }};
-}
-
-/// Route a query to the state service where available, JSON-RPC otherwise.
-macro_rules! state_or_fetch {
-    ($self:ident, $method:ident $(, $arg:expr)*) => {{
-        match $self.state() {
-            Some(state) => state.$method($($arg),*).await.map_err(to_seam),
-            None => $self.rpc.$method($($arg),*).await,
-        }
-    }};
 }
 
 // ---------------------------------------------------------------------------
@@ -147,17 +72,12 @@ macro_rules! state_or_fetch {
 // ---------------------------------------------------------------------------
 
 impl zaino_source::ValidatorSource for ZebraValidator {
-    // The composite normalises its sub-adapters' faults to the seam type.
     type NonDomain = zaino_source::NonDomainError;
 }
 
 impl OneShotGetBlock for ZebraValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        // The finalized state holds only heights at or below its own finalized
-        // tip; the volatile top of the chain sits above it. A miss there means
-        // "not finalized yet", not "no such block", so it falls through to
-        // JSON-RPC, which sees the whole best chain.
-        state_then_fetch!(self, get_block, height)
+        self.rpc.get_block(height).await
     }
 }
 
@@ -166,20 +86,13 @@ impl OneShotGetBlockByHash for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        // A hash can name a side-chain block, which the finalized state does
-        // not hold. Its `NotFound` therefore means "not in the finalized
-        // state", not "no such block" — so the miss is retried over JSON-RPC,
-        // which sees the whole block tree. This is the accumulated knowledge
-        // the previous enum encoded inline.
-        state_then_fetch!(self, get_block_by_hash, hash)
+        self.rpc.get_block_by_hash(hash).await
     }
 }
 
 impl OneShotGetRawBlock for ZebraValidator {
     async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
-        // Same finalized-tip boundary as `get_block`: a height above the
-        // finalized state is served over JSON-RPC.
-        state_then_fetch!(self, get_raw_block, height)
+        self.rpc.get_raw_block(height).await
     }
 }
 
@@ -188,26 +101,18 @@ impl OneShotGetRawBlockByHash for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<Vec<u8>, QueryError<GetBlockByHashError>> {
-        // Same side-chain gap as `GetBlockByHash`: the finalized state does not
-        // hold blocks off the best chain.
-        state_then_fetch!(self, get_raw_block_by_hash, hash)
+        self.rpc.get_raw_block_by_hash(hash).await
     }
 }
 
 impl OneShotGetChainTip for ZebraValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
-        // The chain tip is the best block, which lives in the volatile top of
-        // the chain — above the finalized state's tip. Only JSON-RPC reports it;
-        // the read-only finalized state would answer with its own lagging tip,
-        // which is why routing the tip through the state path froze the head at
-        // the boot-time finalized height.
         self.rpc.get_chain_tip().await
     }
 }
 
 impl OneShotGetBestBlockHeight for ZebraValidator {
     async fn get_best_block_height(&self) -> Result<Height, QueryError<GetBestBlockHeightError>> {
-        // The best height tracks the chain tip; see [`get_chain_tip`].
         self.rpc.get_best_block_height().await
     }
 }
@@ -217,10 +122,7 @@ impl OneShotGetPreIndexCompactBlock for ZebraValidator {
         &self,
         height: Height,
     ) -> Result<PreIndexCompactBlock, QueryError<GetBlockError>> {
-        // The compact state path only reaches the finalized state; the volatile
-        // top — every block on a chain that has not finalized yet, e.g. all of
-        // regtest — is served over JSON-RPC on the finalized-tip miss.
-        state_then_fetch!(self, get_pre_index_compact_block, height)
+        self.rpc.get_pre_index_compact_block(height).await
     }
 }
 
@@ -233,10 +135,7 @@ impl OneShotGetTransaction for ZebraValidator {
         &self,
         txid: TransactionId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
-        // The state service has no mempool, so its `NotFound` means "not
-        // mined". An unmined transaction is found only over JSON-RPC, which is
-        // why this is a fallback rather than a preference.
-        state_then_fetch!(self, get_transaction, txid)
+        self.rpc.get_transaction(txid).await
     }
 }
 
@@ -249,14 +148,7 @@ impl OneShotGetTreestate for ZebraValidator {
         &self,
         height: Height,
     ) -> Result<Treestate, QueryError<GetTreestateError>> {
-        // Prefer the state path, but the finalized state only reaches its
-        // finalized tip; a height in the volatile top the chain-head serves is a
-        // domain miss (the adapter's presence gate) that must fall through to
-        // JSON-RPC (`z_gettreestate` serves the whole best chain), exactly like
-        // `get_commitment_tree_roots`. `state_or_fetch!` would never consult RPC
-        // while a state exists, turning a non-finalized treestate into a retried
-        // transport failure ("state service unavailable").
-        state_then_fetch!(self, get_treestate, height)
+        self.rpc.get_treestate(height).await
     }
 }
 
@@ -265,10 +157,7 @@ impl OneShotGetTreestateByHash for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<Treestate, QueryError<GetTreestateByHashError>> {
-        // Same as `get_treestate`: a non-finalized block is a domain miss the
-        // adapter reports (via a `Depth` presence check) and the composite must
-        // retry over JSON-RPC, not a false transport failure.
-        state_then_fetch!(self, get_treestate_by_hash, hash)
+        self.rpc.get_treestate_by_hash(hash).await
     }
 }
 
@@ -277,16 +166,7 @@ impl OneShotGetCommitmentTreeRoots for ZebraValidator {
         &self,
         block: BlockHash,
     ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
-        // Prefer the state path: over JSON-RPC the roots are not reported at all
-        // and have to be recovered by deserialising each pool's commitment tree,
-        // whereas the state service hands back a live tree. But the finalized
-        // state only reaches its finalized tip; the volatile top the chain-head
-        // serves sits above it, where the state answers a domain miss (`Depth`
-        // presence check). That miss falls through to JSON-RPC — which assembles
-        // the roots over the whole best chain — exactly as the block reads do.
-        // `state_or_fetch!` would never consult RPC while a state exists, so a
-        // non-finalized block's roots came back as a false zero-size tree.
-        state_then_fetch!(self, get_commitment_tree_roots, block)
+        self.rpc.get_commitment_tree_roots(block).await
     }
 }
 
@@ -297,7 +177,7 @@ impl OneShotGetSubtreeRoots for ZebraValidator {
         start_index: u16,
         limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError>> {
-        state_or_fetch!(self, get_subtree_roots, pool, start_index, limit)
+        self.rpc.get_subtree_roots(pool, start_index, limit).await
     }
 }
 
@@ -310,10 +190,7 @@ impl OneShotGetAddressBalance for ZebraValidator {
         &self,
         addresses: Vec<String>,
     ) -> Result<AddressBalance, QueryError<GetAddressBalanceError>> {
-        match self.state() {
-            Some(state) => state.get_address_balance(addresses).await.map_err(to_seam),
-            None => self.rpc.get_address_balance(addresses).await,
-        }
+        self.rpc.get_address_balance(addresses).await
     }
 }
 
@@ -324,13 +201,7 @@ impl OneShotGetAddressTxids for ZebraValidator {
         start: Height,
         end: Height,
     ) -> Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>> {
-        match self.state() {
-            Some(state) => state
-                .get_address_txids(addresses, start, end)
-                .await
-                .map_err(to_seam),
-            None => self.rpc.get_address_txids(addresses, start, end).await,
-        }
+        self.rpc.get_address_txids(addresses, start, end).await
     }
 }
 
@@ -339,10 +210,7 @@ impl OneShotGetAddressUtxos for ZebraValidator {
         &self,
         addresses: Vec<String>,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
-        match self.state() {
-            Some(state) => state.get_address_utxos(addresses).await.map_err(to_seam),
-            None => self.rpc.get_address_utxos(addresses).await,
-        }
+        self.rpc.get_address_utxos(addresses).await
     }
 }
 
@@ -353,34 +221,12 @@ impl OneShotGetAddressDeltas for ZebraValidator {
         start: Height,
         end: Height,
     ) -> Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError>> {
-        // The state service first where there is one. This inverts the usual
-        // reasoning — deltas cover every transaction in a height range, so
-        // asking the validator to compute them would be the natural choice —
-        // but `getaddressdeltas` is a legacy full-node method that Zebra does not
-        // implement. Against Zebra the state service is not a speedup here; it
-        // is the only thing that can answer at all.
-        //
-        // Both paths report mined transactions only, so the routing does not
-        // change which transactions are covered. Against the legacy full node the RPC path
-        // additionally reports spends, which the state service cannot resolve
-        // (see the readstate implementation).
-        match self.state() {
-            Some(state) => state
-                .get_address_deltas(addresses, start, end)
-                .await
-                .map_err(to_seam),
-            None => self.rpc.get_address_deltas(addresses, start, end).await,
-        }
+        self.rpc.get_address_deltas(addresses, start, end).await
     }
 }
 
 // ---------------------------------------------------------------------------
-// JSON-RPC only
-//
-// Everything below has no state-service implementation, because the state
-// database cannot answer it: mempool contents, node-local facts, the block
-// tree beyond the finalized chain, and derived queries the validator computes.
-// These need no routing decision — there is one transport that can answer.
+// Mempool and node-local facts
 // ---------------------------------------------------------------------------
 
 impl OneShotGetMempoolTxids for ZebraValidator {
@@ -413,8 +259,6 @@ impl OneShotGetMempoolCompactTransaction for ZebraValidator {
         &self,
         txid: TransactionId,
     ) -> Result<PreIndexCompactTx, QueryError<GetRawMempoolTransactionError>> {
-        // Mempool-only, like the raw read it projects from: routed to RPC, never
-        // the finalised state, which holds no mempool.
         self.rpc.get_mempool_compact_transaction(txid).await
     }
 }
@@ -423,18 +267,12 @@ impl OneShotGetMempoolSourceTip for ZebraValidator {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
-        // Deliberately *not* `state_or_fetch!`, unlike `GetChainTip` above. This
-        // tip tags a mempool set read over JSON-RPC, and the comparison it
-        // exists for is only sound if both come from one source — see the port's
-        // documentation.
         self.rpc.get_mempool_source_tip().await
     }
 }
 
 impl OneShotGetChainTips for ZebraValidator {
     async fn get_chain_tips(&self) -> Result<Vec<rpc::ChainTip>, QueryError<GetChainTipsError>> {
-        // Enumerating the block tree includes side-chain tips, which the
-        // finalized state does not retain.
         self.rpc.get_chain_tips().await
     }
 }
@@ -480,13 +318,10 @@ impl OneShotGetBlockDeltas for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<rpc::BlockDeltas, QueryError<GetBlockDeltasError>> {
-        // State service first, and it is not merely a preference: `getblockdeltas`
-        // is a legacy full-node method that **zebrad does not implement** — it answers
-        // `-32601 Method not found` — so on a zebrad-backed deployment the
-        // derivation in the state adapter is the only implementation there is.
-        // The RPC path remains for the legacy full node, and for a side-chain block the
-        // finalized state does not hold.
-        state_then_fetch!(self, get_block_deltas, hash)
+        // `getblockdeltas` is a legacy full-node method that **zebrad does not
+        // implement** — it answers `-32601 Method not found`. It is served here
+        // only by the legacy full node.
+        self.rpc.get_block_deltas(hash).await
     }
 }
 
@@ -543,9 +378,8 @@ impl OneShotGetSpentInfo for ZebraValidator {
         &self,
         outpoint: rpc::SpentOutpoint,
     ) -> Result<rpc::SpentInfo, QueryError<GetSpentInfoError>> {
-        // RPC only, and not merely by preference: `getspentinfo` reads a spent
-        // index that the read-state service does not expose, so there is no
-        // faster path to prefer. Against zebrad this answers `Unsupported`.
+        // `getspentinfo` reads a spent index zebrad does not expose; against
+        // zebrad this answers `Unsupported`.
         self.rpc.get_spent_info(outpoint).await
     }
 }
@@ -565,7 +399,7 @@ impl OneShotSendRawTransaction for ZebraValidator {
 
 impl OneShotGetDifficulty for ZebraValidator {
     async fn get_difficulty(&self) -> Result<Difficulty, QueryError<GetDifficultyError>> {
-        state_or_fetch!(self, get_difficulty)
+        self.rpc.get_difficulty().await
     }
 }
 
@@ -573,7 +407,7 @@ impl OneShotGetBlockchainInfo for ZebraValidator {
     async fn get_blockchain_info(
         &self,
     ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
-        state_or_fetch!(self, get_blockchain_info)
+        self.rpc.get_blockchain_info().await
     }
 }
 
@@ -583,36 +417,24 @@ impl OneShotGetBlockchainInfo for ZebraValidator {
 
 impl SubscribeChainTip for ZebraValidator {
     fn subscribe_to_chain_tip(&self) -> Option<watch::Receiver<TipObservation>> {
-        // Prefer a native stream if either adapter ever gains one; fall back to
-        // the synthesised poller. Today neither transport has a native stream,
-        // so this is the poller or nothing.
-        self.readstate
+        // Return the synthesised poller's receiver, or None when polling was
+        // never started.
+        self.tip
             .as_ref()
-            .and_then(|readstate| readstate.subscribe_to_chain_tip())
-            .or_else(|| {
-                self.tip
-                    .as_ref()
-                    .and_then(|tip| tip.subscribe_to_chain_tip())
-            })
+            .and_then(|tip| tip.subscribe_to_chain_tip())
     }
 }
 
 impl SubscribeBlocks for ZebraValidator {
     fn subscribe_to_blocks_received(&self) -> Option<watch::Receiver<()>> {
-        // Neither transport pushes block arrivals; that signal belongs to the
-        // syncer, which neither adapter owns.
+        // The transport does not push block arrivals; that signal belongs to the
+        // syncer, which this source does not own.
         None
     }
 }
 
 impl SourceLifecycle for ZebraValidator {
     fn shutdown(&self) {
-        // Both, unconditionally: shutdown is idempotent and an adapter that
-        // owns nothing has a no-op implementation, so there is nothing gained
-        // by asking which of them holds resources.
         self.rpc.shutdown();
-        if let Some(readstate) = &self.readstate {
-            readstate.shutdown();
-        }
     }
 }
