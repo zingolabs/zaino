@@ -27,7 +27,6 @@ members = [
     "packages/zaino-rpc",
     "packages/zaino-convert-zebra",
     "packages/zaino-source-zebra-rpc",
-    "packages/zaino-source-zebra-readstate",
     "packages/zaino-source-zebra",
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
@@ -164,13 +163,9 @@ zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.
 zaino-rpc = { path = "packages/zaino-rpc", version = "0.2.0" }
 # The single place `zebra_chain` types are translated into domain types.
 zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.2.0" }
-# Source adapters. The RPC adapter answers every question over the Zcash
-# JSON-RPC interface; the ReadState adapter answers the subset zebra's
-# in-process state can serve, and simply does not implement the rest.
+# Source adapter: answers every question over the Zcash JSON-RPC interface.
 zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.2.0" }
-zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.2.0" }
-# Composite over the two adapters: capability decides what each can answer,
-# this decides which to ask.
+# Validator source over the RPC adapter, adding a synthesised tip subscription.
 zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.0" }
 zaino-common = { path = "packages/zaino-common", version = "0.5.1" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
@@ -195,13 +190,13 @@ opt-level = 3
 debug = true
 
 # TEMPORARY: point zebra at nachog00/zebra `feat/compact-block-read-v6.3.0`,
-# which adds `ReadRequest::CompactBlock` — a zaino-shaped compact block
-# (transparent + shielded, proofs/signatures skipped) that the ReadState
-# adapter's compact source path needs. The branch tracks zebra 6.3.0
-# (zebra-state 13.0.0), matching our version requirements, so this is a drop-in
-# patch and the on-disk state format (v28) is unchanged. Only the three crates
-# we depend on directly are listed; their transitive zebra crates come from the
-# fork through its internal path deps. Revert to crates.io once the endpoint is
+# which adds a zaino-shaped compact block (transparent + shielded,
+# proofs/signatures skipped) that the RPC adapter's `getpreindexcompactblock`
+# compact source path needs. The branch tracks zebra 6.3.0 (zebra-state
+# 13.0.0), matching our version requirements, so this is a drop-in patch and
+# the on-disk state format (v28) is unchanged. Only the three crates we depend
+# on directly are listed; their transitive zebra crates come from the fork
+# through its internal path deps. Revert to crates.io once the endpoint is
 # upstreamed to ZcashFoundation/zebra.
 [patch.crates-io]
 zebra-chain = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }

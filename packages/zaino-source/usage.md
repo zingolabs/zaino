@@ -119,11 +119,11 @@ to retry.
 
 ## Capability is structural
 
-An adapter implements only the ports it can answer.
-`zaino-source-zebra-readstate` does not implement the mempool traits, because a
-read-state service has no mempool — so routing a mempool query to it is a
-compile error rather than a runtime panic. Do not add a port impl that
-`unimplemented!()`s; leave it out and let the type system carry the fact.
+An adapter implements only the ports it can answer. A transport that cannot
+serve a question — say a source with no mempool — leaves the corresponding
+traits unimplemented, so routing that query to it is a compile error rather than
+a runtime panic. Do not add a port impl that `unimplemented!()`s; leave it out
+and let the type system carry the fact.
 
 ## The mempool ports, and why there are four of them
 
@@ -174,9 +174,9 @@ transport level. Nothing is left to name.
 
 That is the general rule for this crate. **A domain variant earns its place by
 being producible by some adapter, not by being plausible.** `GetChainTipError::
-NotReady` is producible — `GetChainTip` may be answered from the state database,
-and the ReadState adapter reports "no tip yet" as an answer. A variant one
-transport cannot see but another can is correct and should stay. A variant *no*
+NotReady` is producible — a validator still syncing has no best tip yet, and the
+adapter reports "no tip yet" as an answer. A variant one transport cannot see
+but another can is correct and should stay. A variant *no*
 transport can produce is worse than absent: it tells a consumer to handle a case
 that cannot arise, and reads as though the condition were being reported when it
 is not. When a method has no such case, type it `Infallible` and say why.

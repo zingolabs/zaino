@@ -1,11 +1,10 @@
 # Cluster sync benchmark.
 #
-# Sources pre-index compact blocks from a Zebra ReadState validator, builds the
-# current-zaino index set into an LMDB backend, and (optionally) serves composed
-# compact blocks back through the store reader — measuring the end-to-end
-# indexing throughput of the real provisioner → engine pipeline over a bounded
-# height window. Meant to run on the validator's own node (ReadState needs the
-# on-disk state DB), so the numbers isolate indexing cost from network variance.
+# Sources pre-index compact blocks from a Zebra validator over JSON-RPC, builds
+# the current-zaino index set into an LMDB backend, and (optionally) serves
+# composed compact blocks back through the store reader — measuring the
+# end-to-end indexing throughput of the real provisioner → engine pipeline over
+# a bounded height window.
 [package]
 name = "sync-bench"
 version = "0.0.0"
@@ -15,7 +14,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish = false
-description = "Cluster sync benchmark: index pre-index compact blocks from a Zebra ReadState validator into LMDB and measure throughput."
+description = "Cluster sync benchmark: index pre-index compact blocks from a Zebra validator over JSON-RPC into LMDB and measure throughput."
 
 [dependencies]
 # The provisioner → engine pipeline under test, and the index set it builds.
@@ -26,13 +25,12 @@ zaino-sync = { workspace = true }
 zaino-backend-lmdb = { workspace = true }
 zaino-persistence = { workspace = true }
 zaino-persistence-codec = { path = "../../packages/zaino-persistence-codec" }
-# The source seam and the adapters it wraps (ReadState opens the on-disk state;
-# RPC takes an endpoint — the two the `--adapter` swap benches against).
+# The source seam and the RPC adapter it wraps (takes a JSON-RPC endpoint).
 zaino-source = { workspace = true }
-zaino-source-zebra-readstate = { workspace = true }
 zaino-source-zebra-rpc = { workspace = true }
-# The RPC path benches the same composite production runs (rpc_only wraps the RPC
-# adapter with a polled tip), so it exercises the real RPC source, not a bare one.
+# The bench provisions from the same validator source production runs (rpc_only
+# wraps the RPC adapter with a polled tip), so it exercises the real RPC source,
+# not a bare one.
 zaino-source-zebra = { workspace = true }
 zaino-rpc = { workspace = true }
 # Compose-on-read verification of the served compact blocks.
@@ -46,7 +44,6 @@ tokio = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-zebra-chain = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

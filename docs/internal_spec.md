@@ -11,8 +11,7 @@ each of its crates carries a `usage.md` beside its `Cargo.toml`.
   - `Zaino-Rpc` — JSON-RPC transport
   - `Zaino-Convert-Zebra` — zebra-chain → domain conversions
   - `Zaino-Source-Zebra-Rpc` — JSON-RPC adapter
-  - `Zaino-Source-Zebra-Readstate` — ReadStateService adapter
-  - `Zaino-Source-Zebra` — the validator composite
+  - `Zaino-Source-Zebra` — the validator source over JSON-RPC
   - `Zaino-Common`
   - `Zaino-Proto`
   - `Zaino-State`
@@ -221,19 +220,15 @@ and each crate's `usage.md` for practical guidance.
     This is what lets the same client serve both the production adapter and the
     live tests' independent oracle.
 
-- Adapters (`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`):
+- Adapter (`zaino-source-zebra-rpc`):
   - The JSON-RPC adapter implements every port JSON-RPC can answer, and owns
     response parsing (Zaino's external-input validation) and error
     classification.
-  - The read-state adapter reads Zebra's state database directly where Zaino
-    and Zebra share a host. It is an accelerator, not an alternative, and
-    deliberately does not implement the mempool or passthrough ports.
 
-- Composite (`zaino-source-zebra`):
-  - `ZebraValidator` holds an RPC adapter and an optional read-state adapter,
-    and routes each question to whichever can answer it. RPC-only and
-    RPC+read-state are configurations of one type rather than variants of an
-    enum.
+- Source (`zaino-source-zebra`):
+  - `ZebraValidator` wraps the RPC adapter and delegates every port to it,
+    adding a synthesised chain-tip subscription (Zebra pushes no native tip
+    stream, so the source polls for one).
 
 
 ## Zaino-Proto

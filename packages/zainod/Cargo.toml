@@ -22,13 +22,11 @@ default = []
 # Prometheus /metrics scrape endpoint.
 prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
 
-# TEST/DEPLOY-ONLY: enables in-process, env-triggered config fixtures that ignore
-# the mounted `--config` — a regtest Direct fixture for the ztest e2e harness and
-# a mainnet Direct/state fixture for cluster state-mode deploys. Both exist
-# because the surrounding harness/chart mounts a legacy-schema config this
-# greenfield config cannot parse. Never enable in a production build; each
-# fixture also requires its own runtime env var and logs a loud warning when it
-# activates.
+# TEST/DEPLOY-ONLY: enables an in-process, env-triggered mainnet Rpc config
+# fixture that ignores the mounted `--config`. It exists because the surrounding
+# harness/chart mounts a legacy-schema config this greenfield config cannot
+# parse. Never enable in a production build; the fixture also requires its own
+# runtime env var and logs a loud warning when it activates.
 ztest-fixture = []
 
 # COMPAT STUBS — UNIMPLEMENTED. Accepted verbatim so ztest can build every SUT
@@ -50,15 +48,11 @@ zaino-lightserve = { path = "../zaino-lightserve" }
 zaino-source = { workspace = true }
 zaino-source-zebra = { workspace = true }
 zaino-source-zebra-rpc = { workspace = true }
-zaino-source-zebra-readstate = { workspace = true }
 
 # Validator connection + probe.
 zaino-common = { workspace = true }
 zaino-rpc = { workspace = true }
 zaino-status = { workspace = true }
-
-# Zebra network parameters (config network -> zebra network).
-zebra-chain = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }

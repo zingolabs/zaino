@@ -6,18 +6,13 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
-description = "Composite Zebra source: routes each query to the transport that can answer it."
+description = "Zebra validator source over JSON-RPC, with a synthesised tip subscription."
 
 [dependencies]
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 zaino-source-zebra-rpc.workspace = true
-zaino-source-zebra-readstate.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-
-[features]
-# Forwards the state-handle escape hatch used by live tests.
-test_dependencies = ["zaino-source-zebra-readstate/test_dependencies"]
 
 [lints.rust]
 unsafe_code = "forbid"
