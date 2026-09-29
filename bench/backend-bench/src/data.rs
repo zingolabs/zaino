@@ -45,7 +45,7 @@ use crate::error::BenchError;
 ///
 /// The three settings bracket what mainnet actually holds, so a run says which
 /// era it is measuring rather than reporting one unlabelled number.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// An early-chain block: a couple of transparent transactions, no shielded
     /// material to speak of. Small records, so the backend's per-key overhead

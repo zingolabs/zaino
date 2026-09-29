@@ -269,7 +269,6 @@ dependencies = [
 name = "backend-bench"
 version = "0.0.0"
 dependencies = [
- "clap",
  "criterion",
  "tempfile",
  "thiserror 2.0.18",

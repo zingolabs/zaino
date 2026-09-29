@@ -32,9 +32,6 @@ zaino-sync = { workspace = true }
 zaino-primitives = { workspace = true }
 # An on-disk backend needs a directory that is removed with the target.
 tempfile = { workspace = true }
-# Shape is a `ValueEnum` so a future runner can select it without restating the
-# variants; the bench reads it from the environment.
-clap = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
