@@ -1,8 +1,7 @@
 //! Zaino source — driven port traits for validator access.
 //!
 //! One trait per question a consumer can ask about the chain.
-//! Implementations (adapters) bridge to a specific transport
-//! (JSON-RPC, Zebra ReadState, mock).
+//! Implementations (adapters) bridge to a specific transport.
 //!
 //! Consumers compose traits via bounds:
 //! ```ignore
@@ -149,9 +148,9 @@ pub use get_tx_out::GetTxOut;
 /// `QueryError<E, Self::NonDomain>`: the domain rejection stays per-operation, the
 /// non-domain side is the adapter's own type. An adapter whose faults already
 /// *are* the seam sets `type NonDomain = NonDomainError` (the identity mapping);
-/// an adapter with its own vocabulary (e.g. the read-state adapter's
-/// `ReadStateError`) names it and provides the single `Into` impl — so the
-/// classification lives in one place, not inline at every call site.
+/// an adapter with its own error vocabulary names that type and provides the
+/// single `Into` impl — so the classification lives in one place, not inline at
+/// every call site.
 pub trait ValidatorSource: Send + Sync {
     /// This adapter's non-domain failure type (see the trait docs).
     type NonDomain: std::error::Error + Send + Sync + 'static + Into<NonDomainError>;

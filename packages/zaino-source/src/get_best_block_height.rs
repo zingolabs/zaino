@@ -16,8 +16,7 @@ pub enum GetBestBlockHeightError {
 
 /// Fetch the current best block height.
 ///
-/// Maps to `getblockcount` over JSON-RPC, or the equivalent ReadState
-/// query. Lighter than [`super::GetChainTip`] when the hash isn't needed.
+/// Lighter than [`super::GetChainTip`] when the hash isn't needed.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetBestBlockHeight: ValidatorSource + Send + Sync {
     /// Fetch current tip height.

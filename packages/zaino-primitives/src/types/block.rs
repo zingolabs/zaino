@@ -40,8 +40,8 @@ pub struct BlockHeader {
 /// A complete block: header + transactions + chain metadata.
 ///
 /// This is the domain-level block — not a wire format. Adapters
-/// parse from their wire format (hex RPC, ReadState, etc.) into
-/// this type. Indexes extract from it via `ProvideContext`.
+/// parse from their wire format into this type. Indexes extract from it via
+/// `ProvideContext`.
 ///
 /// Transaction position is the block's to know, not the transaction's: a
 /// transaction's slot — and so whether it is the coinbase — is read from the

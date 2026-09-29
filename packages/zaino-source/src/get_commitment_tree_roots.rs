@@ -15,9 +15,6 @@ pub enum GetCommitmentTreeRootsError {
 }
 
 /// Fetch commitment tree roots and sizes at a specific block.
-///
-/// Available via Zebra ReadState; over JSON-RPC this is assembled
-/// from `z_gettreestate`.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetCommitmentTreeRoots: ValidatorSource + Send + Sync {
     /// Fetch tree roots.
