@@ -38,7 +38,6 @@ members = [
     "packages/zaino-chain-store",
     "packages/zaino-chain-store-zainodb",
     "packages/zainod",
-    "packages/zaino-state",
     "packages/zaino-proto",
     # Cluster sync benchmark. A leaf consumer of the indexer/store crates; kept a
     # workspace member so it shares the production lockfile (reproducible cluster
@@ -209,7 +208,6 @@ zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
 # chain store. Consumers depend on the ports; this is what a deployment picks.
 zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.5.0" }
-zaino-state = { path = "packages/zaino-state", version = "0.8.0", default-features = false }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }
