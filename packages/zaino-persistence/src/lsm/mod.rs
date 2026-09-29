@@ -32,6 +32,7 @@ pub use log::SegmentLog;
 pub use meta::{decode_list, encode_list, SegmentMeta};
 pub use reader::{SegmentSet, Snapshot};
 pub use record::{Key, Record};
+pub use report::Size;
 pub use store::{committed_files, LsmIndex, LsmStore, SegmentLogs};
 
 use crate::pages::PageError;

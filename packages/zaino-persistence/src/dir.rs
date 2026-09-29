@@ -112,6 +112,26 @@ impl IndexDir {
     }
 }
 
+/// Bytes every file under `path` takes, subdirectories included (plain `stat`s, no lock); a file
+/// removed mid-walk counts as gone
+pub fn disk_bytes(path: &Path) -> io::Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let bytes = match entry.metadata() {
+            Ok(meta) if meta.is_dir() => disk_bytes(&entry.path()),
+            Ok(meta) => Ok(meta.len()),
+            Err(error) => Err(error),
+        };
+        match bytes {
+            Ok(bytes) => total += bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use zcash_protocol::consensus::NetworkType;
@@ -183,5 +203,19 @@ mod tests {
             };
             assert!(allowed.contains(&body), "{}: {body:?}", state.label);
         }
+    }
+
+    /// Every file counts, nested ones included; a missing directory is an error
+    #[test]
+    fn disk_bytes_sums_every_file_under_the_directory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("MANIFEST"), [0; 10]).expect("manifest");
+        std::fs::create_dir(root.path().join("by_hash")).expect("subdir");
+        std::fs::write(root.path().join("by_hash/0.seg"), [0; 4096]).expect("segment");
+        std::fs::write(root.path().join("by_hash/1.seg"), []).expect("empty segment");
+
+        assert_eq!(disk_bytes(root.path()).expect("walk"), 4106);
+        let missing = disk_bytes(&root.path().join("absent")).expect_err("absent");
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 }

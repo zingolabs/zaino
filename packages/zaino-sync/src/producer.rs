@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::TryStreamExt;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{info, warn, Instrument as _, Span};
 use zaino_chainview::QuorumTip;
 use zaino_non_finalized_state::{Advance, AdvanceError, ChainHead};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
@@ -47,6 +47,8 @@ pub struct Producer<S> {
     pool: BlockFetchPool<S>,
     tips: watch::Receiver<Option<QuorumTip>>,
     progress: Arc<Progress>,
+    /// Span over following the quorum tip (bulk logs under the caller's)
+    live: Span,
 }
 
 /// Blocks one chain-head step handed the sink
@@ -67,7 +69,13 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         durable: impl IntoIterator<Item = Option<Height>>,
     ) -> Self {
         let sink = Publisher::new(sink, depth, durable);
-        Self { sink, pool, tips, progress: Arc::default() }
+        Self { sink, pool, tips, progress: Arc::default(), live: Span::none() }
+    }
+
+    /// Following the quorum tip logs under `span`
+    pub fn with_live_span(mut self, span: Span) -> Self {
+        self.live = span;
+        self
     }
 
     /// Cancel → `Ok`; either way the sink ends with `Shutdown` (every follower persists and stops)
@@ -88,13 +96,14 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
     }
 
     async fn produce(&mut self) -> Result<Infallible, ProduceError> {
+        let live = self.live.clone();
         let mut head = self.bulk(None).await?;
         loop {
             let tip = self.tip().await?;
             let pool = self.agreeing(tip);
             let ahead = u32::from(tip.block.height).saturating_sub(u32::from(head.tip().height));
             if ahead <= self.sink.depth().get() {
-                if self.step(&mut head, tip.block, &pool).await? {
+                if self.step(&mut head, tip.block, &pool).instrument(live.clone()).await? {
                     self.changed().await?;
                 }
                 continue;
@@ -102,11 +111,12 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
             // bulk's `set_tip` finalizes the window → only once the validator still holds our tip
             // (then buried past the reorg bound); else step onto its block at our height = reorg
             let ours = head.tip();
-            let theirs = block_at(&pool, ours.height).await.header().hash;
+            let theirs = block_at(&pool, ours.height).instrument(live.clone()).await.header().hash;
             if theirs == ours.hash {
                 head = self.bulk(Some(ours.hash)).await?;
             } else {
-                self.step(&mut head, BlockRef { hash: theirs, height: ours.height }, &pool).await?;
+                let theirs = BlockRef { hash: theirs, height: ours.height };
+                self.step(&mut head, theirs, &pool).instrument(live.clone()).await?;
             }
         }
     }
@@ -141,10 +151,10 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
                 emit::reorg();
                 let published = self.publish(head, tip).await;
                 warn!(
-                    %fork,
+                    fork = u32::from(fork),
                     dropped = u32::from(before.height) + 1 - u32::from(fork),
                     added = u32::from(tip.height) + 1 - u32::from(fork),
-                    height = %tip.height,
+                    height = u32::from(tip.height),
                     hash = %tip.hash,
                     "Chain reorg detected"
                 );
@@ -169,12 +179,12 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         let age = Duration::from_secs(now.saturating_sub(u64::from(header.time)));
         let finalized = self.sink.final_tip().map_or(0, u32::from);
         info!(
-            height = %header.height,
+            height = u32::from(header.height),
             hash = %header.hash,
             blocks = published.blocks,
             txs = published.txs,
             age = %Human(age),
-            %finalized,
+            finalized,
             "Chain tip advanced"
         );
     }
@@ -239,7 +249,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
                 Err(error) => {
                     warn!(
                         %error,
-                        next = %self.sink.next(),
+                        next = u32::from(self.sink.next()),
                         retry = %Human(RETRY_DELAY),
                         "Block fetch failed"
                     );
@@ -317,7 +327,7 @@ where
             Ok(Some(block)) => return block,
             Ok(None) => unreachable!("a one-height fetch yields its block or fails"),
             Err(error) => {
-                warn!(%error, %height, retry = %Human(RETRY_DELAY), "Block fetch failed");
+                warn!(%error, height = u32::from(height), retry = %Human(RETRY_DELAY), "Block fetch failed");
                 tokio::time::sleep(RETRY_DELAY).await;
             }
         }

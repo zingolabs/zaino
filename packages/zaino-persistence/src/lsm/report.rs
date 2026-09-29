@@ -45,7 +45,7 @@ pub(super) fn cancelled(set: &str, merges: usize) {
 }
 
 /// `412.3MiB` (binary units, no space: one logfmt token)
-struct Size(u64);
+pub struct Size(pub u64);
 
 impl fmt::Display for Size {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

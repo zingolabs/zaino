@@ -503,7 +503,7 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
         self.writer.committed(done).await?;
         let finalized = self.writer.finalized_height();
         debug!(
-            height = %finalized.map_or(0, u32::from),
+            height = finalized.map_or(0, u32::from),
             blocks = in_flight.blocks,
             bytes = in_flight.bytes,
             elapsed = ?in_flight.started.elapsed(),
@@ -524,8 +524,8 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
         if changed {
             let height = self.writer.applied_height().map_or(0, u32::from);
             match serving {
-                true => info!(%height, "Serving"),
-                false => info!(%height, "Syncing, requests refused"),
+                true => info!(height, "Serving"),
+                false => info!(height, "Syncing, requests refused"),
             }
         }
     }

@@ -42,7 +42,7 @@ use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateSt
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService, BlockHashStore};
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_primitives::types::{Block, ReorgDepth};
+use zaino_primitives::types::{Block, Height, ReorgDepth};
 use zaino_source::{BlockFetchPool, FetchRoute, ZebraRpcAdapter};
 use zaino_sync::{BlockSink, FeeSink, IndexFollower, IndexWriter, Producer, Zip};
 use zcash_protocol::consensus::NetworkType;
@@ -166,7 +166,8 @@ async fn boot(
         config.primary_validator_index().map_or(FetchRoute::Spread, FetchRoute::Primary),
         config.fetch.concurrency,
     );
-    let producer = Producer::new(block_sink, pool, tips, depth, durable.into_iter().flatten());
+    let producer = Producer::new(block_sink, pool, tips, depth, durable.into_iter().flatten())
+        .with_live_span(crate::logging::component("ZainoNFS"));
 
     // --- serving: index first, validator behind it; bound here (EADDRINUSE = boot failure)
     let mut server = GrpcServer::new(
@@ -215,6 +216,23 @@ async fn boot(
     // --- run: nothing fallible left, every stage one task
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
+    let mut report = |span: &Span, (finalized, synced), config: &ZainoIndexConfig| {
+        let dir = config.path.clone();
+        let run = crate::index_report::run(finalized, synced, dir, cancel.child_token());
+        spawn(&mut tasks, "index-report", span.clone(), run);
+    };
+    let index = &config.index;
+    report(&compact_block_span, gates(&compact_block), &index.compact_block);
+    report(&value_balance_span, gates(&value_balance), &index.value_balance);
+    if let Some((span, follower)) = &block_hash {
+        report(span, gates(follower), &index.block_hash);
+    }
+    if let Some((span, follower)) = &tree_state {
+        report(span, gates(follower), &index.tree_state);
+    }
+    if let Some((span, follower)) = &transparent {
+        report(span, gates(follower), &index.transparent_address);
+    }
     // followers: the root token (a failure cancels everything), stopped by the producer's Shutdown
     spawn(&mut tasks, "compact-block", compact_block_span, compact_block.run(cancel.clone()));
     spawn(&mut tasks, "value-balance", value_balance_span, value_balance.run(cancel.clone()));
@@ -230,8 +248,8 @@ async fn boot(
     for poller in chainview.pollers {
         spawn(&mut tasks, "chainview", chainview_span.clone(), poller.run(cancel.child_token()));
     }
-    let sync_span = crate::logging::component("ZainoSync");
-    spawn(&mut tasks, "producer", sync_span, producer.run(cancel.child_token()));
+    let source_span = crate::logging::component("ZainoSource");
+    spawn(&mut tasks, "producer", source_span, producer.run(cancel.child_token()));
     spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
     spawn(
         &mut tasks,
@@ -353,6 +371,13 @@ fn open_transparent_address(
         .enabled
         .then(|| open_index(TransparentAddressIndexWriter::NAME, config, open))
         .transpose()
+}
+
+/// `follower`'s durable tip and serving gate, for its `Index on disk` report
+fn gates<W: IndexWriter, F, D>(
+    follower: &IndexFollower<W, F, D>,
+) -> (watch::Receiver<Option<Height>>, watch::Receiver<bool>) {
+    (follower.subscribe_finalized(), follower.subscribe_synced())
 }
 
 /// `writer`'s own queue off `block_sink`, committing per `config.batch_mib`

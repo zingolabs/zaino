@@ -102,23 +102,22 @@ The `terminal` format follows go-ethereum's layout, with a component column:
 
 ```text
 INFO  [09-28|17:29:12.660] CompactBlockIdx:     Opening from /var/lib/zaino/compact-block
-WARN  [09-28|17:29:15.175] ChainView:           Validator catching up         endpoint=zebrad:18232 height=3434171 behind=65,512 hash=00000000…1a76bf89
-INFO  [09-28|17:29:42.659] ZainoSync:           Syncing blocks                height=31,399 target=3,433,171 synced=0.91% bps=1,047 tps=6,077 eta=54m10s
+WARN  [09-28|17:29:15.175] ChainView:           Validator catching up         endpoint=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
+INFO  [09-28|17:29:42.659] ZainoSource:         Syncing blocks                height=31,399 target=3,433,171 synced=0.91% bps=1,047 tps=6,077 eta=54m10s
 ```
 
 - Each line has a 5-character level, a UTC `MM-DD|HH:MM:SS.mmm` timestamp, the
   component that logged it, and the message, padded to 30 columns when fields
   follow, so repeated lines align.
 - Components: `Zainod` (lifecycle), `Metrics`, `ChainView` (validator polling,
-  mempool), `ZainoSync` (block fetch), `Grpc`, and one per index
+  mempool), `ZainoSource` (bulk block fetch), `ZainoNFS` (following the chain tip, reorgs), `Grpc`, and one per index
   (`CompactBlockIdx`, `ValueBalanceIdx`, `BlockHashIdx`,
   `TreeStateIdx`, `TransparentAddrIdx`), which also owns that index's
   commits and compactions. In `json` the component is the `component` field of
   the event's enclosing span.
-- Fields are `key=value` logfmt, parseable by Loki and `hl`. Counts from 1,000
-  up are grouped with commas. Heights are not, so they paste straight into an
-  RPC call, except `height` and `target` on `ZainoSync` progress lines
-  (`Syncing blocks`, `Block fetch stalled`), which read as progress. A 64-hex hash shows its first and last 8 digits (`json` keeps it
+- Fields are `key=value` logfmt, parseable by Loki and `hl`. Integers from
+  1,000 up, heights included, are grouped with commas (`json` keeps them plain
+  numbers). A 64-hex hash shows its first and last 8 digits (`json` keeps it
   whole). A value containing a space or `=` is quoted, and an error field
   carries its whole source chain. A path in a message longer than 48 columns
   keeps its tail (`…/zaino/compact-block`).
@@ -133,13 +132,15 @@ What an operator sees at `info`:
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
-| `ZainoSync` | `Syncing to finalized target` | info | A bulk pass starts (`from`, `target` = tip − `finalised_depth`, `tip`). |
-| `ZainoSync` | `Syncing blocks` | info | Every 30 s during a bulk pass (`height`, `target`, `synced`, `bps`, `tps`, `eta`). |
-| `ZainoSync` | `Block fetch stalled` | warn | A whole 30 s interval of a bulk pass added no block. |
-| `ZainoSync` | `Reached finalized target` | info | A bulk pass finished (`blocks`, `elapsed`, average `bps`). |
-| `ZainoSync` | `Chain tip advanced` | info | Each chain-head step past bulk (`height`, `hash`, `blocks`, `txs`, block `age`, `finalized`). |
-| `ZainoSync` | `Chain reorg detected` | warn | A branch won (`fork`, `dropped`, `added`, new tip). |
+| `ZainoSource` | `Syncing to finalized target` | info | A bulk pass starts (`from`, `target` = tip − `finalised_depth`, `tip`). |
+| `ZainoSource` | `Syncing blocks` | info | Every 30 s during a bulk pass (`height`, `target`, `synced`, `bps`, `tps`, `eta`). |
+| `ZainoSource` | `Block fetch stalled` | warn | A whole 30 s interval of a bulk pass added no block. |
+| `ZainoSource` | `Reached finalized target` | info | A bulk pass finished (`blocks`, `elapsed`, average `bps`). |
+| `ZainoNFS` | `Chain tip advanced` | info | Each chain-head step past bulk (`height`, `hash`, `blocks`, `txs`, block `age`, `finalized`). |
+| `ZainoNFS` | `Chain reorg detected` | warn | A branch won (`fork`, `dropped`, `added`, new tip). |
 | index | `Serving` / `Syncing, requests refused` | info | The index's serving gate changes. |
+| index | `Index on disk` | info | Every 120 s while that index syncs, silent once it serves (`durable` tip, omitted while empty; `size` = every file in its directory). |
+| index | `Index size unreadable` | warn | That interval's directory walk failed (`durable`, `error`); the next one retries. |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 
 Per-commit lines (`Committed batch`) and every LSM merge (`Compacting segments`,

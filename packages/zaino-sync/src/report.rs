@@ -41,7 +41,8 @@ impl Progress {
     pub(crate) fn start(&self, start: Height, target: Height, tip: Height) {
         let mut tally = self.tally();
         tally.pass = Some(Pass { target, started: Instant::now(), blocks: tally.blocks });
-        info!(%start, %target, %tip, "Syncing to finalized target");
+        let (start, target, tip) = (u32::from(start), u32::from(target), u32::from(tip));
+        info!(start, target, tip, "Syncing to finalized target");
     }
 
     /// Quorum tip moved mid-pass
@@ -67,7 +68,7 @@ impl Progress {
         let elapsed = pass.started.elapsed();
         let blocks = tally.blocks - pass.blocks;
         info!(
-            height = %pass.target,
+            height = u32::from(pass.target),
             blocks,
             elapsed = %Human(elapsed),
             bps = per_second(blocks, elapsed),

@@ -15,6 +15,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 mod fd_limit;
+mod index_report;
 pub mod indexer;
 pub mod logging;
 mod metrics;

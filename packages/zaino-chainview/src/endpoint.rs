@@ -231,7 +231,7 @@ impl<S: EndpointSource> EndpointPoller<S> {
                             {
                                 warn!(
                                     endpoint = %self.address,
-                                    height = %tip.height,
+                                    height = u32::from(tip.height),
                                     behind = u32::from(network).saturating_sub(tip.height.into()),
                                     hash = %tip.hash,
                                     "Validator catching up",

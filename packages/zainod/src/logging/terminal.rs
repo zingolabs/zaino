@@ -1,5 +1,5 @@
 //! Terminal log line:
-//! `INFO  [09-25|12:00:30.002] ZainoSync:           Syncing blocks                height=1,730,091 bps=2,853`
+//! `INFO  [09-25|12:00:30.002] ZainoSource:         Syncing blocks                height=1,730,091 bps=2,853`
 //!
 //! - Level tag, `MM-DD|HH:MM:SS.mmm` UTC, nearest [`COMPONENT`] span, message padded to
 //!   [`MESSAGE_WIDTH`] when fields follow
@@ -303,7 +303,8 @@ mod tests {
         let hash = "000000000022c9338155930761987061f1c65cad85b6ee60037a0c221a76bf89";
         tracing::subscriber::with_default(subscriber, || {
             let daemon = tracing::error_span!("component", component = "Zainod");
-            let sync = tracing::error_span!(parent: &daemon, "component", component = "ZainoSync");
+            let sync =
+                tracing::error_span!(parent: &daemon, "component", component = "ZainoSource");
             sync.in_scope(|| {
                 tracing::info!(
                     height = %1_730_091u32,
@@ -331,11 +332,11 @@ mod tests {
         let expected = [
             format!(
                 "{:<21}{:<30} height=1730091 blocks=1,812 delta=-250,000 rows=999",
-                "ZainoSync:", "Syncing blocks"
+                "ZainoSource:", "Syncing blocks"
             ),
             format!(
                 "{:<21}{:<30} reason=\"queue full\" ratio=0.5 hash=00000000…1a76bf89",
-                "ZainoSync:", "Commit waited"
+                "ZainoSource:", "Commit waited"
             ),
             format!(
                 "{:<21}{:<30} error=\"disk gone\" endpoint=10.0.0.1:8232",
