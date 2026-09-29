@@ -1,0 +1,26 @@
+[package]
+name = "zaino-index-transparent-address"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Transparent-address index: receives and spends as two immutable sorted-run projections"
+
+[dependencies]
+arc-swap.workspace = true
+imbl.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-primitives.workspace = true
+zaino-sync.workspace = true
+zcash_protocol.workspace = true
+zcash_transparent.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+zaino-primitives = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+zcash_script.workspace = true
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+proptest.workspace = true
