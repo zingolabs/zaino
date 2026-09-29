@@ -39,6 +39,13 @@ implements the `OneShot*` ports it can, and the compiler says which
 deployments the client over it can serve: an arm whose deployment's `…Source`
 bundle names a port the adapter lacks does not compile.
 
+`[indexer] fetch` pairs with the source: `compact` (default) needs a validator
+serving zaino's pre-index compact read, i.e. the zebra fork over either
+transport; `full` indexes from whole blocks over the standard read, so an
+`rpc` source pointed at a stock validator works, at the cost of deserialising
+proofs the indexes never read. The mainnet RPC fixture takes the same choice
+from `ZAINO_TEST_FETCH`.
+
 ## Boot-time checks
 
 Two things happen before the indexer resumes, both loud when they fire:

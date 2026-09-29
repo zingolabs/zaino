@@ -32,10 +32,31 @@ impl StoreConfig {
     }
 }
 
+/// What the indexer asks the validator for at each height.
+///
+/// Both reads project to the same provisioning context, so the index built is
+/// identical either way; they differ in where the work of skipping what the
+/// indexes never read is done, and in which validators can answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FetchStrategy {
+    /// The pre-index compact block: proofs, signatures and input scripts are
+    /// skipped on the validator's side, so the indexer never deserialises them.
+    /// Needs a validator that serves the compact read (zaino's zebra fork).
+    #[default]
+    Compact,
+    /// The whole block over the standard block read, deserialised and projected
+    /// locally. Any validator answers it; the indexer pays to deserialise what
+    /// it then discards.
+    Full,
+}
+
 /// Index-build tuning.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct IndexerConfig {
+    /// What the provisioner fetches per height.
+    pub fetch: FetchStrategy,
     /// Blocks committed per atomic batch.
     pub batch_size: u32,
     /// Contexts buffered between the provisioner and the engine.
@@ -52,6 +73,7 @@ pub struct IndexerConfig {
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
+            fetch: FetchStrategy::default(),
             batch_size: 1000,
             channel_capacity: 256,
             finalised_depth: MAX_BLOCK_REORG_HEIGHT,

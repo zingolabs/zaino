@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 pub use zaino_common::Network;
-pub use zaino_runtime::config::{IndexerConfig, StoreConfig};
+pub use zaino_runtime::config::{FetchStrategy, IndexerConfig, StoreConfig};
 
 use crate::error::IndexerError;
 
@@ -309,6 +309,32 @@ pub const TEST_FIXTURE_STORE_ENV: &str = "ZAINO_TEST_STORE_DIR";
 #[cfg(feature = "ztest-fixture")]
 pub const TEST_FIXTURE_MAP_SIZE_ENV: &str = "ZAINO_TEST_MAP_SIZE_GB";
 
+/// Env var selecting what the mainnet Rpc fixture's indexer fetches per height:
+/// `compact` (the fork's pre-index compact block, the default) or `full` (whole
+/// blocks over the standard read, which any validator answers — see
+/// [`FetchStrategy`]). Optional; an unrecognised value is reported and the
+/// default kept.
+#[cfg(feature = "ztest-fixture")]
+pub const TEST_FIXTURE_FETCH_ENV: &str = "ZAINO_TEST_FETCH";
+
+/// The fetch strategy the mainnet Rpc fixture's env selects, default when unset.
+#[cfg(feature = "ztest-fixture")]
+fn fixture_fetch_strategy() -> FetchStrategy {
+    match std::env::var(TEST_FIXTURE_FETCH_ENV).as_deref() {
+        Ok("compact") => FetchStrategy::Compact,
+        Ok("full") => FetchStrategy::Full,
+        Ok(other) => {
+            tracing::warn!(
+                env = TEST_FIXTURE_FETCH_ENV,
+                value = other,
+                "unrecognised fetch strategy; expected `compact` or `full`, keeping the default"
+            );
+            FetchStrategy::default()
+        }
+        Err(_) => FetchStrategy::default(),
+    }
+}
+
 /// Default LMDB map size (GiB) for the mainnet state fixture. A full mainnet
 /// index far exceeds a regtest chain's, so this is generous headroom over what
 /// the index actually occupies; the deploy caps it under the volume size.
@@ -399,6 +425,8 @@ pub const MAINNET_RPC_FIXTURE_ENV: &str = "ZAINO_MAINNET_RPC_FIXTURE";
 /// - [`TEST_FIXTURE_JSONRPC_ENV`]: the validator JSON-RPC `host:port`.
 /// - [`TEST_FIXTURE_STORE_ENV`]: the writable FS-store directory.
 /// - [`TEST_FIXTURE_MAP_SIZE_ENV`]: the LMDB map size in GiB (store ceiling).
+/// - [`TEST_FIXTURE_FETCH_ENV`]: `compact` or `full` — what the indexer fetches
+///   per height. `full` lets the fixture index from a stock validator.
 ///
 /// The serving policy (mainnet, reorg-margin finalised depth, gRPC on
 /// `0.0.0.0:8137`) is baked. NEVER for production: gated behind BOTH the
@@ -432,7 +460,10 @@ pub fn mainnet_rpc_fixture() -> DaemonConfig {
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
         },
-        indexer: IndexerConfig::default(),
+        indexer: IndexerConfig {
+            fetch: fixture_fetch_strategy(),
+            ..IndexerConfig::default()
+        },
     }
 }
 

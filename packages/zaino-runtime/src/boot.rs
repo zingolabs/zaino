@@ -23,16 +23,18 @@ use zaino_chain_head_service::{ChainHeadInitError, ChainHeadService, ChainHeadSu
 use zaino_component::{ComponentName, Managed, ReachabilityProbe, StatusSource, StatusWatch};
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_core::chain_view::ChainTier;
-use zaino_indexer::{SourceSyncDriver, SyncTuning};
+use zaino_indexer::{SourceFetch, SourceSyncDriver, SyncTuning};
 use zaino_indexes::index_set::IndexSet;
-use zaino_indexes::sets::current_zaino::context_from_pre_index_compact_block;
+use zaino_indexes::sets::current_zaino::{
+    context_from_block, context_from_pre_index_compact_block, CurrentZainoContext,
+};
 use zaino_persistence::{Namespace, OpenError};
 use zaino_persistence_codec::reserved_namespaces;
 use zaino_service::use_cases::{Serves, UseCase};
 use zaino_service::TakeSnapshot;
 use zaino_store::{StoreComponent, StoreReader, WatermarkRepairError};
 
-use crate::config::IndexedDeploymentConfig;
+use crate::config::{FetchStrategy, IndexedDeploymentConfig};
 use crate::deployment::{compose, DeploymentEngine, IndexedSource};
 use crate::orchestra::{Orchestra, OrchestraBuilder};
 use crate::plan::RuntimePlan;
@@ -112,21 +114,61 @@ where
     let store_reader = StoreReader::<_, D::Indexes>::new(Arc::new(backend.clone()));
     repair_watermark::<D>(&store_reader)?;
 
-    // The indexer sources the cheap pre-index compact block and builds the
-    // deployment's index set, resuming from the backend watermark.
-    let driver = SourceSyncDriver::resuming_compact(
-        &backend,
-        D::Indexes::pipelines(),
-        Arc::clone(&source),
-        |compact_block| context_from_pre_index_compact_block(&compact_block),
-        SyncTuning {
-            batch_size: config.indexer.batch_size,
-            finalised_depth: config.indexer.finalised_depth,
-            channel_capacity: config.indexer.channel_capacity,
-            concurrency: config.indexer.concurrency,
-        },
-    )
-    .map_err(DeployError::Indexer)?;
+    let tuning = SyncTuning {
+        batch_size: config.indexer.batch_size,
+        finalised_depth: config.indexer.finalised_depth,
+        channel_capacity: config.indexer.channel_capacity,
+        concurrency: config.indexer.concurrency,
+    };
+
+    // The indexer builds the deployment's index set from what the validator
+    // hands it per height, resuming from the backend watermark. Which read it
+    // asks for is the configured fetch strategy; both project to the one
+    // provisioning context, so the index built is the same either way.
+    match config.indexer.fetch {
+        FetchStrategy::Compact => {
+            let driver = SourceSyncDriver::resuming_compact(
+                &backend,
+                D::Indexes::pipelines(),
+                Arc::clone(&source),
+                |compact_block| context_from_pre_index_compact_block(&compact_block),
+                tuning,
+            )
+            .map_err(DeployError::Indexer)?;
+            assemble::<D, A, C, _, _>(source, store_reader, driver, serve).await
+        }
+        FetchStrategy::Full => {
+            let driver = SourceSyncDriver::resuming(
+                &backend,
+                D::Indexes::pipelines(),
+                Arc::clone(&source),
+                |block| context_from_block(&block),
+                tuning,
+            )
+            .map_err(DeployError::Indexer)?;
+            assemble::<D, A, C, _, _>(source, store_reader, driver, serve).await
+        }
+    }
+}
+
+/// Bring up everything around an indexer that is already built: the chain
+/// head anchored over the same client, the engine composed under the
+/// deployment's routing, the serving adapter, and the Orchestra over the lot.
+async fn assemble<D, A, C, F, Fetch>(
+    source: Arc<C>,
+    store_reader: StoreReader<LmdbBackend, D::Indexes>,
+    driver: SourceSyncDriver<C, LmdbBackend, CurrentZainoContext, F, Fetch>,
+    serve: impl FnOnce(IndexedEngine<D, C>) -> A,
+) -> Result<Orchestra, DeployError>
+where
+    D: RuntimePlan<Config = IndexedDeploymentConfig>,
+    C: IndexedSource,
+    StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainTier>,
+    IndexedEngine<D, C>: Serves<D::UseCase>,
+    RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
+    Fetch: SourceFetch<C>,
+    F: Fn(Fetch::Item) -> CurrentZainoContext + Send + Sync + 'static,
+{
     // Capture the confirmed-watermark receiver before the driver is moved into
     // its component — it is the chain head's only handle onto what the store
     // has durably committed (confirm-before-trim).
