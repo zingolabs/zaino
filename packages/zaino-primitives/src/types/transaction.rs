@@ -23,6 +23,7 @@ pub struct Transaction {
     pub txid: TransactionId,
     /// Transparent pool data.
     pub transparent: TransparentData,
+    pub sprout: SproutData,
     /// Sapling pool data.
     pub sapling: SaplingData,
     /// Orchard pool data.
@@ -37,22 +38,39 @@ pub struct Transaction {
     pub ironwood: OrchardData,
 }
 
+impl Transaction {
+    /// Heap bytes held (allocation capacities; the inline struct excluded)
+    pub(crate) fn heap_size(&self) -> usize {
+        fn slots<T>(items: &Vec<T>) -> usize {
+            size_of::<T>() * items.capacity()
+        }
+        let transparent = &self.transparent;
+        let scripts: usize =
+            transparent.outputs.iter().map(|output| output.script.heap_size()).sum();
+        slots(&transparent.inputs)
+            + slots(&transparent.outputs)
+            + scripts
+            + slots(&self.sapling.spends)
+            + slots(&self.sapling.outputs)
+            + slots(&self.orchard.actions)
+            + slots(&self.ironwood.actions)
+    }
+}
+
 /// Transparent pool data within a transaction.
 #[derive(Debug, Clone, Default)]
 pub struct TransparentData {
-    /// Transparent inputs (spent outpoints).
-    pub inputs: Vec<TransparentInput>,
+    /// Transparent inputs, each = the outpoint it spends (coinbase inputs elided at decode)
+    pub inputs: Vec<OutPoint>,
     /// Transparent outputs.
     pub outputs: Vec<TransparentOutput>,
 }
 
-/// A transparent input: reference to a previous output being spent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransparentInput {
-    /// Transaction containing the output being spent.
-    pub prev_txid: TransactionId,
-    /// Index of the output being spent.
-    pub prev_index: OutputIndex,
+/// One transparent output, named by its transaction and position
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OutPoint {
+    pub txid: TransactionId,
+    pub vout: OutputIndex,
 }
 
 /// A transparent output.
@@ -62,6 +80,13 @@ pub struct TransparentOutput {
     pub value: Zatoshis,
     /// Output script.
     pub script: Script,
+}
+
+/// Sprout pool data within a transaction (value only: no compact-format fields)
+#[derive(Debug, Clone, Default)]
+pub struct SproutData {
+    /// Σ `vpub_new` − Σ `vpub_old` over the JoinSplits (positive = value flows out of the pool)
+    pub value_balance: SignedZatoshis,
 }
 
 /// Sapling pool data within a transaction.

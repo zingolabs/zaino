@@ -8,9 +8,12 @@ repository.workspace = true
 homepage.workspace = true
 license.workspace = true
 
+[features]
+# Test-only constructors (`BlockHeader::for_tests`) for downstream fixtures.
+testing = []
+
 [dependencies]
 thiserror = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"

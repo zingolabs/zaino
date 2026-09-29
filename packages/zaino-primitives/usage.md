@@ -1,205 +1,124 @@
-# `zaino-primitives` — usage
+# zaino-primitives
 
-Zaino's domain vocabulary: the types that describe the Zcash chain in Zaino's
-own terms, independent of how any of it is transported or stored.
+Zaino's domain vocabulary: Zcash chain types in Zaino's own terms, independent
+of how they are transported or stored. Every other Zaino crate that needs a
+height, hash, block or amount depends on this one.
 
-## The one rule
+## Dependencies: `thiserror` only
 
-**This crate's entire dependency list is `thiserror`.** That is not an
-accident of the current implementation — it is the property that makes every
-other crate able to depend on it. Adding a dependency here adds it to
-`zaino-source`, both adapters, `zaino-state`, `zaino-serve` and `zainod` at
-once.
+Anything added here lands in every crate above it. In particular there is no
+serde: formats are owned by the boundary that speaks them.
 
-In particular there is **no serde**. A serde derive in this crate would let the
-wire format and the domain model start deciding each other, which is exactly
-what ADR-0009 exists to prevent. Serialization lives at the boundary that owns
-the format:
-
-| direction | who owns the format |
+| Direction | Owner |
 |---|---|
-| validator reply → domain | `zaino-source-zebra-rpc/src/parse.rs` |
-| domain → served JSON | `zaino-serve/src/rpc/jsonrpc/wire/` |
-| domain → disk | `zaino-state`'s `Persistent*` types |
-| domain → gRPC | `zaino-proto`, generated from `.proto` |
+| validator JSON-RPC reply → domain | `zaino-source-zebra-rpc` (`parse.rs`, `convert.rs`) |
+| domain → disk | each index crate's `Persistent*` records (`zaino-persistence`) |
+| domain → gRPC | `zaino-grpc` and the index crates, onto `zaino-proto` types |
 
-## What is in here
+Fields may carry Zcash protocol bytes (raw blocks, transactions, serialized
+trees): those are consensus-defined encodings, so they are domain facts. JSON
+values never belong here.
+
+## Modules
 
 ```rust
-use zaino_primitives::types::{Block, BlockHash, Height, Transaction, Treestate};
+use zaino_primitives::protocol::{COINBASE_MATURITY, MAX_BLOCK_REORG_HEIGHT, MAX_NONFINALISED_DEPTH};
+use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
 use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 ```
 
-- `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
-  `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
-  `Treestate`, `ShieldedPool`, `ChainMetadata`, and the zatoshi quantity
-  family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis` (see below).
-- `types::rpc` — the response shapes for passthrough RPCs, in domain
-  vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
-  `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
-  `BlockSubsidy`.
-
-### Bytes are allowed; JSON is not
-
-Some types carry `Vec<u8>` — a raw block, a raw transaction, a serialized
-commitment tree. Those are **Zcash protocol bytes**: the canonical
-consensus-defined encoding that a hash commits to. They are in the domain
-because they *are* domain facts, not because they are a convenient blob.
-
-A `serde_json::Value` is a different thing entirely and does not belong here.
-If a type needs one, the type belongs at a boundary.
+- `types` — the chain: `Block` (the one decoded block every index
+  consumes, off `zaino_sync::BlockSink`), `BlockHeader`, `ChainMetadata` (cumulative tree sizes, derived by
+  the compact-block index), `Transaction` (and `types::transaction` parts,
+  Sprout's value balance included), `ValueBalance` (what a transaction moves
+  out of each pool; `fee()` = their sum, `None` for a coinbase) and
+  `BlockValueBalances` (one per transaction, named by block hash), `OutPoint`
+  (`txid` + `vout`: a transparent input is the outpoint it spends, and the key
+  both transparent indexes store under),
+  `BlockHash`, `TransactionId`, `Height`, `BlockRef`, `TreeSize`, `TreeRoot`,
+  `Treestate`, `SubtreeRoot`, `ShieldedPool`, `BlockchainInfo` and the
+  network-upgrade types, plus the zatoshi and work families below.
+- `types::rpc` — domain answers to `zaino-source` ports for validator queries
+  (`BlockDeltas`, `BlockHeaderVerbose`, `BlockSubsidy`, `ChainTip`,
+  `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`, …). Only named,
+  typed fields; `Option` means "the validator may not report it".
+- `protocol` — `COINBASE_MATURITY` (100), `MAX_BLOCK_REORG_HEIGHT` (1000),
+  `MAX_NONFINALISED_DEPTH` (1001). Stated as protocol facts, not borrowed from
+  a node; `zaino-source-zebra-rpc`'s `consensus_agreement` tests check them
+  against Zebra. Restating them elsewhere is a bug.
 
 ## Invariants live in constructors
 
-Types enforce what they claim:
-
 ```rust
-let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
-let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
-let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
-let c = CompactCiphertext::try_new(&bytes)?; // rejects anything but exactly 52 bytes
+let h = Height::try_from(800_000u32)?;                // ≤ 2^31 - 1
+let z = Zatoshis::new(21_000_000)?;                   // ≤ money supply
+let b = Block::try_new(header, txs)?;                 // non-empty tx list
+let c = CompactCiphertext::try_new(&bytes)?;          // exactly 52 bytes
 ```
 
-A transaction's position is the block's to know, not the transaction's:
-`Transaction` stores no index, and coinbase-ness is read from block order via
-`Block::coinbase()` (position 0), never from a per-transaction field that could
-disagree with the container.
+- `Height::checked_add` / `checked_sub` are checked, never wrapping.
+- `Transaction` stores no index: position is list order, and
+  `Block::coinbase()` is transaction 0.
+- `CompactCiphertext` is the 52-byte compact head of a note ciphertext;
+  once built it converts infallibly to `[u8; 52]`.
+- `TreeSize::checked_add` enforces the compact protocol's `u32` range
+  (`TreeSizeOutOfRange`); `TreeSizes::advance(&block)` = the cumulative sizes
+  after a block (one commitment per Sapling output, Orchard or Ironwood action).
 
-`CompactCiphertext` is the 52-byte compact head of a note ciphertext — the
-form a compact transaction serves to light clients, not the full 580-byte
-encryption output. Once constructed it converts infallibly to `[u8; 52]`, so
-no consumer re-checks the width.
+## Zatoshi family
 
-`Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
-expressing an invariant in the type over asserting it at a call site — the
-no-`unwrap` rule in CLAUDE.md is much easier to follow when the type has
-already done the work.
-
-## The zatoshi quantity family
-
-Three types share the zatoshi unit but carry different invariants, so summing
-and differencing amounts is done through them rather than a bare integer. See
-ADR-0013 for the doctrine.
-
-| type | range | is |
+| Type | Range | Is |
 |---|---|---|
-| `Zatoshis` | `0 ..= supply` | an amount of ZEC counted in zatoshis — a balance, a UTXO value, a single movement |
-| `ZatoshisFlowSum` | `0 ..= u128::MAX` | an accumulation of movements, **not** supply-bounded |
-| `SignedZatoshis` | `-supply ..= supply` | a signed value: a movement or a difference |
-
-A sum of *movements* — every output paying an address, every input it spent —
-counts the same coins each time they move, so it is not bounded by the supply;
-that is why it is its own type and not another `Zatoshis`. A sum of *coexisting*
-balances stays supply-bounded — coins that coexist cannot total more than
-exist — so that precondition keeps the total inside `Zatoshis` and there is no
-fourth type: that sum is the operation `Zatoshis::sum_balances`, a checked fold
-landing back in `Zatoshis`. The set of `Zatoshis` is still not closed under
-addition; the fold refuses a total past the supply rather than pretend the
-precondition held.
-
-The operations relate the types and live beside them:
+| `Zatoshis` | `0 ..= supply` | an amount: balance, UTXO value, one movement |
+| `ZatoshisFlowSum` | `0 ..= u128::MAX` | a sum of movements (not supply-bounded) |
+| `SignedZatoshis` | `-supply ..= supply` | a signed movement or difference |
 
 ```rust
-use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
-
-// Sum amounts as flow. `None` only past `u128::MAX` (unreachable in
-// practice), never on passing the supply — gross flow legitimately can.
-let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
-let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
-
-// Adopt a flow total a backend delivered already summed as a u64.
-// Infallible: a u64 always fits the u128 accumulator, and u128::MAX
-// is the flow sum's only bound.
-let lifetime = ZatoshisFlowSum::from_summed(received_total);
-
-// Net of a received flow minus a spent flow for one balance, as a signed
-// value. `None` if the two flows don't describe a coherent balance.
-let net: Option<SignedZatoshis> = received.net(spent);
-
-// Sum balances that coexist at one moment. Supply-capped, and under that
-// precondition the total lands back in `Zatoshis`. `None` means the total
-// passed the supply, which under the coexistence contract is overlapping or
-// double-counted input, not a large number.
-let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied());
+let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?; // None only past u128::MAX
+let lifetime = ZatoshisFlowSum::from_summed(total_u64);                    // source-summed total
+let net: Option<SignedZatoshis> = received.net(spent);                     // None if incoherent
+let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied()); // coexisting balances; None past supply
+let parsed = SignedZatoshis::new(value_i64)?;                          // boundary input
 ```
 
-`ZatoshisFlowSum` has two validated doors and no unchecked one:
-`try_accumulate` for a total *derived* in the domain as the checked sum of
-some amounts, and `from_summed` for a total a source *delivers already
-summed*. `SignedZatoshis` likewise — `ZatoshisFlowSum::net` for a value
-*derived* in the domain, and `SignedZatoshis::try_new` for one *parsed at a
-boundary* (a movement read off the wire or disk). `try_new` is the
-external-input validation step for a signed value, the same discipline the
-crate applies at every wire and persistence boundary, pushed down to the
-primitive.
+Movements recount the same coins, so their sum is its own type; coexisting
+balances cannot exceed the supply, so `sum_balances` lands back in `Zatoshis`
+and a total past the supply means double-counted input.
 
-## The work quantity family
+## Work family
 
-Two quantities share the proof-of-work unit and are not interchangeable:
-
-| type | is |
+| Type | Is |
 |---|---|
-| `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
-| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
+| `SingleBlockWork` | expected work of one block, from its difficulty target |
+| `AbsoluteChainWork` | total work up to a block (validators' `chainwork`) |
 
-Each fold is a method on the type it returns, and each is checked:
-
-```rust,ignore
-// A chain of one block has that block's work.
+```rust
 let mut total = AbsoluteChainWork::genesis(block_work);
-
-// Extend by one block; unwind one on reorg. Both checked, with typed errors.
-total = total.accumulate(next_block_work)?;
-total = total.rollback(next_block_work)?;
+total = total.accumulate(next_work)?; // WorkOverflow
+total = total.rollback(next_work)?;   // WorkUnderflow
 ```
 
-`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
-sends, and answers `Ok(None)` when the validator does not track the value;
-`to_be_bytes` renders back for the wire. For an integer you already hold, use
-`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
-
-The `types::work` module documentation covers why these are separate
-types, and what `AbsoluteChainWork` is *not* — in particular
-`zaino-chain-head`'s anchor-relative work, which is a third quantity.
-
-### Where `SingleBlockWork` comes from: `CompactDifficulty`
-
-The nBits encoding from the block header is its own validated type,
-`CompactDifficulty`, and the whole bits → target → work conversion is native
-to this crate — the domain owns its arithmetic, and consensus implementations
-serve as *differential-test oracles* (`zaino-source-zebra-rpc`'s `convert` tests sweep the
-pipeline against zebra across the encoding space) rather than as dependencies.
-
-Construction is only through checked doors — `try_from_bits(u32)` for a value
-carried numerically, `try_from_be_bytes([u8; 4])` for one carried as its
-display-order bytes. Both apply the acceptance set a validator enforces before
-comparing a hash (clear sign bit, target within 256 bits, non-zero target),
-plus one domain rule: the target's work must fit the 128 bits work is recorded
-in. Each rejected rule has its own `CompactDifficultyError` variant. `as_bits`
-reads the raw `u32` back out for wire and persistence renders.
-
-The work — `floor(2^256 / (target + 1))` — is computed once at construction,
-so `to_work()` is an infallible getter returning the block's
-`SingleBlockWork`. The expanded 256-bit target itself never leaves the type:
-no consumer reasons about targets, only about validity and work.
+- `AbsoluteChainWork::try_from_reported([u8; 32])` reads a validator's
+  big-endian value (`Ok(None)` when it does not track it); `to_be_bytes`
+  renders it back. `AbsoluteChainWork::new(NonZeroU128)` and
+  `SingleBlockWork::try_new(u128)` take an integer already held.
+- `CompactDifficulty` (header nBits): `try_from_bits(u32)` /
+  `try_from_be_bytes([u8; 4])` apply a validator's acceptance rules (sign bit
+  clear, target within 256 bits, non-zero) plus work fitting 128 bits, each
+  rejection its own `CompactDifficultyError` variant. `to_work()` returns the
+  precomputed `SingleBlockWork` (`floor(2^256 / (target + 1))`); `as_bits()`
+  reads the raw `u32`. The arithmetic is native; `zaino-source-zebra-rpc`'s
+  `convert` tests sweep it against Zebra.
 
 ## Byte order
 
-Internal order throughout. `BlockHash` and `TransactionHash` hold bytes in the
-order the protocol hashes them, **not** the reversed order used for display.
-The reversal is a presentation concern and happens at the boundary that
-presents:
+`BlockHash` and `TransactionId` hold internal (hash-output) byte order and
+convert via `From<[u8; 32]>` both ways. Their `Display` renders the reversed
+(RPC/explorer) hex; any other display-order rendering happens at the boundary
+that presents it.
 
-```rust
-// in an adapter or a wire module, never here
-let displayed = { let mut b = <[u8; 32]>::from(hash); b.reverse(); hex::encode(b) };
-```
+## Features
 
-Tree roots and nonces are **not** reversed for display. If you are unsure which
-a field is, check the wire module that serves it — `wire/treestate.rs` and
-`wire/subtrees.rs` each state their choice and pin it with a test.
-
-## Related
-
-- ADR-0008 — validator access is a set of single-question ports over these types.
-- `zaino-source` — the ports themselves.
+`testing` exposes `BlockHeader::for_tests(height, hash, prev_hash, time)`: a
+fixture header with regtest `bits` and every field no test asserts on zeroed.
+Enable it from `[dev-dependencies]` only.

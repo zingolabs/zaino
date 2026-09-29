@@ -20,12 +20,6 @@ impl ConsensusBranchId {
     }
 }
 
-impl From<u32> for ConsensusBranchId {
-    fn from(id: u32) -> Self {
-        Self(id)
-    }
-}
-
 impl From<ConsensusBranchId> for u32 {
     fn from(id: ConsensusBranchId) -> Self {
         id.0
@@ -39,36 +33,21 @@ impl core::fmt::Display for ConsensusBranchId {
     }
 }
 
-/// How far along a network upgrade is at the validator's current tip.
+/// At the validator's current tip (zebrad never reports a disabled upgrade)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkUpgradeStatus {
-    /// Activated. Includes upgrades activated long ago, not just the latest.
     Active,
-    /// Has an activation height that the chain has not reached yet.
+    /// Activation height not reached yet
     Pending,
-    /// Has no activation height on this network.
-    Disabled,
 }
 
-/// One entry in the validator's network upgrade schedule.
+/// One entry in the validator's upgrade schedule (`branch_id` = the identity to key on)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkUpgradeInfo {
-    /// Consensus branch identifier of this upgrade.
     pub branch_id: ConsensusBranchId,
-
-    /// The validator's name for the upgrade, e.g. `"Canopy"`, `"NU5"`.
-    ///
-    /// Descriptive only — never match on it. This is a `String` rather than an
-    /// enum on purpose: the set of upgrades grows with the protocol, so an enum
-    /// here could not represent an upgrade released after this crate was built,
-    /// and a validator ahead of Zaino is exactly the case that must not fail.
-    /// [`Self::branch_id`] is the identity to key on.
+    /// Display only, never matched (a validator ahead of Zaino names upgrades Zaino can't)
     pub name: String,
-
-    /// Height at which the upgrade activates.
     pub activation_height: Height,
-
-    /// Status at the validator's current tip.
     pub status: NetworkUpgradeStatus,
 }
 
@@ -84,13 +63,6 @@ pub struct ConsensusBranchIds {
     pub next_block: ConsensusBranchId,
 }
 
-impl ConsensusBranchIds {
-    /// Whether the next block activates a network upgrade.
-    pub fn next_block_activates_upgrade(&self) -> bool {
-        self.chain_tip != self.next_block
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,20 +71,5 @@ mod tests {
     fn branch_id_displays_as_eight_digit_hex() {
         assert_eq!(ConsensusBranchId::new(0xc2d6_d0b4).to_string(), "c2d6d0b4");
         assert_eq!(ConsensusBranchId::new(0).to_string(), "00000000");
-    }
-
-    #[test]
-    fn upgrade_activation_is_a_branch_change() {
-        let steady = ConsensusBranchIds {
-            chain_tip: ConsensusBranchId::new(1),
-            next_block: ConsensusBranchId::new(1),
-        };
-        let activating = ConsensusBranchIds {
-            chain_tip: ConsensusBranchId::new(1),
-            next_block: ConsensusBranchId::new(2),
-        };
-
-        assert!(!steady.next_block_activates_upgrade());
-        assert!(activating.next_block_activates_upgrade());
     }
 }

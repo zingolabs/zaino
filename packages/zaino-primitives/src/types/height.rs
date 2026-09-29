@@ -35,6 +35,11 @@ impl Height {
         Some(Self(sum))
     }
 
+    /// `self + 1` (panics past the protocol maximum: no chain gets there)
+    pub fn next(self) -> Self {
+        self.checked_add(1).expect("height one past the protocol maximum")
+    }
+
     /// Subtract a delta, returning `None` on underflow.
     pub fn checked_sub(self, delta: u32) -> Option<Self> {
         self.0.checked_sub(delta).map(Self)
@@ -45,9 +50,9 @@ impl Height {
         Self(self.0.saturating_sub(delta))
     }
 
-    /// Distance between two heights (absolute value).
-    pub fn abs_diff(self, other: Self) -> u32 {
-        self.0.abs_diff(other.0)
+    /// `self..=last`, ascending (empty when `last < self`)
+    pub fn up_to(self, last: Height) -> impl Iterator<Item = Height> + Send + 'static {
+        (self.0..=last.0).map(Self)
     }
 }
 
@@ -133,14 +138,6 @@ mod tests {
     #[test]
     fn saturating_sub_floors_at_zero() {
         assert_eq!(Height::GENESIS.saturating_sub(100), Height::GENESIS);
-    }
-
-    #[test]
-    fn abs_diff_commutative() {
-        let a = Height::try_from(10).expect("valid");
-        let b = Height::try_from(25).expect("valid");
-        assert_eq!(a.abs_diff(b), 15);
-        assert_eq!(b.abs_diff(a), 15);
     }
 
     #[test]

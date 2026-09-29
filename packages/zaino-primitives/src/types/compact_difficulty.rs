@@ -17,11 +17,8 @@
 //! the domain's 128-bit work width. [`CompactDifficulty`] is the proof that a
 //! value passed those checks, and carries the work they computed.
 //!
-//! The whole bits → target → work pipeline is native to this crate: the domain
-//! owns its arithmetic, and consensus implementations serve as differential
-//! test oracles (`zaino-source-zebra-rpc`'s `convert` tests sweep this module against
-//! zebra's implementation across the encoding space) rather than as
-//! dependencies. The expanded 256-bit target is deliberately internal — no
+//! The whole bits → target → work pipeline is native to this crate, pinned by known mainnet /
+//! testnet work vectors below. The expanded 256-bit target is deliberately internal — no
 //! consumer reasons about targets, only about validity and work — so the
 //! `u256` helper stays private to this module.
 //!
@@ -31,9 +28,7 @@
 mod u256;
 
 use core::fmt;
-use core::hash::{Hash, Hasher};
 
-use super::work::SingleBlockWork;
 use u256::U256;
 
 /// Width of the mantissa field in bits, including its sign bit.
@@ -45,17 +40,10 @@ const UNSIGNED_MANTISSA_MASK: u32 = SIGN_BIT - 1;
 /// Exponent offset: a raw exponent of 3 leaves the mantissa unscaled.
 const EXPONENT_OFFSET: u32 = 3;
 
-/// A validated compact difficulty (`nBits`) value from a block header.
-///
-/// Invariant: `bits` expands to a valid target — non-negative, non-zero,
-/// within 256 bits — whose work fits 128 bits, and `work` is that target's
-/// work. `work` is a function of `bits`, so equality and hashing follow from
-/// `bits` alone.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct CompactDifficulty {
-    bits: u32,
-    work: SingleBlockWork,
-}
+/// Validated `nBits`: expands to a non-negative, non-zero target within 256 bits whose work fits
+/// 128 bits
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CompactDifficulty(u32);
 
 /// Why a `u32` is not a valid compact difficulty encoding.
 ///
@@ -96,50 +84,10 @@ pub enum CompactDifficultyError {
 }
 
 impl CompactDifficulty {
-    /// Validate a raw `u32` nBits value.
-    ///
-    /// The boundary door for a value carried numerically — a parsed wire
-    /// field, a stored row. Rejects every encoding outside the acceptance set,
-    /// naming the broken rule.
+    /// Rejects every encoding outside the acceptance set, naming the broken rule
     pub fn try_from_bits(bits: u32) -> Result<Self, CompactDifficultyError> {
-        let work = expand(bits)?
-            .work()
-            .ok_or(CompactDifficultyError::WorkOverWidth { bits })?;
-        Ok(Self {
-            bits,
-            work: SingleBlockWork::from(work),
-        })
-    }
-
-    /// Validate nBits carried as its four big-endian (display-order) bytes.
-    ///
-    /// The same door as [`try_from_bits`](Self::try_from_bits) for call sites
-    /// that already hold the display bytes — the byte order zebra's
-    /// `bytes_in_display_order` and the hex wire forms use — sparing them a
-    /// manual byte-order conversion.
-    pub fn try_from_be_bytes(bytes: [u8; 4]) -> Result<Self, CompactDifficultyError> {
-        Self::try_from_bits(u32::from_be_bytes(bytes))
-    }
-
-    /// The raw `u32` nBits value.
-    ///
-    /// For wire serialization and persistence; the value is guaranteed to be a
-    /// valid compact encoding.
-    pub fn as_bits(&self) -> u32 {
-        self.bits
-    }
-
-    /// The proof-of-work this difficulty contributes to its chain:
-    /// `floor(2^256 / (target + 1))`, per specification §7.7.5. Computed at
-    /// construction.
-    pub fn to_work(&self) -> SingleBlockWork {
-        self.work
-    }
-}
-
-impl Hash for CompactDifficulty {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.bits.hash(state);
+        expand(bits)?.work().ok_or(CompactDifficultyError::WorkOverWidth { bits })?;
+        Ok(Self(bits))
     }
 }
 
@@ -188,142 +136,51 @@ fn expand(bits: u32) -> Result<U256, CompactDifficultyError> {
 
 impl fmt::Debug for CompactDifficulty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("CompactDifficulty")
-            .field(&format_args!("{:#010x}", self.bits))
-            .finish()
+        f.debug_tuple("CompactDifficulty").field(&format_args!("{:#010x}", self.0)).finish()
     }
 }
 
 impl fmt::Display for CompactDifficulty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The hex form the wire renders: eight lowercase digits, no prefix.
-        write!(f, "{:08x}", self.bits)
+        write!(f, "{:08x}", self.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use core::num::NonZeroU128;
-
     use super::*;
 
-    /// A valid nBits value: the testnet/regtest proof-of-work limit.
-    const TEST_VALID_NBITS: u32 = 0x2007_ffff;
-
+    /// Every rule in the acceptance set, in the validator's check order (all-ones rejects as
+    /// negative before its oversized exponent is looked at)
     #[test]
-    fn valid_bits_round_trip() {
-        let cd = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid");
-        assert_eq!(cd.as_bits(), TEST_VALID_NBITS);
+    fn each_invalid_encoding_names_the_rule_it_breaks() {
+        use CompactDifficultyError::*;
+        for (bits, expected) in [
+            (0x2007_ffff, None),
+            (0x2200_00ff, None),
+            (0x2100_ffff, None),
+            (0x0000_0000, Some(ZeroTarget { bits: 0 })),
+            (0x0100_0100, Some(ZeroTarget { bits: 0x0100_0100 })),
+            (0x0180_0000, Some(NegativeTarget { bits: 0x0180_0000 })),
+            (u32::MAX, Some(NegativeTarget { bits: u32::MAX })),
+            (0x2300_0001, Some(OverflowTarget { bits: 0x2300_0001 })),
+            (0x2200_0100, Some(OverflowTarget { bits: 0x2200_0100 })),
+            (0x2101_0000, Some(OverflowTarget { bits: 0x2101_0000 })),
+            (0x0101_0000, Some(WorkOverWidth { bits: 0x0101_0000 })),
+        ] {
+            assert_eq!(CompactDifficulty::try_from_bits(bits).err(), expected, "{bits:#010x}");
+        }
     }
 
+    /// Work pinned against known limits (mainnet genesis 2^13, testnet 32, classic minimum);
+    /// rendered as the wire's 8-digit hex
     #[test]
-    fn be_bytes_door_matches_the_bits_door() {
-        assert_eq!(
-            CompactDifficulty::try_from_be_bytes([0x1d, 0x00, 0xff, 0xff]),
-            CompactDifficulty::try_from_bits(0x1d00_ffff)
-        );
-    }
-
-    #[test]
-    fn zero_is_a_zero_target() {
-        assert_eq!(
-            CompactDifficulty::try_from_bits(0x0000_0000),
-            Err(CompactDifficultyError::ZeroTarget { bits: 0 })
-        );
-    }
-
-    #[test]
-    fn sign_bit_is_a_negative_target() {
-        assert_eq!(
-            CompactDifficulty::try_from_bits(0x0180_0000),
-            Err(CompactDifficultyError::NegativeTarget { bits: 0x0180_0000 })
-        );
-    }
-
-    /// All ones has the sign bit set, so it rejects as negative before the
-    /// oversized exponent is even looked at — the validator's check order.
-    #[test]
-    fn all_ones_rejects_as_negative() {
-        assert_eq!(
-            CompactDifficulty::try_from_bits(u32::MAX),
-            Err(CompactDifficultyError::NegativeTarget { bits: u32::MAX })
-        );
-    }
-
-    #[test]
-    fn oversized_exponent_overflows() {
-        assert_eq!(
-            CompactDifficulty::try_from_bits(0x2300_0001),
-            Err(CompactDifficultyError::OverflowTarget { bits: 0x2300_0001 })
-        );
-    }
-
-    /// At the two boundary exponents, a mantissa wider than the room left
-    /// overflows; one that fits is accepted.
-    #[test]
-    fn boundary_exponents_split_on_mantissa_width() {
-        assert!(CompactDifficulty::try_from_bits(0x2200_00ff).is_ok());
-        assert_eq!(
-            CompactDifficulty::try_from_bits(0x2200_0100),
-            Err(CompactDifficultyError::OverflowTarget { bits: 0x2200_0100 })
-        );
-        assert!(CompactDifficulty::try_from_bits(0x2100_ffff).is_ok());
-        assert_eq!(
-            CompactDifficulty::try_from_bits(0x2101_0000),
-            Err(CompactDifficultyError::OverflowTarget { bits: 0x2101_0000 })
-        );
-    }
-
-    /// A small exponent shifts the mantissa right; when nothing survives, the
-    /// encoding is a zero target.
-    #[test]
-    fn underflow_to_zero_is_a_zero_target() {
-        assert_eq!(
-            CompactDifficulty::try_from_bits(0x0100_0100),
-            Err(CompactDifficultyError::ZeroTarget { bits: 0x0100_0100 })
-        );
-    }
-
-    fn work_of(bits: u32) -> u128 {
-        let work = CompactDifficulty::try_from_bits(bits)
-            .expect("valid")
-            .to_work();
-        NonZeroU128::from(work).get()
-    }
-
-    /// The Zcash mainnet proof-of-work limit (and genesis nBits):
-    /// target `0x07ffff · 256^28`, work exactly `2^13`.
-    #[test]
-    fn work_of_the_mainnet_limit() {
-        assert_eq!(work_of(0x1f07_ffff), 8192);
-    }
-
-    /// The testnet/regtest proof-of-work limit: target `0x07ffff · 256^29`,
-    /// work exactly 32.
-    #[test]
-    fn work_of_the_testnet_limit() {
-        assert_eq!(work_of(TEST_VALID_NBITS), 32);
-    }
-
-    /// The classic Bitcoin-family minimum-difficulty encoding:
-    /// target `0xffff · 256^26`, work `0x1_0001_0001`.
-    #[test]
-    fn work_of_the_classic_minimum() {
-        assert_eq!(work_of(0x1d00_ffff), 0x1_0001_0001);
-    }
-
-    /// A target of 1 is a well-formed encoding whose work (`2^255`) does not
-    /// fit the 128-bit work width, so construction refuses it.
-    #[test]
-    fn tiny_target_work_is_over_width() {
-        assert_eq!(
-            CompactDifficulty::try_from_bits(0x0101_0000),
-            Err(CompactDifficultyError::WorkOverWidth { bits: 0x0101_0000 })
-        );
-    }
-
-    #[test]
-    fn display_renders_the_wire_hex_form() {
+    fn work_matches_known_limits_and_display_is_wire_hex() {
+        for (bits, work) in [(0x1f07_ffff, 8192), (0x2007_ffff, 32), (0x1d00_ffff, 0x1_0001_0001)] {
+            let computed = expand(bits).expect("valid").work().expect("fits").get();
+            assert_eq!(computed, work, "{bits:#010x}");
+        }
         let cd = CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid");
         assert_eq!(cd.to_string(), "1d00ffff");
         assert_eq!(format!("{cd:?}"), "CompactDifficulty(0x1d00ffff)");
