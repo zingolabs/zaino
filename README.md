@@ -188,13 +188,13 @@ README](https://github.com/zingolabs/zingo-adrs#pointing-a-code-repository-at-zi
 a record.
 
 Records a newcomer needs first:
-- [ADR-0006](./docs/adr/zaino/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
-- [ADR-0007](./docs/adr/zaino/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
-- [ADR-0008](./docs/adr/zaino/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
-- [ADR-0009](./docs/adr/zaino/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
-- [ADR-0010](./docs/adr/zaino/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
-- [ADR-0011](./docs/adr/zaino/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
-- [ADR-0012](./docs/adr/zaino/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
+- [ADR-0006](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
+- [ADR-0007](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
+- [ADR-0008](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
+- [ADR-0009](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
+- [ADR-0010](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
+- [ADR-0011](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
+- [ADR-0012](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
 
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
