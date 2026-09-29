@@ -1,0 +1,26 @@
+[package]
+name = "zaino-block-decode"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Consensus-encoded block bytes projected straight to the domain Block: transaction ids for every version, shielded fields read as bytes, no curve point ever decompressed."
+
+[dependencies]
+zaino-primitives = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+blake2b_simd = "1"
+
+[dev-dependencies]
+hex = { workspace = true }
+# The oracle: the same bytes through zebra's full deserialiser and the existing
+# zebra-to-domain conversion must give the same block.
+zebra-chain = { workspace = true }
+zaino-convert-zebra = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+wildcard_enum_match_arm = "deny"
