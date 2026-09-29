@@ -8,6 +8,7 @@ mod terminal;
 
 use std::borrow::Cow;
 use std::env;
+use std::fmt;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Once;
@@ -152,6 +153,16 @@ pub(crate) fn index_component(name: &str) -> tracing::Span {
         })
         .collect();
     component(&format!("{camel}Idx"))
+}
+
+/// Pairs named at runtime as one `parts` field: `receives=10.0GiB spent=9.0GiB`; the terminal
+/// writes each as its own field (keys and values without spaces)
+pub(crate) fn parts<K: fmt::Display, V: fmt::Display>(
+    pairs: impl IntoIterator<Item = (K, V)>,
+) -> String {
+    let pairs: Vec<String> =
+        pairs.into_iter().map(|(key, value)| format!("{key}={value}")).collect();
+    pairs.join(" ")
 }
 
 /// Paths in a message: past this many columns, the head elided (the tail names the index)

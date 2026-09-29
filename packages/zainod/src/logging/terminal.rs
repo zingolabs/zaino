@@ -4,10 +4,13 @@
 //! - Level tag, `MM-DD|HH:MM:SS.mmm` UTC, nearest [`COMPONENT`] span, message padded to
 //!   [`MESSAGE_WIDTH`] when fields follow
 //! - Fields `key=value`: integers ≥ 1,000 grouped, `%` fields as displayed, a value with a space
-//!   or `=` quoted, a 64-hex hash shortened
+//!   or `=` quoted, a 64-hex hash shortened, a [`PARTS`] field split into its own pairs
 //! - Enclosing spans' fields follow the event's own
 
-use std::fmt::{self, Write as _};
+use std::{
+    borrow::Cow,
+    fmt::{self, Write as _},
+};
 
 use time::{macros::format_description, OffsetDateTime};
 use tracing::{
@@ -24,6 +27,9 @@ use tracing_subscriber::{
 
 /// Span field naming the component
 pub(super) const COMPONENT: &str = "component";
+
+/// Field of runtime-named pairs ([`super::parts`]), each written as its own `key=value`
+pub(super) const PARTS: &str = "parts";
 
 /// Longest component (`TransparentAddrIdx:`) + 2
 const COMPONENT_WIDTH: usize = 21;
@@ -61,7 +67,7 @@ where
         event.record(&mut fields);
         if self.location {
             if let (Some(file), Some(line)) = (meta.file(), meta.line()) {
-                fields.pairs.push(("at", format!("{file}:{line}")));
+                fields.pairs.push((Cow::Borrowed("at"), format!("{file}:{line}")));
             }
         }
 
@@ -184,7 +190,7 @@ impl<'writer> FormatFields<'writer> for Logfmt {
 struct Fields {
     message: String,
     component: Option<String>,
-    pairs: Vec<(&'static str, String)>,
+    pairs: Vec<(Cow<'static, str>, String)>,
 }
 
 impl Fields {
@@ -192,7 +198,14 @@ impl Fields {
         match field.name() {
             "message" => self.message = value,
             COMPONENT => self.component = Some(value),
-            name => self.pairs.push((name, quoted(shortened(value)))),
+            PARTS => {
+                for part in value.split(' ') {
+                    if let Some((key, value)) = part.split_once('=') {
+                        self.pairs.push((Cow::Owned(key.to_owned()), value.to_owned()));
+                    }
+                }
+            }
+            name => self.pairs.push((Cow::Borrowed(name), quoted(shortened(value)))),
         }
     }
 }
@@ -289,7 +302,7 @@ mod tests {
     }
 
     /// Tag, timestamp shape, innermost component, padded message, grouped integers vs `%`
-    /// fields, shortened hashes, quoting, error chains, span context, bare message
+    /// fields, shortened hashes, quoting, split `parts`, error chains, span context, bare message
     #[test]
     fn lines_follow_the_layout_under_their_component() {
         let captured = Captured::default();
@@ -314,6 +327,8 @@ mod tests {
                     "Syncing blocks"
                 );
                 tracing::warn!(reason = "queue full", ratio = 0.5, %hash, "Commit waited");
+                let parts = super::super::parts([("receives", "10.0GiB"), ("spent", "9.0GiB")]);
+                tracing::info!(size = "19.0GiB", %parts, "Index on disk");
             });
             let poll = tracing::info_span!(parent: &daemon, "poll", endpoint = "10.0.0.1:8232");
             poll.in_scope(|| tracing::error!(error = &io as &dyn std::error::Error, "Poll failed"));
@@ -328,7 +343,7 @@ mod tests {
             lines[0][7..25].chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
         let levels: Vec<&str> = lines.iter().map(|l| &l[..5]).collect();
         assert_eq!(stamp, "00-00|00:00:00.000", "{}", lines[0]);
-        assert_eq!(levels, ["INFO ", "WARN ", "ERROR", "INFO "]);
+        assert_eq!(levels, ["INFO ", "WARN ", "INFO ", "ERROR", "INFO "]);
         let expected = [
             format!(
                 "{:<21}{:<30} height=1730091 blocks=1,812 delta=-250,000 rows=999",
@@ -337,6 +352,10 @@ mod tests {
             format!(
                 "{:<21}{:<30} reason=\"queue full\" ratio=0.5 hash=00000000…1a76bf89",
                 "ZainoSource:", "Commit waited"
+            ),
+            format!(
+                "{:<21}{:<30} size=19.0GiB receives=10.0GiB spent=9.0GiB",
+                "ZainoSource:", "Index on disk"
             ),
             format!(
                 "{:<21}{:<30} error=\"disk gone\" endpoint=10.0.0.1:8232",

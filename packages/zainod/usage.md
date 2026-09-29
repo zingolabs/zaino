@@ -139,7 +139,7 @@ What an operator sees at `info`:
 | `ZainoNFS` | `Chain tip advanced` | info | Each chain-head step past bulk (`height`, `hash`, `blocks`, `txs`, block `age`, `finalized`). |
 | `ZainoNFS` | `Chain reorg detected` | warn | A branch won (`fork`, `dropped`, `added`, new tip). |
 | index | `Serving` / `Syncing, requests refused` | info | The index's serving gate changes. |
-| index | `Index on disk` | info | Every 120 s while that index syncs, silent once it serves (`durable` tip, omitted while empty; `size` = every file in its directory). |
+| index | `Index on disk` | info | Every 120 s while that index syncs, silent once it serves (`durable` tip, omitted while empty; `size` = every file in its directory, then each subdirectory's share by name, e.g. `receives=… spent=…`; `json` carries them as one `parts` string). |
 | index | `Index size unreadable` | warn | That interval's directory walk failed (`durable`, `error`); the next one retries. |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 
