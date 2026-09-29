@@ -38,7 +38,6 @@ members = [
     "packages/zaino-chain-store",
     "packages/zaino-chain-store-zainodb",
     "packages/zainod",
-    "packages/zaino-serve",
     "packages/zaino-state",
     "packages/zaino-proto",
     # Cluster sync benchmark. A leaf consumer of the indexer/store crates; kept a

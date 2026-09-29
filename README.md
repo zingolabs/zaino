@@ -72,7 +72,6 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-chain-store/                 Finalised state: vocabulary and ports
   zaino-chain-store-zainodb/         Finalised state: the LMDB implementation
   zaino-state/                       Chain state and indexer service library
-  zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
 
 live-tests/                        Live-test suite — standalone workspace, run on the ztest k8s harness

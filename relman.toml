@@ -30,10 +30,6 @@ name = "zainod"
 path = "packages/zainod"
 
 [[target]]
-name = "zaino-serve"
-path = "packages/zaino-serve"
-
-[[target]]
 name = "zaino-state"
 path = "packages/zaino-state"
 
