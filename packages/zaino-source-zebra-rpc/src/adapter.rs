@@ -1,18 +1,19 @@
 //! Trait implementations: zaino-source query traits on [`ZebraRpcAdapter`].
 
+use zaino_block_decode::{decode_block, decode_transaction, DecodeError};
 use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
 };
-use zebra_chain::serialization::ZcashDeserializeInto;
 
 use crate::parse;
 
 /// Zebra JSON-RPC adapter.
 ///
-/// Implements zaino-source query traits by delegating to an [`RpcClient`],
-/// deserializing via `zebra-chain`, and converting to domain types.
+/// Implements zaino-source query traits by delegating to an [`RpcClient`] and
+/// parsing the replies into domain types: JSON replies field by field, raw
+/// block and transaction bytes through `zaino-block-decode`'s projection.
 /// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
 pub struct ZebraRpcAdapter {
     rpc: RpcClient,
@@ -213,21 +214,23 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
         // Hex decode.
         let raw_bytes = parse::parse_raw_block(&value).map_err(from_parse)?;
 
-        // Deserialize via zebra-chain.
-        let zebra_block: zebra_chain::block::Block = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
-
         // Cumulative tree sizes are indexed state, not present in the block
         // bytes, so they are zero here and populated by the caller that tracks
         // them (via `GetTreestate` or its own index). Zero is a placeholder,
         // not a measurement: a consumer that needs real sizes must not read
         // them off this block.
-        let chain_metadata = ChainMetadata::ZERO;
-
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+        decode_block(&raw_bytes, ChainMetadata::ZERO).map_err(|e| from_decode(e).into())
     }
+}
+
+/// The block and transaction bytes a validator returns are projected to the
+/// domain by walking their encoding, not by deserialising them in full: the
+/// fields the domain keeps are read as bytes and the rest — proofs,
+/// signatures, value commitments — is stepped over, so no curve point is ever
+/// decompressed for a field the indexes then discard. Bytes that are not a
+/// block are a parse failure, never retried.
+fn from_decode(e: DecodeError) -> NonDomainError {
+    NonDomainError::from_cause(FailureMode::Parse, e)
 }
 
 impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
@@ -452,14 +455,8 @@ impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
             })
             .await?;
 
-        let zebra_block: zebra_chain::block::Block = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
-
         // Tree sizes are indexed state, not block data — see `GetBlock`.
-        let chain_metadata = ChainMetadata::ZERO;
-        zaino_convert_zebra::block_from_zebra(&zebra_block, chain_metadata)
-            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+        decode_block(&raw_bytes, ChainMetadata::ZERO).map_err(|e| from_decode(e).into())
     }
 }
 
@@ -689,11 +686,7 @@ impl zaino_source::OneShotGetMempoolCompactTransaction for ZebraRpcAdapter {
                 || zaino_source::GetRawMempoolTransactionError::NotFound(txid),
             )
             .await?;
-        let zebra_tx: zebra_chain::transaction::Transaction = raw_bytes
-            .zcash_deserialize_into()
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
-        let transaction = zaino_convert_zebra::transaction_from_zebra(&zebra_tx)
-            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+        let transaction = decode_transaction(&raw_bytes).map_err(from_decode)?;
         Ok(zaino_primitives::types::PreIndexCompactTx::from(
             &transaction,
         ))

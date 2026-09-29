@@ -22,6 +22,7 @@ tracing = { workspace = true, optional = true }
 incrementalmerkletree.workspace = true
 zcash_primitives.workspace = true
 sapling-crypto = "0.7.0"
+zaino-block-decode = { version = "0.1.0", path = "../zaino-block-decode" }
 
 [features]
 tracing = ["dep:tracing"]
