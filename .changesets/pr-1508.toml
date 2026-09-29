@@ -1,0 +1,68 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f862-74b1-85d6-2a16f9831921"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+Zatoshi quantities are three checked types: `Zatoshis` (an amount, `0 ..= supply`), \
+`ZatoshisFlowSum` (an accumulation of movements, bounded only by `u128`), and \
+`SignedZatoshis` (a movement or a net, `-supply ..= supply`). `accumulate`, \
+`sum_balances` and `ZatoshisFlowSum::net` are the only arithmetic, and \
+`AddressBalance.received` is a `ZatoshisFlowSum`."""
+migration = """
+`SignedZatoshis::new(i64)` is removed: parse a value with `SignedZatoshis::try_new`, \
+or derive one with `ZatoshisFlowSum::net`. Read `AddressBalance.received` as a \
+`ZatoshisFlowSum`, since lifetime receipts can exceed the supply."""
+issues = ["#1504", "#1505"]
+
+[[changes]]
+crate = "zaino-convert-zebra"
+kind = "breaking"
+description = """
+`transaction_from_zebra` takes only the transaction; a transaction's position, and \
+whether it is the coinbase, now comes from its order in the block. `ConvertError` \
+gains a `Block` variant for converted transactions that do not form a valid block."""
+migration = "Drop the position argument from `transaction_from_zebra` calls, and match `ConvertError::Block`."
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = """
+`BlockDeltas::from_domain` and the `getblockchaininfo` pool-balance rendering are \
+infallible, because the domain types already guarantee the range. The \
+`DeltaAmountOutOfRange` and `PoolBalanceOutOfRange` errors are removed."""
+migration = "Remove handling for `DeltaAmountOutOfRange` and `PoolBalanceOutOfRange`, and drop the `?` on the now-infallible conversions."
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+An address's net value no longer rejects busy address history as corrupt. Gross \
+receipts and spends may exceed the supply; only an impossible net value is refused."""
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "fix"
+description = "A signed zatoshi value outside `-supply ..= supply` in a validator reply fails as a typed parse error."
+
+[[changes]]
+crate = "zaino-source-zebra-readstate"
+kind = "fix"
+description = "A signed zatoshi value outside `-supply ..= supply` in the read state fails as a typed parse error."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "fix"
+description = "A signed zatoshi value outside `-supply ..= supply` read from disk fails as a typed error."
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "internal"
+description = "Address balances use the checked zatoshi quantity types."
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = "Value balances use the checked zatoshi quantity types."
