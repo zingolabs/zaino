@@ -1,46 +1,38 @@
 # Updating Zebra crates
 
-Zaino indexes from Zebra, and keeping its Zebra dependency close to the latest
-release is a priority for Zaino maintainers: a small delta means no surprises
-when new versions are released. A spread between the latest and the supported
-version is treated as high-priority tech debt.
+Keep the Zebra dependency close to the latest release; a spread between latest
+and supported is high-priority tech debt.
 
 ## What depends on Zebra
 
-Zaino depends on a single Zebra crate, `zebra-chain`, used only by
-`zaino-source-zebra-rpc` (block and transaction parsing for blocks fetched over
-Zebra's JSON-RPC). Every other crate uses zaino's own domain types
-(`zaino-primitives`), so a Zebra update is confined to that adapter crate.
-Confirm with `cargo tree -i zebra-chain`.
+One crate, `zebra-chain`, used only by `zaino-source-zebra-rpc` (block and
+transaction parsing for blocks fetched over JSON-RPC). Every other crate speaks
+`zaino-primitives`, so a Zebra update is confined to that adapter. Confirm with
+`cargo tree -i zebra-chain`.
 
-Behaviour of the running node is decided by the `zebrad` release, not the
-vendored crate; when checking a JSON-RPC response shape, read the tagged Zebra
-source for the node version you target.
+Node behaviour is decided by the `zebrad` release, not the `zebra-chain` crate:
+when checking a JSON-RPC response shape, read the tagged Zebra source for the
+node version you target.
 
 ## How to update
 
-We expect readers to be familiar with the [testing](./testing.md)
-documentation.
-
-1. Establish a baseline on `dev`: `cargo nextest run --workspace --all-features`.
-2. Bump `zebra-chain` once, in the root `Cargo.toml`
-   `[workspace.dependencies]`; members inherit it via `workspace = true`.
+1. Baseline on `dev`: `cargo nextest run --workspace --all-features`.
+2. Bump `zebra-chain` once, in the root `Cargo.toml` `[workspace.dependencies]`.
 3. Fix `zaino-source-zebra-rpc`, then re-run the unit tests and the live tests
-   in `live-tests/` (via ztest) against the matching `zebrad` image.
+   (see [testing.md](./testing.md)) against the matching `zebrad` version.
 
-## Pinning to an unreleased zebra (git rev)
+`zebra-chain` depends on librustzcash crates, so a bump can force a librustzcash
+bump: take the highest version each crate shares with the one Zebra pins.
 
-When Zaino needs a zebra change not yet published to crates.io, add a root
-`[patch.crates-io]` entry pointing `zebra-chain` at a specific
-`ZcashFoundation/zebra.git` rev. Cargo honours `[patch.crates-io]` only in the
-workspace root, so member manifests must not carry their own patch sections.
+## Pinning an unreleased Zebra
 
-Add an inline comment at the patch site explaining why the pin is a git rev,
-and reference a tracking issue to revert to a published version once the
-upstream change is released.
+Pin an unpublished change through the root `[patch.crates-io]`: a git rev, or a
+path to a sibling checkout while the change spans several repositories. Cargo
+honours `[patch.crates-io]` only in the workspace root. Patching `zebra-chain`
+usually forces patching the librustzcash crates with it, so that both sides
+agree on one version of the types that cross between them. Comment each patch
+with why it is not a published version and when to drop it.
 
-## Updating librustzcash dependencies
-
-Stick with the latest tag you can find. `zebra-chain` depends on librustzcash
-crates, so a zebra update can force a librustzcash update. Find the highest
-common version across the zebra-pinned librustzcash crates on a per-crate basis.
+The current patch set (the lazy point-decompression stack) pins `orchard`,
+`sapling-crypto` and the librustzcash crates by git rev, and `zebra-chain` by
+path to `../zebra`: a fresh clone does not build without that sibling checkout.

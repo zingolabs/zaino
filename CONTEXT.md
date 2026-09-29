@@ -1,116 +1,67 @@
-# Zaino
+# Zaino glossary
 
-Zaino is a Zcash indexing service. This glossary pins down the canonical
-terms for concepts where the team has picked one word among several.
+Canonical terms, where the team has picked one word among several.
 
-## Language
-
-### Release engineering
+## Release engineering
 
 **Publishable set**:
-The workspace members released to crates.io as a unit — every member not
-marked `publish = false`. Derived from workspace metadata, never from a
-hard-coded list.
+The crates released to crates.io: the `[[target]]` entries in `relman.toml`,
+which are every `packages/*` crate without `publish = false`.
 _Avoid_: crate list, publish list
 
 **Blocking context**:
-A CI context in which release checks must pass: pushes to `stable`, whose
-tip is the release commit.
+A CI context in which release checks must pass: pushes to `stable`, whose tip is
+the release commit.
 _Avoid_: strict mode, release mode
 
 **Advisory context**:
-Any CI context that is not a blocking context. Release checks report
-findings (warnings, annotations) but do not fail the build there.
+Any CI context that is not a blocking context. Release checks report findings
+there but do not fail the build.
 _Avoid_: soft mode, informational mode
 
 **Version-reuse violation**:
-A publishable crate whose exact version already exists on crates.io while
-its packaged content differs. The tree cannot be released until that crate's
-version is bumped. An unchanged crate keeping its published version is not a
-violation.
+A publishable crate whose exact version already exists on crates.io with
+different packaged content. The tree cannot be released until that version is
+bumped. An unchanged crate keeping its published version is not a violation.
 _Avoid_: stale version, forgotten bump
 
-### Chains and networks
+## Chains and networks
 
 **The Public Testnet**:
-The public Zcash test network, and only that. Its regimes are
-non-hermetic — state is shared with other participants, and an epoch
-the public chain has left (e.g. pre-NU6.3 once NU6.3 activates there)
-cannot be re-entered. Always this exact phrase in prose; identifiers
-use `the_pub_testnet` and types use `PubTestnet`.
-_Avoid_: bare "Testnet"/"testnet", and especially "testnet" for any
-locally-launched chain, even one launched under a testnet network kind
+The public Zcash test network, and only that. Non-hermetic: state is shared
+with other participants, and an epoch it has left (pre-NU6.3, since height
+4,134,000) cannot be re-entered.
+_Avoid_: bare "testnet" for any locally launched chain, even one launched under
+a testnet network kind
 
 **Regtest net**:
-A hermetic, locally-launched chain whose activation heights the
-launcher chooses. Every hermetic local net is a regtest net, whatever
-network-kind flag it runs under.
+A hermetic, locally launched chain whose activation heights the launcher
+chooses. Every hermetic local net is a regtest net, whatever network-kind flag
+it runs under.
 _Avoid_: local testnet, custom testnet
 
-### Pools and upgrades
+## Pools and upgrades
 
 **Ironwood / Orchard (era naming)**:
-Eras, fixtures, and predicates that speak of shielded pools are named by
-pool — Orchard, Ironwood — and a name that mentions one pool pairs with
-the other pool's name, never with the upgrade's. **NU6.3** names only the
-network upgrade itself: activation heights, consensus branch ID,
-consensus rules.
-_Avoid_: mixing vocabularies in one name or one sibling set (e.g. an
-`ORCHARD_ONLY_*` fixture whose sibling is `NU6_3_ACTIVE_*` — the sibling
-is `IRONWOOD_ONLY_*`)
+Eras, fixtures and predicates about shielded pools are named by pool (Orchard,
+Ironwood), and a name mentioning one pool pairs with the other pool's name,
+never with the upgrade's. **NU6.3** names only the network upgrade: activation
+heights, consensus branch ID, consensus rules.
+_Avoid_: mixing vocabularies in one name or sibling set (an `ORCHARD_ONLY_*`
+fixture's sibling is `IRONWOOD_ONLY_*`, not `NU6_3_ACTIVE_*`)
 
 **Unfiltered pool set**:
-The pool set served when a client's `poolTypes` request field is empty —
-every shielded pool (Sapling, Orchard, Ironwood), transparent excluded.
-It has exactly one definition (`PoolTypeFilter::default`); serving any
-narrower backfill makes compact blocks disagree with their own
-`chainMetadata` tree sizes, which scanning wallets read as a phantom
-reorg.
-_Avoid_: default pools, backfill set, "Sapling and Orchard" (stale —
-predates Ironwood)
+The pools served when a request's `poolTypes` is empty: every shielded pool
+(Sapling, Orchard, Ironwood), transparent excluded. Defined once, by
+`PoolTypeFilter::default`; a narrower set makes compact blocks disagree with
+their own `chainMetadata` tree sizes, which a scanning wallet reads as a
+phantom reorg.
+_Avoid_: default pools, backfill set, "Sapling and Orchard"
 
 **Cross-address restriction**:
-The post-NU6.3 rule the Orchard Action circuit enforces: "(g_d, pk_d)
-of the output note must equal (g_d, pk_d) of the spent note" — the
-output note must carry the same expanded receiver (diversified base
-g_d, diversified transmission key pk_d) as its spent note, so each
-Orchard action is either change to the spent note's own address or a
-withdrawal (positive value balance). Orchard-to-Orchard transfers to
-any other address — including another address of the same wallet — are
-prohibited. A companion transaction-level rule forbids new value
-entering the pool. Source:
-<https://zcash.github.io/ironwood/design/action-circuit.html#the-cross-address-restriction>
-_Avoid_: "exit-only" (overclaims — same-receiver change still lands in
-the pool and its commitment tree still grows)
-
-### Decision records
-
-**zingo-adrs**:
-The `zingolabs/zingo-adrs` repository: the one append-only home of
-architecture decision records for every zingolabs code repository. A code
-repository checks in a submodule pointer to it and none of its content.
-_Avoid_: "the ledger", "the org ledger", zaino-adrs, "the ADR repo"
-
-**Org-scoped record**:
-A record that binds every zingolabs code repository. It lives at the top
-level of zingo-adrs.
-_Avoid_: global ADR, shared ADR
-
-**Repo-scoped record**:
-A record that binds exactly one code repository. It lives in that
-repository's subdirectory of zingo-adrs (`zaino/` for zaino).
-_Avoid_: local ADR, project ADR
-
-**Record citation**:
-Each scope of zingo-adrs numbers its records in its own sequence.
-A bare `ADR-NNNN` cites a record in the citing repository's own scope; a
-citation into another scope carries the path (`zaino/0016`, or the
-org-level `003`).
-_Avoid_: bare numbers across scopes, "zingolabs ADR" (stale form)
-
-**Record status**:
-The first line under a record's `## Status` heading, one of `proposed`,
-`accepted`, or `superseded by <record citation>`. Prose after that line
-may narrow a partial supersession; the line itself is the whole record's
-standing.
-_Avoid_: deprecated, retired, obsolete, "no longer applies"
+The post-NU6.3 Orchard Action circuit rule that an output note carry the same
+`(g_d, pk_d)` as the note it spends, so every Orchard action is change to the
+spent note's own address or a withdrawal. Details:
+[Ironwood activation](./docs/notes/ironwood-activation.md).
+_Avoid_: "exit-only" (same-receiver change still lands in the pool, and its
+commitment tree still grows)

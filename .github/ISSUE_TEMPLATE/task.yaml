@@ -58,30 +58,20 @@ body:
       multiple: true
       options:
         - zainod
-        - zaino-runtime
-        - zaino-indexer
-        - zaino-sync
-        - zaino-indexes
-        - zaino-store
-        - zaino-store-service
+        - zaino-grpc
         - zaino-chainview
-        - zaino-chain-head
-        - zaino-chain-head-service
-        - zaino-backend-lmdb
+        - zaino-sync
+        - zaino-index-compact-block
+        - zaino-index-tree-state
+        - zaino-index-transparent-address
         - zaino-persistence
-        - zaino-lightserve
+        - zaino-persistence-macros
+        - zaino-chain-head
         - zaino-source
+        - zaino-source-macros
         - zaino-source-zebra-rpc
-        - zaino-mempool
-        - zaino-mempool-service
-        - zaino-wallet
-        - zaino-rpc
-        - zaino-noderpc
-        - zaino-proto
-        - zaino-core
         - zaino-primitives
-        - zaino-consensus
-        - zaino-address
+        - zaino-proto
         - Testing / CI
         - Documentation
         - Other

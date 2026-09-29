@@ -57,78 +57,24 @@ timers? If not, downgrade. Leave a brief comment only if the choice is
 non-obvious (e.g. "multi_thread required: test exercises a race between
 writer and reader on the db").
 
-## Persistence-boundary conversions: `PersistentRecord`, not `From`/`TryFrom`
+## Disk and wire boundaries: named functions, not `From`/`TryFrom`
 
-Every on-disk record is an explicit DTO — named `Persistent<X>` by
-convention — that implements `zaino_persistence_codec::PersistentRecord`:
+Bytes coming off disk or off the wire are the input-validation step, so the
+conversion is a named function whose signature states the direction and the
+failure — never `impl From` / `impl TryFrom`, which hide both behind `.into()`.
 
-- `fn from_domain(domain: &X) -> Self` — infallible; the domain value is
-  already valid.
-- `fn into_domain(self) -> Result<X, DecodeError>` — the disk → domain
-  validation step.
-- The byte layout is the `RecordLayout` supertrait: `#[derive(PersistentRecord)]`
-  for positional layouts, hand-written only for irregular framing (unframed
-  repetition, count-prefixed nested collections).
+- Disk: the index that owns a file owns its layout, as `encode(&X) -> [u8; N]`
+  and `decode(&[u8; N]) -> X` (or `Result<X, E>` when some bytes are invalid).
+  Reference: `packages/zaino-index-tree-state/src/heights.rs`.
+- Wire: domain crates (`zaino-primitives`, …) never depend on `zaino-proto`.
+  The crate that produces or consumes the wire bytes owns the conversion (e.g.
+  `encode_compact_block` in `packages/zaino-index-compact-block/src/build.rs`); a fallible
+  wire → domain conversion returns an error enum naming each rejection.
+- A golden-bytes / round-trip test sits next to each layout and each wire
+  conversion, not in a distant test module.
 
-Never `impl From` / `impl TryFrom` across this boundary.
-
-**Why this rule exists**:
-
-1. The `PersistentX → X` direction *is* the validation step for bytes
-   coming off disk. A named method puts that contract in the API; a
-   `TryFrom` leaves it implicit.
-1. Named methods are grep-friendly and disambiguate direction at every
-   call site (`record.into_domain()` reads direction and boundary; `.into()`
-   hides both).
-1. Splitting mapping (`from_domain`/`into_domain`) from layout
-   (`RecordLayout`) keeps the error-prone byte half mechanical.
-
-**Reference**: `PersistentHeaderValue` in
-`packages/zaino-indexes/src/indexes/headers.rs`. Copy its shape, including
-the pinned golden-bytes test beside it.
-
-**Scope**: this rule covers DB-boundary conversions. It does not govern
-conversions between two business-layer types, error `From` impls used
-with `?`, or conversions involving foreign types that don't cross the
-persistence or wire boundaries.
-
-## Wire-boundary conversions: adapter-owned, not `From`/`TryFrom`
-
-The same reasoning applies at the gRPC/JSON-RPC boundary — the wire →
-domain direction is the *external-input* validation step. Domain types live
-in `zaino-core` / `zaino-primitives`, which must never depend on a wire
-schema (`zaino-proto`, jsonrpsee): that would recouple the domain to a
-transport. So the serve **adapter** owns conversion:
-
-- `to_wire` / `try_from_wire` live in the adapter crate, on a **local
-  extension trait** (`trait ToWire { fn to_wire(self) -> ...; }`, impl'd
-  for the foreign domain type) or as free functions. The orphan rule forbids
-  inherent methods on a foreign type anyway.
-- `try_from_wire` returns a per-conversion error enum documenting each
-  rejection reason.
-- Two adapters over one port render the same domain answer into two
-  different wire shapes; neither leaks into the domain crate.
-
-**Reference**: `ToWire` in `packages/zaino-lightserve/src/wire.rs`.
-
-**Enforcement (covers both boundaries)**:
-
-- CI lint: `makers lint-boundary-conversions` (run as part of
-  `makers lint`) greps the tree for any `impl From` / `impl TryFrom`
-  where either side is a `Persistent*` type or a `proto::` type and
-  fails the build.
-- Review checklist — apply on every PR that adds or changes a
-  `Persistent*` record or a wire conversion:
-  1. No `From`/`TryFrom` across either boundary. (The lint catches these,
-     but read for them anyway.)
-  1. Persistence goes through `PersistentRecord` (`from_domain` /
-     `into_domain`); wire through the adapter's `to_wire` / `try_from_wire`.
-  1. Visibility is the minimum that compiles (`EntryCodec`'s associated
-     record types force `pub` on index DTOs; adapter wire traits stay
-     `pub(crate)`).
-  1. `Persistent*` types do *nothing else* — no business logic, no
-     accessors. A golden-bytes / round-trip test sits next to each record
-     and each wire conversion, not in a distant test module.
+Error `From` impls used with `?`, and conversions between two domain types,
+are outside this rule.
 
 ## No `.unwrap()`: propagate or handle every error
 
@@ -176,8 +122,7 @@ say so when you do.
 ## Crate usage guides: keep them current
 
 Each crate is documented by a usage guide at `packages/<crate>/usage.md`, indexed
-from the root `README.md`'s "Crate usage guides" section. The set is deliberately
-incomplete and filled in crate by crate.
+from the root `README.md`'s "Crate usage guides" section.
 
 When a change adds or alters a crate's **public capability** — a new port,
 service, config knob, public method, or a behavioural contract consumers rely on
@@ -186,3 +131,40 @@ one if none fits. If the crate has no guide yet, create it and add it to the
 README index. This mirrors the CHANGELOG discipline: the CHANGELOG records *what
 changed*, the guide records *how to use it*, and neither substitutes for the
 other. Purely internal refactors need no guide edit.
+
+## `zaino-persistence` changes: heavy proptest run before you're done
+
+Every index's durability rests on `packages/zaino-persistence`. After **any**
+change inside it (code, tests, `SimFs`, even a refactor), and before reporting
+the work as done, run the heavy validation below. The default `cargo test` run
+is deliberately light (64 model-test cases, ~2 s) and is not enough.
+
+```bash
+# 1. heavy: fresh random seeds, round after round, for at least 3 minutes
+end=$((SECONDS + 180)); round=0
+while [ $SECONDS -lt $end ]; do
+  round=$((round + 1))
+  PROPTEST_CASES=1000 cargo test -p zaino-persistence --features testing \
+    || { echo "FAILED in round $round"; break; }
+done
+
+# 2. every crate built on it
+cargo test -p zaino-internal-block-hash-to-height -p zaino-internal-value-balance \
+  -p zaino-index-transparent-address -p zaino-index-compact-block -p zaino-index-tree-state
+```
+
+- Step 1 re-runs the whole persistence suite each round, so the thread-timing
+  sensitive tests (background merges, failed I/O, crash states) repeat too, and
+  the model test (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`)
+  runs 1000 fresh random histories per round.
+- Env overrides (proptest 1.6): `PROPTEST_CASES` (cases per proptest; overrides
+  the in-code 64), `PROPTEST_MAX_SHRINK_ITERS` (shrink harder on a failure),
+  `PROPTEST_VERBOSE=1` (print each case). Lengthen the run by raising the `180`
+  (seconds); never shorten it.
+- Keep debug assertions on: use the default test profile, not `--release`.
+  Some invariant checks (`Pages::read_unchecked`) are `debug_assert!`.
+- A failure writes the shrunk case to
+  `packages/zaino-persistence/proptest-regressions/`. Commit that file (it
+  replays on every future run), fix the bug, and rerun the whole block. Never
+  lower case counts, loosen an assertion, or skip a test to get green.
+- Report the rounds completed and the result in your summary.
