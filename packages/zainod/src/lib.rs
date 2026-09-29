@@ -1,6 +1,5 @@
 //! Zaino Indexer service.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
@@ -8,80 +7,51 @@ use std::path::PathBuf;
 use crate::config::load_config;
 use crate::error::IndexerError;
 use crate::indexer::start_indexer;
-#[cfg(feature = "ztest-fixture")]
-use tracing::warn;
-use tracing::{error, info};
+use tracing::{error, info, Instrument as _};
 
+mod chainview;
 pub mod cli;
 pub mod config;
 pub mod error;
+mod fd_limit;
 pub mod indexer;
+pub mod logging;
 #[cfg(feature = "prometheus")]
-pub mod metrics;
+mod metrics;
 pub mod paths;
+pub mod verify;
 
-/// Run the Zaino indexer.
+/// Runs the Zaino indexer until a shutdown signal (`Ok`) or the first failure (`Err`).
 ///
-/// Runs the main indexer loop with restart support.
-/// Logging should be initialized by the caller before calling this function.
-/// Returns an error if config loading or indexer startup fails.
+/// - no in-process restart: a failure ends the process, the service manager restarts it, and
+///   the next boot proves its state from disk (`docs/design/durability.md` §6)
+/// - logging initialised by the caller
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
-    zaino_logging::try_init();
+    crate::logging::try_init()
+        .map_err(|error| IndexerError::ConfigError(format!("logging: {error}")))?;
+    daemon(config_path).instrument(crate::logging::component("Zainod")).await
+}
 
-    info!(version = env!("CARGO_PKG_VERSION"), "zainod started");
-
-    // TEST-ONLY: under the `ztest-fixture` feature AND the runtime env var, boot
-    // an in-process regtest config, ignoring `--config`. The ztest e2e
-    // mounts a legacy-schema config this greenfield loader can't parse; this is
-    // the bridge. Inert in any build without both the feature and the env var.
-    #[cfg(feature = "ztest-fixture")]
-    let config = if std::env::var_os(crate::config::TEST_FIXTURE_ENV).is_some() {
-        warn!(
-            "TEST FIXTURE CONFIG active ({}) — NOT FOR PRODUCTION; ignoring --config {}",
-            crate::config::TEST_FIXTURE_ENV,
-            config_path.display(),
-        );
-        crate::config::regtest_fixture()
-    } else {
-        load_config(&config_path)?
-    };
-    #[cfg(not(feature = "ztest-fixture"))]
+async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
+    info!(version = env!("CARGO_PKG_VERSION"), "Starting");
     let config = load_config(&config_path)?;
 
     #[cfg(feature = "prometheus")]
     if let Some(endpoint) = config.metrics_endpoint {
-        crate::metrics::init(endpoint)?;
+        crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
     }
 
-    loop {
-        match start_indexer(config.clone()).await {
-            Ok(joinhandle_result) => {
-                info!("Zaino Indexer started successfully.");
-                match joinhandle_result.await {
-                    Ok(indexer_result) => match indexer_result {
-                        Ok(()) => {
-                            info!("Exiting Zaino successfully.");
-                            return Ok(());
-                        }
-                        Err(IndexerError::Restart) => {
-                            error!("Zaino encountered critical error, restarting.");
-                            continue;
-                        }
-                        Err(e) => {
-                            error!(%e, "exiting Zaino with error");
-                            return Err(e);
-                        }
-                    },
-                    Err(e) => {
-                        error!(%e, "Zaino exited early with error");
-                        return Err(e.into());
-                    }
-                }
-            }
-            Err(e) => {
-                error!(%e, "Zaino failed to start");
-                return Err(e);
-            }
+    let running = start_indexer(config).await.inspect_err(|error| {
+        error!(%error, "Startup failed");
+    })?;
+    match running.await? {
+        Ok(()) => {
+            info!("Shutdown complete");
+            Ok(())
+        }
+        Err(error) => {
+            error!(%error, "Stopped with error");
+            Err(error)
         }
     }
 }

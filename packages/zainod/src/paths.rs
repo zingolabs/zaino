@@ -7,9 +7,12 @@ pub fn default_config() -> PathBuf {
     under(dirs::config_dir(), ".config").join("zaino/zainod.toml")
 }
 
-/// `<cache dir>/zaino/store`
-pub fn default_store() -> PathBuf {
-    under(dirs::cache_dir(), ".cache").join("zaino/store")
+/// `<cache dir>/zaino/indexes/<name>`
+///
+/// One directory per index, because they do not share a storage engine — compact blocks are
+/// append-only files, not a table in someone else's database.
+pub fn default_index(name: &str) -> PathBuf {
+    under(dirs::cache_dir(), ".cache").join("zaino/indexes").join(name)
 }
 
 /// `/tmp/zaino/<home_subdir>` when no home dir (e.g. unset `HOME` under a service manager)

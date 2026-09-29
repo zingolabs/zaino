@@ -1,10 +1,8 @@
 //! Error types for the zainod daemon.
 
+use zaino_sync::FollowError;
+
 /// Errors from configuring, booting, or running the Zaino daemon.
-///
-/// Each variant keeps its cause typed (`#[from]`/`#[source]`); only the
-/// component-boot boundary is boxed, since `OrchestraBuilder::boot` is generic
-/// over each component's error type and one enum cannot name them all.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     /// Configuration is missing, malformed, or invalid.
@@ -12,25 +10,38 @@ pub enum IndexerError {
     ConfigError(String),
     /// The validator's JSON-RPC endpoint could not be resolved, authenticated, or reached.
     #[error(transparent)]
-    ValidatorProbe(#[from] zaino_rpc::ProbeError),
-    /// Seeding the validator tip subscription failed (first tip read).
-    #[error("reading the validator tip to seed the tip subscription failed")]
-    TipPolling(#[source] zaino_source::QueryError<zaino_source::GetChainTipError>),
-    /// The non-finalised chain-head could not anchor against the validator.
-    #[error("the chain-head could not anchor against the validator")]
-    ChainHeadInit(#[source] zaino_chain_head_service::ChainHeadInitError),
-    /// Opening the LMDB index store failed.
+    ValidatorProbe(#[from] zaino_source::ProbeError),
+    /// Opening an index directory failed.
     #[error(transparent)]
-    OpenStore(#[from] zaino_persistence::OpenError),
-    /// Building or running the sync stack (backend, provisioner, engine) failed.
+    OpenIndex(#[from] zaino_persistence::StoreError),
+    /// The compact-block index could not resume — its stored tree sizes will not decode.
     #[error(transparent)]
-    Sync(#[from] zaino_indexer::IndexerError),
-    /// The validator was unreachable when the runtime gated on it at boot.
+    ResumeIndex(#[from] zaino_index_compact_block::IndexWriterError),
+    /// The tree-state index's carries would not reseed off disk.
     #[error(transparent)]
-    ValidatorUnreachable(#[from] zaino_runtime::ValidatorUnreachable),
-    /// A runtime component failed to boot.
-    #[error("component failed to boot")]
-    Boot(#[source] Box<dyn std::error::Error + Send + Sync>),
+    OpenTreeStateIndex(#[from] zaino_index_tree_state::IndexWriterError),
+    /// An index with no errors of its own (block-hash, transparent-address) stopped.
+    #[error(transparent)]
+    Index(#[from] FollowError<zaino_persistence::StoreError>),
+    #[error(transparent)]
+    CompactBlockIndex(#[from] FollowError<zaino_index_compact_block::IndexWriterError>),
+    #[error(transparent)]
+    TreeStateIndex(#[from] FollowError<zaino_index_tree_state::IndexWriterError>),
+    #[error(transparent)]
+    OpenValueBalanceIndex(#[from] zaino_internal_value_balance::IndexWriterError),
+    #[error(transparent)]
+    ValueBalanceIndex(#[from] FollowError<zaino_internal_value_balance::IndexWriterError>),
+    /// The configured validator set is empty or beyond the endpoint-set bound.
+    #[error(transparent)]
+    ChainView(#[from] zaino_chainview::ConfigError),
+    /// A chainview endpoint was ejected (failure budget spent, or no mempool).
+    #[error(transparent)]
+    ChainViewEndpoint(#[from] zaino_chainview::EndpointPollError),
+    #[error(transparent)]
+    Produce(#[from] zaino_sync::ProduceError),
+    /// Binding or running the gRPC server failed.
+    #[error(transparent)]
+    Grpc(#[from] zaino_grpc::GrpcServeError),
     /// A background task panicked or was cancelled.
     #[error(transparent)]
     TokioJoinError(#[from] tokio::task::JoinError),
@@ -38,7 +49,7 @@ pub enum IndexerError {
     #[cfg(feature = "prometheus")]
     #[error("metrics error: {0}")]
     MetricsError(String),
-    /// A fatal runtime escalation — the caller's run loop restarts the daemon.
-    #[error("restart zaino")]
-    Restart,
+    /// A runtime task ended cleanly before any shutdown signal (never expected: a fault)
+    #[error("{task} task ended before shutdown")]
+    TaskEnded { task: &'static str },
 }

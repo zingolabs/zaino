@@ -1,55 +1,62 @@
-//! Boots the Zaino daemon on the runtime stack.
+//! Boots the Zaino daemon and composes its pipeline.
 //!
-//! Translates the daemon [`DaemonConfig`] into the runtime stack's typed params
-//! and supervises validator → indexer → store → wallet-gRPC under one
-//! [`Orchestra`](zaino_runtime::Orchestra). The stack crates stay config-agnostic;
-//! this module is the only place daemon config crosses into them.
+//! One fetch, N indexes, one server. The stack crates stay config-agnostic; this module is the
+//! only place daemon config crosses into them, and the only place the pipeline's shape is
+//! written down (`docs/design/sync.md`):
 //!
-//! Scope: serves the index-only compact-block slice
-//! (`GetLatestBlock`/`GetBlock`/`GetBlockRange`). Transactions, treestate,
-//! address queries, `SendTransaction`, and node JSON-RPC are not served yet.
+//! ```text
+//!   validators ──▶ ChainView ── quorum tip ──▶ Producer ──▶ BlockSink ─┬─▶ IndexFollower(compact_block) ◀┐
+//!   validators ──▶ BlockFetchPool ───────────────┘                     ├─▶ IndexFollower(value_balance)  │
+//!                                                                      │     └─▶ ValueBalanceSink (fees) ┘
+//!                                                                      ├─▶ IndexFollower(block_hash)
+//!                                                                      ├─▶ IndexFollower(tree_state)
+//!                                                                      ├─▶ IndexFollower(transparent_address)
+//!                                                                      └─▶ (further indexes subscribe here)
+//!
+//!   pre-commit + files ──▶ CompactBlockService       ──┐
+//!   pre-commit + files ──▶ BlockHashService          ──┤ (by-hash locator for the other two)
+//!   pre-commit + files ──▶ TreeStateService          ──┼─▶ Router
+//!   pre-commit + runs  ──▶ TransparentAddressService ──┘
+//! ```
+//!
+//! - Stage → stage = a channel, wired here by hand (no scheduler, no dependency graph)
+//! - Every stage = one plain task in a `JoinSet`; fallible setup awaited before any spawn
+//! - Scope: compact-block, block-hash, tree-state, transparent-address slices from their indexes,
+//!   plus `SendTransaction`/`GetLightdInfo` off the validator
 
-use std::num::NonZeroU32;
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn, Instrument as _, Span};
 
-use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
-use zaino_chain_head::ChainHeadConfig;
-use zaino_chain_head_service::ChainHeadService;
-use zaino_component::{CancellationToken, ComponentName, ReachabilityProbe};
-use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
-use zaino_indexer::{SourceSyncDriver, SyncTuning};
-use zaino_indexes::sets::current_zaino::{context_from_pre_index_compact_block, index_set};
-use zaino_lightserve::{GrpcServer, LightServe};
-use zaino_persistence::Namespace;
-use zaino_persistence_codec::reserved_namespaces;
-use zaino_runtime::{
-    IndexerComponent, OrchestraBuilder, RunComponent, ServeComponent, ValidatorComponent,
-};
-use zaino_source::{OneShotGetChainTip, RetryPolicy, ValidatorClient};
-use zaino_source_zebra_rpc::ZebraRpcAdapter;
-use zaino_store::{StoreComponent, StoreReader};
-use zaino_store_service::Engine;
+use zaino_grpc::{GrpcLimits, GrpcServer, TrustedProxies, ValidatorHandler};
+use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockService, CompactBlockStore};
+use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressService};
+use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateStore};
+use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService, BlockHashStore};
+use zaino_internal_value_balance::ValueBalanceIndexWriter;
+use zaino_persistence::fs::{Fs, RealFs};
+use zaino_primitives::types::{Block, ReorgDepth};
+use zaino_source::{BlockFetchPool, FetchRoute, ZebraRpcAdapter};
+use zaino_sync::{BlockSinkBuilder, IndexFollower, IndexWriter, Producer, ValueBalanceSinkBuilder};
+use zcash_protocol::consensus::NetworkType;
 
-use crate::config::{DaemonConfig, SourceConfig};
+use crate::config::{DaemonConfig, SourceConfig, ZainoIndexConfig};
 use crate::error::IndexerError;
 
-/// Tip poll cadence for the FS indexer's follow loop (= chain-head default poll)
-const TIP_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Task name + outcome (name → log line for a task that ends early with `Ok`)
+type TaskExit = (&'static str, Result<(), IndexerError>);
 
 /// Start the Zaino daemon.
 ///
-/// Returns a handle that resolves when the runtime exits: `Ok(())` on a clean
-/// shutdown signal or settle, or [`IndexerError::Restart`] on a fatal component
-/// escalation (the caller's run loop restarts).
+/// Returns a handle that resolves when the runtime exits: `Ok(())` on a shutdown signal, or the
+/// first task's failure (the process then exits; nothing restarts in-process).
 pub async fn start_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    startup_message();
-    info!("Starting Zaino");
+    warn!("In development, not for production mainnet use");
     spawn_indexer(config).await
 }
 
@@ -57,11 +64,16 @@ pub async fn start_indexer(
 pub async fn spawn_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    let validator = Arc::new(connect_validator(&config.source).await?);
+    config.validate()?;
+    crate::fd_limit::raise_for(config.grpc.max_connections)?;
+    let validator = Arc::new(
+        connect_validator(&config.source)
+            .instrument(crate::logging::component("ChainView"))
+            .await?,
+    );
     boot(validator, config).await
 }
 
-/// JSON-RPC source with a live tip subscription
 async fn connect_validator(source: &SourceConfig) -> Result<ZebraRpcAdapter, IndexerError> {
     let adapter = ZebraRpcAdapter::connect(
         &source.jsonrpc_address,
@@ -70,149 +82,262 @@ async fn connect_validator(source: &SourceConfig) -> Result<ZebraRpcAdapter, Ind
         source.password.clone(),
     )
     .await?;
-    info!(validator = %source.jsonrpc_address, "validator JSON-RPC answering");
-    adapter
-        .with_tip_polling(TIP_POLL_INTERVAL)
-        .await
-        .map_err(IndexerError::TipPolling)
+    info!(endpoint = %source.jsonrpc_address, "Validator reachable");
+    Ok(adapter)
 }
 
-/// Boot the runtime over the shared `validator`: an LMDB-backed compact-block
-/// index (the FS), the self-synchronising non-finalised chain head (the NFS), the
-/// engine that composes the two into one served chain, and the wallet gRPC
-/// server — all supervised under one Orchestra (validator gated first).
+/// Compose the pipeline over the shared `validator`, then spawn every stage.
 ///
-/// The one `Arc<ZebraRpcAdapter>` backs both source consumers: the FS indexer
-/// wraps it in the resilient [`ValidatorClient`]; the chain-head reaches the raw
-/// one-shot ports through the `Arc` directly. The chain-head's confirmed-watermark
-/// gate is the seam owner — it trims only what the FS has committed.
+/// - One `Arc<ZebraRpcAdapter>` per validator, shared by the fetch pool, chainview and the gRPC
+///   fallback
 async fn boot(
     validator: Arc<ZebraRpcAdapter>,
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    // The FS indexer sources through the resilient wrapper over the shared
-    // validator; the chain-head reaches the same validator's raw one-shot ports
-    // through the `Arc`.
-    let source = Arc::new(ValidatorClient::new(
-        Arc::clone(&validator),
-        RetryPolicy::default(),
-    ));
+    // --- the indexes: each its own files, its own finalised height, its own sink subscription
+    //
+    // `enabled = false` → store unopened, unsubscribed, no task, routes unclaimed (validator
+    // fallback). compact-block not optional (`DaemonConfig::validate`)
+    let mut blocks = BlockSinkBuilder::new(ReorgDepth::new(config.fetch.finalised_depth));
+    let fs = RealFs::shared();
 
-    // LMDB must declare every namespace up front: one per index in the set, plus
-    // the engine's reserved watermark / format-version namespaces.
-    let namespaces: Vec<Namespace> = index_set()
-        .index_ids()
-        .into_iter()
-        .map(Namespace::from)
-        .chain(reserved_namespaces())
-        .collect();
-    let backend = LmdbBackend::open(LmdbConfig {
-        path: config.store.path.clone(),
-        map_size_bytes: config.store.map_size_gb << 30,
-        namespaces,
+    // compact-block pairs each block with its fees off value-balance's sink: subscribed first,
+    // so the sink starts at compact-block's durable extent, then sealed into its publisher
+    let mut balances = ValueBalanceSinkBuilder::new(ReorgDepth::new(config.fetch.finalised_depth));
+    let (index, fees) = (&config.index.compact_block, &config.index.value_balance);
+    let (compact_block_span, store) = open_index(CompactBlockIndexWriter::NAME, index, || {
+        Ok(CompactBlockStore::open(Arc::clone(&fs), &index.path, config.network)?)
     })?;
+    let for_compact_block = balances.subscribe(
+        CompactBlockIndexWriter::NAME,
+        fees.queue_bytes(),
+        store.finalized_height(),
+    );
+    let compact_block =
+        follow(&mut blocks, CompactBlockIndexWriter::new(store, for_compact_block), index);
+    let (value_balance_span, writer) = open_index(ValueBalanceIndexWriter::NAME, fees, || {
+        let (fs, network) = (Arc::clone(&fs), config.network);
+        Ok(ValueBalanceIndexWriter::open(fs, &fees.path, network, balances.seal())?)
+    })?;
+    let value_balance = follow(&mut blocks, writer, fees);
+    let (index, network) = (&config.index, config.network);
+    let block_hash = open_block_hash(&fs, &index.block_hash, network)?
+        .map(|(span, writer)| (span, follow(&mut blocks, writer, &index.block_hash)));
+    let tree_state = open_tree_state(&fs, &index.tree_state, network)?
+        .map(|(span, writer)| (span, follow(&mut blocks, writer, &index.tree_state)));
+    let transparent = open_transparent_address(&fs, &index.transparent_address, network)?
+        .map(|(span, writer)| (span, follow(&mut blocks, writer, &index.transparent_address)));
 
-    // The finalised store: the indexer writes it, the engine composes blocks on
-    // read from it. One reader, shared (Arc-backed clone).
-    let store_reader = StoreReader::new(Arc::new(backend.clone()));
+    let compact_block_service = CompactBlockService::new(compact_block.served())
+        .with_max_range(config.serve.max_block_range);
+    let block_hash_service =
+        block_hash.as_ref().map(|(_, follower)| BlockHashService::new(follower.served()));
+    let tree_state_service = tree_state
+        .as_ref()
+        .map(|(_, follower)| TreeStateService::new(follower.served(), config.network));
+    let transparent_service = transparent.as_ref().map(|(_, follower)| {
+        TransparentAddressService::new(follower.served(), config.network)
+            .with_max_rows(config.serve.max_address_rows)
+    });
 
-    // The FS indexer sources the cheap pre-index compact block and builds the
-    // current-zaino index set, resuming from the backend watermark.
-    let driver = SourceSyncDriver::resuming_compact(
-        &backend,
-        index_set(),
-        Arc::clone(&source),
-        |compact_block| context_from_pre_index_compact_block(&compact_block),
-        SyncTuning {
-            batch_size: config.indexer.batch_size,
-            finalised_depth: config.indexer.finalised_depth,
-            channel_capacity: config.indexer.channel_capacity,
-            concurrency: config.indexer.concurrency,
-        },
-    )?;
-    // Capture the confirmed-watermark receiver before the driver is moved into
-    // its component — it is the chain-head's only handle onto what the FS has
-    // durably committed (confirm-before-trim).
-    let confirmed_watermark = driver.subscribe_confirmed_watermark();
+    // --- the chain view: the mempool and the broadcast fan-out, over every configured validator
+    let chainview_span = crate::logging::component("ChainView");
+    let chainview = crate::chainview::connect(Arc::clone(&validator), &config)
+        .instrument(chainview_span.clone())
+        .await?;
 
-    // The NFS chain head, anchored over the raw validator. Its cancel is a child
-    // of the runtime's root token (governs anchoring; the run loop is cancelled
-    // through the token its RunComponent hands it).
-    let runtime_cancel = CancellationToken::new();
-    let (chain_head_subscriber, chain_head_writer) = ChainHeadService::anchor(
-        Arc::clone(&validator),
-        ChainHeadConfig::with_max_depth(
-            NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT).expect("the consensus reorg bound is non-zero"),
+    // --- the producer: bulk over every validator (or the primary), then chainview's quorum tip
+    let pool = BlockFetchPool::new(
+        chainview.sources.clone(),
+        config.primary_validator_index().map_or(FetchRoute::Spread, FetchRoute::Primary),
+        config.fetch.concurrency,
+    );
+    let producer = Producer::new(blocks.seal(), pool, chainview.handles.view.subscribe_tip());
+
+    // --- serving: index first, validator behind it; bound here (EADDRINUSE = boot failure)
+    let mut server = GrpcServer::new(
+        ValidatorHandler::new(
+            Arc::clone(&validator),
+            compact_block_service.clone(),
+            config.network,
         ),
-        confirmed_watermark,
-        runtime_cancel.child_token(),
+        config.serve.grpc_listen_address,
+        GrpcLimits::from(&config.grpc),
     )
-    .await
-    .map_err(IndexerError::ChainHeadInit)?;
+    .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()))
+    .with_compact_block(compact_block_service)
+    .with_chainview(chainview.handles.clone());
+    if let Some(service) = block_hash_service {
+        server = server.with_block_hash(service);
+    }
+    if let Some(service) = tree_state_service {
+        server = server.with_tree_state(service);
+    }
+    if let Some(service) = transparent_service {
+        server = server.with_transparent_address(service);
+    }
+    let server = server.bind().await?;
+    let grpc_span = crate::logging::component("Grpc");
+    grpc_span.in_scope(|| {
+        info!(
+            endpoint = %config.serve.grpc_listen_address,
+            network = crate::config::network_name(config.network),
+            "Listening"
+        )
+    });
 
-    // Compose FS ⊕ NFS into the served engine, behind the light-wallet profile.
-    let engine = Engine::new(store_reader.clone(), chain_head_subscriber);
-
-    let validator_component = ValidatorComponent::connect(&TipReachable(&validator)).await?;
-    let indexer = IndexerComponent::new(ComponentName("indexer"), driver);
-    let store = StoreComponent::new(ComponentName("store"), store_reader);
-    // The chain-head writer is escalated and supervised exactly like the indexer.
-    let chain_head = RunComponent::new(ComponentName("chain-head"), chain_head_writer);
-    let light_serve = ServeComponent::new(
-        ComponentName("light-serve"),
-        GrpcServer::new(LightServe::new(engine), config.serve.grpc_listen_address),
-    );
-
-    // Readiness-gated order: validator, then the FS indexer (so its watermark is
-    // published before the chain-head trims against it), then the store, then the
-    // chain-head writer, then the server.
-    let mut orchestra = OrchestraBuilder::new()
-        .boot_observed(validator_component)
-        .await
-        .boot(indexer)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .boot(store)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .boot(chain_head)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .boot(light_serve)
-        .await
-        .map_err(|e| IndexerError::Boot(Box::new(e)))?
-        .build();
-
-    info!(
-        grpc = %config.serve.grpc_listen_address,
-        "Zaino runtime booted; serving compact blocks over the composed FS⊕NFS chain"
-    );
-
-    Ok(tokio::spawn(async move {
-        // Run until a shutdown signal (clean exit) or a component escalation
-        // (fatal → restart). Either way, stop supervising the rest.
-        let escalation = tokio::select! {
-            signal = shutdown_signal() => {
-                info!(signal, "shutdown signal received");
-                orchestra.shutdown();
-                runtime_cancel.cancel();
-                return Ok(());
-            }
-            escalation = orchestra.next_escalation() => escalation,
-        };
-        orchestra.shutdown();
-        runtime_cancel.cancel();
-        match escalation {
-            Some(component) => {
-                error!(%component, "runtime component escalated; restarting");
-                Err(IndexerError::Restart)
-            }
-            None => {
-                info!("runtime settled");
-                Ok(())
-            }
+    #[cfg(feature = "prometheus")]
+    {
+        crate::metrics::track_index(&compact_block);
+        crate::metrics::track_index(&value_balance);
+        if let Some((_, follower)) = &block_hash {
+            crate::metrics::track_index(follower);
         }
-    }))
+        if let Some((_, follower)) = &tree_state {
+            crate::metrics::track_index(follower);
+        }
+        if let Some((_, follower)) = &transparent {
+            crate::metrics::track_index(follower);
+        }
+    }
+
+    // --- run: nothing fallible left, every stage one task
+    let cancel = CancellationToken::new();
+    let mut tasks = JoinSet::new();
+    spawn(&mut tasks, "compact-block", compact_block_span, compact_block.run());
+    spawn(&mut tasks, "value-balance", value_balance_span, value_balance.run());
+    if let Some((span, follower)) = block_hash {
+        spawn(&mut tasks, "block-hash", span, follower.run());
+    }
+    if let Some((span, follower)) = tree_state {
+        spawn(&mut tasks, "tree-state", span, follower.run());
+    }
+    if let Some((span, follower)) = transparent {
+        spawn(&mut tasks, "transparent-address", span, follower.run());
+    }
+    for poller in chainview.pollers {
+        spawn(&mut tasks, "chainview", chainview_span.clone(), poller.run(cancel.child_token()));
+    }
+    let sync_span = crate::logging::component("ZainoSync");
+    spawn(&mut tasks, "producer", sync_span, producer.run(cancel.child_token()));
+    spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
+
+    Ok(tokio::spawn(supervise(tasks, cancel)))
+}
+
+/// Signal → `Ok(())`; the first task to end → its failure (ending cleanly before shutdown is one)
+///
+/// - Either way: cancel the rest, then wait for them (followers flush what is final)
+async fn supervise(
+    mut tasks: JoinSet<TaskExit>,
+    cancel: CancellationToken,
+) -> Result<(), IndexerError> {
+    let outcome = tokio::select! {
+        signal = shutdown_signal() => {
+            info!(signal, "Shutdown signal received");
+            Ok(())
+        }
+        Some(exit) = tasks.join_next() => Err(first_failure(exit)),
+    };
+    cancel.cancel();
+    while let Some(exit) = tasks.join_next().await {
+        match exit {
+            Ok((task, Ok(()))) => debug!(task, "Task stopped"),
+            Ok((task, Err(error))) => error!(task, %error, "Task failed while stopping"),
+            Err(error) => error!(%error, "Task panicked while stopping"),
+        }
+    }
+    outcome
+}
+
+/// A task ended before any shutdown signal: always a fault
+fn first_failure(exit: Result<TaskExit, tokio::task::JoinError>) -> IndexerError {
+    match exit {
+        Ok((task, Ok(()))) => IndexerError::TaskEnded { task },
+        Ok((task, Err(error))) => {
+            error!(task, %error, "Task failed");
+            error
+        }
+        Err(error) => IndexerError::TokioJoinError(error),
+    }
+}
+
+fn spawn<E>(
+    tasks: &mut JoinSet<TaskExit>,
+    task: &'static str,
+    component: Span,
+    run: impl Future<Output = Result<(), E>> + Send + 'static,
+) where
+    IndexerError: From<E>,
+{
+    tasks.spawn(async move { (task, run.await.map_err(IndexerError::from)) }.instrument(component));
+}
+
+/// `open` under the index's component span, logged; the span then carries the index's task
+fn open_index<W>(
+    name: &str,
+    config: &ZainoIndexConfig,
+    open: impl FnOnce() -> Result<W, IndexerError>,
+) -> Result<(Span, W), IndexerError> {
+    let span = crate::logging::index_component(name);
+    let opened = span.in_scope(|| {
+        info!("Opening from {}", crate::logging::shown_path(&config.path));
+        open()
+    })?;
+    Ok((span, opened))
+}
+
+/// Enabled → an index writer over its files; disabled → `None`, and `config.path` is not created.
+fn open_block_hash(
+    fs: &Arc<dyn Fs>,
+    config: &ZainoIndexConfig,
+    network: NetworkType,
+) -> Result<Option<(Span, BlockHashIndexWriter)>, IndexerError> {
+    let open = || {
+        let store = BlockHashStore::open(Arc::clone(fs), &config.path, network)?;
+        Ok(BlockHashIndexWriter::new(store))
+    };
+    config.enabled.then(|| open_index(BlockHashIndexWriter::NAME, config, open)).transpose()
+}
+
+/// Enabled → an index writer over its files; disabled → `None`, and `config.path` is not created.
+fn open_tree_state(
+    fs: &Arc<dyn Fs>,
+    config: &ZainoIndexConfig,
+    network: NetworkType,
+) -> Result<Option<(Span, TreeStateIndexWriter)>, IndexerError> {
+    let open = || {
+        let store = TreeStateStore::open(Arc::clone(fs), &config.path, network)?;
+        Ok(TreeStateIndexWriter::new(store)?)
+    };
+    config.enabled.then(|| open_index(TreeStateIndexWriter::NAME, config, open)).transpose()
+}
+
+/// Enabled → an index writer over its files; disabled → `None`, and `config.path` is not created.
+fn open_transparent_address(
+    fs: &Arc<dyn Fs>,
+    config: &ZainoIndexConfig,
+    network: NetworkType,
+) -> Result<Option<(Span, TransparentAddressIndexWriter)>, IndexerError> {
+    let open = || {
+        let fs = Arc::clone(fs);
+        Ok(TransparentAddressIndexWriter::open(fs, &config.path, network)?)
+    };
+    config
+        .enabled
+        .then(|| open_index(TransparentAddressIndexWriter::NAME, config, open))
+        .transpose()
+}
+
+/// `writer`'s own queue off `blocks`, resuming at its own finalised height, committing per
+/// `config.batch_mib`
+fn follow<W: IndexWriter<Input = Block>>(
+    blocks: &mut BlockSinkBuilder,
+    writer: W,
+    config: &ZainoIndexConfig,
+) -> IndexFollower<W> {
+    let subscription = blocks.subscribe(W::NAME, config.queue_bytes(), writer.finalized_height());
+    IndexFollower::new(writer, subscription, config.batch_bytes())
 }
 
 /// Wait for a process shutdown signal, returning which one arrived.
@@ -235,24 +360,90 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
-/// Validator gate: reachable = answers a tip read
-struct TipReachable<'a>(&'a ZebraRpcAdapter);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroU32;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-impl ReachabilityProbe for TipReachable<'_> {
-    async fn reachable(&self) -> bool {
-        self.0.get_chain_tip().await.is_ok()
+    /// Any task ending first is the daemon's failure, named for what it was (clean end, its own
+    /// error, a panic), returned only after every other task saw the cancel and finished
+    #[tokio::test]
+    async fn a_task_ending_first_cancels_and_drains_the_rest_then_fails_the_daemon() {
+        type Run = Pin<Box<dyn Future<Output = Result<(), IndexerError>> + Send>>;
+        let early: [(&str, Run); 3] = [
+            ("ends ok", Box::pin(async { Ok(()) })),
+            ("fails", Box::pin(async { Err(IndexerError::ConfigError("boom".into())) })),
+            ("panics", Box::pin(async { panic!("boom") })),
+        ];
+
+        for (case, run) in early {
+            let cancel = CancellationToken::new();
+            let drained = Arc::new(AtomicBool::new(false));
+            let mut tasks = JoinSet::new();
+            let (token, flag) = (cancel.child_token(), Arc::clone(&drained));
+            spawn(&mut tasks, "waits-for-cancel", Span::none(), async move {
+                token.cancelled().await;
+                tokio::task::yield_now().await;
+                flag.store(true, Ordering::SeqCst);
+                Ok::<_, IndexerError>(())
+            });
+            spawn(&mut tasks, "early", Span::none(), run);
+
+            let outcome = supervise(tasks, cancel.clone()).await;
+
+            let named = match case {
+                "ends ok" => matches!(outcome, Err(IndexerError::TaskEnded { task: "early" })),
+                "fails" => {
+                    matches!(outcome, Err(IndexerError::ConfigError(ref boom)) if boom == "boom")
+                }
+                _ => {
+                    matches!(outcome, Err(IndexerError::TokioJoinError(ref join)) if join.is_panic())
+                }
+            };
+            assert!(named, "{case}: {outcome:?}");
+            assert!(cancel.is_cancelled(), "{case}: rest not cancelled");
+            assert!(drained.load(Ordering::SeqCst), "{case}: returned before the drain");
+        }
     }
-}
 
-/// Prints Zaino's startup banner.
-fn startup_message() {
-    let welcome_message = r#"
-       ░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████▓░▒▒▒
-              Thank you for using ZingoLabs Zaino!
+    /// `enabled = false` is honoured before anything touches the disk: no index writer, and the
+    /// index's directory is never created — so nothing can subscribe or claim a route either.
+    #[test]
+    fn a_disabled_index_is_never_constructed_and_creates_no_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = |name: &str, enabled: bool| ZainoIndexConfig {
+            enabled,
+            path: dir.path().join(name),
+            batch_mib: NonZeroU32::MIN,
+            queue_mib: NonZeroU32::MIN,
+        };
 
-       - Donate to us at https://free2z.cash/zingolabs.
+        let (fs, net) = (RealFs::shared(), NetworkType::Regtest);
 
-****** Please note Zaino is currently in development and should not be used to run mainnet nodes. ******
-    "#;
-    println!("{welcome_message}");
+        let off = index("block-hash-off", false);
+        assert!(open_block_hash(&fs, &off, net).expect("disabled").is_none());
+        assert!(!off.path.exists(), "{}", off.path.display());
+
+        let off = index("tree-state-off", false);
+        assert!(open_tree_state(&fs, &off, net).expect("disabled").is_none());
+        assert!(!off.path.exists(), "{}", off.path.display());
+
+        let off = index("transparent-off", false);
+        assert!(open_transparent_address(&fs, &off, net).expect("disabled").is_none());
+        assert!(!off.path.exists(), "{}", off.path.display());
+
+        let on = index("block-hash-on", true);
+        assert!(open_block_hash(&fs, &on, net).expect("enabled").is_some());
+        assert!(on.path.exists(), "{}", on.path.display());
+
+        let on = index("tree-state-on", true);
+        assert!(open_tree_state(&fs, &on, net).expect("enabled").is_some());
+        assert!(on.path.exists(), "{}", on.path.display());
+
+        let on = index("transparent-on", true);
+        assert!(open_transparent_address(&fs, &on, net).expect("enabled").is_some());
+        assert!(on.path.exists(), "{}", on.path.display());
+    }
 }

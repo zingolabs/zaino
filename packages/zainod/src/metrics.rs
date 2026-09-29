@@ -1,82 +1,115 @@
-//! Prometheus metrics endpoint for Zaino.
+//! Prometheus `/metrics` endpoint + the per-index metrics
 //!
-//! Installs a global metrics recorder and spawns an HTTP listener
-//! that serves the `/metrics` scrape endpoint.
+//! - Index metrics mirror each follower's watches
+//! - Producer, serve, validator-RPC + LSM metrics emitted by `zaino-sync` / `zaino-grpc` /
+//!   `zaino-source` / `zaino-persistence`, registered here via their `describe_metrics` /
+//!   `METRIC_BUCKETS`
 
 use std::net::SocketAddr;
 
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use tracing::info;
-
-// Metric names are owned by the crates that emit them, so the `describe_*`
-// registrations below share one source of truth with the emit sites and can
-// never drift. On the runtime stack the only emitter wired so far is the
-// outbound JSON-RPC client (`zaino-rpc`); the sync/DB/gRPC/mempool metric sets
-// that the legacy serving stack described are re-added here as the new stack's
-// components start emitting them.
-use zaino_rpc::metric_names::*;
 
 use crate::error::IndexerError;
 
-/// Static build-metadata gauge name (`zainod.build_info`); see [`set_build_info`].
-const BUILD_INFO: &str = "zainod.build_info";
+/// Dotted here, `_`-joined once scraped (`zaino.build_info` → `zaino_build_info`)
+mod names {
+    pub(super) const BUILD_INFO: &str = "zaino.build_info";
+    pub(super) const INDEX_FINALIZED_HEIGHT: &str = "zaino.index.finalized_height";
+    pub(super) const INDEX_SYNCED: &str = "zaino.index.synced";
+}
 
-/// Install the Prometheus metrics recorder and spawn the HTTP listener.
+/// Installs the global recorder + HTTP listener (before it, every emit site no-ops)
 ///
-/// This must be called **once** before any `metrics::gauge!()` / `metrics::counter!()`
-/// calls, otherwise those calls silently no-op.
-pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
-    PrometheusBuilder::new()
-        .with_http_listener(endpoint)
-        .install()
-        .map_err(|e| {
-            IndexerError::MetricsError(format!("Failed to install metrics recorder: {e}"))
-        })?;
+/// - listener on its own thread + current-thread runtime: a scrape answers however busy the
+///   serving and sync workers are
+pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
+    let builder = zaino_grpc::METRIC_BUCKETS
+        .iter()
+        .chain(zaino_source::METRIC_BUCKETS)
+        .chain(zaino_persistence::lsm::METRIC_BUCKETS)
+        .try_fold(
+            PrometheusBuilder::new().with_http_listener(endpoint),
+            |builder, (metric, edges)| {
+                builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
+            },
+        )
+        .map_err(|e| IndexerError::MetricsError(format!("setting histogram buckets: {e}")))?;
 
-    describe_metrics();
-    set_build_info();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| IndexerError::MetricsError(format!("building its runtime: {e}")))?;
+    let (recorder, exporter) = {
+        let _entered = runtime.enter();
+        builder.build().map_err(|e| IndexerError::MetricsError(format!("building: {e}")))?
+    };
+    std::thread::Builder::new()
+        .name("metrics".to_owned())
+        .spawn(move || runtime.block_on(exporter))
+        .map_err(|e| IndexerError::MetricsError(format!("spawning its thread: {e}")))?;
+    metrics::set_global_recorder(recorder)
+        .map_err(|e| IndexerError::MetricsError(format!("installing the recorder: {e}")))?;
 
-    info!(%endpoint, "Prometheus metrics endpoint started");
+    zaino_grpc::describe_metrics();
+    zaino_source::describe_metrics();
+    zaino_sync::describe_metrics();
+    zaino_persistence::lsm::describe_metrics();
+    describe_zainod();
+    metrics::gauge!(names::BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
+
+    info!(%endpoint, "Listening");
     Ok(())
 }
 
-/// Register human-readable descriptions for all Zaino metrics.
-///
-/// These appear as `# HELP` lines in the scrape output.
-fn describe_metrics() {
-    metrics::describe_gauge!(
-        BUILD_INFO,
-        "Static build metadata; always 1. Version exposed as a label."
-    );
+fn describe_zainod() {
+    use metrics::describe_gauge;
 
-    // Outbound JSON-RPC (the validator connection) — the only metrics the
-    // runtime stack emits so far. Sync / DB / inbound-gRPC / mempool sets are
-    // re-added as the runtime components gain their own metric names.
-    metrics::describe_counter!(
-        RPC_OUTBOUND_REQUESTS_TOTAL,
-        "Total outbound JSON-RPC requests by method"
+    describe_gauge!(names::BUILD_INFO, "Always 1; the zainod version rides the `version` label");
+    describe_gauge!(
+        names::INDEX_FINALIZED_HEIGHT,
+        "Highest height the index has durably written, by index"
     );
-    metrics::describe_histogram!(
-        RPC_OUTBOUND_REQUEST_DURATION_SECONDS,
-        "Duration of outbound JSON-RPC requests by method"
-    );
-    metrics::describe_counter!(
-        RPC_OUTBOUND_ERRORS_TOTAL,
-        "Total outbound JSON-RPC errors by method"
-    );
-    metrics::describe_counter!(
-        RPC_OUTBOUND_RETRIES_TOTAL,
-        "Total outbound JSON-RPC retries due to work queue depth exceeded"
+    describe_gauge!(
+        names::INDEX_SYNCED,
+        "1 = the index serves, 0 = it refuses every request as syncing, by index"
     );
 }
 
-/// Emit a constant gauge `zainod_build_info{version="x.y.z"} 1` so the
-/// deployed binary version is queryable in PromQL / Grafana, matching the
-/// pattern Zebra uses with `zebrad_build_info`.
-fn set_build_info() {
-    metrics::gauge!(
-        BUILD_INFO,
-        "version" => env!("CARGO_PKG_VERSION"),
-    )
-    .set(1.0);
+/// Mirrors one follower's durable extent + sync gate, labelled `S::NAME`
+pub(crate) fn track_index<S: zaino_sync::IndexWriter>(follower: &zaino_sync::IndexFollower<S>) {
+    let index = S::NAME;
+    let mut finalized = follower.subscribe_finalized();
+    let mut synced = follower.subscribe_synced();
+
+    tokio::spawn(async move {
+        loop {
+            publish_finalized(index, *finalized.borrow_and_update());
+            if finalized.changed().await.is_err() {
+                return;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        loop {
+            publish_synced(index, *synced.borrow_and_update());
+            if synced.changed().await.is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// Gauge = highest durable height (unset while empty)
+fn publish_finalized(index: &'static str, durable: zaino_primitives::types::Extent) {
+    if let Some(height) = durable.last() {
+        metrics::gauge!(names::INDEX_FINALIZED_HEIGHT, "index" => index)
+            .set(f64::from(u32::from(height)));
+    }
+}
+
+fn publish_synced(index: &'static str, serving: bool) {
+    let value = if serving { 1.0 } else { 0.0 };
+    metrics::gauge!(names::INDEX_SYNCED, "index" => index).set(value);
 }

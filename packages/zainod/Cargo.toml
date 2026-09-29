@@ -20,42 +20,31 @@ path = "src/lib.rs"
 default = []
 
 # Prometheus /metrics scrape endpoint.
-prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
-
-# TEST-ONLY: enables an in-process, hardcoded regtest config fixture for
-# the ztest e2e harness (which mounts a legacy-schema config this greenfield
-# config cannot parse). Never enable in a production build; the fixture also
-# requires a runtime env var and logs a loud warning when it activates.
-ztest-fixture = []
+prometheus = [
+    "metrics",
+    "metrics-exporter-prometheus",
+    "zaino-source/prometheus",
+    "zaino-sync/prometheus",
+    "zaino-grpc/prometheus",
+    "zaino-persistence/prometheus",
+]
 
 [dependencies]
 # Runtime stack (config-agnostic; zainod translates its config into their typed
 # params at boot). Path deps for the ones not yet in [workspace.dependencies].
-zaino-runtime = { path = "../zaino-runtime" }
-zaino-indexer = { path = "../zaino-indexer" }
-zaino-store = { path = "../zaino-store" }
-zaino-lightserve = { path = "../zaino-lightserve" }
-zaino-persistence-codec = { path = "../zaino-persistence-codec" }
-zaino-component = { path = "../zaino-component" }
-zaino-indexes = { workspace = true }
-zaino-backend-lmdb = { workspace = true }
-zaino-persistence = { workspace = true }
+zaino-sync = { workspace = true }
+zaino-index-compact-block = { workspace = true }
+zaino-index-tree-state = { workspace = true }
+zaino-index-transparent-address = { workspace = true }
+zaino-internal-block-hash-to-height = { workspace = true }
+zaino-internal-value-balance = { workspace = true }
+zaino-grpc = { path = "../zaino-grpc" }
 zaino-source = { workspace = true }
-zaino-source-zebra-rpc = { workspace = true }
-zaino-consensus = { workspace = true }
 
-# The composed serving stack: the finalised store, the non-finalised chain head,
-# and the engine that composes them behind the light-wallet serve profile.
-zaino-store-service = { path = "../zaino-store-service" }
-zaino-chain-head = { workspace = true }
-zaino-chain-head-service = { workspace = true }
-
-# Validator connection + probe.
-zaino-rpc = { workspace = true }
-zaino-status = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
 
 # CLI + default config/store paths
 dirs = { workspace = true }
@@ -75,7 +64,20 @@ metrics-exporter-prometheus = { workspace = true, optional = true }
 
 # Utility
 thiserror = { workspace = true }
-zaino-logging = { version = "0.1.0", path = "../zaino-logging" }
+zaino-primitives.workspace = true
+zcash_protocol = { workspace = true }
+zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
+tonic.workspace = true
+zaino-proto.workspace = true
+serde_json.workspace = true
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+tracing-subscriber.workspace = true
+time.workspace = true
+unicode-ellipsis.workspace = true
+rlimit = "0.11"
+ipnet = { version = "2.12", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }

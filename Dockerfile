@@ -82,10 +82,7 @@ RUN mkdir -p /app/config /app/data && \
     ln -s /app/data ${HOME}/.cache/zaino && \
     chown -R ${UID}:${GID} /app ${HOME}/.config ${HOME}/.cache
 
-# Copy binary and entrypoint
 COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
 # Default port
 ARG ZAINO_GRPC_PORT=8137
@@ -96,4 +93,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 USER ${USER}
 
-ENTRYPOINT ["/entrypoint.sh"]
+# Config at /app/config/zainod.toml (zainod's default path), data under /app/data
+ENTRYPOINT ["zainod"]
+CMD ["start"]

@@ -1,0 +1,15 @@
+# zebrad config paired with zainod.toml (Testnet). Omitted keys take zebrad's defaults.
+# Run: zebrad -c docs/example_configs/zebrad.toml start
+
+[network]
+network = "Testnet"
+
+[rpc]
+# zainod's [source] jsonrpc_address
+listen_addr = "127.0.0.1:18232"
+# true → zebrad writes <cookie_dir>/.cookie; point zainod's [source] cookie_path at it
+enable_cookie_auth = false
+cookie_dir = "<PATH_TO_ZEBRA>"
+
+[state]
+cache_dir = "<PATH_TO_ZEBRA>"

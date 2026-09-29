@@ -1,40 +1,104 @@
-# Zaino daemon configuration (example)
+# zainod config paired with zebrad.toml (Testnet)
 #
-# Pairs with docs/example_configs/zebrad_config_3.1.0.toml (Testnet).
-# Layered highest-priority-first: ZAINO_ env vars (`__` for nesting, e.g.
-# ZAINO_INDEXER__BATCH_SIZE=500), then this file, then built-in defaults.
-# Omitted keys take their defaults; `zainod generate-config` prints them all.
+# - Precedence: ZAINO_CONFIG_ env vars (`__` nesting, e.g. ZAINO_CONFIG_FETCH__FINALISED_DEPTH=100)
+#   → this file → built-in defaults
+# - Unknown keys rejected at load
+# - `zainod generate-config` = every key at its default
 
-# Prometheus /metrics endpoint (requires the `prometheus` build feature).
-# Omit to disable.
+# mainnet | testnet | regtest (default mainnet)
+# - declared, never read off the validator (Zebra on regtest reports "test")
+network = "testnet"
+
+# Prometheus /metrics endpoint (requires the `prometheus` build feature). Omit to disable.
 # metrics_endpoint = "127.0.0.1:9999"
 
-# Zebra JSON-RPC endpoint: the only block source.
+# Validator blocks are fetched from (Zebra JSON-RPC)
 [source]
-jsonrpc_address = "127.0.0.1:18231"
-# Zebra auth cookie (when zebrad runs with enable_cookie_auth = true).
+jsonrpc_address = "127.0.0.1:18232"
+# zebrad enable_cookie_auth = true
 # cookie_path = "<PATH_TO_ZEBRA>/.cookie"
-# Or basic auth:
+# basic auth
 # user = "xxxxxx"
 # password = "xxxxxx"
 
-# Finalised index store (LMDB).
-[store]
-path = "<ZAINO_STORE>"
-# Maximum on-disk size in GiB, reserved at open.
-map_size_gb = 16
+# Extra validators the mempool view quorates over (absent = [source] alone, quorum trivially met)
+# [[chainview_peers]]
+# jsonrpc_address = "127.0.0.1:18242"
 
-# Wallet-facing lightwalletd-compatible gRPC (CompactTxStreamer, plaintext).
 [serve]
+# CompactTxStreamer gRPC, plaintext HTTP/2
 grpc_listen_address = "127.0.0.1:8137"
+# Max blocks per GetBlockRange; over it = error, never a short answer
+# - below 65536 locks pepper-sync into a retry loop (asks for a whole 2^16 shard range)
+# max_block_range = 131072
+# Max transparent receives one address request walks (all its addresses); over = RESOURCE_EXHAUSTED
+# max_address_rows = 100000
 
-# Index-build tuning (defaults shown).
-[indexer]
-# Blocks committed per atomic batch.
-batch_size = 1000
-# Blocks buffered between the fetcher and the sync engine.
-channel_capacity = 256
-# Depth below the tip left to the non-finalised window.
+# Serving caps (defaults shown); every cap refuses rather than queues, except the read lanes
+[grpc]
+# excess accepts closed; + 1024 must fit the open-file limit or boot fails
+max_connections = 4096
+# per client: the peer, or the address a trusted proxy's PROXY header names
+max_connections_per_ip = 32
+# HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS
+max_streams_per_connection = 8
+# work streams across all connections; excess = UNAVAILABLE + retry hint
+max_streams = 2048
+# GetMempoolStream subscriptions (idle until the next block), counted apart from max_streams
+max_subscriptions = 4096
+# index reads in flight on the blocking pool, per lane; excess waits in its own lane
+# - point: one block / tree state / root list; range: one GetBlockRange window; scan: one address history
+max_point_reads = 64
+max_range_reads = 32
+max_scan_reads = 4
+# a stream holding data its client does not read for this long closes its connection
+stall_timeout_secs = 300
+# proxies that open every connection with a PROXY header (v1/v2); see docs/running.md
+trusted_proxies = []
+
+# One block-fetch pipeline, shared by every index (defaults shown)
+[fetch]
+# Blocks below the tip kept reorg-able (in memory, served, written once buried); non-zero
 finalised_depth = 1000
-# Block fetches kept in flight (must be >= 1).
-concurrency = 16
+# Bulk-sync fetches (and decodes) in flight; non-zero
+concurrency = 32
+# jsonrpc_address of the one validator bulk sync fetches from; unset = spread over
+# [source] + every [[chainview_peers]]
+# primary_validator = "127.0.0.1:8232"
+
+# One directory per index; an omitted table takes its defaults (path under the XDG cache dir)
+[index.compact_block]
+# GetBlock, GetBlockRange, GetLatestBlock; cannot be disabled
+path = "<ZAINO_DATA>/compact-block"
+# MiB of decoded blocks per bulk-sync commit (bigger = fewer fsyncs, more memory held, more to
+# redo after a crash); at the tip each final block commits as it arrives
+batch_mib = 64
+# MiB of decoded blocks this index may lag the fetch before it throttles the pipeline
+queue_mib = 256
+
+[index.value_balance]
+# Every transparent output's value: each CompactTx.fee; cannot be disabled (compact_block reads it)
+path = "<ZAINO_DATA>/value-balance"
+batch_mib = 64
+queue_mib = 256
+
+[index.block_hash]
+# GetBlock / GetTreeState by hash (off = those UNIMPLEMENTED; by height unaffected)
+enabled = true
+path = "<ZAINO_DATA>/block-hash"
+batch_mib = 64
+queue_mib = 256
+
+[index.tree_state]
+# GetTreeState, GetLatestTreeState, GetSubtreeRoots
+enabled = true
+path = "<ZAINO_DATA>/tree-state"
+batch_mib = 64
+queue_mib = 256
+
+[index.transparent_address]
+# GetAddressUtxos(+Stream), GetTaddressBalance(+Stream), GetTaddressTransactions
+enabled = true
+path = "<ZAINO_DATA>/transparent-address"
+batch_mib = 64
+queue_mib = 256
