@@ -45,21 +45,11 @@ impl ZebraValidator {
 
     /// Add a tip subscription, polling `source` every `interval`.
     ///
-    /// Opt-in and fallible, rather than part of construction, for two reasons.
-    /// Seeding a subscription takes one live read, so folding it into
-    /// construction would make a validator handle impossible to build while the
-    /// validator is down — exactly when an indexer most wants to start and
-    /// retry. And polling a validator nobody is watching is pure cost, so the
-    /// caller says when it wants the capability.
-    ///
-    /// The poll task owns its source for its lifetime and so cannot borrow this
-    /// source; the caller passes a second handle to the same validator.
-    /// Anything that can answer [`GetChainTip`] will do, which also lets a test
-    /// drive the subscription without a validator.
-    ///
-    /// Zebra's JSON-RPC interface exposes no native tip stream, so this poller is
-    /// the only way to obtain one. If that changes, [`SubscribeChainTip`] prefers
-    /// the native stream and this becomes the fallback.
+    /// Fallible and opt-in: seeding takes one live read, so a caller building a
+    /// handle while the validator is down defers this until it is up. The poll
+    /// task owns `source` for its lifetime, so the caller passes a second handle
+    /// to the same validator; anything answering [`GetChainTip`] will do, which
+    /// also lets a test drive the subscription without one.
     pub async fn with_tip_polling<S>(
         mut self,
         source: S,
@@ -427,9 +417,8 @@ impl OneShotGetBlockchainInfo for ZebraValidator {
 
 impl SubscribeChainTip for ZebraValidator {
     fn subscribe_to_chain_tip(&self) -> Option<watch::Receiver<TipObservation>> {
-        // Zebra's JSON-RPC interface has no native tip stream, so this is the
-        // synthesised poller or nothing. Prefer a native stream if the transport
-        // ever gains one.
+        // Return the synthesised poller's receiver, or None when polling was
+        // never started.
         self.tip
             .as_ref()
             .and_then(|tip| tip.subscribe_to_chain_tip())
