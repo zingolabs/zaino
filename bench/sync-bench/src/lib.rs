@@ -8,7 +8,7 @@
 //! This module owns the two run bodies (`run_provision`, `run_sync`), the window
 //! resolution, and the result reporting; the binary is a thin dispatch on the
 //! selected mode. Both run bodies drive the *same* generic [`BenchSource`] port,
-//! so the ReadState and RPC adapters exercise byte-for-byte the same paths.
+//! provisioned from the validator's JSON-RPC endpoint.
 
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -33,12 +33,10 @@ use zaino_source::{
     GetBlock, GetChainTip, GetPreIndexCompactBlock, RetryPolicy, SubscribeChainTip, ValidatorClient,
 };
 use zaino_source_zebra::ZebraValidator;
-use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zaino_store::StoreReader;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
-use zebra_chain::parameters::Network;
 
 /// A boxed error is enough for a benchmark binary — every step already carries a
 /// typed cause, and the harness only reports the failure, it does not react to
@@ -87,18 +85,13 @@ impl Strategy {
     }
 }
 
-/// The resilient ReadState source: reads compact blocks straight off the
-/// on-disk state DB. The default adapter for both modes.
-pub type Source = Arc<ValidatorClient<ZebraReadStateAdapter>>;
-
 /// The resilient JSON-RPC source: reads compact blocks over the validator's RPC
-/// endpoint, to isolate the RocksDB-secondary read cost from the RPC-wire cost on
-/// the same loop.
+/// endpoint.
 ///
-/// It is the `ZebraValidator` composite (`rpc_only`), exactly as production RPC
-/// mode composes it — the bare RPC adapter has no tip stream, so the composite
-/// supplies one by polling. Benching the composite therefore measures the real
-/// RPC source path, not a stripped-down one.
+/// It is the [`ZebraValidator`] (`rpc_only`), exactly as production composes it —
+/// the bare RPC adapter has no tip stream, so the validator supplies one by
+/// polling. Benching it therefore measures the real RPC source path, not a
+/// stripped-down one.
 pub type RpcSource = Arc<ValidatorClient<ZebraValidator>>;
 
 /// What the benchmark measures: `provision` drains the provisioner (read-path
@@ -125,50 +118,16 @@ impl Mode {
     }
 }
 
-/// Which source adapter a run provisions through — the two ports the same loop
-/// can run over.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum AdapterArg {
-    /// Open the on-disk Zebra state DB directly (run on the validator's node).
-    Readstate,
-    /// Reach the validator over its JSON-RPC endpoint.
-    Rpc,
-}
-
-impl AdapterArg {
-    /// A stable lowercase tag for the result schema.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AdapterArg::Readstate => "readstate",
-            AdapterArg::Rpc => "rpc",
-        }
-    }
-}
+/// The source tag recorded in the result schema. The bench provisions from the
+/// validator's JSON-RPC endpoint; the tag is kept so cross-commit runs stay
+/// comparable in Loki/Grafana.
+const ADAPTER: &str = "rpc";
 
 /// The sync engine's default provisioner concurrency — the value a real indexer
 /// runs with, so a bench that does not sweep the knob reflects it rather than a
 /// swept value.
 pub fn default_concurrency() -> FetchConcurrency {
     FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero"))
-}
-
-/// The networks the harness supports, mapped to zebra's [`Network`].
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum NetworkArg {
-    /// The Zcash main network.
-    Mainnet,
-    /// The Zcash test network.
-    Testnet,
-}
-
-impl NetworkArg {
-    /// The zebra [`Network`] this argument selects.
-    pub fn to_zebra(self) -> Network {
-        match self {
-            NetworkArg::Mainnet => Network::Mainnet,
-            NetworkArg::Testnet => Network::new_default_testnet(),
-        }
-    }
 }
 
 /// Install the JSON tracing subscriber (→ stdout → Loki/Grafana on the cluster).
@@ -183,20 +142,9 @@ pub fn init_logging() {
         .init();
 }
 
-/// Open the Zebra ReadState under `cache` (read-only) wrapped in the resilient
-/// decorator, so a run binds the resilient source ports rather than the raw
-/// single-attempt adapter.
-pub fn open_source(cache: &Path, network: &Network) -> Result<Source, BoxError> {
-    let adapter = ZebraReadStateAdapter::open(cache, network)?;
-    Ok(Arc::new(ValidatorClient::new(
-        adapter,
-        RetryPolicy::default(),
-    )))
-}
-
 /// Connect to the validator's JSON-RPC endpoint at `addr` (`host:port`), wrapped
-/// in the same resilient decorator as [`open_source`], so the two adapters differ
-/// only in transport and the loop over them is identical.
+/// in the resilient decorator, so a run binds the resilient source ports rather
+/// than the raw single-attempt adapter.
 pub fn open_rpc_source(addr: &str) -> Result<RpcSource, BoxError> {
     let rpc = RpcClient::new(RpcClientConfig {
         url: format!("http://{addr}"),
@@ -427,7 +375,6 @@ where
 pub fn report(
     kind: &str,
     mode: Mode,
-    adapter: AdapterArg,
     strategy: Strategy,
     out: &Outcome,
     concurrency: FetchConcurrency,
@@ -438,7 +385,7 @@ pub fn report(
         "{kind} [{}/{}/{}] {} blocks in {seconds:.3}s = {per_second:.1} blocks/s \
          ({:.3} ms/block, concurrency {concurrency})",
         mode.as_str(),
-        adapter.as_str(),
+        ADAPTER,
         strategy.as_str(),
         out.count,
         seconds * 1000.0 / f64::from(out.count),
@@ -447,7 +394,7 @@ pub fn report(
         target: "sync_bench::result",
         kind,
         mode = mode.as_str(),
-        adapter = adapter.as_str(),
+        adapter = ADAPTER,
         strategy = strategy.as_str(),
         blocks = out.count,
         elapsed_ms = out.elapsed.as_millis(),
@@ -466,12 +413,7 @@ pub fn report(
 /// close to the ceiling the read path bounds throughput; when it is far below,
 /// the engine (index build + LMDB write) does, and `ceiling − end-to-end` is the
 /// headroom recoverable by optimising the write side.
-pub fn report_bottleneck(
-    adapter: AdapterArg,
-    provision: &Outcome,
-    sync: &Outcome,
-    concurrency: FetchConcurrency,
-) {
+pub fn report_bottleneck(provision: &Outcome, sync: &Outcome, concurrency: FetchConcurrency) {
     let ceiling = provision.blocks_per_second();
     let end_to_end = sync.blocks_per_second();
     let verdict = attribute(ceiling, end_to_end);
@@ -479,7 +421,7 @@ pub fn report_bottleneck(
     println!(
         "bottleneck [{}] read-ceiling {ceiling:.1} b/s vs end-to-end {end_to_end:.1} b/s \
          (ratio {:.2}) -> {}; write headroom {:.1} b/s",
-        adapter.as_str(),
+        ADAPTER,
         verdict.ratio,
         verdict.bound,
         verdict.headroom,
@@ -488,7 +430,7 @@ pub fn report_bottleneck(
         target: "sync_bench::result",
         kind = "bottleneck",
         mode = Mode::Both.as_str(),
-        adapter = adapter.as_str(),
+        adapter = ADAPTER,
         provision_bps = ceiling,
         sync_bps = end_to_end,
         ratio = verdict.ratio,
