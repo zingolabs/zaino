@@ -4,9 +4,9 @@
 //! "provisioner is internal to the indexer"): it fetches blocks from a validator
 //! and projects them into the set-wide context the engine consumes. It is
 //! **generic over the source** — bound on exactly the `zaino-source` capability
-//! traits it needs, so any validator adapter (zebra-rpc, zebra-readstate, a
-//! mock) plugs in — and it reacts to a typed source error rather than baking in
-//! retry (transient handling is the resilient-source decorator's job, below).
+//! traits it needs, so any validator adapter plugs in — and it reacts to a typed
+//! source error rather than baking in retry (transient handling is the
+//! resilient-source decorator's job, below).
 //!
 //! [`SourceSyncDriver`] wires it to the engine: it spawns the provisioner
 //! feeding the engine's `sync_channel`, and reports `Ready` once caught up to the
