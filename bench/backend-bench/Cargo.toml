@@ -1,0 +1,57 @@
+# Backend benchmark.
+#
+# Measures one persistence backend in isolation, over the `zaino-persistence`
+# seam: no source, no provisioner, no engine. Every workload is generic over
+# `Backend` and the backends are criterion inputs, so one `cargo bench` reports
+# them side by side. Cluster-scale whole-pipeline measurement is bench/sync-bench.
+# See bench/backend-bench/usage.md.
+[package]
+name = "backend-bench"
+version = "0.0.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Backend benchmark: measure one zaino-persistence backend in isolation, so two implementations can be swapped in place and compared."
+
+[dependencies]
+# The seam under test, and the backends that implement it today.
+# The in-memory backend — the no-IO ceiling this bench compares against — is
+# gated behind `testing`, since production never opens it.
+zaino-persistence = { workspace = true, features = ["testing"] }
+zaino-backend-lmdb = { workspace = true }
+# The real codecs: records are encoded through the production DTOs, so the byte
+# sizes a workload writes are the sizes the indexer writes.
+zaino-persistence-codec = { path = "../../packages/zaino-persistence-codec" }
+zaino-indexes = { workspace = true }
+# The namespace set a real deployment declares, and the height/key primitives
+# the codecs encode.
+zaino-sync = { workspace = true }
+zaino-primitives = { workspace = true }
+# An on-disk backend needs a directory that is removed with the target.
+tempfile = { workspace = true }
+# Shape is a `ValueEnum` so a future runner can select it without restating the
+# variants; the bench reads it from the environment.
+clap = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+# The library holds the generic workloads and their unit tests; it is not itself
+# a benchmark target, so `cargo bench` does not hand it criterion's arguments.
+[lib]
+bench = false
+
+[[bench]]
+name = "backend"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+wildcard_enum_match_arm = "deny"
