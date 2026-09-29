@@ -39,6 +39,15 @@ implements the `OneShot*` ports it can, and the compiler says which
 deployments the client over it can serve: an arm whose deployment's `…Source`
 bundle names a port the adapter lacks does not compile.
 
+An `rpc` source is one validator by default. A `[source.quorum]` section names
+several — `[[source.quorum.members]]` entries with the same fields as the
+single endpoint, and `quorum`, how many must agree on the chain tip, a majority
+when absent. The daemon builds `zaino-source`'s `Quorum` over them and still
+hands the runtime one client; the members are the source's own detail, spread
+and failed over inside it (see `zaino-source/quorum.md`). The mainnet RPC
+fixture reads the same from a comma-separated `ZAINO_TEST_ZEBRA_JSONRPC` and
+an optional `ZAINO_TEST_QUORUM`.
+
 `[indexer] fetch` pairs with the source: `compact` (default) needs a validator
 serving zaino's pre-index compact read, i.e. the zebra fork over either
 transport; `full` indexes from whole blocks over the standard read, so an
@@ -56,9 +65,11 @@ Two things happen before the indexer resumes, both loud when they fire:
   and answered "no such block", and the indexer would resume past heights it
   never indexed. The runtime re-stamps it at the highest header held and logs
   a warning naming both heights.
-- **Tip polling** (the daemon's). Neither Zebra transport pushes tip changes, so the daemon
-  hands the validator a second RPC handle to poll every two seconds. Without
-  it the finalised indexer's follow loop has nothing to wake it and the index
-  stays at its catch-up height; the driver warns if it is ever handed a source
-  it cannot follow.
+- **Tip polling** (the daemon's). Neither Zebra transport pushes tip changes, so the
+  source polls the validator every two seconds: the Direct source over a second
+  RPC handle, the RPC source over each of its members. Without it the finalised
+  indexer's follow loop has nothing to wake it and the index stays at its
+  catch-up height; the driver warns if it is ever handed a source it cannot
+  follow. Seeding the poll takes one live reading — one agreed on by the quorum
+  for an RPC source — which is what gates boot on the validator being reachable.
 

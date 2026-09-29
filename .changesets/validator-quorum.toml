@@ -1,0 +1,23 @@
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+`Quorum<A>`: several validators behind one source. A wrapper over N sources \
+of one adapter type answering the same one-shot ports — the chain tip by \
+k-of-n agreement, chain reads spread over the members with failover, \
+passthrough questions from the first member that answers, the mempool \
+pinned to one member — so it sits inside `ValidatorClient` and nothing above \
+the client learns there are several validators. `QuorumConfig<M>` is the \
+configuration section it is built from.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+An `rpc` source may name several validators in a `[source.quorum]` section \
+(`[[source.quorum.members]]` plus `quorum`, a majority by default); the \
+daemon builds one source over them and hands the runtime one client as \
+before. The mainnet RPC fixture reads a comma-separated \
+`ZAINO_TEST_ZEBRA_JSONRPC` and an optional `ZAINO_TEST_QUORUM` the same way.
+"""

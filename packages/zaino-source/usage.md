@@ -117,6 +117,32 @@ nothing to retry — transience is retried on the query ports a wake triggers.
 risks a double-submit, so its canonical name is reserved for a send that is safe
 to retry.
 
+## `Quorum`: several validators behind one source
+
+`Quorum<A>` holds N sources of one adapter type and answers the `OneShot*` ports
+the adapter answers, so it goes where an adapter goes: inside the client,
+`ValidatorClient<Quorum<A>>`. Nothing above the client learns there are several
+validators; a quorum of one behaves as the bare adapter.
+
+```rust
+use zaino_source::{QuorumConfig, RetryPolicy, ValidatorClient};
+
+let section: QuorumConfig<Endpoint> = /* the `[quorum]` config section */;
+let quorum = section.build(|endpoint| connect(endpoint))?;   // Result<Quorum<A>, _>
+let quorum = quorum.with_tip_polling(Duration::from_secs(2)).await?;
+let source = ValidatorClient::new(quorum, RetryPolicy::default());
+```
+
+The chain tip is the `(hash, height)` at least `quorum` members report; below
+that the call fails as a retryable non-domain failure whose typed cause names
+the counts. Chain reads are spread round-robin with failover, a miss being the
+answer only when every member misses; passthrough questions take the first
+member that answers; the mempool ports are pinned to one member until it fails,
+so the single-source rule below holds. Failover is placement, not retry: the
+ladder stays in `ValidatorClient` outside. `QuorumConfig<M>` is the
+configuration section, owned here so every composition root reads the same one.
+The rules, and what is deliberately not exposed, are in [`quorum.md`](./quorum.md).
+
 ## Capability is structural
 
 An adapter implements only the ports it can answer.
