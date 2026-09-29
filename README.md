@@ -80,6 +80,9 @@ live-tests/                        Live-test suite — standalone workspace, run
   clientless/                        Clientless partition (Zaino services -> live validator, no client)
   zaino-testutils/                   Shared test harness and utilities
 
+bench/                             Benchmarks
+  sync-bench/                        Whole pipeline: validator -> provisioner -> engine -> store
+  backend-bench/                     One persistence backend in isolation, backends compared side by side
 docs/                              Architecture diagrams, specs, and usage guides
 tools/                             Development tools
   workbench/                         Repo guards run by `makers lint`
@@ -223,6 +226,7 @@ mistakes its design is trying to prevent.
 - [`zaino-core`](./packages/zaino-core/usage.md): the engine every use case is served by — the finalised store, the chain head and the validator composed under a routing, checked where the engine is wired; [`chain_view`](./packages/zaino-core/chain_view.md) covers the FS⊕NFS seam and why the initial-build gap is an explicit policy knob.
 - [`zaino-block-decode`](./packages/zaino-block-decode/usage.md): consensus block bytes projected straight to the domain block — transaction ids for every version, shielded fields kept as bytes, no curve point decompressed; zebra-chain is its test oracle.
 - [`zainod`](./packages/zainod/usage.md): the composition root — use cases as types, config selects one, and how to add another.
+- [`backend-bench`](./bench/backend-bench/usage.md): measuring one persistence backend in isolation — what each workload mirrors, the criterion baseline recipe, and how a new backend joins the comparison.
 
 
 ## Security Vulnerability Disclosure
