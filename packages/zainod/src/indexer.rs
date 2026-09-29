@@ -42,13 +42,14 @@ use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateSt
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService, BlockHashStore};
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_primitives::types::{Block, Height, ReorgDepth};
+use zaino_primitives::types::{Block, ReorgDepth};
 use zaino_source::{BlockFetchPool, FetchRoute, ZebraRpcAdapter};
 use zaino_sync::{BlockSink, FeeSink, IndexFollower, IndexWriter, Producer, Zip};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::config::{DaemonConfig, SourceConfig, ZainoIndexConfig};
 use crate::error::IndexerError;
+use crate::index_report::Watched;
 
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
 type TaskExit = (&'static str, Result<(), IndexerError>);
@@ -216,14 +217,15 @@ async fn boot(
     // --- run: nothing fallible left, every stage one task
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
-    let mut report = |span: &Span, (finalized, synced), config: &ZainoIndexConfig| {
-        let dir = config.path.clone();
-        let run = crate::index_report::run(finalized, synced, dir, cancel.child_token());
+    let mut report = |span: &Span, watched, config: &ZainoIndexConfig| {
+        let run = crate::index_report::run(watched, config.path.clone(), cancel.child_token());
         spawn(&mut tasks, "index-report", span.clone(), run);
     };
     let index = &config.index;
     report(&compact_block_span, gates(&compact_block), &index.compact_block);
-    report(&value_balance_span, gates(&value_balance), &index.value_balance);
+    // no service reads value-balance (compact-block takes its fees through the sink)
+    let unread = Watched { reads: None, ..gates(&value_balance) };
+    report(&value_balance_span, unread, &index.value_balance);
     if let Some((span, follower)) = &block_hash {
         report(span, gates(follower), &index.block_hash);
     }
@@ -373,11 +375,14 @@ fn open_transparent_address(
         .transpose()
 }
 
-/// `follower`'s durable tip and serving gate, for its `Index on disk` report
-fn gates<W: IndexWriter, F, D>(
-    follower: &IndexFollower<W, F, D>,
-) -> (watch::Receiver<Option<Height>>, watch::Receiver<bool>) {
-    (follower.subscribe_finalized(), follower.subscribe_synced())
+/// `follower`'s tips, serving gate and request count, for its status report
+fn gates<W: IndexWriter, F, D>(follower: &IndexFollower<W, F, D>) -> Watched {
+    Watched {
+        finalized: follower.subscribe_finalized(),
+        applied: follower.subscribe_applied(),
+        synced: follower.subscribe_synced(),
+        reads: Some(follower.reads()),
+    }
 }
 
 /// `writer`'s own queue off `block_sink`, committing per `config.batch_mib`

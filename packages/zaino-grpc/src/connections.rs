@@ -35,6 +35,11 @@ impl ConnectionCaps {
         }
     }
 
+    /// Connections held now (reserved or served), of `cap` (`max_connections`)
+    pub(crate) fn held(&self, cap: usize) -> (usize, usize) {
+        (cap.saturating_sub(self.total.available_permits()), cap)
+    }
+
     /// `None` = at `max_connections`, and the caller drops the socket.
     pub(crate) fn reserve(&self) -> Option<Reserved> {
         match Arc::clone(&self.total).try_acquire_owned() {

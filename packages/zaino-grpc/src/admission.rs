@@ -61,6 +61,11 @@ impl Permits {
         }
     }
 
+    /// Permits of `class` held now, of `cap` (the pool's size)
+    pub(crate) fn held(&self, class: Class, cap: usize) -> (usize, usize) {
+        (cap.saturating_sub(self.pool(class).available_permits()), cap)
+    }
+
     fn pool(&self, class: Class) -> &Arc<Semaphore> {
         match class {
             Class::Work => &self.work,
@@ -83,6 +88,10 @@ impl<Inner> Admission<Inner> {
     }
 }
 
+/// Marks a response as an admission refusal (counted as such, never logged one by one)
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AtCapacity;
+
 /// `UNAVAILABLE` plus the pushback hint, written before any handler runs.
 fn refused(class: Class) -> Response<tonic::body::Body> {
     let message = match class {
@@ -91,6 +100,7 @@ fn refused(class: Class) -> Response<tonic::body::Body> {
     };
     let mut response = Status::unavailable(message).into_http();
     response.headers_mut().insert(PUSHBACK_HEADER, HeaderValue::from_static(PUSHBACK_MS));
+    response.extensions_mut().insert(AtCapacity);
 
     response
 }

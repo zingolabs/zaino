@@ -294,11 +294,20 @@ following steps through `Shutdown`.
   index publishes its own; a query spanning indexes reads at the minimum
 - `served()` = `Served<View>`, what an index's service holds: `pin()` = the
   latest published `View` (one load per request), `None` while unsynced;
-  `pin_any()` = the view regardless (final data, tips). `Served::fixed(view)`
-  = a synced, never-republished handle for tests with no follower
+  `pin_any()` = the view regardless (final data, tips); `synced()` = the gate
+  without pinning. `Served::fixed(view)` = a synced, never-republished handle
+  for tests with no follower
+- `reads()` = the follower's `Reads`: every view a `served()` handle pinned
+  (`pin` answered, or `pin_any`), shared across clones, `total()` since boot.
+  One pin per request keeps it a request count
+- `subscribe_applied()` publishes the applied height (inclusive, `None` when
+  empty) with each view
 - `subscribe_synced()` is `true` only while `applied_height() > tip`, recomputed
   when the queue is idle and dropped immediately on reset; serving refuses every
-  request of that index while `false`; each flip logs `index serving gate`
+  request of that index while `false`; each flip logs `Serving` / `Syncing,
+  requests refused`, except around a reset: `Reorg received, replaying` (warn,
+  `durable`, `dropped`) at the reset, `Reorg replayed, serving` (`took`) once
+  the gate reopens
 
 ### Shutdown drains
 

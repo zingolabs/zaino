@@ -5,6 +5,7 @@ use std::time::Duration;
 use tonic::Code;
 
 use crate::admission::Class;
+use crate::report;
 
 const REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
 const FIRST_MESSAGE_SECONDS: &str = "zaino.grpc.first_message_seconds";
@@ -22,7 +23,7 @@ const CONNECTIONS_REJECTED_TOTAL: &str = "zaino.grpc.connections_rejected_total"
 const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 
 /// Every `CompactTxStreamer` method, then `unknown` (any other path): the `method` label set
-const METHODS: [&str; 19] = [
+pub(crate) const METHODS: [&str; 19] = [
     "GetLatestBlock",
     "GetBlock",
     "GetBlockRange",
@@ -56,14 +57,23 @@ impl Method {
         Self(METHODS[..unknown].iter().position(|known| *known == name).unwrap_or(unknown))
     }
 
-    #[cfg(test)]
     pub(crate) fn name(self) -> &'static str {
         METHODS[self.0]
+    }
+
+    /// Slot in [`METHODS`]
+    pub(crate) fn index(self) -> usize {
+        self.0
+    }
+
+    /// Open until the next block, idle between arrivals: no latency worth timing
+    pub(crate) fn is_subscription(self) -> bool {
+        self.name() == "GetMempoolStream"
     }
 }
 
 /// `Code`'s `Debug` spelling by value (the `code` label, never formatted per request)
-const CODES: [&str; 17] = [
+pub(crate) const CODES: [&str; 17] = [
     "Ok",
     "Cancelled",
     "Unknown",
@@ -173,6 +183,7 @@ pub(crate) fn connection_closed() {
 /// A connection closed for holding unread data past the stall timeout
 pub(crate) fn connection_stalled() {
     metrics::counter!(STALLED_CONNECTIONS_TOTAL).increment(1);
+    report::connection_stalled();
 }
 
 pub(crate) fn accept_failed() {
@@ -181,6 +192,7 @@ pub(crate) fn accept_failed() {
 
 pub(crate) fn connection_rejected() {
     metrics::counter!(CONNECTIONS_REJECTED_TOTAL).increment(1);
+    report::connection_refused();
 }
 
 fn active(class: Class) -> &'static str {
@@ -199,6 +211,7 @@ pub(crate) fn stream_released(class: Class) {
 }
 
 pub(crate) fn stream_rejected(class: Class) {
+    report::at_capacity();
     match class {
         Class::Work => metrics::counter!(ADMISSION_REJECTED_TOTAL).increment(1),
         Class::Subscription => metrics::counter!(SUBSCRIPTIONS_REJECTED_TOTAL).increment(1),
@@ -214,14 +227,17 @@ pub(crate) fn first_message(method: Method, elapsed: Duration) {
     series(method).first_message.record(elapsed.as_secs_f64());
 }
 
-/// One stream's close-out (recorded where the body drops)
+/// One stream's close-out (recorded where the body drops); `latency` = time to its first message,
+/// for an answered work request
 pub(crate) fn stream_finished(
     method: Method,
     code: Code,
     elapsed: Duration,
+    latency: Option<Duration>,
     messages: u64,
     sent: u64,
 ) {
+    report::finished(method, code, latency, sent);
     {
         let series = series(method);
         // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)

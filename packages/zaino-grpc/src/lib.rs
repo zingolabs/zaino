@@ -15,6 +15,7 @@ mod grpc;
 mod limits;
 mod memo;
 mod observe;
+mod report;
 mod router;
 mod stall;
 mod transport;

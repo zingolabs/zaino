@@ -6,16 +6,17 @@
 //! - `Shutdown` → writes what is final, ends the downstream sink, returns
 //! - Failure → cancels `shutdown`, pops its feed through `Shutdown` (never dropped before)
 
-use std::{collections::VecDeque, future::Future, num::NonZeroUsize, sync::Arc};
+use std::{collections::VecDeque, future::Future, num::NonZeroUsize, sync::Arc, time::Instant};
 
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use zaino_chainview::QuorumTip;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 
 use crate::{
-    Derives, Feed, IndexWriter, IndexerDataSink, Linked, Served, Step, Subscription, Weight,
+    report::Human, Derives, Feed, IndexWriter, IndexerDataSink, Linked, Reads, Served, Step,
+    Subscription, Weight,
 };
 
 mod sealed {
@@ -124,6 +125,12 @@ pub struct IndexFollower<W: IndexWriter, F = Subscription<<W as IndexWriter>::In
     tips: watch::Receiver<Option<QuorumTip>>,
     /// Durable tip height (inclusive; `None` = empty), published after each fsync
     finalized: watch::Sender<Option<Height>>,
+    /// Applied height (inclusive; `None` = empty), published with each view
+    applied: watch::Sender<Option<Height>>,
+    /// Requests this index's services answered
+    reads: Reads,
+    /// When the last reset dropped the non-finalized state (`None` = no replay pending)
+    reorg: Option<Instant>,
     /// Non-finalized state, published after each step (what serving pins)
     view: Arc<arc_swap::ArcSwap<W::View>>,
     /// Opens once applied through the tip; closes on a reset or past the reorg depth behind (a
@@ -159,6 +166,9 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>> IndexFollower<W, F, ()> {
         assert_eq!(writer.applied_height(), durable, "{}: non-finalized state at boot", W::NAME);
         Self {
             finalized: watch::Sender::new(durable),
+            applied: watch::Sender::new(durable),
+            reads: Reads::default(),
+            reorg: None,
             view: Arc::new(arc_swap::ArcSwap::from_pointee(writer.view())),
             synced: watch::Sender::new(false),
             linked: None,
@@ -188,6 +198,9 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>> IndexFollower<W, F, ()> {
             depth: self.depth,
             tips: self.tips,
             finalized: self.finalized,
+            applied: self.applied,
+            reads: self.reads,
+            reorg: self.reorg,
             view: self.view,
             synced: self.synced,
             linked: self.linked,
@@ -207,14 +220,24 @@ impl<W: IndexWriter, F, D> IndexFollower<W, F, D> {
         self.finalized.subscribe()
     }
 
+    /// Applied height (inclusive; `None` = empty), with each published view
+    pub fn subscribe_applied(&self) -> watch::Receiver<Option<Height>> {
+        self.applied.subscribe()
+    }
+
     pub fn subscribe_synced(&self) -> watch::Receiver<bool> {
         self.synced.subscribe()
+    }
+
+    /// Requests every [`served`](Self::served) handle answered
+    pub fn reads(&self) -> Reads {
+        self.reads.clone()
     }
 
     /// What this index's services read: the view published after every step and commit, gated
     /// on `synced`
     pub fn served(&self) -> Served<W::View> {
-        Served::new(Arc::clone(&self.view), self.synced.subscribe())
+        Served::counted(Arc::clone(&self.view), self.synced.subscribe(), self.reads.clone())
     }
 }
 
@@ -377,6 +400,10 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
                         Some(oldest) => oldest.height().checked_sub(1),
                         None => delivered,
                     };
+                    let (from, to) =
+                        (finalized_tip.map_or(0, u32::from), delivered.map_or(0, u32::from));
+                    warn!(durable = from, dropped = to - from, "Reorg received, replaying");
+                    self.reorg = Some(Instant::now());
                     self.drain(&mut staged).await.map_err(fail)?;
                     self.writer.reset().await.map_err(fail)?;
                     self.downstream.signal(&Step::Reset).await;
@@ -393,7 +420,7 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
                 Step::Shutdown => break,
             }
 
-            self.view.store(Arc::new(self.writer.view()));
+            self.publish_view();
 
             if staged.bytes >= self.batch_bytes.get() {
                 self.flush(&mut staged).await.map_err(fail)?;
@@ -509,25 +536,40 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
             elapsed = ?in_flight.started.elapsed(),
             "Committed batch"
         );
-        self.view.store(Arc::new(self.writer.view()));
+        self.publish_view();
         let before = self.finalized.send_replace(finalized);
         assert!(before <= finalized, "{}: durable tip moved back", W::NAME);
         Ok(())
     }
 
-    fn set_synced(&self, serving: bool) {
+    /// Serving gate set; a reorg's replay is timed from its reset to the gate reopening
+    fn set_synced(&mut self, serving: bool) {
         let changed = self.synced.send_if_modified(|current| {
             let changed = *current != serving;
             *current = serving;
             changed
         });
-        if changed {
-            let height = self.writer.applied_height().map_or(0, u32::from);
-            match serving {
-                true => info!(height, "Serving"),
-                false => info!(height, "Syncing, requests refused"),
-            }
+        if !changed {
+            return;
         }
+        let height = self.writer.applied_height().map_or(0, u32::from);
+        match (serving, self.reorg) {
+            (true, Some(reset)) => {
+                info!(height, took = %Human(reset.elapsed()), "Reorg replayed, serving");
+                self.reorg = None;
+            }
+            (true, None) => info!(height, "Serving"),
+            // `Reorg received` already said so
+            (false, Some(_)) => {}
+            (false, None) => info!(height, "Syncing, requests refused"),
+        }
+    }
+
+    /// View + applied height published together
+    fn publish_view(&self) {
+        self.view.store(Arc::new(self.writer.view()));
+        let applied = self.writer.applied_height();
+        self.applied.send_if_modified(|current| std::mem::replace(current, applied) != applied);
     }
 }
 

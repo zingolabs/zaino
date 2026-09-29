@@ -30,7 +30,7 @@ pub use follower::{Downstream, FollowError, IndexFollower};
 pub use index_writer::{finalize_now, Derives, IndexWriter, Linked};
 pub use offload::{blocking, compute, Offloaded};
 pub use producer::{ProduceError, Producer};
-pub use served::Served;
+pub use served::{Reads, Served};
 
 use zaino_primitives::types::{Block, BlockFees};
 

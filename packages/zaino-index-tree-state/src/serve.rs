@@ -59,9 +59,9 @@ impl TreeStateService {
     /// it); anything above it only once synced
     pub fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
         let view = self.served.pin_any();
-        match Some(at) <= view.finalized() {
+        match Some(at) <= view.finalized() || self.served.synced() {
             true => view.treestate(at),
-            false => self.pin()?.treestate(at),
+            false => Err(ServeError::Syncing),
         }
     }
 

@@ -5,13 +5,15 @@
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use http::{Request, Response};
 use http_body::{Body, Frame, SizeHint};
-use tonic::Code;
+use tonic::{Code, Status};
 
+use crate::admission::AtCapacity;
 use crate::emit::{self, Method};
+use crate::report;
 
 /// gRPC framing: compression flag + big-endian length.
 const FRAME_HEADER: usize = 5;
@@ -32,6 +34,15 @@ impl<Inner> Measured<Inner> {
 fn code_of(headers: &http::HeaderMap) -> Option<Code> {
     let status = headers.get("grpc-status")?.to_str().ok()?;
     Some(Code::from_i32(status.parse().ok()?))
+}
+
+/// `grpc-status`, plus its decoded `grpc-message` when it is not `Ok` (never read on success)
+fn status_of(headers: &http::HeaderMap) -> Option<(Code, Option<String>)> {
+    let code = code_of(headers)?;
+    let message = (code != Code::Ok)
+        .then(|| Status::from_header_map(headers).map(|status| status.message().to_owned()))
+        .flatten();
+    Some((code, message))
 }
 
 impl<Inner, ReqBody, ResBody> tower::Service<Request<ReqBody>> for Measured<Inner>
@@ -61,16 +72,19 @@ where
         Box::pin(async move {
             let response = inner.call(request).await?;
             // Header-carried `grpc-status` = a unary answer or an error, complete already.
-            let code = code_of(response.headers());
+            let (code, message) = status_of(response.headers()).unzip();
+            let at_capacity = response.extensions().get::<AtCapacity>().is_some();
 
             Ok(response.map(|body| Counted {
                 inner: body,
                 method,
                 started,
-                first_message: false,
+                first_message: None,
                 sent: 0,
                 messages: Messages::default(),
                 code,
+                message: message.flatten(),
+                at_capacity,
                 ended: false,
             }))
         })
@@ -82,10 +96,15 @@ pub(crate) struct Counted<Inner> {
     inner: Inner,
     method: Method,
     started: Instant,
-    first_message: bool,
+    /// Admission to the first DATA frame
+    first_message: Option<Duration>,
     sent: u64,
     messages: Messages,
     code: Option<Code>,
+    /// The status message, when the status is not `Ok`
+    message: Option<String>,
+    /// Refused by admission (counted, never logged one by one)
+    at_capacity: bool,
     ended: bool,
 }
 
@@ -102,16 +121,19 @@ impl<Inner: Body<Data = bytes::Bytes> + Unpin> Body for Counted<Inner> {
         match &polled {
             Poll::Ready(Some(Ok(frame))) => match frame.data_ref() {
                 Some(chunk) => {
-                    if !self.first_message {
-                        self.first_message = true;
-                        emit::first_message(self.method, self.started.elapsed());
+                    if self.first_message.is_none() {
+                        let elapsed = self.started.elapsed();
+                        self.first_message = Some(elapsed);
+                        emit::first_message(self.method, elapsed);
                     }
                     self.sent += chunk.len() as u64;
                     self.messages.feed(chunk);
                 }
                 // Trailers are where a streaming answer's real status lands.
                 None => {
-                    self.code = frame.trailers_ref().and_then(code_of).or(self.code);
+                    if let Some((code, message)) = frame.trailers_ref().and_then(status_of) {
+                        (self.code, self.message) = (Some(code), message);
+                    }
                 }
             },
             Poll::Ready(Some(Err(_))) | Poll::Ready(None) => self.ended = true,
@@ -138,13 +160,22 @@ impl<Inner> Drop for Counted<Inner> {
             false => Code::Cancelled,
         });
 
+        let elapsed = self.started.elapsed();
+        // an answered work request's latency = what its client waited for the first message
+        let latency = (code == Code::Ok && !self.method.is_subscription())
+            .then(|| self.first_message.unwrap_or(elapsed));
+
         emit::stream_finished(
             self.method,
             code,
-            self.started.elapsed(),
+            elapsed,
+            latency,
             self.messages.complete,
             self.sent,
         );
+        if code != Code::Ok && !self.at_capacity {
+            report::answered_badly(self.method, code, self.message.as_deref().unwrap_or_default());
+        }
     }
 }
 

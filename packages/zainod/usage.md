@@ -132,15 +132,21 @@ What an operator sees at `info`:
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
+| `Grpc` | `Serving requests` | info / warn | Every 60 s while anything is served or held: `requests`, `rps`, `p50` / `p99` / `max` time to first message, `out` bytes/s, `streams` / `subs` / `conns` held of their caps; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
+| `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
+| `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (index syncing, validator unreachable: `method`, `error`). |
 | `ZainoSource` | `Syncing to finalized target` | info | A bulk pass starts (`from`, `target` = tip − `finalised_depth`, `tip`). |
 | `ZainoSource` | `Syncing blocks` | info | Every 30 s during a bulk pass (`height`, `target`, `synced`, `bps`, `tps`, `eta`). |
 | `ZainoSource` | `Block fetch stalled` | warn | A whole 30 s interval of a bulk pass added no block. |
 | `ZainoSource` | `Reached finalized target` | info | A bulk pass finished (`blocks`, `elapsed`, average `bps`). |
 | `ZainoNFS` | `Chain tip advanced` | info | Each chain-head step past bulk (`height`, `hash`, `blocks`, `txs`, block `age`, `finalized`). |
 | `ZainoNFS` | `Chain reorg detected` | warn | A branch won (`fork`, `dropped`, `added`, new tip). |
-| index | `Serving` / `Syncing, requests refused` | info | The index's serving gate changes. |
-| index | `Index on disk` | info | Every 120 s while that index syncs, silent once it serves (`durable` tip, omitted while empty; `size` = every file in its directory, then each subdirectory's share by name, e.g. `receives=… spent=…`; `json` carries them as one `parts` string). |
+| index | `Serving` / `Syncing, requests refused` | info | The index's serving gate changes (`height` = applied tip). |
+| index | `Index on disk` | info | Every 120 s while that index syncs (`durable` tip, omitted while empty; `size` = every file in its directory, then each subdirectory's share by name, e.g. `receives=… spent=…`; `json` carries them as one `parts` string). |
+| index | `Serving index` | info | Every 5 min while that index serves: `durable` and `applied` tips, `size` and subdirectory shares as above, `requests` = requests it answered since the previous line (absent on value-balance, which no service reads). |
 | index | `Index size unreadable` | warn | That interval's directory walk failed (`durable`, `error`); the next one retries. |
+| index | `Reorg received, replaying` | warn | A reset dropped the non-finalized state (`durable` = the tip it replays from, `dropped` = blocks discarded); requests are refused until it replays. |
+| index | `Reorg replayed, serving` | info | The replay reached the tip and the gate reopened (`height`, `took` = from the reset). |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 
 Per-commit lines (`Committed batch`) and every LSM merge (`Compacting segments`,

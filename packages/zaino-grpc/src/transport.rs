@@ -24,16 +24,18 @@ use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use tokio::io::AsyncReadExt as _;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, warn, Instrument as _, Span};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 
-use crate::admission::{Admission, Permits};
+use crate::admission::{Admission, Class, Permits};
 use crate::client::TrustedProxies;
 use crate::connections::{ConnectionCaps, Reserved};
 use crate::grpc::GrpcService;
 use crate::limits::ReadLanes;
 use crate::observe::Measured;
+use crate::report::{self, Held, INTERVAL};
 use crate::validator::{ValidatorHandler, ValidatorPorts};
 use crate::{emit, GrpcLimits, Router};
 
@@ -188,8 +190,21 @@ struct Shared<S> {
     http2: auto::Builder<TokioExecutor>,
     routed: Routed<S>,
     permits: Permits,
-    stall_timeout: Duration,
+    limits: GrpcLimits,
     cancel: CancellationToken,
+}
+
+impl<S> Shared<S> {
+    /// Permits and connections held now, each against its cap
+    fn held(&self) -> Held {
+        Held {
+            streams: self.permits.held(Class::Work, self.limits.max_streams.get()),
+            subscriptions: self
+                .permits
+                .held(Class::Subscription, self.limits.max_subscriptions.get()),
+            connections: self.caps.held(self.limits.max_connections.get()),
+        }
+    }
 }
 
 impl<S: ValidatorPorts> BoundGrpcServer<S> {
@@ -205,15 +220,23 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
             http2: http2(&server.limits),
             routed: server.routed,
             permits: Permits::new(&server.limits),
-            stall_timeout: server.limits.stall_timeout,
+            limits: server.limits,
             cancel: cancel.clone(),
         });
         let mut backoff = ACCEPT_BACKOFF_MIN;
+        let mut summaries = tokio::time::interval_at(Instant::now() + INTERVAL, INTERVAL);
+        summaries.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut window_opened = Instant::now();
 
         loop {
             let accepted = tokio::select! {
                 _ = cancel.cancelled() => return Ok(()),
                 accepted = listener.accept() => accepted,
+                now = summaries.tick() => {
+                    report::summarise(now - window_opened, shared.held());
+                    window_opened = now;
+                    continue;
+                }
             };
 
             let (socket, peer) = match accepted {
@@ -224,7 +247,7 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
                 Err(error) if peer_gone(&error) => continue,
                 Err(error) => {
                     emit::accept_failed();
-                    warn!(%error, retry_in = ?backoff, "accept failed");
+                    warn!(%error, retry_in = ?backoff, "Accept failed");
                     tokio::select! {
                         _ = cancel.cancelled() => return Ok(()),
                         _ = tokio::time::sleep(backoff) => {}
@@ -239,11 +262,12 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
                 continue;
             };
             if let Err(error) = tune(&socket) {
-                debug!(%error, %peer, "dropping a socket that refused its options");
+                debug!(%error, %peer, "Dropping a socket that refused its options");
                 continue;
             }
 
-            tokio::spawn(Arc::clone(&shared).connection(socket, peer, reserved));
+            let connection = Arc::clone(&shared).connection(socket, peer, reserved);
+            tokio::spawn(connection.instrument(Span::current()));
         }
     }
 }
@@ -291,7 +315,7 @@ impl<S: ValidatorPorts> Shared<S> {
         let (source, read_ahead) = match header {
             Ok(read) => read,
             Err(error) => {
-                warn!(%error, %peer, "dropping a trusted proxy's connection");
+                warn!(%error, %peer, "Dropping a trusted proxy's connection");
                 return;
             }
         };
@@ -323,7 +347,7 @@ impl<S: ValidatorPorts> Shared<S> {
 
         tokio::select! {
             _ = serving.as_mut() => {}
-            _ = stalls.stalled(self.stall_timeout) => emit::connection_stalled(),
+            _ = stalls.stalled(self.limits.stall_timeout) => emit::connection_stalled(),
             _ = self.cancel.cancelled() => {
                 serving.as_mut().graceful_shutdown();
                 let _ = serving.await;

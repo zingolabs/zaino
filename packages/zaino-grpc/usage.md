@@ -163,6 +163,43 @@ inline.
   `CompactTxStreamer` method plus `unknown`); each series handle is resolved once
   per process, never per request.
 
+### Serving log
+
+`run` logs a summary of each minute's traffic under the caller's span (connection
+tasks inherit it too), built from the same close-outs the metrics count:
+
+```text
+INFO  … Grpc:  Serving requests  requests=2,526 rps=42.1 p50=1.21ms p99=38.4ms max=412ms out=3.1MiB/s streams=4/2,048 subs=12/4,096 conns=17/4,096
+WARN  … Grpc:  Serving requests  requests=880 rps=14.7 … failed=2 refused=31 at_capacity=29 slow=3 slowest=GetTaddressTxids
+ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
+```
+
+- **Rate** = streams finished in the window, per second. **Latency** = time to
+  the first message of each `OK` work request (a unary answer, or a stream's
+  first item; `GetMempoolStream` is never timed), p50 / p99 from log-linear
+  buckets ≤ 12.5 % wide, never above `max`, which is exact. **out** = response
+  body bytes (gRPC frames, before HTTP/2 and TCP overhead). **streams / subs /
+  conns** = permits and connections held at the summary, of their caps.
+- Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
+  (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
+  index syncing, validator unreachable; `at_capacity` = the admission share);
+  everything else = the client's (bad argument, not found, cancelled), counted
+  per method at DEBUG only.
+- The summary is WARN once the window holds a failure, a refusal, a request
+  slower than 1 s to its first message (`slow`, `slowest` = the method with the
+  longest), a stalled connection closed (`stalled`) or a connection refused at a
+  cap (`conns_refused`); problem fields appear only when non-zero. Nothing
+  served and nothing held = no line.
+- The window's first failure is logged as it happens (ERROR `Request failed`:
+  `method`, `code`, the `error` message the client got), and its first
+  refusal other than admission (WARN `Request unavailable`); the rest are only
+  counted, so an outage costs two lines a minute, not one per request.
+- DEBUG adds `Method served` per method with traffic: `requests`, `p50`, `p99`,
+  `out`, `client`, `refused`, `failed`.
+- Cost: a few relaxed atomic adds per request into fixed per-method counters,
+  swapped to zero once a minute on the accept loop; no lock, no allocation per
+  request.
+
 ## Stored bytes on the wire
 
 Compact-block records are stored gRPC-framed (`[0x00][len:be32][message]`), so
