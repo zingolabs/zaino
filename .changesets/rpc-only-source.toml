@@ -1,0 +1,1039 @@
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+The Direct (ReadState) source is removed; zainod sources blocks from the \
+validator's JSON-RPC only. `[source]` is now a plain table (`jsonrpc_address`, \
+`cookie_path`, `user`, `password`) and rejects unknown fields, so a config \
+still carrying `mode` or `zebra_cache_dir` fails to parse. Boot waits for the \
+validator to answer.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+The `ztest-fixture` feature and its built-in regtest config are removed: a \
+test harness renders a `zainod.toml` like any other operator.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+The container image's `entrypoint.sh` and its env-var config contract \
+(`ZAINO_VALIDATOR_JSONRPC`, `ZAINO_VALIDATOR_COOKIE`, `ZAINO_STORE_PATH`, \
+`ZAINO_GRPC_LISTEN`, `ZAINO_CONFIG_FILE`) are removed. The image runs \
+`zainod start` on `/app/config/zainod.toml` (zainod's default config path), \
+the same file and schema as any other install; arguments replace `start`, and \
+zainod's own `ZAINO_CONFIG_` variables still override keys.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+`ZebraRpcAdapter::connect` waits for a validator to answer and builds the \
+adapter. `get_chain_tip` reads `getbestblockheightandhash` (its `hash` is Zebra's \
+raw 32-byte array, internal order, not display hex) — one call, so hash \
+and height come from the same tip.
+"""
+
+[[changes]]
+crate = "zaino-convert-zebra"
+kind = "breaking"
+section = "Removed"
+description = """
+`header_from_parts` and `pre_index_compact_block_from_zebra` are removed: their \
+only caller was the ReadState adapter.
+"""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+section = "Removed"
+description = """
+The `heavy` feature and `blockid_to_hashorheight` are removed; the crate no \
+longer depends on `zebra-state` or `zebra-chain`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+`network` takes `mainnet` / `testnet` / `regtest` (default `mainnet`) and is \
+never read off the validator. \
+zainod links no TLS stack: the \
+JSON-RPC port, the NO_TLS/withTls build switches and the no-tls release image \
+are gone. Default config/store paths come from the platform's user dirs.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+The validator probe no longer resolves the validator hostname at startup: the client \
+dials `http://host:port` and reqwest resolves per connection, so a validator \
+whose IP changes (a restarted pod) stays reachable. `ProbeError::Address` now \
+reports a malformed `host:port` (`reason: String`). The client builds without \
+TLS and installs no crypto provider.
+"""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+section = "Removed"
+description = "The unused `grpc_proxy_server` feature (a prost/tonic re-export) is removed."
+
+[[changes]]
+crate = "zaino-non-finalized-state"
+kind = "breaking"
+section = "Removed"
+description = """
+The declaration-only `transparent_address_history_experimental` feature and its \
+`transparent` module are removed: nothing implemented or consumed them.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+New crate: the storage core every index shares. Absorbs `zaino-persistence-codec` \
+and `zaino-runs` (as `zaino_persistence::lsm`, runs renamed segments); the record codec and `verify` \
+module are removed (each index owns its fixed-width layouts).
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+description = """
+Absorbs `zaino-indexer`. One `Producer` owns the `BlockSink` \
+(`IndexerDataSink<Block>`, a byte-bounded broadcast queue; the producer decides \
+start, finality and resets and sends them as in-band steps): it bulk-syncs \
+through `zaino_source::BlockFetchPool`, then follows chainview's quorum tip \
+through `zaino_non_finalized_state::ChainHead`; a reorg resets every subscriber and \
+replays from the in-memory window without refetching. Indexes implement \
+`IndexWriter`, driven by `IndexFollower`. `BlockFetcher`, `SourceProvisioner`, \
+`FanOut`, `FetchConcurrency` and `FetchError` are removed. It emits \
+`zaino_best_tip`, `zaino_reorgs_total` (published at 0 from boot), \
+`zaino_fetch_height` and the per-block `zaino_fetch_*_total` counters.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+Absorbs `zaino-rpc` as a private transport module; `RpcClient`, \
+`RpcClientConfig`, `RpcError` and `ProbeError` are re-exported.
+"""
+
+[[changes]]
+crate = "zaino-non-finalized-state"
+kind = "breaking"
+section = "Removed"
+description = """
+Rewritten as a library, absorbing and removing `zaino-chain-head-service`: \
+`ChainHead` holds the non-final window of the best chain as `Arc<Block>`s; \
+`advance(quorum_tip, &pool)` returns `Advance::{Unchanged, Extended, \
+Reorg { fork }}` and `best_chain_from(height)` reads the blocks back. \
+`ChainHeadService`, `ChainHeadConfig`, `ChainHeadBlockSource`, the block graph, \
+anchor-relative work, the snapshot / transaction query traits and the \
+`testing` feature are removed.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "Removed"
+description = "`ChainStateEpoch`, `Outpoint` and `BlockTxPosition` are removed: nothing uses them."
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+Zaino serves no JSON-RPC: `serve.jsonrpc_listen_address` and the node JSON-RPC \
+server (`zaino-noderpc`) are removed, so a config still carrying the key fails \
+to parse. Logging init moves in as `zainodlib::logging`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+The component runtime (`zaino-component`: `Orchestra`, `RunLoop`, \
+`RunReporter`, per-component status/health) is removed. Every stage is a plain \
+task; any task ending before a shutdown signal restarts the daemon, and a \
+signal cancels every task and waits for the indexes to flush what is final.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+`EndpointPoller::run(self, cancel)` is an inherent async fn taking a \
+`tokio_util::sync::CancellationToken`; the `RunLoop` impl is removed.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+`BlockFetchPool` fetches blocks from N validators: `blocks(from, to)` is an \
+ordered stream (one spawned fetch + decode per height, `concurrency` in flight), \
+`FetchRoute::Spread` rotates heights with fallback or `Primary(i)` pins one \
+validator, and `block_by_hash` tries every validator, primary first.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Removed"
+description = """
+`SubscribeChainTip`, `TipObservation`, `SubscribeBlocks`, `PolledChainTip` and \
+`ZebraRpcAdapter::with_tip_polling` are removed: chainview polls every \
+validator's tip itself. `Arc<V>` forwards `OneShotGetBlockByHash` in place of \
+`OneShotGetChainTip`.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Changed"
+description = """
+`GetMempoolListingError::Inactive`: zebrad's `-1` "mempool is not active" (a \
+validator below the network tip) is an answer, no longer a transport failure.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Changed"
+description = """
+`GetMempoolSourceTip` returns a `SourceTip` (`hash`, `height`, and the \
+validator's `estimated_height` of the network tip) in place of a \
+`(BlockHash, Height)` pair.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+Terminal log lines carry a component column (`Zainod`, `Metrics`, \
+`ChainView`, `ZainoSync`, `Grpc`, one per index); `json` carries it as the \
+enclosing span's `component` field. Counts group from 1,000, heights never \
+group, and hashes shorten to their first and last 8 digits. Each index logs \
+`Opening from <path>` in place of the single `Indexer started` line; `blk/s` \
+and `tx/s` are `bps` and `tps`; every LSM merge logs at `debug`.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "fix"
+section = "Fixed"
+description = """
+A validator whose mempool is inactive while it catches up to the network tip \
+no longer stalls block sync: it is `EndpointState::CatchingUp`, still votes its \
+tip, serves no mempool, and is warned about every 60 s with its tip height and \
+hash, where before it failed every poll and was ejected.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "feature"
+description = """
+`ChainViewSubscriber::subscribe_tip()` returns the quorum tip as a \
+level-triggered `watch` (`None` = below quorum), which cannot lag the way \
+`actions()` can.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+`fetch.finalised_depth` must be non-zero (non-final blocks are served from \
+the non-finalized state, so depth 0 bought nothing and could not survive a reorg). \
+`fetch.concurrency` defaults to \
+32 (was 16: the ordered stream's throughput = fetches in flight / the validator's \
+tail latency). New `fetch.primary_validator` \
+pins bulk sync to one validator by `jsonrpc_address`; unset, bulk sync spreads \
+over `source` and every `chainview_peers` entry, and the quorum tip over the \
+same set drives live sync.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "Removed"
+description = "`ChainProgress` and `MAX_NONFINALISED_DEPTH` are removed: nothing uses them."
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "fix"
+section = "Fixed"
+description = """
+`GetTaddressBalance[Stream]` dedupes on the parsed address, not the string: \
+two network encodings of one hash160 were counted twice, and a large enough \
+doubled balance panicked the server.
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+Client heights are parsed once at the router: a height above the protocol \
+ceiling, or a range whose start is above its end, is `INVALID_ARGUMENT` for \
+every method, before any index is consulted.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "breaking"
+section = "Changed"
+description = """
+Queries take `zcash_transparent::address::TransparentAddress` and `Height`; \
+`AddressKey`, `AddressKind` and `address_key` are internal; \
+`ServeError::ReversedRange` is removed (ranges are ordered by the caller).
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "breaking"
+section = "Changed"
+description = """
+`block`/`range` take `Height`; `ServeError::ReversedRange` is removed \
+(`range` asserts `from <= to`).
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "Changed"
+description = """
+`Block`'s fields are private: `Block::new` (asserts a coinbase) is the only \
+constructor, read through `header()` and `transactions()`.
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+`poolTypes` values that name no pool (`POOL_TYPE_INVALID` or an unknown \
+number) are `INVALID_ARGUMENT` on `GetBlockRange`, `GetBlockRangeNullifiers` \
+and `GetMempoolTx`, instead of being silently dropped.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Changed"
+description = """
+Every index commits through a per-directory `MANIFEST` (magic, format, index \
+kind, network, CRC; written as `MANIFEST.next` → fsync → rename → dir fsync) \
+and holds a `LOCK`. Files go through the `fs::Fs` port (`RealFs`; `SimFs` \
+behind `testing` enumerates crash states). `lsm` lists committed segments as \
+`SegmentMeta { id, records, sealed }` in the owner's manifest, removes unlisted \
+segments at open, and merges size tiers in the background through `SegmentLog` \
+(`batch`, `committed`).
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+section = "Added"
+description = """
+`pages`: every index file is a `PagedFile` with a CRC-32 per 4 KiB page in a \
+`<file>.crc` sidecar and a `Sealed { len, tail }` in the owner's manifest. Open \
+checks the length and the tail page only; every page is checked on first read \
+and a mismatch panics (zainod aborts rather than serve it). `scrub(dir, \
+relative, sealed)` is the offline check. Integrity is filesystem-level only: \
+data is validated while it is built, never re-derived from disk.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+section = "Added"
+description = """
+Runs of a `Key` with `PROBED = true` carry a sharded BinaryFuse8 filter (xorf, \
+≤ 2^20 keys per shard, ~9 bits/key, ~0.4% false positives), so an exact-key \
+miss costs no read. `Snapshot::get(&key)` probes it. Runs also carry fence keys \
+(one per ~4 KiB block): a seek is a fence binary search plus one block.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "Changed"
+description = """
+`PerPool<T>` (`get`, `get_mut`, `map`) and `TreeSizes = PerPool<TreeSize>` \
+replace `ChainMetadata`. `SubtreeRoot` carries `completing: BlockRef` (height \
+and hash). The `serde` feature is removed.
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "breaking"
+section = "Changed"
+description = """
+`CompactBlockStore::open(fs, path, network)`; `commit(sizes: TreeSizes)` \
+records the tip's tree sizes in the manifest. Files are page-checked \
+(`offsets.idx` = 8 B end offsets); open reads lengths and tail pages only. \
+Hash lookup moved to `zaino-internal-block-hash-to-height`: `hashes.idx` and \
+`block_by_hash` are gone, and `CompactBlockService::block_at_hash(height, hash)` \
+serves a located height only if the record's own hash matches. \
+`committed_files(dir, network)` lists the sealed files. `CompactBlockWriter`, \
+`verify` and `encode_record`'s `ChainMetadata` argument are removed; \
+`CompactBlockIndexWriter::new(store, batch)` is infallible.
+"""
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "breaking"
+section = "Changed"
+description = """
+`TreeStateStore::open(fs, path, network)`. Height records (48 B), subtree \
+entries (36 B) and node files are page-checked; open reads lengths and tail \
+pages only. `View = ReadView` (non-finalized state + committed snapshot, one \
+publication); `TreeStateService::new(view, synced, network)`. \
+`treestate(height)` answers committed heights while the index is syncing. \
+`subtree_roots` fills each root's completing block hash. `verify` is removed; \
+`committed_files(dir, network)` lists the sealed files.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "breaking"
+section = "Changed"
+description = """
+`TransparentAddressIndexWriter::open(fs, path, network, batch)`. The \
+`next_height` watermark is replaced by the manifest listing committed segments; \
+segments merge by size tier in the background (fanout 8); `spent` segments carry filters. \
+`TransparentAddressService::network()` is added; `disabled()`, \
+`ServeError::Disabled` and `verify` are removed; `committed_files(dir, \
+network)` lists the sealed segments (`<set>/<id>.seg`).
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+`GrpcServer::new(handler, bind, limits)` (`with_limits` removed); \
+`Router::new(inner, raw_transactions, disk_reads)` requires both. \
+`GetTreeState` by `BlockID.hash` is answered: the compact-block index locates \
+the height, the tree-state index must hold the same hash there (`NOT_FOUND` \
+across a reorg). `SubtreeRoot.completingBlockHash` is filled (display order, as \
+lightwalletd). A t-address encoded for another network is `INVALID_ARGUMENT`.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+`IndexWriter::finalized_tip()` and `Input: Linked`: the follower checks every \
+delivered block links onto the previous one (the first onto the durable tip); \
+a break is the fatal `FollowError::Unlinked`. `FollowError` is an enum \
+(`Index`, `Unlinked`).
+"""
+
+[[changes]]
+crate = "zaino-non-finalized-state"
+kind = "fix"
+section = "Fixed"
+description = """
+A reorg onto a higher tip no longer trims new-branch blocks the producer has \
+yet to replay (the trim runs at the start of the next `advance`; window bound \
+`2 × depth + 1`).
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+section = "Added"
+description = """
+`MockChain::extend_best` moves the mock's best chain (reorgs under a live consumer).
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+Any panic aborts; the first task to end stops zainod (no in-process restart: \
+run it under a service manager). `fetch.finalised_depth` defaults to 1000 and \
+is refused below it except on regtest.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+`zainod verify` scrubs every sealed file of every enabled index against its \
+page checksums (read-only, safe beside a live daemon) and prints a JSON report \
+per index; exit 0 clean, 1 lost/corrupt, 2 unreadable. `--rehash` is removed.
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "breaking"
+section = "Changed"
+description = """
+Heights are typed: `append`, `block`, `hash_at` and `NonFinalizedState` take \
+`Height`; tips are the last height, inclusive (`ReadView::{tip, finalized_tip}` \
+and `CompactBlockService::tip` return `Option<Height>`, `None` = empty; \
+`CompactBlockStore::finalized_tip` returns `Option<BlockRef>`; `span_from` \
+returns the last height it reached); `latest_id` returns `(Height, hash)`; \
+`ServeError::{NotFound, Malformed}` carry a `Height`. \
+`CompactBlockStore::next_height` is replaced by `appended() -> Option<Height>`, \
+and `tip_hash` by `finalized_tip`; `NonFinalizedState::best_chain` is removed.
+"""
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "breaking"
+section = "Changed"
+description = """
+`TreeStateStore::finalized_tip` returns the last committed block \
+(`Option<BlockRef>`), and `ReadView::tip` the last held height, inclusive \
+(`Option<Height>`); `ServeError::{NotFound, Inconsistent}` and \
+`StoreError::Commitment` carry a `Height`.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "Changed"
+description = """
+`Treestate`'s trees are `CommitmentTreeBytes` (never empty; `as_bytes()`). \
+Added `Height::next`.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Changed"
+description = """
+A manifest's committed state is `Committed { tip: Option<BlockRef> }` (the last \
+committed block, inclusive; `height()`, `count()`), so the height and hash can \
+no longer disagree; the bytes on disk are unchanged (block count, then hash). \
+`LsmStore::commit(rows, tip)` takes that `BlockRef`, and `CommittedFiles::tip` \
+is the last committed height (`Option<Height>`).
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+`GetLightdInfo` is `UNAVAILABLE` while the validator is unreachable (it served \
+an empty branch id, zero Sapling activation and `estimatedHeight` = our own \
+height). Compact-block errors carry the index's own messages, as the other \
+indexes' do.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+`compute(f)` (CPU work on the rayon pool, one thread per core) and \
+`blocking(f)` (blocking syscalls on tokio's blocking pool) are how an index \
+writer leaves the runtime; both resume a job's panic on the awaiting task. \
+`IndexWriter::apply` takes `&Arc<Input>`, so a block moves into a `compute` \
+job without a copy.
+"""
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "feature"
+section = "Changed"
+description = """
+The commitment-tree fold hashes a run of blocks level by level, each level's \
+pairs across every core, the three pools concurrently (one fold for `apply` \
+and `finalize` alike; output independent of how blocks split into runs). Fold \
+under `compute`, write under `blocking`.
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "feature"
+section = "Changed"
+description = """
+Records encode under `compute` (a batch's encodes across every core), the \
+appends and fsyncs under `blocking`; nothing CPU-heavy runs on a runtime \
+worker.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "feature"
+section = "Changed"
+description = """
+Projection and the non-finalized state drain run under `compute` (a batch's blocks \
+projected across every core), the run writes under `blocking`.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Changed"
+description = """
+`lsm::Key` and `lsm::Record` require `Send`: a batch sorts in parallel \
+(unstable, exact because keys within a batch are unique) on the CPU pool \
+rather than on the writing thread.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Changed"
+description = """
+`runs` is renamed `lsm`: `SegmentLog`, `SegmentSet`, `SegmentMeta`, \
+`SegmentError`, `segment_files`, files `<id>.seg`. Merges happen in the \
+background. `SegmentLog<R>` is typed by its record and built over its \
+`SegmentSet` (`SegmentLog::open(set, fanout)`). `batch(records)` returns the \
+next list with every finished merge swapped in for its inputs. `committed()` \
+publishes that list, unlinks retired inputs and starts merges. `merge` is \
+removed: an owner commits one manifest per batch, never one per merge. Merges \
+run one per size tier on their own threads, and peers need not be adjacent. A \
+tier that reaches `(1 + 2) × fanout` segments while merging stalls `batch` until \
+its merge lands. Dropping the log cancels and joins every merge.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+section = "Added"
+description = """
+LSM metrics labelled by `set`. `zaino_lsm_segments` and \
+`zaino_lsm_merging` per size `tier`, `zaino_lsm_stall_at`, \
+`zaino_lsm_{batch,merge}_rows_total`, `zaino_lsm_merge_bytes_total`, and \
+`zaino_lsm_{merge,stall}_duration_seconds` histograms (`METRIC_BUCKETS`, \
+`describe_metrics`).
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Added"
+description = """
+`FileHandle::write_behind(range)` (Linux: \
+`sync_file_range(SYNC_FILE_RANGE_WRITE)`). `PagedFile` starts writeback per \
+1 MiB appended, so a seal's fsync finds little dirty data (RocksDB \
+`bytes_per_sync`).
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+Subscriber queues are bounded in bytes, not steps. \
+`IndexerDataSink::subscribe(name, budget)` takes a byte budget, and the sink \
+requires `T: Weight` (the bytes an item holds; `Block` weighs its \
+`footprint()`). A step heavier than the whole budget passes alone once the \
+queue drains.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+section = "Added"
+description = "`Block::footprint()`: bytes a decoded block holds in memory, allocations at capacity."
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+`[index.*] queue_depth` (blocks) is replaced by `queue_mib` (MiB of decoded \
+blocks, default 256). Slack stays steady from 1 KB early-chain blocks to 2 MB \
+full ones; 2048 blocks was half a second of fetch early in the chain.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "feature"
+section = "Changed"
+description = "Segment merges no longer block a commit: they run in the background and land in the next manifest."
+
+[[changes]]
+crate = "zaino-internal-block-hash-to-height"
+kind = "feature"
+section = "Added"
+description = """
+New block-hash index (own `MANIFEST`, `by_hash/` segments; hash → height only): \
+`BlockHashStore`, `BlockHashIndexWriter` (`NAME` = `"block_hash"`) and \
+`BlockHashService::locate(hash) -> Height`, the locator `GetBlock` and \
+`GetTreeState` by hash resolve through. `by_hash` merges run in the background \
+and land in the next manifest.
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+`GetBlock` / `GetTreeState` by hash resolve through \
+`with_block_hash(BlockHashService)` instead of the compact-block index. Without \
+it wired, a by-hash request is `UNIMPLEMENTED`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+`[index.block_hash]` (enabled by default, `<data>/block-hash`) backs `GetBlock` \
+and `GetTreeState` by hash, and `zainod verify` scrubs it.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+Logs are one line per event in go-ethereum's layout: level, `[MM-DD|HH:MM:SS.mmm]` \
+UTC, the message padded to 40 columns, then logfmt `key=value` fields with \
+grouped integers. `ZAINOLOG_FORMAT` is `terminal` (default) or `json`; `stream` \
+and `tree` are removed. `ZAINOLOG_COLOR` defaults to `auto` (colour on a \
+terminal only). An unrecognised `ZAINOLOG_*` value or a malformed `RUST_LOG` \
+fails startup. The stdout banner is replaced by one warning log line. Messages \
+are normalised to short capitalised phrases with their data in fields.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "feature"
+section = "Added"
+description = """
+Operator sync logs. A bulk pass logs `Syncing to finalized target`, then \
+`Syncing blocks` every 30 s (height, target, synced %, blk/s, tx/s, eta). A \
+30 s interval with no block logs `Block fetch stalled` (warn). The pass ends \
+with `Reached finalized target`. Past bulk, each chain-head step logs \
+`Chain tip advanced` (height, hash, blocks, txs, block age, finalized), a reorg \
+logs `Chain reorg detected` (fork, dropped, added), and each index logs \
+`Index serving` or `Index syncing, requests refused` when its gate changes. \
+Per-batch commits log at debug.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+section = "Added"
+description = """
+Compaction logs. `Compacting segments` (debug) is logged at launch (set, tier, \
+segments, rows, size). `Compacted segments` (debug) is logged once the \
+manifest listing the output is durable and the inputs are unlinked (adds the \
+merge's wall time). `Commit waited on compaction` (warn) names the tiers and \
+the wait.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+section = "Added"
+description = """
+`Snapshot::get_many(&keys)` resolves a batch of keys in the caller's order, \
+probing in sorted key order across the rayon pool (one page fault serves \
+neighbouring keys, a cold batch keeps many reads in flight). `get` probes the \
+newest segment first.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Changed"
+description = """
+`Pages::open` takes an `fs::Access` readahead advice for its mapping: segment \
+readers map probed sets `Random` and unprobed sets `Normal`, and merges map \
+their inputs `Sequential`. `Mapping::advise` applies it.
+"""
+
+[[changes]]
+crate = "zaino-internal-value-balance"
+kind = "fix"
+section = "Fixed"
+description = """
+Prevouts are resolved with one batched lookup per block instead of one random \
+lookup per input. A sandblast-era run of blocks spending ~1.9M transparent \
+inputs stalled bulk sync for ~5 minutes on cold page faults, each a 128 KiB \
+readahead for one 44-byte record.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+Commit batches are sized in bytes, not blocks. `IndexFollower::new(writer, \
+feed, tips, batch_bytes, depth)` finalizes once the staged items' `Weight` \
+reaches `batch_bytes`, so a commit stays one steady size from 1 KB \
+early-chain blocks to 2 MB full ones. `IndexWriter::batch()` is removed, \
+and `IndexWriter::Input` now requires `Weight`.
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "breaking"
+section = "Changed"
+description = """
+`CompactBlockIndexWriter::new` no longer takes a batch size (the follower \
+owns commit batching).
+"""
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "breaking"
+section = "Changed"
+description = """
+`TreeStateIndexWriter::new` no longer takes a batch size (the follower owns \
+commit batching).
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "breaking"
+section = "Changed"
+description = """
+`TransparentAddressIndexWriter::open` no longer takes a batch size (the \
+follower owns commit batching).
+"""
+
+[[changes]]
+crate = "zaino-internal-block-hash-to-height"
+kind = "breaking"
+section = "Changed"
+description = """
+`BlockHashIndexWriter::new` no longer takes a batch size (the follower owns \
+commit batching).
+"""
+
+[[changes]]
+crate = "zaino-internal-value-balance"
+kind = "breaking"
+section = "Changed"
+description = """
+`ValueBalanceIndexWriter::open` no longer takes a batch size (the follower \
+owns commit batching).
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+Per-index `batch` (blocks per commit, default 1000) is replaced by \
+`batch_mib` (MiB of decoded blocks per bulk-sync commit, default 64). A \
+config still setting `batch` is rejected at startup. At the tip each final \
+block commits as it arrives, as before.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+`IndexWriter::deliver` takes a run of blocks (every step already queued), and \
+`finalize` splits in two: it prepares a batch and returns the write that \
+stores it, which the follower runs off its loop, and the new `committed` lands \
+the finished write. `finalize_now` does all three in one await. \
+`Offloaded::blocking` is replaced by `lend` / `restore`.
+"""
+migration = """
+Implement `type Done` and `committed`; move store writes into the closure \
+`finalize` returns (lend the store, hand it back through `Done`), and every \
+in-memory tier change into `committed`. Answer `finalized_tip`, \
+`applied_height` and `view` without the store (state as of the last landing).
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "Changed"
+description = """
+Index commits (segment writes, fsyncs, manifests) run in the background while \
+each index keeps indexing the next batch, instead of pausing it and, through \
+the shared fetch budget, every other index. Value balances resolve their \
+spent outputs a run of blocks at a time rather than one block at a time.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "Changed"
+description = """
+Index-backed gRPC answers (blocks, tree states, subtree roots, address UTXOs, \
+balances and transactions) are read off the async workers, so a heavy address \
+query no longer stalls other requests, index sync or `/metrics`. The metrics \
+endpoint runs on its own thread. Address UTXO, balance and transaction \
+queries check spends in one batched lookup per request.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "feature"
+section = "Added"
+description = """
+`TransparentAddressService::utxos_of` and `balances` answer many addresses \
+from one view with one batched spend lookup.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+`[grpc] max_subscriptions` (default 4096) caps `GetMempoolStream` \
+subscriptions apart from `max_streams`, so idle mempool streams (one per \
+connected wallet) no longer exhaust the work cap. `[grpc] trusted_proxies` \
+(CIDRs) names proxies that open each connection with a PROXY protocol header \
+(v1 or v2); `max_connections_per_ip` then counts the client it names. See \
+`docs/running.md` for nginx and HAProxy.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "Changed"
+description = """
+A failing `accept()` (`EMFILE`, `ENOBUFS`, ...) no longer stops zainod: the \
+listener backs off and keeps serving. At boot zainod raises its open-file soft \
+limit to the hard limit and refuses a `max_connections` that does not fit it \
+with 1024 descriptors to spare.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "Changed"
+description = """
+Serving at scale: accepted sockets set `TCP_NODELAY` (and `TCP_NOTSENT_LOWAT` \
+on Linux); request bodies are capped (64 KiB, 2 MB + 1 KiB for \
+`SendTransaction`; over = `RESOURCE_EXHAUSTED`); `GetLightdInfo` reuses one \
+validator answer for up to a second; `GetMempoolStream` sends its snapshot \
+rendered once per published view and shared by every subscriber, and is \
+`UNAVAILABLE` below quorum instead of opening silent.
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+`GrpcLimits` gains `max_subscriptions`. `GrpcServer::with_trusted_proxies` \
+takes a `TrustedProxies`. `BoundGrpcServer::run` no longer returns an error \
+for a failed accept.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+`ChainViewSubscriber::tail` returns `Result<MempoolTail, BelowQuorum>`. A tail \
+exposes its opening `snapshot()` and `anchor()`; `next()` yields only what \
+turned servable afterwards. Tails wake on an arrival or a tip move only, and \
+share the view's per-epoch arrivals log instead of each holding a copy of the \
+mempool's txids. The internal `ChainAction` broadcast is removed.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+section = "Added"
+description = """
+`protocol::MAX_BLOCK_BYTES`, the spec's serialized block ceiling.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+`[grpc] max_disk_reads` is replaced by three read lanes, each with its own \
+permits and wait histogram (`zaino_grpc_disk_read_wait_seconds{lane}`): \
+`max_point_reads` (64: one block, tree state or subtree-root list), \
+`max_range_reads` (32: one `GetBlockRange` window) and `max_scan_reads` (4: one \
+transparent-address history). A heavy address scan no longer queues tip reads.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+`[serve] max_address_rows` (default 100,000) bounds the transparent receives \
+one address request walks; over it the request is `RESOURCE_EXHAUSTED`, never \
+a short list or a partial balance. `[grpc] stall_timeout_secs` (default 300) \
+closes a connection holding data its client has not read for that long \
+(`zaino_grpc_stalled_connections_total`); a request body not complete within \
+30 s is `DEADLINE_EXCEEDED`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "Changed"
+description = """
+The answers every synced wallet asks for after each block are computed once \
+per block instead of once per wallet and served without a blocking-pool hop: \
+`GetLatestBlock`, `GetBlock` and default-pools `GetBlockRange` above the \
+finalised seam (zero-copy), `GetLatestTreeState`, `GetTreeState` at \
+non-finalized heights, and `GetSubtreeRoots` (one pre-framed list per pool, \
+sliced per request). Per-request metric bookkeeping no longer allocates.
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "feature"
+section = "Added"
+description = """
+`CompactBlockService::resident_block` answers from the non-finalized tier \
+without a page read; `latest_id` is resolved when each view is published. \
+Non-finalized records are also held projected to the default pools, so tip \
+ranges in that shape are zero-copy.
+"""
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "feature"
+section = "Added"
+description = """
+`TreeStateService::pin` returns the latest synced publication; `ReadView` \
+exposes `treestate`, `latest`, `subtree_roots` and `is_nonfinalized`, so a \
+transport can memoize answers per publication.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "feature"
+section = "Added"
+description = """
+`TransparentAddressService::with_max_rows` (default `DEFAULT_MAX_ADDRESS_ROWS`) \
+bounds the receives one request walks across all its addresses; the walk stops \
+at the limit and answers `ServeError::TooManyRows`.
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+`DiskReadPermits` is replaced by `ReadLanes`; `GrpcLimits` replaces \
+`max_disk_reads` with `max_point_reads`, `max_range_reads`, `max_scan_reads` \
+and gains `stall_timeout`.
+"""

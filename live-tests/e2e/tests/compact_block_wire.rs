@@ -14,7 +14,7 @@ use ztest::prelude::*;
 const READY: Duration = Duration::from_secs(120);
 
 /// The mid-chain NU6.3 (Ironwood) activation height for the transition fixture:
-/// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
+/// an Orchard era from height 2 inclusive to 6 exclusive that flips to Ironwood at height 6.
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
 /// NU6.3 never activates, so the orchard-receiver coinbase stays in Orchard
@@ -42,29 +42,16 @@ async fn orchard_only_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "zainod must serve every block in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "zainod must serve every block in [1, {tip}]");
 
     for (offset, block) in blocks.iter().enumerate() {
         let height = 1 + offset as u64;
         assert_eq!(block.height, height, "served heights must be contiguous");
         let orchard: usize = block.vtx.iter().map(|tx| tx.actions.len()).sum();
         let ironwood: usize = block.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
-        assert_eq!(
-            orchard > 0,
-            height >= 2,
-            "orchard actions at height {height} (orchard {orchard}, ironwood {ironwood})"
-        );
-        assert_eq!(
-            ironwood, 0,
-            "no ironwood actions anywhere at height {height} (orchard {orchard})"
-        );
+        let expected = (height >= 2, 0);
+        assert_eq!((orchard > 0, ironwood), expected, "{height}: (has orchard, ironwood count)");
     }
     Ok(())
 }
@@ -82,29 +69,16 @@ async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "zainod must serve every block in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "zainod must serve every block in [1, {tip}]");
 
     for (offset, block) in blocks.iter().enumerate() {
         let height = 1 + offset as u64;
         assert_eq!(block.height, height, "served heights must be contiguous");
         let orchard: usize = block.vtx.iter().map(|tx| tx.actions.len()).sum();
         let ironwood: usize = block.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
-        assert_eq!(
-            ironwood > 0,
-            height >= 2,
-            "ironwood actions at height {height} (orchard {orchard}, ironwood {ironwood})"
-        );
-        assert_eq!(
-            orchard, 0,
-            "no orchard actions anywhere at height {height} (ironwood {ironwood})"
-        );
+        let expected = (height >= 2, 0);
+        assert_eq!((ironwood > 0, orchard), expected, "{height}: (has ironwood, orchard count)");
     }
     Ok(())
 }
@@ -137,14 +111,8 @@ async fn orchard_to_ironwood_transition_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(mined).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "zainod must serve every block in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "zainod must serve every block in [1, {tip}]");
 
     for (offset, block) in blocks.iter().enumerate() {
         let height = 1 + offset as u64;
@@ -152,16 +120,8 @@ async fn orchard_to_ironwood_transition_wire_serving_zebrad() -> Result<()> {
         let orchard: usize = block.vtx.iter().map(|tx| tx.actions.len()).sum();
         let ironwood: usize = block.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
         let boundary = u64::from(NU6_3_TRANSITION_BOUNDARY);
-        assert_eq!(
-            orchard > 0,
-            (2..boundary).contains(&height),
-            "orchard actions at height {height} (orchard {orchard}, ironwood {ironwood})"
-        );
-        assert_eq!(
-            ironwood > 0,
-            height >= boundary,
-            "ironwood actions at height {height} (orchard {orchard}, ironwood {ironwood})"
-        );
+        let expected = ((2..boundary).contains(&height), height >= boundary);
+        assert_eq!((orchard > 0, ironwood > 0), expected, "{height}: (has orchard, has ironwood)");
     }
     Ok(())
 }

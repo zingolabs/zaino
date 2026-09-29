@@ -6,18 +6,10 @@ use tonic_prost_build::{compile_protos, configure};
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
 const INDEXED_TIP_PROTO: &str = "proto/indexed_tip.proto";
-const PROPOSAL_PROTO: &str = "proto/proposal.proto";
 const SERVICE_PROTO: &str = "proto/service.proto";
 
 fn protoc_available() -> bool {
-    if env::var_os("PROTOC").is_some() {
-        return true;
-    }
-    #[cfg(feature = "heavy")]
-    if which::which("protoc").is_ok() {
-        return true;
-    }
-    false
+    env::var_os("PROTOC").is_some() || which::which("protoc").is_ok()
 }
 
 /// Copy a generated file into the source tree and force non-executable
@@ -47,7 +39,6 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={COMPACT_FORMATS_PROTO}");
     println!("cargo:rerun-if-changed={INDEXED_TIP_PROTO}");
-    println!("cargo:rerun-if-changed={PROPOSAL_PROTO}");
     println!("cargo:rerun-if-changed={SERVICE_PROTO}");
 
     // Check and compile proto files if needed
@@ -59,18 +50,14 @@ fn main() -> io::Result<()> {
 }
 
 fn build() -> io::Result<()> {
-    let out: PathBuf = env::var_os("OUT_DIR")
-        .expect("Cannot find OUT_DIR environment variable")
-        .into();
+    let out: PathBuf =
+        env::var_os("OUT_DIR").expect("Cannot find OUT_DIR environment variable").into();
 
     // Build the compact format types.
     compile_protos(COMPACT_FORMATS_PROTO)?;
 
     // Copy the generated types into the source tree so changes can be committed.
-    copy_generated(
-        &out.join("cash.z.wallet.sdk.rpc.rs"),
-        "src/proto/compact_formats.rs",
-    )?;
+    copy_generated(&out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/compact_formats.rs")?;
 
     // Build the gRPC types and client, remapping every compact-format type
     // the service references onto the module compiled above.
@@ -82,12 +69,6 @@ fn build() -> io::Result<()> {
         "CompactSaplingOutput",
         "CompactOrchardAction",
     ];
-    // A gating attribute once considered for the generated client would be
-    // restored on this builder:
-    // .client_mod_attribute(
-    //     "cash.z.wallet.sdk.rpc",
-    //     r#"#[cfg(feature = "lightwalletd-tonic")]"#,
-    // )
     COMPACT_FORMAT_TYPES
         .iter()
         .fold(
@@ -108,27 +89,13 @@ fn build() -> io::Result<()> {
         )
         .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
-    configure()
-        .build_server(true)
-        .compile_protos(&[INDEXED_TIP_PROTO], &["proto/"])?;
-
-    // Build the proposal types.
-    compile_protos(PROPOSAL_PROTO)?;
-
-    // Copy the generated types into the source tree so changes can be committed.
-    copy_generated(
-        &out.join("cash.z.wallet.sdk.ffi.rs"),
-        "src/proto/proposal.rs",
-    )?;
+    configure().build_server(true).compile_protos(&[INDEXED_TIP_PROTO], &["proto/"])?;
     copy_generated(&out.join("zaino.index.v1.rs"), "src/proto/indexed_tip.rs")?;
 
     // Copy the generated types into the source tree so changes can be committed. The
     // file has the same name as for the compact format types because they have the
     // same package, but we've set things up so this only contains the service types.
-    copy_generated(
-        &out.join("cash.z.wallet.sdk.rpc.rs"),
-        "src/proto/service.rs",
-    )?;
+    copy_generated(&out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/service.rs")?;
 
     Ok(())
 }

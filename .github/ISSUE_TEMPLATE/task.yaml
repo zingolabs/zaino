@@ -58,11 +58,20 @@ body:
       multiple: true
       options:
         - zainod
-        - zaino-state
-        - zaino-serve
-        - zaino-fetch
+        - zaino-grpc
+        - zaino-chainview
+        - zaino-sync
+        - zaino-index-compact-block
+        - zaino-index-tree-state
+        - zaino-index-transparent-address
+        - zaino-persistence
+        - zaino-persistence-macros
+        - zaino-non-finalized-state
+        - zaino-source
+        - zaino-source-macros
+        - zaino-source-zebra-rpc
+        - zaino-primitives
         - zaino-proto
-        - chain_index
         - Testing / CI
         - Documentation
         - Other

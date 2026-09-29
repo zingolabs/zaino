@@ -187,24 +187,6 @@ pub struct TransparentAddressBlockFilter {
     #[prost(message, optional, tag = "2")]
     pub range: ::core::option::Option<BlockRange>,
 }
-/// Duration is currently used only for testing, so that the Ping rpc
-/// can simulate a delay, to create many simultaneous connections. Units
-/// are microseconds.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Duration {
-    #[prost(int64, tag = "1")]
-    pub interval_us: i64,
-}
-/// PingResponse is used to indicate concurrency, how many Ping rpcs
-/// are executing upon entry and upon exit (after the delay).
-/// This rpc is used for testing only.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PingResponse {
-    #[prost(int64, tag = "1")]
-    pub entry: i64,
-    #[prost(int64, tag = "2")]
-    pub exit: i64,
-}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Address {
     #[prost(string, tag = "1")]
@@ -543,44 +525,6 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Return a compact block containing only nullifier information for the
-        /// shielded pools (Sapling spend nullifiers, Orchard action nullifiers, and
-        /// Ironwood action nullifiers). Transparent transaction data, Sapling
-        /// outputs, full Orchard/Ironwood action data, and commitment tree sizes are
-        /// not included.
-        ///
-        /// Note: this method is deprecated; use `GetBlockRange` with the
-        /// appropriate `poolTypes` instead.
-        #[deprecated]
-        pub async fn get_block_nullifiers(
-            &mut self,
-            request: impl tonic::IntoRequest<super::BlockId>,
-        ) -> std::result::Result<
-            tonic::Response<crate::proto::compact_formats::CompactBlock>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockNullifiers",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "cash.z.wallet.sdk.rpc.CompactTxStreamer",
-                        "GetBlockNullifiers",
-                    ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
         /// Return a list of consecutive compact blocks in the specified range,
         /// which is inclusive of `range.end`.
         ///
@@ -617,6 +561,9 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
+        /// !!! TODO: REMOVE THIS. DEPRECATED. Served by Zaino only because pepper-sync still calls it;
+        /// !!! delete once pepper-sync requests `GetBlockRange` with `poolTypes` instead.
+        ///
         /// Return a stream of compact blocks for the specified range, where each
         /// block contains only nullifier information for the shielded pools
         /// (Sapling spend nullifiers, Orchard action nullifiers, and Ironwood action
@@ -713,10 +660,14 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// !!! TODO: REMOVE THIS. DEPRECATED. Served by Zaino only because pepper-sync still calls it;
+        /// !!! delete once pepper-sync calls `GetTaddressTransactions` (same request, same response).
+        ///
         /// Return RawTransactions that match the given transparent address filter.
         ///
         /// Note: This function is misnamed, it returns complete `RawTransaction` values, not TxIds.
         /// NOTE: this method is deprecated, please use GetTaddressTransactions instead.
+        #[deprecated]
         pub async fn get_taddress_txids(
             &mut self,
             request: impl tonic::IntoRequest<super::TransparentAddressBlockFilter>,
@@ -1075,30 +1026,6 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
-        pub async fn ping(
-            &mut self,
-            request: impl tonic::IntoRequest<super::Duration>,
-        ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("cash.z.wallet.sdk.rpc.CompactTxStreamer", "Ping"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
     }
 }
 /// Generated server implementations.
@@ -1138,21 +1065,6 @@ pub mod compact_tx_streamer_server {
             tonic::Response<crate::proto::compact_formats::CompactBlock>,
             tonic::Status,
         >;
-        /// Return a compact block containing only nullifier information for the
-        /// shielded pools (Sapling spend nullifiers, Orchard action nullifiers, and
-        /// Ironwood action nullifiers). Transparent transaction data, Sapling
-        /// outputs, full Orchard/Ironwood action data, and commitment tree sizes are
-        /// not included.
-        ///
-        /// Note: this method is deprecated; use `GetBlockRange` with the
-        /// appropriate `poolTypes` instead.
-        async fn get_block_nullifiers(
-            &self,
-            request: tonic::Request<super::BlockId>,
-        ) -> std::result::Result<
-            tonic::Response<crate::proto::compact_formats::CompactBlock>,
-            tonic::Status,
-        >;
         /// Server streaming response type for the GetBlockRange method.
         type GetBlockRangeStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<
@@ -1183,6 +1095,9 @@ pub mod compact_tx_streamer_server {
             >
             + std::marker::Send
             + 'static;
+        /// !!! TODO: REMOVE THIS. DEPRECATED. Served by Zaino only because pepper-sync still calls it;
+        /// !!! delete once pepper-sync requests `GetBlockRange` with `poolTypes` instead.
+        ///
         /// Return a stream of compact blocks for the specified range, where each
         /// block contains only nullifier information for the shielded pools
         /// (Sapling spend nullifiers, Orchard action nullifiers, and Ironwood action
@@ -1216,6 +1131,9 @@ pub mod compact_tx_streamer_server {
             >
             + std::marker::Send
             + 'static;
+        /// !!! TODO: REMOVE THIS. DEPRECATED. Served by Zaino only because pepper-sync still calls it;
+        /// !!! delete once pepper-sync calls `GetTaddressTransactions` (same request, same response).
+        ///
         /// Return RawTransactions that match the given transparent address filter.
         ///
         /// Note: This function is misnamed, it returns complete `RawTransaction` values, not TxIds.
@@ -1345,11 +1263,6 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<tonic::Response<super::LightdInfo>, tonic::Status>;
-        /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
-        async fn ping(
-            &self,
-            request: tonic::Request<super::Duration>,
-        ) -> std::result::Result<tonic::Response<super::PingResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct CompactTxStreamerServer<T> {
@@ -1502,55 +1415,6 @@ pub mod compact_tx_streamer_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetBlockSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockNullifiers" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetBlockNullifiersSvc<T: CompactTxStreamer>(pub Arc<T>);
-                    impl<
-                        T: CompactTxStreamer,
-                    > tonic::server::UnaryService<super::BlockId>
-                    for GetBlockNullifiersSvc<T> {
-                        type Response = crate::proto::compact_formats::CompactBlock;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::BlockId>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as CompactTxStreamer>::get_block_nullifiers(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetBlockNullifiersSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
@@ -2317,50 +2181,6 @@ pub mod compact_tx_streamer_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetLightdInfoSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping" => {
-                    #[allow(non_camel_case_types)]
-                    struct PingSvc<T: CompactTxStreamer>(pub Arc<T>);
-                    impl<
-                        T: CompactTxStreamer,
-                    > tonic::server::UnaryService<super::Duration> for PingSvc<T> {
-                        type Response = super::PingResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::Duration>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as CompactTxStreamer>::ping(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = PingSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

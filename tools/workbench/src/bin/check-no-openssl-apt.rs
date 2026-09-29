@@ -3,7 +3,7 @@
 //! The Rust graph is kept OpenSSL-free by `deny.toml` (the openssl/boring* crate
 //! bans), but that can't see `apt` installs. This scans every tracked
 //! Dockerfile/Containerfile and fails if a line installs a `libssl*`/`openssl*`
-//! package. TLS is rustls throughout; nothing here needs system OpenSSL.
+//! package. Zaino links no TLS stack; nothing here needs system OpenSSL.
 
 use workbench::{git, read, repo_root, run};
 
@@ -40,7 +40,7 @@ fn check() -> Result<usize, Vec<String>> {
 
     if !offenders.is_empty() {
         let mut msg = vec![
-            "OpenSSL system package(s) found in a Dockerfile — TLS is rustls, none is needed:"
+            "OpenSSL system package(s) found in a Dockerfile — zaino links no TLS, none is needed:"
                 .to_string(),
         ];
         msg.extend(offenders);

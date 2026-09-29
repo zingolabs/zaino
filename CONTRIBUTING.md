@@ -1,136 +1,68 @@
 # Contributing to Zaino
 
-Welcome! Thank you for your interest in Zaino. We look forward to your contribution to this important part of the Zcash mainnet and testing ecosystem.
+Contributions of code, documentation, bug reports and feature requests are
+welcome. To run Zaino, start with [running zainod](./docs/running.md).
 
-## Table of Contents
-- [Getting Started](#getting-started)
-- [How to Contribute Code and Documentation](#how-to-contribute)
-- [How to open Bug Reports and Feature Requests](#bug-reports-and-feature-requests)
-- [Local Testing](#local-testing)
-- [Communication Channels](#communication-channels)
-- [More Documentation](#more-documentation)
-- [Software Philosophy](#software-philosophy)
+## Security issues
 
-## Getting Started
-To get started using Zaino, please see our [use cases document](./docs/use_cases.md) where you can find instructions for use and example use cases.
+Do not open a public issue. Report privately via
+[GitHub security advisories](https://github.com/zingolabs/zaino/security) or
+email zingodisclosure@proton.me.
 
-We welcome and appreciate contributions in the form of code, documentation, bug reports and feature requests. We also generally enjoy feedback and outreach efforts.
+## Bug reports and feature requests
 
-## Bug Reports and Feature Requests
+Open a GitHub [issue](https://github.com/zingolabs/zaino/issues) using one of
+the templates. For bugs, include the Zaino version or commit, the zebrad
+version, your OS, and your config.
 
-If you believe you have discovered a security issue and wish to disclose it non-pubicly, please contact us at:
-zingodisclosure@proton.me
+## Communication
 
-Bug reports and feature requests can best be opened as [issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue) on this GitHub repo. To do so you will need a [GitHub account](https://docs.github.com/en/account-and-profile). Especially for bug reports, any details you can offer will help us understand the issue better. Such details include versions or commits used in exposing the bug, what operating system is being used, and so on.
+The ZingoLabs [Matrix channel](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.org)
+(English and Spanish), and the
+[Zcash Community Forum](https://forum.zcashcommunity.com/).
 
-Bug reports and feature requests can also be registered via other [communication channels](#communication-channels), but will be accepted in this way without guarantees of visibility to project software developers.
+## Pull requests
 
-## Communication Channels
-In addition to GitHub, there is a ZingoLabs [Matrix](https://matrix.org/) channel that can be reached through [this web link](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.org). Our primary languages are English and Spanish.
+- Open PRs against [`dev`](https://github.com/zingolabs/zaino/tree/dev), from a
+  personal fork if you are a new contributor. Keep a PR in `Draft` until it is
+  ready for review.
+- Run `makers lint` before pushing: it runs every lint CI runs (fmt, clippy,
+  cargo-deny, shellcheck, duplication and boundary-conversion guards).
+  `git config core.hooksPath .githooks` runs it as a pre-push hook.
+- Every PR that changes a released crate carries a changeset; see
+  [changeset format](./docs/release/changeset-format.md).
+- All CI checks must pass. Review happens in public on the PR.
+- A PR from a fork does not dispatch the `zcash/integration-tests` suite,
+  because GitHub withholds repository secrets from fork PRs. Its
+  `Trigger integration tests` check is skipped, and a skipped check does not
+  mean the suite passed. The suite first runs when the change merges to `dev`,
+  unless a maintainer pushes the branch to `zingolabs/zaino` first.
+- A PR is written by one developer, reviewed in detail by a second, and merged
+  by a third. Experienced maintainers may waive this case by case.
+- Signed (verified) commits are encouraged; see GitHub's
+  [commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification).
+- Keep docs accurate to your latest commit, including doc comments and the
+  affected crate's `usage.md`.
 
-Other channels where you may be able to reach Zingolabs developers that include the [Zcash Community Forum](https://forum.zcashcommunity.com/) website, Bluesky, Telegram and Twitter/X (English and Spanish), Instagram (Spanish), and Zcash related Discord.
+## Testing
 
-## How to Contribute
-Code and documentation are very helpful and the lifeblood of Free Software. To merge in code to this repo, one will have to have a [GitHub account](https://docs.github.com/en/account-and-profile).
+Zaino uses [`cargo nextest`](https://nexte.st/)
+(`cargo install cargo-nextest --locked`):
 
-Code, being Rust, must be formatted using `rustfmt` and applying the `clippy` suggestions.
-Run `makers lint` before pushing: it runs every lint CI runs. `git config core.hooksPath .githooks` runs it as a pre-push hook.
+```sh
+cargo nextest run --workspace
+```
 
-In general, PRs should be opened against [the `dev` branch](https://github.com/zingolabs/zaino/tree/dev).
+The live suites run on a Kubernetes cluster through `ztest`; see
+[docs/testing.md](./docs/testing.md).
 
-All tests must pass, see [Local Testing](#local-testing).
+The reference platform is Debian 12 (Bookworm) on `x86_64-unknown-linux-gnu`;
+the container image builds on it.
 
-Verified commits are encouraged. The best way to verify is using a GPG signature. See [this document about commit signature verification.](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
+## Software philosophy
 
-Code should be as complex as it needs to be, but no more.
-
-All code will be reviewed in public, as conversations on the pull request. It is very possible there will be requested changes or questions. This is not a sign of disrespect, but is necessary to keep code quality high in an important piece of software in the Zcash ecosystem.
-
-Documentation should be clear and accurate to your latest commit. This includes sensible and understandable doc comments.
-
-Contributions must be [GitHub pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests). New contributors should make PRs _from a personal fork_ of the project, _to this repo, zingolabs/zaino_. Generally pull requests will be against `dev`, the development branch.
-
-Pull requests opened from a fork do not dispatch the `zcash/integration-tests` suite: GitHub withholds repository secrets from fork pull requests, so the workflow cannot authenticate. The `Trigger integration tests` check is skipped on those PRs rather than failing them, so a skipped check does not mean that the suite passed. The suite first runs against such a change when it merges to `dev`, unless a maintainer pushes the branch to `zingolabs/zaino` beforehand.
-
-When code or documentation is still being developed and is not intended for review, the PR should be in the `Draft` state.
-`Draft` pull requests cannot be merged: an `Open` PR is a PR that is "ready for review." The `Draft` state should be set as a default when working with GitHub on the web, and can be changed to `Open` status later, marking the PR as ready for review.
-
-All CI checks (remote testing and lints) must pass.
-
-Running `cargo update` may be considered as a requirement for some releases.
-
-PRs should be written by one developer, have a detailed review performed by a second developer, and be checked over and merged by a third.
-
-Certain situations may arise where experienced Zaino developers might bypass the merge-constraints, on a case-by-case basis.
-
-Finally, see our [Software Philosophy](#software-philosophy), and understand you are contribuing to a project with these principles at work.
-
-## Block Explorer Merge Requirements
-This is an evolving document: the following merge requirements are intended for the specific case of Block Explorer RPCs.
-
-Any use of `TODO`s makes a PR invalid for merging into `dev`.
-
-Use of `.unwrap()` and `.expect()` are discouraged in non-test code. When used in code, an explicit comment is required explaining why the particular use of expect is okay, (eg matching on a known enum variant).
-In test code, `.unwrap()` is wrong when a helper function might fail with insufficient information.
-
-Doc-tested doc-comments should be used to avoid stale docs, and skew from the underlying code. Quality doc-comments should include a doc-test, and with `pub` interface doc-comments should be considered nearly as a requirement.
-
-Error handling must be included and expose underlying information as much as and wherever possible, to assist developers and users.
-
-Merges must minimally reflect the zcash RPC spec and include a link to the relevant zcash C++ implementation (URLs that point at the analogous logic), OR reflect the C++ implementation.
-
-Tests are encouraged that show parity between responses from `zaino` + a `zebra` backend and the local cache.
-
-## Local Testing
-Local testing requires a system with ample resources, particularly RAM.
-
-Tier 1 denotes the reference platform. It is the latest, updated, stable [Debian 12](https://www.debian.org/releases/bookworm/), codename Bookworm, with an AMD64 `x86_64-unknown-linux-gnu` compilation target. This can be thought of as Tier 1 or "guaranteed to build and pass all tests."
-
-Tier 2 platforms are platforms that are currently understood to be working as well as Tier 1, but as non-canonical sources of truth. Sometimes these platforms provide valuable insights when compared with the reference Tier 1 Debian. Therefore, using them is encouraged.
-
-Currently, [Arch Linux](https://archlinux.org) AMD64 `x86_64-unknown-linux-gnu` is understood to be Tier 2.
-
-Zaino uses [`cargo nextest`](https://nexte.st/). On the linux command line, with a system already using Rust (and `cargo`), you can install this using `cargo install cargo-nextest --locked` or from GitHub with `cargo install --git https://github.com/nextest-rs/nextest --bin cargo-nextest`.
-
-After installing this crate, all tests can be run locally with `cargo nextest run`.
-
-For more details see our [testing document](./docs/testing.md).
-
-## More Documentation
-
-To see more included documentation, please see [our docs directory](./docs/).
-
-Architecture decision records live in
-[zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs). This repository
-holds only a submodule pointer to it at `docs/adr/`; run
-`git submodule update --init docs/adr` to read the records. Propose a record as
-a pull request to zingo-adrs, not to this repository; its README explains the
-record shape and how to advance the pointer. A code pull request may advance
-the pointer, for example when the code cites a record newer than the pinned
-commit; the change is one line and needs no separate pull request.
-## Software Philosophy
-We believe in the power of Free and Open Source Software (FOSS) as the best path for individual and social freedom in computing.
-
-Very broadly, Free Software provides a clear path to make software benefit its users. That is, Free Software  has the possibility to be used it like a traditional tool, extending the user's capabilities, unlike closed source software which constrains usage, visability and adaptability of the user while providing some function.
-
-In more detail, the Free Software Foundation states FOSS allows:
-
-The freedom to run a program, for any purpose,
-
-The freedom to study how a program works and adapt it to a person’s needs. Access to the source code is a precondition for this,
-
-The freedom to redistribute copies so that you can help your neighbour,  and
-
-The freedom to improve a program and release your improvements to the public, so that the whole community benefits. Access to the source code is a precondition for this.
-
-Developing from this philosophical perspective has several practical advantages:
-
-Reduced duplication of effort,
-
-Building upon the work of others,
-
-Better quality control,
-
-Reduced maintenance costs.
-
-To read more, see [this document on wikibooks](https://en.wikibooks.org/wiki/FOSS_A_General_Introduction/Preface).
+Zaino is Free Software. We hold that FOSS, with its freedoms to run, study,
+redistribute and improve a program, is the best path to individual and social
+freedom in computing, and that building on shared work reduces duplicated
+effort and improves quality. See
+[FOSS: A General Introduction](https://en.wikibooks.org/wiki/FOSS_A_General_Introduction/Preface).

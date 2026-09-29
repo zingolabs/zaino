@@ -3,4 +3,5 @@
 //! Zero-dependency crate. All Zaino crates that need chain-level types
 //! (heights, hashes) depend on this crate instead of on each other.
 
+pub mod protocol;
 pub mod types;

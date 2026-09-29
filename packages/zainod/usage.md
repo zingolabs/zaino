@@ -1,50 +1,153 @@
 # `zainod` — usage
 
-The binary and `zainodlib`. Covers the admin listener (`metrics_endpoint`, feature `prometheus`);
-configuration and serving live in the README.
+The daemon binary: its offline disk check, failure policy, logging and admin listener.
+Configuration and running the daemon are in [`docs/running.md`](../../docs/running.md).
 
 ## The admin listener
 
-Own thread + current-thread runtime (a probe on the saturated serving runtime measures its queue; a
-timed-out liveness probe kills the pod).
+With `metrics_endpoint` set, zainod serves an admin listener on
+its own thread and current-thread runtime. A probe answered from a saturated serving runtime
+would measure that runtime's queue, and a timed-out liveness probe gets the pod killed.
 
-| Path       | Answers                                | `503` when                   |
-| ---------- | -------------------------------------- | ---------------------------- |
-| `/metrics` | Prometheus exposition: quantities only | never (render panic → `500`) |
-| `/livez`   | indexer loop still running             | no heartbeat for 30s         |
-| `/readyz`  | TODO                                   | TODO                         |
+| Path       | Answers                                | Fails when                     |
+| ---------- | -------------------------------------- | ------------------------------ |
+| `/metrics` | Prometheus exposition, process metrics | render panic (`500`)           |
+| `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)   |
 
-- Heartbeat republished by the indexer loop every 100ms
+- A supervised task on the serving runtime republishes the heartbeat every 100ms.
+- The listener binds before the recorder installs, so a bind failure fails startup.
+- At most 32 admin connections are served at once; the rest wait in the accept backlog.
+- A non-private `metrics_endpoint` logs a warning at startup, because `/metrics` is
+  unauthenticated.
+- The build gauge keeps its released name, `zainod_build_info`, with the version as a label.
 
-### `/readyz` — TODO
+## `zainod verify`
 
-Status code: `200` iff every component `Ready` + `Healthy`. Body, per component (`zaino-component`
-`ComponentStatus`):
+```
+zainod verify --config /etc/zaino/zainod.toml
+```
 
-| Field       | Values                                                  |
-| ----------- | ------------------------------------------------------- |
-| `name`      | chain index, finalised state, chain head, mempool, gRPC, JSON-RPC |
-| `lifecycle` | `Offline`, `Spawning`, `Syncing`, `Ready`, `Closing`    |
-| `health`    | `Healthy`, `Recoverable`, `Critical`, `Offline`         |
+Loads the same config the daemon runs with and, for every **enabled** index,
+reads every file its `MANIFEST` seals against that file's page checksums
+([`docs/design/durability.md`](../../docs/design/durability.md) §3). The same
+check for every index: the bytes on disk are the bytes that were sealed. What
+they mean was settled while they were built, so nothing here decodes or
+re-derives them. A disabled index is skipped and reported as `null`.
 
-Per-component detail:
+Safe beside a live daemon: plain sequential reads, no mmap, no lock, nothing
+created or written. Bytes past a file's seal (a live writer's next batch, a
+crash's leftovers) are counted as `orphaned_bytes`, never as corruption.
 
-| Component       | Detail                                                                                          |
-| --------------- | ----------------------------------------------------------------------------------------------- |
-| finalised state | mode: `persistent`, `ephemeral(configured)`, `ephemeral(syncing)`, `ephemeral(migrating)`; accumulator rebuild running |
-| mempool         | completeness: `complete`, `incomplete(capacity_limited / pending_metadata / source_error)`      |
+### Output and exit status
 
-## Quantities on `/metrics`, modes on `/readyz`
+The full report goes to stdout as JSON, a one-line-per-index summary to stderr
+(logging is not initialised for this subcommand). Exit 0 when every sealed file
+is present with every page intact, 1 when any file is lost or any page corrupt,
+2 when the config or a manifest could not be read (a manifest built for another
+network or format included).
 
-- Metric = a quantity (count, height, duration, size)
-- Mode as a gauge (`0 none, 1 read-only, 2 full`) → averaged, `rate()`d, thresholded: meaningless,
-  never an error
+```json
+{
+  "clean": true,
+  "compact_block": {
+    "heights": 4,
+    "files": [
+      { "path": "blocks.dat", "committed_bytes": 1234, "orphaned_bytes": 0, "lost": false, "bad_pages": [] },
+      { "path": "offsets.idx", … }
+    ]
+  },
+  "block_hash": { "heights": 4, "files": [ … by_hash/*.seg ] },
+  "tree_state": { "heights": 4, "files": [ … heights.idx, then per pool l00.dat … l31.dat, subtrees.dat ] },
+  "transparent_address": { "heights": 4, "files": [ … receives/*.seg, spent/*.seg ] }
+}
+```
 
-## Metric names
+`bad_pages` = 4 KiB page indexes whose CRC disagrees. A corrupt or lost file
+means delete that index's directory and resync it.
 
-- Declared by the emitting crate's `metric_names` module: `const` names + `COUNTERS` / `GAUGES` /
-  `HISTOGRAMS` (`# HELP`) tables
-- `zainod` registers them and owns bucket ladders; a histogram without one fails `metrics::init`
-  (would scrape as a summary)
-- `metrics::init` binds `metrics_endpoint` before it installs the recorder, and a bind failure
-  fails startup: a recorder with no listener would record samples that nothing drains
+## Failure policy
+
+zainod dies rather than serve from a state it cannot vouch for
+([`docs/design/durability.md`](../../docs/design/durability.md) §6):
+
+- any panic aborts the process, including a page checksum mismatch on the read
+  that first touches a corrupt page
+- the first task to end, cleanly or not, cancels the rest and `zainod start`
+  exits 1 (`IndexerError::TaskEnded` or the task's own error); there is no
+  in-process restart, so run it under a service manager that restarts it
+- an index directory built for another network or format, shorter than its
+  seals, or whose tail page fails its checksum refuses to open: resync it
+- `fetch.finalised_depth` defaults to Zebra's reorg bound (1000,
+  `MAX_BLOCK_REORG_HEIGHT`); below it is a config error on mainnet and testnet,
+  allowed on regtest only
+
+## Logging
+
+`zainodlib::logging::init()` installs the global `tracing` subscriber and the
+panic hook; `zainod start` calls it, `zainod verify` does not (stdout carries
+only the JSON report). Everything is read from the environment:
+
+| Variable | Effect |
+|---|---|
+| `RUST_LOG` | Standard tracing filter. Unset, only zaino crates log at `info`; `RUST_LOG=info` includes every crate, or filter explicitly (`RUST_LOG=zaino=info,zaino_persistence=debug,tonic=warn`). |
+| `ZAINOLOG_FORMAT` | `terminal` (default, one line per event) or `json` (machine-parseable, spans included). |
+| `ZAINOLOG_COLOR` | `true`/`false` to force ANSI colour, `auto` (default) to colour only when stdout is a terminal. |
+| `ZAINOLOG_LOCATION` | `true` adds each event's source as `at=file:line`. Off by default. |
+
+An unrecognised value for any `ZAINOLOG_*` variable, or a malformed `RUST_LOG`,
+stops startup with an error that names the variable. There is no fallback
+format.
+
+The `terminal` format follows go-ethereum's layout, with a component column:
+
+```text
+INFO  [09-28|17:29:12.660] CompactBlockIdx:     Opening from /var/lib/zaino/compact-block
+WARN  [09-28|17:29:15.175] ChainView:           Validator catching up         endpoint=zebrad:18232 height=3434171 behind=65,512 hash=00000000…1a76bf89
+INFO  [09-28|17:29:42.659] ZainoSync:           Syncing blocks                height=31,399 target=3,433,171 synced=0.91% bps=1,047 tps=6,077 eta=54m10s
+```
+
+- Each line has a 5-character level, a UTC `MM-DD|HH:MM:SS.mmm` timestamp, the
+  component that logged it, and the message, padded to 30 columns when fields
+  follow, so repeated lines align.
+- Components: `Zainod` (lifecycle), `Metrics`, `ChainView` (validator polling,
+  mempool), `ZainoSync` (block fetch), `Grpc`, and one per index
+  (`CompactBlockIdx`, `ValueBalanceIdx`, `BlockHashIdx`,
+  `TreeStateIdx`, `TransparentAddrIdx`), which also owns that index's
+  commits and compactions. In `json` the component is the `component` field of
+  the event's enclosing span.
+- Fields are `key=value` logfmt, parseable by Loki and `hl`. Counts from 1,000
+  up are grouped with commas. Heights are not, so they paste straight into an
+  RPC call, except `height` and `target` on `ZainoSync` progress lines
+  (`Syncing blocks`, `Block fetch stalled`), which read as progress. A 64-hex hash shows its first and last 8 digits (`json` keeps it
+  whole). A value containing a space or `=` is quoted, and an error field
+  carries its whole source chain. A path in a message longer than 48 columns
+  keeps its tail (`…/zaino/compact-block`).
+- Fields from enclosing spans follow the event's own fields.
+
+What an operator sees at `info`:
+
+| Component | Event | Level | When |
+|---|---|---|---|
+| index | `Opening from <path>` | info | At startup, per enabled index. |
+| `ChainView` | `Validator reachable` / `Quorum configured` | info | At startup. |
+| `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
+| `ChainView` | `Validator caught up` | info | The mempool answers again. |
+| `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
+| `ZainoSync` | `Syncing to finalized target` | info | A bulk pass starts (`from`, `target` = tip − `finalised_depth`, `tip`). |
+| `ZainoSync` | `Syncing blocks` | info | Every 30 s during a bulk pass (`height`, `target`, `synced`, `bps`, `tps`, `eta`). |
+| `ZainoSync` | `Block fetch stalled` | warn | A whole 30 s interval of a bulk pass added no block. |
+| `ZainoSync` | `Reached finalized target` | info | A bulk pass finished (`blocks`, `elapsed`, average `bps`). |
+| `ZainoSync` | `Chain tip advanced` | info | Each chain-head step past bulk (`height`, `hash`, `blocks`, `txs`, block `age`, `finalized`). |
+| `ZainoSync` | `Chain reorg detected` | warn | A branch won (`fork`, `dropped`, `added`, new tip). |
+| index | `Serving` / `Syncing, requests refused` | info | The index's serving gate changes. |
+| index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
+
+Per-commit lines (`Committed batch`) and every LSM merge (`Compacting segments`,
+`Compacted segments`) are at `debug`.
+
+The panic hook logs each panic as a structured `error` event at its origin —
+thread, location, and message — so a panic on a worker thread that would
+otherwise surface only as a distant `JoinError` is logged through the same sink
+as every other error. The `panic` target is forced on so no filter drops it.
+The hook then chains to `main`'s, which prints the panic and aborts the process
+(see [Failure policy](#failure-policy)).

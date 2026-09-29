@@ -1,36 +1,21 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
-    "packages/zaino-status",
-    "packages/zaino-component",
-    "packages/zaino-consensus",
-    "packages/zaino-encoding",
-    "packages/zaino-primitives",
+    "packages/zaino-grpc",
+    "packages/zaino-index-compact-block",
+    "packages/zaino-index-tree-state",
+    "packages/zaino-index-transparent-address",
+    "packages/zaino-internal-block-hash-to-height",
+    "packages/zaino-internal-value-balance",
+    "packages/zaino-chainview",
     "packages/zaino-persistence",
-    "packages/zaino-address",
-    "packages/zaino-source-macros",
+    "packages/zaino-primitives",
+    "packages/zaino-sync",
     "packages/zaino-source",
-    "packages/zaino-rpc",
-    "packages/zaino-convert-zebra",
-    "packages/zaino-source-zebra-rpc",
-    "packages/zaino-source-zebra-readstate",
-    "packages/zaino-source-zebra",
-    "packages/zaino-mempool",
-    "packages/zaino-mempool-service",
-    "packages/zaino-common",
-    "packages/zaino-chain-head",
-    "packages/zaino-chain-head-service",
-    "packages/zaino-chain-store",
-    "packages/zaino-chain-store-zainodb",
+    "packages/zaino-non-finalized-state",
     "packages/zainod",
-    "packages/zaino-serve",
-    "packages/zaino-state",
     "packages/zaino-proto",
-    # NOTE: live-tests/ is its own standalone workspace (see
-    # live-tests/Cargo.toml). It has been migrated onto the ztest k8s harness
-    # (`ztest` from crates.io), which stands the system up as deployed images and
-    # drives it over its served interfaces, so the suite links no production
-    # crate and shares no lockfile with one. Build and run it from live-tests/.
+    # live-tests/ = standalone workspace (ztest harness, links no production crate)
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -56,22 +41,19 @@ categories = ["cryptography::cryptocurrencies"]
 
 # Librustzcash
 incrementalmerkletree = "0.8"
+orchard = { version = "0.15", default-features = false, features = ["multicore"] }
 sapling-crypto = "0.7"
 zcash_address = "0.13"
-zcash_keys = "0.16"
 zcash_protocol = "0.10"
 zcash_primitives = "0.30"
+zcash_script = { version = "0.4", default-features = false }
 zcash_transparent = "0.10"
-
-# Zebra
-zebra-chain = "12.0"
-zebra-state = "13.0"
-zebra-rpc = "16.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
-tokio-stream = "0.1"
 tokio-util = "0.7"
+# Data-parallel commitment hashing (a fold runs on every core, not one blocking thread)
+rayon = "1.12"
 
 # CLI
 clap = "4.0"
@@ -84,136 +66,98 @@ tracing-subscriber = { version = "0.3.20", features = [
     "time",
     "json",
 ] }
-tracing-tree = "0.4"
 time = { version = "0.3", features = ["macros", "formatting"] }
-
-# Network / RPC
-http = "1.1"
+unicode-ellipsis = "0.6"
+# Plain HTTP only (validator JSON-RPC)
+reqwest = { version = "0.13", default-features = false }
+# Admin listener (/metrics, /livez)
 hyper = "1.10"
-hyper-util = "0.1"
-http-body-util = "0.1"
-reqwest = { version = "0.13", default-features = false, features = [
-    "cookies",
-    "rustls-no-provider",
-    "webpki-roots",
-] }
-tower = { version = "0.4", features = ["buffer", "util"] }
+hyper-util = "0.1.20"
 tonic = { version = "0.14" }
 prost = "0.14"
+# Route dispatch and raw response bodies for the gRPC router.
+tower = "0.5"
+http-body-util = "0.1"
 serde = "1.0"
 serde_json = "1.0"
-jsonrpsee = { version = "0.24", features = ["server", "macros"] }
-
-# Hashmaps, channels, DBs
-indexmap = "2.2.6"
-dashmap = "6.1"
-lmdb = "0.8"
-lmdb-sys = "0.8"
 futures = "0.3.30"
 
 # Metrics
 metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-process = "2.4"
 
 # Utility
 bytes = "1.12"
-strum = { version = "0.28", features = ["derive"] }
+memmap2 = "0.9"
+# sync_file_range (write-behind; no safe wrapper in rustix/nix)
+libc = "0.2"
+crc32fast = "1.4"
+xorf = { version = "0.13", default-features = false, features = ["binary-fuse"] }
 thiserror = "2.0"
-once_cell = "1.20"
-chrono = "0.4"
 which = "8"
-whoami = "2.1"
-corez = "0.1"
-sha2 = "0.10"
-blake2 = "0.10"
 hex = "0.4"
 toml = "1.1"
-primitive-types = "0.14"
-bitflags = "2.9"
+dirs = "6"
 
 # Test
 tempfile = "3.2"
-zainod = { path = "packages/zainod" }
-# Service status and health-probe vocabulary. A leaf with one dependency
-# (`tracing`), so any subsystem can report its status without inheriting a
-# dependency graph to do it.
-zaino-status = { path = "packages/zaino-status", version = "0.1.2" }
-# Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
-# and the protocol-limit validation built on them. A leaf that depends on no
-# node implementation, so referencing a consensus fact costs neither a
-# general-purpose dependency nor a peer's reading of the specification.
-zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.0" }
-# Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
-# traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
-# formats are written in. A leaf over `corez` alone, so a storage backend and a
-# wire codec can share one encoding vocabulary without either depending on the
-# other. Holds no impl for any domain type: those live with the type whose
-# bytes they describe, which is what keeps a schema out of the vocabulary
-# crates. See docs/adr/zaino/0012.
-zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.1" }
-# Zero-dependency domain vocabulary. Every crate that needs chain-level types
-# (heights, hashes, blocks, transactions) depends on this rather than on
-# `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
+# Domain vocabulary (heights, hashes, blocks, transactions)
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.3.0" }
-# Zcash address parsing and classification, for the two address-validation RPCs.
-# A leaf: it isolates the librustzcash address stack from everything else.
-zaino-address = { path = "packages/zaino-address", version = "0.1.2" }
+zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
 # Driven port traits for validator access: one trait per question a consumer can
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
 zaino-source = { path = "packages/zaino-source", version = "0.2.2" }
-zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.1" }
-zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.2" }
-zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.2" }
-# JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
-zaino-rpc = { path = "packages/zaino-rpc", version = "0.3.0" }
-# The single place `zebra_chain` types are translated into domain types.
-zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.3.0" }
-# Source adapters. The RPC adapter answers every question over the Zcash
-# JSON-RPC interface; the ReadState adapter answers the subset zebra's
-# in-process state can serve, and simply does not implement the rest.
-zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.2.2" }
-zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.2.2" }
-# Composite over the two adapters: capability decides what each can answer,
-# this decides which to ask.
-zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.2" }
-zaino-common = { path = "packages/zaino-common", version = "0.5.3" }
-# ChainHead: the bounded non-finalised block graph, its canonical chain, and the
-# competing branches retained alongside it. This crate is the domain half —
-# types and ports only, no runtime — so a consumer can name what ChainHead
-# answers without depending on the service that answers it. See docs/adr/zaino/0011.
-zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.2.0" }
-# The ChainHead runtime: owns the writer task that keeps the graph reconciled
-# with the validator, and publishes each snapshot. Separate from the domain
-# crate so a consumer can name what ChainHead answers without depending on the
-# machinery that answers it.
-zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.2.0" }
-# ChainStore: the finalised half of the chain — everything below the reorg
-# seam, and the indexes built over it. This crate is the domain half: types and
-# ports only, no storage, so a consumer can name what a store answers without
-# depending on the implementation that answers it, and a second implementation
-# is a matter of satisfying the traits. It also owns Zaino's UTXO-set
-# commitment, which is a contract between implementations rather than any one
-# implementation's business. See docs/adr/zaino/0012.
-zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.1" }
-# The LMDB implementation of those ports, and the on-disk vocabulary it is
-# built from. Named for the backend rather than for the role: a second
-# implementation is expected, and neither should be able to claim to be *the*
-# chain store. Consumers depend on the ports; this is what a deployment picks.
-zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.2.0" }
+# ChainHead: the in-memory non-final window of the best chain (reorg replay without refetch)
+zaino-non-finalized-state = { path = "packages/zaino-non-finalized-state", version = "0.2.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
-zaino-state = { path = "packages/zaino-state", version = "0.10.0", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.9.0", default-features = false }
+# CompactBlockIndex's storage engine: gRPC-framed records in append-only files,
+# served as contiguous mmap spans.
+zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.1.0" }
+# Block hash <-> height: the locator every by-hash request resolves through.
+zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.1.0" }
+# Outpoint -> value: every transaction's value balance (fees), published for compact blocks.
+zaino-internal-value-balance = { path = "packages/zaino-internal-value-balance", version = "0.1.0" }
+# TreeStateIndex's storage: retained commitment-tree nodes, per-height sizes,
+# subtree roots. Rebuilds any historical frontier with no hashing.
+zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.1.0" }
+# TransparentAddressIndex's storage: `receives` and `spent` as two immutable
+# sorted-run projections, composed per query.
+zaino-index-transparent-address = { path = "packages/zaino-index-transparent-address", version = "0.1.0" }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }
-proptest = "~1.11"
+# < 1.7 = librustzcash's `test-dependencies` strategies (rand 0.8)
+proptest = "1.6"
 arc-swap = "1.7.1"
+# Persistent collections: a published snapshot shares structure with the one it
+# came from rather than copying.
+imbl = "7.0"
 
 [profile.test]
 opt-level = 3
 debug = true
+
+# Lazy point decompression stack (`CompressedTransaction`: block decode w/o curve arithmetic)
+# - orchard = zcash/orchard#562 + perf/merkle-crh-weighted, sapling-crypto = zcash/sapling-crypto#204
+#   + perf/pedersen-windowed, incrementalmerkletree = perf/combine-pairs (batched tree hashing),
+#   librustzcash = elicbarbieri/librustzcash pr/lazy-point-decompression-v3 (on upstream main)
+# - Forks based on librustzcash main's pins; halo2, zip32 = its git pins (ff 0.14 releases pending)
+# - drop each once released
+[patch.crates-io]
+halo2_gadgets = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
+halo2_poseidon = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
+halo2_proofs = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
+zip32 = { git = "https://github.com/zcash/zip32.git", rev = "0399cd62dae9b3abe5dc8d5e761b8ef11b57b12a" }
+incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19" }
+orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "8c8e8ae802e93c786ca858c205b1e1012609a2e8" }
+sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "9dd80432983fc183d628f53ab7f9852ddcc9dada" }
+zcash_primitives = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
 
 # Release codegen a profiler can attribute to source lines (`release` stays lean)
 # - Frame pointers = other half, no Cargo key for them: pass

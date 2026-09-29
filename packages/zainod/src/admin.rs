@@ -15,7 +15,8 @@ use http_body_util::Full;
 use hyper::{body::Bytes, server::conn::http1, service::service_fn, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics_exporter_prometheus::PrometheusHandle;
-use tracing::{error, info, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, warn};
 
 use crate::error::IndexerError;
 
@@ -27,22 +28,28 @@ const UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
 /// - Unbounded `spawn` per connection = fd exhaustion of the whole process (may bind non-private)
 const MAX_CONNECTIONS: usize = 32;
 
-/// Heartbeat age past which `/livez` fails
-///
-/// - Indexer republishes every 100ms; a wedged runtime stops while this thread keeps answering
+/// Heartbeat age past which `/livez` fails, because a wedged serving runtime stops [`beat`] while this thread keeps answering.
 const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
+
+/// How often [`beat`] republishes the heartbeat.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 
 static HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// Called by the indexer loop every tick
-pub(crate) fn heartbeat() {
+fn heartbeat() {
     // Poison-tolerant: the lock only guards a `Copy` swap
     *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
 }
 
-/// Supervisor restart: back to "still starting" (the respawn stops the loop, may outlast 30s)
-pub(crate) fn clear_heartbeat() {
-    *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = None;
+/// Republishes the heartbeat from the serving runtime until `cancel` fires, so a wedged runtime fails `/livez`.
+pub(crate) async fn beat(cancel: CancellationToken) -> Result<(), IndexerError> {
+    let mut tick = tokio::time::interval(HEARTBEAT_INTERVAL);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => heartbeat(),
+            () = cancel.cancelled() => return Ok(()),
+        }
+    }
 }
 
 fn last_heartbeat() -> Option<Instant> {
@@ -73,10 +80,7 @@ pub(crate) fn spawn(
     std::thread::Builder::new()
         .name("zaino-admin".to_string())
         .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
+            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => runtime,
                 Err(e) => return error!(%e, "admin runtime failed to build; no /metrics or probes"),
             };
@@ -98,12 +102,10 @@ async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
         }
     });
 
-    let endpoint = listener.local_addr();
     let listener = match tokio::net::TcpListener::from_std(listener) {
         Ok(listener) => listener,
         Err(e) => return error!(%e, "admin listener failed to register with its runtime"),
     };
-    info!(endpoint = ?endpoint, "admin endpoint started: /metrics, /livez");
 
     let connections = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
@@ -153,21 +155,15 @@ async fn route(
                 Ok(scrape) => body(StatusCode::OK, EXPOSITION_CONTENT_TYPE, scrape),
                 Err(e) => {
                     error!(%e, "rendering the scrape panicked");
-                    body(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        PLAIN_CONTENT_TYPE,
-                        String::new(),
-                    )
+                    body(StatusCode::INTERNAL_SERVER_ERROR, PLAIN_CONTENT_TYPE, String::new())
                 }
             }
         }
         "/livez" => match is_fresh(last_heartbeat()) {
             true => body(StatusCode::OK, PLAIN_CONTENT_TYPE, "ok".to_string()),
-            false => body(
-                StatusCode::SERVICE_UNAVAILABLE,
-                PLAIN_CONTENT_TYPE,
-                "unavailable".to_string(),
-            ),
+            false => {
+                body(StatusCode::SERVICE_UNAVAILABLE, PLAIN_CONTENT_TYPE, "unavailable".to_string())
+            }
         },
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
     }
@@ -201,15 +197,9 @@ mod tests {
             metrics::counter!("zaino.test.total").increment(7);
         });
 
-        let listener = bind(
-            "127.0.0.1:0"
-                .parse()
-                .expect("a loopback socket address parses"),
-        )
-        .expect("loopback bind succeeds");
-        let endpoint = listener
-            .local_addr()
-            .expect("a bound listener has an address");
+        let listener = bind("127.0.0.1:0".parse().expect("a loopback socket address parses"))
+            .expect("loopback bind succeeds");
+        let endpoint = listener.local_addr().expect("a bound listener has an address");
         tokio::spawn(serve(listener, handle));
 
         // The accept loop races the connect; retry rather than sleep a fixed guess
@@ -233,9 +223,7 @@ mod tests {
         assert!(metrics.starts_with("HTTP/1.1 200"), "{metrics}");
         assert!(metrics.contains("zaino_test_total 7"), "{metrics}");
         assert!(
-            metrics
-                .to_ascii_lowercase()
-                .contains("content-type: text/plain; version=0.0.4"),
+            metrics.to_ascii_lowercase().contains("content-type: text/plain; version=0.0.4"),
             "{metrics}"
         );
         assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
@@ -246,9 +234,7 @@ mod tests {
     #[test]
     fn a_port_in_use_fails_the_bind() {
         let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind succeeds");
-        let endpoint = holder
-            .local_addr()
-            .expect("a bound listener has an address");
+        let endpoint = holder.local_addr().expect("a bound listener has an address");
         let error = bind(endpoint).expect_err("a second bind on a held port fails");
         assert!(error.to_string().contains(&endpoint.to_string()), "{error}");
     }

@@ -14,17 +14,8 @@ on:
 
 jobs:
   docker:
-    name: Docker image (${{ matrix.variant }})
+    name: Docker image
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - variant: default
-            suffix: ''
-            features: ''
-          - variant: no-tls
-            suffix: '-no-tls'
-            features: no_tls_use_unencrypted_traffic
     env:
       PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
     steps:
@@ -43,8 +34,6 @@ jobs:
           images: |
             ${{ secrets.DOCKERHUB_USERNAME }}/zaino
             ${{ secrets.DOCKERHUB_USERNAME }}/zainod
-          flavor: |
-            suffix=${{ matrix.suffix }}
           tags: |
             type=match,pattern=zainod-(.*),group=1
             type=ref,event=branch
@@ -57,11 +46,9 @@ jobs:
           push: ${{ env.PUSH_IMAGES }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            CARGO_FEATURES=${{ matrix.features }}
           cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache${{ matrix.suffix }}
-            type=gha,scope=${{ matrix.variant }}
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache
+            type=gha
           cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache${{ matrix.suffix }},mode=max
-            type=gha,scope=${{ matrix.variant }},mode=max
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache,mode=max
+            type=gha,mode=max

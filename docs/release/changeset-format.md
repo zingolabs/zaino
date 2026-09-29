@@ -76,7 +76,7 @@ else is required.
 
 ```toml
 [[changes]]
-crate = "zaino-state"
+crate = "zaino-sync"
 kind = "feature"
 description = "Add a parallel block-sync mode selectable via config."
 
@@ -300,7 +300,7 @@ file with no `[[changes]]` and a required reason:
 ```toml
 # .changesets/<slug>.toml
 [empty]
-reason = "Comment-only fix in zaino-state; no behavioural or API change."
+reason = "Comment-only fix in zaino-sync; no behavioural or API change."
 ```
 
 This satisfies enforcement without forcing a spurious patch bump and leaves an
@@ -310,20 +310,20 @@ consumed like any other on release.
 
 ## Worked example
 
-Two PRs land in a cycle. `zaino-state` is at `0.3.1`, `zainod` at `0.4.3`
+Two PRs land in a cycle. `zaino-sync` is at `0.3.1`, `zainod` at `0.4.3`
 (both pre-1.0).
 
 `.changesets/wandering-quokka.toml` (PR #1501):
 
 ```toml
 [[changes]]
-crate = "zaino-state"
+crate = "zaino-sync"
 kind = "breaking"
 description = "Replace the `sync()` entrypoint with `sync_with(SyncMode)`."
 migration = "Call `sync_with(SyncMode::Serial)` for the previous behaviour."
 
 [[changes]]
-crate = "zaino-state"
+crate = "zaino-sync"
 kind = "fix"
 description = "Stop double-counting orphaned blocks in the tip height gauge."
 ```
@@ -341,8 +341,8 @@ Aggregated (pre-1.0 mapping):
 
 | Crate       | Highest kind | Current | Next  | Notes                          |
 | ----------- | ------------ | ------- | ----- | ------------------------------ |
-| zaino-state | breaking     | 0.3.1   | 0.4.0 | breaking → minor (pre-1.0)     |
-| zainod      | feature      | 0.4.3   | 0.4.4 | feature → patch (pre-1.0); plus a transitive check against zaino-state's boundary crossing |
+| zaino-sync | breaking     | 0.3.1   | 0.4.0 | breaking → minor (pre-1.0)     |
+| zainod      | feature      | 0.4.3   | 0.4.4 | feature → patch (pre-1.0); plus a transitive check against zaino-sync's boundary crossing |
 
-zaino-state's changelog gets both its bullets (the breaking one with its
+zaino-sync's changelog gets both its bullets (the breaking one with its
 migration note); zainod's gets one. The workspace changelog gets all three.

@@ -1,0 +1,28 @@
+[package]
+name = "zaino-non-finalized-state"
+description = "Zaino's in-memory non-final window of the best chain: follows the quorum tip, resolves reorgs, replays without refetching."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+version = "0.2.0"
+
+[dependencies]
+zaino-primitives = { workspace = true }
+zaino-source = { workspace = true }
+
+futures = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unsafe_code = "forbid"

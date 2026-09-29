@@ -8,8 +8,5 @@ pub mod compact_formats;
 pub mod indexed_tip;
 #[allow(clippy::all)]
 #[rustfmt::skip]
-pub mod proposal;
-#[allow(clippy::all)]
-#[rustfmt::skip]
 pub mod service;
 pub mod utils;

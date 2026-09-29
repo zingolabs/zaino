@@ -1,97 +1,126 @@
-//! Error types shared across all query traits.
+//! Port errors: the validator's answer vs. no answer
 
 use core::fmt;
 
-/// What kind of transport failure occurred.
-///
-/// Machine-readable — the resilience wrapper matches on this to
-/// decide retryability, not on message strings.
+/// Machine-readable no-answer class (retry decisions match on this, never on messages)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailureMode {
-    /// Connection refused, DNS failure, TLS handshake error.
     Connection,
-    /// Request timed out.
     Timeout,
-    /// Non-2xx HTTP status code.
     HttpStatus(u16),
-    /// Server returned a JSON-RPC error code.
     RpcError(i64),
-    /// Response couldn't be deserialized.
     Parse,
-    /// Authentication rejected.
     Auth,
 }
 
-/// Transport-level failure from a single attempt.
-///
-/// Carries a structured [`TransportFailure`] for machine classification
-/// and a human-readable message for logging.
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub struct FetchError {
-    /// What kind of failure.
-    pub mode: FailureMode,
-    /// Human-readable description.
-    pub message: String,
-}
-
-impl FetchError {
-    /// Construct a transport error.
-    pub fn new(mode: FailureMode, message: impl Into<String>) -> Self {
-        Self {
-            mode,
-            message: message.into(),
+impl FailureMode {
+    /// Asking again can change the outcome
+    ///
+    /// - `-1` work queue full, `-28` warming up (every other code = the node's considered reply)
+    pub(crate) fn is_transient(&self) -> bool {
+        match self {
+            Self::Connection | Self::Timeout => true,
+            Self::HttpStatus(code) => *code >= 500,
+            Self::RpcError(code) => matches!(code, -1 | -28),
+            Self::Parse | Self::Auth => false,
         }
     }
 }
 
-/// Single-attempt error from an adapter.
+/// The validator did not answer the question
 ///
-/// Two variants: the server answered with a domain rejection, or the
-/// transport failed. No retry awareness.
-#[derive(Debug, thiserror::Error)]
-pub enum QueryError<E: fmt::Debug + fmt::Display> {
-    /// The server answered with a domain-level rejection.
-    #[error("{0}")]
-    Domain(E),
-
-    /// Transport-level failure.
-    #[error("{0}")]
-    Fetch(FetchError),
+/// - `source()` = the concrete cause when there is an error value (boxed, never stringified)
+/// - `message` = the note when there is none (a coded refusal)
+#[derive(Debug)]
+pub struct NonDomainError {
+    pub mode: FailureMode,
+    pub message: String,
+    source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-impl<E: fmt::Debug + fmt::Display> From<FetchError> for QueryError<E> {
-    fn from(e: FetchError) -> Self {
-        Self::Fetch(e)
+impl NonDomainError {
+    pub fn new(mode: FailureMode, message: impl Into<String>) -> Self {
+        Self { mode, message: message.into(), source: None }
+    }
+
+    pub fn from_cause(
+        mode: FailureMode,
+        cause: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        Self { mode, message: String::new(), source: Some(cause.into()) }
     }
 }
 
-/// Retries exhausted while trying to reach the validator.
-#[derive(Debug, thiserror::Error)]
-#[error("unavailable after {attempts} attempts: {last_error}")]
-pub struct UnavailableError {
-    /// Number of attempts made.
-    pub attempts: u32,
-    /// The last transport error before giving up.
-    pub last_error: FetchError,
+impl fmt::Display for NonDomainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.source {
+            _ if !self.message.is_empty() => write!(f, "{}", self.message),
+            Some(cause) => write!(f, "{cause}"),
+            None => write!(f, "{:?}", self.mode),
+        }
+    }
 }
 
-/// Consumer-facing error from the resilience wrapper.
-///
-/// - `Domain`: the server answered "no" (never retried)
-/// - `Transport`: non-retryable transport failure (passed through)
-/// - `Unavailable`: retryable failure, retries exhausted
+impl std::error::Error for NonDomainError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_ref().map(|cause| cause.as_ref() as &(dyn std::error::Error + 'static))
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
-pub enum SourceError<E: fmt::Debug + fmt::Display> {
-    /// The server answered with a domain-level rejection.
+pub enum QueryError<E: fmt::Debug + fmt::Display> {
+    /// The validator's answer
     #[error("{0}")]
     Domain(E),
+    #[error(transparent)]
+    NonDomain(NonDomainError),
+}
 
-    /// Non-retryable transport failure.
-    #[error("{0}")]
-    Fetch(FetchError),
+impl<E: fmt::Debug + fmt::Display> From<NonDomainError> for QueryError<E> {
+    fn from(e: NonDomainError) -> Self {
+        Self::NonDomain(e)
+    }
+}
 
-    /// Retries exhausted — the validator is unreachable.
-    #[error("{0}")]
-    Unavailable(UnavailableError),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("concrete transport cause")]
+    struct Cause;
+
+    /// A wrapped cause stays reachable through `QueryError`; a coded refusal has no source and
+    /// displays its message; only no-answer classes asking again can change are transient
+    #[test]
+    fn causes_survive_wrapping_and_only_transient_modes_retry() {
+        let wrapped: QueryError<String> =
+            NonDomainError::from_cause(FailureMode::Parse, Cause).into();
+        let mut cursor: Option<&(dyn Error + 'static)> = Some(&wrapped);
+        let mut reached = false;
+        while let Some(err) = cursor {
+            reached |= err.downcast_ref::<Cause>().is_some();
+            cursor = err.source();
+        }
+        assert!(reached, "cause lost in {wrapped:?}");
+
+        let refusal = NonDomainError::new(FailureMode::RpcError(-8), "rejected");
+        assert!(refusal.source().is_none());
+        assert_eq!(refusal.to_string(), "rejected");
+
+        for (mode, transient) in [
+            (FailureMode::Connection, true),
+            (FailureMode::Timeout, true),
+            (FailureMode::HttpStatus(503), true),
+            (FailureMode::HttpStatus(404), false),
+            (FailureMode::RpcError(-1), true),
+            (FailureMode::RpcError(-28), true),
+            (FailureMode::RpcError(-8), false),
+            (FailureMode::Parse, false),
+            (FailureMode::Auth, false),
+        ] {
+            assert_eq!(mode.is_transient(), transient, "{mode:?}");
+        }
+    }
 }

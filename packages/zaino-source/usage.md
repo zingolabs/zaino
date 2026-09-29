@@ -1,226 +1,182 @@
 # `zaino-source` — usage
 
-The driven ports: one trait per question a consumer can ask about the chain,
-declared in domain vocabulary, with per-question errors.
+The driven ports: one trait per question a consumer can ask a validator,
+declared in `zaino-primitives` vocabulary, each with its own domain error.
+`ZebraRpcAdapter` implements them over the validator's JSON-RPC; blocks come
+from `getblock <id> 0` and are decoded once, from consensus bytes, into
+`zaino_primitives::types::Block`.
 
-## Asking a question
+## Two port layers
 
-Each port is a single-method trait. Consumers name exactly what they need:
+Every query exists twice:
 
-```rust
-use zaino_source::{GetBlock, GetChainTip};
+| layer | names | returns | implemented by |
+|---|---|---|---|
+| single-attempt | `OneShotGetBlock`, `OneShotGetChainTip`, … | `QueryError<E, Self::NonDomain>` | adapters (and `MockChain`) |
+| resilient (canonical) | `GetBlock`, `GetChainTip`, … | `SourceError<E>` | `ValidatorClient<V>` only (sealed) |
 
-async fn sync_one<V: GetBlock + GetChainTip>(validator: &V) -> Result<(), MyError> {
-    let (_hash, tip) = validator.get_chain_tip().await?;
-    let block = validator.get_block(tip).await?;
-    // ...
+Consumers bind the unqualified resilient names; holding one proves the value
+went through the retry ladder, since only `ValidatorClient` can implement them.
+Name `OneShot*` only when writing an adapter, or when a consumer runs its own
+retry (as `zaino-chainview` does).
+
+```rust,ignore
+use zaino_source::{GetBlock, GetChainTip, RetryPolicy, ValidatorClient};
+
+async fn tip_block<V: GetBlock + GetChainTip>(source: &V) -> Result<Block, MyError> {
+    let (_hash, tip) = source.get_chain_tip().await?;
+    Ok(source.get_block(tip).await?)
+}
+
+let source = ValidatorClient::new(adapter, RetryPolicy::default());
+let block = tip_block(&source).await?;
+```
+
+A bound is a statement of dependency; keep it short. A consumer needing many
+ports declares its own alias trait with a blanket impl **in its own crate**
+(e.g. `zaino_chainview::EndpointSource`); this crate does not know its
+consumers.
+
+Every adapter implements `ValidatorSource`, whose `type NonDomain:
+Into<NonDomainError>` is the adapter's own transport-fault type (the zebra-rpc
+adapter uses `NonDomainError` itself).
+
+## Error model
+
+```rust,ignore
+pub enum QueryError<E, N = NonDomainError> {
+    Domain(E),     // the validator answered; this is the answer
+    NonDomain(N),  // no domain answer: unreachable, timed out, unauthorized, undecodable
+}
+
+pub enum SourceError<E> {
+    Domain(E),                   // never retried
+    NonDomain(NonDomainError),   // non-retryable failure, passed through
+    Unavailable(UnavailableError), // retryable failure, retries exhausted
 }
 ```
 
-A bound is a statement of dependency, and a short one is a design signal. If a
-function needs eleven ports, it is probably doing eleven things.
+The split is load-bearing. `Domain` is returned immediately (asking again
+yields the same answer); `NonDomain` is what `ValidatorClient` retries. An
+adapter that reports "no block at that height" as `NonDomain` makes the retry
+ladder treat every above-tip probe as an outage. If the validator replied at
+all, it is almost certainly `Domain`.
 
-Some questions exist in a height-addressed and a hash-addressed form, each as
-its own port (`GetTreestate` / `GetTreestateByHash`, `GetCommitmentTreeRoots` /
-`GetCommitmentTreeRootsByHeight`). A height names a best-chain position that a
-reorg can reassign, so a height-addressed answer that will be paired with other
-reads names the block it describes: `get_commitment_tree_roots_by_height`
-returns the answering block's hash alongside the roots, and the consumer
-compares it against the block it holds before combining the two.
+`NonDomainError { mode: FailureMode, message, .. }` keeps the concrete cause as
+its `source()` (`from_cause`) or, for a coded refusal with no error value, a
+message (`new`). `FailureMode` = `Connection`, `Timeout`, `HttpStatus(u16)`,
+`RpcError(i64)`, `Parse`, `Auth`.
 
-## The error model, which is the point
+### Domain variants name answers
 
-```rust
-pub enum QueryError<E> {
-    Domain(E),          // the validator answered, and this is the answer
-    Fetch(FetchError),  // the validator could not be reached, or failed
-}
-```
-
-This distinction is **load-bearing, not cosmetic**:
-
-- `Domain(E)` is returned to the caller immediately. It is not retried, because
-  asking again produces the same answer.
-- `Fetch(FetchError)` is retried by [`ValidatorClient`](#validatorclient) according to its
-  `FailureMode`, and escalated by consumers when retries are exhausted.
-
-Getting this backwards has a specific, observed failure mode: an adapter that
-reported "no block at that height" as a `Fetch` error stalled the ChainIndex
-sync loop against a *healthy* validator, because the sync loop asks that
-question on every iteration and the retry ladder treated each answer as an
-outage.
-
-**When implementing an adapter method, decide explicitly which one you are
-returning.** If the validator replied at all, it is almost certainly `Domain`.
-
-`FetchError` carries a machine-readable kind:
-
-```rust
-pub enum FailureMode {
-    Connection, Timeout, HttpStatus(u16), RpcError(i64), Parse, Auth,
-}
-```
-
-`RpcError(i64)` is what lets a legacy full-node legacy code survive from the validator to
-the served response.
-
-## Domain errors name answers, not failures
-
-A port's error enum enumerates what that question can be answered with:
-
-```rust
+```rust,ignore
 GetBlockError::HeightNotFound(Height)
-SendRawTransactionError::Rejected(String)
+GetChainTipError::NotReady
+SendRawTransactionError::{ Malformed(String), Rejected(String) }
 GetSpentInfoError::{ NotSpent, Unsupported }
 ```
 
-Write the variant that says what happened. A generic `NotFound` on every port
-throws away the thing the caller needs to act on — and, at the serving
-boundary, the thing that decides which the legacy full node error code the client sees.
+A variant earns its place by being producible by some adapter. When a method
+has no domain answer, type it `Infallible` (`OneShotGetMempoolSourceTip` does).
 
-## Two port layers: `OneShot*` and the canonical resilient ports
+## `ValidatorClient` and `RetryPolicy`
 
-Every question exists as **two** ports:
+`ValidatorClient::new(adapter, policy)` implements every resilient port whose
+`OneShot*` twin the adapter provides. The impls and the `QueryError →
+SourceError` translation are generated by `#[resilient_port]`
+(`zaino-source-macros`) on each `OneShot*` trait, so the retry ladder exists in
+one place (`ValidatorClient::with_retry`).
 
-- `OneShotGetBlock`, `OneShotGetChainTip`, … — the **single-attempt** contract,
-  returning `QueryError`. Adapters implement these. One attempt, no retry
-  awareness.
-- `GetBlock`, `GetChainTip`, … — the **canonical** (unqualified) resilient
-  ports, returning `SourceError` (whose `Unavailable` variant is "retried and
-  gave up"). Consumers bind these.
+- `RetryPolicy::default()`: 3 attempts, 250 ms initial delay, ×2 backoff, 8 s
+  cap. Tune retries through a custom `RetryPolicy`; the seal only blocks
+  structurally different strategies
+- retryable: `Connection`, `Timeout`, `HttpStatus(>= 500)`, and RPC codes `-1`
+  (work queue full) and `-28` (in warmup). Every other code is the validator's
+  considered reply
+- `OneShotSendRawTransaction` has **no** resilient twin: resending a
+  non-idempotent submit risks a double-submit, and an error does not prove the
+  transaction was not accepted earlier
 
-The resilient port is the default name because resilience is the default: a
-consumer that writes `S: GetBlock` gets a source that has already handled
-transience, and knows so from the type. To reach the single-attempt contract you
-have to name the awkward `OneShot*` — which is exactly what an adapter author (or
-a legacy raw consumer still to be migrated) does, and no one else.
+`Arc<V>` forwards `ValidatorSource`, `OneShotGetBlock` and
+`OneShotGetBlockByHash`, so one shared `Arc<Adapter>` per validator backs both
+the fetch pool's `ValidatorClient` and raw one-shot consumers (chainview, the
+gRPC fallback).
 
-The resilient ports are **sealed**: the only implementor is `ValidatorClient<V>`, so a
-value satisfying a canonical port has provably been through the retry ladder — a
-consumer cannot hand-roll a type that claims resilience without retrying.
+## `BlockFetchPool`: blocks from N validators
 
-## `ValidatorClient`
+`BlockFetchPool::new(sources, route, concurrency)` over one `ValidatorClient`
+per validator (non-empty; a `Primary` index in range).
 
-Wraps an adapter and implements the canonical resilient ports for it — one per
-`OneShot*` port the adapter provides. The port impls and the
-`QueryError -> SourceError` translation are generated by
-[`#[resilient_port]`](../zaino-source-macros) on each `OneShot*` trait, so the
-retry ladder lives in exactly one place (`ValidatorClient::with_retry`).
-
-```rust
-use zaino_source::{GetBlock, ValidatorClient, RetryPolicy}; // GetBlock == the resilient port
-
-let source = ValidatorClient::new(adapter, RetryPolicy::default());
-let block = source.get_block(height).await?; // -> SourceError<GetBlockError>
-```
-
-Retryable: `Connection`, `Timeout`, `HttpStatus(>= 500)`, and exactly two RPC
-codes — `-1` (work queue full) and `-28` (in warmup). Both mean the node is up
-and busy or starting. Every other code is the validator's considered reply.
-
-Subscriptions (`SubscribeBlocks`, `SubscribeChainTip`) are forwarded unchanged:
-they are synchronous and return `Option<Receiver>`, not `Result`, so there is
-nothing to retry — transience is retried on the query ports a wake triggers.
-`SendRawTransaction` has **no** resilient port: retrying a non-idempotent send
-risks a double-submit, so its canonical name is reserved for a send that is safe
-to retry.
+- `blocks(start, end)` (both inclusive; `start <= end` asserted) → an ordered
+  `Stream` of `Result<Block, _>`, ascending. Each height's
+  fetch + decode is its own spawned task (decode spreads across cores), at most
+  `concurrency` in flight, `buffered` so completion order never shows. The
+  first error ends the stream: nothing after it is sent
+- `FetchRoute::Spread` rotates heights over every validator, falling back to
+  the others when one fails (a lagging node lacks the height);
+  `FetchRoute::Primary(i)` pins every height to validator `i`, no fallback
+- `among(positions)` is the same pool over only the sources at `positions`
+  (e.g. the validators agreeing on a quorum tip). A `Primary` among them stays
+  primary; otherwise it falls to `Spread` over them, since the primary's chain
+  is not theirs
+- `block_by_hash(hash)` tries every validator, the primary first (a branch tip
+  may be on only some of them); used by `zaino-non-finalized-state` to walk a reorg back
+- a validator answering with another height or hash panics: decode derives
+  both from the bytes, so that is a broken validator, not a race
 
 ## Capability is structural
 
-An adapter implements only the ports it can answer.
-`zaino-source-zebra-readstate` does not implement the mempool traits, because a
-read-state service has no mempool — so routing a mempool query to it is a
-compile error rather than a runtime panic. Do not add a port impl that
-`unimplemented!()`s; leave it out and let the type system carry the fact.
+An adapter implements only the ports it can answer. Do not add an impl that
+`unimplemented!()`s; leave the port out, and routing that query to the adapter
+becomes a compile error.
 
-## The mempool ports, and why there are four of them
+## Mempool ports
 
-`GetMempoolTxids`, `GetMempoolMetadata`, `GetRawMempoolTransaction` and
-`GetMempoolSourceTip` look like they could be one trait, or could reuse ports
-that already exist. They cannot, and each split is load-bearing:
+Four separate ports, all answered from the same source:
 
-- **`GetMempoolMetadata` is separate from `GetMempoolTxids`** because the txid
-  listing is cheap and the verbose listing is a whole-mempool walk. A consumer
-  polls the first every tick and reaches for the second only when the diff shows
-  additions. Folding them would make every poll pay the walk.
-- **`GetRawMempoolTransaction` is separate from `GetTransaction`** because
-  `GetTransaction` may be routed to a state database that has no mempool. Bytes
-  assembled from one source against a listing from another are not a mempool.
-- **`GetMempoolSourceTip` is separate from `GetChainTip`** for the same reason,
-  and this is the subtle one. `GetChainTip` is free to answer from whichever
-  transport is fastest, and `ZebraValidator` prefers the state database. But a
-  mempool consumer tags each published set with the tip it was *read against*,
-  so a later reader can judge the set's coherence without re-reading it. That
-  comparison is only sound when the tag and the set come from one source: a tip
-  from the database against a listing from JSON-RPC can differ by a block for
-  reasons that have nothing to do with the mempool, and the consumer reads the
-  difference as a real tip change.
+- `GetMempoolListing` (`getrawmempool true`): every entry's txid and fee
+  (`MempoolListed`), polled every tick. The fee is the validator's: it resolved
+  the prevouts admitting the transaction, and no index holds unconfirmed
+  outputs. Zebra sends ZEC as an `f64`, parsed back to exact zatoshis (every
+  in-supply count is below 2^53)
+- `GetRawMempoolTransaction`: bytes of one listed transaction, `NotFound` when
+  it left the mempool between listing and fetch (a normal race)
+- `GetMempoolSourceTip`: a `SourceTip`, the tip the listing was read against
+  (so a consumer can tag each published set with a tip coherent with it) plus
+  the validator's `estimated_height` of the network tip (telemetry, never a
+  vote); typed `QueryError<Infallible>` (no domain answer exists)
 
-So an adapter must route all four to the same transport, even where a cheaper
-answer exists elsewhere. `ZebraValidator` does: they sit in the JSON-RPC-only
-section of `routing.rs`, and `GetMempoolSourceTip` deliberately does not use the
-`fast_or_slow!` macro its `GetChainTip` neighbour does.
+The two listing ports carry `Unavailable` (the validator exposes no mempool):
+retrying cannot change it, so a consumer stops asking. `GetMempoolListing` also
+carries `Inactive`: zebrad's mempool is off until it reaches the network tip,
+and its own tip is still valid.
 
-The listing caps live in the adapter (`zaino-source-zebra-rpc`'s
-`MAX_MEMPOOL_LISTING_ENTRIES`), checked on the declared entry count before any
-entry is decoded. That bounds the parse's peak allocation *and* stops an
-oversized listing from driving a million raw-transaction fetches upstream.
+## Lifecycle
 
-### Their error models differ, and the single-source rule is why
-
-The two listing methods carry `Unavailable` — *this validator does not expose a
-mempool*, produced from `-32601`. It is worth distinguishing because retrying
-cannot change it: a consumer should stop asking rather than re-poll a node that
-will never answer.
-
-`GetMempoolSourceTip` carries **no domain error at all** — it is typed
-`QueryError<Infallible>`. This follows directly from the single-source rule
-above: because the tip must come from whichever transport serves the mempool,
-there is no second implementation that could observe a mempool-specific reason
-for having no tip, and the JSON-RPC answer either returns one or fails at the
-transport level. Nothing is left to name.
-
-That is the general rule for this crate. **A domain variant earns its place by
-being producible by some adapter, not by being plausible.** `GetChainTipError::
-NotReady` is producible — `GetChainTip` may be answered from the state database,
-and the ReadState adapter reports "no tip yet" as an answer. A variant one
-transport cannot see but another can is correct and should stay. A variant *no*
-transport can produce is worse than absent: it tells a consumer to handle a case
-that cannot arise, and reads as though the condition were being reported when it
-is not. When a method has no such case, type it `Infallible` and say why.
-
-## Consumer aliases go in the consumer
-
-A crate that needs many ports declares its own supertrait alias, **in its own
-crate**, with a blanket impl:
-
-```rust
-// in zaino-state, not here
-pub trait ChainIndexSourcePorts: GetBlock + GetChainTip + /* ... */ {}
-impl<T> ChainIndexSourcePorts for T where T: GetBlock + GetChainTip + /* ... */ {}
-```
-
-An alias states a requirement of its consumer, not a capability of this crate.
-`zaino-source` should not have to know who its consumers are.
+`SourceLifecycle::shutdown()` releases adapter-owned resources; synchronous,
+infallible, idempotent, default no-op.
 
 ## Testing: `MockChain`
 
-Behind the `testing` feature (and always on for this crate's own tests):
+Behind the `testing` feature (always compiled for this crate's own tests):
 
-```rust
-use zaino_source::mock::MockChain;
+```rust,ignore
+use zaino_source::{FailureMode, mock::MockChain};
 
 let mock = MockChain::new()
     .with_block(block)
-    .fail_next(2, FailureMode::Timeout);   // failure injection
+    .fail_next(2, FailureMode::Timeout); // failure injection
+
+mock.extend_best(fork); // replaces the heights it covers; the last block becomes the tip
+mock.rewind_to(height); // invalidateblock: heights above leave the best chain
 ```
 
-If you add a mock module elsewhere, gate it `#[cfg(any(test, feature = "..."))]`
-— a bare `#[cfg(feature = ...)]` that nothing in the workspace enables means the
-module never compiles and its tests silently never run.
+`extend_best` and `rewind_to` move the best chain under a live consumer, so a
+reorg test drives the real producer and followers against it
+(`zaino-sync/tests/reorg_model.rs`). A reorg onto a lower tip is `rewind_to`
+the fork parent, then `extend_best` the new branch; a retreat is `rewind_to`
+alone.
 
-## Related
-
-- ADR-0008 — the split, and why the bound-swap approach was abandoned.
-- `zaino-primitives` — the vocabulary these ports speak.
-- `zaino-source-zebra` — the composite that routes questions to transports.
+A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a
+bare feature gate nothing enables compiles nothing, and its tests silently
+never run.

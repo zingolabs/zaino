@@ -53,16 +53,9 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
         .set_nu6_2(Some(2))
         .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
         .build();
-    assert_ne!(
-        heights,
-        ActivationHeights::regtest_default(),
-        "premise: zainod's config placeholder must differ from the fixture schedule, \
-         or this proves nothing"
-    );
+    assert_ne!(heights, ActivationHeights::regtest_default(), "premise: != config placeholder");
 
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(heights);
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
@@ -71,38 +64,23 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
     // Reaching the tip at all is the core regression: pre-adoption, the
     // chain-index sync died on the first block whose commitment scheme the
     // misconfigured heights got wrong.
-    let tip = validator
-        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1)
-        .await?;
+    let tip = validator.generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1).await?;
     indexer.wait_for_block_num(tip, READY).await?;
     let indexed_tip = u64::from(indexer.latest_block_height().await?);
-    assert!(
-        indexed_tip > u64::from(NU6_3_TRANSITION_BOUNDARY),
-        "the indexer's own tip must be past the boundary, it is {indexed_tip}"
-    );
+    assert!(indexed_tip > u64::from(NU6_3_TRANSITION_BOUNDARY), "indexer tip {indexed_tip}");
 
     // Era composition of the served chain proves the adopted schedule is the
     // validator's, not the placeholder: under the placeholder (NU6.3 at 2)
     // the pre-boundary orchard coinbases would be misread as ironwood-era.
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(2u32), tip)
-        .await?;
+    let blocks = indexer.get_block_range(BlockHeight::from(2u32), tip).await?;
     assert!(!blocks.is_empty(), "no compact blocks served");
     for block in &blocks {
         let height = block.height;
         let has_orchard = block.vtx.iter().any(|tx| !tx.actions.is_empty());
         let has_ironwood = block.vtx.iter().any(|tx| !tx.ironwood_actions.is_empty());
-        if height >= u64::from(NU6_3_TRANSITION_BOUNDARY) {
-            assert!(
-                has_ironwood && !has_orchard,
-                "height {height} must be ironwood-era, got orchard={has_orchard} ironwood={has_ironwood}"
-            );
-        } else {
-            assert!(
-                has_orchard && !has_ironwood,
-                "height {height} must be orchard-era, got orchard={has_orchard} ironwood={has_ironwood}"
-            );
-        }
+        let ironwood_era = height >= u64::from(NU6_3_TRANSITION_BOUNDARY);
+        let era = (has_orchard, has_ironwood);
+        assert_eq!(era, (!ironwood_era, ironwood_era), "height {height}: (orchard, ironwood)");
     }
 
     Ok(())
@@ -131,24 +109,14 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
         .set_nu6_2(Some(2))
         .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
         .build();
-    assert_ne!(
-        heights,
-        ActivationHeights::regtest_default(),
-        "premise: zainod's config placeholder must differ from the fixture schedule, \
-         or this proves nothing"
-    );
+    assert_ne!(heights, ActivationHeights::regtest_default(), "premise: != config placeholder");
 
-    let mut env = TestEnv::builder()
-        .ready_timeout(READY)
-        .activation_heights(heights);
+    let mut env = TestEnv::builder().ready_timeout(READY).activation_heights(heights);
     let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     env.build().await?;
 
-    let blockchain_info = validator
-        .json_rpc()
-        .await?
-        .call_value("getblockchaininfo", json!([]))
-        .await?;
+    let blockchain_info =
+        validator.json_rpc().await?.call_value("getblockchaininfo", json!([])).await?;
     let upgrades = blockchain_info
         .get("upgrades")
         .and_then(Value::as_object)
@@ -187,10 +155,7 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
     .map(|(name, height)| (name.to_string(), height))
     .collect();
 
-    assert_eq!(
-        reported, expected,
-        "reported upgrade schedule must match the pinned transition set, order, and heights"
-    );
+    assert_eq!(reported, expected, "upgrade schedule: set, order, heights");
 
     Ok(())
 }

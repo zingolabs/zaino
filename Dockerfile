@@ -13,9 +13,6 @@ FROM docker.io/library/rust:1.98.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
-# Comma-separated; empty = default feature set (e.g. "prometheus")
-ARG CARGO_FEATURES=""
-
 # `release` or `profiling` (adds line tables + frame pointers, set below)
 ARG CARGO_PROFILE=release
 
@@ -25,8 +22,6 @@ ARG CARGO_PROFILE=release
 # them together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config=1.8.1-1 \
-      clang=1:14.0-55.7~deb12u1 \
-      cmake=3.25.1-1 \
       make=4.3-4.1 \
       ca-certificates=20250419~deb12u1 \
       protobuf-compiler=3.21.12-3+deb12u1 \
@@ -49,7 +44,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       export RUSTFLAGS="-C force-frame-pointers=yes"; \
     fi; \
     cargo install --locked --path packages/zainod --bin zainod --root /out \
-      --profile "${CARGO_PROFILE}" --features "${CARGO_FEATURES}"
+      --profile "${CARGO_PROFILE}"
 
 ############################
 # Runtime
@@ -88,20 +83,17 @@ RUN mkdir -p /app/config /app/data && \
     ln -s /app/data ${HOME}/.cache/zaino && \
     chown -R ${UID}:${GID} /app ${HOME}/.config ${HOME}/.cache
 
-# Copy binary and entrypoint
 COPY --from=builder /out/bin/zainod /usr/local/bin/zainod
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
 
-# Default ports
+# Default port
 ARG ZAINO_GRPC_PORT=8137
-ARG ZAINO_JSON_RPC_PORT=8237
-EXPOSE ${ZAINO_GRPC_PORT} ${ZAINO_JSON_RPC_PORT}
+EXPOSE ${ZAINO_GRPC_PORT}
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
 
 USER ${USER}
 
-ENTRYPOINT ["/entrypoint.sh"]
+# Config at /app/config/zainod.toml (zainod's default path), data under /app/data
+ENTRYPOINT ["zainod"]
 CMD ["start"]

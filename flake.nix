@@ -48,10 +48,7 @@
 
         craneLib = mkCraneLib pkgs;
 
-        # self.rev is set on clean trees; self.dirtyRev (with a "-dirty" suffix) on dirty trees.
-        zainod = pkgs.zainod.override {
-          gitCommit = self.rev or self.dirtyRev;
-        };
+        zainod = pkgs.zainod;
 
         # Build env defined once in nix/package.nix; devShell reuses it via passthru
         inherit (zainod.passthru) commonArgs;
@@ -74,8 +71,6 @@
           packages = with pkgs; [
             protobuf
             pkg-config
-            cmake
-            rustPlatform.bindgenHook
             cargo-nextest
             cargo-deny
             cargo-make
@@ -88,10 +83,7 @@
             openshift
           ];
 
-          env = commonArgs.env // {
-            # Needed for librocksdb-sys
-            LD_LIBRARY_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          };
+          env = commonArgs.env;
         };
 
         formatter = pkgs.nixfmt-rfc-style;

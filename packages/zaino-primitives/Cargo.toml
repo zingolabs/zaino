@@ -11,11 +11,12 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Test-only constructors (`BlockHeader::for_tests`) for downstream fixtures.
+testing = []
+
 [dependencies]
 thiserror = { workspace = true }
-zcash_address.workspace = true
-zcash_protocol.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"

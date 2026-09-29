@@ -19,7 +19,7 @@ reproduced verbatim under [Cross References](#cross-references).
   travels with the *what*.
 - **(prior) — periodic release flow.** Resolved ADR 003's deferred cadence and
   RC-validation TODOs. Superseded; kept as
-  [ADR-0015](../adr/zaino/0015-periodic-release-flow.md).
+  [ADR-0015](https://github.com/zingolabs/zingo-adrs/blob/main/zaino/0015-periodic-release-flow.md).
 
 ## Framing Principle
 
@@ -46,25 +46,16 @@ landed. We do not cherry-pick from `dev` to cut releases — a release is always
 a **prefix** of `dev`'s history (the hotfix path, below, is the sole, contained
 exception).
 
-There are 23 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
-`zaino-proto`, `zaino-common`, `zaino-primitives`, `zaino-address`,
-`zaino-source`, `zaino-source-macros`, `zaino-rpc`, `zaino-convert-zebra`,
-`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`, `zaino-source-zebra`,
-`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status`,
-`zaino-encoding`, `zaino-chain-head`, `zaino-chain-head-service`,
-`zaino-chain-store`, `zaino-chain-store-zainodb`) and 3 internal-only
-(`e2e`, `clientless`, `zaino-testutils`). Each public crate is versioned and
-released **independently**. The authoritative, machine-read list of governed
-targets is [`relman.toml`](../../../relman.toml) at the repo root; this prose
-list mirrors it.
-
-> Some worked examples below predate ADR-0008 (which deleted `zaino-fetch` and
-> added the source stack) and name the old 6-crate set. The release
-> *mechanism* is crate-count-agnostic; only the illustrative tables are stale.
+Each publishable crate is versioned and released **independently**; the
+live-test crates (`e2e`, `clientless`, `zaino-testutils`) are internal-only.
+The list of governed targets is [`relman.toml`](../../relman.toml) at the
+repo root — the one machine-read source, deliberately not restated here. Crate
+names in the worked examples below are illustrative; the release mechanism is
+crate-count-agnostic.
 
 ### Relationship to ADR 003
 
-[Org record 003](../adr/003-zaino-branching-versioning-and-release-strategy.md)
+[Org record 003](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md)
 previously stated Zaino's branching, versioning, changelog, public-interface,
 and release policy at the level of the broader zingolabs organization. That ADR
 explicitly deferred two items: a fixed release cadence ("A stable release
@@ -79,8 +70,9 @@ public-interface governance are only meaningful relative to a specific state
 of the code, so this document, revised in place beside the `Cargo.toml`,
 `CODEOWNERS`, and crate graph it constrains, is the authoritative statement
 of them. The decision that adopted it is
-[ADR-0016](../adr/zaino/0016-changeset-derived-release-pipeline.md), which **supersedes org record 003**. Both
-records live in zingo-adrs, reached through the submodule at `docs/adr/`.
+[ADR-0016](https://github.com/zingolabs/zingo-adrs/blob/main/zaino/0016-changeset-derived-release-pipeline.md), which **supersedes org record 003**. Both
+records live in [zingo-adrs](https://github.com/zingolabs/zingo-adrs), which
+this repository no longer vendors.
 The text this document inherits from 003 is reproduced verbatim under [Cross
 References](#cross-references) with per-section back-references to the
 original. Future changes to any of these rules are made here; a change of
@@ -218,9 +210,6 @@ are not one kind of thing:
   the rule that is simply the correct `rc-gate` placement (validator-heavy, over
   the pre-merge budget); the one small regtest binary `e2e::compact_block_wire`
   is pulled back as a smoke.
-- `clientless::json_server`, `e2e::devtool_zcashd` — `zcashd_support`-feature-gated.
-  A **separate axis**, not a dev/rc cost tier: the default `--no-default-features`
-  build holds zero of their tests.
 
 Two subtleties the first cut turns on. (1) The ceiling counts **fixture/snapshot
 provisioning**, not just execution: a test that needs a multi-GB testnet snapshot
@@ -245,7 +234,7 @@ extends = "dev-gate"                                     # cumulative: runs dev-
 filterset = "(package(clientless) | package(e2e)) & !binary_id(=clientless::chain_cache)"  # full live suite minus the hang (#1312)
 ```
 
-The first-cut classification of the 13 live-crate binaries (the file's header
+The first-cut classification of the live-crate binaries (the file's header
 carries the full rationale):
 
 | Binary | Tier | Why |
@@ -254,20 +243,13 @@ carries the full rationale):
 | `clientless::validator_heights` | **dev** | ~5 tests, regtest mining |
 | `clientless::compact_block_consistency` | **dev** | ~13 tests, regtest mining |
 | `e2e::compact_block_wire` | **dev** | ~7 tests, regtest — pulled from the capacity-excluded e2e group |
-| `clientless::fetch_service` | **rc** | ~35 tests — over the smoke budget |
-| `clientless::state_service` | **rc** | ~75 tests; cached-testnet + regtest mix (needs snapshot) |
-| `clientless::the_pub_testnet_ironwood_boundary` | **rc** | needs a testnet snapshot; skips without one |
-| `e2e::test_vectors` | **rc** | heavy zebra fixtures |
-| `e2e::ironwood_activation` | **rc** | ~22 tests, validator-heavy |
-| `e2e::devtool` | **rc** | ~170 tests |
+| `clientless::fetch_service` | **rc** | over the smoke budget |
+| `e2e::ironwood_activation` | **rc** | validator-heavy |
 | `clientless::chain_cache` | **disabled** | hangs → #1312; excluded both tiers until fixed |
-| `clientless::json_server` | *feature axis* | `zcashd_support`-gated; absent from the default build |
-| `e2e::devtool_zcashd` | *feature axis* | `zcashd_support`-gated; absent from the default build |
 
-Deltas from today's `CI - PR` set: `state_service`, `fetch_service`,
-`the_pub_testnet_ironwood_boundary` move **out** of pre-merge (size / snapshot
-dependency); `e2e::compact_block_wire` moves **in**. A finer within-binary split
-(keeping the regtest subset of `state_service`/`fetch_service` as a smoke) is
+Deltas from today's `CI - PR` set: `fetch_service` moves **out** of pre-merge
+(size); `e2e::compact_block_wire` moves **in**. A finer within-binary split
+(keeping the regtest subset of `fetch_service` as a smoke) is
 deferred to per-test filtersets once real wall-clock data exists — the manifest
 edit is one line when it does. That one-line-edit property is the point: moving a
 test between tiers needs no gate rename or policy-doc churn, and a gate-aware
@@ -575,7 +557,7 @@ Format](./changeset-format.md); in brief:
 
 ```toml
 [[changes]]
-crate = "zaino-state"
+crate = "zaino-sync"
 kind = "feature"   # breaking | feature | fix | internal — CI derives the semver bump
 description = "New parallel sync mode"
 
@@ -620,9 +602,9 @@ the next cycle starts fresh.
    GitHub prereleases. This is the stable human handle for "the Friday release,"
    and it carries no version — so it can never lie.
 2. **Per-crate version tags — crates.io provenance.** At blessing, each crate
-   that bumped is tagged `<crate>-<X.Y.Z>` (e.g. `zaino-state-0.4.0`), one git
+   that bumped is tagged `<crate>-<X.Y.Z>` (e.g. `zaino-sync-0.4.0`), one git
    point per published `crate@version`. This is standard independent-versioning
-   provenance and makes "which commit was `zaino-state 0.4.0` cut from?"
+   provenance and makes "which commit was `zaino-sync 0.4.0` cut from?"
    answerable.
 3. **Derived versions — live only in the PR/notes.** The per-crate resolved
    versions appear in the Release PR description and prerelease notes, updated
@@ -656,7 +638,7 @@ All gates passed. Merging promotes this commit to stable.
 ## Version bumps (derived, since last stable)
 | Crate       | Current | Next  | Changes                 |
 | ----------- | ------- | ----- | ----------------------- |
-| zaino-state | 0.1.0   | 0.2.0 | new sync mode, fix #987 |
+| zaino-sync  | 0.1.0   | 0.2.0 | new sync mode, fix #987 |
 | zainod      | 0.2.0   | 0.3.0 | new sync mode exposed   |
 ```
 
@@ -852,19 +834,19 @@ needed. `release-ready` says "eligible to ship," not "shipped."
 ## Cross References
 
 This document inherits a body of rules from [org record
-003](../adr/003-zaino-branching-versioning-and-release-strategy.md).
+003](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md).
 The inherited text is reproduced here verbatim so that the authoritative
 statement of each rule travels with the code it governs. Each subsection
 attributes the source section of ADR 003.
 
-**Org record 003 is superseded** by [ADR-0016](../adr/zaino/0016-changeset-derived-release-pipeline.md), per the
+**Org record 003 is superseded** by [ADR-0016](https://github.com/zingolabs/zingo-adrs/blob/main/zaino/0016-changeset-derived-release-pipeline.md), per the
 governance principle in [Relationship to ADR 003](#relationship-to-adr-003).
 Future changes to any rule below are made in this file; a change of decision
 gets a new record in zingo-adrs.
 
 ### Branching and approvals (inherited from ADR 003 §1)
 
-From [ADR 003 §1, "Branch / development strategy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
+From [ADR 003 §1, "Branch / development strategy"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
 
 > **Branches**
 > - `dev`: primary development branch (default branch).
@@ -895,7 +877,7 @@ authoritative.
 
 ### CI test execution (refined by this ADR)
 
-From [ADR 003 §1, "CI / test execution rules"](../adr/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
+From [ADR 003 §1, "CI / test execution rules"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
 
 > - PRs into `dev`: run a **fast test set** (unit tests where available, small subset of integration tests included while unit tests are missing).
 > - Nightly on `dev`: run the **full test suite**.
@@ -927,14 +909,14 @@ a synchronous PR on days-long operations.
 
 ### Dependency policy (inherited from ADR 003 §1)
 
-From [ADR 003 §1, "Dependency rules"](../adr/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
+From [ADR 003 §1, "Dependency rules"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#1-branch--development-strategy):
 
 > All non-test dependencies must be crates.io imports on stable.
 > Dev may temporarily use feature branches via `[patch.crates-io]`.
 
 ### Versioning semantics (inherited from ADR 003 §2)
 
-From [ADR 003 §2, "Versioning strategy (SemVer)"](../adr/003-zaino-branching-versioning-and-release-strategy.md#2-versioning-strategy-semver-and-what-it-means-in-zaino):
+From [ADR 003 §2, "Versioning strategy (SemVer)"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#2-versioning-strategy-semver-and-what-it-means-in-zaino):
 
 > Zaino follows **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`.
 >
@@ -966,7 +948,7 @@ From [ADR 003 §2, "Versioning strategy (SemVer)"](../adr/003-zaino-branching-ve
 
 ### Documentation publication (inherited from ADR 003 §3)
 
-From [ADR 003 §3, "GitHub Pages + crates.io documentation update strategy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#3-github-pages--cratesio-documentation-update-strategy):
+From [ADR 003 §3, "GitHub Pages + crates.io documentation update strategy"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#3-github-pages--cratesio-documentation-update-strategy):
 
 > **Docs targets**
 > - **GitHub Pages (gh-pages)**: the canonical "workspace documentation" site.
@@ -982,7 +964,7 @@ until that is automated.
 
 ### Changelog policy (inherited from ADR 003 §4)
 
-From [ADR 003 §4, "Changelog policy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#4-changelog-policy):
+From [ADR 003 §4, "Changelog policy"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#4-changelog-policy):
 
 > **Changelog locations**
 > - **Workspace changelog:** one primary changelog for the repository/workspace (covers cross-cutting changes and release-level summaries).
@@ -1004,54 +986,36 @@ cadence.
 
 ### Governed public interfaces (inherited from ADR 003 §5)
 
-From [ADR 003 §5, "Public interfaces governed by this ADR"](../adr/003-zaino-branching-versioning-and-release-strategy.md#5-public-interfaces-governed-by-this-adr-and-officially-supported-in-zaino):
+From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#5-public-interfaces-governed-by-this-adr-and-officially-supported-in-zaino):
 
 > This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
 
-**Authoritative crate list (this repo)**: [Context](#context) enumerates the
-**23 crates.io-published packages** and **3 internal-only packages** (`e2e`,
-`clientless`, `zaino-testutils`), mirroring the machine-read
-[`relman.toml`](../../../relman.toml). This list has grown since ADR 003:
-`zaino-fetch` was **deleted** and the source stack (`zaino-source*`,
-`zaino-primitives`, `zaino-address`, `zaino-rpc`, `zaino-convert-zebra`)
-**added** by ADR-0008; `integration` was renamed `clientless` by ADR-0004; and
-`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status` were
-added later and brought under governance. The per-crate public-interface
-subsections below still reflect the **older** set; deriving the governed
-public-item lists for the source-stack, consensus, mempool, and status crates is
-a **pending follow-up** (tracked with the drift note at the end of this
-section). The release *mechanism* in the body above is unaffected — it operates
-over whatever the current crate list is.
+**Authoritative crate list (this repo)**: [`relman.toml`](../../relman.toml) at
+the repo root, the one machine-read source. No list of crates is restated here.
+The release *mechanism* is crate-count-agnostic: it operates over whatever
+`relman.toml` currently names.
 
-`zainodlib` exists as a library target inside the `zainod` package
-(`packages/zainod/Cargo.toml`: `[[bin]] name = "zainod"` alongside
-`[lib] name = "zainodlib"`). It is **not** a first-class crates.io-published
-package: it has no independent version number and is not `cargo publish`ed
-separately. External consumers who import `zainodlib` do so by depending on
-the `zainod` package. ADR 003 treats `zainodlib` as a distinct governed
-interface surface, and its public-item list remains in force (below), but
-its SemVer bumps are expressed through the `zainod` package version, not an
-independent version of its own. Changes to `zainodlib`'s public API are
-therefore recorded as governed public-interface changes on the `zainod`
-crate for changeset purposes.
+The internal-only (not crates.io-published) packages are `e2e`, `clientless`
+and `zaino-testutils`. They may change freely without affecting SemVer, except
+where a change forces one in a governed crate.
 
-`zaino-testvectors` is not in this repo. It has been extracted to a separate
-repository/workspace and is now published independently to crates.io; its
-release policy is governed there, not here. ADR 003's listing of it as an
-excluded crate in this repo is therefore moot — it is out of scope entirely
-for this ADR. The excluded (internal-only, not-crates.io-published) crate
-list governed by this ADR is `e2e`, `clientless`, and `zaino-testutils`.
+**What the governed surface of a crate is**: its public Rust API plus any
+externally-observable contract it owns — `zainod`'s CLI arguments and config
+schema, `zaino-proto`'s wire messages, an index crate's on-disk format. Each
+crate's `usage.md` and rustdoc are where that surface is described.
 
-The per-crate subsections below reproduce the public-interface and
-public-item lists from ADR 003 verbatim. Subsection headers use the Rust
-module form (underscore) to match ADR 003's original headings; the
-corresponding package names (`Cargo.toml`) use the hyphenated form.
+`zainodlib` is a library target inside the `zainod` package
+(`[[bin]] name = "zainod"` alongside `[lib] name = "zainodlib"`), not a
+crates.io package of its own. It has no independent version, so changes to its
+public API are recorded as governed changes on the `zainod` crate.
+
+`zaino-testvectors` lives in a separate repository and is published on its own
+cadence; it is out of scope here entirely.
 
 #### `zainod` (daemon)
 
 > Public interfaces:
 > - Zainod daemon: Main indexing daemon
->   - Zcash JsonRPC service
 >   - Zcash LightClient gRPC service
 >
 > Public items:
@@ -1062,81 +1026,16 @@ corresponding package names (`Cargo.toml`) use the hyphenated form.
 #### `zainodlib` (daemon library)
 
 > Public interfaces:
-> - `indexer::Indexer`: Full indexing server
+> - `run`: the daemon entrypoint
 >
 > Public items:
 > - `config::*`
 > - `error::*`
-
-#### `zaino_serve` (gRPC + JsonRPC servers)
-
-> Public interfaces:
-> - `server::{grpc::TonicServer, jsonrpc::JsonRpcServer}`: gRPC / JsonRPC server implementations
->
-> Public items:
-> - `rpc::{GrpcClient, JsonRpcClient}`
-> - `rpc::jsonrpc::service::ZcashIndexerRpc`
-> - `server::config::*`
-> - `server::error::*`
-
-#### `zaino_state` (core indexing library)
-
-> Public interfaces:
-> - `chain_index::source::ValidatorConnector`: Validator agnostic Chain data fetch service
-> - `chain_index::{NodeBackedChainIndex, NodeBackedChainIndexSubscriber}`: Core chain indexing service
-> - `backends::{fetch::{FetchService, FetchServiceSubscriber}, state::{StateService, StateServiceSubscriber}}`: Indexing API (IndexerService / IndexerSubscriber) based on the zcash RPC services for compatibility, utilising Zaino's underlying indexing services
->
-> Public items:
-> - `indexer::{IndexerService, ZcashService, IndexerSubscriber, ZcashIndexer, LightWalletIndexer, LightWalletService}`
-> - `chain_index::{ChainIndex, NonFinalizedSnapshot}`
-> - `chain_index::source::{BlockchainSource, State, BlockchainSourceResult}`
-> - `chain_index::encoding::*`
-> - `chain_index::types::*`
-> - `status::*`
-> - `stream::*`
-> - `config::*`
-> - `error::*`
-> - ZainoDB's on disk schema.
-
-#### `zaino_fetch` (Zcash-specific JsonRPC client + parsing)
-
-> **Note (this ADR):** `zaino_fetch` was deleted by ADR-0008; its
-> responsibilities moved into the source stack. Retained here as the historical
-> ADR-003 record until the source-stack crates' governed lists are derived.
-
-> Public interfaces:
-> - `jsonrpc::connector::JsonRpcConnector`: Zcash specific JsonRPC client with full chain data fetch and block / transaction parsing capability
->
-> Public items:
-> - `chain::utils::ParseFromSlice`
-> - `chain::transaction::*`
-> - `chain::block::*`
-> - `chain::error::*`
-> - `jsonrpc::connector::test_node_and_return_url`
-> - `jsonrpc::response::*`
-> - `jsonrpc::error::*`
 
 #### `zaino_proto` (LightClient protocol implementation)
 
 > Public items:
 > - `::*`
-
-#### `zaino_common` (common types + utilities)
-
-> Public items:
-> - `::*`
-
-#### Excluded (not governed)
-
-> - `zaino-testutils`
-> - `e2e`
-> - `clientless`
->
-> These may change freely without affecting SemVer, except where they force changes to governed public crates.
-
-(ADR 003's original excluded list named `integration` — since renamed
-`clientless` (ADR-0004) — and `zaino-testvectors`, now in a separate repo with
-its own crates.io cadence, out of scope here entirely.)
 
 > **Note** The codebase does not currently reflect this in some places, with entities that should be private currently publicised (or error / config types in the wrong locations). Where this is the case issues / PRs should be opened to provide fixes (make entities pub(crate) or move to the correct location), or a subsequent ADR opened to update the public interface officially maintained.
 
@@ -1151,4 +1050,4 @@ are resolved in the body of this document:
 - **Release steps** — [Blessing: the Only Human Decision](#blessing-the-only-human-decision)
 - **Container image publication** — follows ADR 003 §6 step 7: images MUST be tagged with the release version (`vMAJOR.MINOR.PATCH`) and SHOULD also be tagged with the Git commit SHA (see [Release Identity](#release-identity-versions-tags-changesets)).
 
-Source: [ADR 003 §6, "Release strategy"](../adr/003-zaino-branching-versioning-and-release-strategy.md#6-release-strategy).
+Source: [ADR 003 §6, "Release strategy"](https://github.com/zingolabs/zingo-adrs/blob/main/003-zaino-branching-versioning-and-release-strategy.md#6-release-strategy).

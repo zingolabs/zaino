@@ -1,0 +1,10 @@
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+`/livez` now fails once the serving runtime stops republishing its heartbeat \
+for 30s, rather than once the indexer loop stops reporting (there is no \
+indexer loop). A wedged serving runtime fails the probe while the admin \
+listener's own thread keeps answering.
+"""

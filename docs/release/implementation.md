@@ -27,7 +27,7 @@ runner.
 
 ## `relman`: functional core, imperative shell
 
-`relman` (a new sibling crate under `tools/`, see [pipeline.md §
+`relman` ([zingolabs/release_manager](https://github.com/zingolabs/release_manager), see [pipeline.md §
 Implementation](./pipeline.md#implementation)) is the **functional core**: it
 makes every deterministic decision and performs every *working-tree* edit, with
 **no network and no ref/remote mutation**, so it is unit-testable and safe to
@@ -112,8 +112,8 @@ root_manifest       = "Cargo.toml"        # where [workspace.dependencies] pins 
 workspace_changelog = "CHANGELOG.md"
 
 [[target]]
-name = "zaino-state"
-path = "packages/zaino-state"
+name = "zaino-sync"
+path = "packages/zaino-sync"
 # changelog defaults to <path>/CHANGELOG.md; publish defaults to true
 
 [[target]]
@@ -222,7 +222,7 @@ endurance test path (short-duration real run) fully decoupled.
 The bridge is the only contract between the repos, so responsibilities divide
 cleanly:
 
-- **`zaino` repo:** `relman`, the GitHub Actions workflows, branch/PR policy
+- **`zaino` repo:** `relman.toml`, the GitHub Actions workflows, branch/PR policy
   (rulesets, CODEOWNERS), and Deployment *creation* + `deployment_status`
   *reaction*.
 - **`devops` repo:** the deployment Argo `WorkflowTemplate`, the Argo Events

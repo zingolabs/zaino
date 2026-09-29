@@ -1,43 +1,43 @@
-# Container Usage
+# Container image
 
-This document covers running Zaino using the official container image.
+Built from the repo-root `Dockerfile`. The image:
 
-## Overview
+- runs `zainod start` as `container_user` (UID/GID 1000)
+- reads its config from `/app/config/zainod.toml`, the same file and schema as
+  any other install
+- exposes the plaintext gRPC server on port `8137`
+- needs a Zebra node with `[rpc] listen_addr` reachable from the container
 
-The container image runs `zainod` - the Zaino indexer daemon. The image:
+There is no container-only configuration: mount a `zainod.toml` and the image
+runs it. Arguments replace `start`, e.g.
+`docker run zaino verify` checks the indexes the mounted config names. zainod's
+own `ZAINO_CONFIG_` variables (`__` for nesting) override any key of the file,
+e.g. `ZAINO_CONFIG_NETWORK=testnet`. Full schema:
+[`example_configs/zainod.toml`](./example_configs/zainod.toml).
 
-- Uses `zainod` as the entrypoint with `start` as the default subcommand
-- Runs as non-root user (`container_user`, UID 1000)
-- Refuses to start if run as root
+## Paths
 
-For CLI usage details, see the CLI documentation or run `docker run --rm zaino --help`.
+| Purpose | Mount point | Symlinked from |
+|---|---|---|
+| Config | `/app/config` | `~/.config/zaino` (zainod's default config path) |
+| Index data | `/app/data` | `~/.cache/zaino` (every index's default directory) |
 
-## Configuration Options
+A config that sets no `[index.*] path` keeps every index under `/app/data`.
+Mounted volumes must be writable by UID 1000. For a bind mount:
+`mkdir -p ./data && chown 1000:1000 ./data`. Under rootless Podman,
+`--userns=keep-id` maps UID 1000 to your host user.
 
-The container can be configured via:
-
-1. **Environment variables only** - Suitable for simple deployments, but sensitive fields (passwords, secrets, tokens, cookies, private keys) cannot be set via env vars for security reasons
-2. **Config file + env vars** - Mount a config file for sensitive fields, override others with env vars
-3. **Config file only** - Mount a complete config file
-
-For data persistence, volume mounts are recommended for the database/cache directory.
-
-## Deployment with Docker Compose
-
-The recommended way to run Zaino is with Docker Compose, typically alongside Zebra:
+## Compose
 
 ```yaml
 services:
   zaino:
     image: zaino:latest
     ports:
-      - "8137:8137"   # gRPC
-      - "8237:8237"   # JSON-RPC (if enabled)
+      - "8137:8137"
     volumes:
-      - ./config:/app/config:ro
+      - ./config:/app/config:ro   # zainod.toml: [source] jsonrpc_address = "zebra:8232"
       - zaino-data:/app/data
-    environment:
-      - ZAINO_VALIDATOR_SETTINGS__VALIDATOR_JSONRPC_LISTEN_ADDRESS=zebra:18232
     depends_on:
       - zebra
 
@@ -45,90 +45,21 @@ services:
     image: zfnd/zebra:latest
     volumes:
       - zebra-data:/home/zebra/.cache/zebra
-    # ... zebra configuration
+    # [rpc] listen_addr must be reachable from zaino
 
 volumes:
   zaino-data:
   zebra-data:
 ```
 
-If Zebra runs on a different host/network, adjust `VALIDATOR_JSONRPC_LISTEN_ADDRESS` accordingly.
+To generate a config to edit:
 
-## Initial Setup: Generating Configuration
-
-To generate a config file on your host for customization:
-
-```bash
+```sh
 mkdir -p ./config
-
 docker run --rm -v ./config:/app/config zaino generate-config
-
-# Config is now at ./config/zainod.toml - edit as needed
 ```
 
-## Container Paths
+## Health check
 
-The container provides simple mount points:
-
-| Purpose | Mount Point |
-|---------|-------------|
-| Config | `/app/config` |
-| Database | `/app/data` |
-
-These are symlinked internally to the XDG paths that Zaino expects.
-
-## Volume Permissions
-
-The container runs as `container_user` (UID 1000, GID 1000) and never
-starts as root. Mounted volumes must be writable by this user.
-
-For named volumes (e.g. `zaino-data:/app/data`), the container runtime
-handles ownership automatically.
-
-For bind mounts to host directories, ensure the host directory is owned
-by UID 1000 before starting the container:
-
-```bash
-mkdir -p ./data
-chown 1000:1000 ./data
-```
-
-### Read-Only Config Mounts
-
-Config files can (and should) be mounted read-only:
-
-```yaml
-volumes:
-  - ./config:/app/config:ro
-```
-
-## Configuration via Environment Variables
-
-Config values can be set via environment variables prefixed with `ZAINO_`, using `__` for nesting:
-
-```yaml
-environment:
-  - ZAINO_NETWORK=Mainnet
-  - ZAINO_VALIDATOR_SETTINGS__VALIDATOR_JSONRPC_LISTEN_ADDRESS=zebra:18232
-  - ZAINO_GRPC_SETTINGS__LISTEN_ADDRESS=0.0.0.0:8137
-```
-
-### Sensitive Fields
-
-For security, the following fields **cannot** be set via environment variables and must use a config file:
-
-- `*_password` (e.g., `validator_password`)
-- `*_secret`
-- `*_token`
-- `*_cookie`
-- `*_private_key`
-
-If you attempt to set these via env vars, Zaino will error on startup.
-
-## Health Check
-
-The image includes a health check:
-
-```bash
-docker inspect --format='{{.State.Health.Status}}' <container>
-```
+`zainod --version`: proves the binary runs, not that an index is synced or the
+gRPC server is serving.

@@ -1,6 +1,5 @@
 //! Zaino Indexer service.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
@@ -8,80 +7,51 @@ use std::path::PathBuf;
 use crate::config::load_config;
 use crate::error::IndexerError;
 use crate::indexer::start_indexer;
-use tracing::{error, info};
+use tracing::{error, info, Instrument as _};
 
-#[cfg(feature = "prometheus")]
-pub(crate) mod admin;
+mod admin;
+mod chainview;
 pub mod cli;
 pub mod config;
 pub mod error;
+mod fd_limit;
 pub mod indexer;
-#[cfg(feature = "prometheus")]
-pub mod metrics;
+pub mod logging;
+mod metrics;
+pub mod paths;
+pub mod verify;
 
-/// Run the Zaino indexer.
+/// Runs the Zaino indexer until a shutdown signal (`Ok`) or the first failure (`Err`).
 ///
-/// Runs the main indexer loop with restart support.
-/// Logging should be initialized by the caller before calling this function.
-/// Returns an error if config loading or indexer startup fails.
+/// - no in-process restart: a failure ends the process, the service manager restarts it, and
+///   the next boot proves its state from disk (`docs/design/durability.md` §6)
+/// - logging initialised by the caller
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
-    zaino_common::logging::try_init();
+    crate::logging::try_init()
+        .map_err(|error| IndexerError::ConfigError(format!("logging: {error}")))?;
+    daemon(config_path).instrument(crate::logging::component("Zainod")).await
+}
 
-    info!(version = env!("CARGO_PKG_VERSION"), "zainod started");
+async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
+    info!(version = env!("CARGO_PKG_VERSION"), "Starting");
     let config = load_config(&config_path)?;
+    config.warn_about_metrics_endpoint();
 
-    #[cfg(feature = "prometheus")]
     if let Some(endpoint) = config.metrics_endpoint {
-        crate::metrics::init(endpoint)?;
+        crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
     }
 
-    // Else silent: the block above is compiled out, so a configured endpoint yields
-    // no listener and no complaint
-    #[cfg(not(feature = "prometheus"))]
-    if config.metrics_endpoint.is_some() {
-        tracing::warn!(
-            "`metrics_endpoint` is configured but this binary was built without the \
-             `prometheus` feature, so no /metrics listener will start. Rebuild with \
-             `--features prometheus` (or `no_tls_with_prometheus`) to enable it."
-        );
-    }
-
-    loop {
-        match start_indexer(config.clone()).await {
-            Ok(joinhandle_result) => {
-                info!("Zaino Indexer started successfully.");
-                match joinhandle_result.await {
-                    Ok(indexer_result) => match indexer_result {
-                        Ok(()) => {
-                            info!("Exiting Zaino successfully.");
-                            return Ok(());
-                        }
-                        Err(IndexerError::Restart) => {
-                            error!("Zaino encountered critical error, restarting.");
-                            // The recorder outlives this loop, so nothing else resets:
-                            // a crash-looping indexer scrapes like a healthy one
-                            #[cfg(feature = "prometheus")]
-                            {
-                                crate::metrics::record_restart();
-                                crate::admin::clear_heartbeat();
-                            }
-                            continue;
-                        }
-                        Err(e) => {
-                            error!(%e, "exiting Zaino with error");
-                            return Err(e);
-                        }
-                    },
-                    Err(e) => {
-                        error!(%e, "Zaino exited early with error");
-                        return Err(e.into());
-                    }
-                }
-            }
-            Err(e) => {
-                error!(%e, "Zaino failed to start");
-                return Err(e);
-            }
+    let running = start_indexer(config).await.inspect_err(|error| {
+        error!(%error, "Startup failed");
+    })?;
+    match running.await? {
+        Ok(()) => {
+            info!("Shutdown complete");
+            Ok(())
+        }
+        Err(error) => {
+            error!(%error, "Stopped with error");
+            Err(error)
         }
     }
 }

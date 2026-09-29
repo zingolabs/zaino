@@ -1,6 +1,6 @@
 [package]
 name = "clientless"
-description = "Clientless live tests: exercise Zaino's service layer over its gRPC/JSON-RPC surface against a live validator, on the ztest k8s harness (no wallet client)."
+description = "Clientless live tests: exercise Zaino's gRPC surface against a live validator, on the ztest k8s harness (no wallet client)."
 publish = false
 
 authors.workspace = true
@@ -13,18 +13,10 @@ version = "0.2.0"
 [features]
 default = []
 
-[dependencies]
-ztest = { workspace = true }
-anyhow = { workspace = true }
-serde_json = { workspace = true }
-
 [dev-dependencies]
 zaino-testutils = { workspace = true }
 ztest = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-rstest.workspace = true
-# `test_vectors.rs` parses committed transaction vectors through the
-# independent `legacy_parser`; no validator, no cluster.
-wire_serialized_transaction_test_data = { workspace = true }
+rstest = "0.27.0"

@@ -1,119 +1,72 @@
 # zainod
 
-`zainod` is the Zaino indexer daemon — an indexer for the Zcash blockchain,
-written in Rust.
+The Zaino indexer daemon. It fetches blocks from a Zebra node over JSON-RPC,
+builds its own on-disk indexes, and serves wallets over the
+[lightclient protocol](https://github.com/zcash/lightwallet-protocol)
+(`CompactTxStreamer` gRPC, as served by
+[lightwalletd](https://github.com/zcash/lightwalletd)), in plaintext. Methods
+served: [`docs/rpc_api.md`](https://github.com/zingolabs/zaino/blob/dev/docs/rpc_api.md).
 
-It sits between a Zcash full validator (Zebra) and client
-applications, serving:
-
-- the [lightclient protocol API](https://github.com/zcash/lightwallet-protocol), the interface today
-  served by [lightwalletd](https://github.com/zcash/lightwalletd), and
-- a **JSON-RPC API** covering the subset of Zcash RPCs needed by wallets and
-  block explorers.
-
-This crate ships the `zainod` binary. The library half of the crate,
-`zainodlib`, exposes the `run` entrypoint and configuration types for embedding
-the daemon in other Rust programs.
-
-For project background and architecture, see the
+The package also builds `zainodlib`, the library behind the binary (`run`,
+config types). Project background: the
 [Zaino repository](https://github.com/zingolabs/zaino).
 
 ## CLI
 
 ```text
-zainod generate-config [--output FILE]   # write a default config file
-zainod start [--config FILE]             # start the indexer
+zainod generate-config [--output FILE]       # write a default config file
+zainod start [--config FILE]                 # start the indexer
+zainod verify [--config FILE] [--rehash]     # read-only index check (see usage.md)
 ```
 
-When `--config`/`--output` is omitted, the path defaults to
-`$XDG_CONFIG_HOME/zaino/zainod.toml` (falling back to
-`$HOME/.config/zaino/zainod.toml`).
+`--config`/`--output` default to `$XDG_CONFIG_HOME/zaino/zainod.toml`
+(`$HOME/.config/zaino/zainod.toml` when unset).
 
-Configuration is layered, highest priority first:
+## Configuration
 
-1. environment variables (prefix `ZAINO_`),
-2. the TOML config file,
-3. built-in defaults.
+Layered, highest priority first:
 
-Sensitive fields (passwords, secrets, tokens, cookies, private keys) cannot be
-set via environment variables and must come from the config file.
+1. environment variables, prefix `ZAINO_CONFIG_`, `__` for nesting
+   (`ZAINO_CONFIG_SOURCE__JSONRPC_ADDRESS=127.0.0.1:8232`)
+2. the TOML file
+3. built-in defaults
+
+Unknown keys fail the load. The config has `[source]` (Zebra JSON-RPC address
+and auth), `[[chainview_peers]]` (extra validators: the quorum tip and mempool
+are agreed over `source` + these, and bulk sync spreads its fetches over all of
+them), `[serve]` (gRPC listen address, `max_block_range`), `[grpc]` (serving
+caps), `[fetch]` (`finalised_depth`, `concurrency`, and `primary_validator` to
+pin bulk sync to one validator), one `[index.<name>]` section per index
+(`compact_block`, `tree_state`, `transparent_address`, each with `path`,
+`batch`, `queue_mib` and `enabled`), a top-level `network` (`mainnet` /
+`testnet` / `regtest`, default `mainnet`) and an optional top-level
+`metrics_endpoint` (Prometheus). Annotated
+example:
+[`docs/example_configs/zainod.toml`](https://github.com/zingolabs/zaino/blob/dev/docs/example_configs/zainod.toml).
+
+`network` is declared rather than read off the validator: Zebra on regtest
+reports its chain as `"test"`. It is what `GetTreeState` reports as
+`TreeState.network` and `GetLightdInfo` as `chainName`.
+
+`index.<name>.enabled = false` builds nothing for that index (no store, no
+`BlockSink` subscription, no follower) and its methods answer `UNIMPLEMENTED`.
+`index.compact_block` cannot be disabled: `GetLightdInfo` reads its finalised
+height.
 
 ## Launching
 
-`zainod` needs a running validator to connect to. The examples below assume one
-is reachable at the address in your config.
-
-### From crates.io
+Needs a Zebra node with JSON-RPC enabled (`[rpc] listen_addr` in `zebrad.toml`),
+reachable at `source.jsonrpc_address`.
 
 ```sh
-cargo install zainod
-zainod generate-config            # writes the default config, then edit it
-zainod start                      # uses the default config path
-# or point at an explicit file:
-zainod start --config ./zainod.toml
+cargo install zainod                         # or: cargo run --release -p zainod -- start ...
+zainod generate-config                       # then edit it
+zainod start
 ```
 
-### From source
-
-```sh
-git clone https://github.com/zingolabs/zaino.git
-cd zaino
-cargo run --release -p zainod -- start --config ./zainod.toml
-```
-
-### With Podman (rootless)
-
-The daemon is published as a container image with `zainod start` as the default
-command. It runs as a non-root user (UID 1000) and refuses to start as root,
-which makes it a natural fit for rootless Podman.
-
-Run it directly, mounting a config file and a data volume:
-
-```sh
-podman run --rm \
-  -p 8137:8137 \
-  -p 8237:8237 \
-  -v ./zainod.toml:/app/config/zainod.toml:ro,Z \
-  -v zaino-data:/app/data \
-  zainod:latest
-```
-
-`--userns=keep-id` maps the container's UID 1000 to your host user, so files in
-the mounted data volume stay owned by you:
-
-```sh
-podman run --rm --userns=keep-id \
-  -p 8137:8137 \
-  -v ./zainod.toml:/app/config/zainod.toml:ro,Z \
-  -v zaino-data:/app/data \
-  zainod:latest
-```
-
-A typical deployment runs `zainod` alongside Zebra with `podman compose`:
-
-```yaml
-services:
-  zaino:
-    image: zainod:latest
-    ports:
-      - "8137:8137"   # gRPC
-      - "8237:8237"   # JSON-RPC (if enabled)
-    volumes:
-      - ./config:/app/config:ro,Z
-      - zaino-data:/app/data
-    depends_on:
-      - zebra
-
-volumes:
-  zaino-data:
-```
-
-```sh
-podman compose up
-```
-
-See [`docs/docker.md`](https://github.com/zingolabs/zaino/blob/dev/docs/docker.md)
-for the full container guide.
+For the container image (non-root, UID 1000; rootless Podman works with
+`--userns=keep-id`) see
+[`docs/docker.md`](https://github.com/zingolabs/zaino/blob/dev/docs/docker.md).
 
 ## License
 

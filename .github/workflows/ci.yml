@@ -13,7 +13,7 @@ concurrency:
 permissions:
   contents: read
 
-# No protoc: zaino-proto & zebra-rpc build.rs fall back to checked-in generated code
+# No protoc: zaino-proto build.rs falls back to checked-in generated code
 # (protoc present = regenerate over tracked sources)
 
 jobs:
@@ -48,15 +48,9 @@ jobs:
 
       - run: cargo nextest run --locked --workspace --no-fail-fast
 
-      # Only crate the experimental umbrella reaches; clippy --all-features covers its compile
-      - run: cargo nextest run --locked -p zaino-state --features experimental_features --no-fail-fast
-
-      # Recorder, admin listener & metric registration contracts compile only under `prometheus`
-      - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
-
   features:
     name: Each feature compiles
-    # dev only (~77 checks); --feature-powerset = 412, over the 6h hosted-runner cap
+    # dev only; each package ≤ 1 feature (`testing`) → --each-feature = --feature-powerset
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

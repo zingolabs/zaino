@@ -28,9 +28,3 @@ impl BlockRef {
         Self { hash, height }
     }
 }
-
-impl From<(BlockHash, Height)> for BlockRef {
-    fn from(tip: (BlockHash, Height)) -> Self {
-        Self::from_tip(tip)
-    }
-}

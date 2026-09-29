@@ -27,11 +27,7 @@ impl U256 {
     /// at most 24 bits and the exponent is at most 29, so the product spans at
     /// most `24 + 8·29 = 256` bits and the shift never discards a set bit.
     pub(super) fn target(mantissa: u32, exponent: u32) -> Self {
-        Self {
-            hi: 0,
-            lo: u128::from(mantissa),
-        }
-        .shl(8 * exponent)
+        Self { hi: 0, lo: u128::from(mantissa) }.shl(8 * exponent)
     }
 
     /// Whether this is zero.
@@ -60,20 +56,13 @@ impl U256 {
 
     /// The bitwise complement, i.e. `2^256 - 1 - self`.
     fn complement(self) -> Self {
-        Self {
-            hi: !self.hi,
-            lo: !self.lo,
-        }
+        Self { hi: !self.hi, lo: !self.lo }
     }
 
     /// `self + 1`, refusing to wrap.
     fn checked_add_one(self) -> Option<Self> {
         let (lo, carry) = self.lo.overflowing_add(1);
-        let hi = if carry {
-            self.hi.checked_add(1)?
-        } else {
-            self.hi
-        };
+        let hi = if carry { self.hi.checked_add(1)? } else { self.hi };
         Some(Self { hi, lo })
     }
 
@@ -106,15 +95,9 @@ impl U256 {
     fn shl(self, n: u32) -> Self {
         match n {
             0 => self,
-            1..=127 => Self {
-                hi: (self.hi << n) | (self.lo >> (128 - n)),
-                lo: self.lo << n,
-            },
+            1..=127 => Self { hi: (self.hi << n) | (self.lo >> (128 - n)), lo: self.lo << n },
             128 => Self { hi: self.lo, lo: 0 },
-            129..=255 => Self {
-                hi: self.lo << (n - 128),
-                lo: 0,
-            },
+            129..=255 => Self { hi: self.lo << (n - 128), lo: 0 },
             _ => Self::ZERO,
         }
     }
@@ -145,10 +128,7 @@ impl U256 {
     /// carried remainder back into 256 bits — never a silent underflow.
     fn wrapping_sub(self, rhs: Self) -> Self {
         let (lo, borrow) = self.lo.overflowing_sub(rhs.lo);
-        let hi = self
-            .hi
-            .wrapping_sub(rhs.hi)
-            .wrapping_sub(u128::from(borrow));
+        let hi = self.hi.wrapping_sub(rhs.hi).wrapping_sub(u128::from(borrow));
         Self { hi, lo }
     }
 }
@@ -165,22 +145,10 @@ mod tests {
     fn shl_moves_bits_across_the_half_boundary() {
         let one = from_u128(1);
         assert_eq!(one.shl(0), one);
-        assert_eq!(
-            one.shl(127),
-            U256 {
-                hi: 0,
-                lo: 1 << 127
-            }
-        );
+        assert_eq!(one.shl(127), U256 { hi: 0, lo: 1 << 127 });
         assert_eq!(one.shl(128), U256 { hi: 1, lo: 0 });
         assert_eq!(one.shl(129), U256 { hi: 2, lo: 0 });
-        assert_eq!(
-            one.shl(255),
-            U256 {
-                hi: 1 << 127,
-                lo: 0
-            }
-        );
+        assert_eq!(one.shl(255), U256 { hi: 1 << 127, lo: 0 });
         assert_eq!(one.shl(256), U256::ZERO);
     }
 
@@ -188,13 +156,7 @@ mod tests {
     fn shl_carries_a_straddling_value() {
         // A value with bits in both halves after the shift.
         let x = from_u128(u128::MAX);
-        assert_eq!(
-            x.shl(1),
-            U256 {
-                hi: 1,
-                lo: u128::MAX - 1
-            }
-        );
+        assert_eq!(x.shl(1), U256 { hi: 1, lo: u128::MAX - 1 });
     }
 
     #[test]
@@ -204,42 +166,20 @@ mod tests {
         // 8·16 = 128 bits: lands exactly on the high half.
         assert_eq!(U256::target(1, 16), U256 { hi: 1, lo: 0 });
         // The largest shift the caller produces.
-        assert_eq!(
-            U256::target(0xff_0000, 29),
-            U256 {
-                hi: 0xff << 120,
-                lo: 0
-            }
-        );
+        assert_eq!(U256::target(0xff_0000, 29), U256 { hi: 0xff << 120, lo: 0 });
     }
 
     #[test]
     fn ord_is_numeric() {
         assert!(U256 { hi: 1, lo: 0 } > from_u128(u128::MAX));
         assert!(from_u128(2) > from_u128(1));
-        assert!(
-            U256 { hi: 2, lo: 0 }
-                > U256 {
-                    hi: 1,
-                    lo: u128::MAX
-                }
-        );
+        assert!(U256 { hi: 2, lo: 0 } > U256 { hi: 1, lo: u128::MAX });
     }
 
     #[test]
     fn checked_add_one_carries_and_refuses_the_wrap() {
-        assert_eq!(
-            from_u128(u128::MAX).checked_add_one(),
-            Some(U256 { hi: 1, lo: 0 })
-        );
-        assert_eq!(
-            U256 {
-                hi: u128::MAX,
-                lo: u128::MAX
-            }
-            .checked_add_one(),
-            None
-        );
+        assert_eq!(from_u128(u128::MAX).checked_add_one(), Some(U256 { hi: 1, lo: 0 }));
+        assert_eq!(U256 { hi: u128::MAX, lo: u128::MAX }.checked_add_one(), None);
     }
 
     #[test]
@@ -255,10 +195,7 @@ mod tests {
         let dividend = U256 { hi: 1, lo: 2 };
         assert_eq!(dividend.div(from_u128(2)), from_u128((1 << 127) + 1));
         // (2^256 - 1) / (2^128 + 1) = 2^128 - 1.
-        let all_ones = U256 {
-            hi: u128::MAX,
-            lo: u128::MAX,
-        };
+        let all_ones = U256 { hi: u128::MAX, lo: u128::MAX };
         assert_eq!(all_ones.div(U256 { hi: 1, lo: 1 }), from_u128(u128::MAX));
     }
 
@@ -266,14 +203,8 @@ mod tests {
     /// carry flag keeps the division exact there.
     #[test]
     fn div_by_a_divisor_above_two_to_the_255() {
-        let dividend = U256 {
-            hi: u128::MAX,
-            lo: u128::MAX,
-        };
-        let divisor = U256 {
-            hi: 1 << 127,
-            lo: 1,
-        };
+        let dividend = U256 { hi: u128::MAX, lo: u128::MAX };
+        let divisor = U256 { hi: 1 << 127, lo: 1 };
         // floor((2^256 - 1) / (2^255 + 1)) = 1.
         assert_eq!(dividend.div(divisor), from_u128(1));
     }

@@ -12,13 +12,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use zaino_testutils::legacy_parser::block::FullBlock;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(120);
 
 /// The mid-chain NU6.3 (Ironwood) activation height for the transition fixture:
-/// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
+/// an Orchard era from height 2 inclusive to 6 exclusive that flips to Ironwood at height 6.
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
 /// The pool a coinbase reward lands in. One per network-upgrade era, and the
@@ -51,18 +50,10 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     let vrpc = validator.json_rpc().await?;
     let mut oracle: Vec<(u64, u64, u64)> = Vec::new();
     for height in 0..=u64::from(tip) {
-        let block = vrpc
-            .call_value("getblock", json!([height.to_string(), 1]))
-            .await?;
-        let trees = block
-            .get("trees")
-            .context("verbose getblock must carry a trees field")?;
+        let block = vrpc.call_value("getblock", json!([height.to_string(), 1])).await?;
+        let trees = block.get("trees").context("verbose getblock must carry a trees field")?;
         let size = |pool: &str| {
-            trees
-                .get(pool)
-                .and_then(|t| t.get("size"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
+            trees.get(pool).and_then(|t| t.get("size")).and_then(Value::as_u64).unwrap_or(0)
         };
         oracle.push((size("sapling"), size("orchard"), size("ironwood")));
     }
@@ -71,21 +62,13 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     // stream must include every shielded pool's actions.
     let start = BlockHeight::from(1u32);
     let blocks = indexer.get_block_range(start, tip).await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "the served range must cover every height in [1, {tip}]"
-    );
+    assert_eq!(blocks.len() as u64, u64::from(tip), "every height in [1, {tip}]");
 
     let (mut prev_sapling, mut prev_orchard, mut prev_ironwood) = oracle[0];
     let mut total_orchard_actions = 0u64;
     let mut total_ironwood_actions = 0u64;
     for (index, block) in blocks.iter().enumerate() {
-        assert_eq!(
-            block.height,
-            index as u64 + 1,
-            "served blocks must be contiguous for the walk's running totals"
-        );
+        assert_eq!(block.height, index as u64 + 1, "contiguous (running totals)");
         let metadata = block
             .chain_metadata
             .as_ref()
@@ -93,11 +76,8 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
 
         let sapling_outputs: u64 = block.vtx.iter().map(|tx| tx.outputs.len() as u64).sum();
         let orchard_actions: u64 = block.vtx.iter().map(|tx| tx.actions.len() as u64).sum();
-        let ironwood_actions: u64 = block
-            .vtx
-            .iter()
-            .map(|tx| tx.ironwood_actions.len() as u64)
-            .sum();
+        let ironwood_actions: u64 =
+            block.vtx.iter().map(|tx| tx.ironwood_actions.len() as u64).sum();
         total_orchard_actions += orchard_actions;
         total_ironwood_actions += ironwood_actions;
 
@@ -105,67 +85,36 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
         let orchard_size = u64::from(metadata.orchard_commitment_tree_size);
         let ironwood_size = u64::from(metadata.ironwood_commitment_tree_size);
 
-        assert_eq!(
-            sapling_size,
-            prev_sapling + sapling_outputs,
-            "sapling tree-size delta must equal the served output count at height {}",
-            block.height
-        );
-        assert_eq!(
-            orchard_size,
-            prev_orchard + orchard_actions,
-            "orchard tree-size delta must equal the served action count at height {}",
-            block.height
-        );
+        let sizes = (sapling_size, orchard_size, ironwood_size);
+        let height = block.height;
         // The regression this walk exists for: a served block whose metadata counts
         // commitments from actions the block omits (e.g. ironwood stripped from an
         // unfiltered request) reads to a scanning wallet as a phantom chain reorg.
-        assert_eq!(
-            ironwood_size,
+        let served = (
+            prev_sapling + sapling_outputs,
+            prev_orchard + orchard_actions,
             prev_ironwood + ironwood_actions,
-            "ironwood tree-size delta must equal the served action count at height {}",
-            block.height
         );
+        assert_eq!(sizes, served, "tree-size delta = served commitments at {height}");
 
         // Clientless-exclusive predicate — oracle parity. Package tests cannot express
         // this: their "source of truth" is the object being served, so any such
         // comparison is circular.
-        let (oracle_sapling, oracle_orchard, oracle_ironwood) = oracle[block.height as usize];
-        assert_eq!(
-            sapling_size, oracle_sapling,
-            "served sapling tree size must match the validator's own at height {}",
-            block.height
-        );
-        assert_eq!(
-            orchard_size, oracle_orchard,
-            "served orchard tree size must match the validator's own at height {}",
-            block.height
-        );
-        assert_eq!(
-            ironwood_size, oracle_ironwood,
-            "served ironwood tree size must match the validator's own at height {}",
-            block.height
-        );
+        assert_eq!(sizes, oracle[height as usize], "tree sizes = validator's at {height}");
 
         prev_sapling = sapling_size;
         prev_orchard = orchard_size;
         prev_ironwood = ironwood_size;
     }
 
-    assert!(
-        total_ironwood_actions > 0,
-        "the fixture produced no ironwood actions; the walk asserted nothing about ironwood"
-    );
+    assert!(total_ironwood_actions > 0, "fixture produced no ironwood actions");
     // The counterpart of the guard above: the miner *asked* for Orchard, and from NU6.3
     // consensus requires an empty Orchard coinbase component, routing the reward into
     // Ironwood actions instead. With coinbase-only blocks, served orchard actions must
     // therefore be exactly zero. Together the two totals distinguish failure modes:
     // pool-swap (orchard > 0, ironwood == 0: ironwood served under the orchard field)
     // vs pool-drop (both zero) vs a broken routing premise.
-    assert_eq!(
-        total_orchard_actions, 0,
-        "an Orchard-receiver coinbase must carry no Orchard actions from NU6.3"
-    );
+    assert_eq!(total_orchard_actions, 0, "Orchard coinbase: no Orchard actions from NU6.3");
 
     Ok(())
 }
@@ -196,14 +145,8 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "the served range must cover every height in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "every height in [1, {tip}]");
 
     // Two independent halves per height, collected across the whole chain so one run
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
@@ -215,27 +158,18 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
         let height = index as u64 + 1;
         assert_eq!(served.height, height, "served blocks must be contiguous");
 
-        let raw = vrpc
-            .call_value("getblock", json!([height.to_string(), 0]))
-            .await?;
-        let raw = zaino_testutils::hex::decode(
-            raw.as_str()
-                .context("verbosity-0 getblock returns a hex string")?,
-            "getblock verbosity 0",
-        )?;
-        let coinbase = FullBlock::parse_from_hex(&raw, None)?
-            .transactions()
-            .into_iter()
-            .next()
-            .context("every block carries a coinbase transaction")?;
+        let block = vrpc.call_value("getblock", json!([height.to_string(), 2])).await?;
+        let coinbase = &block["tx"][0];
+        let count = |v: &Value| v.as_array().map_or(0, Vec::len);
 
-        // A coinbase input is the single null prevout (all-zero hash, index u32::MAX).
-        let inputs = coinbase.transparent_inputs();
-        let is_coinbase = matches!(inputs.as_slice(), [(prevout, u32::MAX, _)] if prevout.iter().all(|b| *b == 0));
-        let version = coinbase.version();
-        let sapling = coinbase.shielded_outputs().len();
-        let orchard = coinbase.orchard_actions().len();
-        let ironwood = coinbase.ironwood_actions().len();
+        let is_coinbase =
+            count(&coinbase["vin"]) == 1 && coinbase["vin"][0].get("coinbase").is_some();
+        let version = coinbase["version"]
+            .as_u64()
+            .context("every block carries a versioned coinbase transaction")?;
+        let sapling = count(&coinbase["vShieldedOutput"]);
+        let orchard = count(&coinbase["orchard"]["actions"]);
+        let ironwood = count(&coinbase["ironwood"]["actions"]);
 
         // The reward lands in exactly one pool; anything else is `None` and fails.
         let observed = match (version, sapling, orchard, ironwood) {
@@ -263,13 +197,8 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
             ));
         }
     }
-    assert!(
-        violations.is_empty(),
-        "coinbase routing mismatches ({} of {} heights):\n{}",
-        violations.len(),
-        blocks.len(),
-        violations.join("\n")
-    );
+    let (bad, of) = (violations.len(), blocks.len());
+    assert!(violations.is_empty(), "coinbase routing ({bad}/{of}):\n{}", violations.join("\n"));
 
     Ok(())
 }
@@ -288,14 +217,8 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "the served range must cover every height in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "every height in [1, {tip}]");
 
     // Two independent halves per height, collected across the whole chain so one run
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
@@ -307,27 +230,18 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
         let height = index as u64 + 1;
         assert_eq!(served.height, height, "served blocks must be contiguous");
 
-        let raw = vrpc
-            .call_value("getblock", json!([height.to_string(), 0]))
-            .await?;
-        let raw = zaino_testutils::hex::decode(
-            raw.as_str()
-                .context("verbosity-0 getblock returns a hex string")?,
-            "getblock verbosity 0",
-        )?;
-        let coinbase = FullBlock::parse_from_hex(&raw, None)?
-            .transactions()
-            .into_iter()
-            .next()
-            .context("every block carries a coinbase transaction")?;
+        let block = vrpc.call_value("getblock", json!([height.to_string(), 2])).await?;
+        let coinbase = &block["tx"][0];
+        let count = |v: &Value| v.as_array().map_or(0, Vec::len);
 
-        // A coinbase input is the single null prevout (all-zero hash, index u32::MAX).
-        let inputs = coinbase.transparent_inputs();
-        let is_coinbase = matches!(inputs.as_slice(), [(prevout, u32::MAX, _)] if prevout.iter().all(|b| *b == 0));
-        let version = coinbase.version();
-        let sapling = coinbase.shielded_outputs().len();
-        let orchard = coinbase.orchard_actions().len();
-        let ironwood = coinbase.ironwood_actions().len();
+        let is_coinbase =
+            count(&coinbase["vin"]) == 1 && coinbase["vin"][0].get("coinbase").is_some();
+        let version = coinbase["version"]
+            .as_u64()
+            .context("every block carries a versioned coinbase transaction")?;
+        let sapling = count(&coinbase["vShieldedOutput"]);
+        let orchard = count(&coinbase["orchard"]["actions"]);
+        let ironwood = count(&coinbase["ironwood"]["actions"]);
 
         // The reward lands in exactly one pool; anything else is `None` and fails.
         let observed = match (version, sapling, orchard, ironwood) {
@@ -355,13 +269,8 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
             ));
         }
     }
-    assert!(
-        violations.is_empty(),
-        "coinbase routing mismatches ({} of {} heights):\n{}",
-        violations.len(),
-        blocks.len(),
-        violations.join("\n")
-    );
+    let (bad, of) = (violations.len(), blocks.len());
+    assert!(violations.is_empty(), "coinbase routing ({bad}/{of}):\n{}", violations.join("\n"));
 
     Ok(())
 }
@@ -392,19 +301,11 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
     env.build().await?;
 
     // Two blocks past the boundary, so both eras carry more than one block.
-    let tip = validator
-        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2)
-        .await?;
+    let tip = validator.generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    let blocks = indexer
-        .get_block_range(BlockHeight::from(1u32), tip)
-        .await?;
-    assert_eq!(
-        blocks.len() as u64,
-        u64::from(tip),
-        "the served range must cover every height in [1, {tip}]"
-    );
+    let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
+    assert_eq!(blocks.len() as u64, u64::from(tip), "every height in [1, {tip}]");
 
     // Two independent halves per height, collected across the whole chain so one run
     // separates them: the raw-block predicate is class 1 (zebrad's own consensus
@@ -416,27 +317,18 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
         let height = index as u64 + 1;
         assert_eq!(served.height, height, "served blocks must be contiguous");
 
-        let raw = vrpc
-            .call_value("getblock", json!([height.to_string(), 0]))
-            .await?;
-        let raw = zaino_testutils::hex::decode(
-            raw.as_str()
-                .context("verbosity-0 getblock returns a hex string")?,
-            "getblock verbosity 0",
-        )?;
-        let coinbase = FullBlock::parse_from_hex(&raw, None)?
-            .transactions()
-            .into_iter()
-            .next()
-            .context("every block carries a coinbase transaction")?;
+        let block = vrpc.call_value("getblock", json!([height.to_string(), 2])).await?;
+        let coinbase = &block["tx"][0];
+        let count = |v: &Value| v.as_array().map_or(0, Vec::len);
 
-        // A coinbase input is the single null prevout (all-zero hash, index u32::MAX).
-        let inputs = coinbase.transparent_inputs();
-        let is_coinbase = matches!(inputs.as_slice(), [(prevout, u32::MAX, _)] if prevout.iter().all(|b| *b == 0));
-        let version = coinbase.version();
-        let sapling = coinbase.shielded_outputs().len();
-        let orchard = coinbase.orchard_actions().len();
-        let ironwood = coinbase.ironwood_actions().len();
+        let is_coinbase =
+            count(&coinbase["vin"]) == 1 && coinbase["vin"][0].get("coinbase").is_some();
+        let version = coinbase["version"]
+            .as_u64()
+            .context("every block carries a versioned coinbase transaction")?;
+        let sapling = count(&coinbase["vShieldedOutput"]);
+        let orchard = count(&coinbase["orchard"]["actions"]);
+        let ironwood = count(&coinbase["ironwood"]["actions"]);
 
         // The reward lands in exactly one pool; anything else is `None` and fails.
         let observed = match (version, sapling, orchard, ironwood) {
@@ -465,13 +357,8 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
             ));
         }
     }
-    assert!(
-        violations.is_empty(),
-        "coinbase routing mismatches ({} of {} heights):\n{}",
-        violations.len(),
-        blocks.len(),
-        violations.join("\n")
-    );
+    let (bad, of) = (violations.len(), blocks.len());
+    assert!(violations.is_empty(), "coinbase routing ({bad}/{of}):\n{}", violations.join("\n"));
 
     Ok(())
 }

@@ -57,6 +57,11 @@ impl Zatoshis {
     pub const fn as_u64(self) -> u64 {
         self.0
     }
+
+    /// Total: the supply (2.1e15) is far below `i64::MAX`
+    pub const fn as_i64(self) -> i64 {
+        self.0 as i64
+    }
 }
 
 impl From<Zatoshis> for u64 {
@@ -103,10 +108,7 @@ mod tests {
     /// `accumulate_balances` of nothing is a zero balance.
     #[test]
     fn sum_balances_of_nothing_is_zero() {
-        assert_eq!(
-            Zatoshis::sum_balances(core::iter::empty()),
-            Some(Zatoshis::ZERO)
-        );
+        assert_eq!(Zatoshis::sum_balances(core::iter::empty()), Some(Zatoshis::ZERO));
     }
 
     /// `accumulate_balances` sums balances within the supply.
@@ -131,9 +133,6 @@ mod tests {
     /// evidence of overlapping or double-counted inputs and is refused.
     #[test]
     fn sum_balances_past_the_supply_is_refused() {
-        assert_eq!(
-            Zatoshis::sum_balances([MAX_ZATOSHIS, 1].map(zatoshis).into_iter()),
-            None
-        );
+        assert_eq!(Zatoshis::sum_balances([MAX_ZATOSHIS, 1].map(zatoshis).into_iter()), None);
     }
 }

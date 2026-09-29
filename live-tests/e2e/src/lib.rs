@@ -63,16 +63,10 @@ fn pool_tx_field_empty(block: &CompactBlock, txid: &TxId, pool: Pool) -> bool {
 
 /// Assert the compact tx with `txid` carries `pool` data.
 pub fn assert_pool_present(block: &CompactBlock, txid: &TxId, pool: Pool) {
-    assert!(
-        !pool_tx_field_empty(block, txid, pool),
-        "{pool:?} data should be present in the compact block"
-    );
+    assert!(!pool_tx_field_empty(block, txid, pool), "{pool:?} data present");
 }
 
 /// Assert the compact tx with `txid` carries no `pool` data.
 pub fn assert_pool_absent(block: &CompactBlock, txid: &TxId, pool: Pool) {
-    assert!(
-        pool_tx_field_empty(block, txid, pool),
-        "{pool:?} data should be absent from the compact block"
-    );
+    assert!(pool_tx_field_empty(block, txid, pool), "{pool:?} data absent");
 }

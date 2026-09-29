@@ -8,6 +8,113 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Added
+- `zainod verify --config <path> [--rehash]`: an offline, read-only verifier for
+  every enabled index, safe to run beside a live daemon (no writes, no
+  directory creation, no lock, no mmap; bytes past the entries complete at open
+  are reported as an orphaned tail). Prints a JSON report on stdout and a
+  summary on stderr; exits 0 clean, 1 on any violation, 2 when unreadable.
+  Each index crate gains a `verify` module checking every invariant its format
+  carries (offset contiguity, CRC, framing, hash-chain linkage and tree-size
+  deltas for compact blocks; size monotonicity, node canonicity, subtree end
+  heights and rehashed nodes for tree state; row decoding, run order,
+  duplicate/conflict detection and height order for the transparent runs), with
+  a SHA-256 per file over the verified prefix. The cross-index pass checks
+  tree-state hashes, times, sizes and leaves against the compact blocks, and
+  that the transparent runs hold exactly the blocks' projection.
+- `zainod` config gained a top-level `network` key (`mainnet` / `testnet` /
+  `regtest`, default `mainnet`). Chain identity is declared, never derived:
+  Zebra on regtest reports its chain as `"test"` over `getblockchaininfo`, so
+  anything read off the validator mislabels regtest as testnet. It is threaded
+  into `TreeStateService::new`, which exposes it as `TreeStateService::network`
+  for `TreeState.network`.
+- `index.<name>.enabled` is honoured. A disabled index opens no store, registers
+  no queue on the fetch fan-out, boots no follower and claims no routes (its
+  methods fall through to the validator fallback). `index.compact_block` cannot
+  be disabled — the chain head trims against its finalised height and
+  `GetLightdInfo` reports it — and `enabled = false` there is refused at
+  startup.
+- Ingest metrics, behind the `prometheus` feature: `zaino_best_tip` (the chain
+  head's tip), `zaino_fetch_height` (highest contiguous height handed to the
+  indexes; rewinds on a reorg), per index `zaino_index_finalized_height{index}`
+  and `zaino_index_synced{index}` (0/1, the serving gate), and unlabelled
+  per-pool work counters `zaino_fetch_{blocks,transactions,transparent_inputs,
+  transparent_outputs,sapling_spends,sapling_outputs,orchard_actions,
+  ironwood_actions}_total`. Emitted by `zainod` from watches it already holds
+  and from the fetch `build` closure, so no stack crate depends on `metrics`.
+  The names are a cross-repo contract with ztest's zainod backend, pinned by a
+  scrape-level test. `zaino_finalized_tip` is gone (one source:
+  `zaino_index_finalized_height{index="compact_block"}`).
+- `IndexFollower::subscribe_synced`, beside `subscribe_finalized`.
+- `zaino-chainview` — one view over N configured validators, replacing
+  `zaino-mempool` (folded in, history preserved). Its poll/diff/publish loop is
+  now the per-endpoint layer: each `EndpointPoller` owns its interval, backoff
+  and failure count and reports deltas, so a dead validator degrades alone and
+  the fold is `O(change)`. The aggregate publishes a `ChainViewSnapshot` through
+  `ArcSwap` — a quorum tip (`⌊N/2⌋ + 1` over the **configured** set, the highest
+  block that many endpoints agree on *by hash*), a mempool keyed by
+  `Sighting { seen_at: EndpointSet, ours, raw }`, and per-endpoint
+  `ValidatorMetadata`. Fails closed: below threshold the tip is `None` and
+  `ChainViewSnapshot::mempool()` returns `BelowQuorum` rather than a weak
+  answer. `ChainView::broadcast` fans a relay out to every endpoint, succeeds on
+  any accept (a mixed result is a success), and marks the transaction `ours`, so
+  a wallet sees its own send before it has propagated. `zainod` wires it at
+  boot over `source` + the new `chainview_peers` list, booting one supervised
+  poller per endpoint, and the frontend serves `SendTransaction`,
+  `GetMempoolTx` and `GetMempoolStream` off it. `GetMempoolTx` prunes each
+  `CompactTx` to the requested `pool_types`, where an empty list is the wire's
+  legacy shielded set (Sapling, Orchard, Ironwood — transparent withheld); the
+  consensus parse it needs arrives through a `ProjectCompact` port the daemon
+  implements, so `zaino-grpc` stays free of any validator adapter.
+  `ChainAction` carries
+  `Sighted { txid, seen_at }` — propagation data the lightwalletd proto has no
+  field for. `getpeerinfo` is read as partition/eclipse telemetry only, never as
+  membership. **N=1 is a valid configuration** (threshold 1, quorum trivially
+  met), so a single-validator deployment runs on this unchanged. Carries a
+  `usage.md`.
+- The gRPC frontend serves on hyper-util directly, with the tonic services
+  mounted as routes, so the accept loop carries the serving caps: connection
+  caps → metrics → admission → router. `max_connections` and
+  `max_connections_per_ip` close a socket at accept; `max_streams` answers
+  `UNAVAILABLE` with `grpc-retry-pushback-ms` rather than queueing;
+  `max_streams_per_connection` is an h2 setting; `max_disk_reads` is the one
+  bounded wait. A stream permit is owned by the response body, so it is returned
+  when the stream ends *or* when the client disconnects. Configured by a new
+  `[grpc]` section, and measured by the `zaino_rpc_*`, `zaino_connections_*` and
+  `zaino_disk_read_wait_seconds` metrics (behind the `prometheus` feature).
+- The tree-state and transparent-address indexes are served. `zaino-grpc`'s
+  router resolves a method path to the index that claims it rather than letting
+  the first wired index shadow the rest, and `zainod` opens, registers and boots
+  all three sinks on the one fetch pipeline (`index.tree_state` and
+  `index.transparent_address` config sections, each with its own storage
+  directory). Newly answered from Zaino's own storage: `GetTreeState`,
+  `GetLatestTreeState`, `GetSubtreeRoots`, `GetAddressUtxos`,
+  `GetAddressUtxosStream`, `GetTaddressBalance`, `GetTaddressBalanceStream`.
+  `GetTaddressTransactions` still falls through to the validator — it answers
+  whole transactions, which needs a raw-transaction index.
+- `zaino-index-tree-state` — the commitment-tree index. Stores the retained
+  nodes of all three pools (every leaf, plus even indices at levels 1..31 —
+  48 B/commitment), so the frontier at any historical tree size is reconstructed
+  in ≤ 33 mmap reads with no hashing, rather than replayed from a checkpoint at
+  ~150 ms per request. Serves `GetTreeState`, `GetLatestTreeState` and
+  `GetSubtreeRoots`; subtree roots are a byproduct of the same fold, because an
+  odd-indexed subtree root never appears as a frontier ommer. In the
+  non-finalized state `apply` folds into `imbl` maps of retained nodes and
+  per-height sizes, `finalize` lands a finalised run (folding whatever never
+  entered the non-finalized state), and `reset` swaps the non-finalized carry
+  for the durable one — so reads inside `tip − 1000` are answered rather than refused, and durable
+  structures never delete. Both blocking hops move state by value through `spawn_blocking`,
+  syncing only the level files that grew. Carries a `usage.md`.
+
+- `zaino-index-transparent-address` — the t-address index, built on
+  `zaino-runs` as two pure projections of one block (`receives` keyed by
+  address, `spent` keyed by outpoint). The fold performs no lookups: no
+  outpoint→address map, no UTXO set, nothing mutable. Serves `GetAddressUtxos`,
+  `GetTaddressBalance` and `GetTaddressTransactions` by composing the two, and
+  reports an unbuilt height as `FailedPrecondition` rather than an empty answer.
+  The non-finalized state is the same fold, buffered in `imbl` maps above the runs and consulted before them, so queries inside
+  `tip − 1000` are answered rather than refused, and a reorg is map truncation
+  that never touches the append-only runs. Carries a `usage.md`.
+
 - **Eight new crates** implementing validator access as a hexagonal port /
   adapter stack (ADR-0008, ADR-0009). Each carries a `usage.md`:
   - `zaino-primitives` — Zaino's domain vocabulary. Depends on `thiserror` and
@@ -34,7 +141,7 @@ and this library adheres to Rust's notion of
 - **Two more crates for the chain head subsystem** (ADR-0011), replacing
   `zaino-state`'s `non_finalised_state` module:
   - `zaino-chain-head` — the domain types and ports for the bounded,
-    non-finalised head of the chain. No runtime and no data structures: the
+    non-finalized head of the chain. No runtime and no data structures: the
     graph's representation belongs to whoever publishes it.
   - `zaino-chain-head-service` — the runtime: the writer task that keeps the
     graph reconciled with the validator, and the snapshots it publishes.
@@ -51,6 +158,41 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- **Crate consolidation: 25 workspace crates → 16.** Each merge keeps the
+  absorbed crate's modules and moves its users over:
+  - `zaino-persistence-codec` + `zaino-runs` → `zaino-persistence` (the storage
+    core every index shares: record codec, `runs::{RunSet, RunWriter, ..}`,
+    `verify`). The derive now emits `::zaino_persistence::` paths.
+  - `zaino-logging` → `zainod` (`zainodlib::logging::init`).
+  - `zaino-rpc` → `zaino-source-zebra-rpc` (the JSON-RPC transport is a private
+    module; `RpcClient`, `RpcClientConfig`, `RpcError`, `ProbeError` and, behind
+    `prometheus`, `metric_names` are re-exported).
+  - `zaino-async`, `zaino-runtime` → deleted with `zaino-component` (see
+    Removed).
+  - `zaino-indexer` → `zaino-sync` (`BlockFetcher`, `SourceProvisioner`,
+    `FanOut`); **breaking:** `IndexerError` is renamed `FetchError`, and
+    `FanOut::push`/`reset` and `PushError` are crate-private.
+  - `zaino-chain-head-service` → `zaino-chain-head` (see Removed).
+- **`ChainHeadService::anchor` returns the writer alone**, and
+  `ChainHeadService::subscribe_progress()` replaces
+  `ChainHeadSubscriber::subscribe_progress()`. **Breaking.** The chain head no
+  longer fetches commitment-tree roots (nothing read them), so
+  `ChainHeadBlockSource` drops `GetCommitmentTreeRoots`.
+- **`zaino_primitives::classify_script` no longer reads a 21-byte script as
+  `[tag][hash20]`.** That arm existed only because the deleted state backend's
+  on-disk data depended on it, and it classified any script opening `0x00` /
+  `0x01` as standard — keying real funds under an address nobody controls.
+- **`GetBlockRange` streams instead of buffering.** The response body is now an
+  `http_body_util::StreamBody` fed from `RangeCursor`, with `grpc-status` in the
+  trailers (a streaming body may not carry it in the headers); `GetBlock` and
+  `GetLatestBlock` stay unary. The mmap copy behind it is bounded too: the span
+  is copied one `SPAN_BUDGET` (1 MiB) window at a time rather than whole, so an
+  unbounded range is no longer unbounded memory. An unprojected finalised window
+  still leaves as one chunk.
+- **`serve.max_block_range` caps one `GetBlockRange`** (default 131,072 = 2 ×
+  the 2^16 subtree, since pepper-sync asks for a whole shard range in one call
+  and never shrinks its ask). Over it is `invalid_argument` naming the limit and
+  the ask — never a short answer, which a wallet reads as the end of the chain.
 - **LMDB reader slots raised from 512 to 2048–8192.** The clamp was
   `(cpu * 32).clamp(512, 4096)`, which gives exactly 512 — the floor — on any
   host with 16 cores or fewer. With `NO_TLS` a slot belongs to a read
@@ -186,6 +328,15 @@ and this library adheres to Rust's notion of
   keeps its choice.
 
 ### Deprecated
+- **`GetBlockRangeNullifiers` and `GetTaddressTxids` are served again, as
+  deprecated aliases — TODO: REMOVE.** pepper-sync calls both on every sync and
+  fails the sync on any non-OK status, so without them no pepper-sync wallet can
+  sync against Zaino. `GetTaddressTxids` is `GetTaddressTransactions` under its
+  old name (same request, same response); `GetBlockRangeNullifiers` is
+  `GetBlockRange` re-projected to nullifiers only, with `TRANSPARENT` in
+  `poolTypes` ignored as the proto requires. Both carry `option deprecated` in
+  the proto and a removal marker at every site; delete them once pepper-sync
+  calls the replacements.
 - Classical TLS key exchange (X25519, SECP256R1, SECP384R1) is deprecated:
   still offered and accepted for wallet compatibility, slated for refusal
   once major wallet stacks negotiate hybrid key exchange (ADR-0006).
@@ -197,6 +348,47 @@ and this library adheres to Rust's notion of
   fixed 60s).
 
 ### Removed
+- **Zaino serves no JSON-RPC. Breaking.** `zaino-noderpc` is deleted, and with
+  it `serve.jsonrpc_listen_address`: its six methods (`getbestblockhash`,
+  `getblockchaininfo`, `getblockcount`, `getmininginfo`, `gettxout`,
+  `sendrawtransaction`) only forwarded to the validator. `ServeConfig` denies
+  unknown fields, so a config still carrying the key fails to parse. Ask the
+  validator's own JSON-RPC instead.
+- **`zaino-status` is deleted. Breaking.** `StatusType`, `NamedAtomicStatus`,
+  `Status`, `Liveness`, `Readiness` and `VitalsProbe` were a second status
+  vocabulary; the chain head, its only user, logs its transitions through
+  `tracing` instead.
+  `ChainHeadService::status`/`shutdown` and `ChainHeadSubscriber` go with it.
+- **The chain head's query surface is deleted. Breaking.**
+  `ChainHeadSnapshot`, `ChainHeadTransactionService`,
+  `ChainHeadTransactionLocations`, `ChainHeadTxPosition`, `SpenderLocation`,
+  `ChainHeadBlockIter`, `ChainHeadError`, `ChainHeadBlockService`, the epoch /
+  generation stamping and the `testing` feature had no consumer outside the
+  crate. The hash-keyed block graph (reorg detection, most-work best chain) and
+  `ChainProgress { tip, reorgs }` stay. `zaino_primitives::ChainStateEpoch`,
+  `Outpoint` and `BlockTxPosition` are deleted with them.
+- **`zaino-component` is deleted (with `zaino-runtime` and `zaino-async`).
+  Breaking.** `Orchestra`, `RunLoop`, `RunReporter`, `RunComponent`,
+  `ServeComponent`, `ValidatorComponent`, `ReachabilityProbe`, `Task`, the
+  status/health/lifecycle vocabulary and `HealthServer` are gone. `zainod`
+  spawns each stage as a plain task (`ChainHeadService::run`,
+  `EndpointPoller::run`, `BoundGrpcServer::run`, each taking a
+  `tokio_util::sync::CancellationToken`); any task ending before a shutdown
+  signal restarts the daemon. `GrpcServer::bind()` takes the socket at boot,
+  so a bind failure is still a boot failure. Retry and readiness transitions
+  are `tracing` lines.
+- **`GetBlockNullifiers` and `Ping` are gone from the gRPC surface.**
+  `GetBlockNullifiers` was deprecated in the proto in favour of `GetBlock`;
+  `Ping` was testing-only. The `Duration` and `PingResponse` messages went with
+  `Ping`; nothing else referenced them.
+- **`zaino-consensus` is deleted from the workspace.** Zaino is an indexer and
+  carries no consensus logic (`docs/design/boundaries.md`): its raw-transaction
+  size/hex validation (`validate_raw_transaction_bytes`,
+  `validate_raw_transaction_hex`, `RawTransactionError`, `MAX_BLOCK_BYTES`) had
+  no consumers and is gone — Zaino relays, Zebra validates and rejects. The
+  protocol constants moved to `zaino_primitives::protocol`, unchanged; the
+  drift-guard test against `zebra-chain` stays in `zaino-source-zebra-rpc`,
+  which already depends on it.
 - **`zaino-fetch` is deleted from the workspace.** It was dual-purpose —
   deserializing validator replies *and* serializing Zaino's own JSON-RPC
   replies — which is why replacing its transport did not remove it. The three
@@ -212,6 +404,27 @@ and this library adheres to Rust's notion of
   gates code (ADR-0001, ADR-0005).
 
 ### Fixed
+- **An index no longer panics when an initial sync reaches the tip.** Blocks
+  below the finality boundary are staged for a batched write, and the tip's
+  blocks are applied to the non-finalized state. The follower handed `apply` the
+  first non-finalized block while a partial batch was still staged beneath it, so the
+  sink's contiguity assertion fired unless the bulk span was an exact multiple
+  of `batch`. The follower now writes the staged blocks first.
+- **A caught-up index now serves when it reaches the tip, not ~`batch` blocks
+  later.** The serving gate was recomputed only when a batch was written, which
+  at the tip happens once every `batch` blocks (~a day on mainnet at the default
+  1000). It is recomputed whenever the follower's queue drains, so a burst
+  already queued cannot close it between its own blocks, and a reorg reset
+  closes it immediately.
+- `GetLightdInfo` now fills `chainName` (from config, as lightwalletd names
+  chains), `saplingActivationHeight`, `consensusBranchId`, and
+  `upgradeName`/`upgradeHeight` (the next *pending* upgrade) from the
+  validator's `getblockchaininfo`, whose `estimatedheight` is now what
+  `estimatedHeight` reports. With the validator unreachable it still answers,
+  with those fields empty rather than guessed.
+- An index that is still building now answers `FailedPrecondition`, not
+  `Unimplemented`. `Unimplemented` tells a client the method will never work, so
+  it retires it permanently rather than retrying once the index catches up.
 - `z_gettreestate` wrote the Orchard and Ironwood `finalRoot` byte-reversed. The
   reversal that turns a Sapling root into display order is Sapling's alone — a
   Pallas root's `to_repr` is already display order — so both pools named a root
