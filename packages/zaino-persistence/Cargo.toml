@@ -1,20 +1,36 @@
 [package]
 name = "zaino-persistence"
 version = "0.1.0"
-edition.workspace = true
+edition = "2021"
 authors.workspace = true
+license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-license.workspace = true
-description = "Driven port traits for index persistence (read/write)."
-
-[dependencies]
-zaino-primitives = { path = "../zaino-primitives" }
-thiserror.workspace = true
+description = "The storage core every Zaino index shares: the file layer, manifest commits, immutable sorted segments and the verify report vocabulary."
 
 [features]
+# `fs::SimFs`: crash-state enumeration for index tests
 testing = []
+# LSM metrics (segments per tier, merge throughput and latency, write stalls)
+prometheus = ["dep:metrics"]
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_docs = "warn"
+[dependencies]
+thiserror = { workspace = true }
+zaino-primitives = { version = "0.2.0", path = "../zaino-primitives" }
+serde = { workspace = true, features = ["derive"] }
+bytes = { workspace = true }
+memmap2 = { workspace = true }
+arc-swap = { workspace = true }
+crc32fast.workspace = true
+zcash_protocol.workspace = true
+xorf.workspace = true
+rayon.workspace = true
+metrics = { workspace = true, optional = true }
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
