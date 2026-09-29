@@ -14,6 +14,39 @@ and this crate adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.10.1] - 2026-09-26
+### Added
+- The gRPC server offers `zaino.index.v1.IndexedTipService`, a Zaino extension that lets a client wait for a newly indexed block without polling. The lightwalletd protocol is unchanged.
+- The metrics listener (`metrics_endpoint`) runs on its own thread and runtime and also serves `/livez` (fails once the indexer loop stops reporting for 30s).
+- Graceful shutdown on `SIGTERM`, through the same close path as an internal shutdown.
+- Process metrics (`process_cpu_seconds_total`, `process_resident_memory_bytes`, fds, threads) sampled on scrape, `zainod.restarts_total`, and explicit bucket ladders for every histogram (none scrape as summaries any more).
+### Changed
+- dependency `zaino-chain-head-service` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-rpc` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-serve` 0.8.0→0.9.0 crossed the requirement `^0.8.0`
+- dependency `zaino-state` 0.9.0→0.10.0 crossed the requirement `^0.9.0`
+### Fixed
+- A `metrics_endpoint` configured on a binary built without `prometheus` now warns instead of being silently ignored; a non-private bind warns that the listener is unauthenticated.
+- A `metrics_endpoint` that fails to bind now fails startup with the error, instead of leaving the process running with no `/metrics`, no `/livez`, and no upkeep of the recorder's histogram samples. The listener is bound before the recorder is installed.
+
+## [0.10.0] - 2026-09-11
+
+### Added
+- Metric descriptions for `zaino.db.read_seconds`, the finalised-database
+  read latency labelled by `op` (the wallet-sync path is
+  `op="compact_chunk"`), and `zaino.db.corrupt_rows_total`. The
+  `prometheus` feature is off by default.
+- A test-only `fast-test-seam` feature, forwarding to zaino-state's, which
+  shrinks the non-finalised depth for the live tests.
+### Changed
+### Deprecated
+### Removed
+- **Breaking** — the `zcashd_support` feature. Zaino no longer supports
+  zcashd as a backing validator.
+- Descriptions for `zaino.mempool.transactions` and
+  `zaino.mempool.tip_changes_total`, which no crate emits.
+### Fixed
+
 ## [0.9.0] - 2026-08-28
 
 ### Added

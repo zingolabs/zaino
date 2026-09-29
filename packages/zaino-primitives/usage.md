@@ -5,16 +5,40 @@ own terms, independent of how any of it is transported or stored.
 
 ## The one rule
 
-**This crate's entire dependency list is `thiserror`.** That is not an
-accident of the current implementation — it is the property that makes every
-other crate able to depend on it. Adding a dependency here adds it to
-`zaino-source`, both adapters, `zaino-state`, `zaino-serve` and `zainod` at
-once.
+**This crate depends only on `thiserror` and the librustzcash
+protocol-specification crates (`zcash_address`, `zcash_protocol`).** Keeping the
+list this short is not an accident of the current implementation — it is the
+property that makes every other crate able to depend on it. Adding a dependency
+here adds it to `zaino-source`, both adapters, `zaino-state`, `zaino-serve` and
+`zainod` at once, so each addition has to earn its place.
 
-In particular there is **no serde**. A serde derive in this crate would let the
-wire format and the domain model start deciding each other, which is exactly
-what ADR-0009 exists to prevent. Serialization lives at the boundary that owns
-the format:
+The rule is about *what a dependency lets in*, not a fixed name list. Two things
+must never enter through it, because both would let some other layer's decisions
+leak into the domain vocabulary:
+
+- **No serialization framework.** In particular there is **no serde**. A serde
+  derive in this crate would let the wire format and the domain model start
+  deciding each other, which is exactly what ADR-0009 exists to prevent.
+- **No node, transport, or storage implementation.** A validator client, a gRPC
+  or JSON-RPC stack, a database — these belong at the boundaries that own them,
+  never in the vocabulary every boundary shares.
+
+A **protocol-specification** library is admissible, on one condition: its
+machinery stays **contained** — its parsers and errors never appear in a public
+signature, re-export, or public error of this crate. Validation happens inside.
+A plain protocol enum may appear where it names the protocol concept directly:
+`TransparentAddress::network()` returns `zcash_protocol`'s `NetworkType` rather
+than a Zaino copy of it. `zcash_address` is the first such dependency, used by
+[`TransparentAddress`](src/types/transparent_address.rs) to decide whether a
+string is a valid transparent address. The alternative was to hand-roll
+Base58Check and SHA-256 here, which buys risk, not ownership: the address
+encoding *is* the protocol, and the spec-steward's parser is the spec artifact,
+so re-implementing it would mean maintaining a second, drift-prone copy of a
+consensus rule. We take the parser and keep its machinery off our surface — the
+containment condition is what makes that a domain decision rather than a leak of
+theirs.
+
+Serialization, by contrast, lives at the boundary that owns the format:
 
 | direction | who owns the format |
 |---|---|
@@ -61,17 +85,26 @@ let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
 let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
 let c = CompactCiphertext::try_new(&bytes)?; // rejects anything but exactly 52 bytes
+let a = TransparentAddress::try_new(s)?; // rejects non-transparent / undecodable
 ```
 
 A transaction's position is the block's to know, not the transaction's:
 `Transaction` stores no index, and coinbase-ness is read from block order via
 `Block::coinbase()` (position 0), never from a per-transaction field that could
-disagree with the container.
+disagree with the container. The list itself is fixed at construction:
+`Block::transactions()` lends it as a slice, and no holder of a `Block` can
+add, drop, or reorder a transaction after `try_new` has accepted it.
 
 `CompactCiphertext` is the 52-byte compact head of a note ciphertext — the
 form a compact transaction serves to light clients, not the full 580-byte
 encryption output. Once constructed it converts infallibly to `[u8; 52]`, so
 no consumer re-checks the width.
+
+`TransparentAddress` is network-blind on construction: it accepts a valid
+transparent address for any network and reports which one via `network()` (a
+`zcash_protocol` `NetworkType`) and the script form via `script_type()`. The
+primitive states what the address *is*; whether that network is the one a query
+should act on is the consumer's policy, not the address's invariant.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the
@@ -193,32 +226,41 @@ tags at its persistence boundary.
 
 ## The work quantity family
 
-Two quantities share the proof-of-work unit and are not interchangeable:
+Three quantities share the proof-of-work unit and are not interchangeable:
 
 | type | is |
 |---|---|
 | `SingleBlockWork` | the work **one** block is expected to take, from its difficulty target |
-| `AbsoluteChainWork` | the **total** work of a chain up to a block — the value validators report as `chainwork` |
+| `AbsoluteChainWork` | the **total** work of a chain up to a block — what validators report as `chainwork` |
+| `RelativeChainWork` | the work a **run of blocks** holds, measured from wherever the run begins |
 
 Each fold is a method on the type it returns, and each is checked:
 
 ```rust,ignore
-// A chain of one block has that block's work.
+// From genesis. A chain of one block has that block's work.
 let mut total = AbsoluteChainWork::genesis(block_work);
+total = total.accumulate(next_block_work)?;   // extend
+total = total.rollback(next_block_work)?;     // unwind, on reorg
 
-// Extend by one block; unwind one on reorg. Both checked, with typed errors.
-total = total.accumulate(next_block_work)?;
-total = total.rollback(next_block_work)?;
+// Over a run. The empty run has accumulated nothing.
+let mut run = RelativeChainWork::ZERO;
+run = run.accumulate(next_block_work)?;
 ```
 
-`AbsoluteChainWork::try_from_reported` reads the 32 big-endian bytes a validator
-sends, and answers `Ok(None)` when the validator does not track the value;
-`to_be_bytes` renders back for the wire. For an integer you already hold, use
-`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::try_new(u128)`.
+Nothing converts between `AbsoluteChainWork` and `RelativeChainWork`. A consumer
+that can only observe a run of blocks holds the relative type and compares runs
+against each other. The `types::work` module documentation states the algebra
+and why the three are distinct.
 
-The `types::work` module documentation covers why these are separate
-types, and what `AbsoluteChainWork` is *not* — in particular
-`zaino-chain-head`'s anchor-relative work, which is a third quantity.
+`to_be_bytes` renders the 32 big-endian byte form and `from_be_bytes` reads it
+back, refusing an over-width or all-zero value with `ChainWorkBytesError`; the
+store's row is that form. Nothing reads chainwork off the wire, since Zebra does
+not report it. For an integer you already hold, use
+`AbsoluteChainWork::new(NonZeroU128)` or `SingleBlockWork::new(NonZeroU128)`.
+
+The `types::work` module documentation states the full algebra, including what
+`AbsoluteChainWork` is *not* — in particular `zaino-chain-head`'s
+anchor-relative work, which is a third quantity.
 
 ### Where `SingleBlockWork` comes from: `CompactDifficulty`
 

@@ -74,10 +74,10 @@ use crate::store::{
 };
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    db::metadata::FinalisedTxOutSetInfoAccumulator, BlockHash, BlockHeaderData, CommitmentTreeData,
-    Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
-    SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
-    TxOutCompact, TxidList,
+    db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, BlockHeaderData,
+    CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
+    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
+    TxLocation, TxOutCompact, TxidList,
 };
 use crate::{config::StoreSettings, error::StoreError};
 use zaino_chain_store::ChainStoreSource;
@@ -477,7 +477,7 @@ impl<T: ChainStoreSource> DbWrite for FinalisedSource<T> {
     /// Write a fully-indexed block into the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), StoreError> {
+    async fn write_block(&self, block: IndexedBlock<AbsoluteChainWork>) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.write_block(block).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
@@ -783,6 +783,19 @@ impl<T: ChainStoreSource> CompactBlockExt for FinalisedSource<T> {
     }
 }
 
+impl<T: ChainStoreSource> FinalisedSource<T> {
+    /// Every stored block in `start..=end`, ascending, from the v1 backend that alone has stored blocks.
+    pub(crate) async fn get_stored_block_range(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
+        self.require_v1("stored block range")?
+            .get_stored_block_range(start, end)
+            .await
+    }
+}
+
 impl<T: ChainStoreSource> IndexedBlockExt for FinalisedSource<T> {
     async fn get_chain_block(&self, height: Height) -> Result<Option<IndexedBlock>, StoreError> {
         match self {
@@ -937,7 +950,10 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
     /// This method does not perform safety checks and must not be used in production code.
     ///
     /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(&self, block: IndexedBlock) -> Result<(), StoreError> {
+    pub(crate) async fn write_block_v1_0_0(
+        &self,
+        block: IndexedBlock<AbsoluteChainWork>,
+    ) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.write_block_v1_0_0(block).await,
             Self::Ephemeral(_) => Err(StoreError::Custom(

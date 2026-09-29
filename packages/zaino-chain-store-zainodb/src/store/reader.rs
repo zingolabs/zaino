@@ -62,10 +62,10 @@ use crate::error::StoreError;
 use crate::store::capability::CapabilityRequest;
 use crate::stream::CompactBlockStream;
 use crate::types::{
-    db::metadata::FinalisedTxOutSetInfoAccumulator, BlockHash, BlockHeaderData, CommitmentTreeData,
-    Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
-    SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
-    TxOutCompact, TxidList,
+    db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, BlockHeaderData,
+    CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
+    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
+    TxLocation, TxOutCompact, TxidList,
 };
 use zaino_chain_store::ChainStoreSource;
 use zaino_status::StatusType;
@@ -557,17 +557,14 @@ impl<T: ChainStoreSource> DbReader<T> {
             .await
     }
 
-    /// Returns the IndexedBlock for the given Hash.
-    ///
-    /// Returns every `IndexedBlock` in `start..=end`, ascending, under one
-    /// read transaction.
-    pub(crate) async fn get_chain_block_range(
+    /// Returns every stored `IndexedBlock` in `start..=end`, ascending, under one read transaction.
+    pub(crate) async fn get_stored_block_range(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<IndexedBlock>, StoreError> {
+    ) -> Result<Vec<IndexedBlock<AbsoluteChainWork>>, StoreError> {
         self.db(CapabilityRequest::IndexedBlockExt)?
-            .get_chain_block_range(start, end)
+            .get_stored_block_range(start, end)
             .await
     }
 

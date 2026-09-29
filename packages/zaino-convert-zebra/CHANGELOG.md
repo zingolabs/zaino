@@ -13,6 +13,24 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-09-26
+### Changed
+- `transaction_from_zebra` takes only the transaction; a transaction's position, and whether it is the coinbase, now comes from its order in the block. `ConvertError` gains a `Block` variant for converted transactions that do not form a valid block.
+  _Migration:_ Drop the position argument from `transaction_from_zebra` calls, and match `ConvertError::Block`.
+- `ConvertError` gains `Difficulty` and `Ciphertext` variants. A ciphertext shorter than the compact prefix is a typed error instead of a panic.
+  _Migration:_ Match `ConvertError::Difficulty` and `ConvertError::Ciphertext`.
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+
+## [0.2.1] - 2026-09-11
+
+### Added
+### Changed
+- Requires zaino-primitives 0.2.1. No code change: the dependency
+  requirement is part of the packaged manifest.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.2.0] - 2026-08-28
 
 ### Added

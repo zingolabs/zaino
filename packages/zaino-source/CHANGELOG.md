@@ -13,6 +13,25 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.2] - 2026-09-26
+### Added
+- `OneShotGetCommitmentTreeRootsByHeight`, with its resilient twin `GetCommitmentTreeRootsByHeight`: tree roots at the best-chain block at a height, answering with the block's hash alongside the roots. The hash names which block answered, so a consumer pairing this query with a concurrent hash-addressed read can detect a reorg between the two.
+### Changed
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Internal
+- Tree sizes use the checked `TreeSize` type.
+- Difficulty and ciphertexts use the checked `zaino-primitives` types.
+
+## [0.2.1] - 2026-09-11
+
+### Added
+### Changed
+- Documentation no longer refers to zcashd, whose support was removed from
+  Zaino. No code change.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.2.0] - 2026-08-28
 
 ### Added

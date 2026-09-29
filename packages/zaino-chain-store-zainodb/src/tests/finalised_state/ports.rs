@@ -567,7 +567,7 @@ async fn a_block_frozen_from_a_read_writes_identical_rows() {
             .expect("the frozen store holds every height");
         assert_eq!(
             written,
-            Some(expected),
+            Some(expected.map_chainwork(Some)),
             "block at height {height} was not written back as it was read"
         );
     }
