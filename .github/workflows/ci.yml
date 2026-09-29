@@ -46,10 +46,8 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      - run: cargo nextest run --locked --workspace --no-fail-fast
-
-      # Recorder, admin listener & metric registration contracts compile only under `prometheus`
-      - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
+      # `zainod/prometheus` also compiles the recorder, admin listener & metric registration tests
+      - run: cargo nextest run --locked --workspace --features zainod/prometheus --no-fail-fast
 
   features:
     name: Each feature compiles

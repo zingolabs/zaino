@@ -416,19 +416,6 @@ impl DaemonConfig {
                 )));
             }
         }
-        // Public bind publishes chain tip, sync progress, request volumes & RSS.
-        // Warn, not reject: read-only telemetry, and containers bind 0.0.0.0 by norm
-        #[cfg(feature = "prometheus")]
-        if let Some(endpoint) = self.metrics_endpoint {
-            if !is_private_listen_addr(&endpoint) {
-                tracing::warn!(
-                    %endpoint,
-                    "metrics_endpoint binds a non-private address; /metrics is \
-                     unauthenticated and exposes operational detail. Restrict it to \
-                     loopback, a private interface, or a network only the scraper reaches."
-                );
-            }
-        }
         let depth = self.fetch.finalised_depth.get();
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
             return Err(IndexerError::ConfigError(format!(
@@ -438,6 +425,31 @@ impl DaemonConfig {
             )));
         }
         Ok(())
+    }
+
+    /// Logs a warning when `metrics_endpoint` cannot start in this build or binds a non-private address.
+    pub(crate) fn warn_about_metrics_endpoint(&self) {
+        let Some(endpoint) = self.metrics_endpoint else {
+            return;
+        };
+        #[cfg(not(feature = "prometheus"))]
+        tracing::warn!(
+            %endpoint,
+            "`metrics_endpoint` is configured but this binary was built without the \
+             `prometheus` feature, so no /metrics listener will start. Rebuild with \
+             `--features prometheus` to enable it."
+        );
+        // Public bind publishes chain tip, sync progress, request volumes & RSS.
+        // Warn, not reject: read-only telemetry, and containers bind 0.0.0.0 by norm
+        #[cfg(feature = "prometheus")]
+        if !is_private_listen_addr(&endpoint) {
+            tracing::warn!(
+                %endpoint,
+                "metrics_endpoint binds a non-private address; /metrics is \
+                 unauthenticated and exposes operational detail. Restrict it to \
+                 loopback, a private interface, or a network only the scraper reaches."
+            );
+        }
     }
 
     /// Every validator, `source` first (the order chainview and the fetch pool index them by)
