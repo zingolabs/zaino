@@ -6,12 +6,13 @@
 # and the publish plan covers exactly this set. No `cargo metadata` heuristic
 # decides governance — this file does.
 #
-# Target set: the 14 crates.io-published packages (docs/release/
-# pipeline.md § Context). The internal-only crates
-# (live-tests/{e2e,clientless,zaino-testutils}) are deliberately absent.
-# Every workspace crate a target depends on through a path + version
-# requirement is itself a target: `cargo publish` resolves that requirement
-# against crates.io, so an ungoverned dependency would never be released.
+# Target set = every `packages/*` crate without `publish = false`, and nothing
+# else. The unpublished ones (e.g. zaino-grpc) and the separate
+# `live-tests` workspace are absent by that rule, not by exception.
+#
+# A target may not depend on a non-target through a path + version requirement:
+# `cargo publish` resolves that requirement against crates.io, so an ungoverned
+# dependency would never be released.
 
 [options]
 changesets_dir      = ".changesets"
@@ -25,61 +26,55 @@ consumed_ledger     = ".release/consumed-ledger.toml"
 
 # Per target: `changelog` defaults to `<path>/CHANGELOG.md`; `publish` to true.
 
+
 [[target]]
 name = "zainod"
 path = "packages/zainod"
 
 [[target]]
-name = "zaino-proto"
-path = "packages/zaino-proto"
-
-
-[[target]]
-name = "zaino-primitives"
-path = "packages/zaino-primitives"
-
-[[target]]
-name = "zaino-address"
-path = "packages/zaino-address"
-
-[[target]]
-name = "zaino-source"
-path = "packages/zaino-source"
-
-[[target]]
-name = "zaino-rpc"
-path = "packages/zaino-rpc"
-
-
-[[target]]
-name = "zaino-source-zebra-rpc"
-path = "packages/zaino-source-zebra-rpc"
-
-[[target]]
-name = "zaino-consensus"
-path = "packages/zaino-consensus"
-
-[[target]]
-name = "zaino-mempool"
-path = "packages/zaino-mempool"
-
-[[target]]
-name = "zaino-mempool-service"
-path = "packages/zaino-mempool-service"
-
-[[target]]
-name = "zaino-status"
-path = "packages/zaino-status"
-
-[[target]]
-name = "zaino-source-macros"
-path = "packages/zaino-source-macros"
+name = "zaino-chainview"
+path = "packages/zaino-chainview"
 
 [[target]]
 name = "zaino-chain-head"
 path = "packages/zaino-chain-head"
 
 [[target]]
-name = "zaino-chain-head-service"
-path = "packages/zaino-chain-head-service"
+name = "zaino-index-compact-block"
+path = "packages/zaino-index-compact-block"
 
+[[target]]
+name = "zaino-index-transparent-address"
+path = "packages/zaino-index-transparent-address"
+
+[[target]]
+name = "zaino-index-tree-state"
+path = "packages/zaino-index-tree-state"
+
+[[target]]
+name = "zaino-internal-value-balance"
+path = "packages/zaino-internal-value-balance"
+
+[[target]]
+name = "zaino-persistence"
+path = "packages/zaino-persistence"
+
+[[target]]
+name = "zaino-primitives"
+path = "packages/zaino-primitives"
+
+[[target]]
+name = "zaino-proto"
+path = "packages/zaino-proto"
+
+[[target]]
+name = "zaino-source"
+path = "packages/zaino-source"
+
+[[target]]
+name = "zaino-source-macros"
+path = "packages/zaino-source-macros"
+
+[[target]]
+name = "zaino-sync"
+path = "packages/zaino-sync"
