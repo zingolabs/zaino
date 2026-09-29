@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use tracing::warn;
-use zaino_async::{Task, TaskName};
+use zaino_async::{panic_message, Task, TaskError, TaskName};
 use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
 use zaino_source::{
@@ -117,6 +117,20 @@ fn map_source<E: std::error::Error + Send + Sync + 'static>(err: SourceError<E>)
     }
 }
 
+/// The failure of a spawned fetch task, as the indexer's worker-failure error.
+fn fetch_task_failure(join: tokio::task::JoinError) -> IndexerError {
+    const NAME: TaskName = TaskName("provisioner-fetch");
+    let failure = if join.is_panic() {
+        TaskError::Panicked {
+            name: NAME,
+            message: panic_message(join.into_panic().as_ref()),
+        }
+    } else {
+        TaskError::Cancelled { name: NAME }
+    };
+    IndexerError::UnexpectedWorkerFailure(failure)
+}
+
 /// How the provisioner obtains one per-height unit from the source.
 ///
 /// The strategy selects the fetch capability at the type level: [`FullBlocks`]
@@ -171,7 +185,8 @@ impl<S: GetPreIndexCompactBlock + Send + Sync + 'static> SourceFetch<S> for Comp
 /// serves any adapter, any source shape, and any index set.
 pub struct SourceProvisioner<S, Ctx, F, Fetch> {
     source: Arc<S>,
-    build: F,
+    /// Shared with every in-flight fetch task, which projects its own item.
+    build: Arc<F>,
     /// How many fetches are kept in flight at once (see [`FetchConcurrency`]).
     concurrency: FetchConcurrency,
     _ctx: std::marker::PhantomData<fn() -> Ctx>,
@@ -191,7 +206,7 @@ where
     pub fn new(source: Arc<S>, build: F, concurrency: FetchConcurrency) -> Self {
         Self {
             source,
-            build,
+            build: Arc::new(build),
             concurrency,
             _ctx: std::marker::PhantomData,
             _fetch: std::marker::PhantomData,
@@ -223,6 +238,13 @@ where
     /// (height) order regardless of which fetch finishes first, which is what
     /// makes concurrent fetch safe here.
     ///
+    /// Each fetch runs as its own task, and projects its item there. Fetching
+    /// is not only I/O: over RPC it decodes a hex payload and deserialises a
+    /// block, and the projection walks every transaction. Polled inside this
+    /// one task that work would serialise on a single thread however many
+    /// fetches were in flight, so the window would bound latency overlap but
+    /// never CPU. Spawned, the window bounds both.
+    ///
     /// The in-flight window is bounded by `concurrency` (fetched items buffer
     /// only up to that), and `tx.send` applies channel backpressure. Stops early
     /// with `Ok` if the receiver is dropped (the engine went away); returns the
@@ -248,22 +270,28 @@ where
                 // conversion is infallible by construction.
                 let height = Height::try_from(next).expect("height within a valid range is valid");
                 let source = Arc::clone(&self.source);
-                in_flight.push_back(async move { Fetch::fetch(&source, height).await });
+                let build = Arc::clone(&self.build);
+                in_flight.push_back(tokio::spawn(async move {
+                    let item = Fetch::fetch(&source, height).await?;
+                    Ok::<Ctx, IndexerError>(build(item))
+                }));
                 next += 1;
             }
 
             // Drain the oldest fetch — `FuturesOrdered` guarantees this is the
             // lowest outstanding height.
             match in_flight.next().await {
-                Some(Ok(item)) => {
-                    let ctx = (self.build)(item);
+                Some(Ok(Ok(ctx))) => {
                     if tx.send(ctx).await.is_err() {
                         // Receiver dropped: the engine stopped consuming.
                         return Ok(());
                     }
                 }
                 // First fetch error: stop submitting, drop the in-flight rest.
-                Some(Err(e)) => return Err(e),
+                Some(Ok(Err(e))) => return Err(e),
+                // The fetch task itself died: a panic in the source or the
+                // projection, or the runtime shutting down under us.
+                Some(Err(join)) => return Err(fetch_task_failure(join)),
                 // Window empty and nothing left to submit: the range is done.
                 None => return Ok(()),
             }
