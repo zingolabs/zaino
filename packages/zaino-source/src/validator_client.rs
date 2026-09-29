@@ -6,7 +6,7 @@
 //! transport failures against the adapter so a consumer never has to.
 //!
 //! ```ignore
-//! let adapter = ZebraRpcAdapter::new(rpc);
+//! // `adapter` is any single-attempt `ValidatorSource` implementation.
 //! let source = ValidatorClient::new(adapter, RetryPolicy::default());
 //! let block = source.get_block(height).await?; // → SourceError, retries handled
 //! ```

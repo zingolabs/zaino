@@ -4,10 +4,6 @@ use crate::proto::{
     compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx},
     service::{BlockId, BlockRange, PoolType},
 };
-#[cfg(feature = "heavy")]
-use zebra_chain::block::Height;
-#[cfg(feature = "heavy")]
-use zebra_state::HashOrHeight;
 
 /// Every pool a request may name — the `PoolType` variants minus `Invalid`.
 const KNOWN_POOLS: [PoolType; 4] = [
@@ -262,21 +258,6 @@ impl PoolTypeFilter {
                 .collect(),
         }
     }
-}
-
-#[cfg(feature = "heavy")]
-/// Converts [`BlockId`] into [`HashOrHeight`] Zebra type
-pub fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
-    <[u8; 32]>::try_from(block_id.hash)
-        .map(zebra_chain::block::Hash)
-        .map(HashOrHeight::from)
-        .or_else(|_| {
-            block_id
-                .height
-                .try_into()
-                .map(|height| HashOrHeight::Height(Height(height)))
-        })
-        .ok()
 }
 
 impl CompactTx {

@@ -1,0 +1,6 @@
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+section = "Removed"
+description = "Remove the `heavy` cargo feature and the `blockid_to_hashorheight` helper. The wire-types crate no longer depends on `zebra-state` or `zebra-chain`."
+migration = "`heavy` was a default feature, so most consumers are unaffected; those building with `default-features = false` no longer need to re-enable it. The `BlockId` -> `HashOrHeight` conversion now lives in the ReadState adapter that consumes it."

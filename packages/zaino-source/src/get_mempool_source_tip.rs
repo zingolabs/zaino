@@ -38,8 +38,8 @@ use super::{QueryError, ValidatorSource};
 /// transport level. Nothing is left to name.
 ///
 /// Contrast [`GetChainTip`](super::GetChainTip), which *does* carry a `NotReady`:
-/// it is free to be answered from the state database, and the ReadState adapter
-/// genuinely observes "no tip yet" as an answer rather than a failure.
+/// a source can genuinely observe "no tip yet" on a still-syncing validator as
+/// an answer rather than a failure.
 ///
 /// So this is typed `QueryError<Infallible, Self::NonDomain>` rather than given an unproducible
 /// variant. A domain error no implementation can return is worse than none: it
