@@ -4184,6 +4184,7 @@ name = "zaino-async"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "proptest",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

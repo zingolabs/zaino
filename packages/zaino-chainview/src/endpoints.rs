@@ -1,0 +1,145 @@
+//! Who the endpoints are, and what the quorum needs to know about each
+
+use std::time::{Duration, Instant};
+
+use zaino_primitives::types::BlockRef;
+
+/// Position in the configured endpoint list, `< EndpointSet::MAX` (keeps `insert` infallible)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct EndpointIndex(u8);
+
+impl EndpointIndex {
+    pub(crate) fn new(index: usize) -> Option<Self> {
+        (index < EndpointSet::MAX).then_some(Self(index as u8))
+    }
+
+    pub(crate) fn get(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
+/// Which endpoints, by index: a bitset, never a count
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EndpointSet(u64);
+
+impl EndpointSet {
+    /// Ceiling on the configured set (the bitset's width)
+    pub const MAX: usize = u64::BITS as usize;
+
+    pub(crate) fn insert(&mut self, endpoint: EndpointIndex) {
+        self.0 |= 1u64 << endpoint.0;
+    }
+
+    pub(crate) fn remove(&mut self, endpoint: EndpointIndex) {
+        self.0 &= !(1u64 << endpoint.0);
+    }
+
+    pub(crate) fn contains(&self, endpoint: EndpointIndex) -> bool {
+        self.0 & (1u64 << endpoint.0) != 0
+    }
+
+    pub fn count(&self) -> usize {
+        self.0.count_ones() as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl FromIterator<EndpointIndex> for EndpointSet {
+    fn from_iter<I: IntoIterator<Item = EndpointIndex>>(endpoints: I) -> Self {
+        let mut set = Self::default();
+        for endpoint in endpoints {
+            set.insert(endpoint);
+        }
+        set
+    }
+}
+
+/// Where one endpoint stands with its poller (only `Live` votes)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EndpointState {
+    /// No successful poll yet
+    #[default]
+    Pending,
+    Live,
+    /// Failing, on the backoff ladder (last observation retained)
+    Degraded,
+    /// Ejected: failure ceiling hit, or no mempool
+    Down,
+    /// Node says it is not ready to report a tip
+    Syncing,
+    /// Tip voted, mempool off (node behind the network tip)
+    CatchingUp,
+}
+
+impl EndpointState {
+    pub(crate) fn votes(self) -> bool {
+        matches!(self, Self::Live | Self::CatchingUp)
+    }
+}
+
+/// Does this endpoint's tip match the quorum's, right now?
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Agreement {
+    /// No quorum tip, or nothing observed from this endpoint yet
+    #[default]
+    Unknown,
+    Agreed,
+    Diverged,
+}
+
+/// Exponentially weighted mean round-trip time (fixed smoothing)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Ewma {
+    micros: Option<f64>,
+}
+
+impl Ewma {
+    const ALPHA: f64 = 0.2;
+
+    pub(crate) fn observe(&mut self, sample: Duration) {
+        let sample = sample.as_micros() as f64;
+        self.micros = Some(match self.micros {
+            Some(mean) => mean + Self::ALPHA * (sample - mean),
+            None => sample,
+        });
+    }
+
+    /// `None` until the first observation
+    pub fn mean(&self) -> Option<Duration> {
+        self.micros.map(|micros| Duration::from_micros(micros as u64))
+    }
+}
+
+/// One configured validator as last observed: the quorum reads `tip` + `state`; `peers` = its
+/// `getpeerinfo` addresses (the graph discovery traverses)
+///
+/// - `tip` = the endpoint's own last-observed tip, not the quorum's (`agreement` says which)
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValidatorMetadata {
+    pub address: String,
+    pub tip: Option<BlockRef>,
+    pub state: EndpointState,
+    pub agreement: Agreement,
+    pub observed_at: Option<Instant>,
+    pub latency: Ewma,
+    pub failures: u32,
+    pub peers: imbl::Vector<String>,
+}
+
+impl ValidatorMetadata {
+    pub(crate) fn new(address: String) -> Self {
+        Self {
+            address,
+            tip: None,
+            state: EndpointState::Pending,
+            agreement: Agreement::Unknown,
+            observed_at: None,
+            latency: Ewma::default(),
+            failures: 0,
+            peers: imbl::Vector::new(),
+        }
+    }
+}

@@ -1,218 +1,244 @@
-//! The composed, pinned view served across the FS⊕NFS seam.
+//! The published view: quorum tip, sighted transactions, per-endpoint metadata.
+//!
+//! - `imbl` collections, so republishing on every fold clones in `O(1)` with structural sharing
+//! - reader takes **one `ArcSwap` load per request or stream**, pinning a coherent view — a fold
+//!   landing mid-stream cannot splice two views into one response
+//! - raw bytes only, never a decoded transaction (parsing = the wire adapter's job, and
+//!   `zaino-proto` must not reach this crate)
 
-use futures::stream::{self, BoxStream, StreamExt};
+use bytes::Bytes;
+use imbl::{OrdMap, Vector};
+use zaino_primitives::types::{TransactionId, Zatoshis};
 
-use zaino_core::{
-    BlockId, BlockRef, Capability, CompactBlock, Height, HeightRange, ServiceableRange,
-};
-use zaino_service::error::{BlockReadError, ReadError};
-use zaino_service::{ChainSegment, CompactBlockRead, Snapshot};
+use crate::endpoints::{EndpointIndex, EndpointSet, ValidatorMetadata};
+use crate::error::BelowQuorum;
+use crate::quorum::{Quorum, QuorumTip};
 
-/// A pinned, reorg-coherent view over the composed chain — the finalised store
-/// segment `F` and the non-finalised head segment `N`, captured together so the
-/// seam watermark and the volatile window agree.
+/// One unconfirmed transaction, as served
 ///
-/// # The seam, as a relation over heights
-///
-/// With `watermark = w` (the FS's finalised tip; `None` when the FS is empty),
-/// `floor = f`, and `tip = t` (the NFS window bounds):
-///
-/// ```text
-/// FS      = [genesis, w]          (empty when w = None)
-/// NFS     = [f, t]                (empty when the head holds nothing)
-/// served  = FS ∪ NFS
-/// gap     = (w, f)                → NotServiceable   (the initial-build gap)
-/// above   = (t, ∞)                → Ok(None)
-/// ```
-///
-/// A height in `FS` reads durable finalised state; a height in `NFS` reads the
-/// volatile window; the `gap` is on-chain but held by neither side (the FS is
-/// still building up toward the NFS floor); above the tip there is no block.
-///
-/// Both sides are named only through the shared `zaino-service` ports — each is
-/// a [`ChainSegment`] (its coverage names the seam bounds) and a
-/// [`CompactBlockRead`] (its by-height/by-hash reads). Only these two capability
-/// families are composed here, the reads compact-block serving needs; other
-/// reads are named separately or passed through.
-#[derive(Clone)]
-pub struct ChainViewSnapshot<F, N> {
-    /// The finalised store segment, pinned at capture. Serves `[genesis, w]`.
-    fs: F,
-    /// The non-finalised head segment, captured together with `fs`. Serves
-    /// `[f, t]`.
-    nfs: N,
-    /// The seam watermark `w`: the FS's finalised tip height, or `None` when the
-    /// FS holds nothing. Derived once at capture so the seam is fixed for the
-    /// life of the pin.
-    watermark: Option<Height>,
+/// - `fee` = a validator's listing (it resolved the prevouts); `None` = our own broadcast, not
+///   yet listed by any validator
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolEntry {
+    pub txid: TransactionId,
+    pub raw: Bytes,
+    pub fee: Option<Zatoshis>,
 }
 
-/// Which side of the seam a height falls on. The `InitialBuildGap` arm is the
-/// explicit policy knob (see [`ChainViewSnapshot::read_routed`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Route {
-    /// `h ≤ w`: the durable finalised prefix, read from the FS.
-    Finalised,
-    /// `f ≤ h ≤ t`: the volatile non-finalised window, read from the NFS.
-    Volatile,
-    /// `w < h < f`: on-chain, but held by neither side — the FS is still
-    /// building up toward the NFS floor.
-    InitialBuildGap,
-    /// `h > t`, or no window at all: no such block.
-    AboveTip,
+/// One transaction and where it has been seen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Sighting {
+    seen_at: EndpointSet,
+    ours: bool,
+    raw: Bytes,
+    fee: Option<Zatoshis>,
 }
 
-impl<F, N> ChainViewSnapshot<F, N>
-where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
-{
-    /// Compose a pinned view from a finalised store segment and a non-finalised
-    /// segment captured at the same instant. The watermark is the FS's coverage
-    /// high read once here, so the seam is coherent for the life of the pin.
-    pub(crate) fn new(fs: F, nfs: N) -> Self {
-        // The FS covers `[genesis, w]`, so the high of its coverage *is* the
-        // watermark `w` — `None` distinguishes an empty FS from a genesis-only
-        // FS (`Some(0)`), which `serviceable_range().finalized_tip`
-        // (GENESIS-on-empty) cannot.
-        let watermark = fs.coverage().map(|range| range.end);
-        Self { fs, nfs, watermark }
+impl Sighting {
+    pub(crate) fn new(raw: Bytes, fee: Option<Zatoshis>, ours: bool) -> Self {
+        Self { seen_at: EndpointSet::default(), ours, raw, fee }
     }
 
-    /// Classify `height` against the seam. Pure over the captured coordinates.
-    fn route(&self, height: Height) -> Route {
-        // FS covers [genesis, w].
-        if let Some(watermark) = self.watermark
-            && height <= watermark
-        {
-            return Route::Finalised;
-        }
-        // Above the watermark (or the FS is empty): consult the NFS window,
-        // whose coverage names its floor and tip.
-        match self.nfs.coverage() {
-            Some(window) => {
-                if height > window.end {
-                    Route::AboveTip
-                } else if height >= window.start {
-                    Route::Volatile
-                } else {
-                    Route::InitialBuildGap
-                }
-            }
-            // No servable window (an empty head): nothing above the watermark is
-            // served.
-            None => Route::AboveTip,
+    /// First listed fee kept (a fee = f(tx, its prevouts): every validator lists the same one)
+    pub(crate) fn listed_fee(&mut self, fee: Zatoshis) {
+        self.fee.get_or_insert(fee);
+    }
+
+    fn entry(&self, txid: TransactionId) -> MempoolEntry {
+        MempoolEntry { txid, raw: self.raw.clone(), fee: self.fee }
+    }
+
+    /// Which endpoints report it.
+    pub(crate) fn seen_at(&self) -> EndpointSet {
+        self.seen_at
+    }
+
+    /// Relayed by us, so known before it propagated anywhere.
+    pub(crate) fn ours(&self) -> bool {
+        self.ours
+    }
+
+    /// Quorum, or ours (§5) — the exception that lets a wallet see its own send.
+    pub(crate) fn servable(&self, quorum: &Quorum) -> bool {
+        self.ours || quorum.met_by(self.seen_at)
+    }
+
+    pub(crate) fn sight(&mut self, endpoint: EndpointIndex) {
+        self.seen_at.insert(endpoint);
+    }
+
+    pub(crate) fn unsight(&mut self, endpoint: EndpointIndex) {
+        self.seen_at.remove(endpoint);
+    }
+
+    pub(crate) fn mark_ours(&mut self) {
+        self.ours = true;
+    }
+}
+
+/// One coherent answer from N validators.
+///
+/// [`tip`](Self::tip) is `None` below quorum — no answer rather than a weak one — and
+/// [`mempool`](Self::mempool) refuses on the same condition.
+///
+/// - `epoch` bumps on every tip change (incl. to/from `None`): `A → B → A` between two reads
+///   still reads as moved
+/// - `arrivals` = txids turned servable this epoch, in order (repeats on a re-admission)
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainViewSnapshot {
+    tip: Option<QuorumTip>,
+    epoch: u64,
+    /// Ordered, so two readers of one view walk the mempool identically.
+    mempool: OrdMap<TransactionId, Sighting>,
+    arrivals: Vector<TransactionId>,
+    endpoints: Vector<ValidatorMetadata>,
+    quorum: Quorum,
+}
+
+impl ChainViewSnapshot {
+    pub(crate) fn empty(endpoints: Vector<ValidatorMetadata>, quorum: Quorum) -> Self {
+        Self {
+            tip: None,
+            epoch: 0,
+            mempool: OrdMap::new(),
+            arrivals: Vector::new(),
+            endpoints,
+            quorum,
         }
     }
 
-    /// Read the composed compact block at `height`, routing on the seam.
+    pub(crate) fn parts_mut(
+        &mut self,
+    ) -> (
+        &mut Option<QuorumTip>,
+        &mut OrdMap<TransactionId, Sighting>,
+        &mut Vector<ValidatorMetadata>,
+    ) {
+        (&mut self.tip, &mut self.mempool, &mut self.endpoints)
+    }
+
+    /// New epoch: arrivals restart (the tails of the old one close on it)
+    pub(crate) fn tip_moved(&mut self) {
+        self.epoch += 1;
+        self.arrivals = Vector::new();
+    }
+
+    pub(crate) fn arrived(&mut self, txid: TransactionId) {
+        self.arrivals.push_back(txid);
+    }
+
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub(crate) fn arrivals(&self) -> &Vector<TransactionId> {
+        &self.arrivals
+    }
+
+    /// Highest block ≥threshold endpoints agree on by hash. `None` below quorum.
+    pub(crate) fn tip(&self) -> Option<QuorumTip> {
+        self.tip
+    }
+
+    /// Per-endpoint metadata, in configured order
+    pub fn endpoints(&self) -> &Vector<ValidatorMetadata> {
+        &self.endpoints
+    }
+
+    /// Where one transaction has been seen, regardless of whether it is servable.
     ///
-    /// The `InitialBuildGap` arm is a **policy knob**: this stage returns
-    /// [`BlockReadError::NotServiceable`] for a height the FS has not yet built
-    /// up to and the NFS window does not reach down to. It deliberately does
-    /// **not** source-fill. A later stage's watermark handshake shrinks this gap
-    /// to nothing *at the finalisation seam*; whether to source-fill the
-    /// *initial-build* gap is a separate decision left open here.
-    async fn read_routed(&self, height: Height) -> Result<Option<CompactBlock>, BlockReadError> {
-        match self.route(height) {
-            Route::Finalised => self.fs.compact_block(BlockRef::Height(height)).await,
-            Route::Volatile => self.nfs.compact_block(BlockRef::Height(height)).await,
-            Route::InitialBuildGap => Err(BlockReadError::NotServiceable(Capability::Blocks)),
-            Route::AboveTip => Ok(None),
-        }
-    }
-}
-
-impl<F, N> ChainSegment for ChainViewSnapshot<F, N>
-where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
-{
-    fn pinned_tip(&self) -> Option<BlockId> {
-        // The composed tip: the volatile NFS tip when present, else the
-        // finalised tip the FS is pinned to.
-        self.nfs.pinned_tip().or_else(|| self.fs.pinned_tip())
+    /// Telemetry and the action stream read this; the mempool RPCs go through
+    /// [`mempool`](Self::mempool).
+    pub(crate) fn sighting(&self, txid: &TransactionId) -> Option<&Sighting> {
+        self.mempool.get(txid)
     }
 
-    fn coverage(&self) -> Option<HeightRange> {
-        // The composed span `FS ∪ NFS`: low is the FS floor (genesis) when the
-        // FS holds anything, else the NFS floor; high is the NFS tip when the
-        // head holds anything, else the FS high. `None` only when both sides are
-        // empty.
-        let fs = self.fs.coverage();
-        let nfs = self.nfs.coverage();
-        let start = fs.or(nfs).map(|range| range.start)?;
-        let end = nfs.or(fs).map(|range| range.end)?;
-        Some(HeightRange { start, end })
+    /// Every transaction the view knows of, servable or not, in txid order.
+    pub(crate) fn sightings(&self) -> impl Iterator<Item = (&TransactionId, &Sighting)> + '_ {
+        self.mempool.iter()
     }
-}
 
-impl<F, N> Snapshot for ChainViewSnapshot<F, N>
-where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
-{
-    fn serviceable_range(&self) -> ServiceableRange {
-        let finalized_tip = self.watermark.unwrap_or(Height::GENESIS);
-        // The served tip is the NFS tip height, falling back to the watermark
-        // (or genesis) when the head is empty.
-        let tip = self
-            .nfs
-            .pinned_tip()
-            .map(|id| id.height)
-            .unwrap_or(finalized_tip);
-        ServiceableRange { finalized_tip, tip }
-    }
-}
-
-impl<F, N> CompactBlockRead for ChainViewSnapshot<F, N>
-where
-    F: ChainSegment + CompactBlockRead,
-    N: ChainSegment + CompactBlockRead,
-{
-    async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
-        match at {
-            BlockRef::Height(height) => self.read_routed(height).await,
-            // A hash is not seam-routable (no height until resolved), so resolve
-            // it as `FS ∪ NFS`: the finalised store first, then the volatile
-            // window.
-            BlockRef::Hash(hash) => match self.fs.compact_block(BlockRef::Hash(hash)).await? {
-                Some(block) => Ok(Some(block)),
-                None => self.nfs.compact_block(BlockRef::Hash(hash)).await,
-            },
+    /// The mempool, or the refusal that stands in for it below quorum.
+    ///
+    /// A `Result` rather than an empty answer: below quorum there is no honest answer to give,
+    /// and a caller must not be able to forget that (§4, fail closed).
+    pub fn mempool(&self) -> Result<MempoolView<'_>, BelowQuorum> {
+        match self.tip {
+            Some(_) => Ok(MempoolView(self)),
+            None => Err(self.quorum.shortfall(self.agreeing())),
         }
     }
 
-    fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
-        // Eager per-height stitch across the seam, mirroring
-        // `StoreSnapshot::stream_compact`: iterate the inclusive height span,
-        // route each height, and yield in height order. A gap height surfaces as
-        // an `Err` item (`NotServiceable`); a height above the tip is skipped
-        // (it is `Ok(None)`, a domain absence, not a failure).
-        let start = u32::from(range.start);
-        let end = u32::from(range.end);
-        let heights: Vec<Height> = (start..=end)
-            .filter_map(|height| Height::try_from(height).ok())
-            .collect();
-        stream::iter(heights)
-            .then(move |height| async move { self.read_routed(height).await })
-            .filter_map(|routed| async move {
-                match routed {
-                    Ok(Some(block)) => Some(Ok(block)),
-                    Ok(None) => None,
-                    Err(error) => Some(Err(block_read_to_read_error(error))),
-                }
-            })
-            .boxed()
+    /// Endpoints whose tip matches the largest agreeing group — the quorum's numerator.
+    fn agreeing(&self) -> EndpointSet {
+        self.tip.map(|tip| tip.agreed_by).unwrap_or_default()
     }
 }
 
-/// Map a [`BlockReadError`] onto the generic [`ReadError`] used by streamed
-/// reads, preserving the not-serviceable / transient / fatal distinction.
-fn block_read_to_read_error(error: BlockReadError) -> ReadError {
-    match error {
-        BlockReadError::NotServiceable(capability) => ReadError::NotServiceable(capability),
-        BlockReadError::Transient(message) => ReadError::Transient(message),
-        BlockReadError::Fatal(message) => ReadError::Fatal(message),
+/// The servable mempool of a snapshot that has quorum.
+///
+/// Every method here applies the per-transaction rule — `seen_at.count() >= threshold || ours`
+/// — so nothing below it can leak out.
+#[derive(Debug, Clone, Copy)]
+pub struct MempoolView<'a>(&'a ChainViewSnapshot);
+
+impl<'a> MempoolView<'a> {
+    /// Callers checked `snapshot.mempool()` already (a tail's anchor)
+    pub(crate) fn of(snapshot: &'a ChainViewSnapshot) -> Self {
+        Self(snapshot)
     }
+
+    fn servable(&self, sighting: &Sighting) -> bool {
+        sighting.servable(&self.0.quorum)
+    }
+
+    /// One servable unconfirmed transaction.
+    pub(crate) fn get(&self, txid: &TransactionId) -> Option<MempoolEntry> {
+        self.0
+            .mempool
+            .get(txid)
+            .filter(|sighting| self.servable(sighting))
+            .map(|sighting| sighting.entry(*txid))
+    }
+
+    pub(crate) fn serves(&self, txid: &TransactionId) -> bool {
+        self.0.mempool.get(txid).is_some_and(|sighting| self.servable(sighting))
+    }
+
+    /// Every servable unconfirmed transaction, in txid order.
+    pub fn entries(&self) -> impl Iterator<Item = MempoolEntry> + '_ {
+        self.0
+            .mempool
+            .iter()
+            .filter(|(_, sighting)| self.servable(sighting))
+            .map(|(txid, sighting)| sighting.entry(*txid))
+    }
+
+    /// `GetMempoolTx`'s filter: everything except the transactions a suffix identifies.
+    ///
+    /// `service.proto:293-305` — a suffix is matched against the txid's **protocol-order** bytes
+    /// (a truncated hex txid reverses into a byte suffix), and a suffix matching two or more
+    /// entries excludes none of them (ambiguous ⇒ the client keeps receiving both). A suffix
+    /// matching nothing is ignored; an empty suffix matches everything, so it excludes only a
+    /// single-entry mempool — fallout of the same rule, not a special case.
+    ///
+    /// `O(suffixes × entries)`, both mempool-bounded.
+    pub fn excluding<B: AsRef<[u8]>>(&self, suffixes: &[B]) -> Vec<MempoolEntry> {
+        let servable: Vec<MempoolEntry> = self.entries().collect();
+        let mut excluded: Vec<TransactionId> = Vec::new();
+
+        for suffix in suffixes {
+            let mut matched =
+                servable.iter().filter(|entry| ends_with(&entry.txid, suffix.as_ref()));
+            if let (Some(only), None) = (matched.next(), matched.next()) {
+                excluded.push(only.txid);
+            }
+        }
+
+        servable.into_iter().filter(|entry| !excluded.contains(&entry.txid)).collect()
+    }
+}
+
+fn ends_with(txid: &TransactionId, suffix: &[u8]) -> bool {
+    <[u8; 32]>::from(*txid).ends_with(suffix)
 }

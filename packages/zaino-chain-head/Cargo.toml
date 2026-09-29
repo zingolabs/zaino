@@ -1,6 +1,6 @@
 [package]
 name = "zaino-chain-head"
-description = "Domain types and ports for Zaino's bounded non-finalised block graph."
+description = "Zaino's in-memory non-final window of the best chain: follows the quorum tip, resolves reorgs, replays without refetching."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
@@ -9,16 +9,17 @@ license = { workspace = true }
 version = "0.1.0"
 
 [dependencies]
-zaino-consensus = { workspace = true }
 zaino-primitives = { workspace = true }
 zaino-source = { workspace = true }
 
-tokio = { workspace = true, features = ["sync"] }
+futures = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-zaino-source-zebra-rpc = { workspace = true }
+proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"
