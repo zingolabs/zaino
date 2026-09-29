@@ -137,16 +137,21 @@ pub(crate) fn component(name: &str) -> tracing::Span {
     tracing::error_span!("component", component = name)
 }
 
-/// [`component`] named for an index: `IndexWriter::NAME` `compact_block` → `CompactBlockIndex`
+/// [`component`] named for an index: `IndexWriter::NAME` `compact_block` → `CompactBlockIdx`,
+/// `transparent_address` → `TransparentAddrIdx`
 pub(crate) fn index_component(name: &str) -> tracing::Span {
     let camel: String = name
         .split('_')
+        .map(|word| match word {
+            "address" => "addr",
+            word => word,
+        })
         .flat_map(|word| {
             let mut chars = word.chars();
             chars.next().map(|first| first.to_ascii_uppercase()).into_iter().chain(chars)
         })
         .collect();
-    component(&format!("{camel}Index"))
+    component(&format!("{camel}Idx"))
 }
 
 /// Paths in a message: past this many columns, the head elided (the tail names the index)

@@ -1,8 +1,5 @@
-//! Operator progress: one `Syncing blocks` line per [`REPORT_INTERVAL`] of bulk fetch, a
-//! stall warning when a whole interval adds nothing
-//!
-//! - Summary, never per block (go-ethereum 8 s, Nethermind 10 s, reth 25 s)
-//! - Sampled on a timer, not per block (a stalled fetch still reports)
+//! Sync progress: one `Syncing blocks` line per [`REPORT_INTERVAL`] of bulk fetch, a stall
+//! warning when a whole interval adds nothing
 
 use std::{
     fmt,
@@ -47,7 +44,7 @@ impl Progress {
         info!(%start, %target, %tip, "Syncing to finalized target");
     }
 
-    /// Quorum tip moved mid-pass (next summary measures against the raised target)
+    /// Quorum tip moved mid-pass
     pub(crate) fn extend(&self, target: Height) {
         if let Some(pass) = self.tally().pass.as_mut() {
             pass.target = target;
@@ -109,17 +106,17 @@ fn summarise(last: &Sample, now: &Sample) {
     };
     let elapsed = now.at - last.at;
     let blocks = now.tally.blocks - last.tally.blocks;
-    let target = pass.target;
+    let (height, target) = (u32::from(height), u32::from(pass.target));
     if blocks == 0 {
-        warn!(%height, %target, stalled = %Human(elapsed), "Block fetch stalled");
+        warn!(height, target, stalled = %Human(elapsed), "Block fetch stalled");
         return;
     }
     let rate = blocks as f64 / elapsed.as_secs_f64();
-    let remaining = u32::from(target).saturating_sub(height.into());
+    let remaining = target.saturating_sub(height);
     info!(
-        %height,
-        %target,
-        synced = %Percent(height.into(), target.into()),
+        height,
+        target,
+        synced = %Percent(height, target),
         bps = per_second(blocks, elapsed),
         tps = per_second(now.tally.txs - last.tally.txs, elapsed),
         eta = %Human(Duration::from_secs_f64(f64::from(remaining) / rate)),
@@ -127,7 +124,7 @@ fn summarise(last: &Sample, now: &Sample) {
     );
 }
 
-/// Whole units per second (a summary line, not a benchmark)
+/// Whole units per second
 fn per_second(count: u64, over: Duration) -> u64 {
     match over.as_secs_f64() {
         secs if secs > 0.0 => (count as f64 / secs).round() as u64,

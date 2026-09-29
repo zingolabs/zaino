@@ -101,9 +101,9 @@ format.
 The `terminal` format follows go-ethereum's layout, with a component column:
 
 ```text
-INFO  [09-28|17:29:12.660] CompactBlockIndex:        Opening from /var/lib/zaino/compact-block
-WARN  [09-28|17:29:15.175] ChainView:                Validator catching up         endpoint=zebrad:18232 height=3434171 behind=65,512 hash=00000000…1a76bf89
-INFO  [09-28|17:29:42.659] ZainoSync:                Syncing blocks                height=31399 target=3433171 synced=0.91% bps=1,047 tps=6,077 eta=54m10s
+INFO  [09-28|17:29:12.660] CompactBlockIdx:     Opening from /var/lib/zaino/compact-block
+WARN  [09-28|17:29:15.175] ChainView:           Validator catching up         endpoint=zebrad:18232 height=3434171 behind=65,512 hash=00000000…1a76bf89
+INFO  [09-28|17:29:42.659] ZainoSync:           Syncing blocks                height=31,399 target=3,433,171 synced=0.91% bps=1,047 tps=6,077 eta=54m10s
 ```
 
 - Each line has a 5-character level, a UTC `MM-DD|HH:MM:SS.mmm` timestamp, the
@@ -111,13 +111,14 @@ INFO  [09-28|17:29:42.659] ZainoSync:                Syncing blocks             
   follow, so repeated lines align.
 - Components: `Zainod` (lifecycle), `Metrics`, `ChainView` (validator polling,
   mempool), `ZainoSync` (block fetch), `Grpc`, and one per index
-  (`CompactBlockIndex`, `ValueBalanceIndex`, `BlockHashIndex`,
-  `TreeStateIndex`, `TransparentAddressIndex`), which also owns that index's
+  (`CompactBlockIdx`, `ValueBalanceIdx`, `BlockHashIdx`,
+  `TreeStateIdx`, `TransparentAddrIdx`), which also owns that index's
   commits and compactions. In `json` the component is the `component` field of
   the event's enclosing span.
 - Fields are `key=value` logfmt, parseable by Loki and `hl`. Counts from 1,000
-  up are grouped with commas. Heights never are, so they paste straight into an
-  RPC call. A 64-hex hash shows its first and last 8 digits (`json` keeps it
+  up are grouped with commas. Heights are not, so they paste straight into an
+  RPC call, except `height` and `target` on `ZainoSync` progress lines
+  (`Syncing blocks`, `Block fetch stalled`), which read as progress. A 64-hex hash shows its first and last 8 digits (`json` keeps it
   whole). A value containing a space or `=` is quoted, and an error field
   carries its whole source chain. A path in a message longer than 48 columns
   keeps its tail (`…/zaino/compact-block`).

@@ -1,12 +1,11 @@
-//! Operator log line, go-ethereum's terminal layout + a component column:
-//! `INFO  [09-25|12:00:30.002] ZainoSync:                Syncing blocks                height=1730091 bps=2,853`
+//! Terminal log line:
+//! `INFO  [09-25|12:00:30.002] ZainoSync:           Syncing blocks                height=1,730,091 bps=2,853`
 //!
-//! - Fixed level tag, `MM-DD|HH:MM:SS.mmm` UTC, nearest [`COMPONENT`] span, message padded to
-//!   [`MESSAGE_WIDTH`] when fields follow (fields of repeated lines line up)
-//! - Fields `key=value` (logfmt, for Loki / hl): integers ≥ 1,000 grouped, a value with a space
+//! - Level tag, `MM-DD|HH:MM:SS.mmm` UTC, nearest [`COMPONENT`] span, message padded to
+//!   [`MESSAGE_WIDTH`] when fields follow
+//! - Fields `key=value`: integers ≥ 1,000 grouped, `%` fields as displayed, a value with a space
 //!   or `=` quoted, a 64-hex hash shortened
-//! - Integers = magnitudes: log identifiers (heights) with `%` so they stay pasteable
-//! - Enclosing spans' fields follow the event's own (context, never repeated per call site)
+//! - Enclosing spans' fields follow the event's own
 
 use std::fmt::{self, Write as _};
 
@@ -23,11 +22,11 @@ use tracing_subscriber::{
     Layer,
 };
 
-/// Span field naming the operator-facing component (`component(...)` in the parent module)
+/// Span field naming the component
 pub(super) const COMPONENT: &str = "component";
 
-/// Longest component (`TransparentAddressIndex:`) + 2
-const COMPONENT_WIDTH: usize = 26;
+/// Longest component (`TransparentAddrIdx:`) + 2
+const COMPONENT_WIDTH: usize = 21;
 
 const MESSAGE_WIDTH: usize = 30;
 
@@ -90,7 +89,7 @@ where
     }
 }
 
-/// 5-wide tag + go-ethereum's level colour
+/// 5-wide tag + level colour
 fn level(level: Level) -> (&'static str, &'static str) {
     match level {
         Level::ERROR => ("ERROR", "\x1b[31m"),
@@ -104,7 +103,7 @@ fn level(level: Level) -> (&'static str, &'static str) {
 /// Span's [`COMPONENT`] value, stored at creation by [`Components`]
 struct Component(String);
 
-/// Records each span's [`COMPONENT`] field for [`Terminal`] (fmt's own record = rendered text)
+/// Records each span's [`COMPONENT`] field for [`Terminal`]
 pub(super) struct Components;
 
 impl<S> Layer<S> for Components
@@ -123,7 +122,7 @@ where
     }
 }
 
-/// Innermost enclosing component (nested spans override their parent's)
+/// Innermost enclosing component
 fn component<S, N>(ctx: &FmtContext<'_, S, N>) -> Option<String>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
@@ -157,7 +156,7 @@ where
     out
 }
 
-/// Span fields in the event fields' logfmt (the layer's `fmt_fields`)
+/// Span fields as `key=value` pairs
 pub(super) struct Logfmt;
 
 impl<'writer> FormatFields<'writer> for Logfmt {
@@ -180,9 +179,7 @@ impl<'writer> FormatFields<'writer> for Logfmt {
     }
 }
 
-/// One event's message + `key=value` pairs, values already logfmt-formatted
-///
-/// - [`COMPONENT`] kept apart (its own column, never repeated as a pair)
+/// One event's message, [`COMPONENT`] and formatted `key=value` pairs
 #[derive(Default)]
 struct Fields {
     message: String,
@@ -245,7 +242,7 @@ fn grouped(value: u64) -> String {
     out
 }
 
-/// 64 hex digits (block hash, txid) → `00000000…1a76bf89` (JSON output keeps the whole)
+/// 64 hex digits → `00000000…1a76bf89`
 fn shortened(value: String) -> String {
     match value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
         true => format!("{}…{}", &value[..HASH_ENDS], &value[64 - HASH_ENDS..]),
@@ -253,7 +250,7 @@ fn shortened(value: String) -> String {
     }
 }
 
-/// logfmt: empty or holding a space, `=` or `"` → Rust-escaped and quoted
+/// Empty or holding a space, `=` or `"` → Rust-escaped and quoted
 fn quoted(value: String) -> String {
     match value.is_empty() || value.contains([' ', '=', '"', '\n', '\t']) {
         true => format!("{value:?}"),
@@ -291,11 +288,10 @@ mod tests {
         }
     }
 
-    /// Every rule of the layout on one event stream: tag, timestamp shape, component column
-    /// (innermost wins, never repeated as a pair), padded message, grouped magnitudes vs `%`
-    /// identifiers, shortened hashes, quoting, error chains, span context, bare message
+    /// Tag, timestamp shape, innermost component, padded message, grouped integers vs `%`
+    /// fields, shortened hashes, quoting, error chains, span context, bare message
     #[test]
-    fn lines_follow_the_geth_layout_under_their_component() {
+    fn lines_follow_the_layout_under_their_component() {
         let captured = Captured::default();
         let subscriber = tracing_subscriber::registry().with(Components).with(
             tracing_subscriber::fmt::layer()
@@ -334,18 +330,18 @@ mod tests {
         assert_eq!(levels, ["INFO ", "WARN ", "ERROR", "INFO "]);
         let expected = [
             format!(
-                "{:<26}{:<30} height=1730091 blocks=1,812 delta=-250,000 rows=999",
+                "{:<21}{:<30} height=1730091 blocks=1,812 delta=-250,000 rows=999",
                 "ZainoSync:", "Syncing blocks"
             ),
             format!(
-                "{:<26}{:<30} reason=\"queue full\" ratio=0.5 hash=00000000…1a76bf89",
+                "{:<21}{:<30} reason=\"queue full\" ratio=0.5 hash=00000000…1a76bf89",
                 "ZainoSync:", "Commit waited"
             ),
             format!(
-                "{:<26}{:<30} error=\"disk gone\" endpoint=10.0.0.1:8232",
+                "{:<21}{:<30} error=\"disk gone\" endpoint=10.0.0.1:8232",
                 "Zainod:", "Poll failed"
             ),
-            format!("{:<26}Shutting down", ""),
+            format!("{:<21}Shutting down", ""),
         ];
         assert_eq!(lines.iter().map(|l| body(l)).collect::<Vec<_>>(), expected);
     }
