@@ -17,6 +17,11 @@ and this library adheres to Rust's notion of
 ### Removed
 - **Breaking** — `CompactBlock::proto_version`. Upstream v0.5.0 removed the
   field and reserved its tag; Zaino only ever wrote `0` to it.
+- **Breaking** — the `heavy` cargo feature and the `blockid_to_hashorheight`
+  helper. The crate no longer depends on `zebra-state`/`zebra-chain`; the
+  `BlockId` → `HashOrHeight` conversion moved to the ReadState adapter that
+  consumes it. `which` is now an unconditional build-dependency, so `protoc`
+  discovery works under `--no-default-features`.
 ### Deprecated
 ### Fixed
 
