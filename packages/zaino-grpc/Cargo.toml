@@ -1,0 +1,61 @@
+[package]
+name = "zaino-grpc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Lightwalletd-compatible gRPC (CompactTxStreamer) server routing each method to an index, the chain view or the validator."
+
+[dependencies]
+zaino-proto = { workspace = true }
+thiserror = { workspace = true }
+tonic.workspace = true
+futures.workspace = true
+tokio = { workspace = true }
+tower = { workspace = true }
+http = "1"
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+
+# Claimed routes, one per index
+zaino-index-compact-block = { workspace = true }
+zaino-index-tree-state = { workspace = true }
+zaino-index-transparent-address = { workspace = true }
+# `BlockID.hash` → height for the by-hash routes above
+zaino-internal-block-hash-to-height = { workspace = true }
+# Domain values rendered onto the wire (index dispatches, `LightdInfo`'s upgrade schedule)
+zaino-primitives = { workspace = true }
+# TreeState carries its trees as hex strings.
+hex = { workspace = true }
+# t-address string -> `TransparentAddress` -> its locking script
+zcash_address = { workspace = true }
+zcash_transparent.workspace = true
+zcash_script.workspace = true
+# `NetworkType`: `LightdInfo.chainName` (declared)
+zcash_protocol = { workspace = true }
+prost.workspace = true
+http-body = "1.1.0"
+zaino-source = { version = "0.2.0", path = "../zaino-source" }
+hyper-util = { version = "0.1.20", features = ["http2", "server", "server-auto", "server-graceful", "service", "tokio"] }
+metrics = { workspace = true, optional = true }
+zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
+tokio-util.workspace = true
+ppp = "2.3"
+ipnet = "2.12"
+socket2 = { version = "0.6", features = ["all"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
+zaino-index-compact-block = { workspace = true, features = ["testing"] }
+zaino-primitives = { workspace = true, features = ["testing"] }
+# Driving the two new indexes' writers in the router tests: `IndexWriter` methods,
+# and the `ArcSwap` a follower would otherwise hand the tree-state service.
+zaino-sync = { workspace = true }
+arc-swap = { workspace = true }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-source = { path = "../zaino-source", features = ["testing"] }
+
+[features]
+# Prometheus emission from the serve path. Observability only: caps, permits and
+# admission are enforced either way.
+prometheus = ["dep:metrics"]

@@ -130,21 +130,6 @@ message TransparentAddressBlockFilter {
     BlockRange range = 2;   // start, end heights only
 }
 
-// Duration is currently used only for testing, so that the Ping rpc
-// can simulate a delay, to create many simultaneous connections. Units
-// are microseconds.
-message Duration {
-    int64 intervalUs = 1;
-}
-
-// PingResponse is used to indicate concurrency, how many Ping rpcs
-// are executing upon entry and upon exit (after the delay).
-// This rpc is used for testing only.
-message PingResponse {
-    int64 entry = 1;
-    int64 exit = 2;
-}
-
 message Address {
     string address = 1;
 }
@@ -239,18 +224,6 @@ service CompactTxStreamer {
     // documentation of the `CompactTx` message for details.
     rpc GetBlock(BlockID) returns (CompactBlock) {}
 
-    // Return a compact block containing only nullifier information for the
-    // shielded pools (Sapling spend nullifiers, Orchard action nullifiers, and
-    // Ironwood action nullifiers). Transparent transaction data, Sapling
-    // outputs, full Orchard/Ironwood action data, and commitment tree sizes are
-    // not included.
-    //
-    // Note: this method is deprecated; use `GetBlockRange` with the
-    // appropriate `poolTypes` instead.
-    rpc GetBlockNullifiers(BlockID) returns (CompactBlock) {
-      option deprecated = true;
-    }
-
     // Return a list of consecutive compact blocks in the specified range,
     // which is inclusive of `range.end`.
     //
@@ -258,6 +231,9 @@ service CompactTxStreamer {
     // otherwise blocks are returned in decreasing height order.
     rpc GetBlockRange(BlockRange) returns (stream CompactBlock) {}
 
+    // !!! TODO: REMOVE THIS. DEPRECATED. Served by Zaino only because pepper-sync still calls it;
+    // !!! delete once pepper-sync requests `GetBlockRange` with `poolTypes` instead.
+    //
     // Return a stream of compact blocks for the specified range, where each
     // block contains only nullifier information for the shielded pools
     // (Sapling spend nullifiers, Orchard action nullifiers, and Ironwood action
@@ -278,11 +254,16 @@ service CompactTxStreamer {
     // Submit the given transaction to the Zcash network
     rpc SendTransaction(RawTransaction) returns (SendResponse) {}
 
+    // !!! TODO: REMOVE THIS. DEPRECATED. Served by Zaino only because pepper-sync still calls it;
+    // !!! delete once pepper-sync calls `GetTaddressTransactions` (same request, same response).
+    //
     // Return RawTransactions that match the given transparent address filter.
     //
     // Note: This function is misnamed, it returns complete `RawTransaction` values, not TxIds.
     // NOTE: this method is deprecated, please use GetTaddressTransactions instead.
-    rpc GetTaddressTxids(TransparentAddressBlockFilter) returns (stream RawTransaction) {}
+    rpc GetTaddressTxids(TransparentAddressBlockFilter) returns (stream RawTransaction) {
+      option deprecated = true;
+    }
 
     // Return the transactions corresponding to the given t-address within the given block range.
     // Mempool transactions are not included in the results.
@@ -325,7 +306,4 @@ service CompactTxStreamer {
 
     // Return information about this lightwalletd instance and the blockchain
     rpc GetLightdInfo(Empty) returns (LightdInfo) {}
-
-    // Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
-    rpc Ping(Duration) returns (PingResponse) {}
 }

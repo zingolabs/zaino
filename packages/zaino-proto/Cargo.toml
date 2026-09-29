@@ -1,6 +1,6 @@
 [package]
 name = "zaino-proto"
-description = "Holds tonic files and build logic for the lightwallet and darkside RPCs."
+description = "Tonic-generated lightwallet CompactTxStreamer service and compact-format types."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
