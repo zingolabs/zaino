@@ -15,9 +15,6 @@ pub enum GetTreestateError {
 }
 
 /// Fetch the commitment tree state at a given height.
-///
-/// Maps to `z_gettreestate(height)` over JSON-RPC, or the equivalent
-/// ReadState query.
 #[zaino_source_macros::resilient_port]
 pub trait OneShotGetTreestate: ValidatorSource + Send + Sync {
     /// Fetch treestate.
