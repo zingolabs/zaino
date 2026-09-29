@@ -40,8 +40,8 @@ body:
       label: Location in codebase
       description: Which modules, files, or components are affected?
       placeholder: |
-        - `zaino-state/src/...`
-        - `chain_index::finalized_state::...`
+        - `zaino-indexer/src/...`
+        - `zaino-store::finalised::...`
     validations:
       required: true
 

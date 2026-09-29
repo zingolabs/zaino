@@ -58,11 +58,11 @@ body:
       multiple: true
       options:
         - zainod
-        - zaino-state
-        - zaino-serve
-        - zaino-fetch
+        - zaino-indexer
+        - zaino-lightserve
+        - zaino-noderpc
+        - zaino-store
         - zaino-proto
-        - chain_index
         - Testing / CI
         - Documentation
         - Other

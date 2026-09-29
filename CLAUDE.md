@@ -84,9 +84,13 @@ in the same directory need access.
    call site (`pbc.into_business()` reads direction and boundary; `.into()`
    hides both).
 
-**Reference**: `PersistentBlockContext` in
-`packages/zaino-state/src/chain_index/types/db/block.rs`. Copy its shape
-when adding new `Persistent*` types.
+**Reference**: the `PersistentRecord` trait in
+`packages/zaino-persistence-codec/src/lib.rs` and a concrete implementation
+such as `PersistentHeaderValue` in
+`packages/zaino-indexes/src/indexes/headers.rs`. The greenfield stack names
+the pair `from_domain` / `into_domain` and derives the mechanical byte
+layout with `#[derive(PersistentRecord)]`; copy that shape when adding new
+`Persistent*` types.
 
 **Scope**: this rule covers DB-boundary conversions. It does not govern
 conversions between two business-layer types, error `From` impls used
@@ -108,15 +112,17 @@ can't add inherent methods to them):
   step; the `WireXError` enum documents each rejection reason.
   Replaces `impl TryFrom<proto::X> for X`.
 
-**Reference**: `BlockIndex` wire methods in
-`packages/zaino-state/src/chain_index/types/wire.rs`. Copy its shape
-when adding wire conversions for other business types (BlockHash,
-TransactionHash, etc.).
+**Reference**: the adapter-owned wire conversions in
+`packages/zaino-lightserve/src/wire.rs` — a local `ToWire` extension trait
+over the foreign domain types, keeping the `to_wire()` naming and direction
+while respecting the orphan rule (see the ports-architecture exception
+below). Copy its shape when adding wire conversions for other business
+types (BlockHash, TransactionHash, etc.).
 
 **Ports-architecture exception — conversion lives in the adapter**:
 The inherent-`to_wire`-on-the-business-type rule assumes the business
-type and the wire schema legitimately co-locate in one crate (the
-legacy `zaino-state` world). In the ports architecture they do **not**:
+type and the wire schema legitimately co-locate in one crate (as they
+did before the ports split). In the ports architecture they do **not**:
 domain types live in `zaino-primitives` / `zaino-service`, which must never
 depend on a wire schema (`zaino-proto`, jsonrpsee), because that would
 recouple the domain to a transport and defeat the seam. There, the
