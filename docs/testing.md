@@ -66,10 +66,9 @@ A new model suite joins the profile by its name: the test or its binary contains
 `model`, or the test starts with `random_histories`. Its oracle is written
 independently of the code under test, and moves the model cannot apply are
 clamped rather than filtered out, so shrinking stays effective. A failing case
-is saved and replays on every run: beside an integration test as
-`<test>.proptest-regressions` (committed), or under the crate's
-`proptest-regressions/` for an in-crate suite (currently excluded by
-`.gitignore`).
+is saved and replays on every run, on every machine and in CI: beside an
+integration test as `<test>.proptest-regressions`, or under the crate's
+`proptest-regressions/` for an in-crate suite. Commit it with the fix.
 
 Two pieces are not built yet:
 

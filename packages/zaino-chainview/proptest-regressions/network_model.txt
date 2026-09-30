@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7b2a1dce4e11ca77ea4638727a4495540940843a85b321b5c82d2e561bbc81ba # shrinks to nodes = 2, moves = [Mine { node: 2, count: 1 }, Fork { node: 2, drop: 2, mine: 0 }, Fork { node: 2, drop: 1, mine: 0 }, Mine { node: 2, count: 1 }, Fork { node: 0, drop: 1, mine: 0 }, Mine { node: 1, count: 2 }, Poll { node: 2 }, Poll { node: 1 }, Fork { node: 1, drop: 1, mine: 0 }, Poll { node: 1 }]

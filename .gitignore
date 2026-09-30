@@ -12,5 +12,4 @@ target/
 !/live-tests/chain_cache/testnet_get_subtree_roots_orchard
 .cargo
 .local/
-**/proptest-regressions/**
 /result
