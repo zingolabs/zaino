@@ -103,5 +103,16 @@ local_capability! {
 
 local_capability! {
     /// Whether, and where, an outpoint was spent.
-    SpendStatus = SpendStatus backed by [TransparentSpendsIndex]
+    ///
+    /// Three indexes, because the answer distinguishes three states. The
+    /// spends index carries the spend itself. Reporting `Unspent` rather than
+    /// `NoSuchOutput` for the rest needs the output to exist, which is the
+    /// txid's location and that block's transparent data — an outpoint the
+    /// indexed range never created is absent from the spends index exactly as
+    /// an unspent one is.
+    SpendStatus = SpendStatus backed by [
+        TransparentSpendsIndex,
+        TxidLocationIndex,
+        TransparentDataIndex,
+    ]
 }

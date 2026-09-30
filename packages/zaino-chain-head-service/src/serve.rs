@@ -39,6 +39,14 @@ use crate::subscriber::ChainHeadSubscriber;
 #[derive(Clone)]
 pub struct HeadSnapshot(Arc<MapBackedSnapshot>);
 
+impl HeadSnapshot {
+    /// The retained window this view is pinned to, for the reads that live in
+    /// sibling modules.
+    pub(crate) fn window(&self) -> &MapBackedSnapshot {
+        &self.0
+    }
+}
+
 /// Project a retained chain-head block onto its compact serving form.
 ///
 /// Every per-block field comes from the block itself (via

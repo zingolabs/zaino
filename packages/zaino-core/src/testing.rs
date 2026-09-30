@@ -18,8 +18,9 @@ use zaino_primitives::types::CompactDifficulty;
 use zaino_primitives::types::{
     BlockHash, BlockRef, BlockSelector, ChainMetadata, CompactBlock, Height, HeightRange,
 };
-use zaino_service::error::{BlockReadError, ReadError, Transient};
-use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
+use zaino_primitives::types::{Outpoint, PreIndexCompactTx};
+use zaino_service::error::{BlockReadError, ReadError, SpendReadError, Transient};
+use zaino_service::{ChainSegment, CompactBlockRead, SpendRead, SpendStatus, TakeSnapshot};
 
 /// A fixed non-finalised window backed by an in-memory map.
 ///
@@ -114,6 +115,50 @@ impl TakeSnapshot for StubNonFinalised {
 ///
 /// Only the height and hash carry meaning for routing tests; the remaining
 /// fields are inert placeholders.
+/// The window answers spend status from its compact transactions, the same way
+/// the real head does and over the same fields: a compact transaction carries
+/// the outpoints its inputs spend and the outputs it creates, which is
+/// everything this read needs.
+///
+/// Mirrors `zaino_chain_head_service`'s implementation, including its reading
+/// of `NoSuchOutput` as "not in this window" rather than "nowhere" — the
+/// composer falls through to the finalised store on anything but a spend.
+impl SpendRead for StubNonFinalised {
+    async fn spend_status(&self, outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
+        let mut created = false;
+        for block in self.blocks.values() {
+            for transaction in &block.transactions {
+                if spends(transaction, outpoint) {
+                    return Ok(SpendStatus::Spent {
+                        by: transaction.txid,
+                    });
+                }
+                created |= creates(transaction, outpoint);
+            }
+        }
+        Ok(match created {
+            true => SpendStatus::Unspent,
+            false => SpendStatus::NoSuchOutput,
+        })
+    }
+}
+
+/// Whether `transaction` spends `outpoint`.
+fn spends(transaction: &PreIndexCompactTx, outpoint: Outpoint) -> bool {
+    transaction
+        .transparent_inputs
+        .iter()
+        .any(|input| input.prev_txid == outpoint.txid && input.prev_index == outpoint.index)
+}
+
+/// Whether `transaction` created `outpoint`.
+fn creates(transaction: &PreIndexCompactTx, outpoint: Outpoint) -> bool {
+    if transaction.txid != outpoint.txid {
+        return false;
+    }
+    usize::try_from(outpoint.index).is_ok_and(|index| index < transaction.transparent_outputs.len())
+}
+
 pub fn stub_compact_block(height: u32, hash_byte: u8) -> CompactBlock {
     CompactBlock {
         hash: BlockHash::from([hash_byte; 32]),

@@ -42,6 +42,7 @@ mod graph;
 mod serve;
 mod service;
 mod snapshot;
+mod spend;
 mod subscriber;
 
 #[cfg(test)]
