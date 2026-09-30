@@ -127,7 +127,7 @@ impl<A, B: DerivedFrom<A>> Zip<A, B> {
                 assert_eq!(derived_height, height, "derived Finalized out of step with upstream");
                 Step::Finalized { height }
             }
-            (Step::Reset, Step::Reset) => Step::Reset,
+            (Step::Reorg, Step::Reorg) => Step::Reorg,
             (_, Step::Shutdown) => Step::Shutdown,
             (upstream, derived) => panic!(
                 "derived stream out of step: upstream {}, derived {}",
@@ -142,7 +142,7 @@ fn kind<T>(step: &Step<T>) -> &'static str {
     match step {
         Step::Apply { .. } => "Apply",
         Step::Finalized { .. } => "Finalized",
-        Step::Reset => "Reset",
+        Step::Reorg => "Reorg",
         Step::Shutdown => "Shutdown",
     }
 }

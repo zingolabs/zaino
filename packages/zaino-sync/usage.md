@@ -1,8 +1,10 @@
 # `zaino-sync` — usage
 
 Zaino's index sync pipeline: `Producer` → `BlockSink` → subscribed
-`IndexWriter`s, each driven by its own `IndexFollower`. Design:
-[`docs/design/sync.md`](../../docs/design/sync.md).
+`IndexWriter`s, each driven by its own `IndexFollower`. New here? Read
+[the data sink](../../docs/design/data-sink.md) first: it explains the steps
+this whole crate is built on, with a worked reorg. Then
+[`docs/design/sync.md`](../../docs/design/sync.md) for the pipeline.
 
 - **Produce**: `Producer` (the one task that owns the `BlockSink`) bulk-fetches
   through `zaino_source::BlockFetchPool`, then follows `zaino-chainview`'s
@@ -53,7 +55,7 @@ on disk, inclusive, `None` when empty). It decides every step the sink carries:
   first; each block is a `Step::Apply` whose `finalized` says whether it is
   already final. The tip itself is not a step: a follower reads it off
   chainview (see `IndexFollower`)
-- **reset**: `Step::Reset`, then a replay from the first non-final height
+- **reorg**: `Step::Reorg`, then a replay from the first non-final height
   (final is never resent)
 
 - **bulk**: `next` to `tip − finalised_depth`, both inclusive, streamed from the pool (ordered,
@@ -63,7 +65,7 @@ on disk, inclusive, `None` when empty). It decides every step the sink carries:
   every bulk block stays final): one pass per catch-up. An index ahead of the
   validators waits for them
 - **live**: each quorum tip → `ChainHead::advance` → the `Finalized` it buries
-  + an `Apply` per new block; a reorg → `Reset`, then the `Apply`s from the resume height out of
+  + an `Apply` per new block; a reorg sends `Reorg`, then the `Apply`s from the resume height out of
   the window (no fetch; the resume height is asserted ≤ the fork)
 - by-height fetches (bulk, and the live extension) go only to the validators
   in the quorum tip's `agreed_by` (`BlockFetchPool::among`). They agree on the
@@ -85,7 +87,8 @@ Metrics (`describe_metrics()`): `zaino_best_tip`,
 ## `IndexerDataSink<T>`
 
 A broadcast queue that decides nothing: start, finality and resets are the
-steps its publisher sends.
+steps its publisher sends. The concepts, a picture and a step-by-step reorg are
+in [the data sink](../../docs/design/data-sink.md); this section is the API.
 
 - `IndexerDataSink::new(name)`, then `subscribe(name, budget)` per subscriber →
   a `Subscription<T>` (its queue); the publisher takes the sink by value, so
@@ -96,7 +99,7 @@ steps its publisher sends.
   later call
 
 `Step` = `Apply { height, finalized, data }`, `Finalized { height }`,
-`Reset`, `Shutdown`: blocks and what happens to them, never the chain tip.
+`Reorg`, `Shutdown`: blocks and what happens to them, never the chain tip.
 None of these fail. A subscriber holds its
 queue until it pops `Shutdown`, so a queue dropped before then panics the sink,
 and a sink dropped without `shutdown()` (its publisher panicked) panics the
@@ -128,7 +131,7 @@ An index that derives per-block data another index needs implements
 delivered), and its follower republishes into a plain
 `IndexerDataSink<Item>`: `IndexFollower::new(..).publishing(sink)`. The
 follower sends **every** step it follows, 1:1: each `Apply` with the derived
-item and the upstream's `finalized` flag, each `Finalized` and `Reset`,
+item and the upstream's `finalized` flag, each `Finalized` and `Reorg`,
 and `Shutdown` last (on a clean stop and on a failure alike). So the stream is
 the upstream's, step for step.
 
@@ -196,7 +199,7 @@ positions, balances) produces plausible but wrong output after a gap, and a
 panic is far cheaper.
 
 A reorg and a restart are the same operation: the non-finalized state is
-dropped and blocks are re-applied from the durable tip. `Step::Reset` carries no height, so no
+dropped and blocks are re-applied from the durable tip. `Step::Reorg` carries no height, so no
 index owns a reverse fold.
 
 `apply`, `finalize` and `reset` run on a runtime worker. Anything slow goes
@@ -254,7 +257,7 @@ The chain tip is not a sink step. The follower reads it off `tips` for two
 decisions, both taken when its queue is empty:
 
 - the serving gate opens once the index has applied the tip, and closes when it
-  falls more than `depth` behind (or on a `Reset`, until the replay is back)
+  falls more than `depth` behind (or on a `Reorg`, until the replay is back)
 - at the tip, each final block commits as it arrives; below it, commits wait
   for a full batch
 
@@ -264,7 +267,7 @@ serving stale data as current. If chainview's sender drops, the follower keeps
 following steps through `Shutdown`.
 
 - every delivered block must link onto the one before it, the first onto
-  `finalized_tip()` when it extends it (and again after each `Reset`). A break
+  `finalized_tip()` when it extends it (and again after each `Reorg`). A break
   is `FollowError::Unlinked { index, height, expected, got }`: the validator's
   chain diverged below the durable tip (a reorg past the window, a reset
   validator, a directory from another chain), so the index stops rather than
@@ -284,10 +287,10 @@ following steps through `Shutdown`.
   write = one fsync of a steady size however big each block is; at the tip every
   final item commits as it arrives
 - its write runs on the blocking pool while the follower keeps going; at most
-  one is out: the next `finalize`, the bulk → tip handoff, a `Reset` and the
+  one is out: the next `finalize`, the bulk → tip handoff, a `Reorg` and the
   final stop each wait for it to land first. A write finishing while the loop
   waits for input lands at once (durability published as it happens)
-- `Reset` writes what is staged (final is final), then `reset`s the non-finalized state
+- `Reorg` writes what is staged (final is final), then `reset`s the non-finalized state
 - `subscribe_finalized()` publishes the durable tip height (inclusive, `None`
   when empty) **after** it is durable;
   anything gating on it is never told about a height that is not on disk. Each
@@ -302,23 +305,24 @@ following steps through `Shutdown`.
   One pin per request keeps it a request count
 - `subscribe_applied()` publishes the applied height (inclusive, `None` when
   empty) with each view
-- `subscribe_synced()` is `true` only while `applied_height() > tip`, recomputed
-  when the queue is idle and dropped immediately on reset; serving refuses every
+- `subscribe_synced()` turns `true` once the index has applied the quorum tip
+  (`applied_height() >= tip`) and stays `true` until it falls more than `depth`
+  behind; recomputed when the queue is idle, and dropped immediately on reset; serving refuses every
   request of that index while `false`; each flip logs `Serving` / `Syncing,
-  requests refused`, except around a reset: `Reorg received, replaying` (warn,
-  `durable`, `dropped`) at the reset, `Reorg replayed, serving` (`took`) once
+  requests refused`, except around a reorg: `Reorg received, replaying` (warn,
+  `durable`, `dropped`) when it arrives, `Reorg replayed, serving` (`took`) once
   the gate reopens
 
 ### Shutdown drains
 
 The `Producer` owns the `BlockSink`; when it stops, `Step::Shutdown` goes last
 into every queue. A follower stops there: it finalises what is final, ends its
-derived sink (if it publishes one) with `Shutdown`, and returns. A step that
+sink it publishes to (if any) with `Shutdown`, and returns. A step that
 reached a queue is never dropped.
 
 `run(shutdown)` takes the pipeline's root `CancellationToken` only to raise it.
 A follower that fails cancels it, keeps popping every queue of its feed through
-`Shutdown` (the sink never sees a dropped queue), ends its derived sink, then
+`Shutdown` (the sink never sees a dropped queue), ends the sink it publishes to, then
 returns its error. The failure is the only error: nothing upstream reports a
 dead consumer, and a zip consumer of a failed publisher stops cleanly.
 

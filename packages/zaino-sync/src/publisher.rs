@@ -84,8 +84,8 @@ impl<T: Weight> Publisher<T> {
     /// replayed from the first non-final height (final is final: nothing below it is re-sent)
     ///
     /// Returns where the producer resumes
-    pub(crate) async fn reset(&mut self) -> Height {
-        self.sink.send(Step::Reset).await;
+    pub(crate) async fn reorg(&mut self) -> Height {
+        self.sink.send(Step::Reorg).await;
         self.delivered = self.announced;
         self.next()
     }
@@ -125,7 +125,7 @@ mod tests {
                     format!("A{height}{}", if finalized { "f" } else { "" })
                 }
                 Step::Finalized { height } => format!("F{height}"),
-                Step::Reset => "R".to_owned(),
+                Step::Reorg => "R".to_owned(),
                 Step::Shutdown => "S".to_owned(),
             })
             .collect()
@@ -185,7 +185,7 @@ mod tests {
         for height in 13..=15 {
             publisher.add(h(height), Arc::new(h(height))).await;
         }
-        assert_eq!(publisher.reset().await, h(14));
+        assert_eq!(publisher.reorg().await, h(14));
         for height in 14..=15 {
             publisher.add(h(height), Arc::new(h(height))).await;
         }

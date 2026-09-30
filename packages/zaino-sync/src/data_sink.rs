@@ -1,13 +1,41 @@
-//! `IndexerDataSink<T>`: one publisher, N subscribers, one byte-bounded queue each
+//! [`IndexerDataSink<T>`]: one publisher sends the same stream of [`Step`]s to every subscriber.
 //!
-//! - `send(step)` = the same step to every queue, in order (one `Arc<T>` shared across them,
-//!   freed when the last subscriber pops)
-//! - Backpressure = the slowest subscriber's byte budget ([`Weight`]): a full queue makes `send`
-//!   wait
-//! - Decides nothing: start, finality and resets are the publisher's steps
-//! - Blocks only, no chain tip (a follower reads that off chainview's quorum tip)
-//! - Stop = [`Step::Shutdown`], last in every queue ([`shutdown`](IndexerDataSink::shutdown)
-//!   consumes the sink); a subscriber holds its queue until it pops it (dropped before = panic)
+//! Each subscriber has its own queue, limited by bytes, so a slow subscriber holds back the
+//! publisher instead of growing memory. A step's data is one `Arc<T>` shared by every queue; it is
+//! freed when the last subscriber pops it. The sink decides nothing itself: the publisher chooses
+//! every step.
+//!
+//! The whole design, with a worked example, is in `docs/design/data-sink.md`.
+//!
+//! ```
+//! use std::{num::NonZeroUsize, sync::Arc};
+//! use zaino_primitives::types::Height;
+//! use zaino_sync::{IndexerDataSink, Step, Weight};
+//!
+//! struct Blob;
+//! impl Weight for Blob {
+//!     fn weight(&self) -> usize { 100 }
+//! }
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() {
+//! let budget = NonZeroUsize::new(1 << 20).unwrap();
+//! let mut sink = IndexerDataSink::new("blobs");
+//! let mut first = sink.subscribe("first", budget);
+//! let mut second = sink.subscribe("second", budget);
+//!
+//! let height = Height::try_from(7).unwrap();
+//! sink.send(Step::Apply { height, finalized: false, data: Arc::new(Blob) }).await;
+//! sink.send(Step::Finalized { height }).await;
+//! sink.shutdown();
+//!
+//! for queue in [&mut first, &mut second] {
+//!     assert!(matches!(queue.next().await, Step::Apply { .. }));
+//!     assert!(matches!(queue.next().await, Step::Finalized { .. }));
+//!     assert!(matches!(queue.next().await, Step::Shutdown));
+//! }
+//! # }
+//! ```
 
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -22,20 +50,19 @@ pub trait Weight {
     fn weight(&self) -> usize;
 }
 
-/// One instruction for a subscriber, in stream order
+/// One instruction for a subscriber. Every subscriber receives the same steps in the same order.
 #[derive(Debug)]
 pub enum Step<T> {
-    /// Block `height`'s data; `finalized` = below the reorg bound (durable-bound, skips the
-    /// non-finalized state)
+    /// Block `height`'s data. `finalized`: too deep to reorg, so it goes straight to disk;
+    /// otherwise it stays in memory until its [`Finalized`](Step::Finalized).
     Apply { height: Height, finalized: bool, data: Arc<T> },
-    /// The chain tip moved, and an applied block at `height` is now finalized and can be durable
+    /// Block `height`, already applied, can no longer be reorged: write it to disk.
     Finalized { height: Height },
-    /// A branch won: drop **all** non-finalized state, then re-apply blocks from the durable tip
-    ///
-    /// - No fork height (no reverse fold to disagree about; the reorg bound keeps every fork above
-    ///   the durable tip)
-    Reset,
-    /// Last step: persist what is final, forward it to any downstream sink, stop
+    /// Another branch won: flush what is final, drop the non-finalized state
+    /// ([`IndexWriter::reset`](crate::IndexWriter::reset)). The winning branch follows, from the
+    /// first non-final height.
+    Reorg,
+    /// Last step: flush what is final and stop.
     Shutdown,
 }
 
@@ -44,7 +71,7 @@ impl<T: Weight> Weight for Step<T> {
         size_of::<Self>()
             + match self {
                 Self::Apply { data, .. } => data.weight(),
-                Self::Finalized { .. } | Self::Reset | Self::Shutdown => 0,
+                Self::Finalized { .. } | Self::Reorg | Self::Shutdown => 0,
             }
     }
 }
@@ -56,7 +83,7 @@ impl<T> Clone for Step<T> {
                 Self::Apply { height: *height, finalized: *finalized, data: Arc::clone(data) }
             }
             Self::Finalized { height } => Self::Finalized { height: *height },
-            Self::Reset => Self::Reset,
+            Self::Reorg => Self::Reorg,
             Self::Shutdown => Self::Shutdown,
         }
     }
@@ -226,13 +253,13 @@ mod tests {
         let (mut one, mut two) = (sink.subscribe("one", queue), sink.subscribe("two", queue));
         sink.send(apply(7, 1)).await;
         sink.send(Step::Finalized { height: h(7) }).await;
-        sink.send(Step::Reset).await;
+        sink.send(Step::Reorg).await;
         sink.shutdown();
 
         for sub in [&mut one, &mut two] {
             assert_eq!(popped(sub.next().await), h(7));
             assert!(matches!(sub.next().await, Step::Finalized { height } if height == h(7)));
-            assert!(matches!(sub.next().await, Step::Reset));
+            assert!(matches!(sub.next().await, Step::Reorg));
             assert!(matches!(sub.next().await, Step::Shutdown));
             assert!(matches!(sub.next().await, Step::Shutdown), "closed queue past Shutdown");
         }

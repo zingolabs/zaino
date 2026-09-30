@@ -343,7 +343,7 @@ mod tests {
                 format!("A{height}{}", if *finalized { "f" } else { "" })
             }
             Step::Finalized { height } => format!("F{height}"),
-            Step::Reset => "R".to_owned(),
+            Step::Reorg => "R".to_owned(),
             Step::Shutdown => "S".to_owned(),
         }
     }
@@ -457,7 +457,7 @@ mod tests {
                 match step {
                     Step::Apply { data, .. } => published.push(data),
                     Step::Shutdown => break,
-                    Step::Finalized { .. } | Step::Reset => {}
+                    Step::Finalized { .. } | Step::Reorg => {}
                 }
             }
             assert_eq!(derived_steps, block_steps, "{boot}: derived mirrors the block stream");
@@ -483,7 +483,7 @@ mod tests {
     }
 
     /// Depth 2, tip 3 on fork 0 (2, 3 non-finalized), then fork 1 wins from 2 (its 3 spends an
-    /// output only its own 2 created): the derived stream carries the `Reset` where the block
+    /// output only its own 2 created): the derived stream carries the `Reorg` where the block
     /// stream did, then fork 1's items, resolved against fork 1's outputs
     #[tokio::test]
     async fn a_reorg_drops_the_losing_branch_outputs_and_republishes_the_winner() {
@@ -538,7 +538,7 @@ mod tests {
         for block in [&genesis, &one].into_iter().chain(&losing) {
             block_sink.send(apply(block)).await;
         }
-        block_sink.send(Step::Reset).await;
+        block_sink.send(Step::Reorg).await;
         for block in &winning {
             block_sink.send(apply(block)).await;
         }

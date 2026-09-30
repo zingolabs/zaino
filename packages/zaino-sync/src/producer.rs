@@ -146,7 +146,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
                 self.advanced(&published);
             }
             Ok(Advance::Reorg { fork }) => {
-                let resume = self.sink.reset().await;
+                let resume = self.sink.reorg().await;
                 assert!(resume <= fork, "reorg at {fork:?} reaches final height {resume:?}");
                 emit::reorg();
                 let published = self.publish(head, tip).await;
@@ -407,7 +407,7 @@ mod tests {
                         format!("{byte:x}{}", if finalized { "f" } else { "" })
                     }
                     Step::Finalized { height } => format!("F{height}"),
-                    Step::Reset => "R".to_owned(),
+                    Step::Reorg => "R".to_owned(),
                     Step::Shutdown => panic!("producer shut down uncancelled"),
                 };
                 steps.push(step);

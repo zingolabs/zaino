@@ -33,7 +33,7 @@ pub trait Downstream<W: IndexWriter>: sealed::Sealed + Send + 'static {
         run: &[(Height, bool, Arc<W::Input>)],
     ) -> impl Future<Output = Result<(), W::Error>> + Send;
 
-    /// `Finalized` or `Reset`, as followed
+    /// `Finalized` or `Reorg`, as followed
     fn signal(&mut self, step: &Step<W::Input>) -> impl Future<Output = ()> + Send;
 
     fn shutdown(self);
@@ -75,7 +75,7 @@ impl<W: Derives> Downstream<W> for IndexerDataSink<W::Item> {
     async fn signal(&mut self, step: &Step<W::Input>) {
         let step = match *step {
             Step::Finalized { height } => Step::Finalized { height },
-            Step::Reset => Step::Reset,
+            Step::Reorg => Step::Reorg,
             Step::Apply { .. } | Step::Shutdown => {
                 unreachable!("Apply = `applied`, Shutdown = `shutdown`")
             }
@@ -394,7 +394,7 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
                     staged.push(oldest);
                     self.downstream.signal(&Step::Finalized { height }).await;
                 }
-                Step::Reset => {
+                Step::Reorg => {
                     // final is final: write it, drop the non-finalized state, replay after it
                     let finalized_tip = match window.front() {
                         Some(oldest) => oldest.height().checked_sub(1),
@@ -406,7 +406,7 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
                     self.reorg = Some(Instant::now());
                     self.drain(&mut staged).await.map_err(fail)?;
                     self.writer.reset().await.map_err(fail)?;
-                    self.downstream.signal(&Step::Reset).await;
+                    self.downstream.signal(&Step::Reorg).await;
                     window.clear();
                     delivered = finalized_tip;
                     let (durable, applied) =
@@ -851,9 +851,9 @@ mod tests {
         tips.send_replace(quorum(1_501));
         sink.set_tip(h(1_501)).await;
         sink.add(h(1_501), on(0, 1_501)).await;
-        let replay_from = sink.reset().await;
+        let replay_from = sink.reorg().await;
         assert_eq!(replay_from, h(502), "first non-final height (1501 + 1 - 1000)");
-        gate(false, "after a reset dropped the non-finalized state").await;
+        gate(false, "after a reorg dropped the non-finalized state").await;
         let durable = *finalized.borrow();
         assert_eq!(durable, Some(h(501)), "reset wrote final 0 to 501 (both inclusive) first");
 
