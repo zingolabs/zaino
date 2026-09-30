@@ -72,22 +72,48 @@ pub fn run(config_path: &Path) -> i32 {
 
 type Committed = fn(&Path, NetworkType) -> io::Result<CommittedFiles>;
 
+/// Scrubs of one index before a file missing from disk counts as lost
+///
+/// A live daemon's merge can retire files between reading the manifest and scrubbing them. A
+/// missing file the manifest no longer lists was retired, not lost: scrub again against the
+/// newer manifest. Each retry needs another merge to land mid-scrub, so a few are plenty.
+const ATTEMPTS: usize = 4;
+
+/// Every file `committed` lists, scrubbed; retried while missing files turn out to be retired
+fn scrub_index(dir: &Path, network: NetworkType, committed: Committed) -> io::Result<IndexReport> {
+    let scrub_all = |listed: &CommittedFiles| {
+        listed
+            .files
+            .iter()
+            .map(|(path, sealed)| scrub(dir, path, *sealed))
+            .collect::<io::Result<Vec<_>>>()
+    };
+    let mut listed = committed(dir, network)?;
+    let mut files: Vec<Scrub> = scrub_all(&listed)?;
+    for _ in 1..ATTEMPTS {
+        if files.iter().all(|file| !file.lost) {
+            break;
+        }
+        let newer = committed(dir, network)?;
+        let still_listed = |file: &Scrub| newer.files.iter().any(|(path, _)| *path == file.path);
+        if files.iter().filter(|file| file.lost).all(still_listed) {
+            break;
+        }
+        listed = newer;
+        files = scrub_all(&listed)?;
+    }
+    let heights = listed.tip.map_or(0, |tip| u64::from(tip) + 1);
+    Ok(IndexReport { heights, files })
+}
+
 fn verify(config: &DaemonConfig) -> Result<Verification, VerifyError> {
     let index = |name: &'static str, index: &ZainoIndexConfig, committed: Committed| {
         index
             .enabled
             .then(|| {
-                let failed =
-                    |source| VerifyError::Index { index: name, path: index.path.clone(), source };
-                let committed = committed(&index.path, config.network).map_err(failed)?;
-                let files = committed
-                    .files
-                    .iter()
-                    .map(|(path, sealed)| scrub(&index.path, path, *sealed))
-                    .collect::<io::Result<_>>()
-                    .map_err(failed)?;
-                let heights = committed.tip.map_or(0, |tip| u64::from(tip) + 1);
-                Ok::<_, VerifyError>(IndexReport { heights, files })
+                scrub_index(&index.path, config.network, committed).map_err(|source| {
+                    VerifyError::Index { index: name, path: index.path.clone(), source }
+                })
             })
             .transpose()
     };
@@ -182,6 +208,45 @@ mod tests {
         TransactionId, TransparentData, TransparentOutput, Zatoshis,
     };
     use zaino_sync::{BlockWithFees, Derives as _, IndexWriter as _};
+
+    /// A live daemon's merge retiring a file between the manifest read and its scrub is not a
+    /// lost file: the index is scrubbed again against the newer manifest. A file still listed
+    /// and missing is lost.
+    #[test]
+    fn a_file_retired_mid_scrub_is_rescrubbed_but_a_listed_missing_one_is_lost() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use zaino_persistence::pages::Sealed;
+        use zaino_primitives::types::Height;
+
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        fn listing(name: &str) -> CommittedFiles {
+            let tip = Some(Height::try_from(3).expect("height"));
+            CommittedFiles { tip, files: vec![(name.to_owned(), Sealed::EMPTY)] }
+        }
+        fn merged_mid_scrub(_: &Path, _: NetworkType) -> io::Result<CommittedFiles> {
+            Ok(match READS.fetch_add(1, Ordering::SeqCst) {
+                0 => listing("input.seg"),
+                _ => listing("output.seg"),
+            })
+        }
+        fn really_lost(_: &Path, _: NetworkType) -> io::Result<CommittedFiles> {
+            Ok(listing("missing.seg"))
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        for file in ["output.seg", "output.seg.crc"] {
+            std::fs::write(dir.path().join(file), []).expect(file);
+        }
+
+        let report =
+            scrub_index(dir.path(), NetworkType::Main, merged_mid_scrub).expect("rescrubbed");
+        assert!(report.is_clean(), "{report:?}");
+        assert_eq!(report.files[0].path, "output.seg");
+        assert_eq!((report.heights, READS.load(Ordering::SeqCst)), (4, 2));
+
+        let lost = scrub_index(dir.path(), NetworkType::Main, really_lost).expect("scrubbed");
+        assert!(lost.files[0].lost, "{lost:?}");
+    }
 
     /// All five indexes from one chain, scrubbed through the daemon's own config: clean = 0, a
     /// flipped committed byte = its page named + 1, a lost file = 1, disabled = skipped, no

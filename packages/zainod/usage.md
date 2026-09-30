@@ -36,7 +36,10 @@ re-derives them. A disabled index is skipped and reported as `null`.
 
 Safe beside a live daemon: plain sequential reads, no mmap, no lock, nothing
 created or written. Bytes past a file's seal (a live writer's next batch, a
-crash's leftovers) are counted as `orphaned_bytes`, never as corruption.
+crash's leftovers) are counted as `orphaned_bytes`, never as corruption. A merge
+can retire segments between reading the manifest and scrubbing them; a missing
+file the manifest no longer lists is retired, not lost, and that index is
+scrubbed again against the newer manifest.
 
 ### Output and exit status
 
