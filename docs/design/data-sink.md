@@ -88,23 +88,20 @@ consumed the data stream
 An index can also be a publisher. Some indexes need per-block data that another index computes,
 and rather than having them query each other, the upstream index republishes every step it
 follows into a second `IndexerDataSink` of its own, one for one, with its computed item in place
-of the block in each `Apply`. In the code, an index that does this implements the `Derives` trait
-(its `derive(&blocks)` returns one item per block), and the consumer receives each block together
-with that item as `Paired { upstream, derived }`.
+of the block in each `Apply`. In the code, the upstream index's own loop sends those steps, and
+the consumer's loop awaits one step off each queue: its block step, then the derived one.
 
 The compact-block index is the example today. Each compact block needs its fees, and only the
 value-balance index can work those out, because it tracks every output's value. So value-balance
-publishes a `FeeSink`, and compact-block reads it alongside its `BlockSink` queue through `Zip`,
-which pops one step from each and asserts they are the same step.
+publishes a `FeeSink`, and compact-block awaits one fee step after each block step.
 
 ```text
 BlockSink ─┬─▶ value-balance ─▶ FeeSink ─┐
-           └────────────────────────────▶ Zip ─▶ compact-block (block + fees)
+           └─────────────────────────────┴─▶ compact-block (block, then its fees)
 ```
 
 Since both streams carry exactly the same steps, reorgs, replays and shutdown line up without any
-extra code. A new derived stream is an `IndexWriter` that also implements `Derives`, wired up with
-`.publishing(sink)` on its follower.
+extra code. A new derived stream is one more sink an index's loop sends into.
 
 ## Implementation
 
@@ -124,5 +121,5 @@ A few mistakes are made impossible or loud rather than silent:
 - The chain tip is deliberately not part of the stream. Indexes read it from `zaino-chainview`
   directly, which keeps the sink purely about blocks.
 
-[sync.md](./sync.md) covers the producer and followers, and
+[sync.md](./sync.md) covers the producer and the index loops, and
 [`zaino-sync/usage.md`](../../packages/zaino-sync/usage.md) is the API reference.

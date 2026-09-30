@@ -7,6 +7,7 @@
 //! - Quorum tip > depth ahead (startup race, long outage) → bulk again
 //! - Validators failing (after the pool's own retries) → wait + retry, bulk and live alike
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::pin::pin;
 use std::sync::Arc;
@@ -33,19 +34,30 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProduceError {
-    /// Validator agreeing on the quorum tip rewrote a final height (past the reorg bound)
+    /// Validator agreeing on the quorum tip rewrote a final height (past the reorg bound), or its
+    /// chain does not extend the rearmost index's durable tip: resync required
     #[error("block {height:?} does not link onto the block below it")]
     Unlinked { height: Height },
+    /// Validators' block at an index's durable tip is not the one that index committed there (a
+    /// reset validator, a directory from another chain): resync required
+    #[error(
+        "block {height:?} is {got}, but an index committed {expected} there; the validator's \
+         chain diverged below the durable tip (resync required)"
+    )]
+    Diverged { height: Height, expected: BlockHash, got: BlockHash },
     #[error(transparent)]
     BelowWindow(AdvanceError),
     #[error("chain view stopped publishing a tip")]
     ChainViewGone,
 }
 
+/// - `durable` = every index's durable tip hash by height: each fetched block landing on one must
+///   be that block (the only chain-identity check; indexes trust the stream)
 pub struct Producer<S> {
     sink: Publisher<Block>,
     pool: BlockFetchPool<S>,
     tips: watch::Receiver<Option<QuorumTip>>,
+    durable: BTreeMap<Height, BlockHash>,
     progress: Arc<Progress>,
     /// Span over following the quorum tip (bulk logs under the caller's)
     live: Span,
@@ -66,10 +78,23 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         pool: BlockFetchPool<S>,
         tips: watch::Receiver<Option<QuorumTip>>,
         depth: ReorgDepth,
-        durable: impl IntoIterator<Item = Option<Height>>,
+        durable: impl IntoIterator<Item = Option<BlockRef>>,
     ) -> Self {
-        let sink = Publisher::new(sink, depth, durable);
-        Self { sink, pool, tips, progress: Arc::default(), live: Span::none() }
+        let durable: Vec<Option<BlockRef>> = durable.into_iter().collect();
+        let sink = Publisher::new(sink, depth, durable.iter().map(|tip| tip.map(|t| t.height)));
+        let durable = durable.into_iter().flatten().map(|tip| (tip.height, tip.hash)).collect();
+        Self { sink, pool, tips, durable, progress: Arc::default(), live: Span::none() }
+    }
+
+    /// `block` = what the index durable at its height committed there, if any
+    fn matches_durable(&self, block: &Block) -> Result<(), ProduceError> {
+        let (height, got) = (block.header().height, block.header().hash);
+        match self.durable.get(&height) {
+            Some(&expected) if expected != got => {
+                Err(ProduceError::Diverged { height, expected, got })
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Following the quorum tip logs under `span`
@@ -78,7 +103,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         self
     }
 
-    /// Cancel → `Ok`; either way the sink ends with `Shutdown` (every follower persists and stops)
+    /// Cancel → `Ok`; either way the sink ends with `Shutdown` (every index loop persists and stops)
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), ProduceError> {
         let report = report::run(Arc::clone(&self.progress));
         let produce = async {
@@ -97,7 +122,10 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
 
     async fn produce(&mut self) -> Result<Infallible, ProduceError> {
         let live = self.live.clone();
-        let mut head = self.bulk(None).await?;
+        // the first block extends the rearmost index's durable tip
+        let resume = self.sink.next().checked_sub(1);
+        let parent = resume.and_then(|height| self.durable.get(&height).copied());
+        let mut head = self.bulk(parent).await?;
         loop {
             let tip = self.tip().await?;
             let pool = self.agreeing(tip);
@@ -195,7 +223,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
     /// - `end` follows the quorum tip mid-pass (one pass per catch-up, not per tip snapshot)
     /// - Stream exhausted below a raised `end` / failed fetch → reopened from what was added,
     ///   from the validators agreeing on the tip that raised it
-    /// - `parent` = hash the first block must extend (`None` at boot: followers check their own)
+    /// - `parent` = hash the first block must extend (`None` = genesis, nothing to extend)
     async fn bulk(&mut self, mut parent: Option<BlockHash>) -> Result<ChainHead, ProduceError> {
         let start = self.sink.next();
         // final already (an index durable past `start`), whatever the tip says now
@@ -216,6 +244,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         if end < start {
             let durable = start.checked_sub(1).expect("height 0 final under any tip");
             let anchor = block_at(&self.agreeing(tip), durable).await;
+            self.matches_durable(&anchor)?;
             return Ok(ChainHead::new(Arc::new(anchor), self.sink.depth()));
         }
         self.progress.start(start, end, tip.block.height);
@@ -234,6 +263,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
                         if parent.is_some_and(|parent| parent != block.header().prev_hash) {
                             return Err(ProduceError::Unlinked { height: block.header().height });
                         }
+                        self.matches_durable(&block)?;
                         parent = Some(block.header().hash);
                         let block = Arc::new(block);
                         self.add(&block).await;
@@ -431,5 +461,78 @@ mod tests {
         cancel.cancel();
         producer.await.expect("join").expect("cancel = clean stop");
         assert!(matches!(index.next().await, Step::Shutdown), "cancel → Shutdown");
+    }
+
+    /// Validators serving chain A (0..=8), depth 3: an index whose durable tip is not A's block
+    /// there stops production before any block reaches an index, and says why
+    #[tokio::test]
+    async fn a_chain_that_does_not_hold_every_index_durable_tip_stops_production() {
+        let block = |height: u32| {
+            Block::new(
+                BlockHeader::for_tests(
+                    height,
+                    [0x10 + height as u8; 32],
+                    [0x0f + height as u8; 32],
+                    0,
+                ),
+                vec![Transaction {
+                    txid: [0x10 + height as u8; 32].into(),
+                    transparent: Default::default(),
+                    sprout: Default::default(),
+                    sapling: Default::default(),
+                    orchard: Default::default(),
+                    ironwood: Default::default(),
+                }],
+            )
+        };
+        let a: Vec<Block> = (0..=8).map(block).collect();
+        let tip = |height: u32, hash: BlockHash| {
+            Some(BlockRef { hash, height: Height::try_from(height).expect("h") })
+        };
+        let (ours, foreign) = (|h: usize| a[h].header().hash, BlockHash::from([0xee; 32]));
+
+        let cases = [
+            // rearmost durable 3 = another chain's block: A's 4 does not extend it
+            (vec![tip(3, foreign)], "Unlinked 4"),
+            // rearmost durable 2 = A's; the index ahead committed another block at 4
+            (vec![tip(2, ours(2)), tip(4, foreign)], "Diverged 4"),
+        ];
+        for (durable, want) in cases {
+            let chain =
+                a.iter().fold(MockChain::new(), |chain, block| chain.with_block(block.clone()));
+            let pool = BlockFetchPool::new(
+                vec![Arc::new(chain)],
+                FetchRoute::Spread,
+                NonZeroUsize::new(4).expect("nz"),
+            );
+            let quorum = QuorumTip {
+                block: BlockRef { hash: ours(8), height: Height::try_from(8u32).expect("h") },
+                agreed_by: EndpointSet::at([0]),
+            };
+            let (_tips, tips_rx) = watch::channel(Some(quorum));
+            let depth = ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"));
+            let mut block_sink = BlockSink::new("blocks");
+            let mut index = block_sink.subscribe("index", NonZeroUsize::new(1 << 20).expect("nz"));
+            let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
+            let stopped = producer.run(CancellationToken::new()).await.expect_err(want);
+            let got = match stopped {
+                ProduceError::Unlinked { height } => format!("Unlinked {height}"),
+                ProduceError::Diverged { height, expected, got } => {
+                    assert_eq!((expected, got), (foreign, ours(4)), "{want}: names both blocks");
+                    format!("Diverged {height}")
+                }
+                other => panic!("{want}: stopped with {other}"),
+            };
+            assert_eq!(got, want);
+            let mut delivered = Vec::new();
+            while let Step::Apply { height, .. } = index.next().await {
+                delivered.push(u32::from(height));
+            }
+            let clean = if want.starts_with("Unlinked") { vec![] } else { vec![3] };
+            assert_eq!(
+                delivered, clean,
+                "{want}: only blocks proven on the durable chain reach an index"
+            );
+        }
     }
 }

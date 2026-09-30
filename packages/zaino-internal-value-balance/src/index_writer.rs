@@ -1,23 +1,32 @@
-//! [`IndexWriter`]: each delivered block's outputs recorded, its inputs resolved into its fees
+//! value_balance index: each delivered block's outputs recorded, its inputs resolved into its fees,
+//! kept by its own loop
 //!
-//! - `deliver` records the run's outputs; [`Derives::derive`] resolves its fees (the follower
-//!   forwards them, one per block, into the [`FeeSink`](zaino_sync::FeeSink))
-//! - `apply` only moves the non-finalized extent
-//! - `finalize` writes the outputs `deliver` recorded; they leave `pending` once it lands
+//! - A run of queued blocks: outputs into `pending`, fees for the whole run resolved in one probe
+//!   of durable storage
+//! - Every step republished into the [`FeeSink`], 1:1 (replayed heights too: an index behind this
+//!   one still pairs them)
+//! - A commit moves outputs through a height from `pending` to the store's segments
 
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    num::NonZeroUsize,
+    path::Path,
+    sync::Arc,
+};
 
+use tokio_util::sync::CancellationToken;
 use zaino_persistence::{
     fs::Fs,
     lsm::{LsmStore, SegmentSet, Snapshot},
-    manifest::Committed,
     StoreError,
 };
 use zaino_primitives::types::{
     Block, BlockFees, BlockRef, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId,
     Zatoshis,
 };
-use zaino_sync::{blocking, Derives, IndexWriter, Offloaded};
+use zaino_sync::{
+    blocking, FeeSink, IndexFailed, Offloaded, Published, Step, Subscription, Weight,
+};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::{key::OutputRow, pending::Pending, ValueBalanceIndex};
@@ -43,38 +52,223 @@ pub enum IndexWriterError {
 
 /// Records every transparent output and derives one [`BlockFees`] per block
 ///
-/// - `committed` = the store's as of the last landing (answered without the store while a
-///   write has it)
+/// - `outputs` = the durable segment set (live: a pin = the segments as of the last commit)
 /// - `applied` = last applied height, inclusive (`None` = none)
+/// - `unwritten` = blocks whose outputs sit in `pending`, oldest first; `final_through` = the
+///   highest final one (bulk), `bulk_bytes` = their [`Weight`]
+/// - `batch_bytes` = one run's bytes and one bulk commit's
 pub struct ValueBalanceIndexWriter {
     outputs: SegmentSet<OutPoint>,
     store: Offloaded<LsmStore<ValueBalanceIndex>>,
-    committed: Committed,
+    durable: Option<BlockRef>,
     applied: Option<Height>,
     pending: Pending,
-}
-
-/// A finished `finalize` write: the store back, plus the outpoints it now holds
-pub struct Landing {
-    store: LsmStore<ValueBalanceIndex>,
-    landed: Vec<OutPoint>,
+    unwritten: VecDeque<BlockRef>,
+    final_through: Option<Height>,
+    bulk_bytes: usize,
+    batch_bytes: NonZeroUsize,
+    published: Published<()>,
 }
 
 impl ValueBalanceIndexWriter {
+    pub const NAME: &'static str = "value_balance";
+
     /// Opens `path` at its committed state (every listed segment proven, every other one removed)
+    ///
+    /// - `batch_bytes` = final blocks per bulk write (one fsync), and one run's bytes
     pub fn open(
         fs: Arc<dyn Fs>,
         path: &Path,
         network: NetworkType,
+        batch_bytes: NonZeroUsize,
     ) -> Result<Self, IndexWriterError> {
         let store = LsmStore::open(fs, path, network)?;
+        let durable = store.committed().tip;
+        let applied = durable.map(|tip| tip.height);
         Ok(Self {
-            committed: store.committed(),
-            applied: store.committed().height(),
             outputs: store.sets(),
             store: Offloaded::new(store),
+            durable,
+            applied,
             pending: Pending::default(),
+            unwritten: VecDeque::new(),
+            final_through: None,
+            bulk_bytes: 0,
+            batch_bytes,
+            published: Published::new((), applied),
         })
+    }
+
+    /// Last committed block (the producer checks the chain it streams links onto it)
+    pub fn durable_tip(&self) -> Option<BlockRef> {
+        self.durable
+    }
+
+    /// Tips and gate, for metrics and status (taken before [`run`](Self::run))
+    pub fn published(&self) -> &Published<()> {
+        &self.published
+    }
+
+    /// Follows `blocks` through its `Shutdown`, republishing into `fees`; a failure cancels
+    /// `cancel` (the pipeline) first, and `fees` ends with `Shutdown` either way
+    pub async fn run(
+        mut self,
+        mut blocks: Subscription<Block>,
+        fees: FeeSink,
+        cancel: CancellationToken,
+    ) -> Result<(), IndexFailed<IndexWriterError>> {
+        let followed = self.follow(&mut blocks, &fees).await;
+        if followed.is_err() {
+            cancel.cancel();
+        }
+        blocks.skip_to_shutdown().await;
+        fees.shutdown();
+        followed.map_err(|source| IndexFailed { index: Self::NAME, source })
+    }
+
+    async fn follow(
+        &mut self,
+        blocks: &mut Subscription<Block>,
+        fees: &FeeSink,
+    ) -> Result<(), IndexWriterError> {
+        // non-`Apply` step popped while gathering a run (handled next, keeping step order)
+        let mut held: Option<Step<Block>> = None;
+        loop {
+            let step = match held.take() {
+                Some(step) => step,
+                None => blocks.next().await,
+            };
+            match step {
+                Step::Apply { height, finalized, data } => {
+                    // run = this block + every `Apply` already queued, to one batch's bytes
+                    let mut bytes = data.weight();
+                    let mut run = vec![(height, finalized, data)];
+                    while bytes < self.batch_bytes.get() {
+                        match blocks.try_next() {
+                            Some(Step::Apply { height, finalized, data }) => {
+                                bytes = bytes.saturating_add(data.weight());
+                                run.push((height, finalized, data));
+                            }
+                            other => {
+                                held = other;
+                                break;
+                            }
+                        }
+                    }
+                    // outputs above the durable tip recorded first: a later block may spend an
+                    // earlier one's (at or below = a replay for an index behind: on disk already)
+                    let durable = self.durable.map(|tip| tip.height);
+                    for (height, _, block) in &run {
+                        if Some(*height) > durable {
+                            self.pending.insert(block);
+                        }
+                    }
+                    // the whole run's fees in one probe (cold page faults overlap)
+                    let run_blocks: Vec<Arc<Block>> =
+                        run.iter().map(|(_, _, block)| Arc::clone(block)).collect();
+                    let (pending, outputs) = (self.pending.clone(), self.outputs.pin());
+                    let run_fees =
+                        blocking(move || resolve(&run_blocks, &pending, &outputs)).await?;
+
+                    for ((height, finalized, block), block_fees) in run.into_iter().zip(run_fees) {
+                        let data = Arc::new(block_fees);
+                        fees.send(Step::Apply { height, finalized, data }).await;
+                        let at = BlockRef { hash: block.header().hash, height };
+                        if Some(height) <= durable {
+                            continue;
+                        }
+                        if finalized {
+                            assert!(
+                                self.applied <= durable,
+                                "value_balance: final block above non-finalized"
+                            );
+                            self.unwritten.push_back(at);
+                            self.final_through = Some(height);
+                            self.bulk_bytes += block.weight();
+                            if self.bulk_bytes >= self.batch_bytes.get() {
+                                self.commit(height).await?;
+                            }
+                        } else {
+                            // bulk → tip: what bulk staged commits before the first apply
+                            if let Some(through) = self.final_through {
+                                self.commit(through).await?;
+                            }
+                            let next = self.applied.map_or(Height::GENESIS, Height::next);
+                            assert_eq!(
+                                height, next,
+                                "value_balance: blocks must arrive contiguously"
+                            );
+                            self.applied = Some(height);
+                            self.unwritten.push_back(at);
+                        }
+                    }
+                }
+                Step::Finalized { height } => {
+                    fees.send(Step::Finalized { height }).await;
+                    self.commit(height).await?;
+                }
+                Step::Reorg => {
+                    assert!(
+                        self.final_through.is_none(),
+                        "value_balance: reorg with finals staged"
+                    );
+                    // back to the durable tip (segments untouched: commits are final-only)
+                    self.pending = Pending::default();
+                    self.unwritten.clear();
+                    self.applied = self.durable.map(|tip| tip.height);
+                    self.publish();
+                    self.published.reorged();
+                    fees.send(Step::Reorg).await;
+                }
+                Step::Shutdown => {
+                    if let Some(through) = self.final_through {
+                        self.commit(through).await?;
+                    }
+                    return Ok(());
+                }
+            }
+            self.publish();
+        }
+    }
+
+    /// Outputs of every block through `through` → disk, then they leave `pending` (segments answer
+    /// for them)
+    async fn commit(&mut self, through: Height) -> Result<(), IndexWriterError> {
+        let mut next = self.durable.map_or(Height::GENESIS, |tip| tip.height.next());
+        let mut tip = None;
+        while self.unwritten.front().is_some_and(|block| block.height <= through) {
+            let block = self.unwritten.pop_front().expect("front checked");
+            assert_eq!(
+                block.height, next,
+                "value_balance: final blocks not contiguous from durable"
+            );
+            next = next.next();
+            tip = Some(block);
+        }
+        let tip =
+            tip.unwrap_or_else(|| panic!("value_balance: nothing to commit through {through}"));
+        assert_eq!(tip.height, through, "value_balance: final blocks short of {through}");
+
+        let rows = self.pending.rows_through(Some(through));
+        let written: Vec<OutPoint> = rows.iter().map(|row| row.key).collect();
+        self.store.blocking(move |store| store.commit(rows, tip)).await?;
+
+        self.durable = self.store.get().committed().tip;
+        self.pending.remove(&written);
+        if self.final_through <= Some(through) {
+            self.final_through = None;
+            self.bulk_bytes = 0;
+        }
+        let durable = self.durable.map(|tip| tip.height);
+        self.applied = self.applied.max(durable);
+        // view first: a reader woken by the durable tip pins the view holding it
+        self.publish();
+        self.published.durable(durable);
+        Ok(())
+    }
+
+    fn publish(&self) {
+        self.published.view((), self.applied);
     }
 }
 
@@ -153,127 +347,21 @@ fn fee(
     Ok(Fee::Paid(Zatoshis::new(remaining).map_err(|_| overflow())?))
 }
 
-impl IndexWriter for ValueBalanceIndexWriter {
-    type Input = Block;
-    type View = ();
-    type Error = IndexWriterError;
-    type Done = Landing;
-
-    const NAME: &'static str = "value_balance";
-
-    fn finalized_tip(&self) -> Option<BlockRef> {
-        self.committed.tip
-    }
-
-    fn applied_height(&self) -> Option<Height> {
-        self.applied
-    }
-
-    fn view(&self) {}
-
-    /// Every output of the run first: a later block may spend an earlier one's
-    async fn deliver(&mut self, blocks: &[Arc<Block>]) -> Result<(), IndexWriterError> {
-        let durable = self.finalized_height();
-        for block in blocks {
-            // durable = outputs already on disk (a replay for a downstream index behind this one)
-            if Some(block.header().height) > durable {
-                self.pending.insert(block);
-            }
-        }
-        Ok(())
-    }
-
-    async fn apply(&mut self, block: &Arc<Block>) -> Result<(), IndexWriterError> {
-        let height = block.header().height;
-        let next = self.applied.map_or(Height::GENESIS, Height::next);
-        assert_eq!(height, next, "value_balance: blocks must arrive contiguously");
-        self.applied = Some(height);
-        Ok(())
-    }
-
-    async fn finalize(
-        &mut self,
-        blocks: &[Arc<Block>],
-    ) -> Result<
-        impl FnOnce() -> Result<Self::Done, IndexWriterError> + Send + 'static,
-        IndexWriterError,
-    > {
-        let mut reached = self.finalized_height();
-        for block in blocks {
-            let height = block.header().height;
-            let next = reached.map_or(Height::GENESIS, Height::next);
-            assert_eq!(height, next, "value_balance: finalize batch not contiguous");
-            reached = Some(height);
-        }
-        let last = blocks.last().expect("value_balance: finalize with no blocks").header();
-        let tip = BlockRef { hash: last.hash, height: last.height };
-
-        let rows = self.pending.rows_through(reached);
-        let landing: Vec<OutPoint> = rows.iter().map(|row| row.key).collect();
-        let mut store = self.store.lend();
-        Ok(move || {
-            store.commit(rows, tip)?;
-            Ok(Landing { store, landed: landing })
-        })
-    }
-
-    async fn committed(
-        &mut self,
-        Landing { store, landed }: Landing,
-    ) -> Result<(), IndexWriterError> {
-        self.committed = store.committed();
-        self.store.restore(store);
-        // durable segments answer for these now (published by the write, before this)
-        self.pending.remove(&landed);
-
-        self.applied = self.applied.max(self.committed.height());
-        Ok(())
-    }
-
-    async fn reset(&mut self) -> Result<(), IndexWriterError> {
-        // segments untouched (commits are final-only); the harness flushed what was staged
-        self.pending = Pending::default();
-        self.applied = self.finalized_height();
-        Ok(())
-    }
-
-    fn wants_commit(&self) -> bool {
-        self.store.get().merge_finished()
-    }
-}
-
-impl Derives for ValueBalanceIndexWriter {
-    type Item = BlockFees;
-
-    /// Durable prevouts = segment probes (a cold page fault each): the blocking pool's step
-    async fn derive(&mut self, blocks: &[Arc<Block>]) -> Result<Vec<BlockFees>, IndexWriterError> {
-        let (blocks, pending, durable) =
-            (blocks.to_vec(), self.pending.clone(), self.outputs.pin());
-        blocking(move || resolve(&blocks, &pending, &durable)).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::num::{NonZeroU32, NonZeroUsize};
+    use std::time::Duration;
 
-    use tokio::sync::watch;
-    use tokio_util::sync::CancellationToken;
     use zaino_persistence::fs::SimFs;
     use zaino_primitives::types::{
-        BlockHeader, OrchardData, ReorgDepth, SaplingData, Script, SignedZatoshis, SproutData,
-        Transaction, TransparentData, TransparentOutput,
+        BlockHeader, OrchardData, SaplingData, Script, SignedZatoshis, SproutData, Transaction,
+        TransparentData, TransparentOutput,
     };
-    use zaino_sync::{BlockSink, FeeSink, FollowError, IndexFollower, Step};
+    use zaino_sync::BlockSink;
 
     use super::*;
 
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
-    }
-
-    fn depth(n: u32) -> ReorgDepth {
-        ReorgDepth::new(NonZeroU32::new(n).expect("non-zero"))
     }
 
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
@@ -352,9 +440,9 @@ mod tests {
         }
     }
 
-    /// Three commits crashed after every operation: each state reopens to an acknowledged or
-    /// attempted commit, resolves the next block's fees against the outputs it recovered, and
-    /// keeps committing from there
+    /// Four final blocks sent one at a time (a 1-byte batch = one commit each), crashed after every
+    /// operation: each state reopens to an acknowledged or attempted commit, and the index run on
+    /// it resolves the next block's fees against the outputs it recovered and commits it
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_committed_prefix_whose_outputs_still_resolve() {
         let path = Path::new("/vb");
@@ -367,73 +455,85 @@ mod tests {
             block(3, 0, 0, vec![coinbase(0x13, 50_000), tx(0x22, &[(0x11, 0)], &[40_000], [0; 4])]),
             block(4, 0, 0, vec![coinbase(0x14, 50_000), tx(0x23, &[(0x21, 0)], &[70_000], [0; 4])]),
         ];
-        let expected = [vec![None], vec![None, Some(10_000)], vec![None, Some(10_000)]];
-        let expected =
-            [&expected[..], &[vec![None, Some(10_000)], vec![None, Some(10_000)]]].concat();
-        // commits cover heights 0..=1, 2, 3; height 4 is only ever committed after a recovery
-        let commits: [&[Arc<Block>]; 3] = [&chain[0..2], &chain[2..3], &chain[3..4]];
+        let paid = vec![None, Some(10_000)];
+        let expected = [vec![None], paid.clone(), paid.clone(), paid.clone(), paid];
+        let within = Duration::from_secs(5);
 
+        // commits of 0..=3 (4 only ever committed after a recovery); tag = commits acknowledged
         let fs = SimFs::recording();
-        {
-            let mut writer = ValueBalanceIndexWriter::open(fs.clone(), path, NetworkType::Regtest)
-                .expect("open");
-            for (acked, run) in (1u64..).zip(commits) {
-                writer.deliver(run).await.expect("deliver");
-                zaino_sync::finalize_now(&mut writer, run).await.expect("commit");
-                fs.set_tag(acked);
-            }
+        let index = ValueBalanceIndexWriter::open(
+            fs.clone(),
+            path,
+            NetworkType::Regtest,
+            NonZeroUsize::MIN,
+        )
+        .expect("open");
+        let mut durable = index.published().subscribe_finalized();
+        let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
+        let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+        let blocks = block_sink.subscribe("value_balance", QUEUE);
+        let running = tokio::spawn(index.run(blocks, fee_sink, CancellationToken::new()));
+        for (acked, block) in (1u64..).zip(&chain[..4]) {
+            let height = block.header().height;
+            block_sink.send(Step::Apply { height, finalized: true, data: Arc::clone(block) }).await;
+            let landed = tokio::time::timeout(within, durable.wait_for(|at| *at == Some(height)));
+            landed.await.expect("each block commits").expect("index alive");
+            fs.set_tag(acked);
         }
-        let tip_after = |commits_done: u64| match commits_done {
-            0 => None,
-            1 => Some(h(1)),
-            2 => Some(h(2)),
-            _ => Some(h(3)),
-        };
+        block_sink.shutdown();
+        running.await.expect("joined").expect("clean stop");
+        consumer.skip_to_shutdown().await;
+        let tip_after = |commits: u64| (commits > 0).then(|| h((commits - 1).min(3) as u32));
 
         let states = fs.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
-            let label = &state.label;
-            let mut writer = ValueBalanceIndexWriter::open(state.fs, path, NetworkType::Regtest)
-                .unwrap_or_else(|error| panic!("{label}: {error}"));
-            let tip = writer.finalized_height();
+            let crashed = &state.label;
+            let index = ValueBalanceIndexWriter::open(state.fs, path, NetworkType::Regtest, QUEUE)
+                .unwrap_or_else(|error| panic!("{crashed}: {error}"));
+            let tip = index.durable_tip().map(|tip| tip.height);
             let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
-            assert!(acked.contains(&tip), "{label}: recovered through {tip:?}");
+            assert!(acked.contains(&tip), "{crashed}: recovered through {tip:?}");
 
-            let next = tip.map_or(0, |tip| u32::from(tip) + 1) as usize;
-            let run = &chain[next..=next];
-            writer.deliver(run).await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let derived =
-                writer.derive(run).await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            assert_eq!(fees(&derived[0]), expected[next], "{label}: fees of block {next}");
-            zaino_sync::finalize_now(&mut writer, run)
-                .await
-                .unwrap_or_else(|error| panic!("{label}: commit after recovery: {error}"));
+            let next = tip.map_or(0, |tip| u32::from(tip) + 1);
+            let durable = index.published().subscribe_finalized();
+            let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
+            let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+            let blocks = block_sink.subscribe("value_balance", QUEUE);
+            let running = tokio::spawn(index.run(blocks, fee_sink, CancellationToken::new()));
+            let data = Arc::clone(&chain[next as usize]);
+            block_sink.send(Step::Apply { height: h(next), finalized: true, data }).await;
+            block_sink.shutdown();
+            let stopped = running.await.expect("joined");
+            stopped.unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
+
+            let resolved = match consumer.next().await {
+                Step::Apply { data, .. } => fees(&data),
+                other => panic!("{crashed}: fees of block {next} expected, got {}", label(&other)),
+            };
+            assert_eq!(resolved, expected[next as usize], "{crashed}: fees of block {next}");
+            assert!(
+                matches!(consumer.next().await, Step::Shutdown),
+                "{crashed}: one block, then stop"
+            );
+            assert_eq!(*durable.borrow(), Some(h(next)), "{crashed}: written, landed");
         }
     }
 
-    /// Depth 2, tip 4 (0 to 2 final, both inclusive, committed one per batch; 3, 4
-    /// non-finalized): every prevout resolves wherever it lives
+    /// Tip 4 (0 to 2 final, both inclusive; 3, 4 non-finalized): every prevout resolves wherever
+    /// it lives
     /// - 1: spends 0's output (durable) and one from earlier in its own block (staged)
     /// - 3: spends 1's outputs (durable) with value leaving sprout
     /// - 4: spends 3's output (non-finalized) and enters ironwood
     ///
     /// Restart with a downstream index durable at 0 (BlockSink starts at 1): 1 to 2 (both
     /// inclusive) replay through durable storage alone, 3 onward recorded again, and every item is
-    /// identical
+    /// identical; the fee stream = the block stream step for step (`Shutdown` last)
     ///
-    /// Derived stream = the block stream step for step (same heights, flags, `Shutdown` last)
-    ///
-    /// Both batch sizes: 1 byte = one block per `deliver`; 1 MiB = the queued chain as one run
-    /// (1's spend of 0's output then resolves inside the run, not from a committed segment)
+    /// Both batch sizes: 1 byte = one block per run; 1 MiB = the queued chain as one run (1's
+    /// spend of 0's output then resolves inside the run, not from a committed segment)
     #[tokio::test]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_a_replay_republishes_them() {
-        for batch in [NonZeroUsize::MIN, QUEUE] {
-            resolve_every_prevout_and_replay(batch).await;
-        }
-    }
-
-    async fn resolve_every_prevout_and_replay(batch: NonZeroUsize) {
         let chain = [
             block(0, 0, 0, vec![coinbase(0x10, 100_000)]),
             block(
@@ -478,77 +578,88 @@ mod tests {
             vec![None, Some(1_000)],
             vec![None, Some(500)],
         ];
-        let fs = SimFs::new();
 
-        let mut first_boot = Vec::new();
-        for (boot, downstream) in [("first", None), ("restart", Some(h(0)))] {
-            let writer =
-                ValueBalanceIndexWriter::open(fs.clone(), Path::new("/vb"), NetworkType::Regtest)
-                    .expect("open");
-            let durable = writer.finalized_height();
-            let mut block_sink = BlockSink::new("blocks");
-            let mut fee_sink = FeeSink::new("fees");
-            let mut consumer = fee_sink.subscribe("consumer", QUEUE);
-            let subscription = block_sink.subscribe("value_balance", QUEUE);
-            let (_tips, tips) = watch::channel(None);
-            let follower = IndexFollower::new(writer, subscription, tips, batch, depth(2))
-                .publishing(fee_sink);
-            let mut blocks = block_sink.subscribe("downstream", QUEUE);
-            let finalized = follower.subscribe_finalized();
-            let running = tokio::spawn(follower.run(CancellationToken::new()));
+        for batch in [NonZeroUsize::MIN, QUEUE] {
+            let fs = SimFs::new();
+            let mut first_boot = Vec::new();
+            for (boot, downstream) in [("first", None), ("restart", Some(h(0)))] {
+                let index = ValueBalanceIndexWriter::open(
+                    fs.clone(),
+                    Path::new("/vb"),
+                    NetworkType::Regtest,
+                    batch,
+                )
+                .expect("open");
+                let durable = index.durable_tip().map(|tip| tip.height);
+                let finalized = index.published().subscribe_finalized();
+                let mut block_sink = BlockSink::new("blocks");
+                let mut fee_sink = FeeSink::new("fees");
+                let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+                let subscription = block_sink.subscribe("value_balance", QUEUE);
+                let mut blocks = block_sink.subscribe("downstream", QUEUE);
+                let running =
+                    tokio::spawn(index.run(subscription, fee_sink, CancellationToken::new()));
 
-            // tip 4, depth 2: final through 2; from after the rearmost durable tip
-            let start = durable.min(downstream).map_or(0, |tip| u32::from(tip) as usize + 1);
-            for block in &chain[start..] {
-                let height = block.header().height;
-                let (finalized, data) = (height <= h(2), Arc::clone(block));
-                block_sink.send(Step::Apply { height, finalized, data }).await;
-            }
-            block_sink.shutdown();
-            running.await.expect("joined").expect("clean stop");
+                // tip 4, depth 2: final through 2; from after the rearmost durable tip
+                let start = durable.min(downstream).map_or(0, |tip| u32::from(tip) as usize + 1);
+                for block in &chain[start..] {
+                    let height = block.header().height;
+                    let (finalized, data) = (height <= h(2), Arc::clone(block));
+                    block_sink.send(Step::Apply { height, finalized, data }).await;
+                }
+                block_sink.shutdown();
+                running.await.expect("joined").expect("clean stop");
 
-            let (mut block_steps, mut derived_steps, mut published) = (vec![], vec![], vec![]);
-            loop {
-                let step = blocks.next().await;
-                block_steps.push(label(&step));
-                if matches!(step, Step::Shutdown) {
-                    break;
+                let (mut block_steps, mut fee_steps, mut published) = (vec![], vec![], vec![]);
+                loop {
+                    let step = blocks.next().await;
+                    block_steps.push(label(&step));
+                    if matches!(step, Step::Shutdown) {
+                        break;
+                    }
+                }
+                loop {
+                    let step = consumer.next().await;
+                    fee_steps.push(label(&step));
+                    match step {
+                        Step::Apply { data, .. } => published.push(data),
+                        Step::Shutdown => break,
+                        Step::Finalized { .. } | Step::Reorg => {}
+                    }
+                }
+                let context = format!("{boot}, batch {batch}");
+                assert_eq!(fee_steps, block_steps, "{context}: fees mirror the block stream");
+                assert_eq!(*finalized.borrow(), Some(h(2)), "{context}: final durable, rest not");
+
+                match boot {
+                    "first" => {
+                        assert_eq!(durable, None, "fresh directory");
+                        assert_eq!(
+                            block_steps,
+                            ["A0f", "A1f", "A2f", "A3", "A4", "S"],
+                            "{context}"
+                        );
+                        let published_fees: Vec<_> = published.iter().map(|b| fees(b)).collect();
+                        assert_eq!(published_fees, expected_fees, "{context}: fees per tx");
+                        first_boot = published;
+                    }
+                    _ => {
+                        assert_eq!(durable, Some(h(2)), "0 to 2 (both inclusive) committed");
+                        assert_eq!(block_steps, ["A1f", "A2f", "A3", "A4", "S"], "{context}");
+                        assert_eq!(
+                            published,
+                            first_boot[1..],
+                            "{context}: replay = identical fees"
+                        );
+                    }
                 }
             }
-            loop {
-                let step = consumer.next().await;
-                derived_steps.push(label(&step));
-                match step {
-                    Step::Apply { data, .. } => published.push(data),
-                    Step::Shutdown => break,
-                    Step::Finalized { .. } | Step::Reorg => {}
-                }
-            }
-            assert_eq!(derived_steps, block_steps, "{boot}: derived mirrors the block stream");
-
-            match boot {
-                "first" => {
-                    assert_eq!(durable, None, "fresh directory");
-                    let expected = ["A0f", "A1f", "A2f", "A3", "A4", "S"];
-                    assert_eq!(block_steps, expected, "{boot}");
-                    let published_fees: Vec<_> = published.iter().map(|b| fees(b)).collect();
-                    assert_eq!(published_fees, expected_fees, "fees per tx");
-                    first_boot = published;
-                }
-                _ => {
-                    assert_eq!(durable, Some(h(2)), "0 to 2 (both inclusive) committed");
-                    assert_eq!(block_steps, ["A1f", "A2f", "A3", "A4", "S"], "{boot}");
-                    assert_eq!(published, first_boot[1..], "replay republishes identical fees");
-                }
-            }
-            let finalized = *finalized.borrow();
-            assert_eq!(finalized, Some(h(2)), "{boot}: final durable, non-finalized not");
         }
     }
 
-    /// Depth 2, tip 3 on fork 0 (2, 3 non-finalized), then fork 1 wins from 2 (its 3 spends an
-    /// output only its own 2 created): the derived stream carries the `Reorg` where the block
-    /// stream did, then fork 1's items, resolved against fork 1's outputs
+    /// Tip 3 on fork 0 (2, 3 non-finalized), then fork 1 wins from 2 (its 3 spends an output only
+    /// its own 2 created): the fee stream carries the `Reorg` where the block stream did, then
+    /// fork 1's fees, resolved against fork 1's outputs
     #[tokio::test]
     async fn a_reorg_drops_the_losing_branch_outputs_and_republishes_the_winner() {
         let genesis = block(0, 0, 0, vec![coinbase(0x10, 100_000)]);
@@ -582,19 +693,21 @@ mod tests {
             ),
         ];
 
-        let writer =
-            ValueBalanceIndexWriter::open(SimFs::new(), Path::new("/vb"), NetworkType::Regtest)
-                .expect("open");
+        let fs = SimFs::new();
+        let index = ValueBalanceIndexWriter::open(
+            fs,
+            Path::new("/vb"),
+            NetworkType::Regtest,
+            NonZeroUsize::MIN,
+        )
+        .expect("open");
         let mut block_sink = BlockSink::new("blocks");
         let mut fee_sink = FeeSink::new("fees");
         let mut consumer = fee_sink.subscribe("consumer", QUEUE);
         let subscription = block_sink.subscribe("value_balance", QUEUE);
-        let (_tips, tips) = watch::channel(None);
-        let follower = IndexFollower::new(writer, subscription, tips, NonZeroUsize::MIN, depth(2))
-            .publishing(fee_sink);
-        let running = tokio::spawn(follower.run(CancellationToken::new()));
+        let running = tokio::spawn(index.run(subscription, fee_sink, CancellationToken::new()));
 
-        // tip 3, depth 2: 0 and 1 final, 2 and 3 not; reset → 2 and 3 again, from fork 1
+        // tip 3, depth 2: 0 and 1 final, 2 and 3 not; reorg → 2 and 3 again, from fork 1
         let apply = |block: &Arc<Block>| {
             let height = block.header().height;
             Step::Apply { height, finalized: height <= h(1), data: Arc::clone(block) }
@@ -609,20 +722,20 @@ mod tests {
         block_sink.shutdown();
         running.await.expect("joined").expect("clean stop");
 
-        let mut derived = Vec::new();
+        let mut published = Vec::new();
         loop {
             let step = consumer.next().await;
             let seen = match &step {
                 Step::Apply { data, .. } => format!("{} {:?}", label(&step), fees(data)),
                 _ => label(&step),
             };
-            derived.push(seen);
+            published.push(seen);
             if matches!(step, Step::Shutdown) {
                 break;
             }
         }
         assert_eq!(
-            derived,
+            published,
             [
                 "A0f [None]",
                 "A1f [None]",
@@ -633,7 +746,7 @@ mod tests {
                 "A3 [None, Some(10000)]",
                 "S",
             ],
-            "losing branch, the reset where the block stream had it, then the winner's own fees"
+            "losing branch, the reorg where the block stream had it, then the winner's own fees"
         );
     }
 
@@ -666,23 +779,24 @@ mod tests {
         ];
 
         for (invalid, expected) in cases {
-            let writer =
-                ValueBalanceIndexWriter::open(SimFs::new(), Path::new("/vb"), NetworkType::Regtest)
-                    .expect("open");
+            let fs = SimFs::new();
+            let index = ValueBalanceIndexWriter::open(
+                fs,
+                Path::new("/vb"),
+                NetworkType::Regtest,
+                NonZeroUsize::MIN,
+            )
+            .expect("open");
             let mut block_sink = BlockSink::new("blocks");
             let mut fee_sink = FeeSink::new("fees");
             let mut consumer = fee_sink.subscribe("consumer", QUEUE);
             let subscription = block_sink.subscribe("value_balance", QUEUE);
-            let (_tips, tips) = watch::channel(None);
-            let follower =
-                IndexFollower::new(writer, subscription, tips, NonZeroUsize::MIN, depth(2))
-                    .publishing(fee_sink);
-            let shutdown = CancellationToken::new();
-            let running = tokio::spawn(follower.run(shutdown.clone()));
+            let cancel = CancellationToken::new();
+            let running = tokio::spawn(index.run(subscription, fee_sink, cancel.clone()));
 
             let data = block(0, 0, 0, vec![coinbase(0x10, 100_000), invalid]);
             block_sink.send(Step::Apply { height: h(0), finalized: false, data }).await;
-            tokio::time::timeout(std::time::Duration::from_secs(5), shutdown.cancelled())
+            tokio::time::timeout(Duration::from_secs(5), cancel.cancelled())
                 .await
                 .expect("the failure cancels the pipeline");
             block_sink.shutdown();
@@ -690,9 +804,9 @@ mod tests {
             let stopped = running.await.expect("joined");
             assert!(
                 matches!(consumer.next().await, Step::Shutdown),
-                "{expected}: nothing derived for the failed block, then Shutdown"
+                "{expected}: no fees for the failed block, then Shutdown"
             );
-            let Err(FollowError::Index { index, source }) = &stopped else { panic!("{stopped:?}") };
+            let Err(IndexFailed { index, source }) = &stopped else { panic!("{stopped:?}") };
             assert_eq!(*index, "value_balance");
             assert_eq!(format!("{source:?}"), format!("{expected:?}"));
         }

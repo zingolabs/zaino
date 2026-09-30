@@ -5,12 +5,12 @@
 //! written down (`docs/design/sync.md`):
 //!
 //! ```text
-//!   validators ──▶ ChainView ── quorum tip ──▶ Producer ──▶ BlockSink ─┬─▶ IndexFollower(compact_block) ◀┐ Zip
-//!   validators ──▶ BlockFetchPool ───────────────┘                     ├─▶ IndexFollower(value_balance)  │ (lockstep)
-//!                                                                      │     └─▶ FeeSink ────────────────┘
-//!                                                                      ├─▶ IndexFollower(block_hash)
-//!                                                                      ├─▶ IndexFollower(tree_state)
-//!                                                                      ├─▶ IndexFollower(transparent_address)
+//!   validators ──▶ ChainView ── quorum tip ──▶ Producer ──▶ BlockSink ─┬─▶ compact_block.run ◀────┐ fees
+//!   validators ──▶ BlockFetchPool ───────────────┘                     ├─▶ value_balance.run      │
+//!                                                                      │     └─▶ FeeSink ─────────┘
+//!                                                                      ├─▶ block_hash.run
+//!                                                                      ├─▶ tree_state.run
+//!                                                                      ├─▶ transparent_address.run
 //!                                                                      └─▶ (further indexes subscribe here)
 //!
 //!   non-finalized + files ──▶ CompactBlockService       ──┐
@@ -20,8 +20,8 @@
 //! ```
 //!
 //! - Stage → stage = a channel, wired here by hand (no scheduler, no dependency graph)
-//! - Every `IndexFollower` also reads the quorum tip (serving gate, bulk / follow switch); the
-//!   sink carries blocks only
+//! - Each index = its own loop over its subscription; its serving gate = a separate task reading
+//!   the quorum tip against the index's published applied height
 //! - Every stage = one plain task in a `JoinSet`; fallible setup awaited before any spawn
 //! - Scope: compact-block, block-hash, tree-state, transparent-address slices from their indexes,
 //!   plus `SendTransaction`/`GetLightdInfo` off the validator
@@ -44,7 +44,7 @@ use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_primitives::types::{Block, ReorgDepth};
 use zaino_source::{BlockFetchPool, FetchRoute, ZebraRpcAdapter};
-use zaino_sync::{BlockSink, FeeSink, IndexFollower, IndexWriter, Producer, Zip};
+use zaino_sync::{BlockSink, FeeSink, Producer, Published, Subscription};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::config::{DaemonConfig, SourceConfig, ZainoIndexConfig};
@@ -113,51 +113,55 @@ async fn boot(
     let depth = ReorgDepth::new(config.fetch.finalised_depth);
     let mut block_sink = BlockSink::new("blocks");
     let fs = RealFs::shared();
-
-    // compact-block reads its blocks and value-balance's republished fees in lockstep: both
-    // subscribed before value-balance's follower takes the fee sink
-    let mut fee_sink = FeeSink::new("fees");
-    let (index, fees) = (&config.index.compact_block, &config.index.value_balance);
-    let (compact_block_span, store) = open_index(CompactBlockIndexWriter::NAME, index, || {
-        Ok(CompactBlockStore::open(Arc::clone(&fs), &index.path, config.network)?)
-    })?;
-    let feed = Zip::new(
-        block_sink.subscribe(CompactBlockIndexWriter::NAME, index.queue_bytes()),
-        fee_sink.subscribe(CompactBlockIndexWriter::NAME, fees.queue_bytes()),
-    );
-    let writer = CompactBlockIndexWriter::new(store);
-    let compact_block = IndexFollower::new(writer, feed, tips.clone(), index.batch_bytes(), depth);
-    let (value_balance_span, writer) = open_index(ValueBalanceIndexWriter::NAME, fees, || {
-        Ok(ValueBalanceIndexWriter::open(Arc::clone(&fs), &fees.path, config.network)?)
-    })?;
-    let sink = &mut block_sink;
-    let value_balance = follow(sink, writer, fees, &tips, depth).publishing(fee_sink);
     let (index, network) = (&config.index, config.network);
-    let block_hash = open_block_hash(&fs, &index.block_hash, network)?
-        .map(|(span, writer)| (span, follow(sink, writer, &index.block_hash, &tips, depth)));
-    let tree_state = open_tree_state(&fs, &index.tree_state, network)?
-        .map(|(span, writer)| (span, follow(sink, writer, &index.tree_state, &tips, depth)));
-    let transparent = open_transparent_address(&fs, &index.transparent_address, network)?.map(
-        |(span, writer)| (span, follow(sink, writer, &index.transparent_address, &tips, depth)),
+
+    // compact-block reads one fee step (value-balance's) per block step
+    let mut fee_sink = FeeSink::new("fees");
+    let (config_cb, config_vb) = (&index.compact_block, &index.value_balance);
+    let (compact_block_span, store) = open_index(CompactBlockIndexWriter::NAME, config_cb, || {
+        Ok(CompactBlockStore::open(Arc::clone(&fs), &config_cb.path, network)?)
+    })?;
+    let compact_block = CompactBlockIndexWriter::new(store, config_cb.batch_bytes());
+    let compact_block_feeds = (
+        block_sink.subscribe(CompactBlockIndexWriter::NAME, config_cb.queue_bytes()),
+        fee_sink.subscribe(CompactBlockIndexWriter::NAME, config_vb.queue_bytes()),
     );
+    let (value_balance_span, value_balance) =
+        open_index(ValueBalanceIndexWriter::NAME, config_vb, || {
+            let path = &config_vb.path;
+            let batch = config_vb.batch_bytes();
+            Ok(ValueBalanceIndexWriter::open(Arc::clone(&fs), path, network, batch)?)
+        })?;
+    let value_balance_blocks = subscribe(&mut block_sink, ValueBalanceIndexWriter::NAME, config_vb);
+    let block_hash = open_block_hash(&fs, &index.block_hash, network)?;
+    let tree_state = open_tree_state(&fs, &index.tree_state, network)?;
+    let transparent = open_transparent_address(&fs, &index.transparent_address, network)?;
+    let sink = &mut block_sink;
+    let block_hash_blocks =
+        block_hash.as_ref().map(|_| subscribe(sink, BlockHashIndexWriter::NAME, &index.block_hash));
+    let tree_state_blocks =
+        tree_state.as_ref().map(|_| subscribe(sink, TreeStateIndexWriter::NAME, &index.tree_state));
+    let transparent_blocks = transparent
+        .as_ref()
+        .map(|_| subscribe(sink, TransparentAddressIndexWriter::NAME, &index.transparent_address));
     // every subscriber's durable tip (production starts after the rearmost)
     let durable = [
-        Some(compact_block.writer().finalized_height()),
-        Some(value_balance.writer().finalized_height()),
-        block_hash.as_ref().map(|(_, follower)| follower.writer().finalized_height()),
-        tree_state.as_ref().map(|(_, follower)| follower.writer().finalized_height()),
-        transparent.as_ref().map(|(_, follower)| follower.writer().finalized_height()),
+        Some(compact_block.durable_tip()),
+        Some(value_balance.durable_tip()),
+        block_hash.as_ref().map(|(_, index)| index.durable_tip()),
+        tree_state.as_ref().map(|(_, index)| index.durable_tip()),
+        transparent.as_ref().map(|(_, index)| index.durable_tip()),
     ];
 
-    let compact_block_service = CompactBlockService::new(compact_block.served())
+    let compact_block_service = CompactBlockService::new(compact_block.published().served())
         .with_max_range(config.serve.max_block_range);
     let block_hash_service =
-        block_hash.as_ref().map(|(_, follower)| BlockHashService::new(follower.served()));
+        block_hash.as_ref().map(|(_, index)| BlockHashService::new(index.published().served()));
     let tree_state_service = tree_state
         .as_ref()
-        .map(|(_, follower)| TreeStateService::new(follower.served(), config.network));
-    let transparent_service = transparent.as_ref().map(|(_, follower)| {
-        TransparentAddressService::new(follower.served(), config.network)
+        .map(|(_, index)| TreeStateService::new(index.published().served(), network));
+    let transparent_service = transparent.as_ref().map(|(_, index)| {
+        TransparentAddressService::new(index.published().served(), network)
             .with_max_rows(config.serve.max_address_rows)
     });
 
@@ -167,7 +171,8 @@ async fn boot(
         config.primary_validator_index().map_or(FetchRoute::Spread, FetchRoute::Primary),
         config.fetch.concurrency,
     );
-    let producer = Producer::new(block_sink, pool, tips, depth, durable.into_iter().flatten())
+    let durable = durable.into_iter().flatten();
+    let producer = Producer::new(block_sink, pool, tips.clone(), depth, durable)
         .with_live_span(crate::logging::component("ZainoNFS"));
 
     // --- serving: index first, validator behind it; bound here (EADDRINUSE = boot failure)
@@ -202,50 +207,44 @@ async fn boot(
         )
     });
 
-    crate::metrics::track_index(&compact_block);
-    crate::metrics::track_index(&value_balance);
-    if let Some((_, follower)) = &block_hash {
-        crate::metrics::track_index(follower);
-    }
-    if let Some((_, follower)) = &tree_state {
-        crate::metrics::track_index(follower);
-    }
-    if let Some((_, follower)) = &transparent {
-        crate::metrics::track_index(follower);
-    }
-
     // --- run: nothing fallible left, every stage one task
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
-    let mut report = |span: &Span, watched, config: &ZainoIndexConfig| {
-        let run = crate::index_report::run(watched, config.path.clone(), cancel.child_token());
-        spawn(&mut tasks, "index-report", span.clone(), run);
-    };
-    let index = &config.index;
-    report(&compact_block_span, gates(&compact_block), &index.compact_block);
+    let mut watchers = Watchers { tasks: &mut tasks, tips, depth, cancel: cancel.clone() };
+    let config_cb = &index.compact_block;
+    let published = compact_block.published();
+    watchers.watch(CompactBlockIndexWriter::NAME, &compact_block_span, published, config_cb, true);
     // no service reads value-balance (compact-block takes its fees through the sink)
-    let unread = Watched { reads: None, ..gates(&value_balance) };
-    report(&value_balance_span, unread, &index.value_balance);
-    if let Some((span, follower)) = &block_hash {
-        report(span, gates(follower), &index.block_hash);
+    let (published, span) = (value_balance.published(), &value_balance_span);
+    watchers.watch(ValueBalanceIndexWriter::NAME, span, published, &index.value_balance, false);
+    if let Some((span, writer)) = &block_hash {
+        let name = BlockHashIndexWriter::NAME;
+        watchers.watch(name, span, writer.published(), &index.block_hash, true);
     }
-    if let Some((span, follower)) = &tree_state {
-        report(span, gates(follower), &index.tree_state);
+    if let Some((span, writer)) = &tree_state {
+        let name = TreeStateIndexWriter::NAME;
+        watchers.watch(name, span, writer.published(), &index.tree_state, true);
     }
-    if let Some((span, follower)) = &transparent {
-        report(span, gates(follower), &index.transparent_address);
+    if let Some((span, writer)) = &transparent {
+        let name = TransparentAddressIndexWriter::NAME;
+        watchers.watch(name, span, writer.published(), &index.transparent_address, true);
     }
-    // followers: the root token (a failure cancels everything), stopped by the producer's Shutdown
-    spawn(&mut tasks, "compact-block", compact_block_span, compact_block.run(cancel.clone()));
-    spawn(&mut tasks, "value-balance", value_balance_span, value_balance.run(cancel.clone()));
-    if let Some((span, follower)) = block_hash {
-        spawn(&mut tasks, "block-hash", span, follower.run(cancel.clone()));
+
+    // index loops: the root token (a failure cancels everything), stopped by the producer's
+    // Shutdown
+    let (blocks, fees) = compact_block_feeds;
+    let run = compact_block.run(blocks, fees, cancel.clone());
+    spawn(&mut tasks, "compact-block", compact_block_span, run);
+    let run = value_balance.run(value_balance_blocks, fee_sink, cancel.clone());
+    spawn(&mut tasks, "value-balance", value_balance_span, run);
+    if let (Some((span, index)), Some(blocks)) = (block_hash, block_hash_blocks) {
+        spawn(&mut tasks, "block-hash", span, index.run(blocks, cancel.clone()));
     }
-    if let Some((span, follower)) = tree_state {
-        spawn(&mut tasks, "tree-state", span, follower.run(cancel.clone()));
+    if let (Some((span, index)), Some(blocks)) = (tree_state, tree_state_blocks) {
+        spawn(&mut tasks, "tree-state", span, index.run(blocks, cancel.clone()));
     }
-    if let Some((span, follower)) = transparent {
-        spawn(&mut tasks, "transparent-address", span, follower.run(cancel.clone()));
+    if let (Some((span, index)), Some(blocks)) = (transparent, transparent_blocks) {
+        spawn(&mut tasks, "transparent-address", span, index.run(blocks, cancel.clone()));
     }
     for poller in chainview.pollers {
         spawn(&mut tasks, "chainview", chainview_span.clone(), poller.run(cancel.child_token()));
@@ -341,7 +340,7 @@ fn open_block_hash(
 ) -> Result<Option<(Span, BlockHashIndexWriter)>, IndexerError> {
     let open = || {
         let store = BlockHashStore::open(Arc::clone(fs), &config.path, network)?;
-        Ok(BlockHashIndexWriter::new(store))
+        Ok(BlockHashIndexWriter::new(store, config.batch_bytes()))
     };
     config.enabled.then(|| open_index(BlockHashIndexWriter::NAME, config, open)).transpose()
 }
@@ -354,7 +353,7 @@ fn open_tree_state(
 ) -> Result<Option<(Span, TreeStateIndexWriter)>, IndexerError> {
     let open = || {
         let store = TreeStateStore::open(Arc::clone(fs), &config.path, network)?;
-        Ok(TreeStateIndexWriter::new(store)?)
+        Ok(TreeStateIndexWriter::new(store, config.batch_bytes())?)
     };
     config.enabled.then(|| open_index(TreeStateIndexWriter::NAME, config, open)).transpose()
 }
@@ -367,7 +366,7 @@ fn open_transparent_address(
 ) -> Result<Option<(Span, TransparentAddressIndexWriter)>, IndexerError> {
     let open = || {
         let fs = Arc::clone(fs);
-        Ok(TransparentAddressIndexWriter::open(fs, &config.path, network)?)
+        Ok(TransparentAddressIndexWriter::open(fs, &config.path, network, config.batch_bytes())?)
     };
     config
         .enabled
@@ -375,26 +374,50 @@ fn open_transparent_address(
         .transpose()
 }
 
-/// `follower`'s tips, serving gate and request count, for its status report
-fn gates<W: IndexWriter, F, D>(follower: &IndexFollower<W, F, D>) -> Watched {
-    Watched {
-        finalized: follower.subscribe_finalized(),
-        applied: follower.subscribe_applied(),
-        synced: follower.subscribe_synced(),
-        reads: Some(follower.reads()),
-    }
+/// Index `name`'s own queue off `block_sink`
+fn subscribe(
+    block_sink: &mut BlockSink,
+    name: &'static str,
+    config: &ZainoIndexConfig,
+) -> Subscription<Block> {
+    block_sink.subscribe(name, config.queue_bytes())
 }
 
-/// `writer`'s own queue off `block_sink`, committing per `config.batch_mib`
-fn follow<W: IndexWriter<Input = Block>>(
-    block_sink: &mut BlockSink,
-    writer: W,
-    config: &ZainoIndexConfig,
-    tips: &watch::Receiver<Option<QuorumTip>>,
+/// What every index runs beside its loop: metrics, the status report, the serving gate
+struct Watchers<'a> {
+    tasks: &'a mut JoinSet<TaskExit>,
+    tips: watch::Receiver<Option<QuorumTip>>,
     depth: ReorgDepth,
-) -> IndexFollower<W> {
-    let subscription = block_sink.subscribe(W::NAME, config.queue_bytes());
-    IndexFollower::new(writer, subscription, tips.clone(), config.batch_bytes(), depth)
+    cancel: CancellationToken,
+}
+
+impl Watchers<'_> {
+    /// `served` = a service reads it (its request count reported)
+    fn watch<V: Send + Sync + 'static>(
+        &mut self,
+        name: &'static str,
+        span: &Span,
+        published: &Published<V>,
+        config: &ZainoIndexConfig,
+        served: bool,
+    ) {
+        let watched = Watched {
+            finalized: published.subscribe_finalized(),
+            applied: published.subscribe_applied(),
+            synced: published.subscribe_synced(),
+            reads: served.then(|| published.reads()),
+        };
+        crate::metrics::track_index(name, &watched);
+        let report =
+            crate::index_report::run(watched, config.path.clone(), self.cancel.child_token());
+        spawn(self.tasks, "index-report", span.clone(), report);
+        let gate = published.gate(self.tips.clone(), self.depth, self.cancel.child_token());
+        let gate = async move {
+            gate.await;
+            Ok::<(), IndexerError>(())
+        };
+        spawn(self.tasks, "serving-gate", span.clone(), gate);
+    }
 }
 
 /// Wait for a process shutdown signal, returning which one arrived.

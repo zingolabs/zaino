@@ -1,4 +1,4 @@
-//! Serving's handle on one index: the view its follower last published + its `synced` gate
+//! Serving's handle on one index: the view its loop last published + its `synced` gate
 
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -49,12 +49,12 @@ impl<V> std::fmt::Debug for Served<V> {
 }
 
 impl<V> Served<V> {
-    /// `view` = what the follower republishes, `synced` = its gate; counts into its own [`Reads`]
+    /// `view` = what the index republishes, `synced` = its gate; counts into its own [`Reads`]
     pub fn new(view: Arc<ArcSwap<V>>, synced: watch::Receiver<bool>) -> Self {
         Self::counted(view, synced, Reads::default())
     }
 
-    /// [`new`](Self::new), counting into `reads` (the follower's, shared by every handle)
+    /// [`new`](Self::new), counting into `reads` (the index's, shared by every handle)
     pub(crate) fn counted(
         view: Arc<ArcSwap<V>>,
         synced: watch::Receiver<bool>,
@@ -63,7 +63,7 @@ impl<V> Served<V> {
         Self { view, synced, reads }
     }
 
-    /// `view` for good, synced (an index with no follower behind it: tests)
+    /// `view` for good, synced (no index loop behind it)
     pub fn fixed(view: V) -> Self {
         // sender dropped: `borrow` keeps the last value
         Self::new(Arc::new(ArcSwap::from_pointee(view)), watch::channel(true).1)

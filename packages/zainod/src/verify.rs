@@ -197,6 +197,7 @@ mod tests {
 
     use std::sync::Arc;
 
+    use std::num::NonZeroUsize;
     use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockStore};
     use zaino_index_transparent_address::TransparentAddressIndexWriter;
     use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateStore};
@@ -207,7 +208,9 @@ mod tests {
         Block, BlockHeader, CompactCiphertext, SaplingData, SaplingOutput, Script, Transaction,
         TransactionId, TransparentData, TransparentOutput, Zatoshis,
     };
-    use zaino_sync::{BlockWithFees, Derives as _, IndexWriter as _};
+
+    use tokio_util::sync::CancellationToken;
+    use zaino_sync::{BlockSink, FeeSink, Step};
 
     /// A live daemon's merge retiring a file between the manifest read and its scrub is not a
     /// lost file: the index is scrubbed again against the newer manifest. A file still listed
@@ -300,33 +303,50 @@ mod tests {
             root.path().join("ts"),
             root.path().join("ta"),
         );
+        // the five index loops wired as the daemon wires them, the chain sent as bulk
         let (fs, net) = (RealFs::shared(), NetworkType::Main);
-        let mut compact = CompactBlockIndexWriter::new(
-            CompactBlockStore::open(fs.clone(), &cb, net).expect("cb"),
-        );
-        let mut fees = ValueBalanceIndexWriter::open(fs.clone(), &vb, net).expect("vb writer");
-        let mut paired = Vec::new();
+        let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
+        let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
+        let mut subscribe = |name| block_sink.subscribe(name, batch);
+        let (compact_name, fees_name) =
+            (CompactBlockIndexWriter::NAME, ValueBalanceIndexWriter::NAME);
+        let (compact_blocks, fee_blocks) = (subscribe(compact_name), subscribe(fees_name));
+        let hash_blocks = subscribe(BlockHashIndexWriter::NAME);
+        let tree_blocks = subscribe(TreeStateIndexWriter::NAME);
+        let transparent_blocks = subscribe(TransparentAddressIndexWriter::NAME);
+        let compact_fees = fee_sink.subscribe(compact_name, batch);
+        let store = CompactBlockStore::open(fs.clone(), &cb, net).expect("cb");
+        let compact = CompactBlockIndexWriter::new(store, batch);
+        let fees = ValueBalanceIndexWriter::open(fs.clone(), &vb, net, batch).expect("vb writer");
+        let store = BlockHashStore::open(fs.clone(), &bh, net).expect("bh");
+        let hashes = BlockHashIndexWriter::new(store, batch);
+        let store = TreeStateStore::open(fs.clone(), &ts, net).expect("ts");
+        let trees = TreeStateIndexWriter::new(store, batch).expect("ts writer");
+        let transparent =
+            TransparentAddressIndexWriter::open(fs, &ta, net, batch).expect("ta writer");
+
+        let cancel = CancellationToken::new;
+        let mut loops = tokio::task::JoinSet::new();
+        let failed = |e: &dyn std::fmt::Display| e.to_string();
+        loops.spawn(async move {
+            compact.run(compact_blocks, compact_fees, cancel()).await.map_err(|e| failed(&e))
+        });
+        loops.spawn(async move {
+            fees.run(fee_blocks, fee_sink, cancel()).await.map_err(|e| failed(&e))
+        });
+        loops.spawn(async move { hashes.run(hash_blocks, cancel()).await.map_err(|e| failed(&e)) });
+        loops.spawn(async move { trees.run(tree_blocks, cancel()).await.map_err(|e| failed(&e)) });
+        loops.spawn(async move {
+            transparent.run(transparent_blocks, cancel()).await.map_err(|e| failed(&e))
+        });
         for block in &blocks {
-            fees.deliver(std::slice::from_ref(block)).await.expect("vb deliver");
-            let [block_fees] = <[_; 1]>::try_from(
-                fees.derive(std::slice::from_ref(block)).await.expect("vb derive"),
-            )
-            .expect("one item per block");
-            let (upstream, derived) = (Arc::clone(block), Arc::new(block_fees));
-            paired.push(Arc::new(BlockWithFees { upstream, derived }));
+            let height = block.header().height;
+            block_sink.send(Step::Apply { height, finalized: true, data: Arc::clone(block) }).await;
         }
-        zaino_sync::finalize_now(&mut fees, &blocks).await.expect("vb finalize");
-        zaino_sync::finalize_now(&mut compact, &paired).await.expect("cb finalize");
-        let mut hashes =
-            BlockHashIndexWriter::new(BlockHashStore::open(fs.clone(), &bh, net).expect("bh"));
-        zaino_sync::finalize_now(&mut hashes, &blocks).await.expect("bh finalize");
-        let mut trees =
-            TreeStateIndexWriter::new(TreeStateStore::open(fs.clone(), &ts, net).expect("ts"))
-                .expect("ts writer");
-        zaino_sync::finalize_now(&mut trees, &blocks).await.expect("ts finalize");
-        let mut transparent = TransparentAddressIndexWriter::open(fs, &ta, net).expect("ta writer");
-        zaino_sync::finalize_now(&mut transparent, &blocks).await.expect("ta finalize");
-        drop((compact, fees, hashes, trees, transparent));
+        block_sink.shutdown();
+        while let Some(indexed) = loops.join_next().await {
+            indexed.expect("no panic").expect("indexed through Shutdown");
+        }
 
         let config_path = root.path().join("zainod.toml");
         std::fs::write(

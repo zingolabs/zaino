@@ -160,7 +160,7 @@ probe costs one block read. At mainnet scale that is about 190M outputs × 44 B,
 about 1.4 GB resident plus a delete path for a maintained UTXO set.
 
 The value-balance index serves nothing itself. It publishes each block's per-transaction fees into
-a `FeeSink`, and the compact-block index reads that in lockstep with its blocks, pairing each block
+a `FeeSink`, and the compact-block index reads one fee step after each block step, pairing each block
 with its fees by hash ([sync.md](./sync.md#fees-an-index-publishing-to-another-index)).
 
 Mempool fees are not a fold. An unconfirmed transaction may spend another unconfirmed one, and the

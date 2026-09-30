@@ -1733,6 +1733,7 @@ mod transparent_address {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_util::sync::CancellationToken;
     use zaino_index_transparent_address::TransparentAddressService;
     use zaino_sync::Served;
 
@@ -1808,6 +1809,27 @@ mod tests {
             .uri(format!("http://localhost{path}"))
             .body(Full::new(bytes::Bytes::from(framed)))
             .expect("request")
+    }
+
+    /// An index loop (`follow` = its `run` over the queue given) fed `blocks` as bulk, each a
+    /// final `Apply` then `Shutdown` as the producer sends them, awaited through `Shutdown`
+    async fn indexed<F, E>(
+        blocks: &[std::sync::Arc<zaino_primitives::types::Block>],
+        name: &'static str,
+        follow: impl FnOnce(zaino_sync::Subscription<zaino_primitives::types::Block>) -> F,
+    ) where
+        F: Future<Output = Result<(), E>> + Send + 'static,
+        E: std::fmt::Debug + Send + 'static,
+    {
+        let mut sink = zaino_sync::BlockSink::new("blocks");
+        let queue = std::num::NonZeroUsize::new(1 << 20).expect("non-zero");
+        let running = tokio::spawn(follow(sink.subscribe(name, queue)));
+        for block in blocks {
+            let (height, data) = (block.header().height, std::sync::Arc::clone(block));
+            sink.send(zaino_sync::Step::Apply { height, finalized: true, data }).await;
+        }
+        sink.shutdown();
+        running.await.expect("no panic").expect("indexed through Shutdown");
     }
 
     /// The router claims a method only when an index is wired for it; everything else reaches
@@ -2214,10 +2236,10 @@ mod tests {
         use zaino_index_transparent_address::TransparentAddressIndexWriter;
         use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateStore};
         use zaino_proto::proto::service as proto;
-        use zaino_sync::IndexWriter as _;
 
         let fs = zaino_persistence::fs::SimFs::new();
         let net = zcash_protocol::consensus::NetworkType::Regtest;
+        let batch = std::num::NonZeroUsize::MIN;
 
         let (compact_synced, compact_synced_rx) = tokio::sync::watch::channel(false);
         let compact_block = CompactBlockService::new(Served::new(
@@ -2229,31 +2251,36 @@ mod tests {
             )),
             compact_synced_rx,
         ));
-        let tree_state_writer = TreeStateIndexWriter::new(
+        let tree_state_index = TreeStateIndexWriter::new(
             TreeStateStore::open(fs.clone(), std::path::Path::new("/tree-state"), net)
                 .expect("open"),
+            batch,
         )
         .expect("new");
         // Start unsynced, flip below: the refusal and the answer come from one wiring.
         let (tree_state_synced, tree_state_synced_rx) = tokio::sync::watch::channel(false);
         let (transparent_synced, transparent_synced_rx) = tokio::sync::watch::channel(false);
 
+        // each index's own boot view, behind a gate this test flips
+        let boot_view = tree_state_index.published().served().pin_any();
         let tree_state = TreeStateService::new(
             Served::new(
-                std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(tree_state_writer.view())),
+                std::sync::Arc::new(arc_swap::ArcSwap::from_pointee((*boot_view).clone())),
                 tree_state_synced_rx,
             ),
             net,
         );
-        let transparent_writer = TransparentAddressIndexWriter::open(
+        let transparent_index = TransparentAddressIndexWriter::open(
             fs,
             std::path::Path::new("/transparent-address"),
             net,
+            batch,
         )
         .expect("open");
+        let boot_view = transparent_index.published().served().pin_any();
         let transparent = TransparentAddressService::new(
             Served::new(
-                std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(transparent_writer.view())),
+                std::sync::Arc::new(arc_swap::ArcSwap::from_pointee((*boot_view).clone())),
                 transparent_synced_rx,
             ),
             net,
@@ -2442,7 +2469,6 @@ mod tests {
             TransparentOutput, Zatoshis,
         };
         use zaino_proto::proto::service as proto;
-        use zaino_sync::IndexWriter as _;
 
         // `t1Hsc…` is hash160 `00…00`, `t3Mg6…` is p2sh `22…22` (base58check, mainnet prefixes).
         const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
@@ -2450,12 +2476,14 @@ mod tests {
         let alice_script = [&[0x76, 0xa9, 0x14][..], &[0x00; 20], &[0x88, 0xac]].concat();
         let bob_script = [&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat();
 
-        let mut writer = TransparentAddressIndexWriter::open(
+        let index = TransparentAddressIndexWriter::open(
             zaino_persistence::fs::SimFs::new(),
             std::path::Path::new("/ta"),
             zcash_protocol::consensus::NetworkType::Main,
+            std::num::NonZeroUsize::MIN,
         )
         .expect("open");
+        let served = index.published().served();
 
         // Height 0: alice 500 (vout 0), bob 70 (vout 1). Height 1: alice 300.
         let blocks: Vec<std::sync::Arc<Block>> = [
@@ -2493,10 +2521,12 @@ mod tests {
             std::sync::Arc::new(block)
         })
         .collect();
-        zaino_sync::finalize_now(&mut writer, &blocks).await.expect("finalize");
+        let name = TransparentAddressIndexWriter::NAME;
+        indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
+        let view = (*served.pin_any()).clone();
 
         let mut router = unwired(SpyInner::default()).with_transparent_address(
-            TransparentAddressService::new(Served::fixed(writer.view()), MAINNET),
+            TransparentAddressService::new(Served::fixed(view.clone()), MAINNET),
         );
 
         async fn body_of(response: Response<Body>) -> bytes::Bytes {
@@ -2676,10 +2706,7 @@ mod tests {
             std::sync::Arc::new(TaggedBytes),
             ReadLanes::new(&crate::GrpcLimits::default()),
         )
-        .with_transparent_address(TransparentAddressService::new(
-            Served::fixed(writer.view()),
-            MAINNET,
-        ));
+        .with_transparent_address(TransparentAddressService::new(Served::fixed(view), MAINNET));
         let filter = proto::TransparentAddressBlockFilter {
             address: ALICE.to_owned(),
             range: Some(proto::BlockRange {
@@ -2726,16 +2753,17 @@ mod tests {
             TransparentOutput, Zatoshis,
         };
         use zaino_proto::proto::service as proto;
-        use zaino_sync::IndexWriter as _;
         use zcash_address::ToAddress as _;
         use zcash_protocol::consensus::NetworkType;
 
-        let mut writer = TransparentAddressIndexWriter::open(
+        let index = TransparentAddressIndexWriter::open(
             zaino_persistence::fs::SimFs::new(),
             std::path::Path::new("/ta"),
             NetworkType::Main,
+            std::num::NonZeroUsize::MIN,
         )
         .expect("open");
+        let served = index.published().served();
         let funded = Block::new(
             BlockHeader::for_tests(0, [0; 32], [0xff; 32], 1_700_000_000),
             vec![Transaction {
@@ -2756,13 +2784,13 @@ mod tests {
                 ironwood: Default::default(),
             }],
         );
-        zaino_sync::finalize_now(&mut writer, &[std::sync::Arc::new(funded)])
-            .await
-            .expect("finalize");
+        let name = TransparentAddressIndexWriter::NAME;
+        let blocks = [std::sync::Arc::new(funded)];
+        indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
+        let view = (*served.pin_any()).clone();
 
-        let mut router = unwired(SpyInner::default()).with_transparent_address(
-            TransparentAddressService::new(Served::fixed(writer.view()), MAINNET),
-        );
+        let mut router = unwired(SpyInner::default())
+            .with_transparent_address(TransparentAddressService::new(Served::fixed(view), MAINNET));
 
         let mainnet = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         let testnet =
@@ -2828,21 +2856,22 @@ mod tests {
             TransactionId,
         };
         use zaino_proto::proto::service as proto;
-        use zaino_sync::IndexWriter as _;
 
         // Small little-endian value: canonical under both moduli, unlike a repeated-byte filler.
         let mut cmu = [0u8; 32];
         cmu[0] = 7;
 
-        let mut writer = TreeStateIndexWriter::new(
+        let index = TreeStateIndexWriter::new(
             TreeStateStore::open(
                 zaino_persistence::fs::SimFs::new(),
                 std::path::Path::new("/ts"),
                 zcash_protocol::consensus::NetworkType::Regtest,
             )
             .expect("open"),
+            std::num::NonZeroUsize::MIN,
         )
         .expect("new");
+        let served = index.published().served();
 
         let block = Block::new(
             BlockHeader::for_tests(0, [0xab; 32], [0x00; 32], 1_700_000_042),
@@ -2862,12 +2891,12 @@ mod tests {
                 ironwood: Default::default(),
             }],
         );
-        zaino_sync::finalize_now(&mut writer, &[std::sync::Arc::new(block)])
-            .await
-            .expect("finalize");
+        let name = TreeStateIndexWriter::NAME;
+        let blocks = [std::sync::Arc::new(block)];
+        indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
 
         let service = TreeStateService::new(
-            Served::fixed(writer.view()),
+            Served::fixed((*served.pin_any()).clone()),
             zcash_protocol::consensus::NetworkType::Regtest,
         );
         let mut router = unwired(SpyInner::default()).with_tree_state(service);
@@ -2930,14 +2959,17 @@ mod tests {
         // Block-hash index holding the same block at 0, and one holding another block there
         // (its chain reorged away from the tree-state index's)
         let locator = |hash: [u8; 32]| async move {
-            let mut writer = zaino_internal_block_hash_to_height::BlockHashIndexWriter::new(
-                zaino_internal_block_hash_to_height::BlockHashStore::open(
+            use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashStore};
+            let index = BlockHashIndexWriter::new(
+                BlockHashStore::open(
                     zaino_persistence::fs::SimFs::new(),
                     std::path::Path::new("/bh"),
                     zcash_protocol::consensus::NetworkType::Regtest,
                 )
                 .expect("open"),
+                std::num::NonZeroUsize::MIN,
             );
+            let served = index.published().served();
             let block = Block::new(
                 BlockHeader::for_tests(0, hash, [0x00; 32], 1_700_000_042),
                 vec![Transaction {
@@ -2949,10 +2981,11 @@ mod tests {
                     ironwood: Default::default(),
                 }],
             );
-            zaino_sync::finalize_now(&mut writer, &[std::sync::Arc::new(block)])
-                .await
-                .expect("finalize");
-            zaino_internal_block_hash_to_height::BlockHashService::new(Served::fixed(writer.view()))
+            let blocks = [std::sync::Arc::new(block)];
+            let name = BlockHashIndexWriter::NAME;
+            indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
+            let view = (*served.pin_any()).clone();
+            zaino_internal_block_hash_to_height::BlockHashService::new(Served::fixed(view))
         };
 
         let mut linked = router.clone().with_block_hash(locator([0xab; 32]).await);

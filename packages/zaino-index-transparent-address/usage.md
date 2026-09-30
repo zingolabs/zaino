@@ -19,9 +19,11 @@ Keys are big-endian, so byte order is key order.
 use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressService};
 use zcash_transparent::address::TransparentAddress;
 
-let writer = TransparentAddressIndexWriter::open(fs, &path, network)?;
-let follower = IndexFollower::new(writer, subscription, tips, batch_bytes, depth);
-let service = TransparentAddressService::new(follower.served(), network);
+let index = TransparentAddressIndexWriter::open(fs, &path, network, batch_bytes)?;
+let service = TransparentAddressService::new(index.published().served(), network);
+tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
+let subscription = block_sink.subscribe(TransparentAddressIndexWriter::NAME, queue_bytes);
+tokio::spawn(index.run(subscription, cancel.clone())); // through the sink's Shutdown
 
 let address = TransparentAddress::PublicKeyHash(hash160);
 let unspent = service.utxos(&address, start)?;              // start (inclusive) to the tip; oldest first
@@ -44,9 +46,10 @@ let balances = service.balances(&addresses)?;            // Vec<Zatoshis>
   address in it resolves through one sorted `get_many` over the `spent`
   segments, not one probe per outpoint.
 
-- `TransparentAddressIndexWriter` implements `zaino_sync::IndexWriter<Input = Block>`,
-  subscribed to the `zaino_sync::BlockSink`. The service shares the writer's
-  store, so it needs no separate view handle.
+- `TransparentAddressIndexWriter::run` is this index's own loop over its
+  `zaino_sync::BlockSink` subscription (one `match` per `Step`), keeping its
+  own final blocks until they commit. Services read what it publishes
+  (`published().served()`), gated by `published().gate(..)`'s task.
 - zainod builds it only when `index.transparent_address.enabled`; `zaino-grpc`'s
   `with_transparent_address` claims the methods and pairs `transactions` with
   the validator's `GetTransaction` to return bytes.
@@ -77,21 +80,23 @@ Both are tips: the last height held, inclusive (`None` = nothing held).
 
 | | covers | moved by |
 |---|---|---|
-| `applied_height()` | non-finalized tier, reaches the tip | `apply`, `finalize`, `reset` |
-| `finalized_tip()` / `finalized_height()` | durable segments | `finalize` |
+| applied | non-finalized tier, reaches the tip | a non-final `Apply`, a commit, a `Reorg` |
+| `durable_tip()` | durable segments | a commit |
 
-- `apply` folds a block into in-memory `imbl` maps (`NonFinalizedRows`) inline;
-  no I/O.
-- `finalize(blocks)` takes one contiguous slice from the height after `finalized_height()`. It
-  drains the non-finalized rows and projects every block they never saw inline,
-  then writes one segment per set under `zaino_sync::blocking`.
-- `reset()` drops all non-finalized rows; no segment is touched. A reorg and a restart
-  are the same operation: re-apply from the durable tip. See
+- A non-final block folds into in-memory `imbl` maps (`NonFinalizedRows`)
+  inline; no I/O.
+- Final blocks are staged: in bulk until a batch's bytes fill, at the tip on
+  every `Finalized`. One commit per batch drains the non-finalized rows, projects
+  every block they never saw, and writes one segment per set on the blocking
+  pool; the loop awaits it before the next step.
+- `Reorg` writes what is final, then drops all non-finalized rows; no segment
+  is touched. A reorg and a restart are the same operation: re-apply from the
+  durable tip. See
   [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
 - Reads pin one `ReadView`: the non-finalized rows and both segment sets, taken
-  together by the writer (a row sits in exactly one tier), answering up to
-  `applied_height()`.
-- `apply` asserts contiguous heights from genesis: a gap would leave spent
+  together by the loop (a row sits in exactly one tier), answering up to the
+  applied height.
+- Applying asserts contiguous heights from genesis: a gap would leave spent
   outputs counted as balance, so there is no start-height option.
 
 ## Manifest and merges
@@ -103,11 +108,11 @@ Both are tips: the last height held, inclusive (`None` = nothing held).
   spent/<id>.seg        + <id>.seg.crc   (spent segments carry a BinaryFuse8 filter)
 ```
 
-- `finalize` writes and seals one segment per set, fsyncs both directories, then
+- A write seals one segment per set, fsyncs both directories, then
   commits `MANIFEST` listing them (the commit point;
   [`docs/design/durability.md`](../../docs/design/durability.md)). Only then
   are the segments published to readers and the height advanced.
-- `open(fs, path, network)` removes every segment the manifest does not list
+- `open(fs, path, network, batch_bytes)` removes every segment the manifest does not list
   (an uncommitted batch or merge output) and opens every listed one at its seal
   (length + tail page). A missing or short segment is fatal; so is a foreign
   network or format.

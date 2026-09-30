@@ -325,6 +325,7 @@ mod tests {
                 h(height),
                 [height as u8; HASH],
                 encode_compact_block(&block, &balances, &sizes),
+                sizes,
             );
         }
 

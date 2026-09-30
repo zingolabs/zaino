@@ -2,9 +2,9 @@
 
 The value-balance index. Serves no RPC itself: it resolves every transaction's
 [`Fee`](../zaino-primitives/usage.md) and derives one `BlockFees` per block,
-which its follower forwards into a `zaino_sync::FeeSink` for downstream
-indexes. The compact-block index reads it, in lockstep with its own
-block stream, to fill `CompactTx.fee`.
+which its loop republishes into a `zaino_sync::FeeSink` for downstream
+indexes. The compact-block index reads one fee step after each block step to
+fill `CompactTx.fee`.
 
 The only term a block does not carry is what each transparent input spends, so
 the index keeps one
@@ -21,32 +21,36 @@ append-only), so any height re-resolves identically.
 
 ```rust
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
-use zaino_sync::{FeeSink, IndexFollower};
+use zaino_sync::FeeSink;
 
 let mut fee_sink = FeeSink::new("fees");
-let for_compact = fee_sink.subscribe("compact_block", queue); // before `publishing`
-let writer = ValueBalanceIndexWriter::open(fs, &path, network)?;
-let subscription = block_sink.subscribe(NAME, queue);
-let follower =
-    IndexFollower::new(writer, subscription, tips, batch_bytes, depth).publishing(fee_sink);
+let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
+let index = ValueBalanceIndexWriter::open(fs, &path, network, batch_bytes)?;
+let durable = index.durable_tip(); // for the producer's start and chain check
+let published = index.published(); // tips + gate for metrics and status
+let blocks = block_sink.subscribe(ValueBalanceIndexWriter::NAME, queue);
+tokio::spawn(index.run(blocks, fee_sink, cancel.clone()));
 ```
 
-- `ValueBalanceIndexWriter` implements `zaino_sync::IndexWriter<Input = Block>`
-  and `zaino_sync::Derives<Item = BlockFees>`, subscribed to the
-  `BlockSink` like any index.
-- The follower forwards every step it follows into the sink, 1:1, `Shutdown`
-  last (clean stop and failure alike): the stream is the block stream's, step
-  for step, from the same start. A consumer reads it beside its own block
-  subscription through `zaino_sync::Zip`.
+- `run` = the index's own loop over its `BlockSink` subscription, through
+  `Shutdown`; a failure cancels `cancel` (the whole pipeline) first.
+- Every step it follows goes into the fee sink, 1:1, `Shutdown` last (clean
+  stop and failure alike): the stream is the block stream's, step for step,
+  from the same start. A consumer awaits one fee step after each of its own
+  block steps.
+- `published()` carries `()` as its view (no service reads this index), plus
+  its durable and applied tips.
 
 ## Resolved per delivered run
 
-`deliver` records the run's outputs; `derive` resolves each block's inputs
-against those and everything recorded before, for every block: bulk, replay
-and tip alike. Resolving at commit time instead would deadlock, since the
-consumer waits on fees block by block while a commit waits for a whole
-batch. `apply` only moves the applied tip (last applied height, inclusive); `finalize` writes the
-outputs `deliver` recorded; `reset` drops them.
+Each `Apply` pulls every `Apply` already queued, to `batch_bytes`, into one
+run. The run's outputs go into `Pending`, then every block's inputs are
+resolved against those and everything recorded before, for every block: bulk,
+replay and tip alike. Resolving at commit time instead would deadlock, since
+the consumer waits on fees block by block while a commit waits for a whole
+batch. Applying a non-final block only moves the applied tip (last applied
+height, inclusive); a commit writes the outputs the run recorded; a reorg
+drops the non-final ones.
 
 A block's prevouts not held in memory are resolved in one
 `Snapshot::get_many` (sorted, parallel, newest segment first). A sandblast

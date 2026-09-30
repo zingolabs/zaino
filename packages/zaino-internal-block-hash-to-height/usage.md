@@ -11,16 +11,19 @@ holds the same block there.
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService, BlockHashStore};
 
 let store = BlockHashStore::open(fs, &path, network)?;
-let writer = BlockHashIndexWriter::new(store);
-let subscription = block_sink.subscribe(BlockHashIndexWriter::NAME, queue);
-let follower = IndexFollower::new(writer, subscription, tips, batch_bytes, depth);
-let service = BlockHashService::new(follower.served());
+let index = BlockHashIndexWriter::new(store, batch_bytes);
+let blocks = block_sink.subscribe(BlockHashIndexWriter::NAME, queue);
+let service = BlockHashService::new(index.published().served());
 router = router.with_block_hash(service);
+tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
+tokio::spawn(index.run(blocks, cancel.clone()));
 ```
 
-- `BlockHashIndexWriter` implements `zaino_sync::IndexWriter<Input = Block,
-  View = ReadView>` (`NAME` = `"block_hash"`). It derives nothing: one hash per
-  block, taken from the header.
+- `BlockHashIndexWriter` runs its own loop over its `Subscription<Block>`
+  ([the shape every index shares](../zaino-sync/usage.md#an-index-loop);
+  `NAME` = `"block_hash"`). It derives nothing: one hash per block, taken from
+  the header. A non-final block goes into a hash → height map; a commit moves
+  its hashes into the store's segments.
 - zainod builds it only when `index.block_hash.enabled`. When it is off, a
   by-hash `GetBlock` / `GetTreeState` is `UNIMPLEMENTED`; the by-height forms
   are unaffected.
@@ -28,7 +31,7 @@ router = router.with_block_hash(service);
 ## Serving
 
 - `BlockHashService::locate(&hash) -> Result<Height, ServeError>`:
-  `Syncing` until the follower's `synced` reads `true` (gRPC `UNAVAILABLE`),
+  `Syncing` until the index's serving gate opens (gRPC `UNAVAILABLE`),
   and `HashNotFound` for a hash on no tier (`NOT_FOUND`).
 - The answer is a height on this index's chain. The caller confirms that its own
   index holds `hash` at that height: `CompactBlockService::block_at_hash` checks
@@ -39,7 +42,7 @@ router = router.with_block_hash(service);
   the hash at a height comes from the answering index's own records.
 - `ReadView` (pinned once per request) answers `height_of_hash(&hash)`. It
   checks the non-finalized map first, then the committed segments.
-- A test with no follower serves the committed segments alone with
+- A test with no index loop serves the committed segments alone with
   `BlockHashService::new(Served::fixed(store.reader().pin()))`.
 
 ## Storage

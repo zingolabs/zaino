@@ -1,8 +1,8 @@
 # zaino-index-compact-block
 
 The compact-block index: an append-only store of gRPC-framed `CompactBlock`
-records, the `zaino_sync::IndexWriter` that builds it, and the service `zaino-grpc`
-serves `GetLatestBlock` / `GetBlock` / `GetBlockRange` from.
+records, the loop that builds it (`CompactBlockIndexWriter`), and the service
+`zaino-grpc` serves `GetLatestBlock` / `GetBlock` / `GetBlockRange` from.
 
 ## On disk
 
@@ -32,29 +32,46 @@ offsets.idx   8 bytes per height: where its record ends in blocks.dat   (OFFSET)
 
 ## Building
 
-`CompactBlockIndexWriter::new(store: CompactBlockStore)` implements
-`IndexWriter<Input = BlockWithFees, View = ReadView>` (`NAME` =
-`"compact_block"`).
+```rust,ignore
+let index = CompactBlockIndexWriter::new(store, batch_bytes);
+let durable = index.durable_tip(); // for the producer's start and chain check
+let service = CompactBlockService::new(index.published().served());
+tokio::spawn(index.run(blocks, fees, cancel.clone()));
+```
 
-- Its follower's feed = `zaino_sync::Zip` of its `BlockSink` subscription (at
-  `store.finalized_height()`) and its subscription to the value-balance index's
+- `NAME` = `"compact_block"`. `run(blocks, fees, cancel)` is its own loop over
+  its `BlockSink` subscription and its subscription to the value-balance index's
   `FeeSink`
   ([`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md)):
-  both streams read in lockstep, each block arriving with its fees
-  (`BlockWithFees { upstream, derived }`). Every `CompactTx.fee` comes from
-  them.
+  one step off each per step: the block step, then its fee step. Every
+  `CompactTx.fee` comes from them; a fee queue that ends first means
+  value-balance failed, and this index commits what is final and stops. The two
+  steps are asserted to match (kind, height, `finalized`, fees of that block).
+  It ends at `Shutdown`; a failure cancels `cancel` first, and both
+  subscriptions are popped through their `Shutdown` either way.
+- Per step: a final block (bulk) joins `bulk` and commits once `batch_bytes`
+  is held (a replay at or below the durable tip is skipped); a non-final block
+  commits what bulk holds, then is applied; `Finalized { h }` commits through
+  `h`; `Reorg` drops the non-finalized state; `Shutdown` commits what bulk
+  holds. Commits are synchronous: `commit(through)` returns once the blocks are
+  on disk. Chain identity is the producer's check, not this index's.
+- `published()` (`zaino_sync::Published<ReadView>`) = the view, both tips and
+  the serving gate (its task: `published().gate(tips, depth, cancel)`).
 
 - It derives each block's commitment-tree sizes (`chainMetadata`) as the
   previous block's plus this block's commitments, so blocks must be contiguous
-  (`apply` asserts it). Resume reseeds the carry from the manifest's sizes.
+  (the non-final `Apply` arm asserts it). Resume reseeds the carry from the
+  manifest's sizes; each applied block keeps its sizes beside its record, for
+  the commit through it.
 - Applied blocks sit in a `NonFinalizedState` (the non-finalized tier: readable,
-  not yet fsynced) until `finalize` writes them to the files. See
+  not yet fsynced) until a commit writes them to the files. See
   [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
-- Encoding runs inline on the writer task (a byte copy, not compute). `finalize`
-  encodes each block in order, reusing the non-finalized record for an applied
-  block. The appends, fsyncs and manifest run under `zaino_sync::blocking`.
-- `finalized_tip()` is the committed tip hash the follower links the next
-  delivered block onto.
+- Encoding runs inline on the loop (a byte copy, not compute) at `apply`. A
+  commit reuses the non-finalized record for an applied block and encodes a
+  bulk block itself, on the blocking pool with the appends, fsyncs and
+  manifest; the loop waits for it.
+- The committed tip hash is what the producer checks the chain against at boot
+  (`ProduceError::Unlinked` / `Diverged`).
 - `encode_compact_block(&Block, &BlockFees, &TreeSizes)` returns the
   framed record bytes. The block carries neither fees nor tree sizes, so the
   caller supplies its fees (asserted to be that block's) and the cumulative
@@ -63,14 +80,14 @@ offsets.idx   8 bytes per height: where its record ends in blocks.dat   (OFFSET)
 ## Serving
 
 ```rust
-let service = CompactBlockService::new(follower.served())
+let service = CompactBlockService::new(index.published().served())
     .with_max_range(max_block_range);
 ```
 
-- `follower.served()` (`zaino_sync::Served<ReadView>`) = the view the follower
-  republishes after every step and commit, gated on `synced`: every method
-  answers `ServeError::Syncing` until the index reaches the tip.
-- A test with no follower serves the files alone with
+- `published().served()` (`zaino_sync::Served<ReadView>`) = the view the loop
+  republishes after every step and commit, gated on `synced`: every
+  method answers `ServeError::Syncing` until the index reaches the tip.
+- A test with no loop serves the files alone with
   `Served::fixed(store.reader().pin())` (the committed-only `ReadView`).
 - `block(h)` returns one framed record with every pool; `latest_id()` = the
   tip's `(height, hash)`; `tip()` = the published tip, last height inclusive (`None` = nothing held), synced or not.

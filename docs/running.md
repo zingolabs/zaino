@@ -115,7 +115,8 @@ a restarted zainod is serving again within seconds.
 
 If the validators stop extending an index's chain, because of a reorg deeper than
 `finalised_depth` or a validator that was reset or resynced onto another chain,
-zainod stops with `FollowError::Unlinked`. Delete that index's directory to resync it.
+zainod stops with `ProduceError::Unlinked` or `ProduceError::Diverged`. Delete that index's
+directory to resync it.
 
 ## Network exposure
 

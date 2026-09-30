@@ -238,11 +238,6 @@ where
         Ok(tiers)
     }
 
-    /// A merge has finished and waits for the next [`batch`](Self::batch) to land it
-    pub fn merge_finished(&self) -> bool {
-        self.merges.iter().any(|merge| merge.thread.is_finished())
-    }
-
     fn allocate(&mut self) -> u32 {
         let id = self.next;
         self.next = id.checked_add(1).expect("segment ids below u32::MAX");

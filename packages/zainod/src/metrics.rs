@@ -1,6 +1,6 @@
 //! Prometheus `/metrics` endpoint + the per-index metrics
 //!
-//! - Index metrics mirror each follower's watches
+//! - Index metrics mirror each index's published watches
 //! - Producer, serve, validator-RPC + LSM metrics emitted by `zaino-sync` / `zaino-grpc` /
 //!   `zaino-source` / `zaino-persistence`, registered here via their `describe_metrics` /
 //!   `METRIC_BUCKETS`
@@ -74,13 +74,10 @@ fn describe_zainod() {
     );
 }
 
-/// Mirrors one follower's durable tip + sync gate, labelled `S::NAME`
-pub(crate) fn track_index<S: zaino_sync::IndexWriter, F, D>(
-    follower: &zaino_sync::IndexFollower<S, F, D>,
-) {
-    let index = S::NAME;
-    let mut finalized = follower.subscribe_finalized();
-    let mut synced = follower.subscribe_synced();
+/// Mirrors one index's durable tip + serving gate, labelled `index`
+pub(crate) fn track_index(index: &'static str, watched: &crate::index_report::Watched) {
+    let mut finalized = watched.finalized.clone();
+    let mut synced = watched.synced.clone();
 
     tokio::spawn(async move {
         loop {

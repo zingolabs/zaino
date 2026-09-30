@@ -48,8 +48,8 @@ hyper-util = { workspace = true, features = ["http2", "server", "server-auto", "
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 zaino-index-compact-block = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
-# Driving the two new indexes' writers in the router tests: `IndexWriter` methods,
-# and the `ArcSwap` a follower would otherwise hand the tree-state service.
+# Router tests: index loops fed through a `BlockSink`, and the `ArcSwap` behind a
+# test-flipped serving gate.
 zaino-sync = { workspace = true }
 arc-swap = { workspace = true }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }

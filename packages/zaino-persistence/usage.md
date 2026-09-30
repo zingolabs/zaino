@@ -291,8 +291,5 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
   memory stays at a few MiB whatever the segment's size, for about 2% extra
   I/O. Scratch files are never listed; opening a set deletes any it finds.
 
-- `LsmStore::merge_finished()` = a merge is done and waits for the next commit
-  to land it (an index uses it for `IndexWriter::wants_commit`).
-
 - Filter sizing (BinaryFuse8, ≤ 2²⁰ keys per shard):
   [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §7.

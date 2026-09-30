@@ -1,7 +1,7 @@
 //! Outputs delivered above the durable tip, staged and non-finalized alike
 //!
-//! - filled by `deliver` (before the harness stages or applies the block), drained once a
-//!   `finalize` write lands (a resolve meanwhile still finds its outputs here)
+//! - filled per delivered run (before its blocks are staged or applied), drained once a commit is
+//!   on disk
 //! - `imbl`: a resolve pins a copy in O(1) while delivery keeps inserting
 
 use imbl::OrdMap;
@@ -39,9 +39,9 @@ impl Pending {
             .collect()
     }
 
-    /// Drops `landed` (durable segments answer for them now)
-    pub(crate) fn remove(&mut self, landed: &[OutPoint]) {
-        for key in landed {
+    /// Drops `written` (durable segments answer for them now)
+    pub(crate) fn remove(&mut self, written: &[OutPoint]) {
+        for key in written {
             self.outputs.remove(key);
         }
     }

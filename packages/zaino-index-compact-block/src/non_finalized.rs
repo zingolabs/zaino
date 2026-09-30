@@ -9,7 +9,7 @@
 
 use bytes::Bytes;
 use imbl::OrdMap;
-use zaino_primitives::types::Height;
+use zaino_primitives::types::{Height, TreeSizes};
 
 use crate::{project::project, Pools, HASH};
 
@@ -17,11 +17,13 @@ use crate::{project::project, Pools, HASH};
 ///
 /// - `shielded` = `record` projected to [`Pools::default`], once at apply (every synced wallet
 ///   asks each tip block in that shape); the same `Bytes` when nothing is pruned
+/// - `sizes` = cumulative tree sizes after this block (what a commit through it writes)
 #[derive(Debug, Clone)]
 struct Held {
     hash: [u8; HASH],
     record: Bytes,
     shielded: Bytes,
+    sizes: TreeSizes,
 }
 
 /// Blocks above the finalised tip, along the one chain the chain head chose
@@ -68,10 +70,20 @@ impl NonFinalizedState {
         self.blocks.get(&height).map(|held| held.hash)
     }
 
+    pub(crate) fn sizes_at(&self, height: Height) -> Option<TreeSizes> {
+        self.blocks.get(&height).map(|held| held.sizes)
+    }
+
     /// Adds one block at the tip
     ///
     /// - `record` = this index's own encoding: a projection failing = an encoder bug
-    pub(crate) fn apply(&mut self, height: Height, hash: [u8; HASH], record: Bytes) {
+    pub(crate) fn apply(
+        &mut self,
+        height: Height,
+        hash: [u8; HASH],
+        record: Bytes,
+        sizes: TreeSizes,
+    ) {
         if let Some(tip) = self.tip_height() {
             assert_eq!(height, tip.next(), "non-finalized apply out of order");
         }
@@ -79,7 +91,7 @@ impl NonFinalizedState {
             .expect("a record this index just encoded walks its own framing");
         // pruning only shrinks: same length = nothing dropped, share the record
         let shielded = if shielded.len() == record.len() { record.clone() } else { shielded };
-        self.blocks.insert(height, Held { hash, record, shielded });
+        self.blocks.insert(height, Held { hash, record, shielded, sizes });
     }
 
     /// Drops every block at or below `height` (now the store's: one copy, one source)
@@ -104,15 +116,16 @@ mod tests {
         let mut state = NonFinalizedState::default();
         assert_eq!((state.root_height(), state.tip_id()), (None, None));
 
-        let records: Vec<Bytes> = (100..103u32)
+        let records: Vec<(Bytes, TreeSizes)> = (100..103u32)
             .map(|height| {
                 let (block, balances, sizes) = block(height);
-                encode_compact_block(&block, &balances, &sizes)
+                (encode_compact_block(&block, &balances, &sizes), sizes)
             })
             .collect();
-        for (n, record) in (100..103u8).zip(&records) {
-            state.apply(h(n.into()), [n; HASH], record.clone());
+        for (n, (record, sizes)) in (100..103u8).zip(&records) {
+            state.apply(h(n.into()), [n; HASH], record.clone(), *sizes);
         }
+        let records: Vec<Bytes> = records.into_iter().map(|(record, _)| record).collect();
         assert_eq!(
             (state.root_height(), state.tip_id()),
             (Some(h(100)), Some((h(102), [102; HASH])))
@@ -144,7 +157,7 @@ mod tests {
             let (block, balances, sizes) = block(height);
             encode_compact_block(&block, &balances, &sizes)
         };
-        state.apply(h(5), [5; HASH], record(5));
-        state.apply(h(7), [7; HASH], record(7));
+        state.apply(h(5), [5; HASH], record(5), TreeSizes::default());
+        state.apply(h(7), [7; HASH], record(7), TreeSizes::default());
     }
 }

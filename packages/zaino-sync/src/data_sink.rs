@@ -58,9 +58,8 @@ pub enum Step<T> {
     Apply { height: Height, finalized: bool, data: Arc<T> },
     /// Block `height`, already applied, can no longer be reorged: write it to disk.
     Finalized { height: Height },
-    /// Another branch won: flush what is final, drop the non-finalized state
-    /// ([`IndexWriter::reset`](crate::IndexWriter::reset)). The winning branch follows, from the
-    /// first non-final height.
+    /// Another branch won: flush what is final, drop the non-finalized state. The winning branch
+    /// follows, from the first non-final height.
     Reorg,
     /// Last step: flush what is final and stop.
     Shutdown,
@@ -116,13 +115,9 @@ impl<T> Subscription<T> {
     }
 
     /// Next step if one is already queued (never waits)
-    pub(crate) fn try_next(&mut self) -> Option<Step<T>> {
+    pub fn try_next(&mut self) -> Option<Step<T>> {
         let queued = self.rx.try_recv().ok()?;
         Some(self.popped(Some(queued)))
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.rx.is_empty()
     }
 
     /// - Closed after `Shutdown` = sink consumed by it

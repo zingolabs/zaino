@@ -138,7 +138,7 @@ pub(crate) fn component(name: &str) -> tracing::Span {
     tracing::error_span!("component", component = name)
 }
 
-/// [`component`] named for an index: `IndexWriter::NAME` `compact_block` → `CompactBlockIdx`,
+/// [`component`] named for an index: its `NAME` `compact_block` → `CompactBlockIdx`,
 /// `transparent_address` → `TransparentAddrIdx`
 pub(crate) fn index_component(name: &str) -> tracing::Span {
     let camel: String = name

@@ -20,9 +20,7 @@ use zaino_primitives::types::{
     Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
 };
 use zaino_source::{mock::MockChain, BlockFetchPool, FetchRoute};
-use zaino_sync::{
-    BlockSink, FollowError, IndexFollower, IndexWriter, ProduceError, Producer, Weight,
-};
+use zaino_sync::{BlockSink, ProduceError, Producer, Step, Subscription, Weight};
 
 const DEPTH: u32 = 4;
 const SETTLE: Duration = Duration::from_secs(10);
@@ -41,68 +39,84 @@ struct Held {
     applied: Vec<BlockHash>,
 }
 
-/// Records every step, asserting the contract the real index writers assert, and checks each
-/// commit against the chain as it lands
+/// An index whose loop is the real indexes' (block_hash's), recording into `held`: asserts the
+/// contract the real indexes assert, and checks each commit against the chain as it lands
 struct Recorder {
     held: Arc<Mutex<Held>>,
     chain: Arc<Mutex<Chain>>,
+    bulk: Vec<Arc<Block>>,
+    bulk_bytes: usize,
+    batch_bytes: NonZeroUsize,
 }
 
 impl Recorder {
     fn held(&self) -> std::sync::MutexGuard<'_, Held> {
         self.held.lock().expect("recorder lock")
     }
-}
 
-/// Last height of `hashes` held from genesis, inclusive (`None` = none held)
-fn tip_of(hashes: &[BlockHash]) -> Option<Height> {
-    let last = u32::try_from(hashes.len()).expect("small chain").checked_sub(1)?;
-    Some(Height::try_from(last).expect("small chain"))
-}
-
-impl IndexWriter for Recorder {
-    type Input = Block;
-    type View = Option<Height>;
-    type Error = std::convert::Infallible;
-    type Done = Vec<BlockHash>;
-    const NAME: &'static str = "recorder";
-
-    fn finalized_tip(&self) -> Option<BlockRef> {
-        let held = self.held();
-        let hash = held.durable.last().copied()?;
-        Some(BlockRef { hash, height: tip_of(&held.durable)? })
-    }
-    fn applied_height(&self) -> Option<Height> {
-        tip_of(&self.held().applied)
-    }
-    fn view(&self) -> Option<Height> {
-        self.applied_height()
-    }
-    async fn apply(&mut self, block: &Arc<Block>) -> Result<(), Self::Error> {
-        let mut held = self.held();
-        assert_eq!(block.header().height.checked_sub(1), tip_of(&held.applied));
-        held.applied.push(block.header().hash);
-        Ok(())
-    }
-    async fn finalize(
-        &mut self,
-        blocks: &[Arc<Block>],
-    ) -> Result<impl FnOnce() -> Result<Vec<BlockHash>, Self::Error> + Send + 'static, Self::Error>
-    {
-        let held = self.held();
-        let start = held.durable.len();
-        for (at, block) in (start..).zip(blocks) {
-            assert_eq!(u32::from(block.header().height) as usize, at, "finalize gap");
-            if let Some(applied) = held.applied.get(at) {
-                assert_eq!(*applied, block.header().hash, "finalized over another branch");
+    async fn run(mut self, mut blocks: Subscription<Block>) {
+        loop {
+            match blocks.next().await {
+                Step::Apply { height, finalized: true, data } => {
+                    // replay for an index behind this one: already committed
+                    if Some(height) <= tip_of(&self.held().durable) {
+                        continue;
+                    }
+                    self.bulk_bytes += data.weight();
+                    self.bulk.push(data);
+                    if self.bulk_bytes >= self.batch_bytes.get() {
+                        self.commit(height);
+                    }
+                }
+                Step::Apply { height, finalized: false, data } => {
+                    if let Some(last) = self.bulk.last() {
+                        self.commit(last.header().height);
+                    }
+                    let mut held = self.held();
+                    assert_eq!(height.checked_sub(1), tip_of(&held.applied), "apply gap");
+                    held.applied.push(data.header().hash);
+                }
+                Step::Finalized { height } => self.commit(height),
+                Step::Reorg => {
+                    assert!(self.bulk.is_empty(), "reorg with bulk blocks staged");
+                    let mut held = self.held();
+                    held.applied = held.durable.clone();
+                }
+                Step::Shutdown => {
+                    if let Some(last) = self.bulk.last() {
+                        self.commit(last.header().height);
+                    }
+                    return;
+                }
             }
         }
-        let hashes: Vec<BlockHash> = blocks.iter().map(|block| block.header().hash).collect();
-        Ok(move || Ok(hashes))
     }
-    async fn committed(&mut self, hashes: Vec<BlockHash>) -> Result<(), Self::Error> {
+
+    /// Every final block through `through` (bulk ones, then applied ones) committed: contiguous
+    /// from durable, on the applied branch where applied, final under the chain's highest tip, on
+    /// its best chain
+    fn commit(&mut self, through: Height) {
+        let bulk = std::mem::take(&mut self.bulk);
+        self.bulk_bytes = 0;
+        let (from, hashes) = {
+            let held = self.held();
+            let from = held.durable.len();
+            let mut hashes: Vec<BlockHash> = Vec::new();
+            for (at, block) in (from..).zip(&bulk) {
+                assert_eq!(u32::from(block.header().height) as usize, at, "finalize gap");
+                if let Some(applied) = held.applied.get(at) {
+                    assert_eq!(*applied, block.header().hash, "finalized over another branch");
+                }
+                hashes.push(block.header().hash);
+            }
+            let through = u32::from(through) as usize;
+            for at in from + hashes.len()..=through {
+                hashes.push(*held.applied.get(at).expect("finalized a block never applied"));
+            }
+            assert_eq!(from + hashes.len(), through + 1, "committed past {through}");
+            (from, hashes)
+        };
         // checked before `held` is locked (a panic under it poisons every later read)
-        let from = self.held().durable.len();
         {
             let chain = self.chain.lock().expect("chain lock");
             for (at, hash) in (from..).zip(&hashes) {
@@ -115,13 +129,18 @@ impl IndexWriter for Recorder {
         if held.applied.len() < held.durable.len() {
             held.applied = held.durable.clone();
         }
-        Ok(())
     }
-    async fn reset(&mut self) -> Result<(), Self::Error> {
-        let mut held = self.held();
-        held.applied = held.durable.clone();
-        Ok(())
-    }
+}
+
+fn durable_tip(held: &Held) -> Option<BlockRef> {
+    let hash = held.durable.last().copied()?;
+    Some(BlockRef { hash, height: tip_of(&held.durable)? })
+}
+
+/// Last height of `hashes` held from genesis, inclusive (`None` = none held)
+fn tip_of(hashes: &[BlockHash]) -> Option<Height> {
+    let last = u32::try_from(hashes.len()).expect("small chain").checked_sub(1)?;
+    Some(Height::try_from(last).expect("small chain"))
 }
 
 /// Hash = (height, branch): every branch's block at a height is distinct
@@ -277,7 +296,7 @@ struct Running {
     tips: watch::Sender<Option<QuorumTip>>,
     cancel: CancellationToken,
     producer: JoinHandle<Result<(), ProduceError>>,
-    followers: Vec<JoinHandle<Result<(), FollowError<std::convert::Infallible>>>>,
+    followers: Vec<JoinHandle<()>>,
 }
 
 /// `best`'s tip, agreed by the two current validators (the lagging one serves the last chain)
@@ -307,13 +326,14 @@ fn start(
     let (tips, tips_rx) = watch::channel(quorum(validators, &chain.lock().expect("lock").best));
     let (mut spawned, mut durable) = (Vec::new(), Vec::new());
     for (held, follower) in held.iter().zip(followers) {
-        durable.push(tip_of(&held.lock().expect("lock").durable));
+        durable.push(durable_tip(&held.lock().expect("lock")));
         let budget = NonZeroUsize::new(follower.budget * (weight + 64)).expect("> 0");
         let subscription = block_sink.subscribe("recorder", budget);
-        let recorder = Recorder { held: Arc::clone(held), chain: Arc::clone(chain) };
         let batch = NonZeroUsize::new(follower.batch * weight).expect("> 0");
-        let follower = IndexFollower::new(recorder, subscription, tips_rx.clone(), batch, depth);
-        spawned.push(follower);
+        let (held, chain) = (Arc::clone(held), Arc::clone(chain));
+        let recorder =
+            Recorder { held, chain, bulk: Vec::new(), bulk_bytes: 0, batch_bytes: batch };
+        spawned.push((recorder, subscription));
     }
     let pool = BlockFetchPool::new(
         validators.order.clone(),
@@ -324,7 +344,7 @@ fn start(
     let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
     let producer = tokio::spawn(producer.run(cancel.clone()));
     let followers =
-        spawned.into_iter().map(|follower| tokio::spawn(follower.run(cancel.clone()))).collect();
+        spawned.into_iter().map(|(recorder, blocks)| tokio::spawn(recorder.run(blocks))).collect();
     Running { tips, cancel, producer, followers }
 }
 
@@ -333,8 +353,7 @@ async fn stop(running: Running, context: &str) {
     let produced = running.producer.await.expect("producer join");
     assert!(produced.is_ok(), "{context}: producer {produced:?}");
     for follower in running.followers {
-        let followed = follower.await.expect("follower join");
-        assert!(followed.is_ok(), "{context}: follower {followed:?}");
+        follower.await.unwrap_or_else(|panic| panic!("{context}: follower {panic:?}"));
     }
 }
 

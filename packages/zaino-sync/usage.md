@@ -1,7 +1,7 @@
 # `zaino-sync` — usage
 
-Zaino's index sync pipeline: `Producer` → `BlockSink` → subscribed
-`IndexWriter`s, each driven by its own `IndexFollower`. New here? Read
+Zaino's index sync pipeline: `Producer` → `BlockSink` → one loop per index,
+each over its own subscription. New here? Read
 [the data sink](../../docs/design/data-sink.md) first: it explains the steps
 this whole crate is built on, with a worked reorg. Then
 [`docs/design/sync.md`](../../docs/design/sync.md) for the pipeline.
@@ -12,24 +12,23 @@ this whole crate is built on, with a worked reorg. Then
 - **Stream**: `IndexerDataSink<T>` (one producer, N subscribers, keyed by block
   height); `BlockSink` = `IndexerDataSink<Block>`, the one stream every index
   subscribes to
-- **Follow**: the `IndexWriter` trait an index implements, and `IndexFollower`,
-  which drives it from its `Subscription` as one spawned task
+- **Index**: each index spawns its own loop over its `Subscription` and
+  publishes through a `Published`; nothing here drives it
 
-No scheduler, no dependency graph, no storage. Each index owns its files, its
-cumulative state, its commit cadence and both of its heights; this crate owns
-the loops.
+No scheduler, no dependency graph, no storage, no trait to implement. Each
+index owns its files, its cumulative state, and its loop.
 
 ```rust,ignore
-use zaino_sync::{BlockSink, IndexFollower, IndexWriter, Producer};
+use zaino_sync::{BlockSink, Producer};
 
 let mut block_sink = BlockSink::new("blocks");
-let subscription = block_sink.subscribe(MyIndex::NAME, queue_bytes);
-let tips = chainview.subscribe_tip();
-let follower = IndexFollower::new(writer, subscription, tips.clone(), batch_bytes, finalised_depth);
-let durable = [follower.writer().finalized_height()]; // every subscriber's durable tip
-// take served() / subscribe_synced() / subscribe_finalized() for serving, then:
+let blocks = block_sink.subscribe(MyIndex::NAME, queue_bytes);
+let index = MyIndex::new(store, batch_bytes);
+let durable = [index.durable_tip()]; // every subscriber's durable tip (height + hash)
+let service = MyService::new(index.published().served());
+tokio::spawn(index.published().gate(tips.clone(), finalised_depth, cancel.child_token()));
 // ends at the producer's Shutdown; a failure cancels `cancel` (the whole pipeline) first
-tokio::spawn(follower.run(cancel.clone()));
+tokio::spawn(index.run(blocks, cancel.clone()));
 
 let producer = Producer::new(block_sink, pool, tips, finalised_depth, durable);
 tokio::spawn(producer.run(cancel.child_token()));
@@ -40,21 +39,27 @@ tokio::spawn(producer.run(cancel.child_token()));
 `Producer::new(sink, pool, tips, depth, durable)` takes the sink (at least one
 subscriber), a `BlockFetchPool` over every validator, chainview's
 level-triggered quorum tip (`watch<Option<QuorumTip>>`; `None` = quorum lost,
-waited out), the reorg depth, and every subscriber's durable tip (last height
-on disk, inclusive, `None` when empty). It decides every step the sink carries:
+waited out), the reorg depth, and every subscriber's durable tip (last block
+on disk, height + hash, `None` when empty). It decides every step the sink
+carries, and it is the only place chain identity is checked:
 
 - **start** = after the rearmost `durable`: **every** subscriber receives the
   same contiguous block sequence from there, so an index asserts on height
   instead of tolerating gaps. An index ahead of the rearmost (a crash between
   two indexes' commits, a newly enabled index on a synced node) receives
-  heights it already holds, and skips them in `IndexWriter::deliver`
+  heights it already holds, and skips them
+- **chain identity**: the first bulk block must extend the rearmost durable
+  tip (`ProduceError::Unlinked`), and any fetched block at an index's durable
+  height must be the block that index committed (`ProduceError::Diverged`).
+  Either means the validators' chain diverged below a durable tip (a reset
+  validator, a directory from another chain): resync required
 - **finality**: the final tip (last final height, inclusive) = highest tip −
   depth, never lowered, and at least the furthest `durable` (a lower tip after
   a restart cannot un-finalise what an index holds). Each new tip sends a
   `Step::Finalized` for every delivered non-final height it buries, oldest
   first; each block is a `Step::Apply` whose `finalized` says whether it is
-  already final. The tip itself is not a step: a follower reads it off
-  chainview (see `IndexFollower`)
+  already final. The tip itself is not a step: an index's serving gate reads
+  it off chainview (see `Published::gate`)
 - **reorg**: `Step::Reorg`, then a replay from the first non-final height
   (final is never resent)
 
@@ -78,7 +83,7 @@ on disk, inclusive, `None` when empty). It decides every step the sink carries:
   below the window or chainview gone → `ProduceError`, the task ends (zainod
   exits)
 - cancel → `Ok`; either way it ends the sink with `shutdown()`, so every
-  follower flushes what is final and stops
+  index loop writes what is final and stops
 
 Metrics (`describe_metrics()`): `zaino_best_tip`,
 `zaino_reorgs_total`, `zaino_fetch_height`, the per-block
@@ -126,103 +131,94 @@ holds. `Shutdown` counts nothing.
 
 ### An index publishing to another
 
-An index that derives per-block data another index needs implements
-`Derives` (`type Item`, `derive(&blocks)` = one item per block of the run just
-delivered), and its follower republishes into a plain
-`IndexerDataSink<Item>`: `IndexFollower::new(..).publishing(sink)`. The
-follower sends **every** step it follows, 1:1: each `Apply` with the derived
-item and the upstream's `finalized` flag, each `Finalized` and `Reorg`,
-and `Shutdown` last (on a clean stop and on a failure alike). So the stream is
-the upstream's, step for step.
+An index that derives per-block data another index needs sends it into a plain
+`IndexerDataSink<Item>` from its own loop: every step it follows, 1:1. Each
+`Apply` carries the derived item and the upstream's `finalized` flag (heights
+it already holds included: a downstream index behind it still needs them),
+each `Finalized` and `Reorg` is forwarded, and `shutdown()` ends the sink last,
+on a clean stop and on a failure alike. The stream is the upstream's, step for
+step.
 
-A consumer reads it in lockstep beside its own block subscription:
-`Zip::new(block_subscription, derived_subscription)` is the follower's feed,
-one step off each stream per step, asserted to be the same step (same kind,
-height, `finalized`, and the item derived from that block). It yields
-`Paired { upstream, derived }`. A derived `Shutdown` ahead of the upstream's
-means the publisher failed: the zip ends (`Shutdown`) and pops the upstream
-through its own `Shutdown`; the publisher reports the failure. Any other
-mismatch panics.
+A consumer awaits one step off each queue per step: `blocks.next().await`,
+then `fees.next().await`. The publisher's loop guarantees they line up (one
+derived step per step, in order). A derived `Shutdown` ahead of the block's
+means the publisher failed: the consumer commits what is final and stops, and
+the publisher reports the failure.
 
 `FeeSink` = `IndexerDataSink<BlockFees>`, published by
 [`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md) and
-read by the compact-block index (`BlockWithFees` = its paired item):
+read by the compact-block index.
+
+## An index loop
+
+Every index spawns the same shape of loop over its subscription. Nothing
+drives it and nothing hides it; the arms are the whole policy:
 
 ```rust,ignore
-let mut fee_sink = FeeSink::new("fees");
-let feed = Zip::new(
-    block_sink.subscribe("compact_block", queue_bytes),
-    fee_sink.subscribe("compact_block", queue_bytes),
-);
-let compact =
-    IndexFollower::new(CompactBlockIndexWriter::new(store), feed, tips.clone(), batch_bytes, depth);
-let fees =
-    IndexFollower::new(value_balance_writer, fees_subscription, tips.clone(), batch_bytes, depth)
-        .publishing(fee_sink); // takes the sink: no subscriber after this
+loop {
+    match blocks.next().await {
+        Step::Apply { height, finalized: true, data } => {
+            if Some(height) <= self.durable.map(|tip| tip.height) {
+                continue;                                       // replay: already on disk
+            }
+            self.bulk_bytes += data.weight();
+            self.bulk.push(data);
+            if self.bulk_bytes >= self.batch_bytes.get() {
+                self.commit(height).await?;                     // one bulk batch = one fsync
+            }
+        }
+        Step::Apply { height, finalized: false, data } => {
+            if let Some(last) = self.bulk.last() {
+                self.commit(last.header().height).await?;       // bulk → tip handoff
+            }
+            // assert contiguous, then fold into the non-finalized state
+        }
+        Step::Finalized { height } => self.commit(height).await?,
+        Step::Reorg => { /* assert bulk empty, drop non-finalized, publish, reorged() */ }
+        Step::Shutdown => { /* commit bulk leftovers */ return Ok(()); }
+    }
+    self.publish();
+}
 ```
 
-## Follow
+`commit(through)` writes every final block through `through`: the bulk ones
+(never applied) and the applied ones in the non-finalized state. It asserts
+they run contiguously from the durable tip, writes them
+(`Offloaded::blocking`: the store hops to the blocking pool and back), drops
+them from memory, and publishes the view, then `Published::durable(height)`.
+It returns once the blocks are on disk: one write at a time, nothing in
+flight. `run(blocks, cancel)` wraps the loop: a failure cancels `cancel` (the
+pipeline) first, then the loop pops its subscription through `Shutdown` either
+way, and returns `IndexFailed { index, source }`. Each index keeps its loop in
+`src/index_writer.rs`; the arms repeat across indexes by design
+(`.dupes-ignore.toml`).
 
-### `IndexWriter`: two tips
-
-Every height here is a last height, inclusive, with `None` meaning nothing
-held.
-
-| method | contract |
-|---|---|
-| `finalized_tip()` | the last durable block (`BlockRef`) as committed, `None` when empty: the resume point, never moves backwards, and the chain identity the next delivered block must link onto |
-| `finalized_height()` | provided: `finalized_tip()`'s height |
-| `applied_height()` | the last applied height (non-finalized state included); the next `apply` expects the height after it |
-| `view()` | cheap-to-clone snapshot of every tier (`type View`), published after every step and commit |
-| `deliver(&[Arc<Input>])` | every delivered item, in order, before any of the run is staged or applied (heights at or below `finalized_height()` included, and only here); a run = the steps already queued (one item at the tip, up to `batch_bytes` in bulk), so per-item lookups batch across it; default = nothing |
-| `apply(&Arc<Input>)` | fold one item into the non-finalized state (not durable) |
-| `finalize(&[Arc<Input>])` | prepare final items, contiguous from the height after `finalized_height()`, and return the `write` that stores them (an owned `FnOnce() -> Result<Done, Error>` holding the lent store); nothing durable, nothing dropped from the non-finalized state |
-| `committed(Done)` | land a finished `write`: store back, `finalized_height()` moves, written items leave the non-finalized state, downstream told; must also advance `applied_height()` to at least the new `finalized_height()` |
-| `reset()` | drop **all** non-finalized state so `applied_height() == finalized_height()`; never touches durable state |
-
-A write is out between `finalize` and `committed`, and the follower keeps
-delivering and applying meanwhile, so every other method answers without the
-store: durable tip and read snapshots as of the last `committed`. Every
-tier change lands in `committed`, so a reader sees an item in exactly one tier
-(non-finalized until the landing, durable after), never both, never neither.
-`zaino_sync::finalize_now(writer, items)` = all three in one await, for tests
-and offline rebuilds.
-
-`type Input: Linked + Weight` is the item of the feed the index follows
-(`Block` for a `BlockSink` subscription, `Paired<A, B>` for a `Zip`: linked
-through its block); `Linked` = `height()`, `hash()`, `prev_hash()`;
-`Weight` = the bytes it holds (sizes both the queue budget and the commit batch).
-
-`apply` receives strictly contiguous, ascending heights. Assert it at the top
-of every implementation: an index threading cumulative state (tree sizes, note
-positions, balances) produces plausible but wrong output after a gap, and a
-panic is far cheaper.
+Commit cadence follows from the arms. In bulk, final blocks stage until a
+batch fills. At the tip, every `Finalized` commits at once: the durable tip
+trails the chain tip by exactly the finality depth. The bulk → tip handoff
+commits what bulk staged before the first non-final block applies on it.
+Indexes do no chain-identity checks: the producer checks every block links
+onto the one before it and onto every index's durable tip.
 
 A reorg and a restart are the same operation: the non-finalized state is
-dropped and blocks are re-applied from the durable tip. `Step::Reorg` carries no height, so no
-index owns a reverse fold.
-
-`apply`, `finalize` and `reset` run on a runtime worker. Anything slow goes
-through one of two helpers (see [Off the runtime](#off-the-runtime)), or it
-stalls the producer feeding every index.
-
+dropped and blocks re-apply from the durable tip. `Step::Reorg` carries no
+height, so no index owns a reverse fold. `apply` receives strictly contiguous,
+ascending heights; assert it at the top of every index, because cumulative
+state (tree sizes, note positions, balances) goes plausibly wrong after a gap.
 See [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
+
 
 ### Off the runtime
 
-An index writer awaits data, computes, and awaits the write, and never picks a
+An index loop awaits data, computes, and awaits the write, and never picks a
 thread:
 
-```rust
+```rust,ignore
 use zaino_sync::{compute, Offloaded};
 
-// finalize: fold on the CPU pool, then hand the lent store to the write
+// commit: fold on the CPU pool, then write on the blocking pool; the store comes back after
 let chunk = compute(move || fold(&blocks)).await;
-let mut store = self.store.lend();
-Ok(move || { store.write(&chunk)?; Ok(Landing { store }) })   // follower runs it off-loop
-
-// committed: the store comes back
-self.store.restore(landing.store);
+self.store.blocking(move |store| store.write(&chunk)).await?;
 ```
 
 | helper | runs `f` on | for |
@@ -231,108 +227,60 @@ self.store.restore(landing.store);
 | `blocking(f)` | tokio's blocking pool | blocking syscalls and mmap faults: `pwrite`, `fsync`, cold reads |
 
 - Cheap bookkeeping (projecting a block into rows, encoding a record, map
-  inserts) stays inline on the writer task: a hop costs more than it saves.
+  inserts) stays inline on the loop: a hop costs more than it saves.
 - Inside `compute`, `rayon::par_iter` / `par_chunks` spreads data-parallel work
   over the same pool (the tree-state fold hashes each tree level across every
   core this way).
-- `Offloaded<S>` holds writer-owned state: `compute(f)` moves it to the pool
-  and back within one call; `lend()` / `restore(s)` hand a store to a `finalize`
-  write and take it back in `committed`. `get()` panics while it is out, never
-  waits: no lock sits beside it.
+- `Offloaded<S>` holds index-owned state: `compute(f)` / `blocking(f)` move it
+  to the pool and back within one call. `get()` panics while it is out, never
+  waits.
 - A panic in either resumes on the awaiting task: zainod aborts rather than keep
   a half-built state.
-- Fetch, delivery and index writes overlap: while a write is out, the follower
-  keeps delivering, applying and staging the next batch, and the producer keeps
-  fetching into the subscription queue (`queue_mib`).
+- Fetch and index writes overlap: while an index commits, the producer keeps
+  fetching into its subscription queue (`queue_mib`).
 
-### `IndexFollower`
+### `Published`: what serving, metrics and status read
 
-`IndexFollower::new(writer, feed, tips, batch_bytes, depth)` (feed = a
-`Subscription` or a `Zip`; `tips` = chainview's quorum tip,
-`watch<Option<QuorumTip>>`; `depth` = how far behind that tip the serving gate
-stays open), `.publishing(sink)` for a `Derives` writer;
-`run(self, shutdown: CancellationToken) -> Result<(), FollowError<W::Error>>`.
+`Published::new(view, durable)` at boot; the loop calls `view(v, applied)`
+after every step (view + applied height published together), `durable(h)` on
+each landing (**after** it is on disk: nothing is told of a height not
+written; never moves back), and `reorged()` after publishing the dropped view.
 
-The chain tip is not a sink step. The follower reads it off `tips` for two
-decisions, both taken when its queue is empty:
+- `served()` = `Served<View>`, what a service holds: `pin()` = the latest view
+  (one load per request), `None` while the gate is closed; `pin_any()` = the
+  view regardless (final data, tips; what tests assert on); `synced()` = the
+  gate without pinning. `Served::fixed(view)` = a synced, never-republished
+  handle
+- `reads()` = every view a `served()` handle pinned, shared across clones
+- `subscribe_finalized()` / `subscribe_applied()` / `subscribe_synced()` =
+  watches for metrics and the status report (and tests: `wait_for`)
+- `gate(tips, depth, cancel)` = the serving gate as its own task, off the loop:
+  it opens once the applied height reaches chainview's quorum tip, closes when
+  it falls more than `depth` behind (a producer stalled while the validators
+  moved on) or on a reorg until the replay is back at the tip. Each flip logs
+  `Serving` / `Syncing, requests refused`, or around a reorg `Reorg received,
+  requests refused until replayed` / `Reorg replayed, serving` (`took`)
 
-- the serving gate opens once the index has applied the tip, and closes when it
-  falls more than `depth` behind (or on a `Reorg`, until the replay is back)
-- at the tip, final blocks commit every `TIP_BATCH_BLOCKS` (32), or sooner when
-  `IndexWriter::wants_commit()` says so; below it, commits wait for a full
-  byte batch
+### Testing an index
 
-A tip that moves with no block behind it (the producer stalled while the
-validators moved on) wakes the follower too, so the gate closes rather than
-serving stale data as current. If chainview's sender drops, the follower keeps
-following steps through `Shutdown`.
-
-- every delivered block must link onto the one before it, the first onto
-  `finalized_tip()` when it extends it (and again after each `Reorg`). A break
-  is `FollowError::Unlinked { index, height, expected, got }`: the validator's
-  chain diverged below the durable tip (a reorg past the window, a reset
-  validator, a directory from another chain), so the index stops rather than
-  fold a foreign block onto its state. Resync required
-- blocks replayed from below the durable tip must land on it: the block at
-  `finalized_height().last()` must hash to `finalized_tip()`, or
-  `FollowError::Diverged { index, height, expected, got }`
-- heights inside `finalized_height()` go to `deliver` only, never staged
-- a writer failure is `FollowError::Index { index, source }`; zainod exits on
-  either
-
-- `Apply { finalized: true }` skips the non-finalized state and is staged straight for
-  `finalize` (bulk sync = one fold per block); a non-final one is `apply`d and
-  staged when its `Finalized` arrives
-- `finalize` runs once the staged items' `Weight` reaches the follower's
-  `batch_bytes` (`IndexFollower::new`'s third argument), so one
-  write = one fsync of a steady size however big each block is. At the tip a
-  byte batch would take hours, so final items commit every 32
-  (`TIP_BATCH_BLOCKS`, about 40 minutes of mainnet blocks). They stay in the
-  non-finalized state and are served until they commit, so the only cost is a
-  longer replay after a crash. `wants_commit()` (default `false`) asks for an
-  earlier commit: an LSM-backed index says yes once a background merge has
-  finished, because the merge output only lands with a commit. The bulk → tip
-  handoff always writes what bulk staged first, since the first non-final
-  `apply` builds on it
-- its write runs on the blocking pool while the follower keeps going; at most
-  one is out: the next `finalize`, the bulk → tip handoff, a `Reorg` and the
-  final stop each wait for it to land first. A write finishing while the loop
-  waits for input lands at once (durability published as it happens)
-- `Reorg` writes what is staged (final is final), then `reset`s the non-finalized state
-- `subscribe_finalized()` publishes the durable tip height (inclusive, `None`
-  when empty) **after** it is durable;
-  anything gating on it is never told about a height that is not on disk. Each
-  index publishes its own; a query spanning indexes reads at the minimum
-- `served()` = `Served<View>`, what an index's service holds: `pin()` = the
-  latest published `View` (one load per request), `None` while unsynced;
-  `pin_any()` = the view regardless (final data, tips); `synced()` = the gate
-  without pinning. `Served::fixed(view)` = a synced, never-republished handle
-  for tests with no follower
-- `reads()` = the follower's `Reads`: every view a `served()` handle pinned
-  (`pin` answered, or `pin_any`), shared across clones, `total()` since boot.
-  One pin per request keeps it a request count
-- `subscribe_applied()` publishes the applied height (inclusive, `None` when
-  empty) with each view
-- `subscribe_synced()` turns `true` once the index has applied the quorum tip
-  (`applied_height() >= tip`) and stays `true` until it falls more than `depth`
-  behind; recomputed when the queue is idle, and dropped immediately on reset; serving refuses every
-  request of that index while `false`; each flip logs `Serving` / `Syncing,
-  requests refused`, except around a reorg: `Reorg received, replaying` (warn,
-  `durable`, `dropped`) when it arrives, `Reorg replayed, serving` (`took`) once
-  the gate reopens
+Drive it as production does: send `Step`s into a real `BlockSink` (and
+`FeeSink`), spawn `index.run(subscription, cancel)`, and assert through
+`published()` (`served().pin_any()`, `subscribe_finalized().wait_for(..)`) and
+`run`'s result; reopen the store after `run` returns for durability. No index
+exposes a test-only entry point.
 
 ### Shutdown drains
 
 The `Producer` owns the `BlockSink`; when it stops, `Step::Shutdown` goes last
-into every queue. A follower stops there: it finalises what is final, ends its
-sink it publishes to (if any) with `Shutdown`, and returns. A step that
-reached a queue is never dropped.
+into every queue. An index stops there: it writes what is final, ends any sink
+it publishes to with `Shutdown`, and returns. A step that reached a queue is
+never dropped.
 
-`run(shutdown)` takes the pipeline's root `CancellationToken` only to raise it.
-A follower that fails cancels it, keeps popping every queue of its feed through
-`Shutdown` (the sink never sees a dropped queue), ends the sink it publishes to, then
+`run(.., cancel)` takes the pipeline's root `CancellationToken` only to raise
+it. A loop that fails cancels it, keeps popping its queues through `Shutdown`
+(the sink never sees a dropped queue), ends the sink it publishes to, then
 returns its error. The failure is the only error: nothing upstream reports a
-dead consumer, and a zip consumer of a failed publisher stops cleanly.
+dead consumer, and a consumer of a failed publisher stops cleanly.
 
 `zainod::indexer`'s module docs diagram the full pipeline;
 [`docs/design/persistence-architecture.md`](../../docs/design/persistence-architecture.md)

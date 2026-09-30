@@ -195,49 +195,62 @@ impl TransparentAddressService {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use arc_swap::ArcSwap;
-    use tokio::sync::watch;
-    use zaino_persistence::fs::SimFs;
-    use zaino_primitives::types::{
-        Block, BlockHeader, Script, Transaction, TransparentData, TransparentOutput,
-    };
-    use zaino_sync::IndexWriter;
+    use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
     use super::*;
     use crate::TransparentAddressIndexWriter;
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
+    use zaino_chainview::{EndpointSet, QuorumTip};
+    use zaino_persistence::fs::SimFs;
+    use zaino_primitives::types::{
+        Block, BlockHash, BlockHeader, BlockRef, ReorgDepth, Script, Transaction, TransparentData,
+        TransparentOutput,
+    };
+    use zaino_sync::{BlockSink, Step};
 
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
     }
 
-    /// Syncing = a refusal on every method; an address with no history = a successful empty
-    /// answer, never an error
+    /// Syncing = a refusal on every method until the gate opens at chainview's tip; an address
+    /// with no history = a successful empty answer, never an error
     #[tokio::test]
     async fn syncing_refuses_and_an_empty_history_answers_empty() {
         let address = TransparentAddress::PublicKeyHash([0x01; 20]);
+        let within = Duration::from_secs(10);
 
-        let mut writer = TransparentAddressIndexWriter::open(
+        let index = TransparentAddressIndexWriter::open(
             SimFs::new(),
             std::path::Path::new("/ta"),
             zcash_protocol::consensus::NetworkType::Regtest,
+            NonZeroUsize::new(1 << 20).expect("non-zero"),
         )
         .expect("open");
-        let (follower, synced) = watch::channel(false);
-        let view = Arc::new(ArcSwap::from_pointee(writer.view()));
         let service = TransparentAddressService::new(
-            Served::new(Arc::clone(&view), synced),
+            index.published().served(),
             zcash_protocol::consensus::NetworkType::Regtest,
         );
+        let (mut synced, mut durable) =
+            (index.published().subscribe_synced(), index.published().subscribe_finalized());
+        // chainview's quorum tip at height 1: the gate opens once the index applies it
+        let block = BlockRef { hash: BlockHash::from([1; 32]), height: h(1) };
+        let (_tips, tips) =
+            watch::channel(Some(QuorumTip { block, agreed_by: EndpointSet::default() }));
+        let depth = ReorgDepth::new(NonZeroU32::new(10).expect("non-zero"));
+        let cancel = CancellationToken::new();
+        let gate = tokio::spawn(index.published().gate(tips, depth, cancel.clone()));
 
         // unsynced: every method refuses alike, none naming a height or a tip
         assert_eq!(service.balance(&address), Err(ServeError::Syncing));
         assert_eq!(service.utxos(&address, h(0)), Err(ServeError::Syncing));
         assert_eq!(service.transactions(&address, h(0), h(10)), Err(ServeError::Syncing));
 
+        let mut sink = BlockSink::new("blocks");
+        let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
+        let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, queue);
+        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
         // heights 0 and 1, only 1 pays the address (0 = bare coinbase)
-        let mut blocks = Vec::new();
         for height in 0..2u32 {
             let (txid, outputs) = if height == 1 {
                 let paid = TransparentOutput {
@@ -268,12 +281,11 @@ mod tests {
                 ),
                 transactions,
             ));
-            writer.apply(&block).await.expect("apply");
-            blocks.push(block);
+            let height = block.header().height;
+            sink.send(Step::Apply { height, finalized: false, data: block }).await;
         }
-
-        view.store(Arc::new(writer.view()));
-        follower.send(true).expect("service holds the receiver");
+        let open = tokio::time::timeout(within, synced.wait_for(|open| *open)).await;
+        open.expect("gate opens at the tip").expect("gate alive");
 
         // applied, uncommitted: non-finalized served (same answer either side of a commit)
         let paid = Zatoshis::new(42).expect("in supply");
@@ -283,8 +295,11 @@ mod tests {
             "non-finalized rows = answers, not a batch"
         );
 
-        zaino_sync::finalize_now(&mut writer, &blocks).await.expect("finalize");
-        view.store(Arc::new(writer.view()));
+        for height in [h(0), h(1)] {
+            sink.send(Step::Finalized { height }).await;
+        }
+        let one = tokio::time::timeout(within, durable.wait_for(|at| *at == Some(h(1)))).await;
+        one.expect("1 written").expect("index alive");
 
         // applied to 2: heights past the fold absent, not an error (a synced index answers)
         assert_eq!(service.transactions(&address, h(2), h(2)), Ok(Vec::new()));
@@ -300,6 +315,11 @@ mod tests {
         assert_eq!(service.balance(&address), Ok(paid));
         let paying = TransactionRef { height: 1, txid: TransactionId::from([0x77; 32]) };
         assert_eq!(service.transactions(&address, h(0), h(1)), Ok(vec![paying]));
+
+        sink.shutdown();
+        running.await.expect("no panic").expect("followed through Shutdown");
+        cancel.cancel();
+        gate.await.expect("gate ends on cancel");
     }
 
     /// The row budget counts receives across every address of a request, on both tiers: at the
@@ -316,14 +336,22 @@ mod tests {
             script: Script::new([&[0x76, 0xa9, 0x14][..], &[hash; 20], &[0x88, 0xac]].concat()),
         };
 
-        let mut writer = TransparentAddressIndexWriter::open(
+        let index = TransparentAddressIndexWriter::open(
             SimFs::new(),
             std::path::Path::new("/ta"),
             zcash_protocol::consensus::NetworkType::Regtest,
+            NonZeroUsize::new(1 << 20).expect("non-zero"),
         )
         .expect("open");
-        // heights 0 to 2 (both inclusive) durable, 3 non-finalized: `first` paid at 1, 2 and 3,
-        // `second` at 2
+        let published = index.published().served();
+        let (mut applied, mut durable) =
+            (index.published().subscribe_applied(), index.published().subscribe_finalized());
+        let mut sink = BlockSink::new("blocks");
+        let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
+        let subscription = sink.subscribe(TransparentAddressIndexWriter::NAME, queue);
+        let running = tokio::spawn(index.run(subscription, CancellationToken::new()));
+        // heights 0 to 2 (both inclusive) sent final (bulk), 3 non-final (written at the bulk →
+        // tip handoff, so 0..=2 durable): `first` paid at 1, 2 and 3, `second` at 2
         let mut blocks = Vec::new();
         for height in 0..4u32 {
             let outputs = match height {
@@ -348,10 +376,16 @@ mod tests {
                 }],
             )));
         }
-        zaino_sync::finalize_now(&mut writer, &blocks[..3]).await.expect("finalize");
-        writer.apply(&blocks[3]).await.expect("apply");
+        for (height, block) in (0u32..).zip(&blocks) {
+            let (height, finalized) = (h(height), height < 3);
+            sink.send(Step::Apply { height, finalized, data: Arc::clone(block) }).await;
+        }
+        let within = Duration::from_secs(10);
+        let three = tokio::time::timeout(within, applied.wait_for(|at| *at == Some(h(3)))).await;
+        three.expect("3 applied").expect("index alive");
+        assert_eq!(*durable.borrow_and_update(), Some(h(2)), "bulk written before 3 applies on it");
 
-        let served = Served::fixed(writer.view());
+        let served = Served::fixed((*published.pin_any()).clone());
         let network = zcash_protocol::consensus::NetworkType::Regtest;
         let budget = |rows: usize| {
             TransparentAddressService::new(served.clone(), network)
@@ -377,5 +411,8 @@ mod tests {
         let roomy = budget(4);
         let sums = roomy.balances(&both).expect("4 rows fit");
         assert_eq!(sums, [30, 10].map(|zat| Zatoshis::new(zat).expect("in supply")));
+
+        sink.shutdown();
+        running.await.expect("no panic").expect("followed through Shutdown");
     }
 }

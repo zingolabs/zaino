@@ -85,24 +85,28 @@ impl TreeStateService {
 mod tests {
     use std::path::Path;
 
-    use arc_swap::ArcSwap;
-    use zaino_persistence::fs::SimFs;
-    use zaino_primitives::types::{
-        Block, BlockHeader, CompactCiphertext, SaplingData, SaplingOutput, Transaction,
-        TransactionId,
-    };
-    use zaino_sync::IndexWriter;
+    use std::{num::NonZeroUsize, time::Duration};
 
     use super::*;
     use crate::{TreeStateIndexWriter, TreeStateStore};
+    use tokio_util::sync::CancellationToken;
+    use zaino_chainview::{EndpointSet, QuorumTip};
+    use zaino_persistence::fs::SimFs;
+    use zaino_primitives::types::{
+        Block, BlockHeader, BlockRef, CompactCiphertext, ReorgDepth, SaplingData, SaplingOutput,
+        Transaction, TransactionId,
+    };
+    use zaino_sync::{BlockSink, Step};
 
-    /// Syncing: a committed height answers (final); a non-finalized height, the tip and a pool
-    /// scan refused alike (never a partial answer); once synced all answer
+    /// Block 0 final, block 1 at the tip, sent through the sink. Syncing (chainview's tip ahead):
+    /// a committed height answers (final); a non-finalized height, the tip and a pool scan refused
+    /// alike (never a partial answer). The tip reached → the gate opens, all answer
     #[tokio::test]
     async fn an_unsynced_index_serves_committed_heights_only_and_everything_once_synced() {
-        let mut writer = TreeStateIndexWriter::new(
+        let index = TreeStateIndexWriter::new(
             TreeStateStore::open(SimFs::new(), Path::new("/ts"), NetworkType::Regtest)
                 .expect("open"),
+            NonZeroUsize::MIN,
         )
         .expect("new");
 
@@ -135,13 +139,29 @@ mod tests {
                 }],
             ))
         };
-        zaino_sync::finalize_now(&mut writer, &[block(0)]).await.expect("finalize");
-        writer.apply(&block(1)).await.expect("apply");
-
-        let (follower, synced) = tokio::sync::watch::channel(false);
-        let view = Arc::new(ArcSwap::from_pointee(writer.view()));
-        let service = TreeStateService::new(Served::new(view, synced), NetworkType::Regtest);
         let h = |n: u32| Height::try_from(n).expect("h");
+        let quorum = |height: u32| {
+            let block = BlockRef { hash: [height as u8; 32].into(), height: h(height) };
+            Some(QuorumTip { block, agreed_by: EndpointSet::default() })
+        };
+        let (tips, tip) = tokio::sync::watch::channel(quorum(5));
+        let depth = ReorgDepth::new(std::num::NonZeroU32::new(10).expect("non-zero"));
+        let cancel = CancellationToken::new();
+        let published = index.published();
+        let service = TreeStateService::new(published.served(), NetworkType::Regtest);
+        let (mut applied, mut synced) =
+            (published.subscribe_applied(), published.subscribe_synced());
+        let gate = tokio::spawn(published.gate(tip, depth, cancel.clone()));
+        let mut sink = BlockSink::new("blocks");
+        let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
+        let blocks = sink.subscribe(TreeStateIndexWriter::NAME, queue);
+        let running = tokio::spawn(index.run(blocks, cancel.clone()));
+        let within = Duration::from_secs(5);
+        for (height, finalized) in [(0, true), (1, false)] {
+            sink.send(Step::Apply { height: h(height), finalized, data: block(height) }).await;
+        }
+        let tip_applied = tokio::time::timeout(within, applied.wait_for(|at| *at == Some(h(1))));
+        tip_applied.await.expect("tip applied").expect("index alive");
 
         assert_eq!(service.treestate(h(0)).expect("committed").height, h(0));
         assert_eq!(service.treestate(h(1)), Err(ServeError::Syncing), "non-finalized");
@@ -149,12 +169,19 @@ mod tests {
         assert_eq!(service.latest(), Err(ServeError::Syncing));
         assert_eq!(service.subtree_roots(ShieldedPool::Sapling, 0, 0), Err(ServeError::Syncing));
 
-        follower.send(true).expect("service holds the receiver");
+        tips.send_replace(quorum(1));
+        let open = tokio::time::timeout(within, synced.wait_for(|open| *open));
+        open.await.expect("the tip reached opens the gate").expect("gate alive");
 
         assert_eq!(service.latest().expect("tip").height, h(1));
         assert!(service.treestate(h(1)).expect("non-finalized").sapling.as_bytes().len() > 1);
         assert_eq!(service.subtree_roots(ShieldedPool::Sapling, 0, 0), Ok(Vec::new()));
         // Above the index = absent, never a progress report
         assert_eq!(service.treestate(h(2)), Err(ServeError::NotFound { height: h(2) }));
+
+        sink.shutdown();
+        running.await.expect("no panic").expect("followed through Shutdown");
+        cancel.cancel();
+        gate.await.expect("gate ends on cancel");
     }
 }

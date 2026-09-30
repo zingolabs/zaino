@@ -1,0 +1,41 @@
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+The `IndexWriter` / `Derives` traits, `IndexFollower`, `Zip`, `Paired`, \
+`BlockWithFees` and `finalize_now` are removed. Each index now runs its own \
+loop over its `Subscription` (`match blocks.next().await`, one arm per step), \
+keeps its own final blocks until they commit, and publishes through a \
+`Published` (view, tips, reads). Commits are synchronous: `commit(through)` \
+writes and fsyncs on the blocking pool (`Offloaded::blocking`) and returns \
+once the blocks are on disk; `Offloaded::lend` / `restore` are gone. At the tip \
+every `Finalized` block commits at once (the 32-block tip batch and \
+`wants_commit` are gone), so the durable tip trails the chain tip by exactly \
+the finality depth. The serving gate is a separate task, \
+`Published::gate(tips, depth, cancel)`. A derived stream is read by awaiting \
+one derived step after each block step. An index's loop failure is \
+`IndexFailed { index, source }` (was `FollowError::Index`).
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+Chain identity is checked once, in the `Producer`: `Producer::new` takes \
+every index's durable tip as a `BlockRef` (height and hash), the first bulk \
+block must extend the rearmost one (`ProduceError::Unlinked`), and a fetched \
+block at any index's durable height must be the one committed there \
+(`ProduceError::Diverged`). `FollowError::Unlinked` / `Diverged` are removed; \
+indexes no longer check linkage.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Removed"
+description = """
+`LsmStore::merge_finished` is removed (its only consumer, the tip-batching \
+`wants_commit` hook, is gone).
+"""

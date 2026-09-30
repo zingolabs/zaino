@@ -129,7 +129,7 @@ impl ZainoIndexConfig {
         NonZeroU32::new(256).expect("256 is non-zero")
     }
 
-    /// `batch_mib` in bytes (the follower's commit unit)
+    /// `batch_mib` in bytes (the index's bulk commit unit)
     pub(crate) fn batch_bytes(&self) -> NonZeroUsize {
         mib(self.batch_mib)
     }

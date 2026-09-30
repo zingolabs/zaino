@@ -54,12 +54,6 @@ impl ReadView {
         self.non_finalized.tip_height().or(self.finalized_tip())
     }
 
-    /// Anything applied but not yet durable
-    #[cfg(test)]
-    pub(crate) fn has_non_finalized(&self) -> bool {
-        !self.non_finalized.is_empty()
-    }
-
     /// Framed, wire-ready; non-finalized first (holds the newest blocks)
     pub(crate) fn block(&self, height: Height) -> Option<Bytes> {
         self.non_finalized.block(height).or_else(|| self.durable.block(height))

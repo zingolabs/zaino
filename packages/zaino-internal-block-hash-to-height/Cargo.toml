@@ -14,6 +14,7 @@ arc-swap.workspace = true
 imbl.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
 zaino-sync.workspace = true

@@ -2,9 +2,9 @@
 
 We think of sync as a function, `f(old_state, blocks)`. The non-finalized state is simply that same
 function applied to blocks that are not final yet, and kept in memory instead of committed. It is
-not a second data structure or a separate subsystem. Every index implements it through the
-`zaino_sync::IndexWriter` trait ([usage.md](../../packages/zaino-sync/usage.md#indexwriter-two-tips)),
-and each index's own `usage.md` describes how it does so.
+not a second data structure or a separate subsystem. Every index keeps it in its own loop
+([usage.md](../../packages/zaino-sync/usage.md#an-index-loop)): a non-final block is applied, and
+dropped again on a reorg. Each index's own `usage.md` describes how it does so.
 
 ## Two watermarks
 
@@ -59,7 +59,7 @@ default, with one persistent-structure clone per published block.
 
 The chain head refuses any fork below its window (`AdvanceError::BelowWindow`), and zainod exits. On
 the next boot the stored tip hash no longer links to the validator's chain, so the first delivered
-block fails the follower's link check (`FollowError::Unlinked`), and zainod refuses to run until the
+block fails the producer's link check (`ProduceError::Unlinked`), and zainod refuses to run until the
 index is resynced. With `finalised_depth` at least `MAX_BLOCK_REORG_HEIGHT`, such a reorg is outside
 the consensus rules, so we want a loud resync rather than silently splicing a new branch onto the old
 durable prefix ([durability.md](./durability.md) §5).

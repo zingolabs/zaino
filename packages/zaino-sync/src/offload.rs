@@ -38,8 +38,7 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 /// Writer-owned state (a store's files) that crosses to a pool for one hop and comes back
 ///
 /// - [`get`](Self::get) = the state itself, never a cached copy of it
-/// - absent inside a hop (which holds `&mut self`), or while [`lend`](Self::lend)ed to a
-///   detached write until [`restore`](Self::restore)d: a read there panics, never waits
+/// - absent only inside a hop (which holds `&mut self`): a read there panics, never waits
 pub struct Offloaded<S>(Option<S>);
 
 impl<S: Send + 'static> Offloaded<S> {
@@ -55,18 +54,6 @@ impl<S: Send + 'static> Offloaded<S> {
         self.0.as_mut().expect("offloaded state read mid-hop (its hop was cancelled)")
     }
 
-    /// The state itself, for a write that outlives this call (an [`IndexWriter::finalize`]
-    /// write); back through [`restore`](Self::restore)
-    ///
-    /// [`IndexWriter::finalize`]: crate::IndexWriter::finalize
-    pub fn lend(&mut self) -> S {
-        self.0.take().expect("offloaded state already lent")
-    }
-
-    pub fn restore(&mut self, state: S) {
-        assert!(self.0.replace(state).is_none(), "offloaded state restored twice");
-    }
-
     /// `f` on the CPU pool, the state moved there and back
     pub async fn compute<T: Send + 'static>(
         &mut self,
@@ -74,6 +61,21 @@ impl<S: Send + 'static> Offloaded<S> {
     ) -> T {
         let mut state = self.0.take().expect("offloaded state already mid-hop");
         let (state, out) = compute(move || {
+            let out = f(&mut state);
+            (state, out)
+        })
+        .await;
+        self.0 = Some(state);
+        out
+    }
+
+    /// `f` on the blocking-I/O pool (a commit's writes and fsyncs), the state moved there and back
+    pub async fn blocking<T: Send + 'static>(
+        &mut self,
+        f: impl FnOnce(&mut S) -> T + Send + 'static,
+    ) -> T {
+        let mut state = self.0.take().expect("offloaded state already mid-hop");
+        let (state, out) = blocking(move || {
             let out = f(&mut state);
             (state, out)
         })
@@ -96,14 +98,11 @@ mod tests {
         assert_eq!(compute(|| (1..=4u64).product::<u64>()).await, 24);
         assert_eq!(blocking(|| 7).await, 7);
 
-        // state crosses, is mutated there, and is back for the next read; a lent state
-        // mutated by its borrower comes back through `restore`
+        // state crosses, is mutated there, and is back for the next read
         let mut state = Offloaded::new(vec![1u8]);
-        let mut lent = state.lend();
-        lent.push(2);
-        state.restore(lent);
         assert!(state.compute(move |_| off_runtime()).await, "state hop ran on a runtime thread");
-        state.compute(|v| v.push(3)).await;
+        state.compute(|v| v.push(2)).await;
+        state.blocking(|v| v.push(3)).await;
         state.get_mut().push(4);
         assert_eq!(state.get(), &[1, 2, 3, 4], "every hop's mutation kept, in order");
 

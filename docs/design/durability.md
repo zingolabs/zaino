@@ -162,10 +162,10 @@ behind, the next batch waits for it, which bounds how many segments a read searc
 The manifest header records the network, so opening a mainnet index with a testnet configuration
 is refused.
 
-The manifest body records the tip hash, which `IndexWriter::finalized_tip()` exposes to the
-follower. The follower checks that every delivered block links to the one before it, starting from
-the stored tip (`FollowError::Unlinked`), and that a replayed block landing on the durable tip is
-the one committed there (`FollowError::Diverged`). Both are fatal and require a resync: they mean a
+The manifest body records the tip hash, which every index hands the producer at boot. The
+producer checks that every block it fetches links to the one before it, the first onto the
+rearmost stored tip (`ProduceError::Unlinked`), and that a fetched block at any index's durable
+height is the one committed there (`ProduceError::Diverged`). Both are fatal and require a resync: they mean a
 reorg deeper than the window, a validator reset or resynced onto another chain, or a directory
 reused across chains, none of which can be spliced onto the old durable prefix.
 

@@ -21,6 +21,7 @@ zaino-sync = { version = "0.1.0", path = "../zaino-sync" }
 tokio = { workspace = true, features = ["macros", "sync"] }
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zcash_protocol.workspace = true
+tokio-util.workspace = true
 
 [features]
 # Sample blocks for consumers that test against a real index.
@@ -30,6 +31,6 @@ testing = ["zaino-primitives/testing"]
 tempfile = { workspace = true }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 proptest.workspace = true
 

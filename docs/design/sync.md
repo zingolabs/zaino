@@ -10,8 +10,8 @@ validators ──▶ BlockFetchPool (bulk: ordered, concurrent, decoded on every
 chainview (quorum tip) ──▶ ChainHead (non-final window, hash-linked) ───────────────┤
                                                                                    ▼
                                                               Producer ──▶ BlockSink
-                                                                            ├─▶ compact-block ◀─ Zip ─ FeeSink ◀─┐
-                                                                            ├─▶ value-balance ───────────────────┘
+                                                                            ├─▶ compact-block ◀───── fees ─ FeeSink ◀─┐
+                                                                            ├─▶ value-balance ────────────────────────┘
                                                                             ├─▶ block-hash
                                                                             ├─▶ tree-state
                                                                             └─▶ transparent-address
@@ -25,9 +25,8 @@ and heights are spread round-robin across the configured validators. Setting `pr
 pins bulk fetching to one of them.
 
 `zaino-chainview` provides the quorum tip, which the validators must agree on by hash rather than
-by highest height. The producer follows that tip, and every follower also reads it directly to
-decide when its index is serving and when to switch from byte-sized batches to batches of 32 final blocks.
-Blocks are only ever fetched from the validators listed in the tip's `agreed_by`, because a
+by highest height. The producer follows that tip, and each index's serving gate (a small task of
+its own, beside the index's loop) reads it to decide when that index is serving. Blocks are only ever fetched from the validators listed in the tip's `agreed_by`, because a
 validator that disagrees may still be serving a stale branch at a height the tip has already made
 final.
 
@@ -49,15 +48,19 @@ more than `finalised_depth` ahead, for example after a long validator outage, th
 back to bulk sync, but only once it has confirmed the validator still holds our tip. Otherwise it
 steps onto the validator's block first, which is just an ordinary reorg.
 
-Each index gets one `IndexFollower`, which drains its queue into the index's `IndexWriter` until
-`Shutdown`. A follower that fails cancels the whole pipeline, but it keeps draining its queue
+Each index runs its own loop over its queue until `Shutdown`, one `match` arm per step
+([`zaino-sync` usage](../../packages/zaino-sync/usage.md#an-index-loop)). In bulk, final blocks
+stage until a byte batch fills, so one write is one fsync of a steady size; at the tip every
+`Finalized` is written at once, so the durable tip trails the chain tip by exactly
+`finalised_depth`. A loop that fails cancels the whole pipeline, but it keeps draining its queue
 through `Shutdown` so the sink never sees a dropped queue.
 
 ## Fees: an index publishing to another index
 
 The compact-block index needs each block's fees, and only the value-balance index can work those
 out. We connect the two with a second sink: value-balance republishes its steps into the
-`FeeSink`, and compact-block reads that alongside its `BlockSink` queue through `Zip`. Since both
+`FeeSink`, and compact-block awaits one fee step after each block step off its `BlockSink` queue.
+Since both
 streams start from the same rearmost height, a compact-block index that is behind still gets its
 fees, because value-balance replays them from its own store.
 
@@ -69,9 +72,10 @@ block while a commit waits for a whole batch, so the two would deadlock.
 These are asserted in release builds, and a violation stops zainod:
 
 - Every index sees contiguous heights from after the rearmost durable tip, and a replay that
-  starts below an index's own durable tip MUST land exactly on it (`FollowError::Diverged`).
-- Every block MUST link onto the one before it, starting from the stored tip hash
-  (`FollowError::Unlinked`, see [durability.md](./durability.md) §5).
+  starts below an index's own durable tip MUST land exactly on it (`ProduceError::Diverged`).
+- Every block MUST link onto the one before it, starting from the rearmost stored tip hash
+  (`ProduceError::Unlinked`, see [durability.md](./durability.md) §5). The producer checks both;
+  indexes trust the stream.
 - `finalised_depth` is at least `MAX_BLOCK_REORG_HEIGHT` on mainnet and testnet, so no replay can
   reach a final height.
 - `Finalized` is sent oldest first, and only for heights already delivered.

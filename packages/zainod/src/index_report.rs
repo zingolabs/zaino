@@ -23,7 +23,7 @@ use crate::error::IndexerError;
 const SYNCING_EVERY: Duration = Duration::from_secs(120);
 const SERVING_EVERY: Duration = Duration::from_secs(300);
 
-/// What the report reads off one index's follower
+/// What the report reads off one index's `Published`
 pub(crate) struct Watched {
     pub(crate) finalized: watch::Receiver<Option<Height>>,
     pub(crate) applied: watch::Receiver<Option<Height>>,
@@ -51,7 +51,7 @@ pub(crate) async fn run(
                 _ = ticks.tick() => None,
             };
             match gate {
-                // follower gone: nothing left to report
+                // index gone: nothing left to report
                 Some(true) => {
                     cancel.cancelled().await;
                     return Ok(());

@@ -12,21 +12,28 @@ is described in
 use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateStore};
 
 let store = TreeStateStore::open(fs, &path, network)?;
-let writer = TreeStateIndexWriter::new(store)?;
-let subscription = block_sink.subscribe(TreeStateIndexWriter::NAME, queue);
-let follower = IndexFollower::new(writer, subscription, tips, batch_bytes, depth);
-let service = TreeStateService::new(follower.served(), network);
+let index = TreeStateIndexWriter::new(store, batch_bytes)?;
+let blocks = block_sink.subscribe(TreeStateIndexWriter::NAME, queue);
+let service = TreeStateService::new(index.published().served(), network);
+tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
+tokio::spawn(index.run(blocks, cancel.clone()));
 ```
 
-- `TreeStateIndexWriter` implements `zaino_sync::IndexWriter<Input = Block,
-  View = ReadView>` (`NAME` = `"tree_state"`), subscribed to the
-  `zaino_sync::BlockSink` (`blocks`). `new` is fallible: it reseeds the running
-  frontiers from disk on every boot.
+- `TreeStateIndexWriter` runs its own loop over the `zaino_sync::BlockSink`
+  subscription (`NAME` = `"tree_state"`): `run` follows it through `Shutdown`,
+  publishing through a `zaino_sync::Published<ReadView>`. Final blocks (bulk)
+  are held and folded at commit, one commit per `batch_bytes`; once following
+  the tip, each `Finalized { height }` commits everything through `height` as
+  it arrives. `durable_tip()` = the last committed block, for the producer's
+  start and chain check. `new` is fallible: it reseeds the running frontiers
+  from disk on every boot.
 - `ReadView` binds the non-finalized tier and the committed snapshot into one publication:
   a request loads it once, so the seam between them cannot move under it.
   `treestate(height)`, `latest()` and `subtree_roots(..)` answer from it, with no
-  `synced` gate; `TreeStateService` adds the gate. `writer.view()` is the only
-  way to get one.
+  `synced` gate; `TreeStateService` adds the gate. The index's `Published`
+  (`index.published()`) is the only way to get one.
+- Tests drive it as production does: steps sent into a `BlockSink`, `run`
+  spawned over its subscription, state read back through `published()`.
 - `network` is the operator-declared network, returned by `service.network()`
   for `TreeState.network` (Zebra on regtest reports `"test"`, so it is never
   read off the validator).
@@ -103,11 +110,11 @@ Every file carries page checksums (`zaino_persistence::pages`).
 
 ## Non-finalized tier and reorgs
 
-`apply` folds into an `imbl` `NonFinalizedTrees`, and `finalize(blocks)` lands
+Each non-final block folds into an `imbl` `NonFinalizedTrees`. A commit lands
 a contiguous batch starting after `finalized_height` (the last durable height,
 inclusive; `None` = empty), reusing non-finalized folds
 where they exist and folding the rest (bulk sync skips the non-finalized tier
-entirely). `reset()` restores the
+entirely). A `Reorg` restores the
 applied carry from the durable one: no reverse fold, no disk read. Nothing
 reorg-able is ever fsynced. See
 [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).

@@ -16,10 +16,10 @@
 //!
 //! - LSM minus everything mutable data needs: spent outputs kept, never deleted → no memtable, no
 //!   WAL, no tombstones (any height re-resolves identically: a downstream index behind this one
-//!   replays through `deliver`, no rewind)
+//!   replays through delivery, no rewind)
 //! - memtable role = `pending::Pending` (every output delivered above the durable tip, staged and
 //!   non-finalized alike, RAM only)
-//! - one item published per block from `deliver` (bulk, replay and tip alike)
+//! - one item published per block at delivery (bulk, replay and tip alike)
 //!
 //! # Lookup (`index_writer::resolve`, per transparent input)
 //!

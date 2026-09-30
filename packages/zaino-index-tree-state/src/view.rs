@@ -1,8 +1,8 @@
 //! Non-finalized tier (the fold applied, not yet fsynced) and the [`ReadView`] over both tiers
 //!
-//! - `imbl` throughout: `view()` = a pointer copy, a reader pins a consistent instant
+//! - `imbl` throughout: a published view = a pointer copy, a reader pins a consistent instant
 //! - split by *tree size*, not height (retention = pure function of size, [`retained_nodes`]):
-//!   one predicate decides what `finalize` writes
+//!   one predicate decides what a commit writes
 
 use std::sync::Arc;
 
@@ -85,7 +85,7 @@ impl NonFinalizedTrees {
 
     /// Splits after `cut` (last height the left half keeps, inclusive; `sizes` = trees after it)
     ///
-    /// - left = the batch `finalize` writes
+    /// - left = the batch a commit writes
     /// - right = what stays buffered
     pub(crate) fn split(&self, cut: Height, sizes: PoolSizes) -> (Self, Self) {
         let first_above = cut.next();
