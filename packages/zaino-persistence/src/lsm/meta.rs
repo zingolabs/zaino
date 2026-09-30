@@ -115,7 +115,11 @@ mod tests {
     use super::*;
 
     fn segment(id: u32, records: u64) -> SegmentMeta {
-        SegmentMeta { id, records, sealed: Sealed { len: records * 3, tail: id * 7 } }
+        SegmentMeta {
+            id,
+            records,
+            sealed: Sealed { len: records * 3, tail: id * 7, sums: id * 11 },
+        }
     }
 
     /// List codec round trip; a duplicate id or an empty segment in a manifest is refused
@@ -124,7 +128,7 @@ mod tests {
         let segments = vec![segment(4, 10), segment(9, 1), segment(2, 1 << 40)];
         let mut bytes = Vec::new();
         encode_list(&segments, &mut bytes);
-        assert_eq!(bytes.len(), 4 + 3 * 24);
+        assert_eq!(bytes.len(), 4 + 3 * 28);
         let mut body = BodyReader::new(&bytes);
         assert_eq!(decode_list(&mut body).expect("decode"), segments);
         body.finish().expect("whole list consumed");

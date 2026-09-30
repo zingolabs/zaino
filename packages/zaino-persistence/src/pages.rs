@@ -3,13 +3,21 @@
 //! ```text
 //! <file>       append-only data
 //! <file>.crc   CRC-32 LE per complete 4 KiB page of <file>
-//! MANIFEST     per file: committed length + CRC-32 of the partial tail page (`Sealed`)
+//! MANIFEST     per file: committed length, the tail page's CRC, a digest of <file>.crc (`Sealed`)
 //! ```
 //!
-//! - a complete page never changes, so its CRC lives beside it; the tail page still grows, so
-//!   its CRC rides the manifest (a crash never leaves a committed page with a stale CRC)
-//! - integrity only: what the bytes mean was settled before they were written; open checks
-//!   lengths and the tail page, a read checks each page the first time it touches it
+//! A complete page never changes, so its checksum lives in `<file>.crc`. The tail page still
+//! grows, so its checksum rides the manifest, and a crash never leaves a committed page with a
+//! stale checksum.
+//!
+//! Each page's checksum covers its page index as well as its bytes, so a page and its checksum
+//! moved together to another position still fail. The manifest also holds a digest of the whole
+//! `<file>.crc`, checked at open: the manifest (itself checksummed and atomically renamed) pins
+//! every page checksum, and each checksum pins its page. A data page and its checksum that are
+//! both stale, for example after a lost write, therefore fail too.
+//!
+//! This is integrity only: what the bytes mean was settled before they were written. Open checks
+//! lengths, the tail page and the digest; a read checks each page the first time it touches it.
 
 use std::{
     io,
@@ -41,28 +49,55 @@ const CORRUPTION: &str = "on-disk corruption: stop zainod, run `zainod verify`, 
 
 /// A file's committed state, as its owner's manifest records it
 ///
-/// - `tail` = CRC-32 of the bytes after the last complete page (CRC of nothing when none)
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// - `tail` = [`page_sum`] of the bytes after the last complete page
+/// - `sums` = CRC-32 of `<file>.crc` through the last complete page (CRC of nothing when none)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sealed {
     pub len: u64,
     pub tail: u32,
+    pub sums: u32,
 }
 
 impl Sealed {
-    pub const EMPTY: Self = Self { len: 0, tail: 0 };
+    /// A file with nothing committed
+    pub const EMPTY: Self = Self { len: 0, tail: 0, sums: 0 };
 
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.len.to_le_bytes());
         out.extend_from_slice(&self.tail.to_le_bytes());
+        out.extend_from_slice(&self.sums.to_le_bytes());
     }
 
     pub fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
-        Ok(Self { len: body.u64()?, tail: body.u32()? })
+        Ok(Self { len: body.u64()?, tail: body.u32()?, sums: body.u32()? })
     }
 
     fn full_pages(&self) -> u64 {
         self.len / PAGE as u64
     }
+}
+
+/// Page `index`'s checksum: CRC-32 of the index (u64 LE), then the page's bytes
+fn page_sum(index: u64, bytes: &[u8]) -> u32 {
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&index.to_le_bytes());
+    hasher.update(bytes);
+    hasher.finalize()
+}
+
+/// The tail page's checksum, 0 when there is no tail (so [`Sealed::EMPTY`] can be a constant)
+fn tail_sum(index: u64, bytes: &[u8]) -> u32 {
+    match bytes.is_empty() {
+        true => 0,
+        false => page_sum(index, bytes),
+    }
+}
+
+/// `digest` (the CRC-32 of the checksums so far) extended by `more` checksum bytes
+fn extend_digest(digest: u32, more: &[u8]) -> u32 {
+    let mut hasher = crc32fast::Hasher::new_with_initial(digest);
+    hasher.update(more);
+    hasher.finalize()
 }
 
 /// `<file>.crc`
@@ -82,11 +117,15 @@ pub enum PageError {
 
     #[error("{path}: tail page fails its checksum")]
     Tail { path: PathBuf },
+
+    #[error("{path}: page checksums differ from the digest the manifest committed")]
+    Sums { path: PathBuf },
 }
 
 /// The write side of one append-only file and its checksums
 ///
 /// - `unsealed_sums` = CRCs of pages completed since the last seal, from page `sealed_pages`
+/// - `sums_digest` = CRC-32 of every sealed page checksum (what the next seal extends)
 #[derive(Debug)]
 pub struct PagedFile {
     path: PathBuf,
@@ -96,25 +135,33 @@ pub struct PagedFile {
     tail_page: Vec<u8>,
     unsealed_sums: Vec<u8>,
     sealed_pages: u64,
+    sums_digest: u32,
     writeback_from: u64,
 }
 
 impl PagedFile {
     /// Opens `path` at `sealed` (fresh = [`Sealed::EMPTY`]): bytes past it dropped, a shorter
-    /// file refused, the tail page read back and checked (≤ 4 KiB)
+    /// file refused, the tail page and the checksums' digest read back and checked (the `.crc`
+    /// file is 1/1024 of the data)
     pub fn open(fs: &dyn Fs, path: &Path, sealed: Sealed) -> Result<Self, PageError> {
         let data = fs.open(path)?;
         let sums = fs.open(&sums_path(path))?;
+        let sums_len = sealed.full_pages() * SUM as u64;
         truncate(data.as_ref(), path, sealed.len)?;
-        truncate(sums.as_ref(), &sums_path(path), sealed.full_pages() * SUM as u64)?;
+        truncate(sums.as_ref(), &sums_path(path), sums_len)?;
 
         let tail_at = sealed.full_pages() * PAGE as u64;
         let mut tail_page = vec![0; usize::try_from(sealed.len - tail_at).expect("tail < PAGE")];
         data.read_exact_at(&mut tail_page, tail_at)?;
-        if crc32fast::hash(&tail_page) != sealed.tail {
+        if tail_sum(sealed.full_pages(), &tail_page) != sealed.tail {
             return Err(PageError::Tail { path: path.to_owned() });
         }
         tail_page.reserve(PAGE - tail_page.len());
+        let mut committed_sums = vec![0; usize::try_from(sums_len).expect("sums fit usize")];
+        sums.read_exact_at(&mut committed_sums, 0)?;
+        if crc32fast::hash(&committed_sums) != sealed.sums {
+            return Err(PageError::Sums { path: path.to_owned() });
+        }
 
         Ok(Self {
             path: path.to_owned(),
@@ -124,6 +171,7 @@ impl PagedFile {
             tail_page,
             unsealed_sums: Vec::new(),
             sealed_pages: sealed.full_pages(),
+            sums_digest: sealed.sums,
             writeback_from: sealed.len,
         })
     }
@@ -156,7 +204,8 @@ impl PagedFile {
             self.tail_page.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
             if self.tail_page.len() == PAGE {
-                let sum = crc32fast::hash(&self.tail_page);
+                let index = self.sealed_pages + (self.unsealed_sums.len() / SUM) as u64;
+                let sum = page_sum(index, &self.tail_page);
                 self.unsealed_sums.extend_from_slice(&sum.to_le_bytes());
                 self.tail_page.clear();
             }
@@ -172,9 +221,11 @@ impl PagedFile {
             self.sums.write_all_at(&self.unsealed_sums, self.sealed_pages * SUM as u64)?;
             self.sums.sync_data()?;
             self.sealed_pages += (self.unsealed_sums.len() / SUM) as u64;
+            self.sums_digest = extend_digest(self.sums_digest, &self.unsealed_sums);
             self.unsealed_sums.clear();
         }
-        Ok(Sealed { len: self.len, tail: crc32fast::hash(&self.tail_page) })
+        let tail = tail_sum(self.sealed_pages, &self.tail_page);
+        Ok(Sealed { len: self.len, tail, sums: self.sums_digest })
     }
 
     /// Read view of `sealed` (a seal this file produced), keeping `previous`'s checked pages
@@ -223,7 +274,8 @@ impl std::fmt::Debug for Pages {
 }
 
 impl Pages {
-    /// An immutable sealed file (a segment): opened read-only, lengths checked, nothing truncated
+    /// An immutable sealed file (a segment): opened read-only, lengths and the checksums' digest
+    /// checked, nothing truncated
     ///
     /// - `access` = how this mapping is read (another mapping of the same file keeps its own)
     pub fn open(
@@ -246,7 +298,11 @@ impl Pages {
                 return Err(PageError::Lost { path: at.to_owned(), have, need });
             }
         }
-        Ok(Self::map(path, data.as_ref(), sums.as_ref(), sealed, None, access)?)
+        let pages = Self::map(path, data.as_ref(), sums.as_ref(), sealed, None, access)?;
+        if crc32fast::hash(&pages.inner.sums) != sealed.sums {
+            return Err(PageError::Sums { path: path.to_owned() });
+        }
+        Ok(pages)
     }
 
     fn map(
@@ -353,7 +409,7 @@ impl Pages {
                 ),
                 false => inner.tail,
             };
-            if crc32fast::hash(bytes) != expected {
+            if page_sum(page as u64, bytes) != expected {
                 let path = inner.path.display();
                 panic!("{path} page {page}: checksum mismatch ({CORRUPTION})");
             }
@@ -380,12 +436,14 @@ pub struct Scrub {
     pub committed_bytes: u64,
     pub orphaned_bytes: u64,
     pub lost: bool,
+    /// `<file>.crc` differs from the digest the manifest committed
+    pub bad_sums: bool,
     pub bad_pages: Vec<u64>,
 }
 
 impl Scrub {
     pub fn is_clean(&self) -> bool {
-        !self.lost && self.bad_pages.is_empty()
+        !self.lost && !self.bad_sums && self.bad_pages.is_empty()
     }
 }
 
@@ -399,6 +457,7 @@ pub fn scrub(dir: &Path, relative: &str, sealed: Sealed) -> io::Result<Scrub> {
         committed_bytes: sealed.len,
         orphaned_bytes: 0,
         lost: false,
+        bad_sums: false,
         bad_pages: Vec::new(),
     };
     let (data, sums) = match (std::fs::File::open(&path), std::fs::read(sums_path(&path))) {
@@ -415,6 +474,8 @@ pub fn scrub(dir: &Path, relative: &str, sealed: Sealed) -> io::Result<Scrub> {
         return Ok(report);
     }
     report.orphaned_bytes = len - sealed.len;
+    let committed_sums = &sums[..usize::try_from(sealed.full_pages()).expect("fits") * SUM];
+    report.bad_sums = crc32fast::hash(committed_sums) != sealed.sums;
 
     let mut reader = io::BufReader::with_capacity(1 << 20, data).take(sealed.len);
     let mut page = vec![0u8; PAGE];
@@ -428,7 +489,7 @@ pub fn scrub(dir: &Path, relative: &str, sealed: Sealed) -> io::Result<Scrub> {
             }
             false => sealed.tail,
         };
-        if crc32fast::hash(&page[..size]) != expected {
+        if page_sum(index, &page[..size]) != expected {
             report.bad_pages.push(index);
         }
     }
@@ -452,20 +513,20 @@ mod tests {
         let mut file = PagedFile::open(fs.as_ref(), path, Sealed::EMPTY).expect("open");
         file.append(&bytes[..PAGE - 3]).expect("append");
         let first = file.seal().expect("seal");
-        let first_tail = crc32fast::hash(&bytes[..PAGE - 3]);
-        assert_eq!(first, Sealed { len: (PAGE - 3) as u64, tail: first_tail });
+        let first_tail = page_sum(0, &bytes[..PAGE - 3]);
+        assert_eq!(first, Sealed { len: (PAGE - 3) as u64, tail: first_tail, sums: 0 });
         drop(file);
 
         let mut file = PagedFile::open(fs.as_ref(), path, first).expect("reopen");
         file.append(&bytes[PAGE - 3..]).expect("append");
         let sealed = file.seal().expect("seal");
-        let tail = crc32fast::hash(&bytes[3 * PAGE..]);
-        assert_eq!(sealed, Sealed { len: bytes.len() as u64, tail });
-        let sums: Vec<u8> = bytes
-            .chunks(PAGE)
-            .take(3)
-            .flat_map(|page| crc32fast::hash(page).to_le_bytes())
+        let sums: Vec<u8> = (0u64..)
+            .zip(bytes.chunks(PAGE).take(3))
+            .flat_map(|(index, page)| page_sum(index, page).to_le_bytes())
             .collect();
+        let tail = page_sum(3, &bytes[3 * PAGE..]);
+        let expected = Sealed { len: bytes.len() as u64, tail, sums: crc32fast::hash(&sums) };
+        assert_eq!(sealed, expected, "one digest whether the checksums were sealed at once or not");
         assert_eq!(fs.contents(&sums_path(path)).expect("sums"), sums);
 
         let pages = file.pages(sealed, None).expect("pages");
@@ -489,6 +550,36 @@ mod tests {
             .downcast::<String>()
             .expect("formatted");
         assert!(message.contains("page 1: checksum mismatch"), "{message}");
+        fs.corrupt(path, |data| data[PAGE + 5] ^= 1);
+
+        // pages 0 and 1 swapped together with their checksums: each still fails at its new index
+        let swap = |data: &mut Vec<u8>, width: usize| {
+            let (first, second) = data.split_at_mut(width);
+            first.swap_with_slice(&mut second[..width]);
+        };
+        fs.corrupt(path, |data| swap(data, PAGE));
+        fs.corrupt(&sums_path(path), |sums| swap(sums, SUM));
+        let pages = Pages::open(fs.as_ref(), path, sealed, Access::Normal);
+        assert!(matches!(pages, Err(PageError::Sums { .. })), "digest pins the checksum order");
+        let mut transposed = sealed;
+        transposed.sums = crc32fast::hash(&fs.contents(&sums_path(path)).expect("sums"));
+        let pages = Pages::open(fs.as_ref(), path, transposed, Access::Normal).expect("digest");
+        let moved =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pages.read(0..PAGE).to_vec()));
+        assert!(moved.is_err(), "a page and its checksum moved together still fail");
+        fs.corrupt(path, |data| swap(data, PAGE));
+        fs.corrupt(&sums_path(path), |sums| swap(sums, SUM));
+
+        // a checksum rewritten to match a changed page: the manifest's digest refuses it
+        fs.corrupt(path, |data| data[5] ^= 1);
+        let forged = page_sum(0, &fs.contents(path).expect("data")[..PAGE]).to_le_bytes();
+        fs.corrupt(&sums_path(path), |sums| sums[..SUM].copy_from_slice(&forged));
+        assert!(matches!(PagedFile::open(fs.as_ref(), path, sealed), Err(PageError::Sums { .. })));
+        let pages = Pages::open(fs.as_ref(), path, sealed, Access::Normal);
+        assert!(matches!(pages, Err(PageError::Sums { .. })));
+        fs.corrupt(path, |data| data[5] ^= 1);
+        let original = page_sum(0, &bytes[..PAGE]).to_le_bytes();
+        fs.corrupt(&sums_path(path), |sums| sums[..SUM].copy_from_slice(&original));
 
         fs.corrupt(path, |data| data[3 * PAGE + 1] ^= 1);
         assert!(matches!(PagedFile::open(fs.as_ref(), path, sealed), Err(PageError::Tail { .. })));
@@ -519,6 +610,14 @@ mod tests {
         std::fs::write(&path, &damaged).expect("write");
         let report = scrub(dir.path(), "data", sealed).expect("scrub");
         assert_eq!((report.bad_pages.clone(), report.orphaned_bytes), (vec![1], 5));
+        assert!(!report.bad_sums, "the checksums themselves are intact");
+
+        let sums_at = sums_path(&path);
+        let mut sums = std::fs::read(&sums_at).expect("sums");
+        sums[0] ^= 1;
+        std::fs::write(&sums_at, &sums).expect("write sums");
+        let report = scrub(dir.path(), "data", sealed).expect("scrub");
+        assert!(report.bad_sums && !report.is_clean(), "{report:?}");
 
         std::fs::write(&path, &bytes[..PAGE]).expect("truncate");
         assert!(scrub(dir.path(), "data", sealed).expect("scrub").lost);

@@ -143,7 +143,11 @@ impl Verification {
             out += &match report {
                 None => format!("{name}: disabled\n"),
                 Some(report) => {
-                    let bad = |scrub: &Scrub| scrub.bad_pages.len() + usize::from(scrub.lost);
+                    let bad = |scrub: &Scrub| {
+                        scrub.bad_pages.len()
+                            + usize::from(scrub.lost)
+                            + usize::from(scrub.bad_sums)
+                    };
                     format!(
                         "{name}: {} heights, {} files, {} faults, {} orphaned bytes\n",
                         report.heights,
@@ -280,7 +284,7 @@ mod tests {
         let blocks_len = std::fs::metadata(cb.join("blocks.dat")).expect("meta").len();
         let blocks_dat = json!({
             "path": "blocks.dat", "committed_bytes": blocks_len, "orphaned_bytes": 0,
-            "lost": false, "bad_pages": [],
+            "lost": false, "bad_sums": false, "bad_pages": [],
         });
         let tree_files = clean["tree_state"]["files"].as_array().map(Vec::len);
         assert_eq!(clean["clean"], true, "{clean:#}");

@@ -52,7 +52,7 @@ network or format included).
   "compact_block": {
     "heights": 4,
     "files": [
-      { "path": "blocks.dat", "committed_bytes": 1234, "orphaned_bytes": 0, "lost": false, "bad_pages": [] },
+      { "path": "blocks.dat", "committed_bytes": 1234, "orphaned_bytes": 0, "lost": false, "bad_sums": false, "bad_pages": [] },
       { "path": "offsets.idx", … }
     ]
   },
@@ -62,7 +62,7 @@ network or format included).
 }
 ```
 
-`bad_pages` = 4 KiB page indexes whose CRC disagrees. A corrupt or lost file
+`bad_pages` = 4 KiB page indexes whose CRC disagrees; `bad_sums` = the `.crc` file no longer matches the digest the manifest committed. A corrupt or lost file
 means delete that index's directory and resync it.
 
 ## Failure policy

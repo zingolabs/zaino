@@ -69,8 +69,10 @@ for n in 0.. {
 ## Page checksums (`pages`)
 
 Every index file is a `PagedFile`: append-only data, a `<file>.crc` sidecar
-holding a CRC-32 per complete 4 KiB page, and a `Sealed { len, tail }` (length +
-CRC of the partial last page) that the owner's manifest carries.
+holding a CRC-32 per complete 4 KiB page (seeded with the page's index), and a
+`Sealed { len, tail, sums }` that the owner's manifest carries: the length, the
+partial last page's checksum, and a CRC-32 of the whole `.crc`, which binds the
+checksums to the manifest (design: `docs/design/durability.md`).
 
 ```rust
 use zaino_persistence::pages::{PagedFile, Sealed};
@@ -83,8 +85,9 @@ let pages = file.pages(sealed, Some(&old_pages))?; // read view; checked pages s
 let bytes = pages.bytes(range);          // zero-copy, every page checked on first touch
 ```
 
-- `open` = the file at least as long as its seal (then truncated to it) and the
-  tail page's CRC: `PageError::{Lost, Tail}`. Nothing else is read.
+- `open` checks the file is at least as long as its seal (then truncates to it),
+  the tail page's checksum, and the `.crc` against `sums`:
+  `PageError::{Lost, Tail, Sums}`. `Pages::open` checks the same digest.
 - A read that first touches a page whose CRC disagrees **panics** (corruption:
   zainod aborts; never serves bytes it cannot vouch for).
 - `Pages::open(fs, path, sealed, access)` maps an immutable sealed file (a segment)
@@ -94,7 +97,7 @@ let bytes = pages.bytes(range);          // zero-copy, every page checked on fir
   larger readahead, pages reclaimed sooner), `Normal` (no advice). `PagedFile`
   views (appendable files) are `Normal`.
 - `scrub(dir, relative, sealed)` is the offline check: plain sequential reads,
-  every page against its CRC → `Scrub { committed_bytes, orphaned_bytes, lost,
+  every page against its CRC and the `.crc` against `sums` → `Scrub { committed_bytes, orphaned_bytes, lost, bad_sums,
   bad_pages }`. Each index exposes `committed_files(dir, network)` →
   `CommittedFiles { heights, files }`, the list `zainod verify` scrubs.
 
