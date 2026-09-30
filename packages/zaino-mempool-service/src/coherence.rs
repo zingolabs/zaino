@@ -45,6 +45,14 @@ struct SynthesizedEpochState {
     generation: u64,
 }
 
+/// How long coherence has been frozen, or `None` while live.
+fn frozen_for(frozen_since: &std::sync::Mutex<Option<Instant>>) -> Option<std::time::Duration> {
+    frozen_since
+        .lock()
+        .expect("frozen_since poisoned")
+        .map(|since| since.elapsed())
+}
+
 /// The tip-aware coherence service.
 ///
 /// Generic over the core mempool port `M` and the NS-epoch observer `N`, so it has
@@ -198,10 +206,7 @@ impl CoherentSubscriber {
     /// tip-coherent reads have gone dark and stayed dark (validator unreachable,
     /// NS stuck), which a bare `Frozen` mode cannot distinguish from a transient.
     pub fn frozen_for(&self) -> Option<std::time::Duration> {
-        self.frozen_since
-            .lock()
-            .expect("frozen_since poisoned")
-            .map(|since| since.elapsed())
+        frozen_for(&self.frozen_since)
     }
 
     /// Subscribe to the bounded coherent event stream.

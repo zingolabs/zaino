@@ -1,0 +1,25 @@
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The chain head emits `CHAIN_TIP_HEIGHT`, `SYNC_CONSECUTIVE_FAILURES` and \
+`SYNC_BACKOFF_SECONDS` from its own poll loop, listed in a new \
+`metric_names::GAUGES`. Metric names are unchanged.
+"""
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "feature"
+description = """
+The coherence loop emits `MEMPOOL_COHERENCE_FROZEN_SECONDS` and warns when \
+coherence stays frozen for over 120 s, once per freeze.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+The sync and coherence-freeze gauges and the 120 s freeze warning moved to \
+`zaino-chain-head-service` and `zaino-mempool-service`. `metric_names` \
+re-exports the constants; its `GAUGES` table is gone.
+"""

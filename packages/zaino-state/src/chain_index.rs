@@ -18,7 +18,6 @@ use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeR
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind};
-use crate::metric_names::*;
 use crate::{CompactBlockStream, SyncError};
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
@@ -67,15 +66,6 @@ pub mod chain_store;
 /// Reaching ChainView from this crate's source vocabulary.
 pub mod chain_view;
 mod mempool;
-
-/// How long the mempool may stay frozen before the sync loop says so.
-///
-/// A freeze is the normal shape of a tip transition and clears in well under a
-/// second. This is two orders of magnitude above that, so it fires only when the
-/// validator tip and Zaino's have genuinely stopped agreeing — a state in which
-/// tip-coherent reads have been failing the whole time, and which otherwise
-/// leaves no trace in the log.
-const COHERENCE_FREEZE_ESCALATION: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Bridge `zaino-state`'s legacy txid type to the domain one the mempool speaks.
 ///
@@ -978,7 +968,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         let status = self.status.clone();
         let source = self.source.clone();
         let block_wake_signal = self.block_wake_signal.clone();
-        let coherence = self.coherence.subscriber();
         let timings = self.sync_timings;
         let cancel_token = self.cancel_token.clone();
 
@@ -1031,10 +1020,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                                 "node returned no best block height",
                             ))
                         })?;
-                    // lag = CHAIN_TIP_HEIGHT - SYNC_FINALIZED_HEIGHT, consumer-derived
-                    // Not exported here: this scope knows the tip, not the committed
-                    // height, so the old gauge reported a constant OPERATIONAL_NFS_DEPTH
-                    metrics::gauge!(CHAIN_TIP_HEIGHT).set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
 
                     // The finalised state is all this worker drives now.
@@ -1055,46 +1040,15 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                         let _ = block_wake_signal.send(());
                     }
 
-                    // A freeze is normal and brief — it is how a tip transition
-                    // is meant to look. A freeze that outlives
-                    // `COHERENCE_FREEZE_ESCALATION` is not: the validator tip and
-                    // Zaino's have stopped agreeing, and tip-coherent reads have
-                    // been failing that whole time with nothing in the log to say
-                    // so. Reported here rather than from the coherence layer
-                    // because this loop is the thing that would have to fix it.
-                    let frozen_for = coherence.frozen_for();
-                    if let Some(frozen_for) = frozen_for {
-                        if frozen_for >= COHERENCE_FREEZE_ESCALATION {
-                            tracing::warn!(
-                                frozen_for_secs = frozen_for.as_secs(),
-                                "mempool coherence has been frozen far longer than a tip \
-                                 transition should take; tip-coherent reads are unavailable"
-                            );
-                        }
-                    }
-
                     Ok(())
                     } => r,
                 };
-
-                // Outside the fallible block: an unreachable validator is exactly when
-                // coherence freezes, and that path returns before reaching it, so the
-                // gauge would read 0 through the whole incident
-                metrics::gauge!(MEMPOOL_COHERENCE_FROZEN_SECONDS).set(
-                    coherence
-                        .frozen_for()
-                        .map_or(0.0, |frozen| frozen.as_secs_f64()),
-                );
 
                 match sync_result {
                     Ok(()) => {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
-                        {
-                            metrics::gauge!(SYNC_CONSECUTIVE_FAILURES).set(0.0);
-                            metrics::gauge!(SYNC_BACKOFF_SECONDS).set(0.0);
-                        }
                         // Race the post-success wait against cancellation
                         // and a source-change notification. `shutdown()`'s
                         // `cancel_token.cancel()` releases this immediately
@@ -1114,14 +1068,6 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                     }
                     Err(e) => {
                         consecutive_failures += 1;
-                        // Before the give-up check: the worker returns below, never
-                        // sampling again
-                        {
-                            metrics::gauge!(SYNC_CONSECUTIVE_FAILURES)
-                                .set(consecutive_failures as f64);
-                            metrics::gauge!(SYNC_BACKOFF_SECONDS)
-                                .set(current_backoff.as_secs_f64());
-                        }
                         if consecutive_failures >= timings.max_consecutive_failures {
                             tracing::error!(
                                 consecutive_failures,
