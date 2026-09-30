@@ -18,7 +18,10 @@ use zaino_source::{
 
 use crate::endpoint::Polled;
 use crate::endpoints::EndpointIndex;
-use crate::{BroadcastError, ChainView, Endpoint, EndpointState, MempoolEntry};
+use crate::{
+    Agreement, BelowQuorum, BroadcastError, ChainView, Endpoint, EndpointSet, EndpointState,
+    MempoolEntry,
+};
 
 /// What one validator would answer, mutated between ticks by the test.
 ///
@@ -484,6 +487,95 @@ async fn a_mixed_broadcast_succeeds_and_ours_is_servable_before_quorum() {
     }
     let sent = view.broadcast(vec![8u8; 8]).await;
     assert!(matches!(sent, Err(BroadcastError::Unreachable { attempted: 3, .. })), "{sent:?}");
+}
+
+/// - One-block race → quorum + open tails kept; lagging majority → retreat onto the ancestor
+/// - Agreers-only change → tip watch moves, epoch doesn't; 1 voter of 3 → shortfall count 1
+#[tokio::test]
+async fn ancestry_votes_ride_a_propagation_race_and_retreat_onto_a_lagging_majority() {
+    let validators: Vec<Arc<FakeValidator>> =
+        (0..3).map(|_| Arc::new(FakeValidator::default())).collect();
+    let at = |h: u32| {
+        let height = Height::try_from(h).expect("h");
+        BlockRef { hash: trunk(height), height }
+    };
+    for validator in &validators {
+        validator.edit(|fake| fake.tip = Some(at(100)));
+    }
+    let (view, pollers) = ChainView::new(
+        validators
+            .iter()
+            .zip(["a:8232", "b:8232", "c:8232"])
+            .map(|(source, address)| Endpoint {
+                address: address.to_owned(),
+                source: Arc::clone(source),
+            })
+            .collect(),
+        depth(),
+    )
+    .expect("three endpoints is a valid set");
+    let reader = view.subscriber();
+    let mut tips = reader.subscribe_tip();
+    let agreed_by = |positions: &[usize]| EndpointSet::at(positions.iter().copied());
+    let agreements = || -> Vec<Agreement> {
+        reader.current().endpoints().iter().map(|meta| meta.agreement).collect()
+    };
+    async fn open(tail: &mut crate::MempoolTail) -> bool {
+        tokio::time::timeout(Duration::from_millis(20), tail.next()).await.is_err()
+    }
+    for poller in &pollers {
+        poller.tick().await.expect("polls");
+    }
+    let settled = reader.current().tip().expect("three agree");
+    assert_eq!((settled.block, settled.agreed_by), (at(100), agreed_by(&[0, 1, 2])));
+    let mut first = reader.tail().expect("quorum met");
+
+    // a mines 101 first: 100 is still on all three chains (exact-tip voting split here)
+    validators[0].edit(|fake| fake.tip = Some(at(101)));
+    pollers[0].tick().await.expect("a polls");
+    let race = reader.current().tip().expect("race keeps the quorum");
+    assert_eq!((race.block, race.agreed_by), (at(100), agreed_by(&[0, 1, 2])));
+    assert!(reader.current().mempool().is_ok(), "never UNAVAILABLE mid-race");
+    assert_eq!(agreements(), [Agreement::Ahead, Agreement::Agreed, Agreement::Agreed]);
+    assert!(open(&mut first).await, "same block: the stream stays open");
+
+    // b follows: 101 has a majority, the stream ends, c trails
+    validators[1].edit(|fake| fake.tip = Some(at(101)));
+    pollers[1].tick().await.expect("b polls");
+    let moved = reader.current().tip().expect("two of three hold 101");
+    assert_eq!((moved.block, moved.agreed_by), (at(101), agreed_by(&[0, 1])));
+    assert_eq!(agreements(), [Agreement::Agreed, Agreement::Agreed, Agreement::Behind]);
+    assert_eq!(first.next().await, None, "a new block ends the stream");
+    let mut second = reader.tail().expect("quorum met");
+
+    // a stops voting: 101 is held by b alone, so the tip retreats onto the common ancestor
+    validators[0].edit(|fake| fake.not_ready = true);
+    assert_eq!(pollers[0].tick().await.expect("a answers"), Polled::Syncing);
+    let retreat = reader.current().tip().expect("b and c share 100");
+    assert_eq!((retreat.block, retreat.agreed_by), (at(100), agreed_by(&[1, 2])));
+    assert_eq!(agreements(), [Agreement::Ahead, Agreement::Ahead, Agreement::Agreed]);
+    assert_eq!(second.next().await, None, "a retreat is a tip move too");
+
+    // c catches up, then a returns: the second change is agreers-only
+    validators[2].edit(|fake| fake.tip = Some(at(101)));
+    pollers[2].tick().await.expect("c polls");
+    let mut third = reader.tail().expect("quorum met");
+    tips.borrow_and_update();
+    validators[0].edit(|fake| fake.not_ready = false);
+    pollers[0].tick().await.expect("a polls again");
+    let joined = *tips.borrow_and_update();
+    let joined = joined.expect("quorum");
+    assert_eq!((joined.block, joined.agreed_by), (at(101), agreed_by(&[0, 1, 2])));
+    assert!(open(&mut third).await, "agreers-only change: same epoch, stream open");
+
+    // b and c stop voting: one of three is no quorum, and the refusal counts that one
+    for (validator, poller) in validators.iter().zip(&pollers).skip(1) {
+        validator.edit(|fake| fake.not_ready = true);
+        poller.tick().await.expect("answers");
+    }
+    let refused = reader.current().mempool().err();
+    assert_eq!(refused, Some(BelowQuorum { agreeing: 1, threshold: 2, configured: 3 }));
+    assert_eq!(*tips.borrow(), None);
 }
 
 /// - Reorg between tip read and header reads → last chain kept, next tick walks to the fork

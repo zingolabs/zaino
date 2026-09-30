@@ -23,14 +23,37 @@ impl EndpointChain {
         }
     }
 
+    pub(crate) fn floor(&self) -> Height {
+        self.floor
+    }
+
     pub(crate) fn hash_at(&self, height: Height) -> Option<BlockHash> {
         let offset = u32::from(height).checked_sub(u32::from(self.floor))?;
         self.hashes.get(offset as usize).copied()
     }
 
+    pub(crate) fn holds(&self, block: BlockRef) -> bool {
+        self.hash_at(block.height) == Some(block.hash)
+    }
+
+    /// Every block held, floor first
+    pub(crate) fn blocks(&self) -> impl Iterator<Item = BlockRef> + '_ {
+        self.floor
+            .up_to(self.tip().height)
+            .zip(self.hashes.iter())
+            .map(|(height, hash)| BlockRef { hash: *hash, height })
+    }
+
     /// Bare tip, no ancestry (a walk that never had to descend)
     fn single(tip: BlockRef) -> Self {
         Self { floor: tip.height, hashes: Vector::unit(tip.hash) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn of(floor: Height, hashes: impl IntoIterator<Item = BlockHash>) -> Self {
+        let hashes: Vector<BlockHash> = hashes.into_iter().collect();
+        assert!(!hashes.is_empty(), "a chain holds its tip");
+        Self { floor, hashes }
     }
 }
 
@@ -134,10 +157,7 @@ mod tests {
             }
             (Ok(walk.finish(held).expect("test supplies every link the walk needs")), fetched)
         };
-        let blocks = |chain: &EndpointChain| -> Vec<BlockRef> {
-            let held = |height| BlockRef { hash: chain.hash_at(height).expect("held"), height };
-            chain.floor.up_to(chain.tip().height).map(held).collect()
-        };
+        let blocks = |chain: &EndpointChain| chain.blocks().collect::<Vec<_>>();
 
         // first build: floor = tip − depth, every hash from a child's `prev_hash`
         let trunk: Vec<BlockLink> = (7..=10).rev().map(|h| link(0, h, 0)).collect();
@@ -145,7 +165,7 @@ mod tests {
         let built = built.expect("floor reached");
         assert_eq!(fetched, [10, 9, 8].map(height));
         assert_eq!(blocks(&built), [7, 8, 9, 10].map(|h| block(0, h)));
-        assert_eq!((built.floor, built.tip()), (height(7), block(0, 10)));
+        assert_eq!((built.floor(), built.tip()), (height(7), block(0, 10)));
 
         // steady state: one link joins, the window slides (floor 7 → 8)
         let (next, fetched) = walk(block(0, 11), Some(&built), &[link(0, 11, 0)]);

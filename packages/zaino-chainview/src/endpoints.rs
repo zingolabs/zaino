@@ -98,14 +98,38 @@ impl EndpointState {
     }
 }
 
-/// Does this endpoint's tip match the quorum's, right now?
+/// This endpoint's chain vs the quorum tip, right now
+///
+/// - `Ahead` = quorum tip on its chain, below its tip; `Behind` = its tip on the quorum's chain
+/// - `Unknown` = no quorum tip, no chain yet, or too far apart for either window to place
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Agreement {
-    /// No quorum tip, or nothing observed from this endpoint yet
     #[default]
     Unknown,
     Agreed,
+    Ahead,
+    Behind,
     Diverged,
+}
+
+impl Agreement {
+    /// `agreer` = any chain holding the quorum tip
+    pub(crate) fn of(theirs: &EndpointChain, quorum: BlockRef, agreer: &EndpointChain) -> Self {
+        let tip = theirs.tip();
+        let spans =
+            |chain: &EndpointChain, height| (chain.floor()..=chain.tip().height).contains(&height);
+        if tip == quorum {
+            Self::Agreed
+        } else if theirs.holds(quorum) {
+            Self::Ahead
+        } else if tip.height < quorum.height && agreer.holds(tip) {
+            Self::Behind
+        } else if spans(theirs, quorum.height) || spans(agreer, tip.height) {
+            Self::Diverged
+        } else {
+            Self::Unknown
+        }
+    }
 }
 
 /// Exponentially weighted mean round-trip time (fixed smoothing)

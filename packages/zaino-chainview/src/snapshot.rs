@@ -81,17 +81,19 @@ impl Sighting {
 /// [`tip`](Self::tip) is `None` below quorum — no answer rather than a weak one — and
 /// [`mempool`](Self::mempool) refuses on the same condition.
 ///
-/// - `epoch` bumps on every tip change (incl. to/from `None`): `A → B → A` between two reads
-///   still reads as moved
+/// - `epoch` bumps on every tip *block* change (incl. to/from `None`): `A → B → A` between two
+///   reads still reads as moved; an `agreed_by`-only change does not bump it
 /// - `arrivals` = txids turned servable this epoch, in order (repeats on a re-admission)
+/// - `agreeing` = largest group holding one common block (= `tip.agreed_by` at quorum)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainViewSnapshot {
-    tip: Option<QuorumTip>,
+    pub(crate) tip: Option<QuorumTip>,
+    pub(crate) agreeing: EndpointSet,
     epoch: u64,
     /// Ordered, so two readers of one view walk the mempool identically.
-    mempool: OrdMap<TransactionId, Sighting>,
+    pub(crate) mempool: OrdMap<TransactionId, Sighting>,
     arrivals: Vector<TransactionId>,
-    endpoints: Vector<ValidatorMetadata>,
+    pub(crate) endpoints: Vector<ValidatorMetadata>,
     quorum: Quorum,
 }
 
@@ -99,22 +101,13 @@ impl ChainViewSnapshot {
     pub(crate) fn empty(endpoints: Vector<ValidatorMetadata>, quorum: Quorum) -> Self {
         Self {
             tip: None,
+            agreeing: EndpointSet::default(),
             epoch: 0,
             mempool: OrdMap::new(),
             arrivals: Vector::new(),
             endpoints,
             quorum,
         }
-    }
-
-    pub(crate) fn parts_mut(
-        &mut self,
-    ) -> (
-        &mut Option<QuorumTip>,
-        &mut OrdMap<TransactionId, Sighting>,
-        &mut Vector<ValidatorMetadata>,
-    ) {
-        (&mut self.tip, &mut self.mempool, &mut self.endpoints)
     }
 
     /// New epoch: arrivals restart (the tails of the old one close on it)
@@ -135,7 +128,7 @@ impl ChainViewSnapshot {
         &self.arrivals
     }
 
-    /// Highest block ≥threshold endpoints agree on by hash. `None` below quorum.
+    /// Highest block ≥threshold voters' chains hold. `None` below quorum.
     pub(crate) fn tip(&self) -> Option<QuorumTip> {
         self.tip
     }
@@ -165,13 +158,8 @@ impl ChainViewSnapshot {
     pub fn mempool(&self) -> Result<MempoolView<'_>, BelowQuorum> {
         match self.tip {
             Some(_) => Ok(MempoolView(self)),
-            None => Err(self.quorum.shortfall(self.agreeing())),
+            None => Err(self.quorum.shortfall(self.agreeing)),
         }
-    }
-
-    /// Endpoints whose tip matches the largest agreeing group — the quorum's numerator.
-    fn agreeing(&self) -> EndpointSet {
-        self.tip.map(|tip| tip.agreed_by).unwrap_or_default()
     }
 }
 

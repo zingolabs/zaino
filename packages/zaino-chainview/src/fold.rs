@@ -2,7 +2,6 @@
 //!
 //! - Publish **before** waking tails (a woken tail must read what woke it)
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,11 +9,11 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use imbl::Vector;
 use tokio::sync::watch;
-use zaino_primitives::types::{BlockRef, TransactionId, Zatoshis};
+use zaino_primitives::types::{TransactionId, Zatoshis};
 
 use crate::chain::EndpointChain;
-use crate::endpoints::{Agreement, EndpointIndex, EndpointSet, EndpointState, ValidatorMetadata};
-use crate::quorum::{Quorum, QuorumTip};
+use crate::endpoints::{Agreement, EndpointIndex, EndpointState, ValidatorMetadata};
+use crate::quorum::{tally, Quorum, QuorumTip};
 use crate::snapshot::{ChainViewSnapshot, Sighting};
 
 /// One txid a poller listed, with bytes iff this poller had to fetch them.
@@ -57,7 +56,7 @@ pub(crate) enum EndpointReport {
     Failed {
         consecutive: u32,
     },
-    /// Ejected. Contributes neither tip nor sightings.
+    /// Ejected. Contributes neither chain nor sightings.
     Down,
 }
 
@@ -69,7 +68,7 @@ pub(crate) struct ChainViewCore {
     /// Fold working copy. `imbl` throughout, so cloning it to publish is `O(1)`.
     state: Mutex<ChainViewSnapshot>,
     published: ArcSwap<ChainViewSnapshot>,
-    /// Level-triggered quorum tip
+    /// Level-triggered quorum tip (`agreed_by` changes too: fetch routing reads it)
     tip: watch::Sender<Option<QuorumTip>>,
     /// Sent iff the epoch moved or an arrival landed (tails sleep through every other fold)
     tails: watch::Sender<()>,
@@ -120,14 +119,14 @@ impl ChainViewCore {
         endpoint: EndpointIndex,
         report: EndpointReport,
     ) -> Vec<TransactionId> {
-        let mut state = self.state.lock().expect("chainview fold mutex poisoned");
+        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let mut touched: Vec<TransactionId> = Vec::new();
         let mut unadmitted: Vec<TransactionId> = Vec::new();
-        let was_servable = servable_set(&state, &self.quorum);
-        let previous_tip = state.tip();
+        let was_servable = servable_set(&guard, &self.quorum);
+        let previous_tip = guard.tip;
 
-        let (tip, mempool, endpoints) = state.parts_mut();
-        let Some(meta) = endpoints.get_mut(endpoint.get()) else {
+        let state = &mut *guard;
+        let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
             return unadmitted;
         };
 
@@ -136,13 +135,13 @@ impl ChainViewCore {
                 meta.state = EndpointState::Live;
                 read(meta, reading);
                 for txid in &listing.removed {
-                    if let Some(sighting) = mempool.get_mut(txid) {
+                    if let Some(sighting) = state.mempool.get_mut(txid) {
                         sighting.unsight(endpoint);
                         touched.push(*txid);
                     }
                 }
                 for sighted in listing.added {
-                    match (mempool.get_mut(&sighted.txid), sighted.raw) {
+                    match (state.mempool.get_mut(&sighted.txid), sighted.raw) {
                         (Some(sighting), _) => {
                             sighting.sight(endpoint);
                             sighting.listed_fee(sighted.fee);
@@ -150,7 +149,7 @@ impl ChainViewCore {
                         (None, Some(raw)) => {
                             let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
                             sighting.sight(endpoint);
-                            mempool.insert(sighted.txid, sighting);
+                            state.mempool.insert(sighted.txid, sighting);
                         }
                         // Held at the fetch-once check, gone by the time the fold ran.
                         (None, None) => {
@@ -163,12 +162,12 @@ impl ChainViewCore {
             }
             EndpointReport::Syncing => {
                 meta.state = EndpointState::Syncing;
-                touched.extend(retract(mempool, endpoint));
+                touched.extend(retract(&mut state.mempool, endpoint));
             }
             EndpointReport::CatchingUp(reading) => {
                 meta.state = EndpointState::CatchingUp;
                 read(meta, reading);
-                touched.extend(retract(mempool, endpoint));
+                touched.extend(retract(&mut state.mempool, endpoint));
             }
             EndpointReport::Failed { consecutive } => {
                 meta.state = EndpointState::Degraded;
@@ -178,24 +177,37 @@ impl ChainViewCore {
                 meta.state = EndpointState::Down;
                 meta.chain = None;
                 meta.peers = Vector::new();
-                touched.extend(retract(mempool, endpoint));
+                touched.extend(retract(&mut state.mempool, endpoint));
             }
         }
 
-        *tip = quorum_tip(endpoints, self.quorum);
-        for meta in endpoints.iter_mut() {
-            meta.agreement = match (*tip, meta.tip()) {
-                (Some(quorum), Some(theirs)) if quorum.block == theirs => Agreement::Agreed,
-                (Some(_), Some(_)) => Agreement::Diverged,
+        let voters = state.endpoints.iter().enumerate().filter(|(_, meta)| meta.state.votes());
+        let counted = tally(
+            self.quorum,
+            voters.filter_map(|(index, meta)| {
+                Some((EndpointIndex::new(index)?, meta.chain.as_ref()?))
+            }),
+        );
+        (state.tip, state.agreeing) = (counted.tip, counted.agreeing);
+        let agreer = counted
+            .tip
+            .and_then(|tip| tip.agreed_by.positions().next())
+            .and_then(|position| state.endpoints.get(position)?.chain.clone());
+        for meta in state.endpoints.iter_mut() {
+            meta.agreement = match (counted.tip, &meta.chain, &agreer) {
+                (Some(quorum), Some(theirs), Some(agreer)) => {
+                    Agreement::of(theirs, quorum.block, agreer)
+                }
                 _ => Agreement::Unknown,
             };
         }
 
-        let tip_moved = *tip != previous_tip;
-        let new_tip = *tip;
+        let tip_changed = state.tip != previous_tip;
+        let tip_moved = state.tip.map(|tip| tip.block) != previous_tip.map(|tip| tip.block);
         // Unsighted entries do not survive a tip move (an `ours` nobody lists after a block =
         // mined or gone).
-        let dropped: Vec<TransactionId> = mempool
+        let dropped: Vec<TransactionId> = state
+            .mempool
             .iter()
             .filter(|(_, sighting)| {
                 sighting.seen_at().is_empty() && (tip_moved || !sighting.ours())
@@ -203,14 +215,15 @@ impl ChainViewCore {
             .map(|(txid, _)| *txid)
             .collect();
         for txid in &dropped {
-            mempool.remove(txid);
+            state.mempool.remove(txid);
         }
 
         if tip_moved {
             state.tip_moved();
         }
-        let arrived = self.record_arrivals(&mut state, &touched, &was_servable);
-        self.publish(state, tip_moved.then_some(new_tip), tip_moved || arrived);
+        let new_tip = state.tip;
+        let arrived = self.record_arrivals(state, &touched, &was_servable);
+        self.publish(guard, tip_changed.then_some(new_tip), tip_moved || arrived);
 
         unadmitted
     }
@@ -220,11 +233,10 @@ impl ChainViewCore {
         let mut state = self.state.lock().expect("chainview fold mutex poisoned");
         let was_servable = servable_set(&state, &self.quorum);
 
-        let (_, mempool, _) = state.parts_mut();
-        match mempool.get_mut(&txid) {
+        match state.mempool.get_mut(&txid) {
             Some(sighting) => sighting.mark_ours(),
             None => {
-                mempool.insert(txid, Sighting::new(raw, None, true));
+                state.mempool.insert(txid, Sighting::new(raw, None, true));
             }
         }
 
@@ -255,7 +267,7 @@ impl ChainViewCore {
 
     /// Store, then signal (a woken reader must find what woke it)
     ///
-    /// - `tip = Some(_)` = the quorum tip moved to it
+    /// - `tip = Some(_)` = the quorum tip (block or agreers) changed to it
     fn publish(
         &self,
         state: std::sync::MutexGuard<'_, ChainViewSnapshot>,
@@ -311,27 +323,6 @@ fn retract(
         }
     }
     held
-}
-
-/// Highest block ≥threshold *voting* endpoints report with the same hash.
-///
-/// Never the maximum height: one node claiming 999,999 agrees with nobody.
-fn quorum_tip(endpoints: &Vector<ValidatorMetadata>, quorum: Quorum) -> Option<QuorumTip> {
-    let mut votes: HashMap<BlockRef, EndpointSet> = HashMap::new();
-    for (index, meta) in endpoints.iter().enumerate() {
-        let (Some(block), Some(index)) = (meta.tip(), EndpointIndex::new(index)) else {
-            continue;
-        };
-        if meta.state.votes() {
-            votes.entry(block).or_default().insert(index);
-        }
-    }
-
-    votes
-        .into_iter()
-        .filter(|(_, agreed_by)| quorum.met_by(*agreed_by))
-        .max_by_key(|(block, _)| block.height)
-        .map(|(block, agreed_by)| QuorumTip { block, agreed_by })
 }
 
 fn servable_set(state: &ChainViewSnapshot, quorum: &Quorum) -> imbl::OrdSet<TransactionId> {
