@@ -21,7 +21,9 @@ use zaino_chain_store::{
 use zaino_primitives::types::BlockTxPosition;
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 
-use crate::chain_index::types::{IndexedBlock, Outpoint, TransactionHash};
+use crate::chain_index::types::{
+    domain_hash, domain_height, local_height, IndexedBlock, Outpoint, TransactionHash,
+};
 use crate::error::ChainIndexError;
 
 /// A read the finalised store has no answer for, as `None`.
@@ -45,20 +47,6 @@ fn absent<T>(result: Result<Option<T>, ChainStoreError>) -> Result<Option<T>, Ch
     }
 }
 
-/// This crate's height, as the domain names it.
-///
-/// Shares [`crate::chain_index::chain_head::domain_height`] rather than restating it: both
-/// halves must agree about which heights are expressible, and a second copy is
-/// a second thing to keep in step.
-pub(super) fn domain_height(height: crate::Height) -> Option<zaino_primitives::types::Height> {
-    crate::chain_index::chain_head::domain_height(height)
-}
-
-/// The domain's height, as this crate names it.
-fn local_height(height: zaino_primitives::types::Height) -> crate::Height {
-    crate::Height(u32::from(height))
-}
-
 /// The main-chain block hash at `height`, or `None` if the store has none.
 pub(crate) async fn block_hash<R: ChainStoreReader>(
     reader: &R,
@@ -77,12 +65,7 @@ pub(crate) async fn block_height<R: ChainStoreReader>(
     reader: &R,
     hash: crate::BlockHash,
 ) -> Result<Option<crate::Height>, ChainIndexError> {
-    Ok(absent(
-        reader
-            .block_height(crate::chain_index::chain_head::domain_hash(hash))
-            .await,
-    )?
-    .map(local_height))
+    Ok(absent(reader.block_height(domain_hash(hash)).await)?.map(local_height))
 }
 
 /// The indexed block at `height`, or `None` if the store does not hold it.

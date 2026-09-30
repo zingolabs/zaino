@@ -391,6 +391,21 @@ impl ChainIndexError {
         }
     }
 
+    /// A request the validator rejected as invalid, in the shape the legacy
+    /// source reported it: carrying the legacy `InvalidParameter` code the
+    /// serving layer recovers from the error chain.
+    pub(crate) fn validator_rejected(message: impl Display) -> Self {
+        Self::backing_validator(
+            crate::chain_index::source::BlockchainSourceError::unrecoverable_context(
+                "validator rejected the query",
+                LegacyRpcError::new(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    message.to_string(),
+                ),
+            ),
+        )
+    }
+
     pub(crate) fn database_hole(
         missing_block: impl Display,
         source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
@@ -543,6 +558,39 @@ impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
     }
 }
 
+/// A chain view read that could not be answered.
+///
+/// A rejection and an unreachable validator keep the error chains the legacy
+/// source produced, which the serving layer walks for legacy RPC codes.
+impl From<zaino_chain::ChainViewError> for ChainIndexError {
+    fn from(value: zaino_chain::ChainViewError) -> Self {
+        use zaino_chain::ChainViewError as Error;
+
+        let kind = match value {
+            Error::Rejected(message) => return ChainIndexError::validator_rejected(message),
+            Error::SourceUnavailable(error) => {
+                return ChainIndexError::backing_validator(
+                    crate::chain_index::source::BlockchainSourceError::unrecoverable_context(
+                        "validator unreachable",
+                        error,
+                    ),
+                )
+            }
+            Error::NotServiceable(_) | Error::Transient(_) => ChainIndexErrorKind::Unavailable,
+            Error::Fatal(_) => ChainIndexErrorKind::InternalServerError,
+            ref other => {
+                return ChainIndexError::internal(format!("chain view read failed: {other}"))
+            }
+        };
+
+        ChainIndexError {
+            kind,
+            message: value.to_string(),
+            source: Some(Box::new(value)),
+        }
+    }
+}
+
 impl From<MempoolError> for ChainIndexError {
     fn from(value: MempoolError) -> Self {
         // Construct a user-facing message depending on the variant
@@ -653,5 +701,69 @@ mod tests {
         ] {
             assert!(ChainIndexError::from(error).source().is_some());
         }
+    }
+
+    /// Walks an error's source chain for the legacy RPC code it carries.
+    fn legacy_code(error: &ChainIndexError) -> Option<i64> {
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        while let Some(error) = current {
+            if let Some(legacy) = error.downcast_ref::<super::LegacyRpcError>() {
+                return Some(legacy.code);
+            }
+            current = error.source();
+        }
+        None
+    }
+
+    /// A chain view rejection reaches the serving layer as the legacy
+    /// `InvalidParameter` code the validator path produced.
+    #[test]
+    fn a_chain_view_rejection_carries_the_legacy_invalid_parameter_code() {
+        let error = ChainIndexError::from(zaino_chain::ChainViewError::Rejected(
+            "invalid address".into(),
+        ));
+        assert_eq!(
+            legacy_code(&error),
+            Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64)
+        );
+    }
+
+    /// Not serviceable and transient reads are retryable; a fatal one is a
+    /// server fault that keeps its cause.
+    #[test]
+    fn chain_view_failures_map_to_their_kinds() {
+        use std::error::Error as _;
+        use zaino_chain::ChainViewError;
+
+        for error in [
+            ChainViewError::NotServiceable("hole"),
+            ChainViewError::Transient("between states".into()),
+        ] {
+            assert_eq!(
+                ChainIndexError::from(error).kind(),
+                ChainIndexErrorKind::Unavailable
+            );
+        }
+
+        let fatal = ChainIndexError::from(ChainViewError::Fatal("backend".into()));
+        assert_eq!(fatal.kind(), ChainIndexErrorKind::InternalServerError);
+        assert!(fatal.source().is_some());
+    }
+
+    /// An unreachable validator keeps its transport error in the chain.
+    #[test]
+    fn an_unreachable_validator_keeps_its_transport_error() {
+        let error = ChainIndexError::from(zaino_chain::ChainViewError::SourceUnavailable(
+            zaino_source::FetchError::new(zaino_source::FailureMode::Connection, "refused"),
+        ));
+        assert_eq!(error.kind(), ChainIndexErrorKind::InternalServerError);
+
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut found = false;
+        while let Some(error) = current {
+            found |= error.is::<zaino_source::FetchError>();
+            current = error.source();
+        }
+        assert!(found, "the transport error is lost from the chain");
     }
 }

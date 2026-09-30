@@ -8,7 +8,7 @@
 
 use zaino_chain_store::{ChainStoreError, ChainStoreIngest, ChainStoreSourceError};
 
-use super::reading::domain_height;
+use crate::chain_index::types::domain_height;
 
 /// Builds the store up to `target`.
 ///

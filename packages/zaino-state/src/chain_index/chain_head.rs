@@ -63,24 +63,6 @@ where
     }
 }
 
-/// This crate's block hash, as the domain names it.
-///
-/// The two are the same 32 bytes; only the type differs, and only until this
-/// crate's own primitives are retired in favour of the domain's.
-pub(crate) fn domain_hash(hash: crate::BlockHash) -> zaino_primitives::types::BlockHash {
-    zaino_primitives::types::BlockHash::from(hash.0)
-}
-
-/// This crate's height, as the domain names it.
-///
-/// `None` when the height is beyond the protocol maximum. This crate's height
-/// is any `u32`, where the domain's is validated, so a caller asking about an
-/// impossible height gets the same answer it would for an absent one: nothing
-/// is there.
-pub(crate) fn domain_height(height: crate::Height) -> Option<zaino_primitives::types::Height> {
-    zaino_primitives::types::Height::try_from(height.0).ok()
-}
-
 /// A [`ChainHeadBlock`] could not be expressed as an [`IndexedBlock`].
 #[derive(Debug, thiserror::Error)]
 pub enum ChainHeadConversionError {

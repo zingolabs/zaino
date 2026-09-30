@@ -1375,7 +1375,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         hash: types::BlockHash,
     ) -> Result<Option<types::Height>, ChainIndexError> {
         // ChainIndex step 2:
-        match snapshot.block_by_hash(&chain_head::domain_hash(hash)) {
+        match snapshot.block_by_hash(&types::domain_hash(hash)) {
             // ChainIndex step 3: canonical height is None for a block the
             // chain head retains but that is not on its best chain.
             Some(block) => Ok(snapshot
@@ -1446,10 +1446,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         snapshot: &Arc<MapBackedSnapshot>,
         hash: &types::BlockHash,
     ) -> Result<bool, ChainIndexError> {
-        if snapshot
-            .block_by_hash(&chain_head::domain_hash(*hash))
-            .is_some()
-        {
+        if snapshot.block_by_hash(&types::domain_hash(*hash)).is_some() {
             return Ok(true);
         }
         Ok(chain_store::block_height(&self.finalized_state, *hash)
@@ -1539,8 +1536,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         height: types::Height,
     ) -> Result<Option<types::BlockHash>, Self::Error> {
         // The chain head first; below its window, the finalised state.
-        match chain_head::domain_height(height)
-            .and_then(|height| snapshot.best_block_by_height(height))
+        match types::domain_height(height).and_then(|height| snapshot.best_block_by_height(height))
         {
             Some(block) => Ok(Some(types::BlockHash(block.hash().into()))),
             None => chain_store::block_hash(&self.finalized_state, height).await,
@@ -1558,7 +1554,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         snapshot: &Self::Snapshot,
         target_hash: &types::BlockHash,
     ) -> Result<Option<IndexedBlock>, Self::Error> {
-        match snapshot.block_by_hash(&chain_head::domain_hash(*target_hash)) {
+        match snapshot.block_by_hash(&types::domain_hash(*target_hash)) {
             Some(block) => Ok(Some(chain_head::indexed_block(block)?)),
             None => match self.get_block_height(snapshot, *target_hash).await {
                 Ok(Some(height)) => chain_store::block_at(&self.finalized_state, height).await,
@@ -1579,7 +1575,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         snapshot: &Self::Snapshot,
         target_height: &types::Height,
     ) -> Result<Option<IndexedBlock>, Self::Error> {
-        match chain_head::domain_height(*target_height)
+        match types::domain_height(*target_height)
             .and_then(|height| snapshot.best_block_by_height(height))
         {
             Some(block) => Ok(Some(chain_head::indexed_block(block)?)),
@@ -1626,7 +1622,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                             source: Some(Box::new(e)),
                         }),
                         Ok(None) => {
-                            match chain_head::domain_height(types::Height(height))
+                            match types::domain_height(types::Height(height))
                                 .and_then(|height| snapshot.best_block_by_height(height))
                             {
                                 Some(block) => {
@@ -1766,13 +1762,11 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         let on_best_chain = |block: &IndexedBlock| {
             block.height() < start_of_nonfinalized
                 || non_finalized_snapshot
-                    .best_block_by_height(match chain_head::domain_height(block.height()) {
+                    .best_block_by_height(match types::domain_height(block.height()) {
                         Some(height) => height,
                         None => return false,
                     })
-                    .is_some_and(|canonical| {
-                        canonical.hash() == chain_head::domain_hash(*block.hash())
-                    })
+                    .is_some_and(|canonical| canonical.hash() == types::domain_hash(*block.hash()))
         };
         let mut best_chain_block = blocks_containing_transaction
             .iter()
@@ -1904,7 +1898,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         // height *is* its own fork point; one that is not is on a competing
         // branch, and the walk back to the canonical chain is the snapshot's
         // own to do.
-        if let Some(fork) = snapshot.find_fork_point(&chain_head::domain_hash(*hash)) {
+        if let Some(fork) = snapshot.find_fork_point(&types::domain_hash(*hash)) {
             return Ok(Some((
                 types::BlockHash(fork.hash.into()),
                 types::Height(u32::from(fork.height)),
@@ -2101,7 +2095,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         }
 
         Ok(Some(
-            match chain_head::domain_height(height)
+            match types::domain_height(height)
                 .and_then(|height| snapshot.best_block_by_height(height))
             {
                 Some(block) => prune_compact_block(
@@ -2263,13 +2257,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                     types::Height(std::cmp::max(start_height.0, lowest_nonfinalized_height.0));
 
                 for height_value in nonfinalized_start_height.0..=capped_end_height.0 {
-                    let Some(indexed_block) =
-                        chain_head::domain_height(types::Height(height_value))
-                            .and_then(|height| nonfinalized_snapshot.best_block_by_height(height))
-                            .map(chain_head::indexed_block)
-                            .transpose()
-                            .map_err(ChainIndexError::from)
-                            .unwrap_or(None)
+                    let Some(indexed_block) = types::domain_height(types::Height(height_value))
+                        .and_then(|height| nonfinalized_snapshot.best_block_by_height(height))
+                        .map(chain_head::indexed_block)
+                        .transpose()
+                        .map_err(ChainIndexError::from)
+                        .unwrap_or(None)
                     else {
                         match compact_block_from_source(
                             &source,
@@ -2323,15 +2316,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                         types::Height(std::cmp::max(end_height.0, lowest_nonfinalized_height.0));
 
                     for height_value in (nonfinalized_end_height.0..=start_height.0).rev() {
-                        let Some(indexed_block) =
-                            chain_head::domain_height(types::Height(height_value))
-                                .and_then(|height| {
-                                    nonfinalized_snapshot.best_block_by_height(height)
-                                })
-                                .map(chain_head::indexed_block)
-                                .transpose()
-                                .map_err(ChainIndexError::from)
-                                .unwrap_or(None)
+                        let Some(indexed_block) = types::domain_height(types::Height(height_value))
+                            .and_then(|height| nonfinalized_snapshot.best_block_by_height(height))
+                            .map(chain_head::indexed_block)
+                            .transpose()
+                            .map_err(ChainIndexError::from)
+                            .unwrap_or(None)
                         else {
                             match compact_block_from_source(
                                 &source,
