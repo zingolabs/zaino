@@ -1,6 +1,6 @@
 //! Per-segment membership filter for probed sets: sharded binary fuse, 8-bit fingerprints
 //!
-//! - BinaryFuse8: ≈9 bits/key, FPR 2^-8; sizing in `docs/design/index-data-structures.md` §5
+//! - BinaryFuse8: ≈9 bits/key, FPR 2^-8; sizing in `docs/design/index-data-structures.md` §7
 //! - shard = top bits of the key's first 8 bytes → monotone in key order (built while streaming)
 //!   and ≤ [`SHARD_KEYS`] per build (bounded scratch, whatever the segment's size)
 

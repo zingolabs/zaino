@@ -1,17 +1,15 @@
 # Persistence architecture
 
-How Zaino stores what it indexes, with the decisions measured rather than
-asserted. [index-data-structures.md](./index-data-structures.md) covers *shape*,
-what each fold retains; this covers the substrate the shapes sit on.
+Zaino stores its indexes as append-only files read through read-only mmap, plus immutable sorted
+segments (`zaino_persistence::lsm`) for the indexes keyed by hash or address. Nothing is rewritten
+in place, nothing is mapped writable, and there is no embedded key-value engine. This document
+records the measurements behind that choice and the mmap hazards that come with it.
+[index-data-structures.md](./index-data-structures.md) covers what each index retains, and
+[durability.md](./durability.md) covers how it is committed and recovered.
 
-**[measured]** = run on the machine in §1. **[estimated]** = arithmetic over
-measured inputs. **[assumed]** = taken from upstream or another document, not
-independently checked.
-
-The substrate is append-only files plus read-only mmap (Shape A) and immutable
-sorted segments (Shape B, `zaino_persistence::lsm`). Nothing is rewritten in place,
-nothing is mapped writable, and there is no embedded key-value engine. This
-document records why, and the hazards that come with mmap.
+**[measured]** means run on the machine in §1, **[estimated]** means arithmetic over measured
+inputs, and **[assumed]** means taken from upstream or another document without an independent
+check.
 
 ## 1. Method
 
@@ -24,16 +22,14 @@ document records why, and the hazards that come with mmap.
 | Kernel     | 7.1.6                                                |
 | rustc      | 1.96.0, `--release` (`opt-level = 3`)                |
 
-**The filesystem is a confound and is treated as one.** btrfs is copy-on-write
-with transparent zstd compression, so every cold random 4 KiB read decompresses
-an entire extent. Cold-path absolutes are therefore pessimistic against anything
-that writes randomly; warm numbers, space figures and relative CPU comparisons
-are unaffected.
+The filesystem is a confound, and we treat it as one. btrfs is copy-on-write with transparent zstd
+compression, so every cold random 4 KiB read decompresses a whole extent. Cold absolutes are
+therefore pessimistic for anything that writes randomly. Warm numbers, space figures and relative
+CPU comparisons are unaffected.
 
-Cold measurements drop the page cache with `posix_fadvise(POSIX_FADV_DONTNEED)`
-**from a separate process that holds no mapping**: `DONTNEED` cannot evict
-pages mapped into the calling process, so an in-process "cold" run measures
-nothing (6.3 µs against the real 296 µs for a cold tree-state read).
+Cold measurements drop the page cache with `posix_fadvise(POSIX_FADV_DONTNEED)` from a separate
+process that holds no mapping. `DONTNEED` cannot evict pages mapped into the calling process, so an
+in-process "cold" run measures nothing: 6.3 µs, against the real 296 µs for a cold tree-state read.
 
 ## 2. The workload, in numbers
 
@@ -43,39 +39,34 @@ nothing (6.3 µs against the real 296 µs for a cold tree-state read).
 | tree state          | ~4.5M nodes/pool                                        | 32                       | **137 MiB/pool**, 412 MiB for 3 [measured] | ≤33 scattered 32 B reads         | **~34,000 per wallet sync** |
 | transparent address | ~190M rows per set (Blockchair outputs count, Sep 2026) | 69 B receive, 72 B spent | ~27 GiB                                    | prefix range scan + point get    | tens per session            |
 
-Two facts dominate everything else:
-
-- **The tree-state working set fits in RAM.** 412 MiB across three pools. Any
-  server with 1 GiB to spare serves every `GetTreeState` from page cache after
-  the first pass; the cold path matters once, at start-up.
-- **The write side is not a constraint.** Sync is I/O bound on validator RPC at
-  2.67% CPU. Write throughput is therefore not a ranking factor. Write
-  *amplification* still is, because it becomes space.
+Two facts shape everything else. First, the tree-state working set fits in RAM: 412 MiB across
+three pools, so any server with 1 GiB to spare serves every `GetTreeState` from the page cache
+after the first pass, and the cold path matters once, at start-up. Second, the write side is not a
+constraint. Sync is I/O bound on validator RPC, at 2.67% CPU, so write throughput is not a ranking
+factor. Write amplification still is, because it turns into disk space.
 
 ## 3. `H::combine`, measured
 
-The tree-state layout rests on how expensive one commitment-tree node hash is.
-Benchmark: `--release`, `std::time::Instant`, best of 5 runs of 2,000–200,000
-iterations with a warm-up pass, `black_box` on inputs and results, against the
-workspace's patched `orchard` and `sapling-crypto`.
+The tree-state layout rests on the cost of one commitment-tree node hash. Each figure is the best of 5
+runs of 2,000 to 200,000 iterations after a warm-up pass, `--release`, `black_box` on inputs and
+results, against the workspace's patched `orchard` and `sapling-crypto`.
 
 | Operation                                                     | µs/call [measured] |
 | ------------------------------------------------------------- | ------------------ |
-| `MerkleHashOrchard::combine` — **as shipped**                 | **100.2**          |
-| `MerkleHashOrchard::combine` — `HashDomain` hoisted           | **83.1**           |
+| `MerkleHashOrchard::combine`, as shipped                      | **100.2**          |
+| `MerkleHashOrchard::combine`, `HashDomain` hoisted            | **83.1**           |
 | `HashDomain::new(MERKLE_CRH_PERSONALIZATION)` alone           | **17.3**           |
 | `HashDomain::hash_to_point` (Sinsemilla loop, no `extract_p`) | 76.8               |
 | `pallas::Base::invert`                                        | 6.5                |
 | `sapling_crypto::Node::combine`                               | **38.7**           |
 
-`-C target-cpu=native` changed nothing material. Level is irrelevant —
-`combine` hashes a 10-bit level prefix into a fixed 520-bit message, so cost
-does not vary with tree height.
+`-C target-cpu=native` changed nothing material. The level does not matter either: `combine`
+hashes a 10-bit level prefix into a fixed 520-bit message.
 
 ### 3.1 Why nothing is replayed on read
 
-At 100 µs per combine, any scheme that reconstructs a historical frontier by
-replaying commitments is dead on arrival:
+At 100 µs per combine, any scheme that rebuilds a historical frontier by replaying commitments is
+too slow to serve:
 
 | Scheme                         | Storage, 3 pools       | Read cost per `GetTreeState`             |
 | ------------------------------ | ---------------------- | ---------------------------------------- |
@@ -84,23 +75,22 @@ replaying commitments is dead on arrival:
 | Checkpoint every 16 + replay   | 290 MB                 | ~24 combines = **~2.4 ms** [estimated]   |
 | **Retained-node store**        | **412 MiB** [measured] | **3.0 µs warm / 296 µs cold** [measured] |
 
-At 34,000 requests per wallet sync, `batch = 1000` replay is **85 minutes of
-server CPU per wallet**. Even `batch = 16` — already 70% of the node store's
-space — is 82 seconds per wallet and 800× slower per request. Retaining the
-nodes is not a compromise; it is free.
+At 34,000 requests per wallet sync, replaying from a checkpoint every 1000 commitments costs 85
+minutes of server CPU per wallet. A checkpoint every 16, which already takes 70% of the node
+store's space, still costs 82 seconds per wallet and is 800 times slower per request. Retaining the
+nodes is not a compromise. It is cheaper on every axis.
 
 ### 3.2 The per-call `HashDomain` is real, and smaller than it looks
 
-`orchard/src/tree.rs` constructs `HashDomain::new(MERKLE_CRH_PERSONALIZATION)`
-inside `combine`, and sinsemilla's `new` is a full group hash of a compile-time
-constant, on every node hash. Hoisting it into a `OnceLock` saves **17.3 µs of
-100.2, or 17%** \[measured\]: a real upstream fix, not a multiple. The cost is the
-Sinsemilla loop itself: 52 ten-bit windows × (one incomplete addition + one
-doubling) = 76.8 µs of the remaining 83.1.
+Upstream `orchard/src/tree.rs` constructs `HashDomain::new(MERKLE_CRH_PERSONALIZATION)` inside
+`combine`, and Sinsemilla's `new` is a full group hash of a compile-time constant, repeated on every
+node hash. Hoisting it into a `OnceLock` saves 17.3 µs of 100.2, or 17% [measured]. That is a real
+upstream fix, but not a multiple. The cost is the Sinsemilla loop itself: 52 ten-bit windows, each
+one incomplete addition and one doubling, account for 76.8 µs of the remaining 83.1.
 
 ### 3.3 What a full-chain fold costs
 
-One combine per commitment, amortised. At N ≈ 3M per pool \[assumed\]:
+A fold costs one combine per commitment, amortised. At N ≈ 3M per pool [assumed]:
 
 | Pool                       | Node                   | Fold cost [estimated]     |
 | -------------------------- | ---------------------- | ------------------------- |
@@ -109,104 +99,106 @@ One combine per commitment, amortised. At N ≈ 3M per pool \[assumed\]:
 | ironwood                   | `MerkleHashOrchard`    | 3M × 100.2 µs = **301 s** |
 | **total, single-threaded** |                        | **~12 minutes of CPU**    |
 
-It is the one place in Zaino where CPU is the bottleneck. Sandblast
-(mainnet ~1.70M–1.72M) makes that real: blocks carry hundreds of Sapling
-outputs each, and a single-threaded fold held zainod to ~100 blocks/s on one
-pegged core, 90% of its CPU in `PoolFold` [measured, profile of a live sync].
-So:
+This is the one place in Zaino where CPU is the bottleneck. The Sandblast spam (mainnet heights
+~1.70M to 1.72M) makes it real: those blocks carry hundreds of Sapling outputs each, and a
+single-threaded fold held zainod to ~100 blocks/s on one pegged core, with 90% of its CPU in
+`PoolFold` [measured, profile of a live sync]. We therefore fold in three ways that stack:
 
-1. **The fold is the only fold, and it is level-synchronous.** A batch of leaves
-   hashes one tree level at a time; each level's pairs split across every core
-   (rayon, under `zaino_sync::compute`). Per-block `apply` is a batch of one
-   block, so there is no second fold to agree with. The emitted node set is a
-   pure function of (start size, leaves), held by a property test against a
-   naive tree for arbitrary splits into batches.
-1. **The three pools share nothing**, so they fold concurrently.
-1. **The Orchard MerkleCRH domain is derived once** (the 17% above, applied in
-   the orchard fork).
+1. The fold is level-synchronous. A batch of leaves is hashed one tree level at a time through
+   `Frontier::append_batch_visiting`, with one `Hashable::combine_pairs` call per level, and the
+   node types split a wide level across every core (the patched `incrementalmerkletree`, `orchard`
+   and `sapling-crypto` in the workspace `Cargo.toml`). The fold runs on the rayon pool under
+   `zaino_sync::compute`. Per-block apply is the same fold over a batch of one block, so there is
+   no second implementation to keep in agreement. The emitted node set is a pure function of the
+   starting size and the leaves, which a property test holds against a naive tree for arbitrary
+   splits into batches.
+1. The three pools share nothing, so they fold concurrently (`rayon::join`).
+1. The Orchard MerkleCRH domain is derived once, which is the 17% above, applied in the `orchard`
+   fork.
 
 ## 4. Direct addressing beats a keyed store, on every axis [measured]
 
-Dataset: N = 3,000,000 commitments, one pool, 4,500,021 stored nodes (level 0
-all indices, levels 1–31 even indices only). Request shape: 32 scattered 32-byte
-reads at a random position, 2,000 requests warm / 300 cold.
+The dataset is N = 3,000,000 commitments in one pool, or 4,500,021 stored nodes (every index at
+level 0, even indices only at levels 1 to 31). Each request is 32 scattered 32-byte reads at a
+random position, with 2,000 requests warm and 300 cold.
 
 | Layout                                       | Size          | Warm, first touch | Warm, resident | Cold       |
 | -------------------------------------------- | ------------- | ----------------- | -------------- | ---------- |
 | **32 fixed-stride files + mmap**             | **137.3 MiB** | **3.02 µs**       | 0.17 µs        | **296 µs** |
 | LMDB via `heed`, key `[level u8][idx u32be]` | 210.2 MiB     | 12.71 µs          | 7.97 µs        | 432 µs     |
-| `redb` 4.3, same key                         | 257.0 MiB     | 14.61 µs          | —              | 796 µs     |
+| `redb` 4.3, same key                         | 257.0 MiB     | 14.61 µs          | n/a            | 796 µs     |
 
-48 bytes per commitment × 3M = 137.3 MiB, to the byte. Direct addressing is 1.5×
-smaller than LMDB and 1.9× smaller than redb, 4× faster warm and 1.5× faster
-cold — no trade is being made. The reason is structural: the key space is dense,
-contiguous and arithmetically derivable, so a B-tree stores ~5 bytes of key and
-~8 bytes of node header per 32-byte payload and then makes you walk four levels
-of it to find something whose address you already knew.
+At 48 bytes per commitment, 3M commitments is 137.3 MiB, exactly. Direct addressing is 1.5 times
+smaller than LMDB and 1.9 times smaller than redb, 4 times faster warm and 1.5 times faster cold,
+so no trade is being made. The reason is structural. The key space is dense, contiguous and
+computable from the position, so a B-tree stores ~5 bytes of key and ~8 bytes of node header per
+32-byte payload, and then walks four levels to find something whose address was already known.
 
 ### 4.1 What actually breaks, and what does not
 
-- **Sparse levels — a non-issue.** At N = 3M, levels 22–31 hold 0 or 1 node
-  each; the whole tail is under 4 KiB.
-- **File count — measurable, and small.** 32 files per pool × 3 pools, plus
-  `heights.idx` and 3 × `subtrees.dat`, is ~100 open files and ~100 mmaps. 100
-  VMAs is noise; the per-process limit is 65,530 by default, and the page cache
-  is indifferent to how many mappings reference it.
-- **Torn writes — solved by the layout.** Node addresses are a pure function of
-  position, so a crash between the node fsync and the manifest leaves surplus
-  bytes past the seal, dropped at open and rewritten byte-identically. Integrity
-  is per 4 KiB page, not per node ([durability.md](./durability.md) §3): 0.1%
-  overhead instead of 12.5%.
-- **fsync fan-out — the one real cost.** Below.
+Sparse levels are not an issue. At N = 3M, levels 22 to 31 hold zero or one node each, and the
+whole tail is under 4 KiB.
+
+File count is measurable and small. The tree-state index has 100 data files (32 levels and a
+`subtrees.dat` per pool, plus `heights.idx`), each with a mapped `.crc` companion, so ~200 files
+and mappings. That is noise against the default limit of 65,530 mappings per process, and the page
+cache does not care how many mappings reference it.
+
+Torn writes are solved by the layout. A node's address is a pure function of its position, so a
+crash between the node fsync and the manifest leaves surplus bytes past the seal, which the next
+open drops and the next commit rewrites byte for byte. Integrity is checked per 4 KiB page, not per
+node ([durability.md](./durability.md) §3), which costs 0.1% of space instead of 12.5%.
+
+The one real cost is fsync fan-out, below.
 
 ### 4.2 fsync is linear in file count; remap is free [measured]
 
-50 commits, each appending 4 KiB to every file in the fan and then `fsync`ing
-all of them, plus the re-`mmap` of every file that the `ArcSwap` snapshot idiom
-performs per commit:
+Each of 50 commits appends 4 KiB to every file in the fan and fsyncs all of them, then re-mmaps
+every file, as each commit does when it republishes its read snapshot through `ArcSwap`:
 
 | Files in fan                              | append + fsync all | remap all |
 | ----------------------------------------- | ------------------ | --------- |
 | 1                                         | 3.3 ms             | 7 µs      |
-| 3 (the compact-block store)               | 10.1 ms            | 21 µs     |
+| 3                                         | 10.1 ms            | 21 µs     |
 | 32 (one pool)                             | 115.1 ms           | 180 µs    |
 | 96 (three pools)                          | 337.4 ms           | 200 µs    |
 | 100 (+ `heights.idx`, 3 × `subtrees.dat`) | **357.8 ms**       | 235 µs    |
 
-~3.5 ms per file, and the remap worry is a non-issue at 235 µs for 100 mappings.
-At `batch = 1000` that is ~20 minutes of fsync across a 3.4M-block sync
-[estimated] — absorbable against an RPC-bound sync, but not free.
+That is ~3.5 ms per file, and remapping 100 files at 235 µs is not a concern. At one commit per
+1000 blocks, fsyncing all 100 files would add ~20 minutes across a 3.4M-block sync [estimated]:
+absorbable against an RPC-bound sync, but not free. The fan measured here is data files only.
+Sealing a file also fsyncs its `.crc` whenever a page completed since the last seal, so a grown
+file costs up to two fsyncs.
 
-btrfs inflates the per-file figure: its fsync goes through a log tree and a CoW
-metadata update. On ext4 the same call is typically sub-millisecond. **The
-linearity is the portable part.**
+btrfs inflates the per-file figure, because its fsync goes through a log tree and a copy-on-write
+metadata update. On ext4 the same call is typically sub-millisecond. The linearity is the portable
+part.
 
-**So the tree-state writer syncs only the level files that grew since the last
-fsync.** Level ℓ receives ~n/2^(ℓ+1) new nodes per n commitments, so the upper
-levels are clean in almost every batch.
+So the tree-state writer seals only the level files that grew since the last seal. Level ℓ receives
+about n/2^(ℓ+1) new nodes per n commitments, so the upper levels are clean in almost every batch.
 
 ### 4.3 Append-only files are one extent; rewritten pages are half a million
 
-A copy-on-write B-tree file after 10M random-order inserts: **478,526 extents**
-for 2.3 GiB, roughly one extent per 5 KiB — every page landed somewhere new. The
-append-only file of the same experiment: **1 extent** \[measured, `filefrag`\].
-Removing that fragmentation was worth 2× on cold point reads.
+A copy-on-write B-tree file after 10M random-order inserts held 478,526 extents for 2.3 GiB,
+roughly one extent per 5 KiB, because every page landed somewhere new. The append-only file of the
+same experiment held 1 extent [measured, `filefrag`]. Removing that fragmentation was worth a
+factor of 2 on cold point reads.
 
-This is the deployment consequence of the storage choice, and it is a
-consequence in Zaino's favour: an append-only file gets a single extent on any
-filesystem, because it is never rewritten in place. Zaino's data directory needs
-no `nodatacow` subvolume, no `chattr +C`, and no filesystem advice at all.
+An append-only file gets a single extent on any filesystem because it is never rewritten in place,
+so Zaino's data directory needs no `nodatacow` subvolume, no `chattr +C`, and no filesystem advice
+at all.
 
 ## 5. mmap hazards that actually bite
 
-Zaino maps ~100 files. These are not hypothetical.
+Zaino maps a few hundred files: every data file and its `.crc`, and every committed segment. The
+hazards below are not hypothetical.
 
 ### 5.1 Page faults inside async tasks
 
-A range read copies or slices up to a 1 MiB span out of the mapping. That is a
-synchronous, unbounded-latency operation on whatever thread polls the stream.
-1 MiB span, 40 random offsets, page cache dropped from a separate process before
-each cold run \[measured\]:
+A compact-block range read serves a window of up to 1 MiB out of the mapping. Touching it is a
+synchronous operation of unbounded latency on whichever thread does it. For a 1 MiB span at 40
+random offsets, with the page cache dropped from a separate process before each cold run
+[measured]:
 
 |                                    | Cold         | Warm      |
 | ---------------------------------- | ------------ | --------- |
@@ -214,75 +206,72 @@ each cold run \[measured\]:
 | `pread` into a heap buffer         | 19.03 ms     | 173 µs    |
 | `madvise(MADV_WILLNEED)` then read | **2.74 ms**  | **92 µs** |
 
-- **`MADV_WILLNEED` is a 4.3× cold win and a 2.9× warm win, for four lines.**
-  The kernel issues the readahead asynchronously and the read then faults
-  against pages already in flight, instead of one serial fault chain.
-- **`pread` is not the fix.** It is slower than the naive mmap cold path: one
-  synchronous request with no overlap, unable to reuse pages the mapping has.
-- **11.7 ms on a runtime worker is a bug.** Tokio's budget for a non-yielding
-  section is tens of microseconds. The refill goes through `spawn_blocking` —
-  one hop per 1 MiB window, amortised over ~100–1000 records — *and* issues the
-  advice.
+`MADV_WILLNEED` is a 4.3 times cold win and a 2.9 times warm win, for four lines of code. The
+kernel issues the readahead asynchronously, and the read then faults against pages already in
+flight instead of walking one serial chain of faults. `pread` is not the fix: it is slower than the
+naive mmap path when cold, because it is one synchronous request with no overlap, and it cannot
+reuse pages the mapping already holds.
 
-Absolutes here were taken on an otherwise idle disk; a run under contention
-showed 6.7 / 2.4 / 0.29 ms for the same three. Treat the ratio as the finding.
+An 11.7 ms fault on a runtime worker is a bug, since Tokio expects a non-yielding section to take
+tens of microseconds. So each window that touches disk runs on `spawn_blocking` (one hop per 1 MiB
+window, amortised over ~100 to 1000 records) and issues `MADV_WILLNEED` over the window first.
+
+These absolutes were taken on an otherwise idle disk. A run under contention showed 6.7, 2.4 and
+0.29 ms for the same three rows, so treat the ratio as the finding.
 
 ### 5.2 SIGBUS on truncation and on ENOSPC
 
-Touching a mapped page past a shrunken EOF raises SIGBUS, which Rust cannot
-catch: the process dies with no unwind and no error. Two rules close it:
+Touching a mapped page past a shrunken end of file raises SIGBUS, which Rust cannot catch: the
+process dies with no unwind and no error. Two rules close this off.
 
-1. **Truncation happens only in `open()`, before the first publication.**
-   Dropping an uncommitted tail obeys this, and nothing reopens an index in a
-   running process (zainod exits on failure; no in-process restart).
-   `zainod verify` truncates nothing and maps nothing, so it is safe beside a
-   running daemon. A `LOCK` per index directory keeps a second zainod from
+1. **Truncation happens only in `open()`, before the first publication.** Dropping an uncommitted
+   tail follows this rule, and nothing reopens an index inside a running process (zainod exits on
+   failure, with no in-process restart). `zainod verify` truncates nothing and maps nothing, so it
+   is safe beside a running daemon. A `LOCK` per index directory keeps a second zainod from
    truncating under this one's mappings.
-1. **Never map writable.** Zaino maps read-only (`Mmap`, never `MmapMut`) and
-   writes through the file descriptor, so a full disk surfaces as an
-   `io::Error` from `write_all` rather than as a signal. This is the single most
-   valuable structural decision in the store.
+1. **Never map writable.** Zaino maps read-only (`Mmap`, never `MmapMut`) and writes through the
+   file descriptor, so a full disk surfaces as an `io::Error` from the write rather than as a
+   signal. This is the single most valuable structural decision in the store.
 
-### 5.3 `msync` vs `fsync` — a non-question, by construction
+### 5.3 `msync` vs `fsync`, a non-question by construction
 
-Because nothing is ever written *through* a mapping, `msync` never enters the
-picture. Durability is `File::sync_data()` on the write fd; the mapping is a
-read view, replaced after the sync. That reduces the durability story to
-ordinary file I/O with one ordering rule: data → fsync → index → fsync.
+Because nothing is ever written through a mapping, `msync` never enters the picture. Durability is
+`sync_data` on the write descriptor, and the mapping is a read view replaced after the commit. That
+reduces durability to ordinary file I/O with one ordering rule: data and checksums are fsynced
+before the manifest that seals them (durability.md §3).
 
-The residual hazard is the opposite of a stale read: `Mmap::map` captures the
-file length at map time, so a mapping can be *longer* than what was fsynced if a
-commit was interrupted. Reads are gated on the durable prefix rather than on the
-map length. Any new mmap-backed index must copy that field, not just the
-mapping.
+The remaining hazard is the opposite of a stale read. A mapping captures the file length when it
+is created, so it can be longer than what was committed if a commit was interrupted. Reads are
+therefore bounded by the sealed length, never by the mapping's length. `Pages` does this for every
+index by slicing each mapping to its seal, so a new index gets it by reading through `Pages`.
 
 ### 5.4 `MAP_POPULATE` is not used
 
-`MmapOptions::populate()` pre-faults the whole mapping.
+`MAP_POPULATE` pre-faults a whole mapping. For compact blocks we never want it: `blocks.dat` is
+tens of GiB, and populating it would read the whole chain at start-up. For tree state it is not
+needed: 412 MiB across three pools, the 296 µs cold path is paid once per page, and the working set
+then stays resident (§2). Populating in code shared with publication would also re-read 412 MiB per
+batch, since every commit remaps.
 
-- **Compact blocks: never.** `blocks.dat` is tens of GiB; populating it reads
-  the whole chain at start-up.
-- **Tree state: not needed.** 412 MiB across three pools; the 296 µs cold path
-  is paid once per page and the working set then stays resident (§2). Populating
-  in a helper shared with publication would re-read 412 MiB *per batch*, since
-  each commit remaps.
+Each mapping carries readahead advice instead. Segment sets probed by key are mapped
+`MADV_RANDOM`, so a point lookup faults one page rather than a readahead window, and merges map
+their inputs `MADV_SEQUENTIAL`.
 
-### 5.5 Transparent hugepages — a non-event
+### 5.5 Transparent hugepages, a non-event
 
-THP does not back file-backed mappings on a stock kernel
-(`CONFIG_READ_ONLY_THP_FOR_FS` is opt-in and khugepaged-driven), and none of
-Zaino's mappings are anonymous. The correct action here is none.
+THP does not back file-backed mappings on a stock kernel (`CONFIG_READ_ONLY_THP_FOR_FS` is opt-in
+and driven by khugepaged), and none of Zaino's mappings are anonymous. The correct action here is
+none.
 
 ### 5.6 Zero-copy reads, and what they cost
 
-Serving a window by `Bytes::copy_from_slice` out of the mapping costs 92–263 µs
-per MiB warm [measured] plus a 1 MiB allocation, purely so the mapping stays
-droppable. `Bytes::from_owner` over an `Arc<Mmap>` deletes both: a served slice
-carries its own handle on the mapping and outlives the snapshot it came from.
-The compact-block index does this, and it is sound **only** under the §5.2 rule
-that mapped files are never truncated after publication: breaking that rule
-corrupts served responses rather than merely crashing.
+Serving a window with `Bytes::copy_from_slice` out of the mapping costs 92 to 263 µs per MiB warm
+[measured], plus a 1 MiB allocation, purely so the mapping stays droppable. `Bytes::from_owner` over
+an `Arc<Mmap>` removes both: a served slice carries its own handle on the mapping and outlives the
+snapshot it came from. The compact-block index serves this way, and it is sound only under the
+§5.2 rule that mapped files are never truncated after publication. Breaking that rule would
+corrupt served responses, not merely crash.
 
-The advice in §5.1 still precedes a window read. Without a copy there is nothing
-to fault the pages in, so they would instead fault wherever the socket reads the
-slice: on a runtime worker rather than on the blocking step that expects it.
+The advice in §5.1 still precedes each window read. A page's first read verifies its checksum and
+so faults it in on the blocking step, but a verified page is never read there again. Once evicted,
+it would fault wherever the socket reads the slice, on a runtime worker.
