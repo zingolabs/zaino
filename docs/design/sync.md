@@ -24,11 +24,21 @@ blocks. Each height is fetched and decoded in its own task, with at most `concur
 and heights are spread round-robin across the configured validators. Setting `primary_validator`
 pins bulk fetching to one of them.
 
-`zaino-chainview` provides the quorum tip, which the validators must agree on by hash rather than
-by highest height. The producer follows that tip, and each index's serving gate (a small task of
-its own, beside the index's loop) reads it to decide when that index is serving. Blocks are only ever fetched from the validators listed in the tip's `agreed_by`, because a
-validator that disagrees may still be serving a stale branch at a height the tip has already made
-final.
+`zaino-chainview` provides the quorum tip: the highest block a majority of the validators hold on
+their best chains, by hash rather than by highest height (each validator's vote counts its tip and
+its ancestors, [chainview §4](./chainview.md#4-quorum)). The producer follows that tip, and each
+index's serving gate (a small task of its own, beside the index's loop) reads it to decide when
+that index is serving. Blocks are only ever fetched from the validators listed in the tip's
+`agreed_by`. Each of them holds the tip on its best chain, some possibly a block or two past it,
+and no fetch asks above the tip. A validator outside that set may still be serving a stale branch
+at a height the tip has already made final.
+
+Because votes count ancestors, the tip can retreat when the validator that was ahead stops voting
+and the rest lag. A retreat inside the window is an ordinary reorg. A retreat below the window
+(`ChainHead::next_floor`) cannot be a legal fork, since on mainnet and testnet the window is at
+least the consensus reorg bound, so the producer logs it and waits for the next tip. The one
+exception is a tip that contradicts a block an index has already committed at that height: that
+is proof of divergence, and production stops.
 
 The `ChainHead` in `zaino-non-finalized-state` is a library rather than a task. It holds the
 non-final window as a hash-linked chain of `Arc<Block>`, and its floor sits one below the final

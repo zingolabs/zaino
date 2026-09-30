@@ -51,13 +51,13 @@ comes through its `ProjectCompact` port, which `zainod` implements.
 - `ChainView::new` rejects an empty list (`ConfigError::NoEndpoints`) and more
   than `EndpointSet::MAX` = 64 (`ConfigError::TooManyEndpoints`)
 - the quorum is over the operator-configured set only. `getpeerinfo` is read
-  every 60 s into each endpoint's `ValidatorMetadata::peers`: the peer graph a
-  discovery pass traverses to find validators to configure, never a vote
+  every 60 s into each endpoint's `ValidatorMetadata::peers` (`PeerInfo`:
+  address + direction): telemetry, never a vote (see Telemetry below)
 
 ## Structure
 
 ```text
-EndpointPoller × N     one validator each: poll, diff, report added / removed / tip
+EndpointPoller × N     one validator each: poll, diff, report added / removed / chain
       │
 ChainViewCore          folds deltas into one ChainViewSnapshot, published via ArcSwap
       │
@@ -74,23 +74,36 @@ Cheap to clone; cannot drive polling or relay.
 
 - `current()` → `Arc<ChainViewSnapshot>`; pin once per request and ask it
   everything
-- `quorum()` → `Quorum` (`configured()`, `threshold()`, `met_by(set)`)
+- `quorum()` → `Quorum` (`configured()`, `threshold()`)
 - `subscribe_tip()` → `watch::Receiver<Option<QuorumTip>>`, level-triggered
-  (`None` = below quorum): what block sync follows (never misses the latest tip)
+  (`None` = below quorum): what block sync follows (never misses the latest tip).
+  It changes when the tip block changes and when `agreed_by` alone changes
+  (fetch routing reads it)
 - `tail()` → `MempoolTail` for one `GetMempoolStream` client
 
 `ChainViewSnapshot` exposes `mempool()` (below) and `endpoints()`: per-endpoint
-`ValidatorMetadata` in configured order (address, own tip, `EndpointState`,
-`Agreement` with the quorum tip, last-observed time, latency `Ewma`, failure
-count, peers).
+`ValidatorMetadata` in configured order (address, own tip via `tip()`,
+`EndpointState`, `Agreement` with the quorum tip, last-observed time, latency
+`Ewma`, failure count, peers).
+
+`Agreement` is `Agreed` (its tip is the quorum tip), `Ahead` (the quorum tip is
+on its chain, below its tip), `Behind` (its tip is on the quorum's chain, below
+the quorum tip), `Diverged`, or `Unknown` (no quorum tip, no chain yet, or too
+far apart for either window to place).
 
 ## Fail closed
 
-`tip()` is the highest block that at least `threshold` voting endpoints report
-with the same **hash** (never the max height). `EndpointState::Live` and
-`CatchingUp` vote; `Pending`, `Degraded`, `Down` and `Syncing` do not. Below threshold `tip()` is
-`None` and `mempool()` returns `Err(BelowQuorum)` instead of an empty answer;
-map it to gRPC `UNAVAILABLE`.
+Each voting endpoint's vote is its **chain**: its tip plus `depth` ancestors.
+The quorum tip is the highest block at least `threshold` of those chains hold by
+**hash** (never the max height), and `agreed_by` is every voter holding it, at
+its tip or below. So validators one block apart during propagation still agree
+on the parent, and when the endpoint that was ahead stops voting the tip
+retreats onto the block the rest hold (block sync reads that as a reorg).
+`EndpointState::Live` and `CatchingUp` vote; `Pending`, `Degraded`, `Down` and
+`Syncing` do not. Below threshold the tip is `None` and `mempool()` returns
+`Err(BelowQuorum)` instead of an empty answer; map it to gRPC `UNAVAILABLE`.
+`BelowQuorum::agreeing` counts the largest group of voters holding one common
+block.
 
 ```rust
 # use zaino_chainview::ChainViewSubscriber;
@@ -123,10 +136,10 @@ validator has listed yet. `CompactTx` projection is the serving layer's job.
 An `ours` transaction no endpoint lists is dropped when the quorum tip next
 moves.
 
-## `Sighting` and `EndpointSet`
+## `EndpointSet`
 
-`Sighting::seen_at()` is an `EndpointSet` bitset over `EndpointIndex`, not a
-count, so it answers *which* nodes: propagation (`1/5 → 4/5`), which no single
+Each held transaction's sightings are an `EndpointSet` bitset, not a count, so
+the view knows *which* nodes list it: propagation (`1/5 → 4/5`), which no single
 node can report. Nothing streams it yet.
 
 `QuorumTip::agreed_by` is the same bitset. `positions()` yields each member's
@@ -155,10 +168,11 @@ while let Some(entry) = tail.next().await {
 - `next()` yields each transaction that crossed into servable after the
   snapshot, once. One the snapshot carried is never repeated, even if it drops
   out and back.
-- It ends when the **quorum tip moves** (any change, including `A → B → A`
-  between two reads), not when the mempool empties. An empty mempool with no new
-  block is a live, silent stream, and a test waiting for it to close must mine a
-  block.
+- It ends when the **quorum tip block changes** (any change, including
+  `A → B → A` between two reads, and a retreat onto an ancestor), not when the
+  mempool empties and not when only `agreed_by` changes. An empty mempool with no
+  new block is a live, silent stream, and a test waiting for it to close must
+  mine a block.
 - It never un-sends; a mined or evicted transaction reaches the client only as
   the block that closes the stream.
 - `anchor()` identifies the snapshot. Tails opened on one published view hold
@@ -173,7 +187,13 @@ tip does not clear the view.
 ## Cadence and failure
 
 Fixed (`config.rs`): poll 1 s, peer refresh 60 s, backoff 500 ms → 30 s, 10
-consecutive failures.
+consecutive failures, 16 `getblockheader` calls in flight per endpoint.
+
+Each tick walks the endpoint's chain down from its reported tip until it joins
+the chain held from the last tick: one header per new block in steady state,
+`depth` headers on the first poll. A validator that reorgs mid-walk keeps last
+tick's chain (not a failure). A failed `getpeerinfo` keeps the last peers and
+never fails the tick.
 
 `EndpointPoller::run(cancel)` logs once (INFO) on its first successful tick.
 A validator whose mempool is off below the network tip (zebrad's "mempool is not
@@ -189,10 +209,34 @@ cancelled poller returns `Ok(())`.
 ## Validator port
 
 `EndpointSource` is blanket-implemented over `zaino-source` queries:
-`GetChainTip`, `GetMempoolListing`, `GetRawMempoolTransaction`,
+`GetChainTip`, `GetBlockLink`, `GetMempoolListing`, `GetRawMempoolTransaction`,
 `GetMempoolSourceTip`, `SendRawTransaction`, `GetPeerInfo`.
 
 - `GetChainTip` is the readiness probe only: `NotReady` marks the endpoint
   `Syncing`; its value is discarded
-- the vote is `GetMempoolSourceTip`, the tip coherent with the listing
+- the top of the vote is `GetMempoolSourceTip`, the tip coherent with the
+  listing; `GetBlockLink` (`getblockheader <h> false`) supplies its ancestry
 - retry is this crate's own per-endpoint ladder
+
+## Telemetry
+
+Observation only: none of it votes, decides membership, or gates serving.
+`zainod` registers the descriptions through `describe_metrics()`.
+
+| Gauge (`zaino.chainview.*`) | Labels | Value |
+|---|---|---|
+| `endpoint_state` | `endpoint`, `state` | 1 on the current `EndpointState` |
+| `agreement` | `endpoint`, `agreement` | 1 on the current `Agreement` |
+| `tip_height` | `endpoint` | the endpoint's own tip height |
+| `stale_blocks` | `endpoint` | `estimatedheight` − tip height |
+| `peers` | `endpoint`, `direction` | inbound / outbound connections |
+| `agreeing` | | largest group of voters holding one common block |
+| `shared_outbound_min` | | fewest outbound peers two live endpoints share |
+
+One WARN when a condition rises, one INFO when it clears:
+
+- stale tip: a `Live` endpoint's tip ≥ 24 blocks behind its own clock-based
+  estimate
+- partition: two live endpoints share no outbound peer
+- eclipse: live endpoints reach 1 to 2 distinct outbound peers in total (none at
+  all, as on regtest, raises nothing)

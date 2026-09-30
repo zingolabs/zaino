@@ -134,6 +134,11 @@ What an operator sees at `info`:
 | `ChainView` | `Validator reachable` / `Quorum configured` | info | At startup. |
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
+| `ChainView` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`endpoint`, `tip`, `estimated`). |
+| `ChainView` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | Edge of the partition check over `getpeerinfo`. |
+| `ChainView` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | Edge of the eclipse check (1 to 2 distinct outbound peers across live validators; none at all raises nothing). |
+| `ChainView` | `Peer list read failed, last one kept` | warn | A `getpeerinfo` transport failure (telemetry only: the poll carries on). |
+| `ZainoNFS` | `Quorum tip below the non-final window (agreeing validators lag), waiting` | warn | Chainview's tip retreated under the chain head's window (`tip`, `floor`); production resumes on the next tip. |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
 | `Grpc` | `Serving requests` | info / warn | Every 60 s while anything is served or held: `requests`, `rps`, `p50` / `p99` / `max` time to first message, `out` bytes/s, `streams` / `subs` / `conns` held of their caps; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |

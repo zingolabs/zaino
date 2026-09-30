@@ -73,11 +73,17 @@ carries, and it is the only place chain identity is checked:
   + an `Apply` per new block; a reorg sends `Reorg`, then the `Apply`s from the resume height out of
   the window (no fetch; the resume height is asserted ≤ the fork)
 - by-height fetches (bulk, and the live extension) go only to the validators
-  in the quorum tip's `agreed_by` (`BlockFetchPool::among`). They agree on the
-  tip's hash, so they agree on every height below it. Another validator may
+  in the quorum tip's `agreed_by` (`BlockFetchPool::among`). Every one of them
+  holds the tip on its best chain (some may be ahead of it), so they agree on
+  every height up to it, and no fetch goes above it. Another validator may
   still serve a stale branch at a height the new tip has made final, and
   publishing that block would finalize it in every index
 - a quorum tip more than `finalised_depth` ahead → bulk again
+- a quorum tip that retreats onto an ancestor inside the window → `Reorg`, then
+  the replay (chainview's vote counts ancestors, so a lagging majority can pull
+  the tip back); below the window (`ChainHead::next_floor`) → WARN and wait for
+  the next tip, never a reorg, unless it contradicts a block an index committed
+  at that height (`ProduceError::Diverged`)
 - a fetch failure (validators failed after the pool's retries), bulk or live →
   WARN, retry after 1 s (bulk resumes from what was added); an unlinked bulk block, a fork
   below the window or chainview gone → `ProduceError`, the task ends (zainod

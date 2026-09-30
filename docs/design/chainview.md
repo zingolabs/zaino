@@ -31,10 +31,25 @@ the chain, not a peer table), so `getpeerinfo` is the wrong source for
 membership.
 
 It is a good source of telemetry. Each poller reads its validator's
-`getpeerinfo` every 60 seconds into `ValidatorMetadata::peers`, and
-cross-referencing those peer sets says whether the configured validators are
-partitioned (no peers in common) or plausibly eclipsed (all sharing one small
-set). That never decides membership, so it costs nothing in trust.
+`getpeerinfo` every 60 seconds into `ValidatorMetadata::peers` (while the
+validator is `Live` or `CatchingUp`), and the fold cross-references the live
+endpoints' *outbound* peers after every report:
+
+- **Partition**: two live validators share no outbound peer.
+- **Eclipse**: the live validators together reach at most
+  `ECLIPSE_OUTBOUND_MAX` distinct outbound peers (an isolated node, such as a
+  regtest validator with no peers at all, raises nothing).
+- **Stale tip**: a live validator's tip trails its own `estimatedheight` by at
+  least `STALE_TIP_BLOCKS`. Zebra estimates that height from the tip block's
+  time and the target spacing, not from its peers, so the gap says "this node
+  stopped advancing", which is what an eclipsed or stalled node looks like.
+
+Inbound peers are left out of the comparison because their addresses carry
+ephemeral ports. Each condition is logged once when it rises and once when it
+clears, and the raw inputs are exported as `zaino.chainview.*` gauges. None of
+it decides membership, a vote, or whether anything is served, so a false alarm
+(or an adversary provoking one) costs a log line and nothing in trust. A failed
+`getpeerinfo` keeps the last answer and never fails the poll.
 
 ## 2. Two layers
 
@@ -52,8 +67,17 @@ Each validator gets its own `EndpointPoller`, which owns its interval, backoff
 and failure count. A slow or flaky validator therefore degrades alone: while it
 is on its backoff ladder it stops voting, and the rest of the view carries on.
 The poller diffs each listing against its own previous one and reports only the
-change (added, removed, and its tip), so folding a report costs `O(change)`
+change (added, removed, and its chain), so folding a report costs `O(change)`
 rather than `O(endpoints × mempool)` per tick.
+
+The chain is the validator's tip plus `finalised_depth` ancestors, read with
+`getblockheader <height> false` and checked link by link against each child's
+`prev_hash` (the hash is recomputed from the header bytes, never taken on
+trust). Each walk starts at the reported tip and descends until it joins the
+chain held from the previous tick, so steady state costs one header per new
+block and the first poll costs `finalised_depth` headers once. A validator that
+reorgs between reporting its tip and answering for its headers keeps last
+tick's chain: that is a race, not a failure.
 
 The fold publishes a new snapshot after every report, cheaply because the
 collections are `imbl`. A reader pins one snapshot per request or stream, so a
@@ -70,10 +94,12 @@ backoff ladder stops the daemon.
 ```rust
 pub struct ChainViewSnapshot {
     tip: Option<QuorumTip>,               // None below quorum
-    epoch: u64,                           // bumped on every tip change
+    agreeing: EndpointSet,                // largest group holding one common block
+    epoch: u64,                           // bumped when the tip *block* changes
     mempool: OrdMap<TransactionId, Sighting>,
     arrivals: Vector<TransactionId>,      // became servable this epoch, in order
     endpoints: Vector<ValidatorMetadata>,
+    alarms: Alarms,                       // partition / eclipse / stale, edge-logged
     quorum: Quorum,
 }
 
@@ -96,13 +122,15 @@ broadcast before any validator has listed it.
 
 `ValidatorMetadata` carries what a decision about one endpoint needs:
 
-| Field                | Decision it enables                  |
-| -------------------- | ------------------------------------ |
-| `tip`, `observed_at` | quorum tip, staleness                |
-| `latency` (EWMA)     | routing                              |
-| `failures`, `state`  | eject and back off                   |
-| `agreement`          | is this node trustworthy *right now* |
-| `peers`              | partition and eclipse telemetry      |
+| Field                     | Decision it enables                                     |
+| ------------------------- | ------------------------------------------------------- |
+| chain (`tip()`)           | its vote: the tip and every ancestor in its window      |
+| `observed_at`             | staleness of the observation                            |
+| `estimated_height`        | stale-tip telemetry                                     |
+| `latency` (EWMA)          | routing                                                 |
+| `failures`, `state`       | eject and back off                                      |
+| `agreement`               | `Agreed`, `Ahead`, `Behind`, `Diverged` or `Unknown`    |
+| `peers`                   | partition and eclipse telemetry                         |
 
 Raw bytes are fetched **once**. `getrawmempool` returns ids and bytes cost a
 round trip, so a poller that lists a txid the view already holds reports it
@@ -115,18 +143,46 @@ The threshold is `⌊N/2⌋ + 1` over the **configured** set, not the responding
 set. Majority-of-responding is trivially subvertible: DoS three of five
 validators and the remaining two become a "quorum".
 
-The **tip** is the highest block that at least threshold endpoints agree on *by
-hash*, never the maximum height, or one node claiming height 999,999 would move
-it. An endpoint votes while it is `Live`, and also while it is `CatchingUp`: a
+An endpoint's **vote is its chain**: its tip and every ancestor in its window.
+The **tip** is the highest block that at least threshold endpoints' chains hold
+*by hash*, never the maximum height, or one node claiming height 999,999 would
+move it. Two blocks at one height cannot both reach a majority, so that block is
+unique, and `QuorumTip::agreed_by` is every voter holding it, whether as its own
+tip or as an ancestor of it.
+
+Voting on the exact tip instead would split the vote every time a block
+propagates: with two validators one block apart, neither tip has a majority even
+though both hold the parent. Counting ancestors makes the quorum tip the highest
+block a majority can vouch for, so it never drops out mid-propagation.
+
+It also means the tip can **retreat**. If the validator that was ahead stops
+voting and the rest lag, the highest block a majority holds is an ancestor of
+the old tip, and the view reports that. Block sync sees a retreat inside its
+non-final window as a reorg (reset, then replay), which is the honest reading of
+"a majority no longer vouches for those blocks". A retreat below the window
+cannot be a legal fork (on mainnet and testnet the window is at least the
+consensus reorg bound), so the producer waits it out instead of halting, unless
+the tip contradicts a block an index committed, which stops it as a divergence.
+
+Chainwork plays no part. The heaviest-chain rule is only sound once proof of
+work is verified (the Equihash solution, hash below target, the difficulty
+adjustment), which is consensus code Zaino does not hold
+([boundaries.md](./boundaries.md)); without those checks a header's work is a
+claim, and one lying validator would win. Over an operator-curated set, agreement
+by hash is the rule that needs no consensus code.
+
+An endpoint votes while it is `Live`, and also while it is `CatchingUp`: a
 validator behind the network tip reports its mempool as inactive, so its
-sightings are retracted, but its tip still counts so block sync can follow it.
+sightings are retracted, but its chain still counts so block sync can follow it.
 An endpoint that is `Pending`, `Degraded`, `Down`, or `Syncing` (the node says it
-is not ready) does not vote.
+is not ready) does not vote. Chains are `finalised_depth + 1` blocks deep, the
+same span as the sync window, so a split deeper than that has no common block and
+the view goes below quorum rather than guess.
 
 **Fail closed.** Below threshold, `tip` is `None`. The mempool RPCs refuse with
 gRPC `UNAVAILABLE`, the same rule as a syncing index, and block sync waits for
-quorum to return. Mempool membership requires quorum too, with one exception
-(§5).
+quorum to return. The refusal reports the largest group of voters that hold one
+common block. Mempool membership requires quorum too, with one exception (§5).
 
 ## 5. Downstream
 
@@ -168,7 +224,9 @@ Every connected pepper-sync wallet holds one mempool stream and reopens it on
 every block, so the cost of a tail is multiplied by the number of wallets. We
 keep that cost small in three ways.
 
-Each published snapshot carries an **epoch**, bumped on every tip change, and
+Each published snapshot carries an **epoch**, bumped whenever the tip *block*
+changes (a change in `agreed_by` alone moves the tip watch that fetch routing
+reads, but leaves the epoch and every open stream alone), and
 the epoch's **arrivals**, the txids that became servable during it, in order. A
 tail pins the snapshot it opened on and keeps a cursor into the arrivals. It
 wakes only when an arrival lands or the epoch moves, never on propagation churn,

@@ -24,6 +24,7 @@ match head.advance(quorum_tip, &pool).await? { // quorum_tip: BlockRef, pool: &B
 | `advance(tip, &pool)` | follow `tip`, fetching what the window lacks |
 | `best_chain_from(start)` | canonical blocks `start` to the tip, both inclusive; `start` ≥ `floor()` |
 | `tip()` / `floor()` | ends of the window |
+| `next_floor()` | floor the next `advance` enforces (its trim runs first); a tip below it = `BelowWindow` |
 | `Advance` | `Unchanged`, `Extended`, `Reorg { fork }` (heights ≥ `fork` replaced, or dropped on a retreat) |
 | `AdvanceError` | `FetchHeight` / `FetchHash` (validators failed after retries), `BelowWindow` |
 
