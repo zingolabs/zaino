@@ -24,7 +24,7 @@ use super::{
 };
 use crate::{
     fs::{Access, Fs},
-    pages::{sums_path, PagedFile, Sealed},
+    pages::{sums_path, FileKind, PagedFile, Sealed},
 };
 
 /// Records buffered to this before each append
@@ -214,7 +214,8 @@ impl SegmentWriter {
     }
 
     fn create<R: Record>(&self, id: u32, records: u64) -> Result<SegmentOut> {
-        let file = PagedFile::open(self.fs.as_ref(), &self.dir.join(file_name(id)), Sealed::EMPTY)?;
+        let path = self.dir.join(file_name(id));
+        let file = PagedFile::open(self.fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment)?;
         Ok(SegmentOut {
             id,
             file,

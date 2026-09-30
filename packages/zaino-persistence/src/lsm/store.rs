@@ -162,7 +162,7 @@ impl<I: LsmIndex> LsmStore<I> {
         const { assert!(I::SETS.len() == <I::Logs as SegmentLogs>::COUNT, "one name per set") };
 
         let opened = IndexDir::open(Arc::clone(&fs), path, identity::<I>(network))?;
-        let dir = opened.dir;
+        let mut dir = opened.dir;
         let (committed, lists) = match &opened.body {
             Some(body) => decode::<I>(body)?,
             None => {

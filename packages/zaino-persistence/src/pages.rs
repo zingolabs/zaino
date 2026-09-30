@@ -44,6 +44,13 @@ const SUM: usize = 4;
 /// Dirty bytes per file before writeback starts (RocksDB `bytes_per_sync` recommendation)
 const WRITE_BEHIND: u64 = 1 << 20;
 
+/// Smallest and largest step a [`Reserve`] grows by (the file's size, clamped)
+const MIN_RESERVE: u64 = 64 << 10;
+const MAX_RESERVE: u64 = 64 << 20;
+
+/// Zeros written per call while growing a reserve
+static ZEROS: [u8; 1 << 20] = [0; 1 << 20];
+
 /// Operator remedy in a checksum-mismatch panic
 const CORRUPTION: &str = "on-disk corruption: stop zainod, run `zainod verify`, resync";
 
@@ -122,10 +129,60 @@ pub enum PageError {
     Sums { path: PathBuf },
 }
 
+/// What a paged file is, which decides how it grows and who makes its name durable
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    /// Written once, then sealed for good (an LSM segment): grows by exactly what is appended,
+    /// and the caller syncs the directory that links it
+    Segment,
+    /// Appended to commit after commit (compact-block, tree-state): linked durably into its
+    /// directory when created, and grown into a [`Reserve`]
+    Log,
+}
+
+/// Zeroed, flushed room past the end of a [`FileKind::Log`]
+///
+/// A seal's `fdatasync` is only cheap when the file's metadata has not changed. An append past
+/// EOF changes the inode's size (and, under delayed allocation, allocates blocks at writeback), so
+/// on ext4 and XFS the sync must commit the filesystem journal, and that commit first waits for
+/// every other file's dirty data: one index's seal stalls behind another's writeback. Appends into
+/// blocks that already exist below EOF change no metadata, so their sync flushes this file alone.
+///
+/// `fallocate` cannot provide that room: it leaves unwritten extents, and the first write into
+/// one is a metadata change again. So the room is written with zeros and flushed, one journal
+/// commit per step, each step the file's size again (64 KiB to 64 MiB): zeros written ≈ the data
+/// once over. Open truncates the file to its seal, dropping the reserve; the next append rebuilds
+/// it.
+#[derive(Debug)]
+struct Reserve {
+    end: u64,
+}
+
+impl Reserve {
+    /// Room for bytes up to `end`, growing (zero-filled, then flushed) if the reserve is short
+    fn cover(&mut self, file: &dyn FileHandle, end: u64) -> io::Result<()> {
+        if end <= self.end {
+            return Ok(());
+        }
+        let step = self.end.clamp(MIN_RESERVE, MAX_RESERVE);
+        let grown = end.max(self.end + step).next_multiple_of(PAGE as u64);
+        let mut at = self.end;
+        while at < grown {
+            let take = (grown - at).min(ZEROS.len() as u64);
+            file.write_all_at(&ZEROS[..take as usize], at)?;
+            at += take;
+        }
+        file.sync_data()?;
+        self.end = grown;
+        Ok(())
+    }
+}
+
 /// The write side of one append-only file and its checksums
 ///
 /// - `unsealed_sums` = CRCs of pages completed since the last seal, from page `sealed_pages`
 /// - `sums_digest` = CRC-32 of every sealed page checksum (what the next seal extends)
+/// - `reserves` = the data's and the checksums' [`Reserve`]s (`None` = a [`FileKind::Segment`])
 #[derive(Debug)]
 pub struct PagedFile {
     path: PathBuf,
@@ -137,15 +194,29 @@ pub struct PagedFile {
     sealed_pages: u64,
     sums_digest: u32,
     writeback_from: u64,
+    reserves: Option<[Reserve; 2]>,
 }
 
 impl PagedFile {
     /// Opens `path` at `sealed` (fresh = [`Sealed::EMPTY`]): bytes past it dropped, a shorter
     /// file refused, the tail page and the checksums' digest read back and checked (the `.crc`
     /// file is 1/1024 of the data)
-    pub fn open(fs: &dyn Fs, path: &Path, sealed: Sealed) -> Result<Self, PageError> {
+    ///
+    /// - a [`FileKind::Log`] with either file created here: the directory is synced, so the file
+    ///   outlives a crash before any manifest names it (a commit no longer syncs directories)
+    pub fn open(
+        fs: &dyn Fs,
+        path: &Path,
+        sealed: Sealed,
+        kind: FileKind,
+    ) -> Result<Self, PageError> {
+        let created =
+            fs.open_existing(path)?.is_none() || fs.open_existing(&sums_path(path))?.is_none();
         let data = fs.open(path)?;
         let sums = fs.open(&sums_path(path))?;
+        if kind == FileKind::Log && created {
+            fs.sync_dir(path.parent().unwrap_or(Path::new("")))?;
+        }
         let sums_len = sealed.full_pages() * SUM as u64;
         truncate(data.as_ref(), path, sealed.len)?;
         truncate(sums.as_ref(), &sums_path(path), sums_len)?;
@@ -173,6 +244,8 @@ impl PagedFile {
             sealed_pages: sealed.full_pages(),
             sums_digest: sealed.sums,
             writeback_from: sealed.len,
+            reserves: (kind == FileKind::Log)
+                .then_some([Reserve { end: sealed.len }, Reserve { end: sums_len }]),
         })
     }
 
@@ -193,6 +266,9 @@ impl PagedFile {
     ///
     /// - writeback started per `WRITE_BEHIND` appended (`seal`'s fsync finds little dirty)
     pub fn append(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+        if let Some([data, _]) = &mut self.reserves {
+            data.cover(self.data.as_ref(), self.len + bytes.len() as u64)?;
+        }
         self.data.write_all_at(bytes, self.len)?;
         self.len += bytes.len() as u64;
         if self.len - self.writeback_from >= WRITE_BEHIND {
@@ -218,7 +294,11 @@ impl PagedFile {
     pub fn seal(&mut self) -> io::Result<Sealed> {
         self.data.sync_data()?;
         if !self.unsealed_sums.is_empty() {
-            self.sums.write_all_at(&self.unsealed_sums, self.sealed_pages * SUM as u64)?;
+            let at = self.sealed_pages * SUM as u64;
+            if let Some([_, sums]) = &mut self.reserves {
+                sums.cover(self.sums.as_ref(), at + self.unsealed_sums.len() as u64)?;
+            }
+            self.sums.write_all_at(&self.unsealed_sums, at)?;
             self.sums.sync_data()?;
             self.sealed_pages += (self.unsealed_sums.len() / SUM) as u64;
             self.sums_digest = extend_digest(self.sums_digest, &self.unsealed_sums);
@@ -381,10 +461,11 @@ impl Pages {
         &self.inner.data[range]
     }
 
-    /// `MADV_WILLNEED` over `range` (advisory)
+    /// `MADV_WILLNEED` over `range`, clipped to the sealed bytes (advisory)
     pub fn will_need(&self, range: Range<usize>) {
-        if let Some(mapping) = &self.inner.mapping {
-            mapping.will_need(range);
+        let end = range.end.min(self.inner.data.len());
+        if let Some(mapping) = self.inner.mapping.as_ref().filter(|_| range.start < end) {
+            mapping.will_need(range.start..end);
         }
     }
 
@@ -510,14 +591,16 @@ mod tests {
         fs.create_dir_all(Path::new("/p")).expect("dir");
         let bytes: Vec<u8> = (0..3 * PAGE + 100).map(|n| (n * 7 % 251) as u8).collect();
 
-        let mut file = PagedFile::open(fs.as_ref(), path, Sealed::EMPTY).expect("open");
+        let mut file =
+            PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
         file.append(&bytes[..PAGE - 3]).expect("append");
         let first = file.seal().expect("seal");
         let first_tail = page_sum(0, &bytes[..PAGE - 3]);
         assert_eq!(first, Sealed { len: (PAGE - 3) as u64, tail: first_tail, sums: 0 });
         drop(file);
 
-        let mut file = PagedFile::open(fs.as_ref(), path, first).expect("reopen");
+        let mut file =
+            PagedFile::open(fs.as_ref(), path, first, FileKind::Segment).expect("reopen");
         file.append(&bytes[PAGE - 3..]).expect("append");
         let sealed = file.seal().expect("seal");
         let sums: Vec<u8> = (0u64..)
@@ -536,7 +619,7 @@ mod tests {
         // a longer file: the uncommitted bytes past the seal are dropped at open
         fs.corrupt(path, |data| data.extend_from_slice(&[9; 17]));
         drop(file);
-        PagedFile::open(fs.as_ref(), path, sealed).expect("reopen past orphans");
+        PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment).expect("reopen past orphans");
         assert_eq!(fs.contents(path).expect("data"), bytes);
 
         fs.corrupt(path, |data| data[PAGE + 5] ^= 1);
@@ -574,7 +657,10 @@ mod tests {
         fs.corrupt(path, |data| data[5] ^= 1);
         let forged = page_sum(0, &fs.contents(path).expect("data")[..PAGE]).to_le_bytes();
         fs.corrupt(&sums_path(path), |sums| sums[..SUM].copy_from_slice(&forged));
-        assert!(matches!(PagedFile::open(fs.as_ref(), path, sealed), Err(PageError::Sums { .. })));
+        assert!(matches!(
+            PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment),
+            Err(PageError::Sums { .. })
+        ));
         let pages = Pages::open(fs.as_ref(), path, sealed, Access::Normal);
         assert!(matches!(pages, Err(PageError::Sums { .. })));
         fs.corrupt(path, |data| data[5] ^= 1);
@@ -582,9 +668,12 @@ mod tests {
         fs.corrupt(&sums_path(path), |sums| sums[..SUM].copy_from_slice(&original));
 
         fs.corrupt(path, |data| data[3 * PAGE + 1] ^= 1);
-        assert!(matches!(PagedFile::open(fs.as_ref(), path, sealed), Err(PageError::Tail { .. })));
+        assert!(matches!(
+            PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment),
+            Err(PageError::Tail { .. })
+        ));
         fs.corrupt(path, |data| data.truncate(10));
-        let short = PagedFile::open(fs.as_ref(), path, sealed);
+        let short = PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment);
         assert!(matches!(short, Err(PageError::Lost { have: 10, .. })));
     }
 
@@ -595,7 +684,8 @@ mod tests {
         let fs = SimFs::new();
         let path = Path::new("/p/data");
         fs.create_dir_all(Path::new("/p")).expect("dir");
-        let mut file = PagedFile::open(fs.as_ref(), path, Sealed::EMPTY).expect("open");
+        let mut file =
+            PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
         file.append(&vec![7; 2 * PAGE + 5]).expect("append");
         let sealed = file.seal().expect("seal");
         drop(file);
@@ -603,10 +693,69 @@ mod tests {
         for fail_at in 0..2 {
             let fs = fs.restarted();
             fs.fail_reads_from(fail_at);
-            let error = PagedFile::open(fs.as_ref(), path, sealed).expect_err("a read failed");
+            let error = PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment)
+                .expect_err("a read failed");
             assert!(error.to_string().contains("injected read EIO"), "read {fail_at}: {error}");
         }
-        PagedFile::open(fs.restarted().as_ref(), path, sealed).expect("healthy reads open");
+        PagedFile::open(fs.restarted().as_ref(), path, sealed, FileKind::Segment)
+            .expect("healthy reads open");
+    }
+
+    /// A log beside a segment fed the same bytes: the log is linked durably at creation (either of
+    /// its two files missing counts), its appends land inside a zeroed reserve (the file's size
+    /// holds between growth steps, so a seal changes no metadata), its seals and reads match the
+    /// segment's, and a reopen drops the reserve that the next append rebuilds
+    #[test]
+    fn a_log_grows_into_a_reserve_its_seals_never_see() {
+        let fs = SimFs::new();
+        for dir in ["/segment", "/log", "/half"] {
+            fs.create_dir_all(Path::new(dir)).expect("dir");
+        }
+        fs.sync_dir(Path::new("/")).expect("link every directory");
+
+        // data durably linked, its checksums never created (a crash between the two): still linked
+        let half = Path::new("/half/data");
+        fs.open(half).expect("data only");
+        fs.sync_dir(Path::new("/half")).expect("link the data");
+        PagedFile::open(fs.as_ref(), half, Sealed::EMPTY, FileKind::Log).expect("open half");
+        assert!(fs.power_loss().contents(&sums_path(half)).is_some(), "the missing .crc linked");
+        let (segment_path, log_path) = (Path::new("/segment/data"), Path::new("/log/data"));
+        let bytes: Vec<u8> = (0..3 * PAGE + 100).map(|n| (n * 7 % 251) as u8).collect();
+        let len = |path: &Path| fs.contents(path).expect("file").len() as u64;
+
+        let open = |path, kind| PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, kind);
+        let mut segment = open(segment_path, FileKind::Segment).expect("open segment");
+        let mut log = open(log_path, FileKind::Log).expect("open log");
+        let crashed = fs.power_loss();
+        let linked = |path: &Path| crashed.contents(path).is_some();
+        assert!(linked(log_path) && linked(&sums_path(log_path)), "a log is linked at creation");
+        assert!(!linked(segment_path), "a segment waits for its owner's directory sync");
+
+        for piece in [&bytes[..10], &bytes[10..]] {
+            segment.append(piece).expect("append segment");
+            log.append(piece).expect("append log");
+            assert_eq!(len(log_path), MIN_RESERVE, "the first step's room, written in place");
+        }
+        let sealed = segment.seal().expect("seal segment");
+        assert_eq!(log.seal().expect("seal log"), sealed, "the reserve is never sealed");
+        assert_eq!(len(&sums_path(log_path)), MIN_RESERVE, "the checksums grow the same way");
+        let stored = fs.contents(log_path).expect("log");
+        assert_eq!(&stored[..bytes.len()], &bytes[..]);
+        assert!(stored[bytes.len()..].iter().all(|byte| *byte == 0), "the rest is zeros");
+        let read =
+            |file: &PagedFile| file.pages(sealed, None).expect("pages").bytes(0..bytes.len());
+        assert_eq!(read(&log), read(&segment));
+
+        log.append(&[1; MIN_RESERVE as usize]).expect("past the reserve");
+        assert_eq!(len(log_path), 2 * MIN_RESERVE, "the next step = the file's size again");
+        drop(log);
+
+        let mut reopened =
+            PagedFile::open(fs.as_ref(), log_path, sealed, FileKind::Log).expect("reopen");
+        assert_eq!(len(log_path), sealed.len, "open truncates to the seal, reserve included");
+        reopened.append(&[2]).expect("append after reopen");
+        let rebuilt = len(log_path);
+        assert!(rebuilt > sealed.len + 1 && rebuilt % PAGE as u64 == 0, "rebuilt: {rebuilt}");
     }
 
     /// Offline scrub over a real file written past `WRITE_BEHIND` (writeback hint issued): clean,
@@ -617,7 +766,8 @@ mod tests {
         let fs = crate::fs::RealFs::shared();
         let path = dir.path().join("data");
         let bytes: Vec<u8> = (0..WRITE_BEHIND as usize + 2 * PAGE + 9).map(|n| n as u8).collect();
-        let mut file = PagedFile::open(fs.as_ref(), &path, Sealed::EMPTY).expect("open");
+        let mut file =
+            PagedFile::open(fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment).expect("open");
         file.append(&bytes).expect("append");
         let sealed = file.seal().expect("seal");
 

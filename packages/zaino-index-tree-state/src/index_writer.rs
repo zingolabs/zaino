@@ -579,6 +579,9 @@ mod tests {
         running.await.expect("no panic").expect("bulk written at Shutdown");
 
         let leaves = Path::new(PATH).join("sapling").join("l00.dat");
+        // a reopen truncates to the seal: what is left = exactly the committed bytes (the zeroed
+        // reserve a writer grows past them is uncommitted)
+        drop(open(&fs, BULK).expect("reopen"));
         let committed = fs.contents(&leaves).expect("leaves");
         let surplus = [committed.as_slice(), &[0xff; 64]].concat();
         let reopen = |bytes: Vec<u8>| {

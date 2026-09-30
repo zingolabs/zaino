@@ -366,9 +366,14 @@ mod tests {
         let clean = serde_json::to_value(verify(&config).expect("verify")).expect("json");
         let indexes =
             ["compact_block", "value_balance", "block_hash", "tree_state", "transparent_address"];
-        let blocks_len = std::fs::metadata(cb.join("blocks.dat")).expect("meta").len();
+        // on disk = the sealed bytes, then the zeroed reserve the appends grow into (uncommitted)
+        let files = zaino_index_compact_block::committed_files(&cb, net).expect("manifest").files;
+        let sealed = files.iter().find(|(name, _)| name == "blocks.dat").expect("blocks.dat").1;
+        let on_disk = std::fs::metadata(cb.join("blocks.dat")).expect("meta").len();
+        assert!(on_disk > sealed.len, "a reserve past the seal");
         let blocks_dat = json!({
-            "path": "blocks.dat", "committed_bytes": blocks_len, "orphaned_bytes": 0,
+            "path": "blocks.dat", "committed_bytes": sealed.len,
+            "orphaned_bytes": on_disk - sealed.len,
             "lost": false, "bad_sums": false, "bad_pages": [],
         });
         let tree_files = clean["tree_state"]["files"].as_array().map(Vec::len);

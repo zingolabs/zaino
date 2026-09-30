@@ -705,10 +705,16 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
 }
 
 /// Several summary groups (group = 512 fences = 131,072 rows here): `seek` finds every key's slot,
-/// the slot after a gap, and both ends, through the in-memory summary and one page of fences
+/// the slot after a gap, and both ends, through the in-memory summary and one page of fences.
+/// For every key, the bytes `get_many` prefetches are exactly the ones that seek reads: the whole
+/// fence group of the key's block, then the key's whole block of records (the layout's arithmetic
+/// written out here independently)
 #[test]
-fn seek_crosses_summary_groups_to_the_right_slot() {
-    use super::{file::SegmentFile, layout::Shape};
+fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() {
+    use super::{
+        file::{Prefetch, SegmentFile},
+        layout::Shape,
+    };
     use crate::fs::Access;
 
     let fs = SimFs::new();
@@ -725,11 +731,92 @@ fn seek_crosses_summary_groups_to_the_right_slot() {
     let key = |seq: u32| row(7, seq).at.encode();
     assert_eq!(file.seek(&row(6, 0).at.encode()), 0, "below every key");
     assert_eq!(file.seek(&row(8, 0).at.encode()), rows, "above every key");
+    let Shape { stride, key_len, block_rows, group_fences, .. } = Shape::of::<Row>();
+    let (blocks, fences_at) = (rows.div_ceil(block_rows), rows * stride);
     for slot in (0..rows).step_by(997).chain([rows - 1, 131_071, 131_072, 262_144]) {
         let seq = 2 * slot as u32;
         assert_eq!(file.seek(&key(seq)), slot, "key at slot {slot}");
         assert_eq!(file.seek(&key(seq + 1)), slot + 1, "gap after slot {slot}");
+
+        let (block, group) = (slot / block_rows, slot / block_rows / group_fences);
+        let group_blocks = group * group_fences..((group + 1) * group_fences).min(blocks);
+        let fences =
+            fences_at + group_blocks.start * key_len..fences_at + group_blocks.end * key_len;
+        let records = block * block_rows * stride..((block + 1) * block_rows).min(rows) * stride;
+        let prefetched = |step| file.prefetch_range(step, &key(seq));
+        assert_eq!(prefetched(Prefetch::Fences), fences, "slot {slot}: its fence group");
+        assert_eq!(prefetched(Prefetch::Records), records, "slot {slot}: its block of records");
     }
+}
+
+/// A batch's prefetch plan over three filtered segments, the keys asked held by the first and the
+/// last: each round covers, in the segment holding it, every asked key's fence group then its
+/// block of records, as whole pages, ascending and disjoint per segment. An unfiltered set plans
+/// nothing (every segment would be a candidate)
+#[test]
+fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
+    use super::{
+        file::{Prefetch, SegmentFile},
+        layout::Shape,
+    };
+    use crate::fs::Access;
+
+    let fs = SimFs::new();
+    let dir = Path::new("/probed");
+    fs.create_dir_all(dir).expect("dir");
+    let writer = SegmentWriter::open(fs.clone(), dir);
+    let spans = [0..20_000u32, 20_000..40_000, 40_000..60_000];
+    let metas: Vec<_> = (0u32..)
+        .zip(&spans)
+        .map(|(id, span)| {
+            let rows = span.clone().map(id_row).collect::<Vec<_>>();
+            writer.write(id, rows).expect("write").expect("rows")
+        })
+        .collect();
+    writer.sync_dir().expect("sync");
+    let set = SegmentSet::<Id>::open::<IdRow>(fs.clone(), dir, &metas).expect("open");
+    let pinned = set.pin();
+    let files: Vec<SegmentFile> = metas
+        .iter()
+        .map(|meta| SegmentFile::open(fs.as_ref(), dir, meta, Shape::of::<IdRow>(), Access::Normal))
+        .collect::<Result<_, _>>()
+        .expect("each segment, mapped on its own");
+
+    let asked: Vec<u32> = (1_000..1_100).chain(45_000..45_100).collect();
+    let mut sorted: Vec<(Vec<u8>, usize)> =
+        asked.iter().enumerate().map(|(at, n)| (id_row(*n).id.encode(), at)).collect();
+    sorted.sort_unstable();
+    let holder = |n: u32| spans.iter().position(|span| span.contains(&n)).expect("held");
+
+    for step in [Prefetch::Fences, Prefetch::Records] {
+        let plan = pinned.prefetch_plan(step, &sorted);
+        for segment in 0..spans.len() {
+            let ranges: Vec<_> =
+                plan.iter().filter(|(s, _)| *s == segment).map(|(_, r)| r).collect();
+            let whole_pages = ranges.iter().all(|r| r.start % 4096 == 0 && r.end % 4096 == 0);
+            let disjoint = ranges.windows(2).all(|pair| pair[0].end < pair[1].start);
+            assert!(whole_pages && disjoint, "{step:?}, segment {segment}: {ranges:?}");
+        }
+        for &n in &asked {
+            let segment = holder(n);
+            let wanted = files[segment].prefetch_range(step, &id_row(n).id.encode());
+            let covered = plan.iter().any(|(s, range)| {
+                *s == segment && range.start <= wanted.start && wanted.end <= range.end
+            });
+            assert!(covered, "{step:?}: id {n}'s {wanted:?} in segment {segment}");
+        }
+    }
+
+    let scanned = Path::new("/scanned");
+    fs.create_dir_all(scanned).expect("dir");
+    let writer = SegmentWriter::open(fs.clone(), scanned);
+    let meta = writer.write(0, (0..600).map(|seq| row(1, seq)).collect()).expect("write");
+    writer.sync_dir().expect("sync");
+    let unfiltered =
+        SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), scanned, &[meta.expect("rows")])
+            .expect("open");
+    let keys = [(row(1, 5).at.encode(), 0)];
+    assert!(unfiltered.pin().prefetch_plan(Prefetch::Fences, &keys).is_empty(), "no filter");
 }
 
 /// `account ‖ seq`, filtered on the account: a range over one account skips the segments the

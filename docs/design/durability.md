@@ -16,10 +16,10 @@ of repairing anything in place. Every index follows the same six rules.
    the committed state: how many heights are durable, the hash of the last one, and the seal
    (length and tail checksum, §3) of every file the index reads. Bytes the manifest does not claim
    are uncommitted, whatever they contain.
-1. **One direction.** Every file is append-only. A commit appends, seals the files it grew, then
-   atomically replaces the manifest. Nothing the current manifest claims is ever rewritten or
-   deleted, except that a segment merge deletes its inputs once a later manifest stops listing
-   them.
+1. **One direction.** Every data file is append-only. A commit appends, seals the files it grew,
+   then writes the new manifest into the manifest slot the previous commit did not use (§2).
+   Nothing the current manifest claims is ever rewritten or deleted, except that a segment merge
+   deletes its inputs once a later manifest stops listing them.
 1. **Validate before durable, never after.** What the bytes mean is settled while the index is
    built, by cheap asserts on what is about to be written: heights contiguous, blocks linked,
    segment keys strictly ascending, appends landing at the end of their file. Once sealed, nothing
@@ -29,9 +29,9 @@ of repairing anything in place. Every index follows the same six rules.
 1. **One disk check, the same everywhere.** Once data is durable, the only question left is
    whether the bytes on disk are the bytes that were sealed. Every file of every index answers it
    with page checksums (§3).
-1. **Recovery never guesses.** Opening an index truncates every file to its sealed length and
-   deletes every segment the manifest does not list. A file shorter than its seal means committed
-   bytes were lost, which is fatal.
+1. **Recovery never guesses.** Opening an index truncates every file to its sealed length (a
+   reserve of zeros past it included, §3) and deletes every segment the manifest does not list. A
+   file shorter than its seal means committed bytes were lost, which is fatal.
 1. **Die, don't repair.** An I/O error on a commit path, a checksum mismatch, a chain that does not
    link, or a violated assert ends the process. zainod never retries a failed `fsync`, never
    restarts in-process, and never rewrites committed data. The service manager restarts it, and
@@ -39,30 +39,57 @@ of repairing anything in place. Every index follows the same six rules.
 
 ## 2. The manifest
 
+`MANIFEST` is two fixed 64 KiB slots. Each commit is written into one slot:
+
 ```text
 offset  bytes  field
-0       8      magic       b"ZAINOMF\0"
+0       8      magic       b"ZAINOMS\0"
 8       2      format      u16 LE, the index's layout version
 10      1      kind        1 compact-block, 2 tree-state, 3 transparent-address,
                            4 block-hash, 5 value-balance
 11      1      network     0 main, 1 test, 2 regtest
-12      4      body_len    u32 LE
-16      n      body        index-owned layout (§4)
-16+n    4      crc         CRC-32 (IEEE) over bytes 0 inclusive to 16+n exclusive
+12      8      seq         u64 LE, the commit's sequence number (1, 2, 3, ...)
+20      4      body_len    u32 LE
+24      n      body        index-owned layout (§4)
+24+n    4      crc         CRC-32 (IEEE) over bytes 0 inclusive to 24+n exclusive
 ```
 
 Every body starts with the committed tip, as the block count from genesis and the tip hash,
 followed by the seal of every file the index owns.
 
-A commit (`IndexDir::commit`) writes `MANIFEST.next`, fsyncs it, renames it over `MANIFEST`, then
-fsyncs the directory. The rename is atomic, so a crash at any point leaves the old manifest or the
-new one, and both are valid states.
+A commit (`IndexDir::commit`) writes commit `seq` over slot `seq % 2`, the slot the previous commit
+did not use, then fsyncs the file. The other slot always holds the commit before it, so a crash
+mid-write leaves one valid slot whatever the torn one holds. The committed state is the valid slot
+with the higher `seq`.
 
-Open removes a stale `MANIFEST.next`. With no `MANIFEST`, the index is fresh only if every file it
-owns is empty or absent, and otherwise open fails with `Unmanifested`. A fresh index commits an
-empty manifest before its first data write, so data without a manifest is never the result of a
-crash. A wrong magic, format, kind or network, a bad CRC, or a body length that disagrees with
-`body_len` is fatal.
+The commit rewrites existing blocks in place, below the end of the file. That changes no
+metadata, so its `fdatasync` flushes this file alone. A rename-based commit (write a new file,
+rename it in, fsync the directory) changes metadata twice. On ext4 and XFS each metadata change
+forces a journal commit, and a journal commit first waits for the dirty data of every other file
+on the filesystem, so every index's commit would stall behind every other index's writeback.
+
+Open reads both slots:
+
+- A slot of zeros was never written.
+- A slot failing its magic, length or CRC check is read as a torn write, a commit a crash
+  interrupted before it was acknowledged. The other slot's commit stands.
+- A slot that passes its CRC but names another index kind, format or network is fatal, as is a
+  file that is not exactly two slots long (an older layout) or two torn slots.
+
+A CRC cannot tell a torn write from bit rot, so a live slot damaged on disk also rolls the index
+back one commit, and the next boot refetches those blocks. For a segment store that rollback
+usually still fails, because the older manifest can list segments a later commit already
+unlinked (`PageError::Lost`).
+
+With no `MANIFEST`, open creates one: two zeroed slots written to `MANIFEST.creating`, fsynced,
+renamed in, then the directory fsynced. `MANIFEST` therefore only ever exists whole, and a leftover
+`MANIFEST.creating` is a creation a crash interrupted, removed at open. A fresh index is fresh only
+if every file it owns is empty or absent, and otherwise open fails with `Unmanifested`. It commits
+an empty manifest before its first data write, so data without a committed manifest is never the
+result of a crash.
+
+Because a commit no longer fsyncs the directory, a data file's own name must be made durable
+before any manifest names it. The file that creates it does that (§3).
 
 Each index directory also holds a `LOCK` file under an exclusive `File::try_lock` for the life of
 the process. Two zainods can never open one directory, because the second one's open-time
@@ -91,10 +118,24 @@ A complete page never changes, so its checksum lives beside it. The tail page is
 its checksum rides in the manifest. A crash can leave a longer file or a newer `.crc`, but never a
 committed page with a stale checksum.
 
+A `PagedFile` is opened as one of two kinds (`pages::FileKind`):
+
+- `Segment`, an LSM segment: written once, then sealed for good. It grows by exactly what is
+  appended, and the segment writer fsyncs its directory before the segment is listed.
+- `Log`, the compact-block and tree-state files: appended to commit after commit. When
+  open creates the file (or its `.crc`), it fsyncs the parent directory, so the name is durable
+  before any manifest names it. The file then grows into a **reserve**: room past its end,
+  written with zeros and fsynced, each step the file's size again (64 KiB to 64 MiB). Appends
+  overwrite that room in place, so a seal's `fdatasync` finds no size change and no new block to
+  allocate, and never waits on the journal (§2). `fallocate` cannot make that room: it leaves
+  unwritten extents, and the first write into one is a metadata change again. The cost is
+  writing the file's bytes twice, once as zeros. Open truncates the file to its seal, so the
+  reserve is dropped at every boot and rebuilt by the next append.
+
 Each page's checksum covers its page index as well as its bytes, so a page and its checksum moved
 together to another position still fail. The `sums` digest goes a level further, in the style of
-ZFS and TigerBeetle, where the parent holds the child's checksum: the manifest is itself checksummed
-and atomically renamed, it pins every page checksum through `sums`, and each checksum pins its page.
+ZFS and TigerBeetle, where the parent holds the child's checksum: each manifest slot is itself
+checksummed, it pins every page checksum through `sums`, and each checksum pins its page.
 A data page and its checksum that are both stale, for example after a lost write, or a file swapped
 in from elsewhere, therefore fail at open or scrub instead of passing as consistent.
 
@@ -195,7 +236,12 @@ durable manifest.
   acknowledged commit and at most the last attempted one, must match the model, and must accept
   the next commit. Both directions are checked: every row of a recovered commit is present and
   every row of a later one is absent (LevelDB `fault_injection_test`). Every index, value-balance
-  included, has such a test.
+  included, has such a test. The manifest's own test runs three commits, so a commit overwrites a
+  slot an earlier one used, under every crash state. A slot damaged by hand (the live one, then
+  both) pins the rollback-by-one and the refusal of §2.
+- **Not measured by `SimFs`.** Whether a sync commits the journal is a property of the real
+  filesystem. `SimFs` checks that the reserve and in-place manifest keep every crash state
+  correct, not that they save time; that is measured on a live sync.
 - **The crash model.** A crash drops, keeps, reorders or tears any write since the last fsync. We
   tear writes in half, on 512-byte sector boundaries (only the first sector, all but the last),
   and with every other sector landing, since a device promises sector atomicity only and may

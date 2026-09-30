@@ -12,7 +12,7 @@
 //!
 //! - integrity = the file's page checksums (`crate::pages`); nothing here re-proven on read
 
-use std::{cmp::Ordering, path::Path, sync::Arc};
+use std::{cmp::Ordering, ops::Range, path::Path, sync::Arc};
 
 use super::{
     filter::{FilterError, FilterLayout, FilterWriter},
@@ -75,7 +75,7 @@ pub(crate) struct Sections {
     pub(crate) shape: Shape,
     pub(crate) records: usize,
     pub(crate) fences: usize,
-    pub(crate) summary: std::ops::Range<usize>,
+    pub(crate) summary: Range<usize>,
     pub(crate) filter: Option<(usize, FilterLayout)>,
 }
 
@@ -98,27 +98,38 @@ impl Sections {
         Self { shape, records, fences, summary: summary_at..filter_at, filter }
     }
 
-    pub(crate) fn fence(&self, b: usize) -> std::ops::Range<usize> {
+    pub(crate) fn fence(&self, b: usize) -> Range<usize> {
         let at = self.fences + b * self.shape.key_len;
         at..at + self.shape.key_len
     }
 
-    /// Block a key could sit in: the last whose fence ≤ `key` (block 0 when below every fence)
-    ///
-    /// `summary` (in memory) picks the group of fences, then one search inside that group, which
-    /// spans at most two pages of fences on disk.
+    /// Blocks whose fences a search for `key` reads: the group `summary` (in memory) picks, so
+    /// no disk read; spans at most two pages of fences
+    pub(crate) fn group_of(&self, summary: &[u8], key: &[u8]) -> Range<usize> {
+        let key_len = self.shape.key_len;
+        let groups = summary.len() / key_len;
+        let group = last_at_most(groups, |g| &summary[g * key_len..(g + 1) * key_len], key);
+        let low = group * self.shape.group_fences;
+        low..(low + self.shape.group_fences).min(self.shape.blocks(self.records as u64))
+    }
+
+    /// Block a key could sit in: the last whose fence ≤ `key` (block 0 when below every fence),
+    /// searched inside [`group_of`](Self::group_of)
     pub(crate) fn block_of<'a>(
         &self,
         summary: &[u8],
         fence: impl Fn(usize) -> &'a [u8],
         key: &[u8],
     ) -> usize {
-        let key_len = self.shape.key_len;
-        let groups = summary.len() / key_len;
-        let group = last_at_most(groups, |g| &summary[g * key_len..(g + 1) * key_len], key);
-        let low = group * self.shape.group_fences;
-        let high = (low + self.shape.group_fences).min(self.shape.blocks(self.records as u64));
-        low + last_at_most(high - low, |b| fence(low + b), key)
+        let group = self.group_of(summary, key);
+        group.start + last_at_most(group.len(), |b| fence(group.start + b), key)
+    }
+
+    /// Bytes of block `b`'s records
+    pub(crate) fn rows(&self, b: usize) -> Range<usize> {
+        let rows = self.shape.block_rows;
+        let (first, end) = (b * rows, ((b + 1) * rows).min(self.records));
+        first * self.shape.stride..end * self.shape.stride
     }
 }
 

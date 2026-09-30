@@ -103,7 +103,10 @@ pub(crate) fn is_scratch(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{fs::SimFs, pages::Sealed};
+    use crate::{
+        fs::SimFs,
+        pages::{FileKind, Sealed},
+    };
 
     /// Past the threshold the stream moves to its scratch file; appended, the bytes are exactly
     /// what was pushed, and the scratch file is gone. Below it, nothing touches the disk.
@@ -123,7 +126,8 @@ mod tests {
         assert!(fs.contents(&path).is_some(), "spilled past the threshold");
 
         let target = dir.join("0000000007.seg");
-        let mut out = PagedFile::open(fs.as_ref(), &target, Sealed::EMPTY).expect("segment");
+        let mut out = PagedFile::open(fs.as_ref(), &target, Sealed::EMPTY, FileKind::Segment)
+            .expect("segment");
         spill.append_to(&mut out).expect("append");
         assert_eq!(fs.contents(&target).expect("segment"), pushed);
         assert!(fs.contents(&path).is_none(), "scratch removed");

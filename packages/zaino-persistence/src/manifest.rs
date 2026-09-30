@@ -1,17 +1,29 @@
 //! `MANIFEST`: an index's one commit point (`docs/design/durability.md` §2)
 //!
 //! ```text
-//! magic b"ZAINOMF\0" ‖ format u16 ‖ kind u8 ‖ network u8 ‖ body_len u32 ‖ body ‖ crc32
+//! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created
+//! slot = magic b"ZAINOMS\0" ‖ format u16 ‖ kind u8 ‖ network u8 ‖ seq u64 ‖ body_len u32
+//!        ‖ body ‖ crc32 ‖ (unused to the slot's end)
 //! ```
 //!
-//! - little-endian throughout; CRC-32 (IEEE) over everything before it
+//! - little-endian throughout; CRC-32 (IEEE) over the slot's bytes before it
+//! - commit `seq` overwrites slot `seq % 2` in place, so the other slot always holds the commit
+//!   before it; the committed state = the valid slot with the highest `seq` ([`latest`])
+//! - in place, not a renamed file: an overwrite below EOF changes no metadata, so the commit's
+//!   `fdatasync` never waits on the filesystem journal (and on every other file's writeback)
 
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
 
-const MAGIC: [u8; 8] = *b"ZAINOMF\0";
-const HEADER: usize = 16;
+const MAGIC: [u8; 8] = *b"ZAINOMS\0";
+const HEADER: usize = 24;
 const CRC: usize = 4;
+
+/// One slot's capacity (the largest body: a segment store's lists, a few KiB at most)
+pub const SLOT: usize = 64 << 10;
+
+/// The whole manifest file: both slots
+pub const FILE_LEN: u64 = 2 * SLOT as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -45,14 +57,17 @@ pub enum ManifestError {
     #[error("manifest io: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("MANIFEST is {len} bytes, shorter than its header and checksum")]
-    Short { len: usize },
-
-    #[error("MANIFEST does not start with the zaino manifest magic")]
+    #[error("MANIFEST slot does not start with the zaino manifest magic")]
     Magic,
 
     #[error("MANIFEST checksum mismatch")]
     Checksum,
+
+    #[error("MANIFEST is {len} bytes, not this build's two-slot layout: resync the index")]
+    Layout { len: u64 },
+
+    #[error("MANIFEST slots both claim commit {seq}")]
+    Sequence { seq: u64 },
 
     #[error("MANIFEST body claims {claimed} bytes, {actual} present")]
     BodyLength { claimed: u32, actual: usize },
@@ -73,34 +88,61 @@ pub enum ManifestError {
     Unmanifested { path: String },
 }
 
-pub fn encode(identity: Identity, body: &[u8]) -> Vec<u8> {
+/// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`; the rest of the slot is left as
+/// it was, outside the CRC)
+pub fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
+    assert!(
+        HEADER + body.len() + CRC <= SLOT,
+        "manifest body of {} bytes overflows its {SLOT}-byte slot",
+        body.len()
+    );
     let mut out = Vec::with_capacity(HEADER + body.len() + CRC);
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&identity.format.to_le_bytes());
     out.push(identity.kind as u8);
     out.push(network_tag(identity.network));
-    out.extend_from_slice(&u32::try_from(body.len()).expect("manifest body < 4 GiB").to_le_bytes());
+    out.extend_from_slice(&seq.to_le_bytes());
+    out.extend_from_slice(&u32::try_from(body.len()).expect("body < SLOT").to_le_bytes());
     out.extend_from_slice(body);
     out.extend_from_slice(&crc32fast::hash(&out).to_le_bytes());
     out
 }
 
-/// Body of a manifest written as `identity`
-pub fn decode(identity: Identity, bytes: &[u8]) -> Result<&[u8], ManifestError> {
-    let short = ManifestError::Short { len: bytes.len() };
-    let (covered, crc) =
-        bytes.split_last_chunk::<CRC>().ok_or(ManifestError::Short { len: bytes.len() })?;
-    let (header, body) = covered.split_first_chunk::<HEADER>().ok_or(short)?;
+/// Where commit `seq` is written: alternating slots, so it never overwrites the commit before it
+pub fn slot_offset(seq: u64) -> u64 {
+    (seq % 2) * SLOT as u64
+}
 
+/// What one slot holds
+#[derive(Debug)]
+enum Slot<'a> {
+    /// All zeros: no commit has used it yet
+    Unwritten,
+    /// Fails its magic, length or CRC: a write a crash interrupted (why, for the error)
+    Torn(ManifestError),
+    Committed {
+        seq: u64,
+        body: &'a [u8],
+    },
+}
+
+/// Reads one slot; `Err` = a whole, checksummed slot written as another index, format or
+/// network (refused outright, never mistaken for a torn write)
+fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestError> {
+    if slot.iter().all(|byte| *byte == 0) {
+        return Ok(Slot::Unwritten);
+    }
+    let (header, rest) = slot.split_first_chunk::<HEADER>().expect("a slot holds its header");
     if header[..8] != MAGIC {
-        return Err(ManifestError::Magic);
+        return Ok(Slot::Torn(ManifestError::Magic));
     }
-    if crc32fast::hash(covered) != u32::from_le_bytes(*crc) {
-        return Err(ManifestError::Checksum);
-    }
-    let claimed = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-    if usize::try_from(claimed).ok() != Some(body.len()) {
-        return Err(ManifestError::BodyLength { claimed, actual: body.len() });
+    let claimed = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
+    let body_len = usize::try_from(claimed).expect("u32 fits usize");
+    let (Some(body), Some(crc)) = (rest.get(..body_len), rest.get(body_len..body_len + CRC)) else {
+        return Ok(Slot::Torn(ManifestError::BodyLength { claimed, actual: rest.len() - CRC }));
+    };
+    if crc32fast::hash(&slot[..HEADER + body_len]).to_le_bytes() != crc {
+        return Ok(Slot::Torn(ManifestError::Checksum));
     }
     if header[10] != identity.kind as u8 {
         return Err(ManifestError::Kind { expected: identity.kind, found: header[10] });
@@ -112,8 +154,39 @@ pub fn decode(identity: Identity, bytes: &[u8]) -> Result<&[u8], ManifestError> 
     if header[11] != network_tag(identity.network) {
         return Err(ManifestError::Network { expected: identity.network, found: header[11] });
     }
+    let seq = u64::from_le_bytes(header[12..20].try_into().expect("8 bytes"));
+    Ok(Slot::Committed { seq, body })
+}
 
-    Ok(body)
+/// The committed `(seq, body)` of a whole manifest file; `None` = no commit ever completed
+///
+/// - both slots committed: the higher `seq` (the other = the commit before it)
+/// - one committed beside a torn one: the committed one (the torn write = a later commit a crash
+///   interrupted before it was acknowledged)
+/// - none committed, at most one torn: nothing committed yet (the first commit interrupted)
+/// - both torn: an error (the file is created zeroed and synced before any commit, and a crash
+///   tears only the slot being written, never the other)
+/// - any other length: an error (an older layout; this file is only ever created whole)
+pub fn latest(identity: Identity, file: &[u8]) -> Result<Option<(u64, &[u8])>, ManifestError> {
+    if file.len() as u64 != FILE_LEN {
+        return Err(ManifestError::Layout { len: file.len() as u64 });
+    }
+    let (first, second) = file.split_at(SLOT);
+    let slots = [decode_slot(identity, first)?, decode_slot(identity, second)?];
+
+    let mut commits = slots.iter().filter_map(|slot| match slot {
+        Slot::Committed { seq, body } => Some((*seq, *body)),
+        Slot::Unwritten | Slot::Torn(_) => None,
+    });
+    match (commits.next(), commits.next()) {
+        (Some((a, _)), Some((b, _))) if a == b => Err(ManifestError::Sequence { seq: a }),
+        (Some(a), Some(b)) => Ok(Some(if a.0 > b.0 { a } else { b })),
+        (Some(only), None) => Ok(Some(only)),
+        (None, _) => match slots {
+            [Slot::Torn(why), Slot::Torn(_)] => Err(why),
+            _ => Ok(None),
+        },
+    }
 }
 
 /// `dir`'s committed body, read offline (plain read, no lock); `None` = never committed, a
@@ -124,8 +197,8 @@ pub fn read(dir: &std::path::Path, identity: Identity) -> std::io::Result<Option
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    decode(identity, &bytes)
-        .map(|body| Some(body.to_vec()))
+    latest(identity, &bytes)
+        .map(|committed| committed.map(|(_, body)| body.to_vec()))
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
@@ -209,38 +282,77 @@ impl<'a> BodyReader<'a> {
 mod tests {
     use super::*;
 
-    /// Layout pinned byte for byte, and every header field checked on decode
+    /// A slot pinned byte for byte, alternating by `seq`, and the committed state read off every
+    /// shape a crash, a foreign directory or an older layout can leave in the two slots
     #[test]
-    fn manifest_golden_bytes_round_trip_and_every_mismatch_is_refused() {
+    fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
         let identity =
             Identity { kind: IndexKind::TreeState, format: 3, network: NetworkType::Test };
-        let encoded = encode(identity, &[0xaa, 0xbb]);
-
-        let mut expected = b"ZAINOMF\0".to_vec();
-        expected.extend_from_slice(&[3, 0, 2, 1, 2, 0, 0, 0, 0xaa, 0xbb]);
+        let encoded = encode(identity, 7, &[0xaa, 0xbb]);
+        let mut expected = b"ZAINOMS\0".to_vec();
+        expected.extend_from_slice(&[3, 0, 2, 1]);
+        expected.extend_from_slice(&7u64.to_le_bytes());
+        expected.extend_from_slice(&[2, 0, 0, 0, 0xaa, 0xbb]);
         expected.extend_from_slice(&crc32fast::hash(&expected).to_le_bytes());
         assert_eq!(encoded, expected);
-        assert_eq!(decode(identity, &encoded).expect("decode"), &[0xaa, 0xbb]);
+        assert_eq!((slot_offset(7), slot_offset(8)), (SLOT as u64, 0), "odd → slot 1, even → 0");
 
-        let mut flipped = encoded.clone();
-        flipped[16] ^= 1;
-        let mut magic = encoded.clone();
-        magic[0] = b'X';
-        // body_len says 3, then re-checksummed so only the length is wrong
-        let mut long_body = encoded[..encoded.len() - CRC].to_vec();
-        long_body[12] = 3;
-        long_body.extend_from_slice(&crc32fast::hash(&long_body).to_le_bytes());
+        // the whole file as each slot holds it (`None` = never written)
+        let file = |first: Option<Vec<u8>>, second: Option<Vec<u8>>| {
+            let mut bytes = vec![0; 2 * SLOT];
+            for (at, slot) in [(0, first), (SLOT, second)] {
+                if let Some(slot) = slot {
+                    bytes[at..at + slot.len()].copy_from_slice(&slot);
+                }
+            }
+            bytes
+        };
+        let commit = |seq: u64, body: &[u8]| Some(encode(identity, seq, body));
+        let torn = |seq: u64, body: &[u8]| {
+            let mut slot = encode(identity, seq, body);
+            slot[HEADER] ^= 1;
+            Some(slot)
+        };
+        // body_len claims past the slot's end: torn on its length, before any CRC is read
+        let mut overlong = encode(identity, 3, &[1]);
+        overlong[20..24].copy_from_slice(&(SLOT as u32).to_le_bytes());
 
-        assert!(matches!(decode(identity, &encoded[..10]), Err(ManifestError::Short { len: 10 })));
-        assert!(matches!(decode(identity, &magic), Err(ManifestError::Magic)));
-        assert!(matches!(decode(identity, &flipped), Err(ManifestError::Checksum)));
-        use ManifestError::{BodyLength, Format, Kind, Network};
+        type Commit = Option<(u64, Vec<u8>)>;
+        let cases: [(&str, Vec<u8>, Commit); 6] = [
+            ("created, never committed", file(None, None), None),
+            ("first commit", file(None, commit(1, &[1])), Some((1, vec![1]))),
+            ("two commits: the newer", file(commit(2, &[2]), commit(1, &[1])), Some((2, vec![2]))),
+            ("newer torn: the older", file(torn(4, &[4]), commit(3, &[3])), Some((3, vec![3]))),
+            ("first commit torn", file(None, torn(1, &[1])), None),
+            ("overlong body = torn", file(None, Some(overlong.clone())), None),
+        ];
+        for (why, bytes, want) in cases {
+            let found = latest(identity, &bytes).unwrap_or_else(|error| panic!("{why}: {error}"));
+            assert_eq!(found.map(|(seq, body)| (seq, body.to_vec())), want, "{why}");
+        }
+
+        use ManifestError::{BodyLength, Checksum, Format, Kind, Layout, Network, Sequence};
+        let (torn_pair, twin_pair) =
+            (file(torn(2, &[2]), torn(1, &[1])), file(commit(1, &[1]), commit(1, &[2])));
+        let overlong_pair = file(Some(overlong.clone()), Some(overlong));
+        let both_torn = latest(identity, &torn_pair);
+        let both_overlong = latest(identity, &overlong_pair);
+        let twins = latest(identity, &twin_pair);
+        let older_layout = latest(identity, &[1; 40]);
+        let empty = latest(identity, &[]);
+        let one = file(None, commit(1, &[1]));
         let (block, main) = (IndexKind::CompactBlock, NetworkType::Main);
-        let long = decode(identity, &long_body);
-        let kind = decode(Identity { kind: block, ..identity }, &encoded);
-        let format = decode(Identity { format: 4, ..identity }, &encoded);
-        let network = decode(Identity { network: main, ..identity }, &encoded);
-        assert!(matches!(long, Err(BodyLength { claimed: 3, actual: 2 })));
+        let kind = latest(Identity { kind: block, ..identity }, &one);
+        let format = latest(Identity { format: 4, ..identity }, &one);
+        let network = latest(Identity { network: main, ..identity }, &one);
+        assert!(matches!(both_torn, Err(Checksum)), "a crash tears one slot, never both");
+        let room = SLOT - HEADER - CRC;
+        let named = matches!(both_overlong, Err(BodyLength { claimed, actual })
+            if claimed as usize == SLOT && actual == room);
+        assert!(named, "the claimed length beside the room the slot holds: {both_overlong:?}");
+        assert!(matches!(twins, Err(Sequence { seq: 1 })));
+        assert!(matches!(older_layout, Err(Layout { len: 40 })));
+        assert!(matches!(empty, Err(Layout { len: 0 })), "only ever created whole");
         assert!(matches!(kind, Err(Kind { expected: IndexKind::CompactBlock, found: 2 })));
         assert!(matches!(format, Err(Format { expected: 4, found: 3 })));
         assert!(matches!(network, Err(Network { expected: NetworkType::Main, found: 1 })));

@@ -44,7 +44,7 @@ use zaino_persistence::{
     dir::IndexDir,
     fs::Fs,
     manifest::{self, BodyReader, Committed, Identity, IndexKind, ManifestError},
-    pages::{CommittedFiles, PagedFile, Pages, Sealed},
+    pages::{CommittedFiles, FileKind, PagedFile, Pages, Sealed},
     StoreError,
 };
 use zaino_primitives::types::{BlockHash, BlockRef, Height, TreeSize, TreeSizes};
@@ -250,7 +250,7 @@ impl CompactBlockStore {
     /// Opens `path` at its committed state (lengths and tail pages checked); fresh = empty
     pub fn open(fs: Arc<dyn Fs>, path: &Path, network: NetworkType) -> Result<Self> {
         let opened = IndexDir::open(Arc::clone(&fs), path, identity(network))?;
-        let dir = opened.dir;
+        let mut dir = opened.dir;
         let committed = match &opened.body {
             Some(body) => Body::decode(body)?,
             None => {
@@ -262,8 +262,9 @@ impl CompactBlockStore {
             }
         };
 
-        let file =
-            |name: &str, sealed| PagedFile::open(fs.as_ref(), &dir.path().join(name), sealed);
+        let file = |name: &str, sealed| {
+            PagedFile::open(fs.as_ref(), &dir.path().join(name), sealed, FileKind::Log)
+        };
         let blocks = file(BLOCKS, committed.blocks)?;
         let offsets = file(OFFSETS, committed.offsets)?;
         if opened.body.is_none() {
@@ -496,7 +497,9 @@ mod tests {
     }
 
     /// Open checks lengths and tail pages only: a lost file or a torn tail page is refused, bytes
-    /// past the manifest are dropped, data without a manifest is refused
+    /// past the manifest are dropped, data without a manifest is refused. A manifest slot failing
+    /// its CRC reads as a torn commit: the live one damaged = the commit before it (commit 1, the
+    /// empty one at open), both damaged = refused
     #[test]
     fn open_checks_lengths_and_tail_pages_only() {
         let path = Path::new("/cb");
@@ -516,13 +519,29 @@ mod tests {
         };
         let data_len: u64 = h(0).up_to(h(3)).map(|height| framed(height).len() as u64).sum();
 
+        // commit 2 (the live one) sits in slot 0, commit 1 in slot 1; byte 30 = inside each body
+        let (live, previous) = (30, manifest::SLOT + 30);
+        let damage = |fs: &SimFs, slots: &[usize]| {
+            fs.corrupt(&path.join("MANIFEST"), |bytes| slots.iter().for_each(|at| bytes[*at] ^= 1))
+        };
+
         let short = refused(&|fs| fs.corrupt(&path.join(BLOCKS), |bytes| bytes.truncate(10)));
         let torn = refused(&|fs| fs.corrupt(&path.join(OFFSETS), |bytes| bytes[3] ^= 1));
-        let manifest = refused(&|fs| fs.corrupt(&path.join("MANIFEST"), |bytes| bytes[20] ^= 1));
+        let manifest = refused(&|fs| damage(fs, &[live, previous]));
         let lost = format!("/cb/blocks.dat is 10 bytes, the committed state needs {data_len}");
         assert_eq!(short, lost);
         assert_eq!(torn, "/cb/offsets.idx: tail page fails its checksum");
         assert_eq!(manifest, "MANIFEST checksum mismatch");
+
+        let fs = populated();
+        damage(&fs, &[live]);
+        let mut store = CompactBlockStore::open(fs.clone(), path, NET).expect("the commit before");
+        assert_eq!(store.finalized_height(), None, "commit 1 = nothing committed");
+        let on_disk = fs.contents(&path.join(BLOCKS)).expect("blocks").len();
+        assert_eq!(on_disk, 0, "truncated to commit 1's seal");
+        store.append(h(0), hash(h(0)), &framed(h(0))).expect("appends again from genesis");
+        store.commit(sizes(h(0))).expect("commit over the damaged slot");
+        drop(store);
 
         // bytes past the manifest = uncommitted: dropped, never an error
         let fs = populated();

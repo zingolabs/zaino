@@ -50,7 +50,7 @@ use zaino_persistence::{
     dir::IndexDir,
     fs::Fs,
     manifest::{self, BodyReader, Committed, Identity, IndexKind, ManifestError},
-    pages::{CommittedFiles, PagedFile, Pages, Sealed},
+    pages::{CommittedFiles, FileKind, PagedFile, Pages, Sealed},
     StoreError,
 };
 use zaino_primitives::types::{BlockRef, Height, PerPool, ShieldedPool};
@@ -222,11 +222,12 @@ impl PoolFiles {
     ) -> Result<Self, StoreError> {
         let path = dir.subdir(&pool.to_string())?;
         let mut levels = Vec::with_capacity(LEVELS);
+        let file =
+            |name: &str, sealed| PagedFile::open(fs, &path.join(name), sealed, FileKind::Log);
         for (level, sealed) in (0u8..).zip(seals.levels) {
-            levels.push(PagedFile::open(fs, &path.join(level_file(level)), sealed)?);
+            levels.push(file(&level_file(level), sealed)?);
         }
-        let subtrees = PagedFile::open(fs, &path.join(SUBTREES), seals.subtrees)?;
-        fs.sync_dir(&path)?;
+        let subtrees = file(SUBTREES, seals.subtrees)?;
 
         Ok(Self {
             nodes: NodeFiles::new(levels, seals.levels),
@@ -272,7 +273,7 @@ impl TreeStateStore {
     /// Opens `path` at its committed state (lengths and tail pages checked); fresh = empty
     pub fn open(fs: Arc<dyn Fs>, path: &Path, network: NetworkType) -> Result<Self, StoreError> {
         let opened = IndexDir::open(Arc::clone(&fs), path, identity(network))?;
-        let dir = opened.dir;
+        let mut dir = opened.dir;
         let committed = match &opened.body {
             Some(body) => Body::decode(body)?,
             None => {
@@ -285,7 +286,12 @@ impl TreeStateStore {
             }
         };
 
-        let heights = PagedFile::open(fs.as_ref(), &dir.path().join(HEIGHTS), committed.heights)?;
+        let heights = PagedFile::open(
+            fs.as_ref(),
+            &dir.path().join(HEIGHTS),
+            committed.heights,
+            FileKind::Log,
+        )?;
         let pools = PerPool::try_from_fn(|pool| {
             PoolFiles::open(fs.as_ref(), &dir, pool, committed.pools.get(pool))
         })?;

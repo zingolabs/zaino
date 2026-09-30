@@ -74,9 +74,10 @@ partial last page's checksum, and a CRC-32 of the whole `.crc`, which binds the
 checksums to the manifest (design: `docs/design/durability.md`).
 
 ```rust
-use zaino_persistence::pages::{PagedFile, Sealed};
+use zaino_persistence::pages::{FileKind, PagedFile, Sealed};
 
-let mut file = PagedFile::open(fs.as_ref(), &path, body.sealed)?; // fresh = Sealed::EMPTY
+// fresh = Sealed::EMPTY
+let mut file = PagedFile::open(fs.as_ref(), &path, body.sealed, FileKind::Log)?;
 file.append(&bytes)?;                    // at the end, never positional
 let sealed = file.seal()?;               // fsync data, write + fsync new page CRCs
 // commit a manifest carrying `sealed`, then:
@@ -87,6 +88,14 @@ let bytes = pages.bytes(range);          // zero-copy, every page checked on fir
 - `open` checks the file is at least as long as its seal (then truncates to it),
   the tail page's checksum, and the `.crc` against `sums`:
   `PageError::{Lost, Tail, Sums}`. `Pages::open` checks the same digest.
+- `FileKind` says what the file is. A `Segment` (an LSM segment, written once and
+  sealed) grows by exactly what is appended, and the caller fsyncs its directory.
+  A `Log` (appended to commit after commit) is linked durably when `open`
+  creates it, and grows into a reserve of zeros written and fsynced ahead
+  of the appends (each step the file's size again, 64 KiB to 64 MiB), so a seal
+  changes no metadata and its `fdatasync` never waits on the filesystem journal
+  (`docs/design/durability.md` §3). The file on disk is longer than its seal by
+  the reserve; open truncates it back.
 - A read that first touches a page whose CRC disagrees **panics** (corruption:
   zainod aborts; never serves bytes it cannot vouch for).
 - `Pages::open(fs, path, sealed, access)` maps an immutable sealed file (a segment)
@@ -102,20 +111,26 @@ let bytes = pages.bytes(range);          // zero-copy, every page checked on fir
 ## Manifest and index directory (`manifest`, `dir`)
 
 `IndexDir::open(fs, path, identity)` creates and durably links the directory,
-takes its `LOCK`, drops a staged `MANIFEST.next`, and returns the committed
-manifest body (`None` = never committed):
+takes its `LOCK`, creates `MANIFEST` if absent (two zeroed slots, written under
+a temporary name and renamed in whole), and returns the committed manifest body
+(`None` = never committed):
 
 ```rust
-let Opened { dir, body } = IndexDir::open(fs, path, Identity { kind, format, network })?;
+let Opened { mut dir, body } = IndexDir::open(fs, path, Identity { kind, format, network })?;
 match body {
     Some(body) => /* decode, open every file at its seal */,
     None => { dir.ensure_empty("data.bin")?; dir.commit(&empty_body)?; }
 }
-dir.commit(&new_body)?;   // MANIFEST.next → fsync → rename → fsync dir
+dir.commit(&new_body)?;   // over the slot the last commit did not use → fdatasync
 ```
 
-- The header checks magic, CRC, index kind, format version and network; any
-  mismatch is a `ManifestError`.
+- A commit rewrites one of `MANIFEST`'s two fixed slots in place: no rename, no
+  directory fsync, so it never waits on the filesystem journal. The other slot
+  keeps the commit before it, which a crash mid-write falls back to.
+- Each slot's header checks magic, CRC, index kind, format version and network.
+  A slot failing magic, length or CRC reads as a torn write, and the other slot
+  stands. A checksummed slot for another kind, format or network, two torn
+  slots, or a file of the wrong length (an older layout) is a `ManifestError`.
 - Every body starts with `Committed { tip: Option<BlockRef> }` (the last
   committed block, inclusive; `None` = nothing committed), stored as the block
   count from genesis then the tip hash; `BodyReader` reads the rest with bounds
@@ -196,9 +211,18 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
 - `get_many` is the batched lookup (RocksDB `MultiGet`): it sorts the keys and
   resolves them in key order. Neighbouring keys share fence, filter and record
   pages, so one fault serves several. From 64 keys it resolves contiguous sorted
-  runs in parallel on the rayon pool (a cold batch keeps many reads in flight);
-  below that it stays on the calling thread, where rayon's wake-up cost 5–10×
-  the lookups themselves (measured). Use it whenever one request needs many keys.
+  runs in parallel on the rayon pool; below that it stays on the calling thread,
+  where rayon's wake-up cost 5–10× the lookups themselves (measured). Use it
+  whenever one request needs many keys.
+
+- From 64 keys on a filtered set, `get_many` first prefetches the batch
+  (`MADV_WILLNEED`, advisory, never changing an answer), in the two reads a seek
+  makes: every candidate segment's fence group, then every candidate's block of
+  records. A faulting thread waits on each read, so without it the device only
+  ever sees one read per rayon thread; with it, the whole batch is queued at
+  once. Candidates are the segments whose filter admits the key, which is almost
+  only the one holding it; an unfiltered set is not prefetched, since every
+  segment would be a candidate while a lookup stops at its first hit.
 
 - Readers map a probed set's segments `Access::Random` (point lookups) and an
   unprobed set's `Access::Normal` (range scans want readahead). A merge maps its
