@@ -1,18 +1,13 @@
-//! Light-wallet index construction on mainnet, following the live tip, then a funded wallet
-//! synced through it.
+//! Mainnet light-wallet index: built from empty, then its capacity found at the live tip, then
+//! synced through by a real wallet.
 //!
-//! - zebra = the lazy-point-decompression fork, restored at `IRONWOOD_MAINNET`, following the
-//!   live network; zaino builds every index from empty over JSON-RPC
-//! - Phase `index`: durable extents never shrink, watermarks ordered, a syncing index refuses,
-//!   zebra leaves its snapshot, committed trees = zebra's every 5 s; at completion every index
-//!   held to zebra + `zainod verify` in-pod
-//! - Phase `follow`: [`FOLLOW_BLOCKS`] live blocks through the non-finalized state; served tip
-//!   tracks zebra, committed trees = zebra's every 5 s, top-of-chain answers held to zebra again
-//! - Phase `serve`: simulated light wallets ramped against the built index ([`Plan::mainnet`]);
-//!   every served block byte-consistent, a sample of every answer held to zebra, capacity per
-//!   stage in the report
-//! - Phase `wallet`: pepper-sync scans [`WALLET`] from its birthday to zaino's tip; tree roots vs
-//!   zebra's, balances + notes vs the declared truth, every block scanned
+//! - zebra = lazy-point-decompression fork, restored at `IRONWOOD_MAINNET`, following mainnet
+//! - `index`: every index built over JSON-RPC under safety probes; at completion each held to
+//!   zebra + `zainod verify` in-pod
+//! - `serve`: [`Plan::mainnet`] ramps incremental then fresh-sync wallets to the SLO's breaking
+//!   point and soaks the capacity; meanwhile live blocks through the non-finalized state, tip +
+//!   trees vs zebra, every served block byte-consistent, a sample of every answer held to zebra
+//! - `wallet`: pepper-sync scans [`WALLET`] birthday → tip; roots, balances, notes vs the truth
 //!
 //! `ztest sync start zaino_index_construction`
 
@@ -23,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use ztest::backends::zainod::{family, ServeCaps};
+use ztest::backends::zingolib::{NoteCounts, PerformanceLevel};
 use ztest::loadtest::load::{LoadRun, LoadSubject, Plan, PodCgroup, Target};
 use ztest::loadtest::reference::{block_diff, tree_state_diff, Fees, Zebra};
 use ztest::prelude::*;
@@ -40,37 +36,28 @@ use ztest::{sync_ensure, AccountId, ZingolibWallet};
 const WALLET: FundedWallet = FundedWallet {
     ufvk: "uview1ta2tvwhnfgafrjcl97yz26ynpktfllr7x6uvy6srmzepy5w6uz7l26k72jfhhyy4ulv2kw5nuhtfwemgahudtxl9q3ve5xtjrakpmt5re96qs72qplgk6ecgxn4mgrzs6gevpws3wx65gxymaf3u657pypn5yj9r35zqjpsdnfyqv0vqnf2fkty2789hn7kmssqj3pqg6z24gsrqdux65m2p6dgkthc8ssymvxhte40gc5ypqfqtcsxg9g3fvs8gjzwxj7wzfp8x42ycfkpc9mlu86prpz507kff2s35nkspc2pwzc00ffak0j5j79jgea98j34txmmkp2gpv4ufg0wswt40hauc2vja6sqft5f5jlknlxjq3c4s7apz0h478xrpk5hp0qm4rz9vhrj9y3ege23lkp8yr2a5j896th33q67fyl7paczs4cdpy0w8xynen62gdntw74wj6fnmtjd69fqnewtt63p9nzayhva5th2295ydp950",
     birthday: 2_208_514,
-    balances: PoolBalances {
-        orchard: 0,
-        ironwood: 0,
-        sapling: 0,
-        transparent: 0,
-    },
-    notes: [0, 3, 0, 0],
+    balances: PoolBalances { orchard: 0, ironwood: 0, sapling: 0, transparent: 0 },
+    notes: NoteCounts { sapling: 0, orchard: 3, ironwood: 0, transparent: 0 },
 };
 
-/// `notes` = unspent sapling, orchard, ironwood, transparent
 struct FundedWallet {
     ufvk: &'static str,
     birthday: u32,
     balances: PoolBalances,
-    notes: [usize; 4],
+    notes: NoteCounts,
 }
 
 const TICK: Duration = secs(15);
 const INDEX_CAP: Duration = hours(48);
-/// ~75 s blocks → ~30 min of live tip
-const FOLLOW_BLOCKS: u32 = 24;
-const FOLLOW_CAP: Duration = hours(2);
 /// UNMEASURED; pepper-sync = 2 scan workers, trial-decrypts every output from the birthday
 const WALLET_CAP: Duration = hours(12);
-/// Plan ≈ 35 min of stages + calibration + up to 20 min settling tip audits
-const SERVE_CAP: Duration = hours(3);
+/// Plan ≤ ~20 min (two ramps of ≤ 12 × 30 s levels + 2 min soaks) + calibration + 2 min burying
+const SERVE_CAP: Duration = mins(45);
 /// Above any mainnet address (pool payouts hold millions of receives): the oracle holds whole
 /// histories to zebra; the budget's own refusal = unit-tested in zaino-index-transparent-address
 const MAX_ADDRESS_ROWS: NonZeroU32 = NonZeroU32::new(1_000_000_000).expect("non-zero");
-/// One driver pod = one client address; the plan's 5k wallets hold a connection + a mempool
-/// stream each
+/// One driver pod = one client address; the plan's up to 10k wallets hold a connection + a
+/// mempool stream each
 const SERVE_CAPS: ServeCaps = ServeCaps {
     max_connections: NonZeroU32::new(16_384).expect("non-zero"),
     max_connections_per_ip: NonZeroU32::new(16_384).expect("non-zero"),
@@ -85,12 +72,11 @@ const PEERING_WINDOW: Duration = mins(10);
 /// Peers but still on the pin = handshakes that never turn into block download
 const SNAPSHOT_EXIT_WINDOW: Duration = mins(30);
 const TERMINAL_WINDOW: Duration = mins(30);
-/// Completion fires on sync; zebrad still closing the snapshot's gap to the network (3,434,171 vs
-/// ~3.5M = ~62k blocks). Sized for public peers (~7.5 blk/s); UNMEASURED fed by golden-mainnet
+/// Zebrad may still be closing the pin → tip gap at completion
 const NETWORK_CATCHUP_WINDOW: Duration = hours(3);
-/// Our reference mainnet zebra (zingo-infra `golden-mainnet`, `zebra-p2p` NodePort on tekau's own
-/// tailscaled: direct path, not DERP); public peers already hold the office egress IP's one slot
-/// per peer, so a zebra dialing from there gets none
+/// No block for 15 min at 75 s spacing ≈ e^-12 → an older tip = zebra still catching up
+const LIVE_TIP_AGE: Duration = mins(15);
+/// zingo-infra `golden-mainnet` via tekau NodePort (direct tailscale; office IP = no public peers)
 const GOLDEN_MAINNET_P2P: &str = "tekau.vaquita-altair.ts.net:30233";
 const TERMINAL_POLL: Duration = secs(10);
 /// Sequential read of every committed byte against its page checksums; UNMEASURED
@@ -106,8 +92,6 @@ const FETCH_CONCURRENCY: NonZeroU32 = NonZeroU32::new(64).expect("non-zero");
 const CHAIN_MOTION_SLACK: u32 = 3;
 /// Below both tips for zebra comparisons (a live tip can reorg under one)
 const REORG_MARGIN: u32 = 10;
-/// `estimatedheight` extrapolates from block times → tens short at the tip
-const NETWORK_ESTIMATE_SLACK: u32 = 24;
 /// Snapshot restores 277 GiB; zebrad appends past the pin
 const CHAIN_DISK_GIB: u64 = 320;
 /// UNMEASURED: compact-block + tree-state + transparent files for the whole chain
@@ -126,7 +110,7 @@ const FETCHED_OPS: [Op; 6] = [
 #[ztest::needs(IRONWOOD_MAINNET)]
 #[ztest::sync_test(
     name = "zaino_index_construction",
-    description = "light-wallet indexes built from empty to the live mainnet tip, followed through the non-finalized state, then a funded zingolib wallet synced through them",
+    description = "light-wallet indexes built from empty to the live mainnet tip, their incremental + fresh-sync wallet capacity found under live blocks, then a funded zingolib wallet synced through them",
     subject = indexer,
     timeout = "60h",
     qos = sync,
@@ -160,10 +144,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                     .disk(Disk::gib(INDEX_DISK_GIB))
                     .resources(Cpu::cores(8), Mem::gib(10)),
             );
-            let wallet = t.add_wallet(
-                Wallet::zingolib()
-                    .performance(ztest::backends::zingolib::PerformanceLevel::Maximum),
-            );
+            let wallet = t.add_wallet(Wallet::zingolib().performance(PerformanceLevel::Maximum));
             (zebra, zaino, wallet)
         })
         .await
@@ -332,76 +313,13 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
         );
     }
 
-    let follow = {
-        let zaino = zaino.clone();
-        run.then("follow", move |_cx: SyncCtx| async move { Ok(zaino) })
-    };
-    follow.tick(TICK).timeout(FOLLOW_CAP).for_blocks(FOLLOW_BLOCKS);
-
-    {
-        let (zaino, durable) = (zaino.clone(), durable.clone());
-        follow
-            .always(Severity::Fatal)
-            .named("durable_extents_never_shrink")
-            .every(secs(30))
-            .check_rpc(move |_s, _cx| {
-                let (zaino, durable) = (zaino.clone(), durable.clone());
-                Box::pin(async move { durable_extents_never_shrink(&zaino, &durable).await })
-            });
-    }
-    {
-        let (zaino, zebra) = (zaino.clone(), zebra.clone());
-        follow
-            .always(Severity::Fatal)
-            .named("committed_tree_states_are_zebras")
-            .every(secs(5))
-            .check_rpc(move |_s, _cx| {
-                let (zaino, zebra) = (zaino.clone(), zebra.clone());
-                Box::pin(async move { committed_tree_states_are_zebras(&zaino, &zebra).await })
-            });
-    }
-    {
-        let (zaino, zebra) = (zaino.clone(), zebra.clone());
-        follow.always(Severity::Fatal).named("served_tip_tracks_zebra").every(secs(30)).check_rpc(
-            move |_s, _cx| {
-                let (zaino, zebra) = (zaino.clone(), zebra.clone());
-                Box::pin(async move { served_tip_tracks_zebra(&zaino, &zebra).await })
-            },
-        );
-    }
-    follow.eventually(Severity::Fatal).named("follows_new_blocks").window(STALL_WINDOW).check(
-        |s: &Snapshot| {
-            if s.progressed_within(STALL_WINDOW) {
-                Verdict::Satisfied
-            } else {
-                Verdict::Pending
-            }
-        },
-    );
-    follow.at_completion(Severity::Fatal).named("no_restart").check(no_restart);
-    {
-        let (zaino, zebra) = (zaino.clone(), zebra.clone());
-        follow.at_completion(Severity::Fatal).named("served_tip_is_the_validator_tip").check_rpc(
-            move |_s, _cx| {
-                let (zaino, zebra) = (zaino.clone(), zebra.clone());
-                Box::pin(async move { served_tip_is_the_validator_tip(&zaino, &zebra).await })
-            },
-        );
-    }
-    {
-        let (zaino, zebra) = (zaino.clone(), zebra.clone());
-        follow.at_completion(Severity::Fatal).named("indexes_agree_with_zebra").check_rpc(
-            move |_s, _cx| {
-                let (zaino, zebra) = (zaino.clone(), zebra.clone());
-                Box::pin(async move { indexes_agree_with_zebra(&zaino, &zebra).await })
-            },
-        );
-    }
-
     let load: Arc<OnceLock<Arc<LoadRun>>> = Arc::new(OnceLock::new());
+    let served_from = Arc::new(AtomicU32::new(0));
     let serve = {
-        let (zebra, zaino, load) = (zebra.clone(), zaino.clone(), load.clone());
+        let (zebra, zaino, load, served_from) =
+            (zebra.clone(), zaino.clone(), load.clone(), served_from.clone());
         run.then("serve", move |cx: SyncCtx| async move {
+            served_from.store(u32::from(zaino.latest_block_height().await?), Ordering::Relaxed);
             let pod = cx.indexer_pod().ok_or("serve: no indexer pod bound")?.clone();
             let target = Target {
                 uri: zaino.grpc_uri().await?,
@@ -432,7 +350,65 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
             },
         );
     }
+    {
+        let (zaino, durable) = (zaino.clone(), durable.clone());
+        serve
+            .always(Severity::Fatal)
+            .named("durable_extents_never_shrink")
+            .every(secs(30))
+            .check_rpc(move |_s, _cx| {
+                let (zaino, durable) = (zaino.clone(), durable.clone());
+                Box::pin(async move { durable_extents_never_shrink(&zaino, &durable).await })
+            });
+    }
+    {
+        let (zaino, zebra) = (zaino.clone(), zebra.clone());
+        serve
+            .always(Severity::Fatal)
+            .named("committed_tree_states_are_zebras")
+            .every(secs(5))
+            .check_rpc(move |_s, _cx| {
+                let (zaino, zebra) = (zaino.clone(), zebra.clone());
+                Box::pin(async move { committed_tree_states_are_zebras(&zaino, &zebra).await })
+            });
+    }
+    {
+        let (zaino, zebra) = (zaino.clone(), zebra.clone());
+        serve.always(Severity::Fatal).named("served_tip_tracks_zebra").every(secs(30)).check_rpc(
+            move |_s, _cx| {
+                let (zaino, zebra) = (zaino.clone(), zebra.clone());
+                Box::pin(async move { served_tip_tracks_zebra(&zaino, &zebra).await })
+            },
+        );
+    }
     serve.at_completion(Severity::Fatal).named("no_restart").check(no_restart);
+    {
+        let (zaino, served_from) = (zaino.clone(), served_from.clone());
+        serve.at_completion(Severity::Fatal).named("followed_live_blocks_under_load").check_rpc(
+            move |_s, _cx| {
+                let (zaino, from) = (zaino.clone(), served_from.load(Ordering::Relaxed));
+                Box::pin(async move { followed_live_blocks(&zaino, from).await })
+            },
+        );
+    }
+    {
+        let (zaino, zebra) = (zaino.clone(), zebra.clone());
+        serve.at_completion(Severity::Fatal).named("served_tip_is_the_validator_tip").check_rpc(
+            move |_s, _cx| {
+                let (zaino, zebra) = (zaino.clone(), zebra.clone());
+                Box::pin(async move { served_tip_is_the_validator_tip(&zaino, &zebra).await })
+            },
+        );
+    }
+    {
+        let (zaino, zebra) = (zaino.clone(), zebra.clone());
+        serve.at_completion(Severity::Fatal).named("indexes_agree_with_zebra").check_rpc(
+            move |_s, _cx| {
+                let (zaino, zebra) = (zaino.clone(), zebra.clone());
+                Box::pin(async move { indexes_agree_with_zebra(&zaino, &zebra).await })
+            },
+        );
+    }
     {
         let load = load.clone();
         serve.at_completion(Severity::Fatal).named("load_ran_to_its_report").check(
@@ -677,19 +653,15 @@ async fn every_index_serves(zaino: &ZainoIndexer, at: u32) -> Verdict {
 }
 
 /// zaino's target = zebra's tip → without this, "zaino at the tip" = "wherever zebra stalled"
+///
+/// - Also what puts `serve`'s load on live blocks, not zebra's catch-up
 async fn validator_at_network_tip(zebra: &ZebraValidator, at: u32) -> Verdict {
     let deadline = Instant::now() + NETWORK_CATCHUP_WINDOW;
     loop {
-        let last = match zebra.blockchain_info().await {
-            Ok(info) => match info.estimated_height.map(u32::from) {
-                Some(estimate) if u32::from(info.blocks) + NETWORK_ESTIMATE_SLACK >= estimate => {
-                    return Verdict::Satisfied
-                }
-                estimate => {
-                    format!("zebra at {}, network estimate {estimate:?}", u32::from(info.blocks))
-                }
-            },
-            Err(e) => format!("zebra getblockchaininfo: {e}"),
+        let last = match tip_age(zebra).await {
+            Ok(age) if age <= LIVE_TIP_AGE => return Verdict::Satisfied,
+            Ok(age) => format!("zebra's tip mined {age:?} ago"),
+            Err(e) => e,
         };
         if Instant::now() >= deadline {
             return violated(at, format!("{NETWORK_CATCHUP_WINDOW:?} after completion, {last}"));
@@ -698,8 +670,33 @@ async fn validator_at_network_tip(zebra: &ZebraValidator, at: u32) -> Verdict {
     }
 }
 
-/// Served tip within motion slack of zebra's; durable extent within the finality depth of it
+/// Now − zebra's tip header time (a miner's clock ahead of ours = 0)
+async fn tip_age(zebra: &ZebraValidator) -> Result<Duration, String> {
+    let client = zebra.json_rpc().await.map_err(|e| format!("zebra json_rpc: {e}"))?;
+    let info = client.call_value("getblockchaininfo", json!([])).await;
+    let tip = info.map_err(|e| format!("zebra getblockchaininfo: {e}"))?["bestblockhash"].clone();
+    let header = client.call_value("getblockheader", json!([tip])).await;
+    let mined = header.map_err(|e| format!("zebra getblockheader: {e}"))?["time"].as_u64();
+    let mined = mined.ok_or_else(|| format!("zebra's tip header {tip} has no time"))?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let now = now.map_err(|e| format!("clock before 1970: {e}"))?.as_secs();
+    Ok(secs(now.saturating_sub(mined)))
+}
+
+/// Retried (zaino trails a moving zebra by one poll batch)
 async fn served_tip_is_the_validator_tip(zaino: &ZainoIndexer, zebra: &ZebraValidator) -> Verdict {
+    let deadline = Instant::now() + TERMINAL_WINDOW;
+    loop {
+        let verdict = served_tip_gap(zaino, zebra).await;
+        if !matches!(verdict, Verdict::Violated(_)) || Instant::now() >= deadline {
+            return verdict;
+        }
+        tokio::time::sleep(TERMINAL_POLL).await;
+    }
+}
+
+/// Served tip within motion slack of zebra's, durable within finality depth
+async fn served_tip_gap(zaino: &ZainoIndexer, zebra: &ZebraValidator) -> Verdict {
     let (served, finalized, tip) = match (
         zaino.latest_block_height().await,
         zaino.finalized_height(ZainoIndex::CompactBlock).await,
@@ -794,7 +791,26 @@ async fn index_files_verify_clean(zaino: &ZainoIndexer, cx: &SyncCtx) -> Verdict
     Verdict::Satisfied
 }
 
-// ── phase `follow` ────────────────────────────────────────────────────────────────────────────
+// ── phase `serve`: the live tip under load ────────────────────────────────────────────────────
+
+/// Served tip past where the load began = live blocks went through the non-finalized state
+/// while wallets hammered it (retried: a quiet spell between blocks)
+async fn followed_live_blocks(zaino: &ZainoIndexer, from: u32) -> Verdict {
+    let deadline = Instant::now() + TERMINAL_WINDOW;
+    loop {
+        let served = match zaino.latest_block_height().await {
+            Ok(h) => u32::from(h),
+            Err(e) => return Verdict::ProbeError(format!("zaino GetLatestBlock: {e}")),
+        };
+        if served > from {
+            return Verdict::Satisfied;
+        }
+        if Instant::now() >= deadline {
+            return violated(from, format!("served tip still {served} {TERMINAL_WINDOW:?} on"));
+        }
+        tokio::time::sleep(TERMINAL_POLL).await;
+    }
+}
 
 /// The non-finalized state serves each new block within motion slack of zebra, never ahead of it
 async fn served_tip_tracks_zebra(zaino: &ZainoIndexer, zebra: &ZebraValidator) -> Verdict {
@@ -1132,8 +1148,7 @@ async fn wallet_notes_are_the_truth(
         return Verdict::ProbeError("phase `wallet` never opened its account".into());
     };
     match wallet.unspent_notes(account).await {
-        Ok(n) => {
-            let counted = [n.sapling, n.orchard, n.ironwood, n.transparent];
+        Ok(counted) => {
             let want = WALLET.notes;
             sync_ensure!(counted == want, "unspent notes {counted:?}, expected {want:?}");
             Verdict::Satisfied

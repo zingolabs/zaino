@@ -6048,6 +6048,7 @@ dependencies = [
  "base64 0.22.1",
  "bip0039",
  "blake3",
+ "bs58",
  "bytes",
  "bytesize",
  "chrono",

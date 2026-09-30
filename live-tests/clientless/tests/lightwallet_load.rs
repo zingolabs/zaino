@@ -1,4 +1,5 @@
-//! Light-wallet load harness on regtest: every stage kind once, every answer held to zebra.
+//! Light-wallet load harness on regtest: both scenarios ramped to their ceiling and soaked, every
+//! answer held to zebra.
 //!
 //! - Proves the harness (raw client, sessions, ledger, auditor) against a real zainod + zebrad
 //!   in minutes, before a mainnet run spends days building the index it loads
@@ -12,12 +13,13 @@ use std::time::Duration;
 use anyhow::Result;
 use rstest::rstest;
 use ztest::backends::zainod::ServeCaps;
-use ztest::loadtest::load::{self, LoadRun, Plan, PodCgroup, Target};
+use ztest::loadtest::load::{self, LoadRun, Plan, PodCgroup, Scenario, Target};
+use ztest::loadtest::measure::Method;
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(180);
 
-/// Past the smoke plan's restore span (40) + reorg margin, with room to spread birthdays
+/// Past the reorg margin with room to spread birthdays (each sync then runs birthday → tip)
 const BLOCKS: u32 = 120;
 
 /// One driver pod = one client address to zainod
@@ -49,8 +51,7 @@ async fn every_answer_under_load_holds_to_zebra(#[case] pool: Pool) -> Result<()
         server: Arc::new(PodCgroup::new(indexer.pod().await?)),
         chain_name: "regtest".to_owned(),
     };
-    let plan = Plan::smoke();
-    let report = load::run(target, plan.clone(), Arc::new(LoadRun::default())).await?;
+    let report = load::run(target, Plan::smoke(), Arc::new(LoadRun::default())).await?;
     println!("{report}");
 
     assert_eq!(report.ledger.violations, 0, "{report}");
@@ -61,17 +62,26 @@ async fn every_answer_under_load_holds_to_zebra(#[case] pool: Pool) -> Result<()
     assert_eq!(report.ledger.dropped, 0, "smoke = every answer audited: {report}");
     assert!(report.ledger.audited > report.calibration.audited, "load answers audited: {report}");
 
-    assert_eq!(report.stages.len(), plan.stages.len());
-    for stage in &report.stages {
-        let offered = match stage.load {
-            load::Load::Steady { wallets, .. } => wallets,
-            load::Load::Restore { sessions, .. } => sessions,
-            load::Load::Mixed { wallets, sessions, .. } => wallets + sessions,
-        };
-        assert_eq!(stage.connected, offered, "every session held its connection: {stage}");
-        assert_eq!(stage.failures(), 0, "{stage}");
-        assert!(stage.requests_per_second() > 0.0, "{stage}");
-        assert!(stage.server_cores.is_some(), "zainod's cgroup read: {stage}");
+    let scenarios: Vec<Scenario> = report.scenarios.iter().map(|s| s.ramp.scenario).collect();
+    assert_eq!(scenarios, [Scenario::Incremental, Scenario::Fresh], "{report}");
+    for scenario in &report.scenarios {
+        let ceiling = scenario.ramp.ceiling;
+        assert_eq!(scenario.capacity, Some(ceiling), "regtest serves every level: {report}");
+        assert_eq!((scenario.stopped, scenario.soak_breach), (None, None), "{report}");
+        for level in scenario.levels.iter().chain(&scenario.soak) {
+            assert_eq!(
+                level.connected, level.wallets,
+                "every wallet held its connection: {level:#}"
+            );
+            assert!(level.server_cores.is_some(), "zainod's cgroup read: {level:#}");
+            let ok = |method| level.methods.iter().find(|m| m.method == method).map_or(0, |m| m.ok);
+            if level.scenario == Scenario::Fresh {
+                assert!(
+                    ok(Method::GetTaddressTxids) > 0,
+                    "pepper-sync's gap-limit scan: {level:#}"
+                );
+            }
+        }
     }
     Ok(())
 }
