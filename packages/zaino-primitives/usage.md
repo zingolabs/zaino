@@ -11,7 +11,7 @@ serde: formats are owned by the boundary that speaks them.
 
 | Direction | Owner |
 |---|---|
-| validator JSON-RPC reply → domain | `zaino-source-zebra-rpc` (`parse.rs`, `convert.rs`) |
+| validator JSON-RPC reply → domain | `zaino-source` (`parse.rs` for JSON, `decode.rs` for consensus bytes) |
 | domain → disk | each index crate's `Persistent*` records (`zaino-persistence`) |
 | domain → gRPC | `zaino-grpc` and the index crates, onto `zaino-proto` types |
 
@@ -38,7 +38,7 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   both transparent indexes store under),
   `BlockHash`, `TransactionId`, `Height`, `BlockRef`, `TreeSize`, `TreeRoot`,
   `Treestate`, `SubtreeRoot`, `ShieldedPool`, `BlockchainInfo` and the
-  network-upgrade types, plus the zatoshi and work families below.
+  network-upgrade types, plus the zatoshi family and `CompactDifficulty` below.
 - `types::rpc` — domain answers to `zaino-source` ports for validator queries
   (`BlockDeltas`, `BlockHeaderVerbose`, `BlockSubsidy`, `ChainTip`,
   `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`, …). Only named,
@@ -85,30 +85,16 @@ Movements recount the same coins, so their sum is its own type; coexisting
 balances cannot exceed the supply, so `sum_balances` lands back in `Zatoshis`
 and a total past the supply means double-counted input.
 
-## Work family
+## Difficulty
 
-| Type | Is |
-|---|---|
-| `SingleBlockWork` | expected work of one block, from its difficulty target |
-| `AbsoluteChainWork` | total work up to a block (validators' `chainwork`) |
-
-```rust
-let mut total = AbsoluteChainWork::genesis(block_work);
-total = total.accumulate(next_work)?; // WorkOverflow
-total = total.rollback(next_work)?;   // WorkUnderflow
-```
-
-- `AbsoluteChainWork::try_from_reported([u8; 32])` reads a validator's
-  big-endian value (`Ok(None)` when it does not track it); `to_be_bytes`
-  renders it back. `AbsoluteChainWork::new(NonZeroU128)` and
-  `SingleBlockWork::try_new(u128)` take an integer already held.
-- `CompactDifficulty` (header nBits): `try_from_bits(u32)` /
-  `try_from_be_bytes([u8; 4])` apply a validator's acceptance rules (sign bit
-  clear, target within 256 bits, non-zero) plus work fitting 128 bits, each
-  rejection its own `CompactDifficultyError` variant. `to_work()` returns the
-  precomputed `SingleBlockWork` (`floor(2^256 / (target + 1))`); `as_bits()`
-  reads the raw `u32`. The arithmetic is native; `zaino-source-zebra-rpc`'s
-  `convert` tests sweep it against Zebra.
+`CompactDifficulty` is a header's nBits once validated. `try_from_bits(u32)`
+applies a validator's acceptance rules (sign bit clear, target within 256 bits,
+non-zero) plus the target's work fitting 128 bits, and reports each rejection
+as its own `CompactDifficultyError` variant. The work
+(`floor(2^256 / (target + 1))`) is computed for that check only and never
+exposed. Zaino holds no chain-work type and does no work-based fork choice:
+the tip is agreement by hash across the configured validators
+([chainview §4](../../docs/design/chainview.md#4-quorum)).
 
 ## Byte order
 

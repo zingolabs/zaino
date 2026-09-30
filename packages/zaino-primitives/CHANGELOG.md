@@ -8,12 +8,10 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
-- `protocol` — the Zcash protocol constants (`COINBASE_MATURITY`,
-  `MAX_BLOCK_REORG_HEIGHT`, `MAX_NONFINALISED_DEPTH`), moved here from the deleted
-  `zaino-consensus`. Consuming a protocol parameter is not doing consensus, so
-  they belong in the vocabulary crate everything already depends on;
-  `zaino-source-zebra-rpc`'s `consensus_agreement` test still guards them
-  against zebra's reading.
+- `protocol` — the Zcash protocol constants (`MAX_BLOCK_REORG_HEIGHT`,
+  `MAX_BLOCK_BYTES`), moved here from the deleted `zaino-consensus`. Consuming a
+  protocol parameter is not doing consensus, so they belong in the vocabulary
+  crate everything already depends on.
 
 ### Changed
 ### Deprecated
