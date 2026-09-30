@@ -78,3 +78,28 @@ description = """
 `conversion::compact_tx_to_wire` is public, temporarily, so the indexer \
 renders mempool transactions with the same conversion as stored blocks.
 """
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+Indexer RPC fixes: `GetBlock`/`GetBlockNullifiers` no longer report the tip \
+height itself as out of range; `GetBlockNullifiers` rejects heights *below* \
+Sapling activation (the check was inverted) and names the activation height; \
+`getrawtransaction` with `verbose = 0` returns raw hex; `RawTransaction.height` \
+is `u64::MAX` for a transaction mined only on a non-best chain and 0 in the \
+mempool, per the protocol, in `GetTransaction` and `GetTaddressTransactions`; \
+`GetLatestTreeState` reads the tip's treestate by hash, so a moving tip cannot \
+mix two blocks; timeout errors name the RPC that timed out. Block and \
+transaction reads that fail now return the failure's own gRPC status \
+(`unavailable`, `internal`, `not_found`, ...) instead of `unknown`.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+Removed unused public items: `chain_index::chain_head::indexed_block` and \
+`ChainHeadConversionError`, `chain_index::wire_types::block_index_from_wire` \
+and `WireBlockIdError`, and `chain_index::source::InvalidData`.
+"""

@@ -852,9 +852,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let channel_rx = spawn_timed_stream(
                 self.timeout_channel_size(),
                 4,
-                tonic::Status::deadline_exceeded(
-                    "Error: get_mempool_stream gRPC request timed out",
-                ),
+                tonic::Status::deadline_exceeded("Error: get_subtree_roots gRPC request timed out"),
                 |channel_tx| async move {
                     for subtree in &subtrees.subtrees {
                         match service_clone

@@ -244,4 +244,86 @@ mod tests {
             .expect_err("an unparseable address is invalid");
         assert!(error.to_string().contains("validator rejected the query"));
     }
+
+    /// A vector's `u64` tree size, as the domain carries it.
+    fn vector_tree_size(size: u64) -> domain::TreeSize {
+        domain::TreeSize::try_from(size).expect("vector tree sizes fit u32")
+    }
+
+    /// The store's domain-block conversion agrees with the `zebra_chain` path
+    /// the golden vectors pin, except for chain work, which it is not given.
+    #[test]
+    fn domain_block_conversion_agrees_with_the_zebra_path() {
+        use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
+
+        let vectors = load_test_vectors().expect("test vectors load");
+        for (vector, expected) in vectors
+            .blocks
+            .iter()
+            .zip(indexed_block_chain(&vectors.blocks))
+        {
+            let block = zaino_convert_zebra::block_from_zebra(
+                &vector.zebra_block,
+                domain::ChainMetadata::new(
+                    vector_tree_size(vector.sapling_tree_size),
+                    vector_tree_size(vector.orchard_tree_size),
+                    domain::TreeSize::ZERO,
+                ),
+            )
+            .expect("vector block converts to the domain shape");
+            let tree_roots = domain::TreeRoots {
+                sapling: Some(domain::TreeRootInfo {
+                    root: <[u8; 32]>::from(vector.sapling_root).into(),
+                    size: vector_tree_size(vector.sapling_tree_size),
+                }),
+                orchard: Some(domain::TreeRootInfo {
+                    root: <[u8; 32]>::from(vector.orchard_root).into(),
+                    size: vector_tree_size(vector.orchard_tree_size),
+                }),
+                ironwood: None,
+            };
+
+            let actual: IndexedBlock =
+                zaino_chain_store_zainodb::conversion::indexed_block(&block, &tree_roots, None)
+                    .expect("conversion succeeds");
+
+            assert_eq!(actual.context.index, expected.context.index, "block index");
+            assert_eq!(actual.context.parent_hash, expected.context.parent_hash);
+            assert_eq!(actual.context.chainwork, None);
+            assert_eq!(actual.data, expected.data, "block header data");
+            assert_eq!(actual.commitment_tree_data, expected.commitment_tree_data);
+            assert_eq!(actual.transactions.len(), expected.transactions.len());
+            for (actual_tx, expected_tx) in actual.transactions.iter().zip(expected.transactions())
+            {
+                assert_eq!(actual_tx.transparent(), expected_tx.transparent());
+                assert_eq!(actual_tx.index(), expected_tx.index(), "transaction index");
+                assert_eq!(actual_tx.txid(), expected_tx.txid(), "txid");
+                assert_eq!(
+                    actual_tx.balances(),
+                    expected_tx.balances(),
+                    "pool balances"
+                );
+            }
+        }
+    }
+
+    /// Every coinbase carries the null prevout the stored form keeps, exactly
+    /// once, and no other transaction carries one.
+    #[test]
+    fn the_coinbase_null_prevout_is_present_exactly_once() {
+        use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
+
+        let vectors = load_test_vectors().expect("test vectors load");
+        for expected in indexed_block_chain(&vectors.blocks) {
+            for transaction in expected.transactions() {
+                let nulls = transaction
+                    .transparent()
+                    .inputs()
+                    .iter()
+                    .filter(|input| **input == TxInCompact::null_prevout())
+                    .count();
+                assert_eq!(nulls, usize::from(transaction.index() == 0));
+            }
+        }
+    }
 }

@@ -427,15 +427,6 @@ impl From<zaino_chain_head::ChainHeadError> for ChainIndexError {
     }
 }
 
-/// A chain-head block that cannot be expressed in this crate's shape means the
-/// two disagree about a block both are holding — an internal inconsistency,
-/// not anything the caller did.
-impl From<crate::chain_index::chain_head::ChainHeadConversionError> for ChainIndexError {
-    fn from(value: crate::chain_index::chain_head::ChainHeadConversionError) -> Self {
-        ChainIndexError::internal(format!("chain head block is unusable: {value}"))
-    }
-}
-
 /// An error occurred during a ChainIndex sync iteration.
 ///
 /// One variant, because the loop now drives one thing: the finalised state.

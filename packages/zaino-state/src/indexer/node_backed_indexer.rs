@@ -435,28 +435,34 @@ impl<
         })
     }
 
-    /// A transaction's bytes, and its height if it is mined on the best chain.
-    async fn transaction_bytes_and_height(
+    /// A transaction as the light-wallet `RawTransaction`: its best-chain
+    /// height, `u64::MAX` if mined only on a non-best chain, or 0 in the mempool.
+    async fn light_wallet_transaction(
         &self,
         snapshot: &crate::chain_index::chain_view::ChainIndexSnapshot<Source>,
         txid_hex: &str,
-    ) -> Result<(Vec<u8>, Option<u64>), NodeBackedIndexerServiceError> {
+    ) -> Result<RawTransaction, NodeBackedIndexerServiceError> {
         let txid = parse_txid(txid_hex)?;
         let (bytes, _branch_id) = self
             .indexer
             .get_raw_transaction(snapshot, &txid)
             .await?
             .ok_or_else(no_such_transaction)?;
-        let height = match self
-            .indexer
-            .get_transaction_status(snapshot, &txid)
-            .await?
-            .0
-        {
-            Some(types::BestChainLocation::Block(_, height)) => Some(u64::from(height.0)),
-            _ => None,
+        let (best, non_best) = self.indexer.get_transaction_status(snapshot, &txid).await?;
+        let height = match best {
+            Some(types::BestChainLocation::Block(_, height)) => u64::from(height.0),
+            _ if non_best
+                .iter()
+                .any(|location| matches!(location, types::NonBestChainLocation::Block(..))) =>
+            {
+                u64::MAX
+            }
+            _ => 0,
         };
-        Ok((bytes, height))
+        Ok(RawTransaction {
+            data: bytes::Bytes::from(bytes),
+            height,
+        })
     }
 
     /// Shared body of `get_block` and `get_block_nullifiers`.
@@ -479,7 +485,7 @@ impl<
                     Ok(Some(height)) => height.0,
                     Ok(None) => {
                         return Err(status(tonic::Status::invalid_argument(
-                            "Error: Invalid hash and/or height out of range. Hash not founf in chain",
+                            "Error: Invalid hash and/or height out of range. Hash not found in chain",
                         )));
                     }
                     Err(_e) => {
@@ -502,28 +508,30 @@ impl<
         let failure = match block {
             Ok(Some(block)) if nullifiers_only => return Ok(compact_block_to_nullifiers(block)),
             Ok(Some(block)) => return Ok(block),
-            Ok(None) => "Error: Failed to retrieve block from state.".to_string(),
-            Err(e) => format!("Error: Failed to retrieve block from node. Server Error: {e}"),
+            Ok(None) => status(tonic::Status::not_found(
+                "Error: Failed to retrieve block from state.",
+            )),
+            Err(e) => NodeBackedIndexerServiceError::from(e),
         };
 
         let chain_height = u32::from(snapshot.best_tip().height);
-        Err(status(match hash_or_height {
-            HashOrHeight::Height(Height(height)) if height >= chain_height => {
-                tonic::Status::out_of_range(format!(
+        let sapling_activation = self.data.network().sapling_activation_height();
+        Err(match hash_or_height {
+            HashOrHeight::Height(Height(height)) if height > chain_height => {
+                status(tonic::Status::out_of_range(format!(
                     "Error: Height out of range [{hash_or_height}]. Height requested \
                     is greater than the best chain tip [{chain_height}].",
-                ))
+                )))
             }
-            HashOrHeight::Height(height)
-                if nullifiers_only && height > self.data.network().sapling_activation_height() =>
-            {
-                tonic::Status::out_of_range(format!(
+            HashOrHeight::Height(height) if nullifiers_only && height < sapling_activation => {
+                status(tonic::Status::out_of_range(format!(
                     "Error: Height out of range [{hash_or_height}]. Height requested \
-                    is below sapling activation height [{chain_height}].",
-                ))
+                    is below sapling activation height [{}].",
+                    sapling_activation.0,
+                )))
             }
-            _otherwise => tonic::Status::unknown(failure),
-        }))
+            _otherwise => failure,
+        })
     }
 
     /// Shared body of `get_block_range` and `get_block_range_nullifiers`: streams the
@@ -551,7 +559,7 @@ impl<
         Ok(CompactBlockStream::new(super::spawn_timed_stream(
             self.timeout_channel_size(),
             4,
-            tonic::Status::deadline_exceeded("Error: get_block_range gRPC request timed out."),
+            tonic::Status::deadline_exceeded(format!("Error: {rpc_name} gRPC request timed out.")),
             |channel_tx| async move {
                 let stream = indexer
                     .get_compact_block_stream(
@@ -570,12 +578,15 @@ impl<
                         }
                         return;
                     }
-                    // A descending range whose start is above the tip.
-                    Ok(None) => tonic::Status::out_of_range(format!(
-                        "Error: Height out of range [{start}]. Height requested is greater \
-                        than the best chain tip [{chain_height}].",
-                    )),
-                    Err(e) => tonic::Status::unknown(e.to_string()),
+                    Err(_) | Ok(None) if start > chain_height || end > chain_height => {
+                        let offending_height = if start > chain_height { start } else { end };
+                        tonic::Status::out_of_range(format!(
+                            "Error: Height out of range [{offending_height}]. Height requested \
+                            is greater than the best chain tip [{chain_height}].",
+                        ))
+                    }
+                    Ok(None) => tonic::Status::not_found("Error: Failed to retrieve blocks."),
+                    Err(e) => NodeBackedIndexerServiceError::from(e).into(),
                 };
                 if let Err(e) = channel_tx.send(Err(failure)).await {
                     warn!(%e, "{rpc_name} channel closed unexpectedly");
@@ -1034,7 +1045,7 @@ impl<
             return Err(no_such_transaction());
         };
 
-        if verbose.is_none() {
+        if verbose.unwrap_or(0) == 0 {
             return Ok(GetRawTransaction::Raw(
                 zebra_chain::transaction::SerializedTransaction::from(serialized_transaction),
             ));
@@ -1075,11 +1086,13 @@ impl<
                         ),
                     );
 
-                    let block_time = self
-                        .indexer
-                        .get_indexed_block_by_hash(&snapshot, &block_hash)
-                        .await?
-                        .and_then(|block| chrono::DateTime::from_timestamp(block.data().time(), 0));
+                    let block_time = zaino_chain::BlockRead::block_header(
+                        &snapshot,
+                        zaino_chain::BlockId::Hash(types::domain_hash(block_hash)),
+                    )
+                    .await
+                    .map_err(crate::error::ChainIndexError::from)?
+                    .and_then(|header| chrono::DateTime::from_timestamp(i64::from(header.time), 0));
 
                     (
                         Some(zebra_chain::block::Height::from(height)),
@@ -1276,14 +1289,7 @@ impl<
         }
         let hash_hex = hex::encode(hash.iter().rev().copied().collect::<Vec<u8>>());
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let (data, height) = self
-            .transaction_bytes_and_height(&snapshot, &hash_hex)
-            .await?;
-        // `0` is the wire sentinel for an unmined transaction.
-        Ok(RawTransaction {
-            data: bytes::Bytes::from(data),
-            height: height.unwrap_or(0),
-        })
+        self.light_wallet_transaction(&snapshot, &hash_hex).await
     }
 
     /// Submit the given transaction to the Zcash network
@@ -1307,22 +1313,16 @@ impl<
         let txids = self.get_taddress_txids_helper(request).await?;
         let service = self.clone();
         let snapshot = self.indexer.snapshot_nonfinalized_state();
-        // An unmined transaction is reported at the chain tip.
-        let chain_height = u64::from(u32::from(snapshot.best_tip().height));
         Ok(RawTransactionStream::new(super::spawn_timed_stream(
             self.timeout_channel_size(),
             4,
-            tonic::Status::internal("Error: get_taddress_txids gRPC request timed out"),
+            tonic::Status::internal("Error: get_taddress_transactions gRPC request timed out"),
             |transmitter| async move {
                 for txid in txids {
                     let transaction = service
-                        .transaction_bytes_and_height(&snapshot, &txid)
+                        .light_wallet_transaction(&snapshot, &txid)
                         .await
-                        .map(|(data, height)| RawTransaction {
-                            data: bytes::Bytes::from(data),
-                            height: height.unwrap_or(chain_height),
-                        })
-                        .map_err(|e| tonic::Status::unknown(e.to_string()));
+                        .map_err(tonic::Status::from);
                     if transmitter.send(transaction).await.is_err() {
                         break;
                     }
@@ -1580,12 +1580,13 @@ impl<
 
     /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
     async fn get_latest_tree_state(&self) -> Result<TreeState, Self::Error> {
-        let latest_block = self.chain_height().await?;
-        self.get_tree_state(BlockId {
-            height: latest_block.0 as u64,
-            hash: vec![],
-        })
-        .await
+        // By hash, so the treestate is the tip's even if the chain moves.
+        let tip = self.indexer.snapshot_nonfinalized_state().best_tip();
+        let treestate = self.z_get_treestate(tip.hash.to_string()).await?;
+        Ok(super::tree_state_from_treestate_response(
+            self.data.network().bip70_network_name(),
+            treestate,
+        ))
     }
 
     #[allow(deprecated)]
@@ -1633,7 +1634,9 @@ impl<
         Ok(UtxoReplyStream::new(super::spawn_timed_stream(
             self.timeout_channel_size(),
             4,
-            tonic::Status::deadline_exceeded("Error: get_mempool_stream gRPC request timed out"),
+            tonic::Status::deadline_exceeded(
+                "Error: get_address_utxos_stream gRPC request timed out",
+            ),
             |channel_tx| async move {
                 for reply in requested_utxos(utxos, request.start_height, request.max_entries)
                     .map(utxo_reply)
