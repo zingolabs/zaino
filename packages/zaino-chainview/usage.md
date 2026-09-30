@@ -11,12 +11,14 @@ restart loses nothing one poll round does not restore.
 ```rust
 use std::sync::Arc;
 use zaino_chainview::{ChainView, Endpoint};
+use zaino_primitives::types::ReorgDepth;
 
 # fn wire<S: zaino_chainview::EndpointSource>(source: Arc<S>) -> Result<(), Box<dyn std::error::Error>> {
-let (view, pollers) = ChainView::new(vec![Endpoint {
-    address: "127.0.0.1:8232".to_owned(),
-    source,
-}])?;
+// depth = each endpoint's ancestry window (zainod passes `fetch.finalised_depth`)
+let (view, pollers) = ChainView::new(
+    vec![Endpoint { address: "127.0.0.1:8232".to_owned(), source }],
+    ReorgDepth::CONSENSUS,
+)?;
 // each poller: `tokio::spawn(poller.run(cancel.child_token()))`
 // `view.broadcast(raw)` relays; `view.subscriber()` = the read handle
 let _ = (view, pollers);

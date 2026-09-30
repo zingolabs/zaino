@@ -12,7 +12,7 @@ use tracing::info;
 use zaino_chainview::{ChainView, EndpointPoller};
 use zaino_grpc::{ChainViewHandles, ProjectCompact};
 use zaino_index_compact_block::compact_tx;
-use zaino_primitives::types::Zatoshis;
+use zaino_primitives::types::{ReorgDepth, Zatoshis};
 use zaino_proto::proto::compact_formats::CompactTx;
 use zaino_source::{decode_transaction, ZebraRpcAdapter};
 
@@ -40,7 +40,7 @@ pub(crate) async fn connect(
         endpoints.push(endpoint(peer, Arc::new(dial(peer).await?)));
     }
     let sources = endpoints.iter().map(|e| Arc::clone(&e.source)).collect();
-    let (view, pollers) = ChainView::new(endpoints)?;
+    let (view, pollers) = ChainView::new(endpoints, ReorgDepth::new(config.fetch.finalised_depth))?;
 
     let quorum = view.subscriber().quorum();
     info!(endpoints = quorum.configured(), threshold = quorum.threshold(), "Quorum configured");

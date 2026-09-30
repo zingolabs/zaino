@@ -8,12 +8,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use zaino_primitives::types::PeerInfo;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth, TransactionId, Zatoshis};
 use zaino_source::{
-    FailureMode, GetChainTip, GetChainTipError, GetMempoolListing, GetMempoolListingError,
-    GetMempoolSourceTip, GetPeerInfo, GetPeerInfoError, GetRawMempoolTransaction,
-    GetRawMempoolTransactionError, MempoolListed, NonDomainError, QueryError, SendRawTransaction,
-    SendRawTransactionError, SourceTip,
+    BlockLink, FailureMode, GetBlockLink, GetBlockLinkError, GetChainTip, GetChainTipError,
+    GetMempoolListing, GetMempoolListingError, GetMempoolSourceTip, GetPeerInfo, GetPeerInfoError,
+    GetRawMempoolTransaction, GetRawMempoolTransactionError, MempoolListed, NonDomainError,
+    QueryError, SendRawTransaction, SendRawTransactionError, SourceTip,
 };
 
 use crate::endpoint::Polled;
@@ -21,9 +21,12 @@ use crate::endpoints::EndpointIndex;
 use crate::{BroadcastError, ChainView, Endpoint, EndpointState, MempoolEntry};
 
 /// What one validator would answer, mutated between ticks by the test.
+///
+/// - Best chain = `tip`, then `branch` overrides, then the shared trunk (`trunk(h)`)
 #[derive(Default)]
 struct FakeState {
     tip: Option<BlockRef>,
+    branch: BTreeMap<Height, BlockHash>,
     not_ready: bool,
     mempool_inactive: bool,
     /// `None` = at the tip it reports
@@ -31,9 +34,28 @@ struct FakeState {
     listed: BTreeSet<TransactionId>,
     bytes: BTreeMap<TransactionId, Vec<u8>>,
     peers: Vec<String>,
+    /// Next header answers come from this chain instead (the node reorged after its tip read)
+    links_from: Option<BTreeMap<Height, BlockHash>>,
+    links_served: usize,
     /// `None` accepts and echoes the txid back; `Some` is this node's answer to a relay.
     relay: Option<Result<(), SendRawTransactionError>>,
     relay_unreachable: bool,
+}
+
+/// Every fake's default ancestry: one chain all of them share below their own blocks
+fn trunk(height: Height) -> BlockHash {
+    let mut hash = [0xee; 32];
+    hash[..4].copy_from_slice(&u32::from(height).to_le_bytes());
+    BlockHash::from(hash)
+}
+
+impl FakeState {
+    fn hash_at(&self, height: Height) -> BlockHash {
+        match self.tip {
+            Some(tip) if tip.height == height => tip.hash,
+            _ => self.branch.get(&height).copied().unwrap_or_else(|| trunk(height)),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -42,6 +64,26 @@ struct FakeValidator(Mutex<FakeState>);
 impl FakeValidator {
     fn edit(&self, edit: impl FnOnce(&mut FakeState)) {
         edit(&mut self.0.lock().expect("fake validator mutex poisoned"))
+    }
+}
+
+impl GetBlockLink for FakeValidator {
+    async fn get_block_link(
+        &self,
+        height: Height,
+    ) -> Result<BlockLink, QueryError<GetBlockLinkError>> {
+        let mut fake = self.0.lock().expect("fake validator mutex poisoned");
+        fake.links_served += 1;
+        let tip = fake.tip.map_or(Height::GENESIS, |tip| tip.height);
+        if height > tip {
+            return Err(QueryError::Domain(GetBlockLinkError::HeightNotFound(height)));
+        }
+        let at = |h| match &fake.links_from {
+            Some(moved) => moved.get(&h).copied().unwrap_or_else(|| trunk(h)),
+            None => fake.hash_at(h),
+        };
+        let prev_hash = height.checked_sub(1).map_or(BlockHash::ZERO, at);
+        Ok(BlockLink { hash: at(height), prev_hash })
     }
 }
 
@@ -106,6 +148,11 @@ impl GetPeerInfo for FakeValidator {
     }
 }
 
+/// Test windows: 3 ancestors below each tip
+fn depth() -> ReorgDepth {
+    ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"))
+}
+
 impl SendRawTransaction for FakeValidator {
     async fn send_raw_transaction(
         &self,
@@ -145,10 +192,10 @@ async fn a_single_endpoint_tail_sends_its_snapshot_then_each_arrival_once_until_
         .collect();
     });
 
-    let (view, pollers) = ChainView::new(vec![Endpoint {
-        address: "one:8232".to_owned(),
-        source: Arc::clone(&validator),
-    }])
+    let (view, pollers) = ChainView::new(
+        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
+        depth(),
+    )
     .expect("one endpoint is a valid set");
     let reader = view.subscriber();
 
@@ -229,10 +276,10 @@ async fn a_catching_up_validator_votes_its_tip_with_no_mempool() {
         fake.bytes = [(TransactionId::from([1u8; 32]), vec![1u8; 8])].into_iter().collect();
     });
 
-    let (view, pollers) = ChainView::new(vec![Endpoint {
-        address: "one:8232".to_owned(),
-        source: Arc::clone(&validator),
-    }])
+    let (view, pollers) = ChainView::new(
+        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
+        depth(),
+    )
     .expect("one endpoint is a valid set");
     let reader = view.subscriber();
     let tip = reader.subscribe_tip();
@@ -303,6 +350,7 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
                 source: Arc::clone(source),
             })
             .collect(),
+        depth(),
     )
     .expect("three endpoints is a valid set");
     let reader = view.subscriber();
@@ -386,6 +434,7 @@ async fn a_mixed_broadcast_succeeds_and_ours_is_servable_before_quorum() {
                 source: Arc::clone(source),
             })
             .collect(),
+        depth(),
     )
     .expect("three endpoints is a valid set");
     let reader = view.subscriber();
@@ -435,4 +484,60 @@ async fn a_mixed_broadcast_succeeds_and_ours_is_servable_before_quorum() {
     }
     let sent = view.broadcast(vec![8u8; 8]).await;
     assert!(matches!(sent, Err(BroadcastError::Unreachable { attempted: 3, .. })), "{sent:?}");
+}
+
+/// - Reorg between tip read and header reads → last chain kept, next tick walks to the fork
+/// - Jump past the window → full rebuild
+#[tokio::test]
+async fn each_block_costs_one_header_and_a_mid_walk_reorg_keeps_the_last_chain() {
+    let validator = Arc::new(FakeValidator::default());
+    let at = |h: u32| {
+        let height = Height::try_from(h).expect("h");
+        BlockRef { hash: trunk(height), height }
+    };
+    validator.edit(|fake| fake.tip = Some(at(10)));
+    let (view, pollers) = ChainView::new(
+        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
+        depth(),
+    )
+    .expect("one endpoint is a valid set");
+    let reader = view.subscriber();
+    let served = || validator.0.lock().expect("fake validator mutex poisoned").links_served;
+    let voted = || reader.current().endpoints()[0].tip();
+
+    pollers[0].tick().await.expect("first poll");
+    assert_eq!((voted(), served()), (Some(at(10)), 3), "first build = depth headers");
+    validator.edit(|fake| fake.tip = Some(at(11)));
+    pollers[0].tick().await.expect("next block");
+    pollers[0].tick().await.expect("same block");
+    assert_eq!((voted(), served()), (Some(at(11)), 4), "one header, then none");
+
+    let fork_12 = BlockRef { hash: BlockHash::from([0xab; 32]), height: at(12).height };
+    let fork_11 = BlockHash::from([0xac; 32]);
+    validator.edit(|fake| {
+        fake.tip = Some(fork_12);
+        fake.branch.insert(at(11).height, fork_11);
+        fake.links_from = Some([(at(12).height, BlockHash::from([0xad; 32]))].into());
+    });
+    let raced = pollers[0].tick().await.expect("a race is not a failure");
+    assert_eq!(raced, Polled::Listed(0));
+    let pinned = reader.current();
+    let meta = &pinned.endpoints()[0];
+    assert_eq!((meta.tip(), meta.state), (Some(at(11)), EndpointState::Live), "last chain kept");
+
+    validator.edit(|fake| fake.links_from = None);
+    let before = served();
+    pollers[0].tick().await.expect("settled");
+    let cost = served() - before;
+    assert_eq!(voted(), Some(fork_12));
+    assert!((2..=3).contains(&cost), "12', then 11' joins (10 may ride its batch): {cost}");
+    assert_eq!(reader.current().tip().map(|tip| tip.block), Some(fork_12));
+
+    validator.edit(|fake| {
+        fake.branch.clear();
+        fake.tip = Some(at(40));
+    });
+    let before = served();
+    pollers[0].tick().await.expect("jump");
+    assert_eq!((voted(), served() - before), (Some(at(40)), 3), "past the window = a rebuild");
 }

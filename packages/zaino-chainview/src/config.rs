@@ -1,4 +1,4 @@
-//! Poll cadence, retry ladder
+//! Poll cadence, retry ladder, ancestry fetch
 
 use std::time::Duration;
 
@@ -18,3 +18,9 @@ pub(crate) const PEER_REFRESH: Duration = Duration::from_secs(60);
 
 /// Delay between "catching up" warnings for one endpoint (polled every `POLL_INTERVAL`)
 pub(crate) const CATCHING_UP_WARN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// `getblockheader` calls in flight per endpoint (first build = `depth` of them, once)
+pub(crate) const LINK_FETCH_CONCURRENCY: usize = 16;
+
+/// Heights fetched per descent step below the held tip (a reorg rarely reaches past one batch)
+pub(crate) const LINK_BATCH: u32 = 16;

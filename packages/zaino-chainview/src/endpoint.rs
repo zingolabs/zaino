@@ -1,8 +1,9 @@
 //! One validator's poller: read, diff, report.
 //!
-//! One tick = readiness, tip, listing, bytes for what *this endpoint* added, one report into the
-//! fold. The diff is against this poller's own previous listing, so it reports `O(change)`
-//! rather than a whole mempool per endpoint per tick.
+//! One tick = readiness, tip + its ancestry (headers only, `O(new blocks)`), peers every
+//! `PEER_REFRESH`, listing, bytes for what *this endpoint* added, one report into the fold. The
+//! diff is against this poller's own previous listing, so it reports `O(change)` rather than a
+//! whole mempool per endpoint per tick.
 //!
 //! Each poller owns its interval, backoff and failure count, so a slow or dead validator
 //! degrades alone (`docs/design/chainview.md` §2).
@@ -10,7 +11,7 @@
 //! # A transaction leaves one endpoint by exactly one route
 //!
 //! Mined or evicted, the validator stops listing it, so it falls out of the diff as a removal.
-//! There is no second removal path keyed on blocks — the poller never looks at a block — and a
+//! There is no second removal path keyed on blocks — the poller never reads a block body — and a
 //! new tip does *not* clear the listing: an unmined transaction survives the block that did not
 //! contain it, and re-fetching its bytes would be work for nothing.
 
@@ -20,20 +21,23 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
-use zaino_primitives::types::{BlockRef, Height, TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockRef, Height, ReorgDepth, TransactionId, Zatoshis};
 use zaino_source::{
-    GetChainTipError, GetMempoolListingError, GetRawMempoolTransactionError, QueryError,
+    GetBlockLinkError, GetChainTipError, GetMempoolListingError, GetRawMempoolTransactionError,
+    QueryError,
 };
 
+use crate::chain::{EndpointChain, Walk};
 use crate::config::{
-    CATCHING_UP_WARN_INTERVAL, INITIAL_BACKOFF, MAX_BACKOFF, MAX_CONSECUTIVE_FAILURES,
-    PEER_REFRESH, POLL_INTERVAL,
+    CATCHING_UP_WARN_INTERVAL, INITIAL_BACKOFF, LINK_BATCH, LINK_FETCH_CONCURRENCY, MAX_BACKOFF,
+    MAX_CONSECUTIVE_FAILURES, PEER_REFRESH, POLL_INTERVAL,
 };
 use crate::endpoints::EndpointIndex;
 use crate::error::EndpointPollError;
-use crate::fold::{ChainViewCore, EndpointReport, Observation, Sighted};
+use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};
 use crate::ports::EndpointSource;
 
 /// What one tick found
@@ -57,8 +61,11 @@ pub struct EndpointPoller<S: EndpointSource> {
     address: String,
     source: Arc<S>,
     view: Arc<ChainViewCore>,
+    depth: ReorgDepth,
     /// What this endpoint listed last tick — the diff's left side.
     listed: std::sync::Mutex<BTreeSet<TransactionId>>,
+    /// Its chain as of the last completed walk — the next walk's join point
+    chain: std::sync::Mutex<Option<EndpointChain>>,
     peers_read_at: std::sync::Mutex<Option<Instant>>,
 }
 
@@ -77,13 +84,16 @@ impl<S: EndpointSource> EndpointPoller<S> {
         address: String,
         source: Arc<S>,
         view: Arc<ChainViewCore>,
+        depth: ReorgDepth,
     ) -> Self {
         Self {
             index,
             address,
             source,
             view,
+            depth,
             listed: std::sync::Mutex::new(BTreeSet::new()),
+            chain: std::sync::Mutex::new(None),
             peers_read_at: std::sync::Mutex::new(None),
         }
     }
@@ -112,6 +122,9 @@ impl<S: EndpointSource> EndpointPoller<S> {
             Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
         };
         let tip = BlockRef { hash: source.hash, height: source.height };
+        let chain = self.follow(tip).await?;
+        let reading =
+            |started: Instant, peers| Reading { chain, latency: started.elapsed(), peers };
 
         let listing: BTreeMap<TransactionId, Zatoshis> =
             match self.source.get_mempool_listing().await {
@@ -120,8 +133,7 @@ impl<S: EndpointSource> EndpointPoller<S> {
                     return Err(EndpointPollError::Unavailable)
                 }
                 Err(QueryError::Domain(GetMempoolListingError::Inactive)) => {
-                    let latency = started.elapsed();
-                    self.view.apply(self.index, EndpointReport::CatchingUp { tip, latency });
+                    self.view.apply(self.index, EndpointReport::CatchingUp(reading(started, None)));
                     self.listed.lock().expect("endpoint listing mutex poisoned").clear();
                     return Ok(Polled::CatchingUp { tip, network: source.estimated_height });
                 }
@@ -156,16 +168,9 @@ impl<S: EndpointSource> EndpointPoller<S> {
         }
 
         let peers = self.read_peers().await?;
-
         let unadmitted = self.view.apply(
             self.index,
-            EndpointReport::Observed(Observation {
-                tip,
-                added,
-                removed,
-                latency: started.elapsed(),
-                peers,
-            }),
+            EndpointReport::Observed(reading(started, peers), Listing { added, removed }),
         );
         for txid in unadmitted {
             admitted.remove(&txid);
@@ -174,6 +179,53 @@ impl<S: EndpointSource> EndpointPoller<S> {
         let size = admitted.len();
         *self.listed.lock().expect("endpoint listing mutex poisoned") = admitted;
         Ok(Polled::Listed(size))
+    }
+
+    /// The endpoint's chain down from `tip`, walked onto the one held last tick
+    ///
+    /// - `getblockheader` by height, [`LINK_FETCH_CONCURRENCY`] in flight, each checked against
+    ///   its child's `prev_hash`
+    /// - endpoint reorged mid-walk → last tick's chain kept (a race, not a failure)
+    async fn follow(&self, tip: BlockRef) -> Result<Option<EndpointChain>, EndpointPollError> {
+        let held = self.chain.lock().expect("endpoint chain mutex poisoned").clone();
+        let mut walk = Walk::new(tip, self.depth);
+        loop {
+            if let Some(chain) = walk.finish(held.as_ref()) {
+                *self.chain.lock().expect("endpoint chain mutex poisoned") = Some(chain.clone());
+                return Ok(Some(chain));
+            }
+            let lowest = match held.as_ref().map(|held| held.tip().height.next()) {
+                // above the held tip: every height new
+                Some(above) if above <= walk.next() => above,
+                // under the held tip (a reorg): a batch at a time until it joins
+                Some(_) => walk.next().saturating_sub(LINK_BATCH - 1),
+                None => walk.lowest(),
+            }
+            .max(walk.lowest());
+            let heights: Vec<Height> = lowest.up_to(walk.next()).collect();
+            let mut links = futures::stream::iter(heights.into_iter().rev())
+                .map(|height| self.source.get_block_link(height))
+                .buffered(LINK_FETCH_CONCURRENCY);
+            while let Some(link) = links.next().await {
+                let link = match link {
+                    Ok(link) => link,
+                    Err(QueryError::Domain(GetBlockLinkError::HeightNotFound(height))) => {
+                        debug!(?height, "Validator's tip retreated mid-walk, chain kept");
+                        return Ok(held);
+                    }
+                    Err(QueryError::NonDomain(cause)) => {
+                        return Err(EndpointPollError::Source(cause))
+                    }
+                };
+                if walk.descend(link).is_err() {
+                    debug!(?tip, "Validator reorged mid-walk, chain kept");
+                    return Ok(held);
+                }
+                if walk.finish(held.as_ref()).is_some() {
+                    break;
+                }
+            }
+        }
     }
 
     /// `getpeerinfo` at its own slower cadence (a node refusing its peer list costs the view

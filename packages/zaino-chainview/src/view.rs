@@ -7,7 +7,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use tracing::warn;
-use zaino_primitives::types::TransactionId;
+use zaino_primitives::types::{ReorgDepth, TransactionId};
 use zaino_source::{NonDomainError, QueryError, SendRawTransactionError};
 
 use crate::endpoint::EndpointPoller;
@@ -43,7 +43,13 @@ impl<S: EndpointSource> std::fmt::Debug for ChainView<S> {
 
 impl<S: EndpointSource> ChainView<S> {
     /// The view + one runnable poller per endpoint (index = position in `endpoints`)
-    pub fn new(endpoints: Vec<Endpoint<S>>) -> Result<(Self, Vec<EndpointPoller<S>>), ConfigError> {
+    ///
+    /// - `depth` = each endpoint's ancestry window (sync's `finalised_depth`: split deeper than
+    ///   the non-final span = no common block → below quorum)
+    pub fn new(
+        endpoints: Vec<Endpoint<S>>,
+        depth: ReorgDepth,
+    ) -> Result<(Self, Vec<EndpointPoller<S>>), ConfigError> {
         let configured = NonZeroUsize::new(endpoints.len()).ok_or(ConfigError::NoEndpoints)?;
         if configured.get() > crate::EndpointSet::MAX {
             return Err(ConfigError::TooManyEndpoints { count: configured.get() });
@@ -66,6 +72,7 @@ impl<S: EndpointSource> ChainView<S> {
                 endpoint.address,
                 endpoint.source,
                 Arc::clone(&core),
+                depth,
             ));
         }
 

@@ -3060,6 +3060,28 @@ mod tests {
         }
     }
 
+    /// Block `h` = hash `[h; 32]`, parent `[h − 1; 32]`, up to the tip
+    impl zaino_source::GetBlockLink for FakeNode {
+        async fn get_block_link(
+            &self,
+            height: Height,
+        ) -> Result<
+            zaino_source::BlockLink,
+            zaino_source::QueryError<zaino_source::GetBlockLinkError>,
+        > {
+            let tip = self.0.lock().expect("fake node").tip;
+            match u8::try_from(u32::from(height)) {
+                Ok(at) if at <= tip => Ok(zaino_source::BlockLink {
+                    hash: [at; 32].into(),
+                    prev_hash: [at.wrapping_sub(1); 32].into(),
+                }),
+                _ => Err(zaino_source::QueryError::Domain(
+                    zaino_source::GetBlockLinkError::HeightNotFound(height),
+                )),
+            }
+        }
+    }
+
     impl zaino_source::GetMempoolListing for FakeNode {
         async fn get_mempool_listing(
             &self,
@@ -3138,10 +3160,13 @@ mod tests {
         use zaino_proto::proto::service as proto;
 
         let node = std::sync::Arc::new(FakeNode::default());
-        let (view, pollers) = zaino_chainview::ChainView::new(vec![zaino_chainview::Endpoint {
-            address: "node:8232".to_owned(),
-            source: std::sync::Arc::clone(&node),
-        }])
+        let (view, pollers) = zaino_chainview::ChainView::new(
+            vec![zaino_chainview::Endpoint {
+                address: "node:8232".to_owned(),
+                source: std::sync::Arc::clone(&node),
+            }],
+            zaino_primitives::types::ReorgDepth::CONSENSUS,
+        )
         .expect("one endpoint");
         let reader = view.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();

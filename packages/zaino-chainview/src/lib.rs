@@ -1,6 +1,7 @@
 #![doc = include_str!("../usage.md")]
 #![forbid(unsafe_code)]
 
+mod chain;
 mod config;
 mod endpoint;
 mod endpoints;

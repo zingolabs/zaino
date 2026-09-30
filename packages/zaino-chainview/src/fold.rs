@@ -12,6 +12,7 @@ use imbl::Vector;
 use tokio::sync::watch;
 use zaino_primitives::types::{BlockRef, TransactionId, Zatoshis};
 
+use crate::chain::EndpointChain;
 use crate::endpoints::{Agreement, EndpointIndex, EndpointSet, EndpointState, ValidatorMetadata};
 use crate::quorum::{Quorum, QuorumTip};
 use crate::snapshot::{ChainViewSnapshot, Sighting};
@@ -27,28 +28,31 @@ pub(crate) struct Sighted {
     pub(crate) fee: Zatoshis,
 }
 
-/// One endpoint's poll-to-poll change.
+/// What every answering tick read, mempool on or off
 #[derive(Debug, Clone)]
-pub(crate) struct Observation {
-    pub(crate) tip: BlockRef,
-    pub(crate) added: Vec<Sighted>,
-    pub(crate) removed: Vec<TransactionId>,
+pub(crate) struct Reading {
+    /// Poller's held chain after this tick's walk (`None` until one completes)
+    pub(crate) chain: Option<EndpointChain>,
     pub(crate) latency: Duration,
     /// `Some` only on a peer-refresh tick
     pub(crate) peers: Option<Vec<String>>,
 }
 
+/// One endpoint's poll-to-poll mempool change
+#[derive(Debug, Clone)]
+pub(crate) struct Listing {
+    pub(crate) added: Vec<Sighted>,
+    pub(crate) removed: Vec<TransactionId>,
+}
+
 /// What one poller has to say this tick.
 #[derive(Debug, Clone)]
 pub(crate) enum EndpointReport {
-    Observed(Observation),
+    Observed(Reading, Listing),
     /// Node says it is not ready to report a tip: polled, never counted.
     Syncing,
-    /// Tip counted, mempool off: sightings retracted
-    CatchingUp {
-        tip: BlockRef,
-        latency: Duration,
-    },
+    /// Chain counted, mempool off: sightings retracted
+    CatchingUp(Reading),
     /// Transport failure, still on the ladder (last observation retained, no vote)
     Failed {
         consecutive: u32,
@@ -128,23 +132,16 @@ impl ChainViewCore {
         };
 
         match report {
-            EndpointReport::Observed(observation) => {
+            EndpointReport::Observed(reading, listing) => {
                 meta.state = EndpointState::Live;
-                meta.failures = 0;
-                meta.tip = Some(observation.tip);
-                meta.observed_at = Some(Instant::now());
-                meta.latency.observe(observation.latency);
-                if let Some(peers) = observation.peers {
-                    meta.peers = peers.into_iter().collect();
-                }
-
-                for txid in &observation.removed {
+                read(meta, reading);
+                for txid in &listing.removed {
                     if let Some(sighting) = mempool.get_mut(txid) {
                         sighting.unsight(endpoint);
                         touched.push(*txid);
                     }
                 }
-                for sighted in observation.added {
+                for sighted in listing.added {
                     match (mempool.get_mut(&sighted.txid), sighted.raw) {
                         (Some(sighting), _) => {
                             sighting.sight(endpoint);
@@ -168,12 +165,9 @@ impl ChainViewCore {
                 meta.state = EndpointState::Syncing;
                 touched.extend(retract(mempool, endpoint));
             }
-            EndpointReport::CatchingUp { tip, latency } => {
+            EndpointReport::CatchingUp(reading) => {
                 meta.state = EndpointState::CatchingUp;
-                meta.failures = 0;
-                meta.tip = Some(tip);
-                meta.observed_at = Some(Instant::now());
-                meta.latency.observe(latency);
+                read(meta, reading);
                 touched.extend(retract(mempool, endpoint));
             }
             EndpointReport::Failed { consecutive } => {
@@ -182,7 +176,7 @@ impl ChainViewCore {
             }
             EndpointReport::Down => {
                 meta.state = EndpointState::Down;
-                meta.tip = None;
+                meta.chain = None;
                 meta.peers = Vector::new();
                 touched.extend(retract(mempool, endpoint));
             }
@@ -190,7 +184,7 @@ impl ChainViewCore {
 
         *tip = quorum_tip(endpoints, self.quorum);
         for meta in endpoints.iter_mut() {
-            meta.agreement = match (*tip, meta.tip) {
+            meta.agreement = match (*tip, meta.tip()) {
                 (Some(quorum), Some(theirs)) if quorum.block == theirs => Agreement::Agreed,
                 (Some(_), Some(_)) => Agreement::Diverged,
                 _ => Agreement::Unknown,
@@ -290,6 +284,17 @@ impl std::fmt::Debug for ChainViewCore {
     }
 }
 
+/// An answering tick: chain, latency, peers
+fn read(meta: &mut ValidatorMetadata, reading: Reading) {
+    meta.failures = 0;
+    meta.chain = reading.chain;
+    meta.observed_at = Some(Instant::now());
+    meta.latency.observe(reading.latency);
+    if let Some(peers) = reading.peers {
+        meta.peers = peers.into_iter().collect();
+    }
+}
+
 /// Clear one endpoint's bit from every sighting, returning the txids it held.
 fn retract(
     mempool: &mut imbl::OrdMap<TransactionId, Sighting>,
@@ -314,7 +319,7 @@ fn retract(
 fn quorum_tip(endpoints: &Vector<ValidatorMetadata>, quorum: Quorum) -> Option<QuorumTip> {
     let mut votes: HashMap<BlockRef, EndpointSet> = HashMap::new();
     for (index, meta) in endpoints.iter().enumerate() {
-        let (Some(block), Some(index)) = (meta.tip, EndpointIndex::new(index)) else {
+        let (Some(block), Some(index)) = (meta.tip(), EndpointIndex::new(index)) else {
             continue;
         };
         if meta.state.votes() {

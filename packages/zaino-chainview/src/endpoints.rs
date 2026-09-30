@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 
 use zaino_primitives::types::BlockRef;
 
+use crate::chain::EndpointChain;
+
 /// Position in the configured endpoint list, `< EndpointSet::MAX` (keeps `insert` infallible)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct EndpointIndex(u8);
@@ -73,7 +75,7 @@ impl FromIterator<EndpointIndex> for EndpointSet {
     }
 }
 
-/// Where one endpoint stands with its poller (only `Live` votes)
+/// Where one endpoint stands with its poller (`Live` + `CatchingUp` vote)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EndpointState {
     /// No successful poll yet
@@ -129,33 +131,36 @@ impl Ewma {
     }
 }
 
-/// One configured validator as last observed: the quorum reads `tip` + `state`; `peers` = its
+/// One configured validator as last observed: the quorum reads `chain` + `state`; `peers` = its
 /// `getpeerinfo` addresses (the graph discovery traverses)
-///
-/// - `tip` = the endpoint's own last-observed tip, not the quorum's (`agreement` says which)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatorMetadata {
     pub address: String,
-    pub tip: Option<BlockRef>,
     pub state: EndpointState,
     pub agreement: Agreement,
     pub observed_at: Option<Instant>,
     pub latency: Ewma,
     pub failures: u32,
     pub peers: imbl::Vector<String>,
+    pub(crate) chain: Option<EndpointChain>,
 }
 
 impl ValidatorMetadata {
     pub(crate) fn new(address: String) -> Self {
         Self {
             address,
-            tip: None,
             state: EndpointState::Pending,
             agreement: Agreement::Unknown,
             observed_at: None,
             latency: Ewma::default(),
             failures: 0,
             peers: imbl::Vector::new(),
+            chain: None,
         }
+    }
+
+    /// Its own last-observed tip, not the quorum's (`agreement` says which)
+    pub fn tip(&self) -> Option<BlockRef> {
+        self.chain.as_ref().map(EndpointChain::tip)
     }
 }
