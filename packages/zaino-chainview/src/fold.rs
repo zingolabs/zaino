@@ -9,12 +9,13 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use imbl::Vector;
 use tokio::sync::watch;
-use zaino_primitives::types::{TransactionId, Zatoshis};
+use zaino_primitives::types::{Height, PeerInfo, TransactionId, Zatoshis};
 
 use crate::chain::EndpointChain;
 use crate::endpoints::{Agreement, EndpointIndex, EndpointState, ValidatorMetadata};
 use crate::quorum::{tally, Quorum, QuorumTip};
 use crate::snapshot::{ChainViewSnapshot, Sighting};
+use crate::telemetry;
 
 /// One txid a poller listed, with bytes iff this poller had to fetch them.
 ///
@@ -32,9 +33,10 @@ pub(crate) struct Sighted {
 pub(crate) struct Reading {
     /// Poller's held chain after this tick's walk (`None` until one completes)
     pub(crate) chain: Option<EndpointChain>,
+    pub(crate) estimated_height: Height,
     pub(crate) latency: Duration,
-    /// `Some` only on a peer-refresh tick
-    pub(crate) peers: Option<Vec<String>>,
+    /// `Some` only on a peer-refresh tick the validator answered
+    pub(crate) peers: Option<Vec<PeerInfo>>,
 }
 
 /// One endpoint's poll-to-poll mempool change
@@ -123,7 +125,7 @@ impl ChainViewCore {
         let mut touched: Vec<TransactionId> = Vec::new();
         let mut unadmitted: Vec<TransactionId> = Vec::new();
         let was_servable = servable_set(&guard, &self.quorum);
-        let previous_tip = guard.tip;
+        let (previous_tip, previous_alarms) = (guard.tip, guard.alarms);
 
         let state = &mut *guard;
         let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
@@ -201,6 +203,7 @@ impl ChainViewCore {
                 _ => Agreement::Unknown,
             };
         }
+        state.alarms = telemetry::alarms(&state.endpoints);
 
         let tip_changed = state.tip != previous_tip;
         let tip_moved = state.tip.map(|tip| tip.block) != previous_tip.map(|tip| tip.block);
@@ -223,7 +226,8 @@ impl ChainViewCore {
         }
         let new_tip = state.tip;
         let arrived = self.record_arrivals(state, &touched, &was_servable);
-        self.publish(guard, tip_changed.then_some(new_tip), tip_moved || arrived);
+        let published = self.publish(guard, tip_changed.then_some(new_tip), tip_moved || arrived);
+        telemetry::emit(&published, previous_alarms);
 
         unadmitted
     }
@@ -273,16 +277,17 @@ impl ChainViewCore {
         state: std::sync::MutexGuard<'_, ChainViewSnapshot>,
         tip: Option<Option<QuorumTip>>,
         wake_tails: bool,
-    ) {
+    ) -> Arc<ChainViewSnapshot> {
         let published = Arc::new(state.clone());
         drop(state);
-        self.published.store(published);
+        self.published.store(Arc::clone(&published));
         if let Some(tip) = tip {
             self.tip.send_replace(tip);
         }
         if wake_tails {
             self.tails.send_replace(());
         }
+        published
     }
 }
 
@@ -296,10 +301,11 @@ impl std::fmt::Debug for ChainViewCore {
     }
 }
 
-/// An answering tick: chain, latency, peers
+/// An answering tick: chain, clock estimate, latency, peers (a failed peer read keeps the last)
 fn read(meta: &mut ValidatorMetadata, reading: Reading) {
     meta.failures = 0;
     meta.chain = reading.chain;
+    meta.estimated_height = Some(reading.estimated_height);
     meta.observed_at = Some(Instant::now());
     meta.latency.observe(reading.latency);
     if let Some(peers) = reading.peers {

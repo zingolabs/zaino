@@ -1,4 +1,4 @@
-//! Poll cadence, retry ladder, ancestry fetch
+//! Poll cadence, retry ladder, ancestry fetch, telemetry thresholds
 
 use std::time::Duration;
 
@@ -24,3 +24,9 @@ pub(crate) const LINK_FETCH_CONCURRENCY: usize = 16;
 
 /// Heights fetched per descent step below the held tip (a reorg rarely reaches past one batch)
 pub(crate) const LINK_BATCH: u32 = 16;
+
+/// Live tip this far behind its own clock estimate = stale (P(natural 30 min gap) ≈ e^-24)
+pub(crate) const STALE_TIP_BLOCKS: u32 = 24;
+
+/// Distinct outbound peers across every live endpoint at or below this (and > 0) = eclipse risk
+pub(crate) const ECLIPSE_OUTBOUND_MAX: usize = 2;

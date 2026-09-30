@@ -13,6 +13,7 @@ use zaino_primitives::types::{TransactionId, Zatoshis};
 use crate::endpoints::{EndpointIndex, EndpointSet, ValidatorMetadata};
 use crate::error::BelowQuorum;
 use crate::quorum::{Quorum, QuorumTip};
+use crate::telemetry::Alarms;
 
 /// One unconfirmed transaction, as served
 ///
@@ -94,6 +95,7 @@ pub struct ChainViewSnapshot {
     pub(crate) mempool: OrdMap<TransactionId, Sighting>,
     arrivals: Vector<TransactionId>,
     pub(crate) endpoints: Vector<ValidatorMetadata>,
+    pub(crate) alarms: Alarms,
     quorum: Quorum,
 }
 
@@ -106,6 +108,7 @@ impl ChainViewSnapshot {
             mempool: OrdMap::new(),
             arrivals: Vector::new(),
             endpoints,
+            alarms: Alarms::default(),
             quorum,
         }
     }

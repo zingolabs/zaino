@@ -36,7 +36,8 @@ struct FakeState {
     network_tip: Option<Height>,
     listed: BTreeSet<TransactionId>,
     bytes: BTreeMap<TransactionId, Vec<u8>>,
-    peers: Vec<String>,
+    peers: Vec<PeerInfo>,
+    peers_unreachable: bool,
     /// Next header answers come from this chain instead (the node reorged after its tip read)
     links_from: Option<BTreeMap<Height, BlockHash>>,
     links_served: usize,
@@ -147,8 +148,18 @@ impl GetRawMempoolTransaction for FakeValidator {
 impl GetPeerInfo for FakeValidator {
     async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>> {
         let fake = self.0.lock().expect("fake validator mutex poisoned");
-        Ok(fake.peers.iter().map(|addr| PeerInfo { addr: addr.clone(), inbound: false }).collect())
+        if fake.peers_unreachable {
+            return Err(QueryError::NonDomain(NonDomainError::new(
+                FailureMode::Timeout,
+                "fake getpeerinfo timed out",
+            )));
+        }
+        Ok(fake.peers.clone())
     }
+}
+
+fn outbound(addr: &str) -> PeerInfo {
+    PeerInfo { addr: addr.to_owned(), inbound: false }
 }
 
 /// Test windows: 3 ancestors below each tip
@@ -339,7 +350,7 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
         validator.edit(|fake| {
             fake.tip = Some(agreed);
             fake.bytes = [(tx7, vec![7u8; 8])].into_iter().collect();
-            fake.peers = vec!["seed-a:8233".to_string()];
+            fake.peers = vec![outbound("seed-a:8233")];
         });
     }
     validators[0].edit(|fake| fake.listed = [tx7].into_iter().collect());
@@ -385,7 +396,7 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
             height: Height::try_from(999_999).expect("999999 is in range"),
         });
         fake.listed = [tx7].into_iter().collect();
-        fake.peers = vec!["seed-z:8233".to_string()];
+        fake.peers = vec![outbound("seed-z:8233")];
     });
     pollers[2].tick().await.expect("endpoint c polls");
     let pinned = reader.current();
@@ -393,14 +404,14 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     assert_eq!(tip.block, agreed, "quorum tip = highest *agreed* block, never highest claimed");
     let mempool = pinned.mempool().expect("quorum met");
     assert!(mempool.get(&tx7).is_some(), "a and c both report it = the threshold");
-    let peers: Vec<(&str, Vec<String>)> = pinned
+    let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
         .endpoints()
         .iter()
         .map(|meta| (meta.address.as_str(), meta.peers.iter().cloned().collect()))
         .collect();
     let expected =
         [("a:8232", "seed-a:8233"), ("b:8232", "seed-a:8233"), ("c:8232", "seed-z:8233")]
-            .map(|(address, peer)| (address, vec![peer.to_owned()]));
+            .map(|(address, peer)| (address, vec![outbound(peer)]));
     assert_eq!(peers, expected, "each validator's peers, keyed by its configured address");
 
     let arrivals: Vec<TransactionId> = pinned.arrivals().iter().copied().collect();
@@ -632,4 +643,45 @@ async fn each_block_costs_one_header_and_a_mid_walk_reorg_keeps_the_last_chain()
     let before = served();
     pollers[0].tick().await.expect("jump");
     assert_eq!((voted(), served() - before), (Some(at(40)), 3), "past the window = a rebuild");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_peer_read_keeps_the_endpoint_live_and_its_last_peers() {
+    let validator = Arc::new(FakeValidator::default());
+    validator.edit(|fake| {
+        fake.tip = Some(BlockRef { hash: trunk(Height::GENESIS), height: Height::GENESIS });
+        fake.peers =
+            vec![outbound("seed-a:8233"), PeerInfo { addr: "x:1".to_owned(), inbound: true }];
+    });
+    let (view, pollers) = ChainView::new(
+        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
+        depth(),
+    )
+    .expect("one endpoint is a valid set");
+    let reader = view.subscriber();
+    let peers =
+        || -> Vec<PeerInfo> { reader.current().endpoints()[0].peers.iter().cloned().collect() };
+
+    pollers[0].tick().await.expect("first poll");
+    let first = peers();
+    assert_eq!(first.len(), 2);
+
+    validator.edit(|fake| {
+        fake.peers_unreachable = true;
+        fake.peers = Vec::new();
+    });
+    tokio::time::advance(crate::config::PEER_REFRESH).await;
+    assert_eq!(
+        pollers[0].tick().await.expect("peer failure is not a poll failure"),
+        Polled::Listed(0)
+    );
+    let pinned = reader.current();
+    let meta = &pinned.endpoints()[0];
+    assert_eq!((meta.state, meta.failures), (EndpointState::Live, 0));
+    assert_eq!(peers(), first, "last answer kept");
+
+    validator.edit(|fake| fake.peers_unreachable = false);
+    tokio::time::advance(crate::config::PEER_REFRESH).await;
+    pollers[0].tick().await.expect("third poll");
+    assert_eq!(peers(), [], "a fresh answer replaces it (isolated = empty, not an error)");
 }

@@ -1,9 +1,9 @@
 //! Prometheus `/metrics` endpoint + the per-index metrics
 //!
 //! - Index metrics mirror each index's published watches
-//! - Producer, serve, validator-RPC + LSM metrics emitted by `zaino-sync` / `zaino-grpc` /
-//!   `zaino-source` / `zaino-persistence`, registered here via their `describe_metrics` /
-//!   `METRIC_BUCKETS`
+//! - Producer, serve, chainview, validator-RPC + LSM metrics emitted by `zaino-sync` /
+//!   `zaino-grpc` / `zaino-chainview` / `zaino-source` / `zaino-persistence`, registered here via
+//!   their `describe_metrics` / `METRIC_BUCKETS`
 
 use std::net::SocketAddr;
 
@@ -37,6 +37,7 @@ pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
         .map_err(|e| IndexerError::MetricsError(format!("installing the recorder: {e}")))?;
 
     zaino_grpc::describe_metrics();
+    zaino_chainview::describe_metrics();
     zaino_source::describe_metrics();
     zaino_sync::describe_metrics();
     zaino_persistence::lsm::describe_metrics();

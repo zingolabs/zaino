@@ -10,6 +10,7 @@ mod fold;
 mod ports;
 mod quorum;
 mod snapshot;
+mod telemetry;
 mod view;
 
 #[cfg(test)]
@@ -21,4 +22,5 @@ pub use error::{BelowQuorum, BroadcastError, ConfigError, EndpointPollError};
 pub use ports::EndpointSource;
 pub use quorum::{Quorum, QuorumTip};
 pub use snapshot::{ChainViewSnapshot, MempoolEntry, MempoolView};
+pub use telemetry::describe_metrics;
 pub use view::{ChainView, ChainViewSubscriber, Endpoint, MempoolTail};

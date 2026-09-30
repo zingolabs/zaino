@@ -18,13 +18,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures::StreamExt;
+// tokio's clock (paused-runtime tests advance the cadences)
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
-use zaino_primitives::types::{BlockRef, Height, ReorgDepth, TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockRef, Height, PeerInfo, ReorgDepth, TransactionId, Zatoshis};
 use zaino_source::{
     GetBlockLinkError, GetChainTipError, GetMempoolListingError, GetRawMempoolTransactionError,
     QueryError,
@@ -123,8 +125,13 @@ impl<S: EndpointSource> EndpointPoller<S> {
         };
         let tip = BlockRef { hash: source.hash, height: source.height };
         let chain = self.follow(tip).await?;
-        let reading =
-            |started: Instant, peers| Reading { chain, latency: started.elapsed(), peers };
+        let peers = self.read_peers().await;
+        let reading = |started: Instant| Reading {
+            chain,
+            estimated_height: source.estimated_height,
+            latency: started.elapsed(),
+            peers,
+        };
 
         let listing: BTreeMap<TransactionId, Zatoshis> =
             match self.source.get_mempool_listing().await {
@@ -133,7 +140,7 @@ impl<S: EndpointSource> EndpointPoller<S> {
                     return Err(EndpointPollError::Unavailable)
                 }
                 Err(QueryError::Domain(GetMempoolListingError::Inactive)) => {
-                    self.view.apply(self.index, EndpointReport::CatchingUp(reading(started, None)));
+                    self.view.apply(self.index, EndpointReport::CatchingUp(reading(started)));
                     self.listed.lock().expect("endpoint listing mutex poisoned").clear();
                     return Ok(Polled::CatchingUp { tip, network: source.estimated_height });
                 }
@@ -167,10 +174,9 @@ impl<S: EndpointSource> EndpointPoller<S> {
             }
         }
 
-        let peers = self.read_peers().await?;
         let unadmitted = self.view.apply(
             self.index,
-            EndpointReport::Observed(reading(started, peers), Listing { added, removed }),
+            EndpointReport::Observed(reading(started), Listing { added, removed }),
         );
         for txid in unadmitted {
             admitted.remove(&txid);
@@ -228,23 +234,28 @@ impl<S: EndpointSource> EndpointPoller<S> {
         }
     }
 
-    /// `getpeerinfo` at its own slower cadence (a node refusing its peer list costs the view
-    /// nothing)
-    async fn read_peers(&self) -> Result<Option<Vec<String>>, EndpointPollError> {
+    /// `getpeerinfo` at its own slower cadence; telemetry only, so a refusal or a failure keeps
+    /// the last answer and never fails the tick
+    async fn read_peers(&self) -> Option<Vec<PeerInfo>> {
         {
-            let read_at = self.peers_read_at.lock().expect("peer refresh mutex poisoned");
+            let mut read_at = self.peers_read_at.lock().expect("peer refresh mutex poisoned");
             if read_at.is_some_and(|at| at.elapsed() < PEER_REFRESH) {
-                return Ok(None);
+                return None;
             }
+            *read_at = Some(Instant::now());
         }
 
-        let peers = match self.source.get_peer_info().await {
-            Ok(peers) => peers.into_iter().map(|peer| peer.addr).collect(),
-            Err(QueryError::Domain(_)) => Vec::new(),
-            Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
-        };
-        *self.peers_read_at.lock().expect("peer refresh mutex poisoned") = Some(Instant::now());
-        Ok(Some(peers))
+        match self.source.get_peer_info().await {
+            Ok(peers) => Some(peers),
+            Err(QueryError::Domain(refused)) => {
+                debug!(%refused, "Peer list refused, last one kept");
+                None
+            }
+            Err(QueryError::NonDomain(cause)) => {
+                warn!(endpoint = %self.address, %cause, "Peer list read failed, last one kept");
+                None
+            }
+        }
     }
 
     /// Poll until `cancel`
