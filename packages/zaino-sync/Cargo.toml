@@ -28,7 +28,7 @@ zaino-source.workspace = true
 [dev-dependencies]
 metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 proptest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 

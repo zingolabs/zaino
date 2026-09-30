@@ -1,11 +1,13 @@
-//! Producer + followers against validators whose best chain moves at random, checked against a
-//! model of the best chain
+//! Chain view → producer → followers against validators whose best chain moves at random, checked
+//! against a model of the best chain
 //!
 //! - Moves: extensions (some past the window), reorgs onto higher / equal / lower tips, bare
-//!   retreats, bursts that never settle, restarts with the chain moving while down, quorum tips
-//!   lagging onto an ancestor (in the window and under it)
-//! - Three validators, 2-of-3 on the quorum tip, one serving the previous move's chain
+//!   retreats, bursts that never settle, restarts with the chain moving while down, the leading
+//!   validator going unready (the quorum retreats onto what the other two share), the lagging one
+//!   stalling (its lag grows past the window)
+//! - Three validators behind a real `ChainView`: two serve the best chain, one the previous move's
 //! - Every commit checked as it lands: final under the model's highest tip, on the best chain
+//! - Paused clock: the view's 1 s poll cadence costs no wall time
 
 use std::{
     num::{NonZeroU32, NonZeroUsize},
@@ -14,9 +16,9 @@ use std::{
 };
 
 use proptest::prelude::*;
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use zaino_chainview::{EndpointSet, QuorumTip};
+use zaino_chainview::{ChainView, Endpoint};
 use zaino_primitives::types::{
     Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
 };
@@ -24,7 +26,8 @@ use zaino_source::{mock::MockChain, BlockFetchPool, FetchRoute};
 use zaino_sync::{BlockSink, ProduceError, Producer, Step, Subscription, Weight};
 
 const DEPTH: u32 = 4;
-const SETTLE: Duration = Duration::from_secs(10);
+/// Virtual time (paused clock): ~60 poll rounds
+const SETTLE: Duration = Duration::from_secs(60);
 
 /// Validators' best chain + the highest tip it ever had (what bounds finality and legal forks)
 #[derive(Debug)]
@@ -182,8 +185,10 @@ enum Move {
     Chain { change: Change, yields: Option<u8> },
     /// Stop everything, move the chain while down, start again from what is durable
     Restart { down: Vec<Change> },
-    /// Quorum tip `back` under the best tip for `yields` (agreers lagging), then back (chain fixed)
-    Lag { back: u32, yields: u8 },
+    /// First current validator unready for `yields`, then ready again (chain fixed)
+    Lag { yields: u8 },
+    /// Lagging validator stops (`true`) or resumes following the chain
+    Stall(bool),
 }
 
 /// One index: blocks per commit, blocks its queue holds
@@ -213,8 +218,8 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
                     (Just(change), yields).prop_map(|(change, yields)| Move::Chain { change, yields })
                 }),
             1 => prop::collection::vec(change(), 0..3).prop_map(|down| Move::Restart { down }),
-            // past 2 × DEPTH = under the window floor
-            2 => (1u32..=2 * DEPTH + 2, 0u8..=16).prop_map(|(back, yields)| Move::Lag { back, yields }),
+            2 => (0u8..=16).prop_map(|yields| Move::Lag { yields }),
+            1 => any::<bool>().prop_map(Move::Stall),
         ],
         1..16,
     )
@@ -241,6 +246,7 @@ proptest! {
     ) {
         tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            .start_paused(true)
             .build()
             .expect("runtime")
             .block_on(run(moves, followers, lagging_at, concurrency));
@@ -254,6 +260,7 @@ struct Validators {
     order: Vec<Arc<MockChain>>,
     blocks: std::collections::HashMap<BlockHash, Block>,
     branch: u16,
+    stalled: bool,
 }
 
 impl Validators {
@@ -267,7 +274,8 @@ impl Validators {
     }
 
     /// `change` applied to `chain` (fork parent clamped to `highest − DEPTH`: deeper = past
-    /// finality, which halts); the lagging validator keeps the chain from before it
+    /// finality, which halts); the lagging validator keeps the chain from before it (unless
+    /// stalled: then it keeps whatever it had)
     fn apply(&mut self, chain: &Mutex<Chain>, change: &Change) {
         let mut chain = chain.lock().expect("chain lock");
         let before = chain.best.clone();
@@ -292,30 +300,20 @@ impl Validators {
         for current in &self.current {
             Self::serve(current, &chain.best, &self.blocks);
         }
-        Self::serve(&self.lagging, &before, &self.blocks);
+        if !self.stalled {
+            Self::serve(&self.lagging, &before, &self.blocks);
+        }
     }
 }
 
-/// One running producer + its followers
+/// One running chain view + producer + its followers
 struct Running {
-    tips: watch::Sender<Option<QuorumTip>>,
+    /// Held for the run (as zainod's serving handles hold it): dropped = the tip channel closes
+    _view: ChainView<MockChain>,
     cancel: CancellationToken,
+    pollers: Vec<JoinHandle<()>>,
     producer: JoinHandle<Result<(), ProduceError>>,
     followers: Vec<JoinHandle<()>>,
-}
-
-/// `best`'s tip, agreed by the two current validators (the lagging one serves the last chain)
-fn quorum(validators: &Validators, best: &[BlockHash]) -> Option<QuorumTip> {
-    let current = |mock: &Arc<MockChain>| !Arc::ptr_eq(mock, &validators.lagging);
-    Some(QuorumTip {
-        block: BlockRef {
-            hash: *best.last().expect("non-empty"),
-            height: Height::try_from(best.len() as u32 - 1).expect("h"),
-        },
-        agreed_by: EndpointSet::at(
-            (0..).zip(&validators.order).filter(|(_, mock)| current(mock)).map(|(at, _)| at),
-        ),
-    })
 }
 
 fn start(
@@ -328,7 +326,20 @@ fn start(
     let weight = block(0, hash(0, 0), hash(0, 0)).weight();
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("depth"));
     let mut block_sink = BlockSink::new("blocks");
-    let (tips, tips_rx) = watch::channel(quorum(validators, &chain.lock().expect("lock").best));
+    let endpoints = (0..)
+        .zip(&validators.order)
+        .map(|(at, mock)| Endpoint { address: format!("v{at}"), source: Arc::clone(mock) })
+        .collect();
+    let (view, view_pollers) = ChainView::new(endpoints, depth).expect("three endpoints");
+    let tips_rx = view.subscriber().subscribe_tip();
+    let cancel = CancellationToken::new();
+    let pollers = view_pollers
+        .into_iter()
+        .map(|poller| {
+            let cancel = cancel.child_token();
+            tokio::spawn(async move { poller.run(cancel).await.expect("a mock never ejects") })
+        })
+        .collect();
     let (mut spawned, mut durable) = (Vec::new(), Vec::new());
     for (held, follower) in held.iter().zip(followers) {
         durable.push(durable_tip(&held.lock().expect("lock")));
@@ -345,20 +356,19 @@ fn start(
         FetchRoute::Spread,
         NonZeroUsize::new(concurrency).expect("1..=4"),
     );
-    let cancel = CancellationToken::new();
     let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
     let producer = tokio::spawn(producer.run(cancel.clone()));
     let followers =
         spawned.into_iter().map(|(recorder, blocks)| tokio::spawn(recorder.run(blocks))).collect();
-    Running { tips, cancel, producer, followers }
+    Running { _view: view, cancel, pollers, producer, followers }
 }
 
 async fn stop(running: Running, context: &str) {
     running.cancel.cancel();
     let produced = running.producer.await.expect("producer join");
     assert!(produced.is_ok(), "{context}: producer {produced:?}");
-    for follower in running.followers {
-        follower.await.unwrap_or_else(|panic| panic!("{context}: follower {panic:?}"));
+    for task in running.followers.into_iter().chain(running.pollers) {
+        task.await.unwrap_or_else(|panic| panic!("{context}: task {panic:?}"));
     }
 }
 
@@ -390,7 +400,15 @@ async fn settle(
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            let held: Vec<_> = held.iter().map(|held| format!("{:?}", held.lock())).collect();
+            let held: Vec<String> = held
+                .iter()
+                .map(|held| {
+                    let held = held.lock().expect("lock");
+                    let diverged = held.applied.iter().zip(&best).position(|(a, b)| a != b);
+                    let (durable, applied) = (held.durable.len(), held.applied.len());
+                    format!("durable {durable} applied {applied} first off-best {diverged:?}")
+                })
+                .collect();
             panic!("{context}: never applied {} blocks: {held:?}", best.len());
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
@@ -404,8 +422,14 @@ async fn run(moves: Vec<Move>, followers: Vec<Follower>, lagging_at: usize, conc
     let lagging = Arc::new(MockChain::new());
     let mut order = vec![Arc::clone(&current[0]), Arc::clone(&current[1])];
     order.insert(lagging_at, Arc::clone(&lagging));
-    let mut validators =
-        Validators { current, lagging, order, blocks: Default::default(), branch: 0 };
+    let mut validators = Validators {
+        current,
+        lagging,
+        order,
+        blocks: Default::default(),
+        branch: 0,
+        stalled: false,
+    };
     for (height, own) in (0u32..).zip(&genesis) {
         let parent = height.checked_sub(1).map_or(hash(u32::MAX, 0), |up| hash(up, 0));
         validators.blocks.insert(*own, block(height, *own, parent));
@@ -423,7 +447,6 @@ async fn run(moves: Vec<Move>, followers: Vec<Follower>, lagging_at: usize, conc
         match change {
             Move::Chain { change, yields } => {
                 validators.apply(&chain, change);
-                running.tips.send_replace(quorum(&validators, &chain.lock().expect("lock").best));
                 match yields {
                     None => settle(&mut running, &chain, &held, &followers, &context).await,
                     Some(count) => {
@@ -445,16 +468,15 @@ async fn run(moves: Vec<Move>, followers: Vec<Follower>, lagging_at: usize, conc
                 running = start(&validators, &chain, &held, &followers, concurrency);
                 settle(&mut running, &chain, &held, &followers, &context).await;
             }
-            Move::Lag { back, yields } => {
-                let best = chain.lock().expect("lock").best.clone();
-                let back = (*back as usize).min(best.len() - 1);
-                running.tips.send_replace(quorum(&validators, &best[..best.len() - back]));
+            Move::Lag { yields } => {
+                validators.current[0].set_ready(false);
                 for _ in 0..*yields {
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                running.tips.send_replace(quorum(&validators, &best));
+                validators.current[0].set_ready(true);
                 settle(&mut running, &chain, &held, &followers, &context).await;
             }
+            Move::Stall(stalled) => validators.stalled = *stalled,
         }
         for (held, ever) in held.iter().zip(&mut committed_ever) {
             let held = held.lock().expect("lock");
