@@ -74,6 +74,9 @@ pub trait SegmentLogs: Send + Sized + 'static {
 
     /// Manifest durable → each set publishes its staged list
     fn committed(&mut self) -> Result<(), SegmentError>;
+
+    /// A background merge has finished and waits for the next commit to land it
+    fn merge_finished(&self) -> bool;
 }
 
 impl<R> SegmentLogs for SegmentLog<R>
@@ -105,6 +108,10 @@ where
 
     fn committed(&mut self) -> Result<(), SegmentError> {
         SegmentLog::committed(self)
+    }
+
+    fn merge_finished(&self) -> bool {
+        SegmentLog::merge_finished(self)
     }
 }
 
@@ -141,6 +148,10 @@ where
     fn committed(&mut self) -> Result<(), SegmentError> {
         self.0.committed()?;
         self.1.committed()
+    }
+
+    fn merge_finished(&self) -> bool {
+        self.0.merge_finished() || self.1.merge_finished()
     }
 }
 
@@ -192,6 +203,12 @@ impl<I: LsmIndex> LsmStore<I> {
 
     pub fn logs(&self) -> &I::Logs {
         &self.logs
+    }
+
+    /// A background merge has finished: the next commit lands it (its inputs stay listed, and
+    /// readers keep visiting them, until then)
+    pub fn merge_finished(&self) -> bool {
+        self.logs.merge_finished()
     }
 
     /// `rows` as one segment per set, then the manifest listing them (the commit point), then

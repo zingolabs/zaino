@@ -258,8 +258,9 @@ decisions, both taken when its queue is empty:
 
 - the serving gate opens once the index has applied the tip, and closes when it
   falls more than `depth` behind (or on a `Reorg`, until the replay is back)
-- at the tip, each final block commits as it arrives; below it, commits wait
-  for a full batch
+- at the tip, final blocks commit every `TIP_BATCH_BLOCKS` (32), or sooner when
+  `IndexWriter::wants_commit()` says so; below it, commits wait for a full
+  byte batch
 
 A tip that moves with no block behind it (the producer stalled while the
 validators moved on) wakes the follower too, so the gate closes rather than
@@ -284,8 +285,15 @@ following steps through `Shutdown`.
   staged when its `Finalized` arrives
 - `finalize` runs once the staged items' `Weight` reaches the follower's
   `batch_bytes` (`IndexFollower::new`'s third argument), so one
-  write = one fsync of a steady size however big each block is; at the tip every
-  final item commits as it arrives
+  write = one fsync of a steady size however big each block is. At the tip a
+  byte batch would take hours, so final items commit every 32
+  (`TIP_BATCH_BLOCKS`, about 40 minutes of mainnet blocks). They stay in the
+  non-finalized state and are served until they commit, so the only cost is a
+  longer replay after a crash. `wants_commit()` (default `false`) asks for an
+  earlier commit: an LSM-backed index says yes once a background merge has
+  finished, because the merge output only lands with a commit. The bulk → tip
+  handoff always writes what bulk staged first, since the first non-final
+  `apply` builds on it
 - its write runs on the blocking pool while the follower keeps going; at most
   one is out: the next `finalize`, the bulk → tip handoff, a `Reorg` and the
   final stop each wait for it to land first. A write finishing while the loop

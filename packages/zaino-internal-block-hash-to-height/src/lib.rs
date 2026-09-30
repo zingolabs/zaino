@@ -119,6 +119,11 @@ impl BlockHashStore {
         self.segments.committed().tip
     }
 
+    /// A background merge has finished and lands with the next commit
+    pub(crate) fn merge_finished(&self) -> bool {
+        self.segments.merge_finished()
+    }
+
     /// Makes `blocks` durable and visible as one new segment
     ///
     /// - `blocks` contiguous from the height after the committed tip (asserted)

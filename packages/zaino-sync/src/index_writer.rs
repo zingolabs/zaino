@@ -173,6 +173,14 @@ pub trait IndexWriter: Send + 'static {
     /// **Never touches durable state.** The harness finalises `MAX_BLOCK_REORG_HEIGHT` behind
     /// the tip, so nothing a reorg can reach was ever fsynced.
     fn reset(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Whether to commit staged final blocks now instead of waiting for a full tip batch
+    ///
+    /// Asked only at the tip, with no write in flight. An LSM-backed index says yes once a
+    /// background merge has finished, because its output only lands with the next commit.
+    fn wants_commit(&self) -> bool {
+        false
+    }
 }
 
 /// An index whose every delivered block derives one item for another sink

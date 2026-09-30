@@ -181,6 +181,10 @@ impl IndexWriter for TransparentAddressIndexWriter {
 
         Ok(())
     }
+
+    fn wants_commit(&self) -> bool {
+        self.segments.get().merge_finished()
+    }
 }
 
 #[cfg(test)]

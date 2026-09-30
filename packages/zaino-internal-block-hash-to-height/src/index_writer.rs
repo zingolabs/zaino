@@ -100,6 +100,10 @@ impl IndexWriter for BlockHashIndexWriter {
         self.applied = self.finalized_height();
         Ok(())
     }
+
+    fn wants_commit(&self) -> bool {
+        self.store.get().merge_finished()
+    }
 }
 
 #[cfg(test)]

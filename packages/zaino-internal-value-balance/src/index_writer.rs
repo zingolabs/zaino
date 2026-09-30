@@ -236,6 +236,10 @@ impl IndexWriter for ValueBalanceIndexWriter {
         self.applied = self.finalized_height();
         Ok(())
     }
+
+    fn wants_commit(&self) -> bool {
+        self.store.get().merge_finished()
+    }
 }
 
 impl Derives for ValueBalanceIndexWriter {

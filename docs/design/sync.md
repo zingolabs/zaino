@@ -26,7 +26,7 @@ pins bulk fetching to one of them.
 
 `zaino-chainview` provides the quorum tip, which the validators must agree on by hash rather than
 by highest height. The producer follows that tip, and every follower also reads it directly to
-decide when its index is serving and when to switch from batched commits to one commit per block.
+decide when its index is serving and when to switch from byte-sized batches to batches of 32 final blocks.
 Blocks are only ever fetched from the validators listed in the tip's `agreed_by`, because a
 validator that disagrees may still be serving a stale branch at a height the tip has already made
 final.

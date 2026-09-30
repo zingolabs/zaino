@@ -19,6 +19,14 @@ use crate::{
     Subscription, Weight,
 };
 
+/// Final blocks per commit once following the tip (about 40 minutes of mainnet blocks)
+///
+/// One commit per block would make a tiny segment per block in every LSM set, each rewritten by
+/// several merges on its way up, plus a round of fsyncs. Blocks this deep are already final and
+/// still served from the non-finalized state until they commit, so batching only means a crash
+/// replays up to this many more blocks.
+pub(crate) const TIP_BATCH_BLOCKS: usize = 32;
+
 mod sealed {
     pub trait Sealed {}
 }
@@ -449,9 +457,13 @@ impl<W: IndexWriter, F: Feed<Item = W::Input>, D: Downstream<W>> IndexFollower<W
         }
         let applied = self.writer.applied_height();
         let at_tip = tip.is_some() && tip <= applied;
-        // following: each final block durable as it arrives (a batch would take hours)
+        // following: a byte batch would take hours, so final blocks commit every
+        // `TIP_BATCH_BLOCKS`, or sooner when the writer has something to land with a commit
         if at_tip && !staged.blocks.is_empty() {
-            self.flush(staged).await?;
+            let batch_full = staged.blocks.len() >= TIP_BATCH_BLOCKS;
+            if batch_full || (self.in_flight.is_none() && self.writer.wants_commit()) {
+                self.flush(staged).await?;
+            }
         }
         // copied out: a `borrow()` guard held into `set_synced` deadlocks its write
         let serving = *self.synced.borrow();
@@ -868,11 +880,11 @@ mod tests {
     }
 
     /// Depth 3, batch of 1000 unit-weight blocks, following the tip block by block:
-    /// - each final block durable as it arrives (a full batch would take hours at the tip)
+    /// - final blocks commit in batches of `TIP_BATCH_BLOCKS` at the tip, none before a batch fills
     /// - gate never flaps as each new tip lands ahead of its block
     /// - quorum tip more than the depth ahead closes it, no block behind it (producer stalled)
     #[tokio::test]
-    async fn following_the_tip_commits_each_final_block_and_never_flaps_the_gate() {
+    async fn following_the_tip_commits_final_blocks_in_batches_and_never_flaps_the_gate() {
         let depth = ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
         let mut sink = IndexerDataSink::<Chained>::new("test");
         let queue = std::num::NonZeroUsize::new(1 << 20).expect("nz");
@@ -897,9 +909,11 @@ mod tests {
         for height in 0..=20 {
             sink.add(h(height), on(0, height)).await;
         }
+        // bulk → tip: the final blocks staged in bulk are written before the first non-final one
+        // applies on top of them, a batch or not
         tokio::time::timeout(within, finalized.wait_for(|f| *f == Some(h(17))))
             .await
-            .expect("final 0..=17 durable at the tip, 18 blocks short of a batch")
+            .expect("final 0..=17 durable at the bulk → tip handoff")
             .expect("follower alive");
         tokio::time::timeout(within, synced.wait_for(|open| *open))
             .await
@@ -907,20 +921,28 @@ mod tests {
             .expect("follower alive");
         synced.mark_unchanged();
 
-        for height in 21..=30 {
+        // following: final 18.. stage until `TIP_BATCH_BLOCKS` of them commit together
+        let batch = u32::try_from(TIP_BATCH_BLOCKS).expect("small");
+        let (first_final, last_final) = (18, 18 + batch - 1);
+        let last = last_final + 3;
+        for height in 21..=last {
             tips.send_replace(quorum(height));
             sink.set_tip(h(height)).await;
             sink.add(h(height), on(0, height)).await;
-            tokio::time::timeout(within, finalized.wait_for(|f| *f == Some(h(height - 3))))
-                .await
-                .unwrap_or_else(|_| panic!("block {} durable once final", height - 3))
-                .expect("follower alive");
+            if height < last {
+                let durable = *finalized.borrow();
+                assert_eq!(durable, Some(h(first_final - 1)), "no commit before the batch fills");
+            }
         }
+        tokio::time::timeout(within, finalized.wait_for(|f| *f == Some(h(last_final))))
+            .await
+            .expect("a full tip batch commits")
+            .expect("follower alive");
         assert!(!synced.has_changed().expect("follower alive"), "gate flapped at the tip");
-        let applied = Some(h(30));
+        let applied = Some(h(last));
         assert_eq!(served.pin().as_deref(), Some(&applied), "served = the latest step's view");
 
-        tips.send_replace(quorum(34));
+        tips.send_replace(quorum(last + 4));
         tokio::time::timeout(within, synced.wait_for(|open| !*open))
             .await
             .expect("more than the depth behind closes the gate")
