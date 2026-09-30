@@ -23,3 +23,31 @@ The sync and coherence-freeze gauges and the 120 s freeze warning moved to \
 `zaino-chain-head-service` and `zaino-mempool-service`. `metric_names` \
 re-exports the constants; its `GAUGES` table is gone.
 """
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+`NodeBackedChainIndex` is a thin adapter: it launches the chain store, chain \
+head, ChainView (with its sync loop) and the mempool, and answers the \
+`ChainIndex` traits through ChainView and the mempool. The legacy sync loop \
+is gone; the chain head's retry ladder now drives the index's error status, \
+and the mempool is woken by the chain head's tip changes.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`ChainIndex::get_block_range` streams in descending order when `start` is \
+above `end`, and yields an error when either bound is above the snapshot's \
+tip instead of clamping `end` or returning `None`. A missing `end` is the tip.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`ChainViewSync` no longer deadlocks when the store rejects a freeze with an \
+error other than a gap, such as `NotReady` during a background build.
+"""

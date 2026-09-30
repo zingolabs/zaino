@@ -432,26 +432,6 @@ pub trait BlockchainSource:
     fn shutdown(&self) {}
 }
 
-/// Sleep up to `duration`, but return early if `change_rx` resolves first.
-///
-/// Sync loops in this module pace themselves on a fixed-cadence timer and
-/// want to wake immediately when the source signals new state. The two-arm
-/// `tokio::select!` is identical at every call site; this helper is the
-/// single home for the pattern. Pass `None` for poll-only sources — the
-/// helper degrades to a plain sleep.
-pub(super) async fn wait_or_source_change(
-    change_rx: Option<&mut tokio::sync::watch::Receiver<()>>,
-    duration: std::time::Duration,
-) {
-    match change_rx {
-        Some(rx) => tokio::select! {
-            _ = tokio::time::sleep(duration) => {}
-            _ = rx.changed() => {}
-        },
-        None => tokio::time::sleep(duration).await,
-    }
-}
-
 // ********** Error / data types + helper methods **********
 // NOTE: Should these be moved into error / type modules?
 

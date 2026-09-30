@@ -1,12 +1,12 @@
 //! Zcash chain fetch and tx submission service backed by the validator's JsonRPC service.
 
+use crate::chain_index::chain_view::BestTip as _;
 use futures::StreamExt;
 use hex::FromHex;
-use std::sync::Arc;
 use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, instrument, warn};
-use zaino_chain_head::ChainHeadSnapshot as _;
+use zaino_chain::ForkReconcile;
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{
@@ -39,8 +39,8 @@ use zaino_proto::proto::{
 
 use crate::{
     chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
-    ChainIndex, ChainIndexRpcExt, MapBackedSnapshot, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber,
+    chain_index::chain_view::WithChainViewSource, ChainIndex, ChainIndexRpcExt,
+    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
 use crate::{
@@ -77,7 +77,7 @@ use zaino_status::{Status, StatusType};
 /// NOTE: We do not implement `Clone` for the central service: it owns and closes its
 /// child processes. Subscribers are the clone-safe read handles.
 pub struct NodeBackedIndexerService<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     indexer: NodeBackedChainIndex<Source>,
@@ -87,16 +87,18 @@ pub struct NodeBackedIndexerService<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
-    for NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > Status for NodeBackedIndexerService<Source>
 {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerService<Source>
 {
     /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
     /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
@@ -211,8 +213,9 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Drop
-    for NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > Drop for NodeBackedIndexerService<Source>
 {
     fn drop(&mut self) {
         self.shutdown_blocking();
@@ -222,7 +225,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Drop
 /// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
 #[derive(Debug, Clone)]
 pub struct NodeBackedIndexerServiceSubscriber<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber<Source>,
@@ -232,24 +235,27 @@ pub struct NodeBackedIndexerServiceSubscriber<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > Status for NodeBackedIndexerServiceSubscriber<Source>
 {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> crate::IndexedTipIndexer
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > crate::IndexedTipIndexer for NodeBackedIndexerServiceSubscriber<Source>
 {
     fn subscribe_indexed_tips(&self) -> crate::IndexedTipStream {
         self.indexer.indexed_tip_stream()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Fetches the current status
     #[deprecated(note = "Use the Status trait method instead")]
@@ -349,7 +355,7 @@ fn compact_tx_to_proto(
 /// is what makes the answer consistent with every other query served from the
 /// same snapshot.
 pub(crate) fn chain_tips_for_snapshot(
-    snapshot: &Arc<MapBackedSnapshot>,
+    snapshot: &impl ForkReconcile,
 ) -> Vec<zaino_primitives::types::rpc::ChainTip> {
     snapshot.chain_tips()
 }
@@ -384,8 +390,9 @@ fn test_service_parts(
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerService<Source>
 {
     /// Wraps a chain index in a service for tests, with placeholder
     /// metadata/config. Lets unit tests exercise the service lifecycle over a
@@ -405,8 +412,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
     /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
@@ -443,8 +451,9 @@ impl ChainTipSubscriber {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerServiceSubscriber<Source>
 {
     /// A subscriber to chain-tip updates, when the backing source exposes a
     /// local tip-change stream. `Some` only on the `Direct` connection; the
@@ -587,8 +596,9 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> ZcashIndexer
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > ZcashIndexer for NodeBackedIndexerServiceSubscriber<Source>
 {
     type Error = NodeBackedIndexerServiceError;
 
@@ -1279,8 +1289,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
 }
 
 #[allow(deprecated)]
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> LightWalletIndexer
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > LightWalletIndexer for NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {

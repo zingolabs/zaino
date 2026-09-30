@@ -69,10 +69,10 @@ pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 pub use zaino_encoding::*;
 // Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.
 // Re-exported so a consumer wiring a ChainIndex need not name that crate.
-// The non-finalised chain head is `zaino-chain-head`; its runtime is
-// `zaino-chain-head-service`. Re-exported here so a consumer wiring a
-// ChainIndex does not need to name those crates directly.
+// The chain view `ChainIndex` answers from, and the types its snapshot is made
+// of. Re-exported so a consumer need not name those crates directly.
 pub use error::{InitError, SyncError};
+pub use zaino_chain::{ChainViewSnapshot, ComposerSnapshot};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::MapBackedSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
@@ -92,7 +92,9 @@ pub use zaino_primitives::types::MempoolInfo;
 /// `zaino_chain_store::StoredTxOut` through the ports, so the one place that
 /// held a stored output — the cross-seam UTXO fold — folds domain outputs
 /// instead. The rest of this list shrinks the same way.
-pub(crate) use chain_index::types::{BlockHash, Height, IndexedBlock, Outpoint, TransactionHash};
+pub(crate) use chain_index::types::{BlockHash, IndexedBlock};
+#[cfg(test)]
+pub(crate) use chain_index::types::{Height, Outpoint, TransactionHash};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing

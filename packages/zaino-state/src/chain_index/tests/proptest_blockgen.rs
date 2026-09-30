@@ -1,9 +1,10 @@
+use crate::chain_index::chain_view::BestTip as _;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use zaino_chain_head::ChainHeadSnapshot as _;
+use zaino_chain::ChainViewSnapshot as _;
 
 use futures::stream::FuturesUnordered;
 use proptest::{
@@ -50,7 +51,7 @@ fn synced_index_test(
         // The subscriber to test against
         NodeBackedChainIndexSubscriber<ValidatorSource<ProptestMockchain>>,
         // A snapshot, which will have only the genesis block
-        &std::sync::Arc<crate::MapBackedSnapshot>,
+        &crate::chain_index::chain_view::ChainIndexSnapshot<ValidatorSource<ProptestMockchain>>,
     ),
 ) {
     synced_index_test_on(
@@ -80,7 +81,7 @@ fn synced_index_test_on(
     test: impl AsyncFn(
         &ValidatorSource<ProptestMockchain>,
         NodeBackedChainIndexSubscriber<ValidatorSource<ProptestMockchain>>,
-        &std::sync::Arc<crate::MapBackedSnapshot>,
+        &crate::chain_index::chain_view::ChainIndexSnapshot<ValidatorSource<ProptestMockchain>>,
     ),
 ) {
     init_tracing();
@@ -358,49 +359,49 @@ fn synced_index_get_block_range() {
             .all_blocks_arb_branch_order()
             .map(|block| block.coinbase_height().unwrap())
         {
-            let expected_end_height = (expected_start_height + 9).unwrap();
-            if expected_end_height.0 as usize
-                <= mockchain.source().all_blocks_arb_branch_order().count()
-            {
-                let index_reader = index_reader.clone();
-                let snapshot = snapshot.clone();
-                parallel.push(async move {
-                    let block_range_stream = index_reader.get_block_range(
-                        &snapshot,
-                        expected_start_height.into(),
-                        Some(expected_end_height.into()),
-                    );
-                    if expected_start_height <= crate::Height(u32::from(snapshot.best_tip().height))
-                    {
-                        let mut block_range_stream = Box::pin(block_range_stream.unwrap());
-                        let mut num_blocks_in_stream = 0;
-                        while let Some(block) = block_range_stream.next().await {
+            let low = expected_start_height.0;
+            let high = low + 9;
+            if high as usize <= mockchain.source().all_blocks_arb_branch_order().count() {
+                for (start, end) in [(low, high), (high, low)] {
+                    let index_reader = index_reader.clone();
+                    let snapshot = snapshot.clone();
+                    parallel.push(async move {
+                        let blocks: Vec<_> = index_reader
+                            .get_block_range(
+                                &snapshot,
+                                crate::Height(start),
+                                Some(crate::Height(end)),
+                            )
+                            .expect("a range always yields a stream")
+                            .collect()
+                            .await;
+
+                        if high > u32::from(snapshot.best_tip().height) {
+                            assert!(
+                                matches!(blocks.as_slice(), [Err(_)]),
+                                "a range above the tip yields one error",
+                            );
+                            return;
+                        }
+
+                        let heights: Vec<u32> = if start <= end {
+                            (start..=end).collect()
+                        } else {
+                            (end..=start).rev().collect()
+                        };
+                        assert_eq!(blocks.len(), heights.len(), "every height is served");
+                        for (block, height) in blocks.into_iter().zip(heights) {
                             let expected_block = mockchain
                                 .source()
                                 .all_blocks_arb_branch_order()
-                                .nth(expected_start_height.0 as usize + num_blocks_in_stream)
+                                .nth(height as usize)
                                 .unwrap()
                                 .zcash_serialize_to_vec()
                                 .unwrap();
-                            assert_eq!(block.unwrap(), expected_block);
-                            num_blocks_in_stream += 1;
+                            assert_eq!(block.unwrap(), expected_block, "height {height}");
                         }
-                        assert_eq!(
-                            num_blocks_in_stream,
-                            // expect 10 blocks
-                            10.min(
-                                // unless the provided range overlaps the finalized boundary.
-                                // in that case, expect all blocks between start height
-                                // and finalized height, (+1 for inclusive range)
-                                u32::from(snapshot.best_tip().height)
-                                    .saturating_sub(expected_start_height.0)
-                                    + 1
-                            ) as usize
-                        );
-                    } else {
-                        assert!(block_range_stream.is_none())
-                    }
-                });
+                    });
+                }
             }
         }
         while let Some(_success) = parallel.next().await {}
@@ -703,7 +704,11 @@ fn metadata_consistency_for_era(
                     let snapshot = index_reader.snapshot_nonfinalized_state();
                     // The chain head is always populated; what this waits for
                     // is the finalised state catching up beneath it.
-                    (snapshot.retained_block_count() > 0).then_some(snapshot)
+                    snapshot
+                        .serviceable_range()
+                        .gap_from
+                        .is_none()
+                        .then_some(snapshot)
                 },
             )
             .await;
@@ -844,23 +849,21 @@ fn make_chain() {
                 Duration::from_millis(25),
                 || async {
                     let snapshot = index_reader.snapshot_nonfinalized_state();
-                    (snapshot.best_chain().count() == best_chain_length
+                    (u32::from(snapshot.best_tip().height) as usize + 1 == best_chain_length
                         && indexer.finalised_state_mode() == crate::FinalisedStateMode::Persistent)
                         .then_some(snapshot)
                 },
             )
             .await;
-            let best_tip = snapshot.best_tip();
-            let best_tip_block = snapshot
-                .block_by_hash(&best_tip.hash)
-                .expect("the tip is retained");
 
-            // A canonical block is its own fork point; a competing one resolves
-            // to an ancestor. Both are answerable, which is what says the
-            // branch is connected to the canonical chain rather than dangling.
-            for block in snapshot.best_chain() {
-                assert!(block.work <= best_tip_block.work);
-                let hash = crate::BlockHash(block.hash().into());
+            // A canonical block is its own fork point, which is what says the
+            // best chain is connected rather than dangling.
+            for height in 0..best_chain_length as u32 {
+                let hash = index_reader
+                    .get_block_hash(&snapshot, crate::Height(height))
+                    .await
+                    .unwrap()
+                    .expect("every best-chain height has a block");
                 assert_eq!(
                     index_reader
                         .find_fork_point(&snapshot, &hash)
@@ -872,7 +875,10 @@ fn make_chain() {
                 );
             }
 
-            assert_eq!(snapshot.best_chain().count(), segment_length * 2);
+            assert_eq!(
+                u32::from(snapshot.best_tip().height) as usize + 1,
+                segment_length * 2
+            );
         });
     });
 }
