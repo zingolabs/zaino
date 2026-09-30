@@ -5,6 +5,7 @@
 //!   boundary following the quorum tip mid-pass
 //! - Live = [`ChainHead::advance`] per quorum tip; reorg → `reset` + replay from the window
 //! - Quorum tip > depth ahead (startup race, long outage) → bulk again
+//! - Quorum tip below the window (lagging agreers) → wait for the next one
 //! - Validators failing (after the pool's own retries) → wait + retry, bulk and live alike
 
 use std::collections::BTreeMap;
@@ -128,6 +129,11 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         let mut head = self.bulk(parent).await?;
         loop {
             let tip = self.tip().await?;
+            if tip.block.height < head.next_floor() {
+                live.in_scope(|| self.below_window(tip.block, head.next_floor()))?;
+                self.changed().await?;
+                continue;
+            }
             let pool = self.agreeing(tip);
             let ahead = u32::from(tip.block.height).saturating_sub(u32::from(head.tip().height));
             if ahead <= self.sink.depth().get() {
@@ -145,6 +151,27 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
             } else {
                 let theirs = BlockRef { hash: theirs, height: ours.height };
                 self.step(&mut head, theirs, &pool).instrument(live.clone()).await?;
+            }
+        }
+    }
+
+    /// Quorum tip under the window = agreers lagging (ancestry vote, leader gone): waited out
+    ///
+    /// - Never a reorg (mainnet / testnet: `finalised_depth` ≥ consensus bound → every legal
+    ///   fork point in the window)
+    /// - Contradicts an index's durable block at its height → divergence proven, production stops
+    fn below_window(&self, tip: BlockRef, floor: Height) -> Result<(), ProduceError> {
+        match self.durable.get(&tip.height) {
+            Some(&expected) if expected != tip.hash => {
+                Err(ProduceError::Diverged { height: tip.height, expected, got: tip.hash })
+            }
+            _ => {
+                warn!(
+                    tip = u32::from(tip.height),
+                    floor = u32::from(floor),
+                    "Quorum tip below the non-final window (agreeing validators lag), waiting"
+                );
+                Ok(())
             }
         }
     }
@@ -461,6 +488,84 @@ mod tests {
         cancel.cancel();
         producer.await.expect("join").expect("cancel = clean stop");
         assert!(matches!(index.next().await, Step::Shutdown), "cancel → Shutdown");
+    }
+
+    /// - Depth 3, validator on A, indexes durable at A2 and A4
+    #[tokio::test]
+    async fn a_tip_below_the_window_waits_on_lag_and_stops_on_a_contradicted_durable_block() {
+        let block = |height: u32| {
+            Block::new(
+                BlockHeader::for_tests(
+                    height,
+                    [0x10 + height as u8; 32],
+                    [0x0f + height as u8; 32],
+                    0,
+                ),
+                vec![Transaction {
+                    txid: [0x10 + height as u8; 32].into(),
+                    transparent: Default::default(),
+                    sprout: Default::default(),
+                    sapling: Default::default(),
+                    orchard: Default::default(),
+                    ironwood: Default::default(),
+                }],
+            )
+        };
+        let a: Vec<Block> = (0..=9).map(block).collect();
+        let chain = Arc::new(
+            a[..=8].iter().fold(MockChain::new(), |chain, block| chain.with_block(block.clone())),
+        );
+        let pool = BlockFetchPool::new(
+            vec![Arc::clone(&chain)],
+            FetchRoute::Spread,
+            NonZeroUsize::new(4).expect("nz"),
+        );
+        let at = |height: u32, hash: BlockHash| BlockRef {
+            hash,
+            height: Height::try_from(height).expect("h"),
+        };
+        let quorum = |block: BlockRef| Some(QuorumTip { block, agreed_by: EndpointSet::at([0]) });
+        let ours = |h: u32| a[h as usize].header().hash;
+        let (tips, tips_rx) = watch::channel(quorum(at(8, ours(8))));
+        let depth = ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"));
+        let mut block_sink = BlockSink::new("blocks");
+        let mut index = block_sink.subscribe("index", NonZeroUsize::new(1 << 20).expect("nz"));
+        let durable = [Some(at(2, ours(2))), Some(at(4, ours(4)))];
+        let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
+        let producer = tokio::spawn(producer.run(CancellationToken::new()));
+        let mut drain = async || {
+            let mut steps = Vec::new();
+            let idle = std::time::Duration::from_millis(50);
+            while let Ok(step) = tokio::time::timeout(idle, index.next()).await {
+                steps.push(match step {
+                    Step::Apply { height, finalized, .. } => {
+                        format!("{height}{}", if finalized { "f" } else { "" })
+                    }
+                    Step::Finalized { height } => format!("F{height}"),
+                    Step::Reorg => "R".to_owned(),
+                    Step::Shutdown => "S".to_owned(),
+                });
+            }
+            steps.join(" ")
+        };
+
+        assert_eq!(drain().await, "3f 4f 5f 6 7 8", "bulk to tip − depth, then the window");
+        tips.send_replace(quorum(at(3, ours(3))));
+        assert_eq!(drain().await, "", "lag below the floor (5): no reorg, no step");
+        assert!(!producer.is_finished(), "waiting, not halted");
+
+        chain.extend_best([a[9].clone()]);
+        tips.send_replace(quorum(at(9, ours(9))));
+        assert_eq!(drain().await, "F6 9", "agreers caught up: 6 final under 9, the window extends");
+
+        let foreign = BlockHash::from([0xee; 32]);
+        tips.send_replace(quorum(at(4, foreign)));
+        let stopped = producer.await.expect("join").expect_err("a durable block contradicted");
+        assert!(
+            matches!(stopped, ProduceError::Diverged { height, expected, got }
+                if u32::from(height) == 4 && expected == ours(4) && got == foreign),
+            "{stopped}"
+        );
     }
 
     /// Validators serving chain A (0..=8), depth 3: an index whose durable tip is not A's block

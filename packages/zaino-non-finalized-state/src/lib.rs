@@ -59,6 +59,12 @@ impl ChainHead {
         self.front().header().height
     }
 
+    /// Floor the next [`advance`](Self::advance) enforces (its trim runs first): a tip below it
+    /// = [`AdvanceError::BelowWindow`]
+    pub fn next_floor(&self) -> Height {
+        self.floor().max(self.highest.saturating_sub(self.depth.get()))
+    }
+
     /// Canonical blocks `start` to the tip, both inclusive, ascending (`start` = tip + 1 → none)
     pub fn best_chain_from(&self, start: Height) -> impl Iterator<Item = &Arc<Block>> {
         let end = self.tip().height.checked_add(1).expect("tip below the height maximum");
@@ -297,6 +303,7 @@ mod tests {
         // floor = the previous highest (4) − depth, trimmed only as the next advance starts
         assert_eq!(head.advance(at(&a[6]), &pool).await.expect("a6"), Advance::Extended);
         assert_eq!((head.floor(), chain(&head, 3)), (height(2), vec![0x13, 0x14, 0x15, 0x16]));
+        assert_eq!(head.next_floor(), height(3), "the next advance trims to highest − depth first");
 
         let reorg_at_5 = Advance::Reorg { fork: height(5) };
         assert_eq!(head.advance(at(&b[2]), &pool).await.expect("b7"), reorg_at_5);

@@ -2,7 +2,8 @@
 //! model of the best chain
 //!
 //! - Moves: extensions (some past the window), reorgs onto higher / equal / lower tips, bare
-//!   retreats, bursts that never settle, restarts with the chain moving while down
+//!   retreats, bursts that never settle, restarts with the chain moving while down, quorum tips
+//!   lagging onto an ancestor (in the window and under it)
 //! - Three validators, 2-of-3 on the quorum tip, one serving the previous move's chain
 //! - Every commit checked as it lands: final under the model's highest tip, on the best chain
 
@@ -181,6 +182,8 @@ enum Move {
     Chain { change: Change, yields: Option<u8> },
     /// Stop everything, move the chain while down, start again from what is durable
     Restart { down: Vec<Change> },
+    /// Quorum tip `back` under the best tip for `yields` (agreers lagging), then back (chain fixed)
+    Lag { back: u32, yields: u8 },
 }
 
 /// One index: blocks per commit, blocks its queue holds
@@ -210,6 +213,8 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
                     (Just(change), yields).prop_map(|(change, yields)| Move::Chain { change, yields })
                 }),
             1 => prop::collection::vec(change(), 0..3).prop_map(|down| Move::Restart { down }),
+            // past 2 × DEPTH = under the window floor
+            2 => (1u32..=2 * DEPTH + 2, 0u8..=16).prop_map(|(back, yields)| Move::Lag { back, yields }),
         ],
         1..16,
     )
@@ -438,6 +443,16 @@ async fn run(moves: Vec<Move>, followers: Vec<Follower>, lagging_at: usize, conc
                     validators.apply(&chain, change);
                 }
                 running = start(&validators, &chain, &held, &followers, concurrency);
+                settle(&mut running, &chain, &held, &followers, &context).await;
+            }
+            Move::Lag { back, yields } => {
+                let best = chain.lock().expect("lock").best.clone();
+                let back = (*back as usize).min(best.len() - 1);
+                running.tips.send_replace(quorum(&validators, &best[..best.len() - back]));
+                for _ in 0..*yields {
+                    tokio::task::yield_now().await;
+                }
+                running.tips.send_replace(quorum(&validators, &best));
                 settle(&mut running, &chain, &held, &followers, &context).await;
             }
         }
