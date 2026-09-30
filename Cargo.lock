@@ -5874,6 +5874,7 @@ dependencies = [
  "hex",
  "sapling-crypto",
  "tracing",
+ "zaino-primitives",
  "zcash_address",
  "zcash_keys",
  "zcash_protocol",
