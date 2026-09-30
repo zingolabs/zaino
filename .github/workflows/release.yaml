@@ -21,10 +21,10 @@ jobs:
         include:
           - variant: default
             suffix: ''
-            no_tls: false
+            features: ''
           - variant: no-tls
             suffix: '-no-tls'
-            no_tls: true
+            features: no_tls_use_unencrypted_traffic
     env:
       PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
     steps:
@@ -58,7 +58,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            NO_TLS=${{ matrix.no_tls }}
+            CARGO_FEATURES=${{ matrix.features }}
           cache-from: |
             type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache${{ matrix.suffix }}
             type=gha,scope=${{ matrix.variant }}

@@ -10,6 +10,7 @@
 
 use zaino_chain_store::ChainStoreSourceError;
 
+use crate::conversion::BlockConversionError;
 use crate::store::capability::CapabilityRequest;
 use crate::types::BlockHash;
 
@@ -120,4 +121,14 @@ pub(crate) fn source_error<E: core::fmt::Debug + core::fmt::Display>(
 /// A validator answer the store cannot reconcile with what it asked for.
 pub(crate) fn inconsistent(message: impl Into<String>) -> StoreError {
     StoreError::Source(ChainStoreSourceError::inconsistent_data(message))
+}
+
+/// A failed block conversion, attributed to the store when the parent chainwork it needed is missing and to the validator otherwise.
+pub(crate) fn conversion_error(error: BlockConversionError) -> StoreError {
+    match error {
+        BlockConversionError::ParentChainWorkUnknown { .. } => {
+            StoreError::DataUnavailable(error.to_string())
+        }
+        other => inconsistent(other.to_string()),
+    }
 }

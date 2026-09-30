@@ -1,0 +1,12 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f88c-7dd0-b360-636c6f13bd23"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = """
+`ChainHeadAdvanceError::SourceUnavailable` carries the source's `FetchError` instead \
+of a `String`, so `Error::source()` returns the transport cause and its \
+`FailureMode`. A rejected query stays under `InconsistentSource`, naming the query."""
+migration = "Match `SourceUnavailable(fetch_error)` and format the error with `Display` where a message was read from the `String`."

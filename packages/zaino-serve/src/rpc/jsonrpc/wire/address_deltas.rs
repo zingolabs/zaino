@@ -44,40 +44,64 @@ impl GetAddressDeltasParams {
         GetAddressDeltasParams::Address(addr.into())
     }
 
-    /// Reads the client's request into the domain vocabulary.
+    /// Reads and validates the client's request into the domain vocabulary.
     ///
-    /// Infallible, unlike the other request conversions in this module. The two
-    /// things that could be rejected here are not rejected by this interface:
-    /// the height range is open-ended by design — the legacy full node reads `0` in either
-    /// position as "unbounded" — and is resolved against the tip by the
-    /// answering adapter, which is the only layer that knows the tip; and
-    /// [`TransparentAddress`](zaino_primitives::types::TransparentAddress) is
-    /// an opaque string, so there is nothing to parse.
+    /// The client supplies the addresses as strings, so this is the
+    /// external-input validation step for them:
+    /// [`TransparentAddress::try_new`](zaino_primitives::types::TransparentAddress::try_new)
+    /// rejects anything that is not a well-formed transparent address, and the
+    /// rejection surfaces as an invalid-params error at the endpoint rather than
+    /// letting a bogus filter string reach the index.
     ///
-    /// Validating the addresses here is now possible — `zaino-address` can
-    /// classify them — but it would start rejecting requests this method
-    /// currently answers with an empty list, which is a served-behaviour change
-    /// and does not belong in a rewire.
-    pub fn into_domain(self) -> zaino_primitives::types::rpc::AddressDeltasRequest {
+    /// The height range is not validated here: it is open-ended by design — the
+    /// legacy full node reads `0` in either position as "unbounded" — and is
+    /// resolved against the tip by the answering adapter, the only layer that
+    /// knows the tip.
+    pub fn into_domain(
+        self,
+    ) -> Result<zaino_primitives::types::rpc::AddressDeltasRequest, GetAddressDeltasError> {
         use zaino_primitives::types::{rpc::AddressDeltasRequest, TransparentAddress};
 
+        let parse = |address: String| {
+            TransparentAddress::try_new(address.clone()).map_err(|reason| {
+                GetAddressDeltasError::Address {
+                    address,
+                    reason: reason.to_string(),
+                }
+            })
+        };
+
         match self {
-            Self::Address(address) => {
-                AddressDeltasRequest::Address(TransparentAddress::new(address))
-            }
+            Self::Address(address) => Ok(AddressDeltasRequest::Address(parse(address)?)),
             Self::Filtered {
                 addresses,
                 start,
                 end,
                 chain_info,
-            } => AddressDeltasRequest::Filtered {
-                addresses: addresses.into_iter().map(TransparentAddress::new).collect(),
+            } => Ok(AddressDeltasRequest::Filtered {
+                addresses: addresses
+                    .into_iter()
+                    .map(parse)
+                    .collect::<Result<Vec<_>, _>>()?,
                 start,
                 end,
                 chain_info,
-            },
+            }),
         }
     }
+}
+
+/// Why a [`GetAddressDeltasParams`] could not be understood.
+#[derive(Debug, thiserror::Error)]
+pub enum GetAddressDeltasError {
+    /// A requested address is not a valid transparent address.
+    #[error("invalid transparent address {address:?}: {reason}")]
+    Address {
+        /// The offending string as the client sent it.
+        address: String,
+        /// Why it was rejected.
+        reason: String,
+    },
 }
 
 /// Response to a `getaddressdeltas` RPC request.
@@ -220,6 +244,12 @@ mod domain_tests {
     use super::*;
     use zaino_primitives::types::{self as domain, Height, SignedZatoshis, TransparentAddress};
 
+    // Real vectors (mainnet t1 / t3, testnet tm), so the addresses that reach
+    // the domain are the ones the validating constructor accepts.
+    const MAINNET_P2PKH: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
+    const TESTNET_P2PKH: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
+    const TESTNET_P2SH: &str = "t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u";
+
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
@@ -233,7 +263,7 @@ mod domain_tests {
             txid: domain::TransactionId::from(ASYMMETRIC),
             index: 2,
             height: Height::try_from(99u32).unwrap(),
-            address: TransparentAddress::new("t1address".to_string()),
+            address: TransparentAddress::try_new(MAINNET_P2PKH).expect("valid mainnet t1"),
             block_index: Some(4),
         }
     }
@@ -256,7 +286,7 @@ mod domain_tests {
         assert_eq!(json[0]["satoshis"], -1_000i64);
         assert_eq!(json[0]["index"], 2);
         assert_eq!(json[0]["height"], 99);
-        assert_eq!(json[0]["address"], "t1address");
+        assert_eq!(json[0]["address"], MAINNET_P2PKH);
         assert_eq!(json[0]["blockindex"], 4);
     }
 
@@ -314,12 +344,13 @@ mod domain_tests {
     #[test]
     fn request_range_is_carried_through_unclamped() {
         let request = GetAddressDeltasParams::new_filtered(
-            vec!["t1a".to_string(), "t1b".to_string()],
+            vec![TESTNET_P2PKH.to_string(), TESTNET_P2SH.to_string()],
             0,
             0,
             true,
         )
-        .into_domain();
+        .into_domain()
+        .expect("both addresses are valid");
 
         let domain::rpc::AddressDeltasRequest::Filtered {
             addresses,
@@ -337,11 +368,35 @@ mod domain_tests {
     /// The single-address form has no range at all, and must not acquire one.
     #[test]
     fn single_address_request_stays_rangeless() {
-        let request = GetAddressDeltasParams::new_address("t1a").into_domain();
+        let request = GetAddressDeltasParams::new_address(TESTNET_P2PKH)
+            .into_domain()
+            .expect("a valid address");
 
         assert!(matches!(
             request,
             domain::rpc::AddressDeltasRequest::Address(_)
+        ));
+    }
+
+    /// A client-supplied string that is not a transparent address is rejected
+    /// at the boundary rather than reaching the index. This is the
+    /// security-relevant fix: the filter string is now validated input.
+    #[test]
+    fn a_bogus_address_is_rejected() {
+        assert!(matches!(
+            GetAddressDeltasParams::new_address("not an address").into_domain(),
+            Err(GetAddressDeltasError::Address { .. })
+        ));
+
+        assert!(matches!(
+            GetAddressDeltasParams::new_filtered(
+                vec![TESTNET_P2PKH.to_string(), "not an address".to_string()],
+                0,
+                0,
+                false,
+            )
+            .into_domain(),
+            Err(GetAddressDeltasError::Address { .. })
         ));
     }
 }

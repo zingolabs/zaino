@@ -240,6 +240,14 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Stat
     }
 }
 
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> crate::IndexedTipIndexer
+    for NodeBackedIndexerServiceSubscriber<Source>
+{
+    fn subscribe_indexed_tips(&self) -> crate::IndexedTipStream {
+        self.indexer.indexed_tip_stream()
+    }
+}
+
 impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     NodeBackedIndexerServiceSubscriber<Source>
 {
@@ -1105,16 +1113,30 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
             .get_transaction_status(&snapshot, &txid)
             .await?;
 
+        // The zebra sink still takes the RPC integers, so the typed state is
+        // rendered through its codec at this boundary; the constructor owns
+        // the depth + 1 off-by-one the arithmetic here used to fold in.
+        let out_of_range = |e: zaino_primitives::types::HeightOverflow| {
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(format!(
+                "best-chain height out of range: {e}"
+            )))
+        };
         // `time`/`blocktime` are the containing block's header timestamp, which the
         // index already holds — no validator round-trip. An unmined transaction has
         // no containing block, so both fields stay absent, as zebrad leaves them.
         let (height, confirmations, block_hash, block_time, in_best_chain) =
             match best_chain_location {
                 Some(types::BestChainLocation::Block(block_hash, height)) => {
-                    let confirmations: i64 = u32::from(snapshot.best_tip().height)
-                        .saturating_sub(height.0)
-                        .saturating_add(1)
-                        .into();
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mined(
+                        zaino_primitives::types::BlockConfirmations::of_best_chain_block(
+                            zaino_primitives::types::Height::try_from(height.0)
+                                .map_err(out_of_range)?,
+                            zaino_primitives::types::Height::try_from(u32::from(
+                                snapshot.best_tip().height,
+                            ))
+                            .map_err(out_of_range)?,
+                        ),
+                    );
 
                     let block_time = self
                         .indexer
@@ -1124,14 +1146,21 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
 
                     (
                         Some(zebra_chain::block::Height::from(height)),
-                        Some(confirmations),
+                        Some(confirmations.to_rpc_i64()),
                         Some(zebra_chain::block::Hash::from(block_hash)),
                         block_time,
-                        Some(true),
+                        Some(confirmations.is_in_best_chain()),
                     )
                 }
                 Some(types::BestChainLocation::Mempool(_height)) => {
-                    (None, Some(0), None, None, Some(false))
+                    let confirmations = zaino_primitives::types::TxConfirmations::Mempool;
+                    (
+                        None,
+                        Some(confirmations.to_rpc_i64()),
+                        None,
+                        None,
+                        Some(confirmations.is_in_best_chain()),
+                    )
                 }
                 None => (None, None, None, None, Some(false)),
             };

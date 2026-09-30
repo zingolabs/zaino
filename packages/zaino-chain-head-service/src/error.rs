@@ -1,5 +1,7 @@
 //! Failures the runtime can report.
 
+use zaino_source::FetchError;
+
 /// The chain head could not advance against its source.
 ///
 /// The non-finalised state's `SyncError` and `UpdateError`, merged and renamed:
@@ -16,8 +18,13 @@ pub enum ChainHeadAdvanceError {
     ///
     /// Transient by assumption: the writer task backs off and retries, and only
     /// escalates after a run of them.
+    ///
+    /// Carries the transport [`FetchError`] as its `#[source]`, so
+    /// [`Error::source`](std::error::Error::source) yields the underlying cause
+    /// — and with it the machine-readable [`FailureMode`](zaino_source::FailureMode)
+    /// — rather than a flattened string.
     #[error("validator unavailable: {0}")]
-    SourceUnavailable(String),
+    SourceUnavailable(#[source] FetchError),
 
     /// The validator answered, but with data that cannot be reconciled — a
     /// block missing whose child it just served, a header whose difficulty does

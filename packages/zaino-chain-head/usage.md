@@ -89,14 +89,14 @@ head down because there is no method on it that could.
 
 ## Work is anchor-relative
 
-`ChainHeadWork` is accumulated from the chain head's **own anchor**, not from
-genesis. It orders competing branches correctly, which is all the chain head
-needs, and it is not the absolute chainwork a validator reports.
+A block's `work` is a `RelativeChainWork`: the total over the blocks this window
+retains above its **own anchor**. The anchor's own work is
+`RelativeChainWork::ZERO`, and each block above folds its own work onto its
+parent's total.
 
-The distinct type is there to stop the two being confused. Do not serve a
-`ChainHeadWork` where an API promises chainwork, and do not compare one against
-a value from a validator — two chain heads with different anchors produce
-different numbers for the same block.
+That orders competing branches, which is all the chain head needs. Two chain
+heads with different anchors produce different numbers for the same block, so
+compare a `RelativeChainWork` only against another from the same window.
 
 ## The driven port names only what is asked
 
