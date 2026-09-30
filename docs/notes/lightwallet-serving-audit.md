@@ -67,7 +67,6 @@ No index was available locally, so no number in this document was measured by th
   - a sample of every answer kind is held to zebra's JSON-RPC.
   - The reference is checked against librustzcash's parse of real mainnet blocks (all field
     kinds).
-- **Regtest proof:** `clientless/tests/lightwallet_load.rs`, the per-pool smoke run.
 - Every [est] above stands until that phase reports.
 
 ---

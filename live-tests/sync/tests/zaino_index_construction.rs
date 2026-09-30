@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use ztest::backends::zainod::{family, ServeCaps};
 use ztest::backends::zingolib::{NoteCounts, PerformanceLevel};
-use ztest::loadtest::load::{LoadRun, LoadSubject, Plan, PodCgroup, Target};
+use ztest::loadtest::load::{LoadRun, LoadSubject, Plan, Target};
 use ztest::loadtest::reference::{block_diff, tree_state_diff, Fees, Zebra};
 use ztest::prelude::*;
 use ztest::snapshots::IRONWOOD_MAINNET;
@@ -115,6 +115,7 @@ const FETCHED_OPS: [Op; 6] = [
     timeout = "60h",
     qos = sync,
     footprint = "14c/20Gi",
+    runner = "8c/8Gi",
     tags = ["mainnet", "zaino", "index", "light-wallet", "pepper-sync", "ironwood", "live-tip"],
 )]
 async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
@@ -132,7 +133,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                 )
                 .follow_from(IRONWOOD_MAINNET, [GOLDEN_MAINNET_P2P])
                 .disk(Disk::gib(CHAIN_DISK_GIB))
-                .resources(Cpu::cores(6), Mem::gib(10)),
+                .resources(Cpu::cores(4), Mem::gib(10)),
             );
             let zaino = t.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile", context = "../..")
@@ -142,7 +143,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                     .serve_caps(SERVE_CAPS)
                     .max_address_rows(MAX_ADDRESS_ROWS)
                     .disk(Disk::gib(INDEX_DISK_GIB))
-                    .resources(Cpu::cores(8), Mem::gib(10)),
+                    .resources(Cpu::cores(10), Mem::gib(10)),
             );
             let wallet = t.add_wallet(Wallet::zingolib().performance(PerformanceLevel::Maximum));
             (zebra, zaino, wallet)
@@ -318,13 +319,12 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     let serve = {
         let (zebra, zaino, load, served_from) =
             (zebra.clone(), zaino.clone(), load.clone(), served_from.clone());
-        run.then("serve", move |cx: SyncCtx| async move {
+        run.then("serve", move |_cx: SyncCtx| async move {
             served_from.store(u32::from(zaino.latest_block_height().await?), Ordering::Relaxed);
-            let pod = cx.indexer_pod().ok_or("serve: no indexer pod bound")?.clone();
             let target = Target {
                 uri: zaino.grpc_uri().await?,
                 zebra: zebra.json_rpc().await?,
-                server: Arc::new(PodCgroup::new(pod)),
+                server: Arc::new(zaino.clone()),
                 chain_name: "main".to_owned(),
             };
             let subject = LoadSubject::new(target, Plan::mainnet());
