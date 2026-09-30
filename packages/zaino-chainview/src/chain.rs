@@ -103,8 +103,11 @@ impl Walk {
     }
 
     /// `Some` once joined onto `held` or down to the floor; `None` = another link needed
+    ///
+    /// - Join only onto a held chain reaching this walk's floor (a retreat lowers the floor)
     pub(crate) fn finish(&self, held: Option<&EndpointChain>) -> Option<EndpointChain> {
-        let joined = held.filter(|held| held.hash_at(self.at) == Some(self.want));
+        let joined = held
+            .filter(|held| held.floor <= self.floor && held.hash_at(self.at) == Some(self.want));
         let base = match joined {
             Some(held) => EndpointChain {
                 floor: held.floor,
@@ -186,11 +189,12 @@ mod tests {
             ([12, 11, 10].map(height).to_vec(), expected.to_vec())
         );
 
-        // retreat onto a held ancestor = a join with nothing above it
-        let (retreat, fetched) = walk(block(0, 9), Some(&next), &[]);
+        // retreat onto a held ancestor: the floor drops (8 → 6), so the walk re-reads down to it
+        let below_held: Vec<BlockLink> = (7..=9).rev().map(|h| link(0, h, 0)).collect();
+        let (retreat, fetched) = walk(block(0, 9), Some(&next), &below_held);
         assert_eq!(
-            (fetched, blocks(&retreat.expect("held"))),
-            (vec![], [8, 9].map(|h| block(0, h)).to_vec())
+            (fetched, blocks(&retreat.expect("floor reached"))),
+            ([9, 8, 7].map(height).to_vec(), [6, 7, 8, 9].map(|h| block(0, h)).to_vec())
         );
 
         // endpoint's chain moved mid-walk: a link that is not the wanted hash = raced

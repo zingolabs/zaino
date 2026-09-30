@@ -23,4 +23,7 @@ zaino-primitives.workspace = true
 zaino-source.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }

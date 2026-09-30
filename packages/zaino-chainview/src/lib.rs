@@ -14,6 +14,8 @@ mod telemetry;
 mod view;
 
 #[cfg(test)]
+mod network_model;
+#[cfg(test)]
 mod tests;
 
 pub use endpoint::EndpointPoller;
