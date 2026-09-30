@@ -51,3 +51,30 @@ description = """
 `ChainViewSync` no longer deadlocks when the store rejects a freeze with an \
 error other than a gap, such as `NotReady` during a background build.
 """
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+`NodeBackedIndexerService` reads through ChainView directly where it used to \
+rebuild legacy shapes: treestates and subtree roots come from one snapshot \
+read, and the streaming RPCs share one spawn-and-timeout helper. RPC \
+signatures, statuses and messages are unchanged, except that \
+`GetTaddressBalanceStream` reports a single timeout message.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`GetTaddressTransactions` reads every transaction from one snapshot rather \
+than one per transaction, so a reorg mid-stream can no longer mix chains.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "feature"
+description = """
+`conversion::compact_tx_to_wire` is public, temporarily, so the indexer \
+renders mempool transactions with the same conversion as stored blocks.
+"""
