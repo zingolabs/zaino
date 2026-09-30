@@ -115,7 +115,6 @@ const FETCHED_OPS: [Op; 6] = [
     timeout = "60h",
     qos = sync,
     footprint = "14c/20Gi",
-    runner = "8c/8Gi",
     tags = ["mainnet", "zaino", "index", "light-wallet", "pepper-sync", "ironwood", "live-tip"],
 )]
 async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
