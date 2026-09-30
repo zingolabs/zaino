@@ -27,8 +27,8 @@ code to run on an async runtime, and be quite simple.
 ```text
  zaino-source (bulk) ───────────┐
                                 ├─▶ Producer ──▶ BlockSink ─┬─▶ [≤ 256 MiB] ─▶ compact-block
- zaino-non-finalized-state ─────┘                            ├─▶ [≤ 256 MiB] ─▶ tree-state
- (tip, reorgs)                                               └─▶ [≤ 256 MiB] ─▶ transparent-address
+ zaino-non-finalized-state ─────┘                           ├─▶ [≤ 256 MiB] ─▶ tree-state
+ (tip, reorgs)                                              └─▶ [≤ 256 MiB] ─▶ transparent-address
 ```
 
 ## Steps

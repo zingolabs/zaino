@@ -1,9 +1,8 @@
 # zaino-persistence
 
 The storage core the index crates share: the file layer, the manifest commit
-point, page checksums (the one disk-integrity check every index file carries),
-and immutable sorted segments. The protocol these implement is
-[`docs/design/durability.md`](../../docs/design/durability.md).
+point, page checksums and immutable sorted segments. The protocol these
+implement is [`docs/design/durability.md`](../../docs/design/durability.md).
 
 Each index owns its own record layouts: fixed-width `encode`/`decode` functions
 beside a golden-bytes test (e.g. `zaino-index-tree-state/src/heights.rs`).
@@ -97,8 +96,7 @@ let bytes = pages.bytes(range);          // zero-copy, every page checked on fir
   larger readahead, pages reclaimed sooner), `Normal` (no advice). `PagedFile`
   views (appendable files) are `Normal`.
 - `scrub(dir, relative, sealed)` is the offline check: plain sequential reads,
-  every page against its CRC and the `.crc` against `sums` → `Scrub { committed_bytes, orphaned_bytes, lost, bad_sums,
-  bad_pages }`. Each index exposes `committed_files(dir, network)` →
+  every page against its CRC and the `.crc` against `sums` → `Scrub { committed_bytes, orphaned_bytes, lost, bad_sums, bad_pages }`. Each index exposes `committed_files(dir, network)` →
   `CommittedFiles { heights, files }`, the list `zainod verify` scrubs.
 
 ## Manifest and index directory (`manifest`, `dir`)
@@ -194,12 +192,14 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
 - `get` probes the newest segment first. The list is roughly data age (batches
   append, a merge takes its oldest input's slot) and lookups skew recent. Keys
   are unique across segments, so order never changes an answer.
+
 - `get_many` is the batched lookup (RocksDB `MultiGet`): it sorts the keys and
   resolves them in key order. Neighbouring keys share fence, filter and record
   pages, so one fault serves several. From 64 keys it resolves contiguous sorted
   runs in parallel on the rayon pool (a cold batch keeps many reads in flight);
   below that it stays on the calling thread, where rayon's wake-up cost 5–10×
   the lookups themselves (measured). Use it whenever one request needs many keys.
+
 - Readers map a probed set's segments `Access::Random` (point lookups) and an
   unprobed set's `Access::Normal` (range scans want readahead). A merge maps its
   inputs separately with `Access::Sequential`, so it neither slows lookups nor is
@@ -209,18 +209,22 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
   encoded prefixes, so byte order must be key order. `const PROBED = true` gives
   each segment a filter and requires the encoded key's first 8 bytes uniform (a
   hash, a txid): the filter shards on them.
+
 - `Record` (`type Key`, `const STRIDE`, `key`, `encode`, `decode`) is
   fixed-width, key first. A batch with a duplicate key panics (asserted while
   writing, before anything is sealed). Key length > 0, ≤ `STRIDE`, and ≥ 8 when
   probed are checked at compile time.
+
 - Keys are unique across a set's committed segments (the owner's invariant):
   `range` panics on a key it finds in two segments, and a merge of two such
   segments panics on its thread, resumed at the next `batch()`.
+
 - A merge's output must hold exactly its inputs' row count (asserted when it
   lands). Under `cfg(test)` or feature `testing`, every sealed segment (batch or
   merge) is read back through its page checksums: row count, strictly ascending
   keys, no filter false negative, and a CRC of the rows equal to the one taken
   while writing (RocksDB `paranoid_file_checks`).
+
 - Merges run in the background, off the commit path (LevelDB/RocksDB
   background compaction). `committed()` starts one per size tier
   (`⌊log_fanout(records)⌋`) that lists `fanout` idle segments, taking the oldest of
@@ -230,6 +234,7 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
   for its inputs, and that batch's manifest commits both at once. Inputs are
   unlinked only after that manifest is durable. Peers need not be adjacent,
   since keys are unique across segments and list order means nothing to readers.
+
 - One merge per tier at a time, and at most `MERGE_SLOTS` (4) doing work at once
   across every set in the process. A launched merge waits for a free slot, and
   the lowest tier waiting gets the next one, so a small merge never waits behind
@@ -240,43 +245,54 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
   (`STALL_WINDOWS`), `batch()` waits for that merge (RocksDB
   `level0_stop_writes_trigger`), which bounds how many segments a read fans out
   over.
+
 - Errors surface at the next `batch()`, and a merge panic (a corrupt input
   page) resumes there. Dropping the log cancels and joins every merge; a
   cancelled output is unlisted, so the next open removes it.
+
 - Publishes `zaino_lsm_*` metrics labelled by `set` (the
   segment directory's name). They cover segments and running merges per size
   tier, the stall count, rows batched and merged (their ratio is write
   amplification), merge bytes, and merge and stall durations. Register them with
   `lsm::describe_metrics` and `lsm::METRIC_BUCKETS`.
+
 - Logs (`tracing`, fields `set`, `tier`, `rows`, `size`):
+
   - `Compacting segments` (debug, adds `segments`) when a merge starts.
   - `Compacted segments` (debug, adds `took`) once the manifest listing its
     output is durable and its inputs are unlinked.
   - `Commit waited on compaction` (warn) when a stall joins a merge.
   - A merge thread runs inside the span that opened or batched the log, so its
     lines carry the owner's context.
+
 - Every `PagedFile` starts writeback per 1 MiB appended
   (`FileHandle::write_behind` = `sync_file_range(SYNC_FILE_RANGE_WRITE)`,
   RocksDB `bytes_per_sync`). A merge's seal-time `fsync` then finds little
   dirty data, so it never stalls the commit path's own `fsync`s.
+
 - A segment is `records ‖ fences ‖ summary ‖ filter`. The summary holds the
   first key of every page of fences, and a reader copies it into memory at
   open, so a seek is a search in memory, one page of fences, then one block of
   rows (≈ one page): two page reads per segment whatever its size.
+
 - A reader reads and checks each segment's whole filter when it maps the
   segment (`warm_filter`), so no probe ever faults in or checks a cold filter
   page, and a corrupt filter dies at open. Merges never probe, so they skip it.
+
 - `Key::PROBED` filters whole keys (point lookups). `Key::FILTER_PREFIX` filters
   the first N bytes of a range-scanned key: each distinct prefix goes into the
   filter once, and `range_at_most` skips every segment whose filter rules out
   a prefix the range's start and end share. Either way the filter shards on the
   first 8 filtered bytes, which must be uniform.
+
 - A segment being written keeps its fences and filter fingerprints in memory
   only up to 1 MiB each, then spills them to `<id>.fences.scratch` and
   `<id>.filter.scratch` beside it, and copies them in after the records. Merge
   memory stays at a few MiB whatever the segment's size, for about 2% extra
   I/O. Scratch files are never listed; opening a set deletes any it finds.
+
 - `LsmStore::merge_finished()` = a merge is done and waits for the next commit
   to land it (an index uses it for `IndexWriter::wants_commit`).
+
 - Filter sizing (BinaryFuse8, ≤ 2²⁰ keys per shard):
   [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §7.

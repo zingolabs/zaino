@@ -43,12 +43,25 @@ No index was available locally, so no number in this document was measured by th
 - **11, metrics:** fixed method/code label tables, handles resolved once.
 - **12, stalls:** owed-frame watchdog per connection plus a 30 s request-body deadline. The per-IP work-stream cap is **not** done: it would tighten the CGNAT problem, and the stall timeout closes the permit-holding hole it targeted.
 
-**§3.5 harness: built, not yet run on mainnet.**
+**§3.5 harness: built; first mainnet run 2026-09-30.**
 
 - `ztest::loadtest::load` holds the plan, stages and report. It runs as phase `serve` of
   `live-tests/sync/tests/zaino_index_construction.rs`.
-- **Client:** raw bytes, never decoded on the load path.
-- **Sessions:** pepper-sync steady, librustzcash restore.
+- **Client:** raw bytes, never decoded on the load path. One engine worker per driver core but
+  one; a stage is flagged client-bound when the engine saturates over its window or across any
+  one burst's drain.
+- **Sessions:** pepper-sync at the tip (incremental); fresh wallets birthday → tip, split between
+  pepper-sync's fresh-wallet sync (gap-limit `GetTaddressTxids`, shard-ordered ranges) and
+  librustzcash's batched loop, each birthday drawn from a profile (recent, Sandblast, anywhere).
+- **Shape:** per scenario, a stair-step capacity test: ×1.5 wallets per 30 s level until a level
+  breaches the SLO (p99, error rate, fresh goodput vs paced demand) or saturates the driver;
+  the last level that held is soaked 2 min and reported as the capacity.
+- **First run (single-thread engine, 2-core driver):** every at-tip stage was client-bound.
+  Burst drain grew linearly with wallets (250 → 0.23 s, 5,000 → 6.0 s, ~100 µs of client CPU
+  per request) while zainod used ≤ 0.12 cores. One unpaced restore drew 123 MB/s at 0.93 zainod
+  cores (7.5 CPU-ms/MB, ~10× the §0 estimate). 16 restores plateaued at 250 MB/s on 1.2 cores:
+  bound by neither CPU. `GetAddressUtxos` p99 reached 22–33 s on the addresses the restores
+  picked.
 - **Correctness:**
   - every served block is byte-consistent;
   - a sample of every answer kind is held to zebra's JSON-RPC.
