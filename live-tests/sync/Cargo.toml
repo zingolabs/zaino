@@ -24,6 +24,11 @@ serde_json = "1.0"
 # Same major as ztest's: downcasting `RpcError`'s boxed source needs the one `tonic::Status` type
 tonic = "0.14"
 
+# Driver = load generator + real wallet: unoptimised tonic / h2 / blake3 / trial decryption cost it
+# ~10× CPU per request; profile code itself stays debug (fast rebuilds, assertions on)
+[profile.dev.package."*"]
+opt-level = 3
+
 # pepper-sync's proto crate: ironwood fields exist only at this rev (needs protoc at build time)
 [patch.crates-io]
 lightwallet-protocol = { git = "https://github.com/zingolabs/lightwallet-protocol-rust", rev = "9bdfdc77eb283f2a3d26c27100cc2ac90148cd93" }

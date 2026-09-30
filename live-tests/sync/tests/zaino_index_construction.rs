@@ -715,7 +715,8 @@ async fn served_tip_gap(zaino: &ZainoIndexer, zebra: &ZebraValidator) -> Verdict
     sync_ensure!(served <= tip, "zaino serves {served}, above zebra's tip {tip}");
     sync_ensure!(tip - served <= CHAIN_MOTION_SLACK, "zaino serves {served}, zebra at {tip}");
     let lag = tip - finalized;
-    sync_ensure!(lag <= FINALISED_DEPTH + CHAIN_MOTION_SLACK, "durable {lag} behind tip {tip}");
+    let bound = FINALISED_DEPTH + CHAIN_MOTION_SLACK;
+    sync_ensure!(lag <= bound, "durable {lag} behind tip {tip} (bound {bound})");
     Verdict::Satisfied
 }
 
