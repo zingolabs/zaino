@@ -28,9 +28,6 @@ jsonrpc_address = "127.0.0.1:18232"
 [serve]
 # CompactTxStreamer gRPC, plaintext HTTP/2
 grpc_listen_address = "127.0.0.1:8137"
-# Max blocks per GetBlockRange; over it = error, never a short answer
-# - below 65536 locks pepper-sync into a retry loop (asks for a whole 2^16 shard range)
-# max_block_range = 131072
 # Max transparent receives one address request walks (all its addresses); over = RESOURCE_EXHAUSTED
 # max_address_rows = 100000
 

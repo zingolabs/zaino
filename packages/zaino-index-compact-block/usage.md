@@ -80,8 +80,7 @@ tokio::spawn(index.run(blocks, fees, cancel.clone()));
 ## Serving
 
 ```rust
-let service = CompactBlockService::new(index.published().served())
-    .with_max_range(max_block_range);
+let service = CompactBlockService::new(index.published().served());
 ```
 
 - `published().served()` (`zaino_sync::Served<ReadView>`) = the view the loop
@@ -101,8 +100,9 @@ let service = CompactBlockService::new(index.published().served())
   so a reorg can land between the locate and the read.
 - `range(start, end, pools)` (heights, both inclusive) returns a `RangeCursor`:
   `start <= end` is asserted (the caller orders; `zaino-grpc` parses client
-  heights into `Height` at the router), `end` is clamped to the tip, a clamped span over `max_range` (default
-  `DEFAULT_MAX_BLOCK_RANGE` = 131 072) is `RangeTooLarge`, never truncated.
+  heights into `Height` at the router), `end` is clamped to the tip, and there is no length cap: pepper-sync asks
+  for a whole shard in one call, and a shard (2^16 notes) spans any number of
+  blocks. The work is bounded per window instead (below).
 - `Pools::default()` = the shielded set (no transparent), matching an empty
   `poolTypes`; `Pools::ALL` = every pool. Pruning walks each record's framing,
   without a decode; `Pools::ALL` serves the stored bytes untouched.

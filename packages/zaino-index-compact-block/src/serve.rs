@@ -5,7 +5,7 @@
 //! - block / range = zero-copy [`Bytes`] slices of the mapping (range walked per [`SPAN_BUDGET`]
 //!   window), pool pruning = framing walk
 
-use std::{num::NonZeroU32, sync::Arc};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use zaino_primitives::types::Height;
@@ -17,14 +17,6 @@ use crate::{project::project, project::record_hash, view::ReadView, Pools, HASH}
 ///
 /// - `GetBlockRange` work per step bounded by this, not by range length
 pub(crate) const SPAN_BUDGET: usize = 1 << 20;
-
-/// Blocks one `GetBlockRange` may return unless an operator overrides it
-///
-/// - 2 x the 2^16 sapling/orchard subtree: pepper-sync asks for a whole shard range in one call
-/// - headroom for a scan range straddling a subtree boundary (client never shrinks its ask)
-/// - not a memory bound (streamed 1 MiB at a time); a cap on one request's work
-pub const DEFAULT_MAX_BLOCK_RANGE: NonZeroU32 =
-    NonZeroU32::new(2 * 65_536).expect("131072 is non-zero");
 
 /// Small (transport maps these onto gRPC codes; this crate names no transport)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -40,9 +32,6 @@ pub enum ServeError {
     #[error("block hash is not in the index")]
     HashNotFound,
 
-    #[error("requested {asked} blocks, the per-range maximum is {limit}")]
-    RangeTooLarge { asked: u64, limit: u32 },
-
     #[error("the index holds no blocks")]
     Empty,
 
@@ -57,19 +46,12 @@ pub enum ServeError {
 #[derive(Debug, Clone)]
 pub struct CompactBlockService {
     served: Served<ReadView>,
-    max_range: NonZeroU32,
 }
 
 impl CompactBlockService {
     /// Unsynced → every method [`ServeError::Syncing`]
     pub fn new(served: Served<ReadView>) -> Self {
-        Self { served, max_range: DEFAULT_MAX_BLOCK_RANGE }
-    }
-
-    /// Overrides [`DEFAULT_MAX_BLOCK_RANGE`] for `GetBlockRange`
-    pub fn with_max_range(mut self, max_range: NonZeroU32) -> Self {
-        self.max_range = max_range;
-        self
+        Self { served }
     }
 
     /// Every tier pinned for one request or stream (one load); checked before any other
@@ -123,6 +105,7 @@ impl CompactBlockService {
     /// `GetBlockRange` of heights `start` to `end`, both inclusive, as a cursor over both tiers
     ///
     /// - `start <= end` (callers refuse a reversed request)
+    /// - no length cap (pepper-sync asks a whole shard, unbounded in blocks; work bounded per window)
     /// - no read here (the first file window = the cursor's first blocking step)
     pub fn range(
         &self,
@@ -149,13 +132,6 @@ impl CompactBlockService {
 
         // clamp, never refuse (a wallet asking past the tip wants what exists)
         let served_end = end.min(tip);
-
-        // measured after the clamp (an open-ended `end` over a short chain = a small request)
-        // still over = refused, never truncated (a short answer reads as the chain's end)
-        let asked = u64::from(served_end) - u64::from(start) + 1;
-        if asked > u64::from(self.max_range.get()) {
-            return Err(ServeError::RangeTooLarge { asked, limit: self.max_range.get() });
-        }
 
         Ok(RangeCursor {
             finalized_tip: view.finalized_tip().min(Some(served_end)),
@@ -375,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn a_range_is_walked_in_bounded_windows_and_refused_past_the_maximum() {
+    fn a_range_is_walked_in_bounded_windows() {
         let service = service(8);
 
         // budget under one record: one record per window anyway (progress beats the bound)
@@ -389,20 +365,6 @@ mod tests {
         let windowed = drain(service.range(h(0), h(7), Pools::ALL).expect("range"));
         assert_eq!(windowed.len(), 1, "unprojected span goes out whole");
         assert_eq!(windowed.concat(), chunks.concat(), "same bytes, one window");
-
-        // max bounds the work → measured after the tip clamp (100 over an 8-block store = an
-        // 8-block request); still over the cap = refused whole, never trimmed (reads as chain end)
-        let capped = service.clone().with_max_range(NonZeroU32::new(4).expect("4 is non-zero"));
-        let refused = capped.range(h(0), h(99), Pools::ALL).err();
-        let too_large = Some(ServeError::RangeTooLarge { asked: 8, limit: 4 });
-        assert_eq!(refused, too_large, "refused whole, naming the clamped span");
-        let at_limit = drain(capped.range(h(0), h(3), Pools::ALL).expect("at the limit"));
-        assert_eq!(heights(&at_limit), [0, 1, 2, 3]);
-
-        // under the cap once clamped (open-ended `to` over a short chain = a small request)
-        let roomy = service.with_max_range(NonZeroU32::new(8).expect("8 is non-zero"));
-        let clamped = drain(roomy.range(h(0), h(99), Pools::ALL).expect("clamped to 8"));
-        assert_eq!(heights(&clamped), [0, 1, 2, 3, 4, 5, 6, 7], "an end past the tip is fine");
     }
 
     /// Range bounds and pool projection: clamped at the tip, a start past it = a miss, a projected

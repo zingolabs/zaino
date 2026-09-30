@@ -22,7 +22,6 @@ use zaino_grpc::GrpcLimits;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use zaino_index_compact_block::DEFAULT_MAX_BLOCK_RANGE;
 use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
 use zcash_protocol::consensus::NetworkType;
@@ -216,13 +215,6 @@ impl Default for IndexConfig {
 pub struct ServeConfig {
     /// Address the `CompactTxStreamer` gRPC server listens on.
     pub grpc_listen_address: SocketAddr,
-    /// Largest number of blocks one `GetBlockRange` may return. Over it is an error, never a
-    /// short answer — a wallet given fewer blocks than it asked for reads that as the chain end.
-    ///
-    /// Default is 2 x the 2^16 subtree: pepper-sync asks for a whole shard range in one call and
-    /// never shrinks its ask, so a cap under 65536 locks that client into its retry loop. The
-    /// body is streamed, so this caps one request's work rather than the server's memory.
-    pub max_block_range: NonZeroU32,
     /// Most transparent receives one request may walk, across all its addresses. Over it the
     /// request is `RESOURCE_EXHAUSTED`, never a short list or a partial balance. Every address
     /// method walks the whole history, whatever height range it asks about.
@@ -233,7 +225,6 @@ impl Default for ServeConfig {
     fn default() -> Self {
         Self {
             grpc_listen_address: "127.0.0.1:8137".parse().expect("valid default addr"),
-            max_block_range: DEFAULT_MAX_BLOCK_RANGE,
             max_address_rows: DEFAULT_MAX_ADDRESS_ROWS,
         }
     }

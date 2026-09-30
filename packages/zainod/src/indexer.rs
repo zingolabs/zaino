@@ -153,8 +153,7 @@ async fn boot(
         transparent.as_ref().map(|(_, index)| index.durable_tip()),
     ];
 
-    let compact_block_service = CompactBlockService::new(compact_block.published().served())
-        .with_max_range(config.serve.max_block_range);
+    let compact_block_service = CompactBlockService::new(compact_block.published().served());
     let block_hash_service =
         block_hash.as_ref().map(|(_, index)| BlockHashService::new(index.published().served()));
     let tree_state_service = tree_state

@@ -90,13 +90,14 @@ makes six calls, not three.
 
 **`GetBlockRange` has no client-side size limit.** pepper-sync requests an
 entire scan range in one call, and scan ranges are derived from subtree
-boundaries, so a historic range can be **2^16 = 65536 blocks** in one streaming
-call. Its flow control is client-side and mid-stream: it counts outputs and
-splits the scan *task* without cancelling the RPC. Any server-side maximum below
-65536 makes Zaino unusable for zingolib, and because the client retries
-unboundedly on a stream error, it presents as a hang rather than a failure. This
-is why `serve.max_block_range` defaults to 131072, and why exceeding it is an
-error rather than a short answer: a wallet given fewer blocks than it asked for
+boundaries. A subtree is 2^16 *notes*, not blocks, so in a quiet stretch of the
+chain one range spans any number of blocks: a mainnet wallet sync asked for
+158,853 in one call. Its flow control is client-side and mid-stream: it counts
+outputs and splits the scan *task* without cancelling the RPC. Any server-side
+maximum breaks zingolib for some birthday, and because the client retries
+unboundedly on a stream error, it presents as a hang rather than a failure. So
+Zaino has no range cap (the stream is bounded per 1 MiB window instead), and a
+short answer is never an option: a wallet given fewer blocks than it asked for
 reads that as the end of the chain.
 
 **Do not implement `GetAddressUtxos` paging naively.** lightwallet-protocol

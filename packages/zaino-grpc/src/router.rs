@@ -635,7 +635,6 @@ mod compact_block {
             ServeError::NotFound { .. } | ServeError::HashNotFound => {
                 Status::not_found(error.to_string())
             }
-            ServeError::RangeTooLarge { .. } => Status::invalid_argument(error.to_string()),
             ServeError::Malformed { .. } => Status::internal(error.to_string()),
         }
     }
@@ -2181,30 +2180,9 @@ mod tests {
         let carried = actions.any(|a| !a.nullifier.is_empty());
         assert!(carried, "fixture carries nullifiers (projection not vacuously empty)");
 
-        // Over the per-range limit: a status, not a short body a wallet would read as the end
-        // of the chain.
-        let mut capped = unwired(SpyInner::default()).with_compact_block(
-            CompactBlockService::new(Served::fixed(store.reader().pin()))
-                .with_max_range(std::num::NonZeroU32::new(2).expect("2 is non-zero")),
-        );
-        let range = proto::BlockRange {
-            start: Some(proto::BlockId { height: 1, hash: Vec::new() }),
-            end: Some(proto::BlockId { height: 5, hash: Vec::new() }),
-            pool_types: Vec::new(),
-        };
-        let response = capped
-            .call(framed_request(path::GET_BLOCK_RANGE, range.encode_to_vec().into()))
-            .await
-            .expect("router answers");
+        // Malformed ranges are refused at the boundary, never reaching the index's asserts.
         // grpc-message = percent-encoded
         let invalid = HeaderValue::from_static("3");
-        let named = "requested%205%20blocks,%20the%20per-range%20maximum%20is%202";
-        let headers = response.headers();
-        let reply = headers.get("grpc-message").and_then(|message| message.to_str().ok());
-        assert_eq!((headers.get("grpc-status"), reply), (Some(&invalid), Some(named)));
-        assert!(body_of(response).await.is_empty(), "no blocks, never a truncated range");
-
-        // Malformed ranges are refused at the boundary, never reaching the index's asserts.
         let at = |height: u64| Some(proto::BlockId { height, hash: Vec::new() });
         let above_ceiling = |bound: &str, height: u64| {
             format!("range%20{bound}%20{height}%20is%20above%20the%20protocol%20height%20ceiling")

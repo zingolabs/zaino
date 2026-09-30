@@ -66,7 +66,7 @@ pub use index_writer::{CompactBlockIndexWriter, IndexWriterError};
 pub(crate) use non_finalized::NonFinalizedState;
 pub use project::Pools;
 pub(crate) use record::{HASH, OFFSET};
-pub use serve::{CompactBlockService, RangeCursor, ServeError, DEFAULT_MAX_BLOCK_RANGE};
+pub use serve::{CompactBlockService, RangeCursor, ServeError};
 pub use view::ReadView;
 
 /// On-disk layout version (bumped on any change to the files, the records or the manifest body)

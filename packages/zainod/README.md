@@ -34,7 +34,7 @@ Layered, highest priority first:
 Unknown keys fail the load. The config has `[source]` (Zebra JSON-RPC address
 and auth), `[[chainview_peers]]` (extra validators: the quorum tip and mempool
 are agreed over `source` + these, and bulk sync spreads its fetches over all of
-them), `[serve]` (gRPC listen address, `max_block_range`), `[grpc]` (serving
+them), `[serve]` (gRPC listen address, `max_address_rows`), `[grpc]` (serving
 caps), `[fetch]` (`finalised_depth`, `concurrency`, and `primary_validator` to
 pin bulk sync to one validator), one `[index.<name>]` section per index
 (`compact_block`, `tree_state`, `transparent_address`, each with `path`,

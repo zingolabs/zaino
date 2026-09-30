@@ -335,8 +335,7 @@ call sites are statically disabled under the default filter (`zainod/src/logging
 
 **Trace for a default-pools request** [code]:
 
-1. **`range()`** decodes the request, parses pools, clamps to the tip, checks `max_range`
-   (131,072), and pins a `ReadView` (`serve.rs:118-155`). No read yet.
+1. **`range()`** decodes the request, parses pools, clamps to the tip, and pins a `ReadView` (`serve.rs:118-155`). No read yet.
 2. **`range_response` unfold** (`router.rs:619-675`). For each step:
    - **Below the finalised seam** (`next_touches_disk`, i.e. every file step, hot or cold): take
      a `DiskReadPermit` (FIFO), then `spawn_blocking`, which runs `next_chunk`:

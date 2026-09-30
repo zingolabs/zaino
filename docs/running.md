@@ -42,7 +42,7 @@ its default. In outline:
 | `metrics_endpoint` | The admin listener serving Prometheus `/metrics` and `/livez`. Unset by default, which disables it. |
 | `[source]` | The validator's `jsonrpc_address` (default `127.0.0.1:8232`) and its credentials, either `cookie_path` or `user` and `password`. A cookie path takes precedence. |
 | `[[chainview_peers]]` | Extra validators, in the same shape as `[source]`, that the mempool view takes a quorum over. |
-| `[serve]` | `grpc_listen_address` (default `127.0.0.1:8137`), `max_block_range` (131072) and `max_address_rows` (100000). |
+| `[serve]` | `grpc_listen_address` (default `127.0.0.1:8137`) and `max_address_rows` (100000). |
 | `[grpc]` | Connection, stream and read caps, plus `trusted_proxies`. See [Network exposure](#network-exposure). |
 | `[fetch]` | `finalised_depth` (1000), `concurrency` (32) and `primary_validator`, which pins bulk sync to one validator instead of spreading it across all of them. |
 | `[index.*]` | One table per index, each with `enabled`, `path`, `batch_mib` (64) and `queue_mib` (256). |
