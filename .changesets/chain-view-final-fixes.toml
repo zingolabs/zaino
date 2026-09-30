@@ -129,5 +129,6 @@ description = """
 `spawn_sync` builds the store up to the chain head's floor on launch, then \
 follows the freeze stream. A store previously came up only once a block was \
 frozen, so on a chain that was not moving — or when the chain head's first \
-freeze was sent before the loop subscribed — it was never built.
+freeze was sent before the loop subscribed — it was never built. The loop \
+reports `Ready` once the store's watermark reaches the floor.
 """

@@ -304,8 +304,9 @@ lagged rather than blocking the chain head, and a chain head that re-anchors
 never emits what it skipped. Neither is handled specially, because a missed block
 becomes a gap on the next freeze and the gap repairs itself.
 
-`ChainViewSync::status()` reports `Syncing` while the launch build runs or a gap
-is open, `Ready` once the store has reached the floor or freezes are landing, and `Offline` once the loop has stopped. This is separate
+`ChainViewSync::status()` reports `Syncing` until the store holds the floor and
+while a gap is open, `Ready` once it holds the floor or freezes are landing, and
+`Offline` once the loop has stopped. This is separate
 from the store's own status, which says whether the *database* is healthy;
 this says whether anything is still feeding it. Cancelling the token stops the
 loop, and so does dropping the handle — `shutdown()` additionally publishes

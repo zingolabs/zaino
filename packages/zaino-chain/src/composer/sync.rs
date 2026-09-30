@@ -48,10 +48,12 @@ use zaino_chain_head::{
 };
 use zaino_chain_store::{
     ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreService, FrozenBlock,
+    StoreWatermark,
 };
 use zaino_component::{
     ComponentName, ComponentStatus, Health, Lifecycle, StatusSource, StatusWatch,
 };
+use zaino_primitives::types::Height;
 
 use crate::block::frozen_block;
 use crate::composer::ChainViewComposer;
@@ -96,8 +98,8 @@ pub struct ChainViewSync {
 impl ChainViewSync {
     /// How the loop is faring.
     ///
-    /// `Syncing` while the launch build runs or a gap is being repaired,
-    /// `Ready` once the store has reached the floor or freezes are landing,
+    /// `Syncing` until the store holds the floor and while a gap is being
+    /// repaired, `Ready` once it holds the floor or freezes are landing,
     /// `Offline` once the loop has stopped. The store's own status is
     /// separate and says whether the *database* is healthy; this says whether
     /// anything is still feeding it.
@@ -279,34 +281,35 @@ async fn run<Store, Head, Source>(
     Head: ChainHeadBlockService + ChainHeadFreezeEvents,
     Source: ChainViewSource,
 {
-    // Freezes sent meanwhile wait in `frozen`; those at or below the floor are
-    // skipped by the store.
+    let mut watermark = composer.store.subscribe_watermark();
     let floor = composer
         .head
         .current()
         .best_chain()
         .next()
         .map(|block| block.height());
+
     if let Some(floor) = floor {
         tokio::select! {
             biased;
             () = cancel.cancelled() => {}
-            built = composer.store.build_to(floor) => match built {
-                Ok(()) => {
-                    status.send_replace(report(Lifecycle::Ready, Health::Healthy));
-                }
-                Err(error) => {
-                    warn!(%error, %floor, "building to the chain head's floor failed");
-                    status.send_replace(report(Lifecycle::Syncing, Health::Recoverable));
-                }
+            built = composer.store.build_to(floor) => if let Err(error) = built {
+                warn!(%error, %floor, "building to the chain head's floor failed");
+                status.send_replace(report(Lifecycle::Syncing, Health::Recoverable));
             },
         }
     }
+    let mut launching = floor.is_some_and(|floor| !launched(&watermark, floor, &status));
 
     loop {
         let first = tokio::select! {
             biased;
             () = cancel.cancelled() => break,
+            changed = watermark.changed(), if launching => {
+                launching = changed.is_ok()
+                    && floor.is_some_and(|floor| !launched(&watermark, floor, &status));
+                continue;
+            }
             received = frozen.recv() => received,
         };
 
@@ -336,6 +339,22 @@ async fn run<Store, Head, Source>(
     }
 
     status.send_replace(report(Lifecycle::Offline, Health::Offline));
+}
+
+/// Whether the store holds `floor`, reporting `Ready` once it does.
+fn launched(
+    watermark: &watch::Receiver<StoreWatermark>,
+    floor: Height,
+    status: &watch::Sender<ComponentStatus>,
+) -> bool {
+    let held = watermark
+        .borrow()
+        .tip
+        .is_some_and(|tip| tip.height >= floor);
+    if held {
+        status.send_replace(report(Lifecycle::Ready, Health::Healthy));
+    }
+    held
 }
 
 /// `first`, plus whatever else is already waiting, up to [`MAX_BATCH`].
