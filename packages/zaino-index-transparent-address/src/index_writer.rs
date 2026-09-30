@@ -325,10 +325,22 @@ mod tests {
             let count = writer.finalized_height().map_or(0, |tip| u64::from(tip) + 1);
             let acked = [state.tag, (state.tag + 1).min(10)];
             assert!(acked.contains(&count), "{label}: recovered {count}");
-            let (receives, spent) = segments(&writer);
-            for (set, listed) in [("receives", receives), ("spent", spent)] {
-                let files = state.fs.list(&Path::new("/ta").join(set)).expect("list").len();
-                assert_eq!(files, 2 * listed, "{label}: only listed {set} segments + checksums");
+            // open removed whatever the crash left unlisted; a merge this open launched may
+            // already be writing its output (and scratch), under an id above every listed one
+            let (receives, spent) = writer.segments.get().sets();
+            let listed =
+                [("receives", receives.pin().segments()), ("spent", spent.pin().segments())];
+            for (set, listed) in listed {
+                let newest = listed.iter().map(|segment| segment.id).max();
+                let from_before =
+                    |name: &String| name.get(..10).and_then(|id| id.parse::<u32>().ok()) <= newest;
+                let files = state.fs.list(&Path::new("/ta").join(set)).expect("list");
+                let kept = files.iter().filter(|name| from_before(name)).count();
+                assert_eq!(
+                    kept,
+                    2 * listed.len(),
+                    "{label}: only listed {set} segments + checksums"
+                );
             }
 
             let expected = |count: u64| match count {
