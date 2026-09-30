@@ -112,11 +112,13 @@ Operating it:
 - [Docker](./docs/docker.md): the container image.
 - [Testing](./docs/testing.md): unit tests, live tests, sync profiles, ztest cluster setup.
 - [Live-test guidelines](./live-tests/CLAUDE.md): rules for writing live tests.
-- [Updating Zebra crates](./docs/updating_zebra_crates.md): the one Zebra dependency and how it is pinned.
+- [Updating Zebra](./docs/updating_zebra_crates.md): testing against a new zebrad release, and how the librustzcash forks are pinned.
 - [Cargo docs](https://zingolabs.github.io/zaino/).
 
 How it is built, and why:
 - [Where data lives](./docs/design/boundaries.md): the consensus / keys / everything-else rule that decides what Zaino indexes.
+- [The data sink](./docs/design/data-sink.md): one stream of blocks feeding every index, its four steps, a reorg step by step, and backpressure. Start here.
+- [Sync](./docs/design/sync.md): the Producer, the followers, and the invariants between them.
 - [The non-finalized state](./docs/design/non-finalized-state.md): one fold, two watermarks, and why a reorg is the same operation as a restart.
 - [Index data structures](./docs/design/index-data-structures.md): the two storage shapes every index is an instance of.
 - [Persistence architecture](./docs/design/persistence-architecture.md): the measurements behind append-only files and mmap, and the mmap hazards.
@@ -136,7 +138,7 @@ prevents.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, `ValidatorClient`, and the ordered multi-validator `BlockFetchPool`.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N validators — the two-layer model, quorum and failing closed, and why `ours` is the exception.
 - [`zaino-non-finalized-state`](./packages/zaino-non-finalized-state/usage.md): the in-memory non-final window, how `advance` resolves an extension or a reorg, and why a reorg replays without fetching.
-- [`zaino-sync`](./packages/zaino-sync/usage.md): the one producer (bulk, then the quorum tip), why every index is fed from the rearmost resume point, derived sinks, the `IndexWriter` contract, and what the committed height promises.
+- [`zaino-sync`](./packages/zaino-sync/usage.md): the one producer (bulk, then the quorum tip), why every index is fed from the rearmost resume point, indexes publishing to other indexes, the `IndexWriter` contract, and what the committed height promises.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the on-disk record boundary, immutable sorted segments, and the report vocabulary every index verifier shares.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.
 - [`zaino-internal-block-hash-to-height`](./packages/zaino-internal-block-hash-to-height/usage.md): the hash ↔ height locator every by-hash request resolves through, and why the serving index confirms it.
