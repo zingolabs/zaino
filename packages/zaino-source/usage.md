@@ -20,6 +20,14 @@ async fn sync_one<V: GetBlock + GetChainTip>(validator: &V) -> Result<(), MyErro
 A bound is a statement of dependency, and a short one is a design signal. If a
 function needs eleven ports, it is probably doing eleven things.
 
+Some questions exist in a height-addressed and a hash-addressed form, each as
+its own port (`GetTreestate` / `GetTreestateByHash`, `GetCommitmentTreeRoots` /
+`GetCommitmentTreeRootsByHeight`). A height names a best-chain position that a
+reorg can reassign, so a height-addressed answer that will be paired with other
+reads names the block it describes: `get_commitment_tree_roots_by_height`
+returns the answering block's hash alongside the roots, and the consumer
+compares it against the block it holds before combining the two.
+
 ## The error model, which is the point
 
 ```rust

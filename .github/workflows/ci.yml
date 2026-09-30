@@ -51,6 +51,9 @@ jobs:
       # Only crate the experimental umbrella reaches; clippy --all-features covers its compile
       - run: cargo nextest run --locked -p zaino-state --features experimental_features --no-fail-fast
 
+      # Recorder, admin listener & metric registration contracts compile only under `prometheus`
+      - run: cargo nextest run --locked -p zainod --features prometheus --no-fail-fast
+
   features:
     name: Each feature compiles
     # dev only (~77 checks); --feature-powerset = 412, over the 6h hosted-runner cap

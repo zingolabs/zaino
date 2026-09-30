@@ -13,6 +13,20 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.5.3] - 2026-09-26
+### Internal
+- The packaged lockfile picks up the workspace's minor and patch dependency updates.
+
+## [0.5.2] - 2026-09-11
+
+### Added
+### Changed
+- Documentation no longer refers to zcashd, whose support was removed from
+  Zaino. No code change.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.5.1] - 2026-08-28
 
 ### Added

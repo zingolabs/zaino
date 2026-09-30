@@ -14,21 +14,18 @@
 //! same time. It goes away when ChainIndex is reworked to read the two halves
 //! through their own vocabularies.
 //!
-//! Until then, one thing about the result is load-bearing: its `chainwork` is
-//! **anchor-relative**, because ChainHead accumulates from its own window
-//! rather than from genesis (see [`ChainHeadWork`]). Blocks produced here are
-//! served, never persisted — the finalised state syncs from the validator
-//! independently and computes absolute chainwork itself. Writing one of these
-//! to the database would put a wrong chainwork on disk.
+//! Blocks produced here carry no chain work, because ChainHead cannot know it
+//! — see [`zaino_chain_head`]. The finalised state syncs from the validator
+//! independently and computes its own.
 
 use std::sync::Arc;
 
 use crate::chain_index::{
-    source::BlockchainSource, source_ports::ChainIndexSourcePorts, types::AbsoluteChainWork,
+    source::BlockchainSource, source_ports::ChainIndexSourcePorts,
     validator_source::ValidatorSource,
 };
 use crate::IndexedBlock;
-use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource, ChainHeadWork};
+use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource};
 
 /// A source that can also answer ChainHead's questions.
 ///
@@ -100,9 +97,8 @@ pub enum ChainHeadConversionError {
 /// Re-expresses a ChainHead block as an `IndexedBlock`.
 ///
 /// Only the ChainHead-specific part is here: unwrapping the block into the
-/// domain pieces the store's conversion takes, and turning ChainHead's
-/// anchor-relative work into the type `IndexedBlock` stores. The field mapping
-/// itself lives in the store, because `IndexedBlock` is the store's shape.
+/// domain pieces the store's conversion takes. The field mapping itself lives
+/// in the store, because `IndexedBlock` is the store's shape.
 ///
 /// That split is deliberate. Neither subsystem may depend on the other, and
 /// this does not make one: the store's conversion names nothing from either
@@ -111,24 +107,14 @@ pub enum ChainHeadConversionError {
 /// adapter. What it avoids is a second copy of the mapping, which is what the
 /// codebase had, and which had already drifted over transparent script
 /// classification.
+///
+/// The chain work is `None`: ChainHead has no absolute value to give.
 pub fn indexed_block(block: &ChainHeadBlock) -> Result<IndexedBlock, ChainHeadConversionError> {
     Ok(zaino_chain_store_zainodb::conversion::indexed_block(
         &block.block,
         &block.tree_roots,
-        chainwork(block.work),
+        None,
     )?)
-}
-
-/// ChainHead's anchor-relative work, as the type `IndexedBlock` stores.
-///
-/// Non-zero by construction: ChainHead starts each accumulation at the anchor
-/// block's own work rather than at zero, precisely so this conversion cannot
-/// fail.
-fn chainwork(work: ChainHeadWork) -> AbsoluteChainWork {
-    AbsoluteChainWork::new(
-        core::num::NonZeroU128::new(work.as_u128())
-            .expect("chain head work is accumulated from a non-zero anchor"),
-    )
 }
 
 #[cfg(test)]
@@ -136,7 +122,7 @@ mod tests {
     use super::*;
     use crate::chain_index::tests::vectors::{indexed_block_chain, load_test_vectors};
     use crate::chain_index::types::TxInCompact;
-    use zaino_primitives::types::{TreeRoots, TreeSize};
+    use zaino_primitives::types::{RelativeChainWork, TreeRoots, TreeSize};
 
     /// A vector's `u64` tree size, as the domain carries it.
     fn vector_tree_size(size: u64) -> TreeSize {
@@ -160,17 +146,19 @@ mod tests {
     /// encodings the golden tests already pin. `indexed_block_chain` is the
     /// oracle: it still builds through the old `zebra_chain` path.
     ///
-    /// Anchoring both accumulations at the same first block makes even
-    /// chainwork comparable, so this is a total comparison. It became total
-    /// when the two paths stopped disagreeing about the coinbase input: the
-    /// store's conversion synthesises the null prevout a domain block drops,
-    /// because that input is a persisted field.
+    /// Chain work is the one field that must differ, and the test pins that
+    /// too: the finalised path computes it, and this one cannot know it.
+    /// Everything else agrees, which became true when the two paths stopped
+    /// disagreeing about the coinbase input — the store's conversion
+    /// synthesises the null prevout a domain block drops, because that input is
+    /// a persisted field.
     #[test]
     fn conversion_agrees_with_the_finalised_state_path() {
         let vectors = load_test_vectors().expect("test vectors load");
-        let expected: Vec<IndexedBlock> = indexed_block_chain(&vectors.blocks).collect();
+        let expected: Vec<IndexedBlock<zaino_primitives::types::AbsoluteChainWork>> =
+            indexed_block_chain(&vectors.blocks).collect();
 
-        let mut work: Option<ChainHeadWork> = None;
+        let mut work = RelativeChainWork::ZERO;
         for (vector, expected) in vectors.blocks.iter().zip(&expected) {
             let block = zaino_convert_zebra::block_from_zebra(
                 &vector.zebra_block,
@@ -182,12 +170,8 @@ mod tests {
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = std::num::NonZeroU128::from(block.header.bits.to_work()).get();
-            let accumulated = match work {
-                Some(parent) => parent.checked_add(block_work).expect("no overflow"),
-                None => ChainHeadWork::anchored_at(block_work),
-            };
-            work = Some(accumulated);
+            let block_work = block.header.bits.to_work();
+            work = work.accumulate(block_work).expect("no overflow");
 
             let chain_head_block = ChainHeadBlock {
                 reference: zaino_primitives::types::BlockRef {
@@ -195,7 +179,7 @@ mod tests {
                     height: block.header.height,
                 },
                 parent_hash: block.header.prev_hash,
-                work: accumulated,
+                work,
                 block,
                 tree_roots: TreeRoots {
                     sapling: Some(zaino_primitives::types::TreeRootInfo {
@@ -212,7 +196,15 @@ mod tests {
 
             let actual = indexed_block(&chain_head_block).expect("conversion succeeds");
 
-            assert_eq!(actual.context, expected.context, "block context");
+            assert_eq!(actual.context.index, expected.context.index, "block index");
+            assert_eq!(
+                actual.context.parent_hash, expected.context.parent_hash,
+                "parent hash",
+            );
+            assert_eq!(
+                actual.context.chainwork, None,
+                "a chain head block cannot know its total chain work",
+            );
             assert_eq!(actual.data, expected.data, "block header data");
             assert_eq!(
                 actual.commitment_tree_data, expected.commitment_tree_data,

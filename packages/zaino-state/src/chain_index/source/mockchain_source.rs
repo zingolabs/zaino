@@ -803,6 +803,35 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
     }
 }
 
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for MockchainSource {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: domain::Height,
+    ) -> Result<
+        (domain::BlockHash, domain::TreeRoots),
+        PortError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let Some(index) = self.served_index_at_height(height) else {
+            return Err(PortError::Domain(
+                zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+            ));
+        };
+        let hash = domain::BlockHash::from(self.blocks[index].hash().0);
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    // The hash was just resolved from this same chain, so a
+                    // missing block is the mock's own fault, not an answer.
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(hash),
+                    ) => port_fault(format!("mockchain lost block {hash} it just indexed")),
+                    PortError::Fetch(fetch) => PortError::Fetch(fetch),
+                })?;
+        Ok((hash, roots))
+    }
+}
+
 impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
     async fn get_block_verbose_by_hash(
         &self,
@@ -1180,7 +1209,8 @@ impl zaino_source::OneShotGetAddressUtxos for MockchainSource {
             .into_iter()
             .map(|(_, output)| {
                 Ok(domain::Utxo {
-                    address: domain::TransparentAddress::new(output.address.to_string()),
+                    address: domain::TransparentAddress::try_new(output.address.to_string())
+                        .map_err(|e| port_fault(e.to_string()))?,
                     txid: domain::TransactionId::from(output.transaction_hash.0),
                     output_index: output.output_index,
                     script: domain::Script::new(output.output.lock_script.as_raw_bytes().to_vec()),
@@ -1245,7 +1275,8 @@ impl MockchainSource {
         let output = prev.outputs().get(outpoint.index as usize)?;
         let address = output.address(network)?;
         Some((
-            domain::TransparentAddress::new(address.to_string()),
+            domain::TransparentAddress::try_new(address.to_string())
+                .expect("zebra derived this address from the output, so it is well-formed"),
             u64::from(output.value()),
         ))
     }
@@ -1295,7 +1326,8 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
                     continue;
                 };
                 outputs.push(domain::rpc::OutputDelta {
-                    address: domain::TransparentAddress::new(address.to_string()),
+                    address: domain::TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| port_fault(e.to_string()))?,
                     satoshis: domain::Zatoshis::new(u64::from(output.value()))
                         .map_err(|e| port_fault(e.to_string()))?,
                     index: output_index as u32,
@@ -1393,7 +1425,8 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
                     index: output_index as u32,
                     height: domain::Height::try_from(height.0)
                         .map_err(|e| port_fault(e.to_string()))?,
-                    address: domain::TransparentAddress::new(address),
+                    address: domain::TransparentAddress::try_new(address)
+                        .map_err(|e| port_fault(e.to_string()))?,
                     block_index: Some(*block_index as u32),
                 });
             }

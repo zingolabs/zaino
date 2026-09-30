@@ -14,20 +14,3 @@ use core::future::Future;
 /// obscures the signature that matters.
 pub trait SendFut<T>: Future<Output = T> + Send {}
 impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
-
-/// Seconds since the Unix epoch, as a float.
-///
-/// For metric timestamps only. Returns zero rather than failing if the system
-/// clock is before the epoch: a metric is not worth an error path, and a zero
-/// reading is visibly wrong in a way a caller can act on.
-#[cfg(feature = "prometheus")]
-// Unused when `transparent_address_history_experimental` is on: that feature
-// selects a different write path, and only the batched one records this gauge.
-// The gap is in the experimental path, not here.
-#[allow(dead_code)]
-pub(crate) fn unix_now_secs() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
-}

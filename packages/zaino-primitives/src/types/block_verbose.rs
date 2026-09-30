@@ -28,8 +28,10 @@ pub struct BlockVerbose {
 
     /// Cumulative chainwork at this block.
     ///
-    /// `None` from validators that do not track it — Zebra does not store
-    /// cumulative work per height (ZcashFoundation/zebra#7109).
+    /// `None` from Zebra, which does not report chainwork over RPC. Modelled
+    /// because a caller that has it can order competing branches without
+    /// recomputing work from headers; callers must handle its absence rather
+    /// than assume it.
     pub chainwork: Option<AbsoluteChainWork>,
 
     /// Total chain value as of this block.

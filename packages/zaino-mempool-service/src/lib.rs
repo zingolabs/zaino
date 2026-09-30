@@ -16,6 +16,32 @@
 //! Dependencies point inward: this crate depends on `zaino-mempool` (the ports +
 //! foundational types); `zaino-mempool` never names anything here.
 
+/// Prometheus metric names emitted by this crate, with the `# HELP` `zainod` registers
+#[allow(missing_docs)] // the `# HELP` in the tables below is the description
+pub mod metric_names {
+    // All off one snapshot per poll (cross-poll reads give a state that never existed)
+    pub const MEMPOOL_TRANSACTIONS: &str = "zaino.mempool.transactions";
+    pub const MEMPOOL_BYTES: &str = "zaino.mempool.bytes";
+    pub const MEMPOOL_UNADMITTED: &str = "zaino.mempool.unadmitted";
+    // `_count` = poll rate = the mempool writer's heartbeat
+    pub const MEMPOOL_POLL_SECONDS: &str = "zaino.mempool.poll_seconds";
+
+    /// Label on MEMPOOL_BYTES: `raw` (serialized) vs `cost` (ZIP-401, what the bound applies to)
+    pub const MEMPOOL_BYTES_KIND: &str = "kind";
+
+    #[rustfmt::skip]
+    pub const GAUGES: &[(&str, &str)] = &[
+        (MEMPOOL_TRANSACTIONS, "Transactions in the published mempool set"),
+        (MEMPOOL_BYTES, "Published mempool size: `raw` serialized bytes, `cost` ZIP-401 accounting"),
+        (MEMPOOL_UNADMITTED, "Transactions known to the validator but refused by Zaino's capacity bound"),
+    ];
+
+    #[rustfmt::skip]
+    pub const HISTOGRAMS: &[(&str, &str)] = &[
+        (MEMPOOL_POLL_SECONDS, "Seconds for one mempool poll"),
+    ];
+}
+
 pub mod service;
 pub mod subscriber;
 
