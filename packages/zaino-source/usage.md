@@ -130,6 +130,16 @@ An adapter implements only the ports it can answer. Do not add an impl that
 `unimplemented!()`s; leave the port out, and routing that query to the adapter
 becomes a compile error.
 
+## Ancestry port: `GetBlockLink`
+
+`GetBlockLink::get_block_link(height)` (`getblockheader <height> false`) returns
+a `BlockLink { hash, prev_hash }` for the validator's best-chain block at that
+height, without the block body. The hash is recomputed from the header bytes,
+never read from a JSON field. `HeightNotFound` is the validator's answer for a
+height above its tip (for example, a tip that retreated since it was read).
+The raw form is used because zebrad's verbose form does two extra state reads
+per header. `zaino-chainview` walks each endpoint's ancestry with it.
+
 ## Mempool ports
 
 Four separate ports, all answered from the same source:

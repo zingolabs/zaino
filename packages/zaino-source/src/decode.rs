@@ -1,4 +1,5 @@
-//! Consensus bytes → domain types: `getblock <h> 0` blocks and standalone mempool transactions
+//! Consensus bytes → domain types: `getblock <h> 0` blocks, `getblockheader <h> false` links and
+//! standalone mempool transactions
 //!
 //! - librustzcash's lazy readers (`CompressedTransaction`): txid for every version, curve points
 //!   left compressed (nothing here needs them decompressed)
@@ -16,6 +17,8 @@ use zaino_primitives::types::{
 use zcash_encoding::CompactSize;
 use zcash_primitives::{block::BlockHeader as RawHeader, transaction::CompressedTransaction};
 use zcash_protocol::{consensus::BranchId, value::ZatBalance};
+
+use crate::BlockLink;
 
 type OrchardBytes = orchard::BundleBytes<orchard::bundle::Authorized, ZatBalance>;
 
@@ -67,6 +70,20 @@ pub(crate) fn block(raw: &[u8]) -> Result<Block, DecodeError> {
     let header = block_header(&header, coinbase)?;
     let transactions = transactions.iter().map(transaction).collect::<Result<Vec<_>, _>>()?;
     Ok(Block::new(header, transactions))
+}
+
+/// `getblockheader <h> false` bytes → [`BlockLink`] (hash recomputed, never taken on trust)
+pub(crate) fn block_link(raw: &[u8]) -> Result<BlockLink, DecodeError> {
+    let mut cursor = Cursor::new(raw);
+    let header = RawHeader::read(&mut cursor)?;
+    let trailing = raw.len() - cursor.position() as usize;
+    if trailing != 0 {
+        return Err(DecodeError::Trailing(trailing));
+    }
+    Ok(BlockLink {
+        hash: BlockHash::from(header.hash().0),
+        prev_hash: BlockHash::from(header.prev_block.0),
+    })
 }
 
 /// One standalone transaction's bytes (mempool: no block, so no position) → [`Transaction`]
@@ -305,6 +322,33 @@ mod tests {
         let mut padded_block = raw.clone();
         padded_block.push(0);
         assert!(matches!(super::block(&padded_block), Err(DecodeError::Trailing(1))));
+    }
+
+    /// - Header prefix of each fixture → the full-block decode's hash + parent
+    /// - Hash = SHA-256d of the header bytes (sha2, independent of librustzcash)
+    #[test]
+    fn a_header_links_to_its_block_hash_and_parent() {
+        use sha2::{Digest, Sha256};
+        for height in [419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000] {
+            let raw = fixture(height);
+            let mut cursor = Cursor::new(raw.as_slice());
+            RawHeader::read(&mut cursor).expect("header");
+            let header = &raw[..cursor.position() as usize];
+
+            let decoded = block(&raw).expect("block decodes");
+            let sha256d: [u8; 32] = Sha256::digest(Sha256::digest(header)).into();
+            let prev: [u8; 32] = header[4..36].try_into().expect("32");
+            let expected =
+                BlockLink { hash: decoded.header().hash, prev_hash: decoded.header().prev_hash };
+            assert_eq!(block_link(header).expect("header decodes"), expected, "height {height}");
+            assert_eq!(
+                (BlockHash::from(sha256d), BlockHash::from(prev)),
+                (expected.hash, expected.prev_hash),
+                "height {height}"
+            );
+            let padded = [header, &[0]].concat();
+            assert!(matches!(block_link(&padded), Err(DecodeError::Trailing(1))));
+        }
     }
 
     /// Header merkle root = Bitcoin merkle tree over txids (every tx version) → pins each txid,

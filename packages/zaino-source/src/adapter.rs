@@ -8,10 +8,10 @@ use zaino_primitives::types::{Block, BlockHash, BlockchainInfo, Height, Transact
 
 use crate::rpc::{auth_from_parts, probe_node, ProbeError, RpcClient, RpcClientConfig, RpcError};
 use crate::{
-    decode, parse, FailureMode, GetBlockByHashError, GetBlockError, GetBlockchainInfoError,
-    GetChainTipError, GetMempoolListingError, GetPeerInfoError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolListed, NonDomainError, QueryError, SendRawTransactionError,
-    SourceTip, TransactionResponse,
+    decode, parse, BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
+    GetBlockchainInfoError, GetChainTipError, GetMempoolListingError, GetPeerInfoError,
+    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, QueryError,
+    SendRawTransactionError, SourceTip, TransactionResponse,
 };
 
 /// Single attempt per call (callers own their retry)
@@ -161,6 +161,22 @@ impl crate::GetBlockByHash for ZebraRpcAdapter {
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
         self.raw_block(display_hex(hash.into()), || GetBlockByHashError::NotFound(hash)).await
+    }
+}
+
+impl crate::GetBlockLink for ZebraRpcAdapter {
+    /// Raw form (verbose = two extra state reads per header on zebrad)
+    async fn get_block_link(
+        &self,
+        height: Height,
+    ) -> Result<BlockLink, QueryError<GetBlockLinkError>> {
+        let params = vec![u32::from(height).to_string().into(), serde_json::Value::Bool(false)];
+        let parse::HexBytes(raw) =
+            self.rpc.call_as("getblockheader", params).await.map_err(|error| {
+                absent_or_fetch(error, || GetBlockLinkError::HeightNotFound(height))
+            })?;
+        decode::block_link(&raw)
+            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 }
 

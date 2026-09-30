@@ -10,8 +10,9 @@ use zaino_primitives::types::{
 };
 
 use crate::{
-    FailureMode, GetBlockByHashError, GetBlockError, GetBlockchainInfoError, GetTransactionError,
-    NonDomainError, QueryError, SendRawTransactionError, TransactionResponse,
+    BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
+    GetBlockchainInfoError, GetTransactionError, NonDomainError, QueryError,
+    SendRawTransactionError, TransactionResponse,
 };
 
 pub struct MockChain {
@@ -107,6 +108,25 @@ impl crate::GetBlock for MockChain {
     }
 }
 
+impl crate::GetBlockLink for MockChain {
+    async fn get_block_link(
+        &self,
+        height: Height,
+    ) -> Result<BlockLink, QueryError<GetBlockLinkError>> {
+        self.injected()?;
+        let chain = self.chain.read().expect("mock chain lock");
+        chain
+            .best
+            .get(&height)
+            .and_then(|hash| chain.blocks.get(hash))
+            .map(|block| BlockLink {
+                hash: block.header().hash,
+                prev_hash: block.header().prev_hash,
+            })
+            .ok_or(QueryError::Domain(GetBlockLinkError::HeightNotFound(height)))
+    }
+}
+
 impl crate::GetBlockByHash for MockChain {
     async fn get_block_by_hash(
         &self,
@@ -183,9 +203,9 @@ pub fn test_block(height: u32, hash_byte: u8) -> Block {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{GetBlock, GetBlockByHash};
+    use crate::{GetBlock, GetBlockByHash, GetBlockLink};
 
-    /// Blocks answer by height and hash, a miss is the port's domain answer, and injected
+    /// Blocks and links answer by height and hash, a miss is the port's domain answer, and injected
     /// failures precede the real answer exactly `count` times
     #[tokio::test]
     async fn serves_blocks_by_height_and_hash_after_injected_failures() {
@@ -211,5 +231,12 @@ mod tests {
         use {GetBlockByHashError::NotFound, GetBlockError::HeightNotFound, QueryError::Domain};
         assert!(matches!(missing_height, Err(Domain(HeightNotFound(h))) if h == height(9)));
         assert!(matches!(missing_hash, Err(Domain(NotFound(_)))));
+
+        let link = chain.get_block_link(height(1)).await.expect("link 1");
+        let expected =
+            BlockLink { hash: BlockHash::from([2; 32]), prev_hash: BlockHash::from([1; 32]) };
+        assert_eq!(link, expected);
+        let missing_link = chain.get_block_link(height(9)).await;
+        assert!(matches!(missing_link, Err(Domain(GetBlockLinkError::HeightNotFound(_)))));
     }
 }

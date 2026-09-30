@@ -17,9 +17,9 @@ pub use decode::{decode_transaction, DecodeError};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use fetch_pool::{BlockFetchPool, FetchRoute};
 pub use queries::{
-    GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError, GetBlockchainInfo,
-    GetBlockchainInfoError, GetChainTip, GetChainTipError, GetMempoolListing,
-    GetMempoolListingError, GetMempoolSourceTip, GetPeerInfo, GetPeerInfoError,
+    BlockLink, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError, GetBlockLink,
+    GetBlockLinkError, GetBlockchainInfo, GetBlockchainInfoError, GetChainTip, GetChainTipError,
+    GetMempoolListing, GetMempoolListingError, GetMempoolSourceTip, GetPeerInfo, GetPeerInfoError,
     GetRawMempoolTransaction, GetRawMempoolTransactionError, GetTransaction, GetTransactionError,
     MempoolListed, SendRawTransaction, SendRawTransactionError, SourceTip, TransactionResponse,
 };

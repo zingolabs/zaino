@@ -43,6 +43,27 @@ pub trait GetBlockByHash: Send + Sync {
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum GetBlockLinkError {
+    #[error("no block at height {0}")]
+    HeightNotFound(Height),
+}
+
+/// Best-chain block at a height: its hash (from the header bytes) + its parent's
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockLink {
+    pub hash: BlockHash,
+    pub prev_hash: BlockHash,
+}
+
+/// `getblockheader <height> false`: ancestry without the block body
+pub trait GetBlockLink: Send + Sync {
+    fn get_block_link(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<BlockLink, QueryError<GetBlockLinkError>>> + Send;
+}
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetChainTipError {
     #[error("validator not ready")]
     NotReady,
