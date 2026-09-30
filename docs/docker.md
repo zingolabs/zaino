@@ -1,29 +1,41 @@
 # Container image
 
-Built from the repo-root `Dockerfile`. The image:
+The repo-root `Dockerfile` builds a Debian bookworm image whose entrypoint is
+`zainod` and whose default command is `start`. It runs as `container_user` (UID and
+GID 1000), reads its config from `/app/config/zainod.toml`, and exposes the gRPC port
+`8137`.
 
-- runs `zainod start` as `container_user` (UID/GID 1000)
-- reads its config from `/app/config/zainod.toml`, the same file and schema as
-  any other install
-- exposes the plaintext gRPC server on port `8137`
-- needs a Zebra node with `[rpc] listen_addr` reachable from the container
+```sh
+docker build -t zaino .
+docker build -t zaino --build-arg CARGO_PROFILE=profiling .   # line tables and frame pointers
+```
 
-There is no container-only configuration: mount a `zainod.toml` and the image
-runs it. Arguments replace `start`, e.g.
-`docker run zaino verify` checks the indexes the mounted config names. zainod's
-own `ZAINO_CONFIG_` variables (`__` for nesting) override any key of the file,
-e.g. `ZAINO_CONFIG_NETWORK=testnet`. Full schema:
-[`example_configs/zainod.toml`](./example_configs/zainod.toml).
+There is no container-only configuration. The image reads the same `zainod.toml` as
+any other install ([`example_configs/zainod.toml`](./example_configs/zainod.toml)
+annotates the full schema), and `ZAINO_CONFIG_` variables override any key of it, with
+`__` separating nested keys, so `-e ZAINO_CONFIG_NETWORK=testnet` works as it does on
+the host. Arguments replace `start`, so `docker run zaino verify` checks the indexes
+the mounted config names.
+
+The default `grpc_listen_address` is `127.0.0.1:8137`, which a published port cannot
+reach. Inside a container the config MUST set it to `0.0.0.0:8137`, either in the file
+or with `ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS=0.0.0.0:8137`. The same applies to
+`metrics_endpoint` if you scrape it from outside the container. zainod then logs a
+warning, because `/metrics` is unauthenticated. The validator's `[rpc] listen_addr`
+must likewise be reachable from the container.
 
 ## Paths
 
+The image mounts its config and data under `/app` and symlinks zainod's XDG default
+paths to them, so a config that sets no `[index.*] path` keeps every index under
+`/app/data`.
+
 | Purpose | Mount point | Symlinked from |
 |---|---|---|
-| Config | `/app/config` | `~/.config/zaino` (zainod's default config path) |
-| Index data | `/app/data` | `~/.cache/zaino` (every index's default directory) |
+| Config | `/app/config` | `~/.config/zaino`, zainod's default config directory |
+| Index data | `/app/data` | `~/.cache/zaino`, the parent of every index's default directory |
 
-A config that sets no `[index.*] path` keeps every index under `/app/data`.
-Mounted volumes must be writable by UID 1000. For a bind mount:
+Mounted volumes must be writable by UID 1000. For a bind mount, run
 `mkdir -p ./data && chown 1000:1000 ./data`. Under rootless Podman,
 `--userns=keep-id` maps UID 1000 to your host user.
 
@@ -35,8 +47,10 @@ services:
     image: zaino:latest
     ports:
       - "8137:8137"
+    environment:
+      ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS: "0.0.0.0:8137"
     volumes:
-      - ./config:/app/config:ro   # zainod.toml: [source] jsonrpc_address = "zebra:8232"
+      - ./config:/app/config:ro   # zainod.toml with [source] jsonrpc_address = "zebra:8232"
       - zaino-data:/app/data
     depends_on:
       - zebra
@@ -52,7 +66,8 @@ volumes:
   zebra-data:
 ```
 
-To generate a config to edit:
+`jsonrpc_address` accepts a hostname, which is resolved on each connection, so a
+Compose service name works. To generate a config to edit:
 
 ```sh
 mkdir -p ./config
@@ -61,5 +76,7 @@ docker run --rm -v ./config:/app/config zaino generate-config
 
 ## Health check
 
-`zainod --version`: proves the binary runs, not that an index is synced or the
-gRPC server is serving.
+The image's `HEALTHCHECK` runs `zainod --version` every 30 seconds. It proves the
+binary runs, not that an index is synced or that the gRPC server is serving. For a
+liveness probe that tracks the serving runtime, set `metrics_endpoint` and probe
+`/livez` (see [`packages/zainod/usage.md`](../packages/zainod/usage.md#the-admin-listener)).

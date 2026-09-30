@@ -108,8 +108,8 @@ async fn boot(
 
     // --- the indexes: each its own files, its own finalised height, its own sink subscription
     //
-    // `enabled = false` → store unopened, unsubscribed, no task, routes unclaimed (validator
-    // fallback). compact-block not optional (`DaemonConfig::validate`)
+    // A disabled index is never opened, subscribed or spawned, and its methods answer
+    // UNIMPLEMENTED. compact-block and value-balance cannot be disabled (`DaemonConfig::validate`)
     let depth = ReorgDepth::new(config.fetch.finalised_depth);
     let mut block_sink = BlockSink::new("blocks");
     let fs = RealFs::shared();

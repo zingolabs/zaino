@@ -1,6 +1,6 @@
 # zainod config paired with zebrad.toml (Testnet)
 #
-# - Precedence: ZAINO_CONFIG_ env vars (`__` nesting, e.g. ZAINO_CONFIG_FETCH__FINALISED_DEPTH=100)
+# - Precedence: ZAINO_CONFIG_ env vars (`__` nesting, e.g. ZAINO_CONFIG_FETCH__CONCURRENCY=64)
 #   → this file → built-in defaults
 # - Unknown keys rejected at load
 # - `zainod generate-config` = every key at its default

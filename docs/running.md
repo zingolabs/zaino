@@ -1,146 +1,186 @@
 # Running zainod
 
 `zainod` indexes the Zcash chain from a Zebra node over JSON-RPC and serves it to
-light wallets over lightwalletd-compatible gRPC. For the container image see
-[docker.md](./docker.md); for the methods it answers see [rpc_api.md](./rpc_api.md).
+light wallets over lightwalletd-compatible gRPC. The validator's JSON-RPC endpoint is
+the only link between the two, so they can run on separate hosts. For the container
+image see [docker.md](./docker.md), and for the methods zainod answers see
+[rpc_api.md](./rpc_api.md).
 
 ## Requirements
 
-A [Zebra](https://github.com/ZcashFoundation/zebra) node with JSON-RPC enabled
-(`[rpc] listen_addr` in `zebrad.toml`). The live suite runs zebrad 6.2.3. That
-endpoint is the only link between the two, so they may run on separate hosts.
+zainod needs a [Zebra](https://github.com/ZcashFoundation/zebra) node with JSON-RPC
+enabled through `[rpc] listen_addr` in `zebrad.toml`. The live suite tests against
+zebrad 6.2.3.
 
 ## Install and run
 
 ```sh
-cargo build --release -p zainod          # target/release/zainod
-zainod generate-config                   # every key at its default
-zainod start                             # $XDG_CONFIG_HOME/zaino/zainod.toml
+cargo build --release -p zainod          # produces target/release/zainod
+zainod generate-config                   # writes every key at its default
+zainod start                             # reads $XDG_CONFIG_HOME/zaino/zainod.toml
 zainod start -c /path/to/zainod.toml
-zainod verify -c /path/to/zainod.toml    # read-only page-checksum scrub, see packages/zainod/usage.md
+zainod verify -c /path/to/zainod.toml    # read-only page-checksum scrub
 ```
 
-Configuration is layered highest-priority-first: `ZAINO_CONFIG_`-prefixed
-environment variables (`__` for nesting, e.g.
-`ZAINO_CONFIG_FETCH__FINALISED_DEPTH=100`), then the TOML file, then the
-built-in defaults. Unknown keys fail the load. An annotated config is
-[`example_configs/zainod.toml`](./example_configs/zainod.toml); index
-directories default to `$XDG_CACHE_HOME/zaino/indexes/<index>`.
+`generate-config` writes to the default config path unless given `-o <FILE>`.
+`verify` is safe to run beside a live daemon, and its report and exit codes are
+described in [`packages/zainod/usage.md`](../packages/zainod/usage.md#zainod-verify).
+
+## Configuration
+
+Configuration is layered with the highest priority first. Environment variables
+prefixed `ZAINO_CONFIG_` win, with `__` separating nested keys, so
+`ZAINO_CONFIG_FETCH__CONCURRENCY=64` sets `[fetch] concurrency`. The TOML
+file comes next, then the built-in defaults. An unknown key fails the load.
+
+[`example_configs/zainod.toml`](./example_configs/zainod.toml) annotates every key and
+its default. In outline:
+
+| Section | What it configures |
+|---|---|
+| `network` | `mainnet` (default), `testnet` or `regtest`. It is declared rather than read off the validator, because Zebra on regtest reports its chain as `"test"`. |
+| `metrics_endpoint` | The admin listener serving Prometheus `/metrics` and `/livez`. Unset by default, which disables it. |
+| `[source]` | The validator's `jsonrpc_address` (default `127.0.0.1:8232`) and its credentials, either `cookie_path` or `user` and `password`. A cookie path takes precedence. |
+| `[[chainview_peers]]` | Extra validators, in the same shape as `[source]`, that the mempool view takes a quorum over. |
+| `[serve]` | `grpc_listen_address` (default `127.0.0.1:8137`), `max_block_range` (131072) and `max_address_rows` (100000). |
+| `[grpc]` | Connection, stream and read caps, plus `trusted_proxies`. See [Network exposure](#network-exposure). |
+| `[fetch]` | `finalised_depth` (1000), `concurrency` (32) and `primary_validator`, which pins bulk sync to one validator instead of spreading it across all of them. |
+| `[index.*]` | One table per index, each with `enabled`, `path`, `batch_mib` (64) and `queue_mib` (256). |
+
+The indexes are `compact_block`, `value_balance`, `block_hash`, `tree_state` and
+`transparent_address`. Each `path` defaults to `$XDG_CACHE_HOME/zaino/indexes/<index>`
+with the index name hyphenated. `compact_block` and `value_balance` cannot be
+disabled, since the compact-block index reads its fees from the value-balance index.
+`finalised_depth` below 1000 is refused on mainnet and testnet, because a reorg Zebra
+accepts could then reach blocks zainod has already written. Only regtest may set less.
 
 ## A local Testnet pair
 
-[`example_configs/`](./example_configs/) holds a zebrad and a zainod config set
-up against each other: zebrad serves JSON-RPC on `127.0.0.1:18232`, zainod's
-`source.jsonrpc_address`.
+[`example_configs/`](./example_configs/) holds a zebrad config and a zainod config set
+up against each other: zebrad serves JSON-RPC on `127.0.0.1:18232`, which is zainod's
+`[source] jsonrpc_address`.
 
-1. Install zebrad: `cargo install zebrad --locked`.
-2. Replace `<PATH_TO_ZEBRA>` in `zebrad.toml` and `<ZAINO_DATA>` in
-   `zainod.toml` with writable directories.
-3. `zebrad -c docs/example_configs/zebrad.toml start`
-4. In another shell:
-   `cargo run --release -p zainod -- start -c docs/example_configs/zainod.toml`
+1. Install zebrad with `cargo install zebrad --locked`.
+2. Replace `<PATH_TO_ZEBRA>` in `zebrad.toml` and `<ZAINO_DATA>` in `zainod.toml` with
+   writable directories.
+3. Run `zebrad -c docs/example_configs/zebrad.toml start`.
+4. In another shell, run
+   `cargo run --release -p zainod -- start -c docs/example_configs/zainod.toml`.
 
 zainod then serves gRPC on `127.0.0.1:8137`.
 
 ## First launch
 
 Each index syncs from genesis, so a first run on Mainnet or Testnet takes a long
-time. Each index persists to its own `[index.*] path` and resumes from its own
-committed height on restart.
+time. Each index persists to its own directory and resumes from its own committed
+height on restart.
 
 **While an index is still building, every method it backs is refused with gRPC
-`UNAVAILABLE`**, with one exception: `GetTreeState` answers any height the
-tree-state index has already committed (final, so the answer never changes). A
-derived answer comes from Zaino's index or not at all (see
-[design/boundaries.md](./design/boundaries.md)). A client reads `UNAVAILABLE` as
-"retry later", never as "the chain ends here".
+`UNAVAILABLE`.** The one exception is `GetTreeState`, which answers any height the
+tree-state index has already committed, since that answer is final and will not
+change. We refuse rather than proxy to the validator because a derived answer comes
+from Zaino's own index or not at all (see [design/boundaries.md](./design/boundaries.md)).
+A client MUST read `UNAVAILABLE` as "retry later", never as "the chain ends here".
 
 ## Disk
 
-Plan for the chain's worth of indexes on one local filesystem (NVMe
-recommended; the indexes are read with mmap). Mainnet, Sep 2026 (estimates, not
-measured on a full sync yet): compact blocks tens of GiB, the transparent-address
-index ~27 GiB across its two segment sets at ~190M outputs, tree state under 1 GiB. Every index file carries page
-checksums; a corrupt page stops zainod on the read that touches it (run
-`zainod verify`, then delete and resync that index).
+Plan for the whole chain's worth of indexes on one local filesystem. We recommend
+NVMe, because the indexes are read through mmap. For Mainnet in September 2026 we
+estimate tens of GiB for compact blocks, about 27 GiB for the transparent-address
+index at roughly 190M outputs, and under 1 GiB for tree state. These figures are not
+yet measured on a full sync.
+
+Every index file carries page checksums. A corrupt page stops zainod on the first
+read that touches it. Run `zainod verify` to find the damaged index, then delete its
+directory and let it resync.
 
 ## Stopping and restarts
 
-Boot fails (exit 1) if a validator does not answer, the gRPC address cannot be
-bound, or an index cannot open. An index refuses to open if its directory is
-locked by another zainod, was built for another network or format, or its files
-are shorter than its `MANIFEST` seals (lost committed bytes) or its last page
-fails its checksum.
+Boot fails with exit code 1 if the validator does not answer, the gRPC address cannot
+be bound, or an index cannot open. An index refuses to open when another zainod holds
+its directory lock, when it was built for another network or format, when its files
+are shorter than its `MANIFEST` seals (committed bytes were lost), or when its last
+page fails its checksum.
 
-Once booted, each stage (index writers, the block producer, chainview pollers,
-gRPC server) runs as its own task. SIGINT/SIGTERM cancels them all and waits for
-each index to write what is final before exiting 0. Any task stopping on its own
-(an error, or a chainview endpoint being ejected) stops the rest the same way
-and exits 1; a panic (including a page checksum mismatch) aborts the process at
-once. zainod never restarts in-process: run it under a service manager that
-restarts it with backoff. Opening is cheap (lengths and one tail page per file),
-so a restart serves again in seconds.
+Once booted, each stage (the index writers, the block producer, the chainview pollers
+and the gRPC server) runs as its own task. SIGINT or SIGTERM cancels them all and
+waits for each index to write what is final before exiting 0. If any task stops on
+its own, for example on an error or because a chainview endpoint was ejected, it stops
+the rest the same way and zainod exits 1. A panic, including a page checksum mismatch,
+aborts the process at once.
 
-An index whose chain the validators no longer extend (a reorg below
-`finalised_depth`, a validator reset or resynced onto another chain) stops
-zainod with `FollowError::Unlinked`; delete that index's directory to resync it.
+zainod never restarts in-process, so run it under a service manager that restarts it
+with backoff. Opening an index only reads file lengths and one tail page per file, so
+a restarted zainod is serving again within seconds.
+
+If the validators stop extending an index's chain, because of a reorg deeper than
+`finalised_depth` or a validator that was reset or resynced onto another chain,
+zainod stops with `FollowError::Unlinked`. Delete that index's directory to resync it.
 
 ## Network exposure
 
-zainod links no TLS stack and serves plaintext HTTP/2. Expose the gRPC listener
-beyond a trusted network only behind a TLS-terminating proxy. The validator
-connection is plain HTTP JSON-RPC.
+zainod links no TLS stack and serves plaintext HTTP/2, and it reaches the validator
+over plain HTTP JSON-RPC. Expose the gRPC listener beyond a trusted network only
+behind a TLS-terminating proxy.
+
+The `[grpc]` caps, listed with their defaults in the example config, all refuse
+rather than queue. A connection over a cap is closed at accept and a stream over one
+is answered `UNAVAILABLE` with a retry hint. The read lanes are the exception: an
+index read waits for a permit in its own lane.
 
 ### Behind a proxy
 
-`[grpc] max_connections_per_ip` caps what one client may hold. Behind a proxy
-every connection comes from the proxy's address, so without more the cap applies
-to the whole server. List the proxy in `trusted_proxies` and have it send a
-[PROXY protocol](https://www.haproxy.org/download/2.9/doc/proxy-protocol.txt)
-header (v1 or v2) naming the client:
+Behind a proxy every connection comes from the proxy's address, so
+`max_connections_per_ip` would cap the whole server rather than each client. To keep
+the cap per client, list the proxy in `trusted_proxies` and have it send a
+[PROXY protocol](https://www.haproxy.org/download/2.9/doc/proxy-protocol.txt) header
+(v1 or v2) naming the client:
 
 ```toml
 [grpc]
 trusted_proxies = ["10.0.0.5/32"]
 ```
 
-- A connection from a trusted address **must** open with the header, or it is
-  closed. Connections from other addresses are served as before, without one.
-- nginx: terminate TLS in the `stream` module and pass the decrypted h2c through
-  with `proxy_protocol on;`. The `http` module's `grpc_pass` cannot send the
-  header.
+A connection from a trusted address MUST open with the header, or it is closed.
+Connections from any other address are served without one.
 
-  ```nginx
-  stream {
-      server {
-          listen 443 ssl;
-          ssl_certificate     /etc/ssl/zaino.pem;
-          ssl_certificate_key /etc/ssl/zaino.key;
-          ssl_alpn            h2;
-          proxy_pass          127.0.0.1:8137;
-          proxy_protocol      on;
-      }
-  }
-  ```
+With nginx, terminate TLS in the `stream` module and pass the decrypted h2c through
+with `proxy_protocol on;`. The `http` module's `grpc_pass` cannot send the header.
 
-- HAProxy: `server zaino 127.0.0.1:8137 send-proxy-v2` in a `mode tcp` backend.
-- A proxy that cannot send the header (e.g. nginx `grpc_pass`): leave
-  `trusted_proxies` empty and raise `max_connections_per_ip` to
-  `max_connections`, since the cap cannot tell its clients apart.
+```nginx
+stream {
+    server {
+        listen 443 ssl;
+        ssl_certificate     /etc/ssl/zaino.pem;
+        ssl_certificate_key /etc/ssl/zaino.key;
+        ssl_alpn            h2;
+        proxy_pass          127.0.0.1:8137;
+        proxy_protocol      on;
+    }
+}
+```
+
+With HAProxy, use `server zaino 127.0.0.1:8137 send-proxy-v2` in a `mode tcp`
+backend.
+
+If your proxy cannot send the header, as with nginx `grpc_pass`, leave
+`trusted_proxies` empty and raise `max_connections_per_ip` to `max_connections`,
+because the cap cannot tell the proxy's clients apart.
 
 ### Open files
 
-Every connection is a file descriptor. At boot zainod raises its soft
-`RLIMIT_NOFILE` to the hard limit, then refuses to start (exit 1) if
-`max_connections` plus 1024 (reserved for index files and the validator) does
-not fit. Raise the hard limit (systemd `LimitNOFILE=`, docker
-`--ulimit nofile=`) or lower `max_connections`. If `accept()` still fails at
-runtime (`EMFILE`, `ENOBUFS`, ...), the listener backs off (10 ms doubling to
-1 s) and keeps serving the open connections; `zaino_grpc_accept_errors_total`
-counts each.
+Every connection is a file descriptor. At boot zainod raises its soft `RLIMIT_NOFILE`
+to the hard limit, then refuses to start with exit code 1 if `max_connections` plus
+1024 descriptors reserved for index files and the validator does not fit. Raise the
+hard limit (systemd `LimitNOFILE=`, docker `--ulimit nofile=`) or lower
+`max_connections`.
+
+If `accept()` still fails at runtime with `EMFILE`, `ENOBUFS` or a similar error, the
+listener backs off from 10 ms, doubling up to 1 s, and keeps serving the connections
+it already has. The `zaino_grpc_accept_errors_total` metric counts each failure.
 
 ## Logging
 
-Configured from the environment (`RUST_LOG`, `ZAINOLOG_FORMAT`,
-`ZAINOLOG_COLOR`, `ZAINOLOG_LOCATION`); see
+Logging is configured from the environment through `RUST_LOG`, `ZAINOLOG_FORMAT`,
+`ZAINOLOG_COLOR` and `ZAINOLOG_LOCATION`, which are described in
 [`packages/zainod/usage.md`](../packages/zainod/usage.md#logging).

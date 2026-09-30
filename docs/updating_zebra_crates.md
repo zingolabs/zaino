@@ -1,38 +1,41 @@
-# Updating Zebra crates
+# Updating Zebra
 
-Keep the Zebra dependency close to the latest release; a spread between latest
-and supported is high-priority tech debt.
+Zaino links no Zebra crate. `zaino-source` fetches each block as consensus bytes with
+`getblock <height> 0` and decodes it with librustzcash (`zcash_primitives`'s
+`CompressedTransaction`), and it parses every other JSON-RPC result into
+`zaino-primitives` types in `packages/zaino-source/src/parse.rs`. `cargo tree -i
+zebra-chain` finds nothing. Zaino's coupling to Zebra is therefore the JSON-RPC
+surface of the zebrad release it runs against, and keeping up with Zebra means
+testing against new zebrad releases rather than bumping a dependency. We treat a
+spread between the latest zebrad and the one the live suite tests as high-priority
+tech debt.
 
-## What depends on Zebra
+Node behaviour is decided by the `zebrad` release. When checking the shape of a
+JSON-RPC response, read the tagged Zebra source for the node version you target.
 
-One crate, `zebra-chain`, used only by `zaino-source-zebra-rpc` (block and
-transaction parsing for blocks fetched over JSON-RPC). Every other crate speaks
-`zaino-primitives`, so a Zebra update is confined to that adapter. Confirm with
-`cargo tree -i zebra-chain`.
+## Moving to a new zebrad
 
-Node behaviour is decided by the `zebrad` release, not the `zebra-chain` crate:
-when checking a JSON-RPC response shape, read the tagged Zebra source for the
-node version you target.
+1. Take a baseline on `dev` with `cargo nextest run --workspace` and the live suite.
+2. Bump the version in every `Validator::zebrad("6.2.3")` under `live-tests/`, and
+   the zebrad version stated in [running.md](./running.md#requirements).
+3. Check out the matching tag in the `zebra` checkout beside this repository, since
+   the sync profiles build zebrad's image from it.
+4. Run the live tests (see [testing.md](./testing.md)). A changed response shape
+   shows up as a parse error in `zaino-source`, which is where it is fixed.
 
-## How to update
+## Pinning unreleased dependencies
 
-1. Baseline on `dev`: `cargo nextest run --workspace --all-features`.
-2. Bump `zebra-chain` once, in the root `Cargo.toml` `[workspace.dependencies]`.
-3. Fix `zaino-source-zebra-rpc`, then re-run the unit tests and the live tests
-   (see [testing.md](./testing.md)) against the matching `zebrad` version.
+The crates that do track upstream closely are librustzcash's (`zcash_primitives`,
+`zcash_protocol`, `zcash_transparent`, `zcash_address`, `equihash`) and the crates
+under them (`orchard`, `sapling-crypto`, `incrementalmerkletree`, `halo2_*`, `zip32`).
+We pin an unpublished change through the root `[patch.crates-io]`, by git rev, or by
+path to a sibling checkout while a change spans several repositories. Cargo honours
+`[patch.crates-io]` only in the workspace root. Patching one of these crates usually
+forces patching the others with it, so that every crate agrees on one version of the
+types that cross between them. Comment each patch with why it is not a published
+version and when to drop it.
 
-`zebra-chain` depends on librustzcash crates, so a bump can force a librustzcash
-bump: take the highest version each crate shares with the one Zebra pins.
-
-## Pinning an unreleased Zebra
-
-Pin an unpublished change through the root `[patch.crates-io]`: a git rev, or a
-path to a sibling checkout while the change spans several repositories. Cargo
-honours `[patch.crates-io]` only in the workspace root. Patching `zebra-chain`
-usually forces patching the librustzcash crates with it, so that both sides
-agree on one version of the types that cross between them. Comment each patch
-with why it is not a published version and when to drop it.
-
-The current patch set (the lazy point-decompression stack) pins `orchard`,
-`sapling-crypto` and the librustzcash crates by git rev, and `zebra-chain` by
-path to `../zebra`: a fresh clone does not build without that sibling checkout.
+The current patch set is the lazy point-decompression stack. It pins `orchard`,
+`sapling-crypto`, `incrementalmerkletree` and the librustzcash crates to forks by git
+rev, and `halo2_*` and `zip32` to the git revs librustzcash's main branch pins. Each
+entry is dropped once its change is released.
