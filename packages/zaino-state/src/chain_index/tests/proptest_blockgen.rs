@@ -1062,21 +1062,16 @@ impl ProptestMockchain {
             .zcash_serialize_to_vec()
             .map_err(|error| format!("proptest block did not serialize: {error}"))
     }
-}
 
-impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
-    async fn get_raw_block(
+    /// The block at `height`, from an arbitrary branch rather than the best
+    /// one: a reader walking by height must cope with the answer changing
+    /// under it, which is the reorg these tests are about.
+    fn block_at_height(
         &self,
         height: zaino_primitives::types::Height,
-    ) -> Result<Vec<u8>, PortError<zaino_source::GetBlockError>> {
-        self.settle().await;
+    ) -> Option<Arc<zebra_chain::block::Block>> {
         let wanted = zebra_chain::block::Height(u32::from(height));
-
-        // Deliberately an arbitrary branch rather than the best one: a reader
-        // walking by height must cope with the answer changing under it, which
-        // is the reorg these tests are about.
-        let block = self
-            .genesis_segment
+        self.genesis_segment
             .iter()
             .find(|block| block.coinbase_height() == Some(wanted))
             .cloned()
@@ -1087,9 +1082,56 @@ impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
                     .find(|block| block.coinbase_height() == Some(wanted))
                     .cloned()
             })
-            .ok_or(PortError::Domain(
-                zaino_source::GetBlockError::HeightNotFound(height),
-            ))?;
+    }
+
+    /// A block's confirmations and successor, as the best branch places it.
+    fn best_chain_placement(
+        &self,
+        block: &zebra_chain::block::Block,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockConfirmations,
+            Option<zaino_primitives::types::BlockHash>,
+        ),
+        String,
+    > {
+        let best = self.best_branch();
+        let Some(position) = best.iter().position(|held| held.hash() == block.hash()) else {
+            return Ok((
+                zaino_primitives::types::BlockConfirmations::NotInBestChain,
+                None,
+            ));
+        };
+        let height = |block: &zebra_chain::block::Block| {
+            block
+                .coinbase_height()
+                .map(|height| height.0)
+                .ok_or_else(|| "proptest block has no coinbase height".to_string())
+        };
+        let tip = best
+            .last()
+            .ok_or_else(|| "proptest chain is empty".to_string())?;
+        let confirmations = crate::chain_index::source::mockchain_source::block_confirmations(
+            height(tip)?,
+            height(block)?,
+        )
+        .map_err(|e| e.to_string())?;
+        let next = best
+            .get(position + 1)
+            .map(|next| zaino_primitives::types::BlockHash::from(next.hash().0));
+        Ok((confirmations, next))
+    }
+}
+
+impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
+    async fn get_raw_block(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<Vec<u8>, PortError<zaino_source::GetBlockError>> {
+        self.settle().await;
+        let block = self.block_at_height(height).ok_or(PortError::Domain(
+            zaino_source::GetBlockError::HeightNotFound(height),
+        ))?;
 
         Self::serialize(&block).map_err(port_fault)
     }
@@ -1585,6 +1627,92 @@ mod proptest_helpers {
     }
 }
 
+impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
+    async fn get_block_header(
+        &self,
+        hash: zaino_primitives::types::BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockHeaderVerbose,
+        PortError<zaino_source::GetBlockHeaderError>,
+    > {
+        self.settle().await;
+        let wanted = zebra_chain::block::Hash(<[u8; 32]>::from(hash));
+        let block = self
+            .all_blocks_arb_branch_order()
+            .find(|block| block.hash() == wanted)
+            .ok_or(PortError::Domain(
+                zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+            ))?;
+        let (confirmations, next_block_hash) =
+            self.best_chain_placement(block).map_err(port_fault)?;
+
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|e| port_fault(e.to_string()))?;
+
+        crate::chain_index::source::mockchain_source::verbose_header(
+            block,
+            confirmations,
+            roots.sapling.map(|info| info.root),
+            next_block_hash,
+        )
+        .map_err(port_fault)
+    }
+}
+
+impl zaino_source::OneShotGetPreIndexCompactBlock for ProptestMockchain {
+    async fn get_pre_index_compact_block(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<zaino_primitives::types::PreIndexCompactBlock, PortError<zaino_source::GetBlockError>>
+    {
+        let block = zaino_source::OneShotGetBlock::get_block(self, height).await?;
+        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerbose for ProptestMockchain {
+    async fn get_block_verbose(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<zaino_primitives::types::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>>
+    {
+        self.settle().await;
+        let block = self.block_at_height(height).ok_or(PortError::Domain(
+            zaino_source::GetBlockVerboseError::HeightNotFound(height),
+        ))?;
+        let (confirmations, next_block_hash) =
+            self.best_chain_placement(&block).map_err(port_fault)?;
+        let roots = zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(
+            self,
+            zaino_primitives::types::BlockHash::from(block.hash().0),
+        )
+        .await
+        .map_err(|e| port_fault(e.to_string()))?;
+        let size = |root: Option<zaino_primitives::types::TreeRootInfo>| {
+            root.map_or(zaino_primitives::types::TreeSize::ZERO, |info| info.size)
+        };
+
+        Ok(zaino_primitives::types::BlockVerbose {
+            confirmations,
+            difficulty: block.header.difficulty_threshold.relative_to_network(
+                &crate::chain_index::source::mockchain_source::mockchain_network(),
+            ),
+            // The generated chains carry no cumulative chain state.
+            chainwork: None,
+            chain_supply: None,
+            value_pools: Vec::new(),
+            tree_sizes: zaino_primitives::types::BlockTreeSizes {
+                sapling: size(roots.sapling),
+                orchard: size(roots.orchard),
+                ironwood: size(roots.ironwood),
+            },
+            next_block_hash,
+        })
+    }
+}
+
 // ***** Questions a generated chain does not answer *****
 //
 // This fixture exercises sync and reorg handling. Everything below carried
@@ -1599,66 +1727,6 @@ impl zaino_source::OneShotGetBlockVerboseByHash for ProptestMockchain {
     ) -> Result<zaino_primitives::types::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>>
     {
         unimplemented!("ProptestMockchain exercises sync/reorg, not the verbose getblock RPC")
-    }
-}
-
-impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
-    async fn get_block_header(
-        &self,
-        hash: zaino_primitives::types::BlockHash,
-    ) -> Result<
-        zaino_primitives::types::rpc::BlockHeaderVerbose,
-        PortError<zaino_source::GetBlockHeaderError>,
-    > {
-        use crate::chain_index::source::mockchain_source::{block_confirmations, verbose_header};
-
-        self.settle().await;
-        let wanted = zebra_chain::block::Hash(<[u8; 32]>::from(hash));
-        let block = self
-            .all_blocks_arb_branch_order()
-            .find(|block| block.hash() == wanted)
-            .ok_or(PortError::Domain(
-                zaino_source::GetBlockHeaderError::BlockNotFound(hash),
-            ))?;
-
-        let best = self.best_branch();
-        let (confirmations, next_block_hash) =
-            match best.iter().position(|block| block.hash() == wanted) {
-                Some(position) => {
-                    let height = |block: &zebra_chain::block::Block| {
-                        block
-                            .coinbase_height()
-                            .map(|height| height.0)
-                            .ok_or_else(|| port_fault("proptest block has no coinbase height"))
-                    };
-                    let tip = best
-                        .last()
-                        .ok_or_else(|| port_fault("proptest chain is empty"))?;
-                    (
-                        block_confirmations(height(tip)?, height(block)?)
-                            .map_err(|e| port_fault(e.to_string()))?,
-                        best.get(position + 1)
-                            .map(|next| zaino_primitives::types::BlockHash::from(next.hash().0)),
-                    )
-                }
-                None => (
-                    zaino_primitives::types::BlockConfirmations::NotInBestChain,
-                    None,
-                ),
-            };
-
-        let roots =
-            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
-                .await
-                .map_err(|e| port_fault(e.to_string()))?;
-
-        verbose_header(
-            block,
-            confirmations,
-            roots.sapling.map(|info| info.root),
-            next_block_hash,
-        )
-        .map_err(port_fault)
     }
 }
 
