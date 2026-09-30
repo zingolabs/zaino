@@ -54,7 +54,7 @@ let balances = service.balances(&addresses)?;            // Vec<Zatoshis>
   exact locking script the rows were stored under, so `GetAddressUtxos`
   returns a script the index never stored.
 - Storage keys are internal: exact-length, exact prefix/suffix P2PKH and P2SH
-  outputs key by `[kind][hash160]`; anything else goes under one opaque key,
+  outputs key by `[hash160][kind]`; anything else goes under one opaque key,
   still stored, never queryable.
 - Heights arrive as `Height`, already range-checked and ordered by the caller
   (`zaino-grpc` parses them at the router).

@@ -352,6 +352,66 @@ mod tests {
         }
     }
 
+    /// Three commits crashed after every operation: each state reopens to an acknowledged or
+    /// attempted commit, resolves the next block's fees against the outputs it recovered, and
+    /// keeps committing from there
+    #[tokio::test]
+    async fn every_crash_state_reopens_to_a_committed_prefix_whose_outputs_still_resolve() {
+        let path = Path::new("/vb");
+        // block h spends an output of block h - 1 (and 3 spends one of 1): each fee needs a
+        // recovered output
+        let chain = [
+            block(0, 0, 0, vec![coinbase(0x10, 100_000)]),
+            block(1, 0, 0, vec![coinbase(0x11, 50_000), tx(0x20, &[(0x10, 0)], &[90_000], [0; 4])]),
+            block(2, 0, 0, vec![coinbase(0x12, 50_000), tx(0x21, &[(0x20, 0)], &[80_000], [0; 4])]),
+            block(3, 0, 0, vec![coinbase(0x13, 50_000), tx(0x22, &[(0x11, 0)], &[40_000], [0; 4])]),
+            block(4, 0, 0, vec![coinbase(0x14, 50_000), tx(0x23, &[(0x21, 0)], &[70_000], [0; 4])]),
+        ];
+        let expected = [vec![None], vec![None, Some(10_000)], vec![None, Some(10_000)]];
+        let expected =
+            [&expected[..], &[vec![None, Some(10_000)], vec![None, Some(10_000)]]].concat();
+        // commits cover heights 0..=1, 2, 3; height 4 is only ever committed after a recovery
+        let commits: [&[Arc<Block>]; 3] = [&chain[0..2], &chain[2..3], &chain[3..4]];
+
+        let fs = SimFs::recording();
+        {
+            let mut writer = ValueBalanceIndexWriter::open(fs.clone(), path, NetworkType::Regtest)
+                .expect("open");
+            for (acked, run) in (1u64..).zip(commits) {
+                writer.deliver(run).await.expect("deliver");
+                zaino_sync::finalize_now(&mut writer, run).await.expect("commit");
+                fs.set_tag(acked);
+            }
+        }
+        let tip_after = |commits_done: u64| match commits_done {
+            0 => None,
+            1 => Some(h(1)),
+            2 => Some(h(2)),
+            _ => Some(h(3)),
+        };
+
+        let states = fs.crash_states();
+        assert!(states.len() > 10, "enumerated {} crash states", states.len());
+        for state in states {
+            let label = &state.label;
+            let mut writer = ValueBalanceIndexWriter::open(state.fs, path, NetworkType::Regtest)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            let tip = writer.finalized_height();
+            let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
+            assert!(acked.contains(&tip), "{label}: recovered through {tip:?}");
+
+            let next = tip.map_or(0, |tip| u32::from(tip) + 1) as usize;
+            let run = &chain[next..=next];
+            writer.deliver(run).await.unwrap_or_else(|error| panic!("{label}: {error}"));
+            let derived =
+                writer.derive(run).await.unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(fees(&derived[0]), expected[next], "{label}: fees of block {next}");
+            zaino_sync::finalize_now(&mut writer, run)
+                .await
+                .unwrap_or_else(|error| panic!("{label}: commit after recovery: {error}"));
+        }
+    }
+
     /// Depth 2, tip 4 (0 to 2 final, both inclusive, committed one per batch; 3, 4
     /// non-finalized): every prevout resolves wherever it lives
     /// - 1: spends 0's output (durable) and one from earlier in its own block (staged)

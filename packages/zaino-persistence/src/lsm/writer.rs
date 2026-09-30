@@ -17,6 +17,7 @@ use rayon::slice::ParallelSliceMut as _;
 use super::{
     file::SegmentFile,
     file_name,
+    filter::FilterError,
     layout::{Navigation, Shape},
     record::Record,
     Result, SegmentError, SegmentMeta,
@@ -58,7 +59,7 @@ struct SegmentOut {
 impl SegmentOut {
     fn push(&mut self, row: &[u8]) -> Result<()> {
         let id = self.id;
-        self.navigation.push(row).map_err(|reason| SegmentError::Filter { segment: id, reason })?;
+        self.navigation.push(row).map_err(|error| navigation_error(id, error))?;
         self.digest.update(row);
         self.chunk.extend_from_slice(row);
         if self.chunk.len() >= CHUNK {
@@ -71,13 +72,19 @@ impl SegmentOut {
     /// Records, then navigation, sealed (fsynced): the meta a manifest would list + the rows' digest
     fn finish(mut self) -> Result<(SegmentMeta, u32)> {
         self.file.append(&self.chunk)?;
-        let navigation = self
-            .navigation
-            .finish(self.records)
-            .map_err(|reason| SegmentError::Filter { segment: self.id, reason })?;
-        self.file.append(&navigation)?;
-        let meta = SegmentMeta { id: self.id, records: self.records, sealed: self.file.seal()? };
+        let id = self.id;
+        self.navigation
+            .finish(self.records, &mut self.file)
+            .map_err(|error| navigation_error(id, error))?;
+        let meta = SegmentMeta { id, records: self.records, sealed: self.file.seal()? };
         Ok((meta, self.digest.finalize()))
+    }
+}
+
+fn navigation_error(segment: u32, error: FilterError) -> SegmentError {
+    match error {
+        FilterError::Build(reason) => SegmentError::Filter { segment, reason },
+        FilterError::Io(error) => SegmentError::Io(error),
     }
 }
 
@@ -117,7 +124,8 @@ impl SegmentWriter {
     /// - inputs read through their page checksums (a corrupt input dies, never propagates)
     /// - caller then commits a manifest listing it in their place, then [`remove`](Self::remove)s
     ///   the inputs
-    /// - streams: memory = one chunk + the navigation being built, whatever the segments' size
+    /// - streams: memory = a few 1 MiB buffers, the summary and the filter's shard table, whatever
+    ///   the segments' size (fences and fingerprints spill to scratch files, `spill.rs`)
     pub(crate) fn merge<R: Record>(
         &self,
         id: u32,
@@ -173,13 +181,15 @@ impl SegmentWriter {
             Access::Sequential,
         )?;
         assert_eq!(file.records() as u64, meta.records, "segment {}: record count", meta.id);
+        file.warm_filter();
         let mut digest = crc32fast::Hasher::new();
         for slot in 0..file.records() {
             let key = file.key(slot);
             if slot > 0 {
                 assert!(file.key(slot - 1) < key, "segment {} slot {slot}: keys ascend", meta.id);
             }
-            assert!(file.may_contain(key), "segment {} slot {slot}: filter finds its key", meta.id);
+            let filtered = &key[..file.filtered()];
+            assert!(file.may_contain(filtered), "segment {} slot {slot}: filter finds it", meta.id);
             digest.update(file.row(slot));
         }
         assert_eq!(digest.finalize(), written, "segment {}: rows read back as written", meta.id);
@@ -209,7 +219,7 @@ impl SegmentWriter {
             id,
             file,
             records,
-            navigation: Navigation::new(Shape::of::<R>(), records),
+            navigation: Navigation::new(Shape::of::<R>(), records, &self.fs, &self.dir, id),
             chunk: Vec::with_capacity(CHUNK + R::STRIDE),
             digest: crc32fast::Hasher::new(),
         })

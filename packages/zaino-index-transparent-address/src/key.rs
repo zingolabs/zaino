@@ -31,14 +31,15 @@ impl AddressKind {
     }
 }
 
-/// Fixed-width address tag `[kind][hash160]` (the whole identity a row is keyed by)
+/// Fixed-width address tag `[hash160][kind]` (the whole identity a row is keyed by)
 ///
 /// - 21 B = the addr id (interning into a `u64` breaks even at ~2.9 rows per address; TEX /
 ///   ephemeral receivers single-use by construction, `docs/design/index-data-structures.md` §7)
+/// - hash first: its uniform bytes lead the key, so the receives filter can shard on them
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct AddressKey {
-    kind: AddressKind,
     hash: [u8; HASH160],
+    kind: AddressKind,
 }
 
 impl AddressKey {
@@ -58,14 +59,14 @@ impl AddressKey {
     }
 
     fn encode_into(&self, out: &mut Vec<u8>) {
-        out.push(self.kind as u8);
         out.extend_from_slice(&self.hash);
+        out.push(self.kind as u8);
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
         Some(Self {
-            kind: AddressKind::decode(*bytes.first()?)?,
-            hash: bytes.get(1..Self::LEN)?.try_into().ok()?,
+            hash: bytes.get(..HASH160)?.try_into().ok()?,
+            kind: AddressKind::decode(*bytes.get(HASH160)?)?,
         })
     }
 }
@@ -97,6 +98,8 @@ impl ReceiveKey {
 
 impl Key for ReceiveKey {
     const LEN: usize = AddressKey::LEN + 4 + TXID + 4;
+    /// A lookup is one address's history: segments without the address are skipped
+    const FILTER_PREFIX: usize = AddressKey::LEN;
 
     fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(Self::LEN);
@@ -203,8 +206,9 @@ mod tests {
         let addr = AddressKey::p2pkh([0x11; HASH160]);
         let txid = TransactionId::from([0x22; TXID]);
 
-        // ascending in each key part, one part changed at a time
+        // ascending in each key part, one part changed at a time (address = hash, then kind)
         let ascending = [
+            ReceiveKey { address: AddressKey::opaque(), height: 9, txid, vout: 0 },
             ReceiveKey { address: AddressKey::p2pkh([0x11; HASH160]), height: 7, txid, vout: 0 },
             ReceiveKey { address: addr, height: 7, txid, vout: 1 },
             ReceiveKey {
@@ -219,8 +223,8 @@ mod tests {
                 txid: TransactionId::from([0x00; TXID]),
                 vout: 0,
             },
-            ReceiveKey { address: AddressKey::p2sh([0x00; HASH160]), height: 0, txid, vout: 0 },
-            ReceiveKey { address: AddressKey::opaque(), height: 0, txid, vout: 0 },
+            ReceiveKey { address: AddressKey::p2sh([0x11; HASH160]), height: 0, txid, vout: 0 },
+            ReceiveKey { address: AddressKey::p2pkh([0x12; HASH160]), height: 0, txid, vout: 0 },
         ];
 
         for pair in ascending.windows(2) {

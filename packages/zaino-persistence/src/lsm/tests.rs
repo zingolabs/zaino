@@ -624,17 +624,23 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
     });
 }
 
-/// Open removes unlisted segments (and their checksums) and refuses a lost one; a flipped committed
-/// byte passes open (lengths only) and dies on the first read or merge that touches its page
+/// Open removes unlisted segments (and their checksums) and any writer's scratch, and refuses a lost
+/// segment; a flipped committed byte passes open (lengths only) and dies on the first read or
+/// merge that touches its page
 #[test]
 fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     let fs = SimFs::new();
     let dir = Path::new("/segments");
     fs.create_dir_all(dir).expect("dir");
     let writer = SegmentWriter::open(fs.clone(), dir);
-    let kept =
-        writer.write(0, vec![row(1, 0), row(1, 1), row(2, 0)]).expect("write").expect("rows");
+    // enough rows that page 0 holds records only (open reads the summary, past them)
+    let rows = |owner| (0..600).map(move |seq| row(owner, seq)).collect::<Vec<_>>();
+    let kept = writer.write(0, rows(1)).expect("write").expect("rows");
     let orphan = writer.write(1, vec![row(3, 0)]).expect("write").expect("rows");
+    // a merge cut short by a crash leaves its scratch, even under a listed segment's id
+    for leftover in ["0000000000.fences.scratch", "0000000009.filter.scratch"] {
+        fs.open(&dir.join(leftover)).expect("scratch").write_all_at(&[1; 9], 0).expect("write");
+    }
     writer.sync_dir().expect("sync");
 
     SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept]).expect("open");
@@ -666,7 +672,7 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     });
 
     // same tier as `kept` at fanout 2 → opening both launches their merge, which reads the page
-    let second = writer.write(2, vec![row(4, 0), row(4, 1)]).expect("write").expect("rows");
+    let second = writer.write(2, rows(4)).expect("write").expect("rows");
     let set = SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept, second]).expect("open");
     let log = SegmentLog::<Row>::open(set, 2).expect("merge launched");
     log.settle();
@@ -679,8 +685,8 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     let unsummed = SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept]).map(|_| ());
     assert!(matches!(unsummed, Err(SegmentError::Page(PageError::Lost { .. }))));
 
-    // probed set: last byte = a filter fingerprint, a page past the filter table (read at open);
-    // first probe of its shard dies, even for a key the segment never held
+    // probed set: last byte = a filter fingerprint; a reader reads and checks its whole filter
+    // when it maps the segment, so opening it dies before any probe
     let ids = Path::new("/ids");
     fs.create_dir_all(ids).expect("dir");
     let id_writer = SegmentWriter::open(fs.clone(), ids);
@@ -688,13 +694,182 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
         id_writer.write(0, (0..3_000).map(id_row).collect()).expect("write").expect("rows");
     let id_path = ids.join(file_name(probed.id));
     fs.corrupt(&id_path, |bytes| *bytes.last_mut().expect("non-empty") ^= 1);
-    let set =
-        SegmentSet::<Id>::open::<IdRow>(fs.clone(), ids, &[probed]).expect("table page intact");
-    let pinned = set.pin();
     let message = panic_message(
-        catch_unwind(AssertUnwindSafe(|| pinned.get::<IdRow>(&id_row(9_999).id)))
-            .expect_err("a corrupt filter shard never answers"),
+        catch_unwind(AssertUnwindSafe(|| {
+            SegmentSet::<Id>::open::<IdRow>(fs.clone(), ids, &[probed]).map(|_| ())
+        }))
+        .expect_err("a corrupt filter never answers"),
     );
     let page = (probed.sealed.len - 1) / 4096;
     assert!(message.contains(&format!("page {page}: checksum mismatch")), "{message}");
+}
+
+/// Several summary groups (group = 512 fences = 131,072 rows here): `seek` finds every key's slot,
+/// the slot after a gap, and both ends, through the in-memory summary and one page of fences
+#[test]
+fn seek_crosses_summary_groups_to_the_right_slot() {
+    use super::{file::SegmentFile, layout::Shape};
+    use crate::fs::Access;
+
+    let fs = SimFs::new();
+    let dir = Path::new("/wide");
+    fs.create_dir_all(dir).expect("dir");
+    let rows = 3 * 131_072 + 999;
+    // even seqs only: every odd seq sits in a gap
+    let written = (0..rows).map(|n| row(7, 2 * n as u32)).collect::<Vec<_>>();
+    let meta =
+        SegmentWriter::open(fs.clone(), dir).write(0, written).expect("write").expect("rows");
+    let file = SegmentFile::open(fs.as_ref(), dir, &meta, Shape::of::<Row>(), Access::Normal)
+        .expect("open");
+
+    let key = |seq: u32| row(7, seq).at.encode();
+    assert_eq!(file.seek(&row(6, 0).at.encode()), 0, "below every key");
+    assert_eq!(file.seek(&row(8, 0).at.encode()), rows, "above every key");
+    for slot in (0..rows).step_by(997).chain([rows - 1, 131_071, 131_072, 262_144]) {
+        let seq = 2 * slot as u32;
+        assert_eq!(file.seek(&key(seq)), slot, "key at slot {slot}");
+        assert_eq!(file.seek(&key(seq + 1)), slot + 1, "gap after slot {slot}");
+    }
+}
+
+/// `account ‖ seq`, filtered on the account: a range over one account skips the segments the
+/// filter rules out, and never misses a row
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct AccountSeq {
+    account: [u8; 8],
+    seq: u32,
+}
+
+impl Key for AccountSeq {
+    const LEN: usize = 12;
+    const FILTER_PREFIX: usize = 8;
+
+    fn encode(&self) -> Vec<u8> {
+        [&self.account[..], &self.seq.to_be_bytes()].concat()
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        Some(Self {
+            account: bytes.get(..8)?.try_into().ok()?,
+            seq: u32::from_be_bytes(bytes.get(8..12)?.try_into().ok()?),
+        })
+    }
+}
+
+impl Record for AccountSeq {
+    type Key = AccountSeq;
+    const STRIDE: usize = 12;
+
+    fn key(&self) -> AccountSeq {
+        *self
+    }
+
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&Key::encode(self));
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        <Self as Key>::decode(bytes)
+    }
+}
+
+/// Uniform account bytes (the filter shards on them)
+fn account(n: u64) -> [u8; 8] {
+    n.wrapping_mul(0x9e37_79b9_7f4a_7c15).to_be_bytes()
+}
+
+/// Ranges within one account return every row across segments; a segment's filter turns away
+/// accounts it never held at about its false-positive rate (2^-8)
+#[test]
+fn a_prefix_filter_skips_segments_without_the_prefix_and_misses_nothing() {
+    use super::{file::SegmentFile, layout::Shape};
+    use crate::fs::Access;
+
+    let fs = SimFs::new();
+    let dir = Path::new("/accounts");
+    fs.create_dir_all(dir).expect("dir");
+    let writer = SegmentWriter::open(fs.clone(), dir);
+    // account 0 in every segment, accounts 100·s .. 100·s + 49 only in segment s
+    let segments: Vec<_> = (0u64..6)
+        .map(|s| {
+            let accounts = std::iter::once(0).chain(100 * s + 1..100 * s + 50);
+            let mut rows: Vec<AccountSeq> = accounts
+                .flat_map(|a| {
+                    (0..20).map(move |seq| AccountSeq {
+                        account: account(a),
+                        seq: seq + 100 * s as u32,
+                    })
+                })
+                .collect();
+            rows.sort();
+            writer.write(s as u32, rows).expect("write").expect("rows")
+        })
+        .collect();
+    writer.sync_dir().expect("sync");
+
+    let set =
+        SegmentSet::<AccountSeq>::open::<AccountSeq>(fs.clone(), dir, &segments).expect("open");
+    let pinned = set.pin();
+    let range = |a: u64| {
+        let (start, end) = (
+            AccountSeq { account: account(a), seq: 0 },
+            AccountSeq { account: account(a), seq: u32::MAX },
+        );
+        pinned.range::<AccountSeq>(&start, &end)
+    };
+    assert_eq!(range(0).len(), 6 * 20, "the shared account from every segment");
+    assert_eq!(range(301).len(), 20, "an account from one segment");
+    assert!(range(7_777).is_empty(), "an account no segment holds");
+
+    let file = SegmentFile::open(
+        fs.as_ref(),
+        dir,
+        &segments[0],
+        Shape::of::<AccountSeq>(),
+        Access::Normal,
+    )
+    .expect("open");
+    file.warm_filter();
+    assert!((1..50).all(|a| file.may_contain(&account(a))), "no false negative");
+    let absent = 10_000u64;
+    let passed = (1_000..1_000 + absent).filter(|a| file.may_contain(&account(*a))).count();
+    assert!(passed < 200, "{passed} of {absent} absent accounts passed (≈ 39 expected)");
+}
+
+/// Read 0, 1, 2, … failed while reopening a committed store until the open succeeds: each
+/// failure surfaces as the injected `Err`, never a panic, and the open that succeeds finds every
+/// commit
+#[test]
+fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
+    let root = Path::new("/idx");
+    let fs = SimFs::new();
+    {
+        let mut store = LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET).expect("open");
+        for at in 0..3u32 {
+            let rows = (vec![row(1, at)], vec![id_row(at)]);
+            store.commit(rows, commit_point(at as usize + 1)).expect("commit");
+        }
+    }
+
+    let mut failures = 0;
+    for fail_at in 0.. {
+        assert!(fail_at < 1_000, "open never succeeded");
+        let fs = fs.restarted();
+        fs.fail_reads_from(fail_at);
+        let opened = catch_unwind(AssertUnwindSafe(|| {
+            LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET)
+        }))
+        .unwrap_or_else(|payload| panic!("read {fail_at}: panicked: {}", panic_message(payload)));
+        match opened {
+            Ok(store) => {
+                assert_eq!(store.committed().count(), 3, "read {fail_at}: every commit found");
+                break;
+            }
+            Err(error) => {
+                assert!(error.to_string().contains("injected read EIO"), "read {fail_at}: {error}");
+                failures += 1;
+            }
+        }
+    }
+    assert!(failures > 0, "open reads through positional reads (the manifest at least)");
 }

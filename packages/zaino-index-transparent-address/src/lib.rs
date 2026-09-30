@@ -8,7 +8,7 @@
 //!   receives/<id>.seg  one immutable sorted segment (+ `.crc`: page checksums)
 //!   spent/<id>.seg     same, for spends
 //!
-//! receives row, 69 B:  addr 21 ([kind][hash160]) ‖ height u32 ‖ txid 32 ‖ vout u32 → value u64
+//! receives row, 69 B:  addr 21 ([hash160][kind]) ‖ height u32 ‖ txid 32 ‖ vout u32 → value u64
 //!                      sorted by address then height: one address = one contiguous range per segment
 //!                      fences per 4 KiB block (≈59 rows), no filter (range-scanned, never probed)
 //! spent row, 72 B:     txid 32 ‖ vout u32 → height u32 ‖ spending txid 32

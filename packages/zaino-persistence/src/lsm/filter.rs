@@ -4,9 +4,11 @@
 //! - shard = top bits of the key's first 8 bytes → monotone in key order (built while streaming)
 //!   and ≤ [`SHARD_KEYS`] per build (bounded scratch, whatever the segment's size)
 
-use std::ops::Range;
+use std::{io, ops::Range};
 
 use xorf::{BinaryFuse8, BinaryFuse8Ref, DmaSerializable, Filter, FilterRef};
+
+use super::spill::Spill;
 
 /// Target keys per shard (xorf build scratch ≈ 25 B/key → ≈ 26 MiB per shard)
 pub(crate) const SHARD_KEYS: u64 = 1 << 20;
@@ -55,28 +57,57 @@ fn shard(key: &[u8], bits: u8) -> usize {
     }
 }
 
+/// Where a filter's fingerprints go as each shard closes: memory, or a segment's [`Spill`]
+pub(crate) trait Fingerprints {
+    fn put(&mut self, bytes: &[u8]) -> io::Result<()>;
+}
+
+impl Fingerprints for Vec<u8> {
+    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
+impl Fingerprints for Spill {
+    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.push(bytes)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum FilterError {
+    #[error("{0}")]
+    Build(&'static str),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
 /// Streams ascending keys into the serialized filter section
-pub(crate) struct FilterWriter {
+///
+/// - only the shard being built and the table stay in memory; each closed shard's fingerprints
+///   go straight to `S`
+pub(crate) struct FilterWriter<S> {
     bits: u8,
     current: usize,
     hashes: Vec<u64>,
     table: Vec<u8>,
-    fingerprints: Vec<u8>,
+    fingerprints: S,
 }
 
-impl FilterWriter {
-    pub(crate) fn new(records: u64) -> Self {
+impl<S: Fingerprints> FilterWriter<S> {
+    pub(crate) fn new(records: u64, fingerprints: S) -> Self {
         Self {
             bits: shard_bits(records),
             current: 0,
             hashes: Vec::new(),
             table: Vec::new(),
-            fingerprints: Vec::new(),
+            fingerprints,
         }
     }
 
     /// Keys in ascending order (shards then close in order)
-    pub(crate) fn push(&mut self, key: &[u8]) -> Result<(), &'static str> {
+    pub(crate) fn push(&mut self, key: &[u8]) -> Result<(), FilterError> {
         let at = shard(key, self.bits);
         assert!(at >= self.current, "filter keys arrive in key order");
         while self.current < at {
@@ -86,29 +117,29 @@ impl FilterWriter {
         Ok(())
     }
 
-    /// `shard bits u8 ‖ 2^bits × (descriptor ‖ count u32 LE) ‖ fingerprints`
-    pub(crate) fn finish(mut self) -> Result<Vec<u8>, &'static str> {
+    /// The section's head, `shard bits u8 ‖ 2^bits × (descriptor ‖ count u32 LE)`, and the
+    /// fingerprints that follow it
+    pub(crate) fn finish(mut self) -> Result<(Vec<u8>, S), FilterError> {
         while self.current < 1 << self.bits {
             self.close()?;
         }
-        let mut out = Vec::with_capacity(1 + self.table.len() + self.fingerprints.len());
-        out.push(self.bits);
-        out.extend_from_slice(&self.table);
-        out.extend_from_slice(&self.fingerprints);
-        Ok(out)
+        let mut head = Vec::with_capacity(1 + self.table.len());
+        head.push(self.bits);
+        head.extend_from_slice(&self.table);
+        Ok((head, self.fingerprints))
     }
 
-    fn close(&mut self) -> Result<(), &'static str> {
+    fn close(&mut self) -> Result<(), FilterError> {
         let mut entry = [0u8; ENTRY];
         if !self.hashes.is_empty() {
             self.hashes.sort_unstable();
             self.hashes.dedup();
-            let built = BinaryFuse8::try_from(&self.hashes)?;
+            let built = BinaryFuse8::try_from(&self.hashes).map_err(FilterError::Build)?;
             built.dma_copy_descriptor_to(&mut entry[..DESCRIPTOR]);
             let fingerprints = built.dma_fingerprints();
             let count = u32::try_from(fingerprints.len()).expect("shard fingerprints < 2^32");
             entry[DESCRIPTOR..].copy_from_slice(&count.to_le_bytes());
-            self.fingerprints.extend_from_slice(fingerprints);
+            self.fingerprints.put(fingerprints)?;
             self.hashes.clear();
         }
         self.table.extend_from_slice(&entry);
@@ -121,6 +152,7 @@ impl FilterWriter {
 #[derive(Debug)]
 pub(crate) struct FilterLayout {
     bits: u8,
+    len: usize,
     shard_ranges: Vec<[Range<usize>; 2]>,
 }
 
@@ -142,21 +174,12 @@ impl FilterLayout {
             shard_ranges.push([descriptor..descriptor + DESCRIPTOR, at..end]);
             at = end;
         }
-        (at == len).then_some(Self { bits, shard_ranges })
+        (at == len).then_some(Self { bits, len, shard_ranges })
     }
 
-    pub(crate) fn shards(&self) -> usize {
-        self.shard_ranges.len()
-    }
-
-    /// Shard `key` probes
-    pub(crate) fn shard_of(&self, key: &[u8]) -> usize {
-        shard(key, self.bits)
-    }
-
-    /// Section ranges a probe of `shard` reads: its descriptor, its fingerprints
-    pub(crate) fn shard_ranges(&self, shard: usize) -> [Range<usize>; 2] {
-        self.shard_ranges[shard].clone()
+    /// The whole section's length
+    pub(crate) fn len(&self) -> usize {
+        self.len
     }
 
     /// `false` = certainly absent; `true` = present or a false positive (≈ 2^-8)
@@ -165,7 +188,7 @@ impl FilterLayout {
         read: impl Fn(Range<usize>) -> &'a [u8],
         key: &[u8],
     ) -> bool {
-        let [descriptor, fingerprints] = self.shard_ranges(self.shard_of(key));
+        let [descriptor, fingerprints] = self.shard_ranges[shard(key, self.bits)].clone();
         if fingerprints.is_empty() {
             return false;
         }
@@ -199,11 +222,12 @@ mod tests {
         };
         let mut keys: Vec<Vec<u8>> = (0..3 * SHARD_KEYS / 2).map(key).collect();
         keys.sort_unstable();
-        let mut writer = FilterWriter::new(keys.len() as u64);
+        let mut writer = FilterWriter::new(keys.len() as u64, Vec::new());
         for key in &keys {
             writer.push(key).expect("push");
         }
-        let section = writer.finish().expect("build");
+        let (head, fingerprints) = writer.finish().expect("build");
+        let section = [head, fingerprints].concat();
         let read = |range: Range<usize>| &section[range];
         let layout = FilterLayout::parse(read, section.len()).expect("parses");
         assert_eq!(layout.bits, 1);
@@ -217,7 +241,8 @@ mod tests {
         let rate_ok = (false_positives as f64) < strangers as f64 * 2.0 / 256.0;
         assert!(rate_ok, "{false_positives} false positives in {strangers}");
 
-        let empty = FilterWriter::new(0).finish().expect("empty");
+        let (head, fingerprints) = FilterWriter::new(0, Vec::new()).finish().expect("empty");
+        let empty = [head, fingerprints].concat();
         let layout = FilterLayout::parse(|range| &empty[range], empty.len()).expect("empty");
         assert!(!layout.may_contain(|range| &empty[range], &key(1)));
         assert!(FilterLayout::parse(read, section.len() - 1).is_none(), "short");

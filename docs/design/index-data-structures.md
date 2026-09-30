@@ -77,15 +77,21 @@ stride, then fences (the first key of every 4 KiB block of rows) and, for sets r
 lookups, a membership filter (§7). Sorting costs nothing extra because the batch is in memory
 anyway. `zaino_persistence::lsm` owns the format and the merge policy.
 
-A read binary-searches each segment's fences, reads one 4 KiB block, about a page, and searches
-inside it. A range scan does the same for its start key and walks forward from there. Segments
-carry no height metadata, so every query visits every live segment, and a height range only narrows
-where the seek lands within each one. That makes the live segment count the read cost, and it is
-why we merge.
+Each segment also stores a summary of its fences, the first key of every page of fences, which a
+reader copies into memory when it maps the segment (about 1/100 of the fences). A read binary-searches
+the summary in memory, reads the one page of fences it points to, then one 4 KiB block of rows,
+and searches inside it: two page reads per segment however large the segment is. A range scan does
+the same for its start key and walks forward from there.
+
+A set's filter decides which segments a query visits at all. A point probe checks each segment's
+filter first and touches no fence or row page on a miss. An address history filters on its address,
+so it visits only the segments holding that address. Segments carry no height metadata, so a height
+range only narrows where the seek lands inside each visited segment. What remains is the live
+segment count, which bounds the filter checks per query, and that is why we merge.
 
 Commits are frequent. During bulk sync an index commits every `batch_mib` (64 MiB by default), and
-at the tip every final block commits as it arrives, so an unmerged set would gain a segment per
-block. Segments are therefore size-tiered: a segment's tier is `⌊log₈ rows⌋`, and once a tier holds
+at the tip every 32 final blocks, so an unmerged set would still gain a segment every 40 minutes
+of mainnet blocks. Segments are therefore size-tiered: a segment's tier is `⌊log₈ rows⌋`, and once a tier holds
 eight segments a background thread, one per tier, merges them into one segment of the tier above.
 The index's next manifest commit swaps the merged segment in, and the inputs are unlinked only once
 that manifest is durable. A commit never waits on a merge unless the merging tier falls two full
@@ -188,22 +194,31 @@ disk, which is what lets Shapes A and B exist.
 
 | Set                       | Key                           | Row  | Read by                  |
 | ------------------------- | ----------------------------- | ---- | ------------------------ |
-| `receives`                | `addr ‖ height ‖ txid ‖ vout` | 69 B | range scan               |
+| `receives`                | `addr ‖ height ‖ txid ‖ vout` | 69 B | range scan, filtered by address |
 | `spent`                   | `txid ‖ vout`                 | 72 B | point probe              |
 | `outputs` (value-balance) | `txid ‖ vout`                 | 44 B | point probe, always hits |
 | `by_hash` (block-hash)    | `block hash`                  | 36 B | point probe              |
 
 The address key is the address itself, not an id for it. `receives` is keyed by the 21-byte
-`[kind][hash160]` tag. Interning it into a `u64` would cost a dictionary, a second structure to keep
+`[hash160][kind]` tag. Interning it into a `u64` would cost a dictionary, a second structure to keep
 in step and an indirection on every read, and only breaks even at about 2.9 rows per address. That
 is more than a wallet receiver reaches, and far more than ZIP-320 TEX and librustzcash ephemeral
 receivers, which are single-use by construction. Keys are big-endian, so byte order is key order and
 segments compare encoded prefixes without decoding them.
 
-`receives` is range-scanned, so it only needs to stay sorted. The other three are probed by a
-uniformly distributed key and never scanned. An unspent output, the common case, is a miss in every
-`spent` segment, so each probed segment carries a filter that turns most of those misses into no
-read at all.
+The other three sets are probed by a uniformly distributed key and never scanned. An unspent output,
+the common case, is a miss in every `spent` segment, so each probed segment carries a filter that
+turns most of those misses into no read at all.
+
+`receives` is range-scanned, and its filter covers only the 21-byte address at the front of each key
+(`Key::FILTER_PREFIX`). An address history is a range whose start and end share that address, so
+each segment's filter answers whether the address is there at all, and the scan skips every segment
+that never saw it. Most addresses are active for a short stretch of the chain, so this turns a seek
+in every segment into a seek in the few that hold the address. The address puts its hash first for
+this reason: the filter shards on a key's first 8 bytes, which must be uniform.
+
+Readers read and check each segment's filter when they map it, so a probe never faults in a cold
+filter page, and the filters stay resident as the page cache allows.
 
 Segments never change after they are built, which is what a static filter is for (RocksDB's
 per-SST filters are the same idea), so we use a sharded BinaryFuse8. Mainnet has about 190M

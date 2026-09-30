@@ -194,12 +194,23 @@ durable manifest.
   state around every persistence point is reopened. The recovered state must be at least the last
   acknowledged commit and at most the last attempted one, must match the model, and must accept
   the next commit. Both directions are checked: every row of a recovered commit is present and
-  every row of a later one is absent (LevelDB `fault_injection_test`).
+  every row of a later one is absent (LevelDB `fault_injection_test`). Every index, value-balance
+  included, has such a test.
+- **The crash model.** A crash drops, keeps, reorders or tears any write since the last fsync. We
+  tear writes in half, on 512-byte sector boundaries (only the first sector, all but the last),
+  and with every other sector landing, since a device promises sector atomicity only and may
+  persist a write's sectors in any order. We also lose one file's unsynced writes while every
+  other file keeps its own, which is the case where the data and the manifest reach the disk but
+  the checksums do not. Tests write with a 4 KiB spill threshold, so every enumerated workload
+  also runs through the merge scratch files.
 - **Failed I/O.** `SimFs::fail_from` returns `EIO` from the nth mutating call on (Pebble
   `errorfs`), and the LSM store workload reruns failing at the 0th, 1st, 2nd call and so on until it
   succeeds. Each failure must surface as the injected error, never a panic and never swallowed (a
   background merge's surfaces at the next commit). The store must then refuse every later commit,
-  and a restart must recover an acknowledged commit or the attempted one.
+  and a restart must recover an acknowledged commit or the attempted one. `fail_reads_from` does
+  the same for positional reads while reopening: each failure is the open's error, and the open
+  that succeeds finds every commit. Mapped reads are not injectable in-process; on a real disk
+  they fail as `SIGBUS`, which kills zainod, in line with §6.
 - **Planted bugs.** Each LSM invariant check is fed the bug it guards against (a duplicate key,
   including one surfacing inside a merge, a key in two segments, a tip that does not advance) and
   must fire. A check never seen firing is not known to work (RocksDB).

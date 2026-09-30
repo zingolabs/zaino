@@ -1,9 +1,6 @@
 //! One listed segment, mapped: what readers and merges hold
 
-use std::{
-    path::Path,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::path::Path;
 
 use super::{
     file_name,
@@ -16,18 +13,18 @@ use crate::{
     pages::Pages,
 };
 
-/// - `shard_checked[s]` = shard `s`'s filter pages CRC-checked (a probe reads a whole shard, up to
-///   ~290 pages: one flag instead of a bitmap walk per probe)
+/// - `summary` = the summary section, copied into memory at open (one key per page of fences)
 #[derive(Debug)]
 pub(crate) struct SegmentFile {
     pub(crate) meta: SegmentMeta,
     pages: Pages,
     sections: Sections,
-    shard_checked: Box<[AtomicBool]>,
+    summary: Box<[u8]>,
 }
 
 impl SegmentFile {
-    /// Maps `meta`'s segment (lengths checked; pages checked as reads touch them)
+    /// Maps `meta`'s segment (lengths and checksum digest checked, the summary read into memory;
+    /// every other page checked as reads touch it)
     pub(crate) fn open(
         fs: &dyn Fs,
         dir: &Path,
@@ -40,9 +37,18 @@ impl SegmentFile {
         let sections = Sections::new(shape, meta.records, len, |at| {
             FilterLayout::parse(|range| pages.read(at + range.start..at + range.end), len - at)
         });
-        let shards = sections.filter.as_ref().map_or(0, |(_, layout)| layout.shards());
-        let shard_checked = (0..shards).map(|_| AtomicBool::new(false)).collect();
-        Ok(Self { meta: *meta, pages, sections, shard_checked })
+        let summary = pages.read(sections.summary.clone()).into();
+        Ok(Self { meta: *meta, pages, sections, summary })
+    }
+
+    /// Reads and checks the whole filter section up front, so no probe ever faults a cold filter
+    /// page in or checks one (a reader's copy; merges never probe)
+    pub(crate) fn warm_filter(&self) {
+        if let Some((at, layout)) = &self.sections.filter {
+            let range = *at..*at + layout.len();
+            self.pages.will_need(range.clone());
+            self.pages.read(range);
+        }
     }
 
     pub(crate) fn records(&self) -> usize {
@@ -58,12 +64,19 @@ impl SegmentFile {
         &self.row(slot)[..self.sections.shape.key_len]
     }
 
+    /// Key bytes the filter covers (0 = no filter)
+    pub(crate) fn filtered(&self) -> usize {
+        self.sections.shape.filtered
+    }
+
     /// First slot whose key is `>= needle` (the record count when every key is below it)
     ///
-    /// - fences name the one block; the search stays inside it (≈ one page)
+    /// - the in-memory summary picks a page of fences, a fence picks the block, and the search
+    ///   stays inside that block (≈ one page)
     pub(crate) fn seek(&self, needle: &[u8]) -> usize {
         let rows = self.sections.shape.block_rows;
-        let b = self.sections.block_of(|b| self.pages.read(self.sections.fence(b)), needle);
+        let fence = |b| self.pages.read(self.sections.fence(b));
+        let b = self.sections.block_of(&self.summary, fence, needle);
         let (mut low, mut high) = (b * rows, ((b + 1) * rows).min(self.records()));
         while low < high {
             let mid = low + (high - low) / 2;
@@ -75,20 +88,17 @@ impl SegmentFile {
         low
     }
 
-    /// `false` = certainly absent (always `true` for an unprobed set)
+    /// `false` = no key starting with `prefix` (the [`filtered`](Self::filtered) bytes) is in this
+    /// segment; always `true` for an unfiltered set
     ///
-    /// - first probe of a shard = checked read of all of it (Release); later = unchecked (Acquire)
-    pub(crate) fn may_contain(&self, key: &[u8]) -> bool {
+    /// - reads only pages [`warm_filter`](Self::warm_filter) already checked
+    pub(crate) fn may_contain(&self, prefix: &[u8]) -> bool {
         let Some((at, layout)) = &self.sections.filter else {
             return true;
         };
-        let shard = layout.shard_of(key);
-        if !self.shard_checked[shard].load(Ordering::Acquire) {
-            for range in layout.shard_ranges(shard) {
-                self.pages.read(at + range.start..at + range.end);
-            }
-            self.shard_checked[shard].store(true, Ordering::Release);
-        }
-        layout.may_contain(|range| self.pages.read_unchecked(at + range.start..at + range.end), key)
+        layout.may_contain(
+            |range| self.pages.read_unchecked(at + range.start..at + range.end),
+            prefix,
+        )
     }
 }

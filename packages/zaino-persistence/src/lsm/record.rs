@@ -14,6 +14,15 @@ pub trait Key: Ord + Sized + Send {
     /// - first 8 encoded bytes must be uniform (a hash, a txid): the filter shards on them
     const PROBED: bool = false;
 
+    /// Range-scanned sets: a filter over the first `FILTER_PREFIX` encoded bytes of each key,
+    /// so a range whose start and end share those bytes skips every segment without them
+    /// (0 = no filter)
+    ///
+    /// - e.g. an address history keyed `address ‖ height ‖ …`: the prefix is the address, and a
+    ///   lookup visits only the segments holding that address
+    /// - the first 8 encoded bytes must be uniform, as for [`PROBED`](Self::PROBED)
+    const FILTER_PREFIX: usize = 0;
+
     /// Exactly [`LEN`](Self::LEN) bytes
     fn encode(&self) -> Vec<u8>;
 

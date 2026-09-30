@@ -5,9 +5,11 @@
 //! - crash points recorded around persistence points only (just before and after each
 //!   `sync_data` / `sync_dir`, after each `rename` / `remove`; CrashMonkey: bugs surface there)
 //! - `Image::crash_states` = what a crash at that point could leave (ALICE model: unsynced
-//!   writes dropped, prefix-applied, reordered, torn, zero- or garbage-filled; unsynced entries
-//!   lost or kept)
-//! - [`SimFs::fail_from`] = `EIO` from the nth mutating call on (Pebble `errorfs`)
+//!   writes dropped, prefix-applied, reordered, torn (in half, and on 512 B sector boundaries,
+//!   sectors out of order), zero- or garbage-filled, lost in one file while kept in the rest;
+//!   unsynced entries lost or kept)
+//! - [`SimFs::fail_from`] = `EIO` from the nth mutating call on (Pebble `errorfs`);
+//!   [`SimFs::fail_reads_from`] = the same for positional reads
 //! - [`SimFs::power_loss`] / [`SimFs::restarted`] = a crash / a process exit at any instant
 
 use std::{
@@ -23,6 +25,9 @@ use bytes::Bytes;
 use super::{FileHandle, Fs, LockGuard, Mapping};
 
 type FileId = usize;
+
+/// The unit a device writes atomically (a torn write tears on these boundaries)
+const SECTOR: usize = 512;
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -107,6 +112,19 @@ impl Content {
             variants.push(torn("torn", bytes[..bytes.len() / 2].to_vec()));
             variants.push(torn("zero-filled", vec![0; bytes.len()]));
             variants.push(torn("garbage", vec![0xa5; bytes.len()]));
+            // a device promises sector atomicity only, and may persist a write's sectors in any
+            // order: tear it at sector boundaries, and keep every other sector
+            if bytes.len() > SECTOR {
+                variants.push(torn("first sector only", bytes[..SECTOR].to_vec()));
+                let last = (bytes.len() - 1) / SECTOR * SECTOR;
+                variants.push(torn("all but the last sector", bytes[..last].to_vec()));
+                let mut data = self.with(prior);
+                for (sector, chunk) in bytes.chunks(SECTOR).enumerate().step_by(2) {
+                    let at = offset + (sector * SECTOR) as u64;
+                    Op::Write { at, bytes: chunk.to_vec() }.apply(&mut data);
+                }
+                variants.push((format!("op {at} every other sector"), data));
+            }
         }
         variants
     }
@@ -241,21 +259,32 @@ impl Image {
         states
     }
 
-    /// Per file with pending writes: each crash variant of it, every other file durable, under
-    /// the durable and the current namespace
+    /// Per file with pending writes: each crash variant of it with every other file durable, and
+    /// the file losing its pending writes while every other file keeps theirs (writeback that
+    /// reached the data and the manifest but not the checksums, say); under the durable and the
+    /// current namespace
     fn content_states(&self) -> Vec<(String, Image)> {
         let mut states = Vec::new();
+        let spaces = [("durable", &self.durable), ("current", &self.volatile)];
         for (id, content) in self.files.iter().enumerate().filter(|(_, c)| !c.pending.is_empty()) {
             let path = self.path_of(id);
             for (variant, bytes) in content.crash_variants() {
-                for (space, namespace) in [("durable", &self.durable), ("current", &self.volatile)]
-                {
+                for (space, namespace) in spaces {
                     let image = self.settle(namespace, |other| match other == id {
                         true => bytes.clone(),
                         false => self.files[other].durable.clone(),
                     });
                     states.push((format!("{path}: {variant}, {space} entries"), image));
                 }
+            }
+            for (space, namespace) in spaces {
+                let image = self.settle(namespace, |other| match other == id {
+                    true => self.files[other].durable.clone(),
+                    false => self.files[other].current.clone(),
+                });
+                let label =
+                    format!("{path}: pending lost, every other file's kept, {space} entries");
+                states.push((label, image));
             }
         }
         states
@@ -297,9 +326,24 @@ struct Inner {
     recorded: Option<Vec<CrashPoint>>,
     mutations: u64,
     fail_from: Option<u64>,
+    reads: u64,
+    fail_reads_from: Option<u64>,
 }
 
 impl Inner {
+    /// Counts one positional read; `EIO` from [`SimFs::fail_reads_from`]'s read on
+    fn read(&mut self, path: &Path) -> io::Result<()> {
+        let at = self.reads;
+        self.reads += 1;
+        match self.fail_reads_from.is_some_and(|from| at >= from) {
+            true => Err(io::Error::other(format!(
+                "sim: injected read EIO at read {at}: {}",
+                path.display()
+            ))),
+            false => Ok(()),
+        }
+    }
+
     /// Counts one mutating call; `EIO` from [`SimFs::fail_from`]'s op on (disk gone, not flaky)
     fn mutate(&mut self, op: impl FnOnce() -> String) -> io::Result<()> {
         let at = self.mutations;
@@ -390,6 +434,13 @@ impl SimFs {
     /// `EIO`, nothing applied (Pebble `errorfs.OnIndex`: loop `op` until a workload succeeds)
     pub fn fail_from(&self, op: u64) {
         self.lock_inner().fail_from = Some(op);
+    }
+
+    /// `EIO` from the nth positional read on (a failing disk surfacing on read). Mapped reads
+    /// are copies here and never fail: on a real disk those fault as `SIGBUS`, which kills the
+    /// process, and nothing in-process can test that
+    pub fn fail_reads_from(&self, read: u64) {
+        self.lock_inner().fail_reads_from = Some(read);
     }
 
     /// Mutating calls so far (creates, writes, truncates, syncs, renames, removes)
@@ -595,7 +646,8 @@ impl FileHandle for SimFile {
     }
 
     fn read_exact_at(&self, buf: &mut [u8], at: u64) -> io::Result<()> {
-        let inner = self.lock_inner();
+        let mut inner = self.lock_inner();
+        inner.read(&self.path)?;
         let data = &inner.image.files[self.id].current;
         let at = usize::try_from(at).map_err(io::Error::other)?;
         let bytes = data.get(at..at + buf.len()).ok_or_else(|| {

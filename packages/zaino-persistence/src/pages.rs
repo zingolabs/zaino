@@ -588,6 +588,27 @@ mod tests {
         assert!(matches!(short, Err(PageError::Lost { have: 10, .. })));
     }
 
+    /// Open reads the tail page and the checksums back: a failing read there is the read's
+    /// `Err`, never a panic and never a file opened on bytes it could not read
+    #[test]
+    fn a_failed_read_at_open_surfaces_as_an_error() {
+        let fs = SimFs::new();
+        let path = Path::new("/p/data");
+        fs.create_dir_all(Path::new("/p")).expect("dir");
+        let mut file = PagedFile::open(fs.as_ref(), path, Sealed::EMPTY).expect("open");
+        file.append(&vec![7; 2 * PAGE + 5]).expect("append");
+        let sealed = file.seal().expect("seal");
+        drop(file);
+
+        for fail_at in 0..2 {
+            let fs = fs.restarted();
+            fs.fail_reads_from(fail_at);
+            let error = PagedFile::open(fs.as_ref(), path, sealed).expect_err("a read failed");
+            assert!(error.to_string().contains("injected read EIO"), "read {fail_at}: {error}");
+        }
+        PagedFile::open(fs.restarted().as_ref(), path, sealed).expect("healthy reads open");
+    }
+
     /// Offline scrub over a real file written past `WRITE_BEHIND` (writeback hint issued): clean,
     /// a bad page named, orphans counted, a short file lost
     #[test]

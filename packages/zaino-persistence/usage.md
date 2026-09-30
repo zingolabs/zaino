@@ -259,9 +259,24 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
   (`FileHandle::write_behind` = `sync_file_range(SYNC_FILE_RANGE_WRITE)`,
   RocksDB `bytes_per_sync`). A merge's seal-time `fsync` then finds little
   dirty data, so it never stalls the commit path's own `fsync`s.
-- A seek = binary search over the fences, then within one block (≈ one page).
-- A probe reads its filter shard whole (up to ~290 pages). The first probe of a
-  shard CRC-checks all of it; later probes read it through a per-shard flag, not
-  a per-page walk. A corrupt shard still dies on its first probe.
+- A segment is `records ‖ fences ‖ summary ‖ filter`. The summary holds the
+  first key of every page of fences, and a reader copies it into memory at
+  open, so a seek is a search in memory, one page of fences, then one block of
+  rows (≈ one page): two page reads per segment whatever its size.
+- A reader reads and checks each segment's whole filter when it maps the
+  segment (`warm_filter`), so no probe ever faults in or checks a cold filter
+  page, and a corrupt filter dies at open. Merges never probe, so they skip it.
+- `Key::PROBED` filters whole keys (point lookups). `Key::FILTER_PREFIX` filters
+  the first N bytes of a range-scanned key: each distinct prefix goes into the
+  filter once, and `range_at_most` skips every segment whose filter rules out
+  a prefix the range's start and end share. Either way the filter shards on the
+  first 8 filtered bytes, which must be uniform.
+- A segment being written keeps its fences and filter fingerprints in memory
+  only up to 1 MiB each, then spills them to `<id>.fences.scratch` and
+  `<id>.filter.scratch` beside it, and copies them in after the records. Merge
+  memory stays at a few MiB whatever the segment's size, for about 2% extra
+  I/O. Scratch files are never listed; opening a set deletes any it finds.
+- `LsmStore::merge_finished()` = a merge is done and waits for the next commit
+  to land it (an index uses it for `IndexWriter::wants_commit`).
 - Filter sizing (BinaryFuse8, ≤ 2²⁰ keys per shard):
   [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §7.

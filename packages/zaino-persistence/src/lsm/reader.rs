@@ -17,6 +17,7 @@ use super::{
     layout::Shape,
     parse_file_name,
     record::{Key, Record},
+    spill::is_scratch,
     Result, SegmentMeta,
 };
 use crate::fs::{Access, Fs};
@@ -32,9 +33,20 @@ struct Mapped<K> {
 }
 
 impl<K: Key> Mapped<K> {
+    /// `meta`'s segment mapped for reads, its filter read and checked up front
+    fn open<R: Record<Key = K>>(
+        fs: &Arc<dyn Fs>,
+        dir: &Path,
+        meta: &SegmentMeta,
+    ) -> Result<Arc<Self>> {
+        let file = SegmentFile::open(fs.as_ref(), dir, meta, Shape::of::<R>(), reads::<R>())?;
+        file.warm_filter();
+        Ok(Arc::new(Self { file, _key: PhantomData }))
+    }
+
     /// The row keyed exactly `key` (filter first: a miss touches no record)
     fn get<R: Record<Key = K>>(&self, key: &[u8]) -> Option<R> {
-        if !self.file.may_contain(key) {
+        if !self.file.may_contain(&key[..self.file.filtered()]) {
             return None;
         }
         let slot = self.file.seek(key);
@@ -71,6 +83,8 @@ impl<K: Key> Snapshot<K> {
     ///
     /// - stops scanning at row `limit + 1` (a serve-path budget: cost bounded by `limit`, not by
     ///   how many rows the range holds)
+    /// - a range whose start and end share the set's `FILTER_PREFIX` visits only the segments
+    ///   whose filter may hold that prefix
     pub fn range_at_most<R: Record<Key = K>>(
         &self,
         start: &K,
@@ -78,10 +92,16 @@ impl<K: Key> Snapshot<K> {
         limit: usize,
     ) -> Option<Vec<R>> {
         let (start, end) = (start.encode(), end.encode());
+        let filtered = Shape::of::<R>().filtered;
+        let prefix =
+            (filtered > 0 && start[..filtered] == end[..filtered]).then(|| &start[..filtered]);
         let mut found = Vec::new();
 
         for mapped in &self.segments {
             let file = &mapped.file;
+            if prefix.is_some_and(|prefix| !file.may_contain(prefix)) {
+                continue;
+            }
             for slot in file.seek(&start)..file.records() {
                 if file.key(slot) >= end.as_slice() {
                     break;
@@ -184,6 +204,12 @@ impl<K: Key + Send + Sync + 'static> SegmentSet<K> {
     ) -> Result<Self> {
         let mut removed = false;
         for name in fs.list(dir)? {
+            // a writer's scratch is never listed: whatever is left of one was cut short
+            if is_scratch(&name) {
+                fs.remove(&dir.join(name))?;
+                removed = true;
+                continue;
+            }
             let Some(id) = parse_file_name(&name) else {
                 continue;
             };
@@ -196,13 +222,8 @@ impl<K: Key + Send + Sync + 'static> SegmentSet<K> {
             fs.sync_dir(dir)?;
         }
 
-        let segments = listed
-            .iter()
-            .map(|meta| {
-                SegmentFile::open(fs.as_ref(), dir, meta, Shape::of::<R>(), reads::<R>())
-                    .map(|file| Arc::new(Mapped { file, _key: PhantomData }))
-            })
-            .collect::<Result<_>>()?;
+        let segments =
+            listed.iter().map(|meta| Mapped::open::<R>(&fs, dir, meta)).collect::<Result<_>>()?;
         Ok(Self {
             fs,
             dir: dir.to_path_buf(),
@@ -219,16 +240,7 @@ impl<K: Key + Send + Sync + 'static> SegmentSet<K> {
                 current.segments.iter().find(|mapped| mapped.file.meta == *meta).map(Arc::clone);
             segments.push(match reused {
                 Some(mapped) => mapped,
-                None => Arc::new(Mapped {
-                    file: SegmentFile::open(
-                        self.fs.as_ref(),
-                        &self.dir,
-                        meta,
-                        Shape::of::<R>(),
-                        reads::<R>(),
-                    )?,
-                    _key: PhantomData,
-                }),
+                None => Mapped::open::<R>(&self.fs, &self.dir, meta)?,
             });
         }
         self.snapshot.store(Arc::new(Snapshot { segments }));

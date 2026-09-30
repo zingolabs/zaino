@@ -22,6 +22,7 @@ mod reader;
 mod record;
 mod report;
 mod slots;
+mod spill;
 mod store;
 mod writer;
 
