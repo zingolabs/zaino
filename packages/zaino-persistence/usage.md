@@ -227,8 +227,13 @@ let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // 
   for its inputs, and that batch's manifest commits both at once. Inputs are
   unlinked only after that manifest is durable. Peers need not be adjacent,
   since keys are unique across segments and list order means nothing to readers.
-- One merge per tier at a time, so a small merge never waits behind a large
-  one. Write stall: if a merging tier falls two idle windows behind
+- One merge per tier at a time, and at most `MERGE_SLOTS` (4) doing work at once
+  across every set in the process. A launched merge waits for a free slot, and
+  the lowest tier waiting gets the next one, so a small merge never waits behind
+  a large one. Each merge thread lowers itself to background priority (CPU nice
+  10, I/O best-effort level 7) so merges yield the disk and cores to serving
+  reads; the I/O class only matters under a scheduler that honours it (BFQ,
+  mq-deadline). Write stall: if a merging tier falls two idle windows behind
   (`STALL_WINDOWS`), `batch()` waits for that merge (RocksDB
   `level0_stop_writes_trigger`), which bounds how many segments a read fans out
   over.

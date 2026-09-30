@@ -22,6 +22,7 @@ use super::{
     reader::SegmentSet,
     record::Record,
     report::{self, Landed},
+    slots::SLOTS,
     writer::SegmentWriter,
     Result, SegmentMeta,
 };
@@ -32,7 +33,8 @@ const STALL_WINDOWS: usize = 2;
 
 /// The committed list, the merges running under it, and the list staged for the next manifest
 ///
-/// - one merge per tier at a time (small merges never queue behind a large one)
+/// - one merge per tier at a time, and at most `MERGE_SLOTS` doing work process-wide (lowest tier
+///   first: small merges never queue behind a large one)
 /// - `batch` stages → owner's manifest commit → `committed` publishes, unlinks, launches
 pub struct SegmentLog<R: Record> {
     set: SegmentSet<R::Key>,
@@ -194,6 +196,10 @@ where
                 let span = tracing::Span::current();
                 move || {
                     let _owner = span.enter();
+                    crate::fs::background_priority();
+                    let Some(_slot) = SLOTS.acquire(tier, &cancel) else {
+                        return Ok(None);
+                    };
                     let started = Instant::now();
                     let Some(segment) = writer.merge::<R>(id, &inputs, &cancel)? else {
                         return Ok(None);

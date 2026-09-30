@@ -12,6 +12,7 @@ mod real;
 #[cfg(any(test, feature = "testing"))]
 mod sim;
 
+pub(crate) use real::background_priority;
 pub use real::RealFs;
 #[cfg(any(test, feature = "testing"))]
 pub use sim::{CrashState, SimFs};

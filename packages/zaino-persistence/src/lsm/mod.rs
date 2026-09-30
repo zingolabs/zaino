@@ -21,6 +21,7 @@ mod meta;
 mod reader;
 mod record;
 mod report;
+mod slots;
 mod store;
 mod writer;
 
