@@ -157,9 +157,10 @@ impl ValueBalanceIndexWriter {
                     }
                     // outputs above the durable tip recorded first: a later block may spend an
                     // earlier one's (at or below = a replay for an index behind: on disk already)
-                    let durable = self.durable.map(|tip| tip.height);
+                    // at the run's start (a commit inside the run moves `self.durable` past it)
+                    let replayed_through = self.durable.map(|tip| tip.height);
                     for (height, _, block) in &run {
-                        if Some(*height) > durable {
+                        if Some(*height) > replayed_through {
                             self.pending.insert(block);
                         }
                     }
@@ -174,12 +175,12 @@ impl ValueBalanceIndexWriter {
                         let data = Arc::new(block_fees);
                         fees.send(Step::Apply { height, finalized, data }).await;
                         let at = BlockRef { hash: block.header().hash, height };
-                        if Some(height) <= durable {
+                        if Some(height) <= replayed_through {
                             continue;
                         }
                         if finalized {
                             assert!(
-                                self.applied <= durable,
+                                self.applied <= self.durable.map(|tip| tip.height),
                                 "value_balance: final block above non-finalized"
                             );
                             self.unwritten.push_back(at);
@@ -518,6 +519,54 @@ mod tests {
             );
             assert_eq!(*durable.borrow(), Some(h(next)), "{crashed}: written, landed");
         }
+    }
+
+    /// Bulk sync whose commit lands inside a run: 0 alone (its bytes carried, under the batch),
+    /// then 1 to 3 queued as one run whose batch fills at 2. 3 is still final after that commit,
+    /// staged and committed at `Shutdown`, and every block's fees go out in order
+    #[tokio::test]
+    async fn a_commit_inside_a_run_keeps_the_rest_of_the_run_final() {
+        let chain = [
+            block(0, 0, 0, vec![coinbase(0x10, 100_000)]),
+            block(1, 0, 0, vec![coinbase(0x11, 50_000), tx(0x20, &[(0x10, 0)], &[90_000], [0; 4])]),
+            block(2, 0, 0, vec![coinbase(0x12, 50_000), tx(0x21, &[(0x20, 0)], &[80_000], [0; 4])]),
+            block(3, 0, 0, vec![coinbase(0x13, 50_000), tx(0x22, &[(0x21, 0)], &[70_000], [0; 4])]),
+        ];
+        let batch = chain[..3].iter().map(|block| block.weight()).sum::<usize>();
+        let index = ValueBalanceIndexWriter::open(
+            SimFs::new(),
+            Path::new("/vb"),
+            NetworkType::Regtest,
+            NonZeroUsize::new(batch).expect("blocks weigh something"),
+        )
+        .expect("open");
+        let durable = index.published().subscribe_finalized();
+        let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
+        let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+        let blocks = block_sink.subscribe("value_balance", QUEUE);
+        let running = tokio::spawn(index.run(blocks, fee_sink, CancellationToken::new()));
+
+        let first = Arc::clone(&chain[0]);
+        block_sink.send(Step::Apply { height: h(0), finalized: true, data: first }).await;
+        assert_eq!(label(&consumer.next().await), "A0f", "0 handled as a run of its own");
+        assert_eq!(*durable.borrow(), None, "0's bytes under the batch: carried, not committed");
+        for block in &chain[1..] {
+            let (height, data) = (block.header().height, Arc::clone(block));
+            block_sink.send(Step::Apply { height, finalized: true, data }).await;
+        }
+        block_sink.shutdown();
+        running.await.expect("joined").expect("clean stop");
+
+        let mut steps = Vec::new();
+        loop {
+            let step = consumer.next().await;
+            steps.push(label(&step));
+            if matches!(step, Step::Shutdown) {
+                break;
+            }
+        }
+        assert_eq!(steps, ["A1f", "A2f", "A3f", "S"]);
+        assert_eq!(*durable.borrow(), Some(h(3)), "2 committed mid-run, 3 at shutdown");
     }
 
     /// Tip 4 (0 to 2 final, both inclusive; 3, 4 non-finalized): every prevout resolves wherever
