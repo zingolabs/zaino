@@ -90,6 +90,9 @@ pub trait ChainViewSnapshot:
     /// The tip this view is pinned to.
     fn tip(&self) -> BlockRef;
 
+    /// The chain state this view is pinned to.
+    fn epoch(&self) -> ChainStateEpoch;
+
     /// The heights this view can answer between.
     fn serviceable_range(&self) -> ServiceableRange;
 }

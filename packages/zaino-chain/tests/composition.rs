@@ -972,12 +972,15 @@ async fn a_snapshot_survives_a_reorg_underneath_it() {
     );
 
     let before = composer.snapshot();
+    let pinned = before.epoch();
     assert_eq!(before.tip().height, height(1200));
 
     head.publish(FakeHeadSnapshot::covering(1100, 1150).at_generation(1));
 
     assert_eq!(before.tip().height, height(1200), "the pinned view moved");
+    assert_eq!(before.epoch(), pinned, "the pinned epoch moved");
     assert_eq!(composer.snapshot().tip().height, height(1150));
+    assert_eq!(composer.snapshot().epoch().generation, 1);
 }
 
 #[tokio::test]

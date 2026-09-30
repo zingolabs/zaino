@@ -174,6 +174,10 @@ covers a height the pinned head still thinks is recent, and a read there would
 be answered by a store holding it under a *different hash* than the caller's
 view believes.
 
+`snapshot.epoch()` is the pinned chain state, so a consumer gating on chain
+state (such as mempool coherence) checks the view it is reading, not the live
+head.
+
 ## Three outcomes, not two
 
 `block_height` and `transaction_locations` distinguish **absent**, **on the best

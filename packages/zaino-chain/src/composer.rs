@@ -666,6 +666,10 @@ where
         self.head.best_tip()
     }
 
+    fn epoch(&self) -> ChainStateEpoch {
+        self.head.epoch()
+    }
+
     fn serviceable_range(&self) -> ServiceableRange {
         ServiceableRange {
             finalised_tip: self.coverage.store_top,

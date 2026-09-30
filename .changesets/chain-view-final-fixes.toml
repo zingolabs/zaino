@@ -132,3 +132,12 @@ frozen, so on a chain that was not moving — or when the chain head's first \
 freeze was sent before the loop subscribed — it was never built. The loop \
 reports `Ready` once the store's watermark reaches the floor.
 """
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`ChainViewSnapshot::epoch()` returns the chain state the snapshot is pinned \
+to, so mempool coherence can be checked against the view being read. \
+Implementors must add it.
+"""
