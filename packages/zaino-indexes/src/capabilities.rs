@@ -94,7 +94,7 @@ mod tests {
 
     use crate::indexes::{
         address_history, chain_metadata, hash_to_height, headers, ironwood, orchard, sapling,
-        transparent_data, transparent_spends, txids,
+        transparent_data, transparent_spends, txid_location, txids,
     };
 
     use crate::indexes::address_history::AddressHistoryIndex;
@@ -106,6 +106,7 @@ mod tests {
     use crate::indexes::sapling::SaplingIndex;
     use crate::indexes::transparent_data::TransparentDataIndex;
     use crate::indexes::transparent_spends::TransparentSpendsIndex;
+    use crate::indexes::txid_location::TxidLocationIndex;
     use crate::indexes::txids::TxidsIndex;
 
     fn height(h: u32) -> Height {
@@ -178,12 +179,16 @@ mod tests {
             Answerable::NotYet
         );
 
-        // Now build address_history and spends too.
+        // Now build address_history and spends too. Spend status also needs
+        // txid_location, to tell an unspent output from one the indexed range
+        // never created; transparent_data, its third index, is already built
+        // above as part of the block set.
         commit(
             &backend,
             vec![
                 version_stamp::<AddressHistoryIndex>(address_history::ID.into()),
                 version_stamp::<TransparentSpendsIndex>(transparent_spends::ID.into()),
+                version_stamp::<TxidLocationIndex>(txid_location::ID.into()),
             ],
         );
         let reader = backend.reader().expect("reader");

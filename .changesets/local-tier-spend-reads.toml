@@ -1,0 +1,21 @@
+[[changes]]
+crate = "zaino-address"
+kind = "feature"
+description = """
+`transparent_address_key` returns the `(script_type, hash160)` the \
+address-history index keys receives under, so a reader holding a queried \
+t-address derives the same key the writer derived from the output script. It \
+takes no network: the hash a t-address locks to is the same bytes on every \
+network, and that hash is what the index stores.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The non-finalised window answers spend status. A transparent input carries the \
+outpoint it spends, so the window resolves a spend, an output it created, or \
+neither from the blocks it already holds. Together with the finalised store's \
+half this makes the `Local` placement for spend status reachable, where before \
+both tiers implemented only the compact-block read.
+"""

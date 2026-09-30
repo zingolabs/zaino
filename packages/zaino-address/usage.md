@@ -33,6 +33,21 @@ Both return domain types (`ValidatedAddress`, `ZValidatedAddress`) with **no
 serde**. The legacy-shaped JSON — including the exact field sets, which differ
 per address kind — is `zaino-serve`'s `wire/address.rs`, per ADR-0009.
 
+`transparent_address_key` serves a different caller: an index read, not an RPC.
+It returns the `(ScriptType, hash160)` the address-history index keys receives
+under, so a reader holding a queried t-address derives the same key the writer
+derived from the output script.
+
+```rust
+let key = zaino_address::transparent_address_key(&address);
+```
+
+It takes **no network**, because the hash a t-address locks to is the same
+bytes on every network and that hash is what the index stores. An address for
+another network therefore resolves rather than being rejected; deciding whether
+it belongs to the network being served is `validate_address`'s job, at the
+layer that knows which network this is.
+
 ## What is deliberately not classified
 
 **Sprout.** `validate_address` and `z_validate_address` both report a Sprout

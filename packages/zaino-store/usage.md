@@ -19,6 +19,27 @@ lacks an index has no such read, so a deployment that needs it fails at the
 wiring, not at a request. Reads the store does not own are not stubbed; the
 composer routes them to the provider that has them.
 
+## Spend status
+
+`SpendRead` exists on a store whose set builds `local::SpendStatus`'s three
+indexes, and reports one of three answers for an outpoint:
+
+| answer | means |
+| --- | --- |
+| `Spent { by }` | the spends index holds a spend of it |
+| `Unspent` | no spend recorded, and the output exists at or below the watermark |
+| `NoSuchOutput` | no spend recorded, and nothing in the finalised range created it |
+
+The third index set is why the capability names three indexes. Absence from
+the spends index is ambiguous on its own — an outpoint the finalised range
+never created is absent exactly as an unspent one is — so absence is resolved
+against the output's existence, through the txid's location and that block's
+transparent data.
+
+`Unspent` means unspent **as of the watermark**. The volatile window above it
+may have spent the output since, which is the composer's business: `zaino-core`
+asks the head first and falls through to the store on anything but a spend.
+
 ## Watermark repair
 
 The watermark is a stamp beside the data and the data outranks it. On boot
