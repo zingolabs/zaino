@@ -1,0 +1,5 @@
+# Model suites only (proptest vs a naive oracle), sized by PROPTEST_CASES
+# (docs/testing.md "Model tests in bulk")
+[profile.models]
+default-filter = "test(/model|random_histories|any_split_into_batches/) | binary(/model/)"
+slow-timeout = { period = "300s" }

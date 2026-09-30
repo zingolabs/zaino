@@ -27,9 +27,49 @@ checked against an independent oracle.
 |---|---|
 | `every_crash_state_*` (persistence and each index) | `SimFs` enumerates every state a power loss at each persistence point could leave. Each must reopen to an acknowledged or attempted commit and keep committing. |
 | `random_histories_*` (each index) | Random apply, finalize, reset and reopen sequences are checked against a naive model: summed tree sizes for compact blocks, `incrementalmerkletree` frontiers for tree state, and a recomputed UTXO set for transparent addresses. |
-| `followers_track_the_best_chain_through_random_reorgs` (`zaino-sync`) | A producer and follower run against a validator whose best chain moves at random, up to the window depth. |
+| `the_tip_is_the_highest_block_a_majority_of_polled_chains_hold` (`zaino-chainview`) | One to five simulated zebrads mine, relay (longest chain wins, first seen on a tie, as on regtest), fork, retreat and go unready, and are polled in random order. After every poll the view's tip, its agreers, each endpoint's own tip, the epoch and the below-quorum shortfall must match a naive count over each endpoint's chain as it was last polled. |
+| `advance_matches_a_model_of_the_best_chain` (`zaino-non-finalized-state`) | The chain head's window against a `Vec` model of the best chain: every `Advance`, the floor, and `BelowWindow` for a fork under it. |
+| `followers_track_the_best_chain_through_random_reorgs` (`zaino-sync`) | A real chain view over three validators drives the producer and one to three followers while the best chain moves at random, up to the window depth. The leading validator goes unready (the quorum retreats) and the lagging one stalls past the window. Every commit must be final and on the best chain. |
 | `committed_tree_states_are_zebras` (`zaino_index_construction`, every 5 s) | On mainnet, `GetTreeState` at the tree-state index's durable tip must match zebrad's `z_gettreestate` byte for byte while the index builds and follows. |
 | `index_files_verify_clean` (both sync profiles, at completion) | `zainod verify` runs in the pod and checks every committed byte of every index against its page checksums. |
+
+The simulated validators are `zaino_source::mock::MockChain`, which answers the
+way zebrad does: blocks by height and by hash come from the best chain only, and
+nothing is served above the tip. A test that relies on a lookup zebrad would
+refuse fails here rather than on a cluster.
+
+### Model tests in bulk
+
+Every model suite runs at its in-code case count under
+`cargo nextest run --workspace`. To run them harder, use the `models` nextest
+profile (`.config/nextest.toml`), which selects only the model suites, and set
+the case count with `PROPTEST_CASES`, which overrides the in-code value:
+
+```sh
+PROPTEST_CASES=5000 cargo nextest run --profile models
+
+# fresh seeds, round after round, for 10 minutes
+end=$((SECONDS + 600)); round=0
+while [ $SECONDS -lt $end ]; do
+  round=$((round + 1))
+  PROPTEST_CASES=2000 cargo nextest run --profile models || { echo "FAILED in round $round"; break; }
+done
+```
+
+`PROPTEST_MAX_SHRINK_ITERS` shrinks a failure harder and `PROPTEST_VERBOSE=1`
+prints each case. Do not raise `PROPTEST_CASES` across the whole workspace:
+`nu6_3_transactions_decode_to_their_source` draws from librustzcash's `arb_tx`,
+which rejects most of what it generates and aborts ("too many local rejects")
+past a few hundred cases.
+
+A new model suite joins the profile by its name: the test or its binary contains
+`model`, or the test starts with `random_histories`. Its oracle is written
+independently of the code under test, and moves the model cannot apply are
+clamped rather than filtered out, so shrinking stays effective. A failing case
+is saved and replays on every run: beside an integration test as
+`<test>.proptest-regressions` (committed), or under the crate's
+`proptest-regressions/` for an in-crate suite (currently excluded by
+`.gitignore`).
 
 Two pieces are not built yet:
 
@@ -46,6 +86,7 @@ Two pieces are not built yet:
 
 ```sh
 cargo nextest run --workspace              # from the repo root
+PROPTEST_CASES=5000 cargo nextest run --profile models   # model suites only, harder
 
 cd live-tests
 ztest run                                  # clientless, e2e and non-finalized-state
