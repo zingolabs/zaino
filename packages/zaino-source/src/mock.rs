@@ -1,27 +1,34 @@
-//! In-memory validator for tests: a best chain (movable mid-test, for reorgs), every block it ever
-//! held (by hash), failure injection
+//! In-memory validator for tests: a best chain (movable mid-test, for reorgs), failure injection
+//!
+//! - Answers like zebrad: by height *and* by hash from the best chain only (a side-chain block =
+//!   not found), nothing above the tip
+//! - Also a chain view endpoint: tip, readiness, an empty mempool, no peers
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::RwLock;
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockchainInfo, Height, TransactionId, TransactionLocation,
+    Block, BlockHash, BlockchainInfo, Height, PeerInfo, TransactionId, TransactionLocation,
 };
 
 use crate::{
     BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
-    GetBlockchainInfoError, GetTransactionError, NonDomainError, QueryError,
-    SendRawTransactionError, TransactionResponse,
+    GetBlockchainInfoError, GetChainTipError, GetMempoolListingError, GetPeerInfoError,
+    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, QueryError,
+    SendRawTransactionError, SourceTip, TransactionResponse,
 };
 
 pub struct MockChain {
     chain: RwLock<Chain>,
+    /// `false` = zebrad still loading its state (`getbestblockheightandhash` = not ready)
+    ready: AtomicBool,
     failures_remaining: AtomicU32,
     failure_mode: FailureMode,
 }
 
-/// Best chain by height; every block ever added by hash (a reorged-out block still resolves)
+/// Best chain by height, up to `tip`; `blocks` = every block ever added (orphans kept, unserved)
 #[derive(Default)]
 struct Chain {
     best: HashMap<Height, BlockHash>,
@@ -30,11 +37,22 @@ struct Chain {
 }
 
 impl Chain {
+    /// `block` = the new tip (everything above its height leaves the best chain)
     fn put(&mut self, block: Block) {
         let height = block.header().height;
+        self.best.retain(|held, _| *held < height);
         self.best.insert(height, block.header().hash);
         self.tip = Some(height);
         self.blocks.insert(block.header().hash, block);
+    }
+
+    fn best_at(&self, height: Height) -> Option<&Block> {
+        self.best.get(&height).and_then(|hash| self.blocks.get(hash))
+    }
+
+    fn best_by_hash(&self, hash: BlockHash) -> Option<&Block> {
+        let block = self.blocks.get(&hash)?;
+        (self.best.get(&block.header().height) == Some(&hash)).then_some(block)
     }
 }
 
@@ -48,9 +66,20 @@ impl MockChain {
     pub fn new() -> Self {
         Self {
             chain: RwLock::new(Chain::default()),
+            ready: AtomicBool::new(true),
             failures_remaining: AtomicU32::new(0),
             failure_mode: FailureMode::Connection,
         }
+    }
+
+    pub fn set_ready(&self, ready: bool) {
+        self.ready.store(ready, Ordering::SeqCst);
+    }
+
+    fn tip(&self) -> Option<(BlockHash, Height)> {
+        let chain = self.chain.read().expect("mock chain lock");
+        let height = chain.tip?;
+        Some((*chain.best.get(&height)?, height))
     }
 
     /// Last block added = tip
@@ -59,8 +88,8 @@ impl MockChain {
         self
     }
 
-    /// Puts `blocks` on the best chain in order, each replacing whatever held its height; the
-    /// last one becomes the tip (a reorg when a height was already held)
+    /// Puts `blocks` on the best chain in order, each becoming the tip (a reorg when a height was
+    /// already held: that height and everything above it leave the best chain)
     pub fn extend_best(&self, blocks: impl IntoIterator<Item = Block>) {
         let mut chain = self.chain.write().expect("mock chain lock");
         for block in blocks {
@@ -68,7 +97,7 @@ impl MockChain {
         }
     }
 
-    /// Best chain cut back to `tip` (`invalidateblock` above it); orphans still found by hash
+    /// Best chain cut back to `tip` (`invalidateblock` above it)
     pub fn rewind_to(&self, tip: Height) {
         let mut chain = self.chain.write().expect("mock chain lock");
         chain.best.retain(|height, _| *height <= tip);
@@ -100,9 +129,7 @@ impl crate::GetBlock for MockChain {
         self.injected()?;
         let chain = self.chain.read().expect("mock chain lock");
         chain
-            .best
-            .get(&height)
-            .and_then(|hash| chain.blocks.get(hash))
+            .best_at(height)
             .cloned()
             .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))
     }
@@ -116,9 +143,7 @@ impl crate::GetBlockLink for MockChain {
         self.injected()?;
         let chain = self.chain.read().expect("mock chain lock");
         chain
-            .best
-            .get(&height)
-            .and_then(|hash| chain.blocks.get(hash))
+            .best_at(height)
             .map(|block| BlockLink {
                 hash: block.header().hash,
                 prev_hash: block.header().prev_hash,
@@ -136,8 +161,7 @@ impl crate::GetBlockByHash for MockChain {
         self.chain
             .read()
             .expect("mock chain lock")
-            .blocks
-            .get(&hash)
+            .best_by_hash(hash)
             .cloned()
             .ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
     }
@@ -180,6 +204,49 @@ impl crate::GetTransaction for MockChain {
                 None => TransactionLocation::Mempool,
             },
         })
+    }
+}
+
+impl crate::GetChainTip for MockChain {
+    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+        self.injected()?;
+        let ready = self.ready.load(Ordering::SeqCst);
+        self.tip().filter(|_| ready).ok_or(QueryError::Domain(GetChainTipError::NotReady))
+    }
+}
+
+impl crate::GetMempoolSourceTip for MockChain {
+    /// Estimate = the tip (no clock); no tip = genesis, as zebrad's own fallback
+    async fn get_mempool_source_tip(&self) -> Result<SourceTip, QueryError<Infallible>> {
+        self.injected()?;
+        let (hash, height) = self.tip().unwrap_or((BlockHash::ZERO, Height::GENESIS));
+        Ok(SourceTip { hash, height, estimated_height: height })
+    }
+}
+
+impl crate::GetMempoolListing for MockChain {
+    async fn get_mempool_listing(
+        &self,
+    ) -> Result<Vec<MempoolListed>, QueryError<GetMempoolListingError>> {
+        self.injected()?;
+        Ok(Vec::new())
+    }
+}
+
+impl crate::GetRawMempoolTransaction for MockChain {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Vec<u8>, QueryError<GetRawMempoolTransactionError>> {
+        self.injected()?;
+        Err(QueryError::Domain(GetRawMempoolTransactionError::NotFound(txid)))
+    }
+}
+
+impl crate::GetPeerInfo for MockChain {
+    async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>> {
+        self.injected()?;
+        Ok(Vec::new())
     }
 }
 

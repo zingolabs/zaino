@@ -177,9 +177,16 @@ let mock = MockChain::new()
     .with_block(block)
     .fail_next(2, FailureMode::Timeout); // failure injection
 
-mock.extend_best(fork); // replaces the heights it covers; the last block becomes the tip
+mock.extend_best(fork); // each block becomes the tip: its height and above are replaced
 mock.rewind_to(height); // invalidateblock: heights above leave the best chain
+mock.set_ready(false);  // getbestblockheightandhash answers "not ready"
 ```
+
+It answers the way zebrad does, so a test cannot pass on behaviour no node has:
+blocks by height *and* by hash come from the best chain only (a block a reorg
+replaced is not found), and nothing is served above the tip. It is also a
+`zaino_chainview::EndpointSource`: its tip, readiness, an empty mempool and no
+peers, so one mock backs the chain view and the fetch pool alike.
 
 `extend_best` and `rewind_to` move the best chain under a live consumer, so a
 reorg test drives the real producer and followers against it
