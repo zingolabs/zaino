@@ -5,8 +5,9 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tokio::sync::{broadcast, watch};
 use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockService, ChainHeadFreezeEvents};
+use zaino_component::{ComponentStatus, StatusSource};
 use zaino_primitives::types::ChainStateEpoch;
-use zaino_status::{NamedAtomicStatus, Status, StatusType};
+use zaino_status::NamedAtomicStatus;
 
 use crate::snapshot::MapBackedSnapshot;
 
@@ -71,13 +72,13 @@ impl ChainHeadSubscriber {
     }
 }
 
-impl Status for ChainHeadSubscriber {
+impl StatusSource for ChainHeadSubscriber {
     /// The status of the runtime this handle reads from.
     ///
     /// The same value `ChainHeadService::status` returns — both read one cell,
     /// so a transition cannot be visible on one handle and not the other.
-    fn status(&self) -> StatusType {
-        self.status.load()
+    fn status(&self) -> ComponentStatus {
+        crate::service::component_status(&self.status)
     }
 }
 

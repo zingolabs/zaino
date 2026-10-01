@@ -6008,9 +6008,29 @@ name = "zaino-async"
 version = "0.1.0"
 dependencies = [
  "futures",
- "thiserror 2.0.18",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "zaino-chain"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-chain",
+ "zaino-chain-head",
+ "zaino-chain-store",
+ "zaino-chain-store-zainodb",
+ "zaino-component",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-zebra",
 ]
 
 [[package]]
@@ -6038,6 +6058,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-chain-head",
+ "zaino-component",
  "zaino-consensus",
  "zaino-primitives",
  "zaino-source",
@@ -6052,10 +6073,10 @@ dependencies = [
  "futures",
  "thiserror 2.0.20",
  "tokio",
+ "zaino-component",
  "zaino-primitives",
  "zaino-source",
  "zaino-source-zebra",
- "zaino-status",
 ]
 
 [[package]]
@@ -6088,6 +6109,7 @@ dependencies = [
  "tracing-subscriber",
  "zaino-chain-store",
  "zaino-common",
+ "zaino-component",
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",
@@ -6152,6 +6174,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-logging"
+version = "0.1.0"
+dependencies = [
+ "time",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tree",
+]
+
+[[package]]
 name = "zaino-mempool"
 version = "0.2.2"
 dependencies = [
@@ -6203,6 +6235,7 @@ dependencies = [
 name = "zaino-proto"
 version = "0.6.1"
 dependencies = [
+ "librocksdb-sys",
  "prost",
  "tonic",
  "tonic-prost",
@@ -6357,11 +6390,13 @@ dependencies = [
  "tracing-subscriber",
  "whoami",
  "zaino-address",
+ "zaino-chain",
  "zaino-chain-head",
  "zaino-chain-head-service",
  "zaino-chain-store",
  "zaino-chain-store-zainodb",
  "zaino-common",
+ "zaino-component",
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",

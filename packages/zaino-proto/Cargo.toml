@@ -17,6 +17,23 @@ heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
 grpc_proxy_server = []
 
 [dependencies]
+
+# Not used by this crate's code. It is here to fix a feature-unification bug
+# that breaks every cold build of the workspace.
+#
+# `libzcash_script` builds with bindgen 0.73, whose `runtime` feature turns on
+# `clang-sys/runtime` — and clang-sys is compiled once for the whole graph, so
+# its function stubs become dynamic-loading ones for everybody. `rocksdb`
+# (reached from here through `zebra-state`) builds with bindgen 0.72 declared
+# `default-features = false`, and nothing re-enables `bindgen/runtime` for it —
+# so that bindgen's `ensure_libclang_is_loaded` compiles to a no-op. Nothing
+# ever loads libclang, and the first stub called panics with "a `libclang`
+# shared library is not loaded on this thread".
+#
+# Naming the feature here puts it back. Remove once `rocksdb` enables one of
+# librocksdb-sys' `bindgen-*` features itself, or once the two bindgen major
+# versions in the lockfile converge.
+librocksdb-sys = { version = "0.17.3", features = ["bindgen-runtime"] }
 zebra-state = { workspace = true, optional = true }
 zebra-chain = { workspace = true, optional = true }
 

@@ -1,0 +1,69 @@
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`StoredAddress` is gone: transparent outputs are keyed by \
+`zaino_primitives::types::TransparentAddressKey`, the same key the chain head \
+reports its half of an address's history under, so a consumer merging the two \
+joins them without translating."""
+migration = """
+Replace `StoredAddress` with `zaino_primitives::types::TransparentAddressKey`, \
+which has the same `hash` and `script_type` fields and the same `new` and \
+`is_standard` methods, plus `from_script`. `StoredTxOut::address` and \
+`TransparentHistoryQuery::addresses` now hold the new type; neither struct is \
+`#[non_exhaustive]`, so literal construction sites need the rename too."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`ChainStoreFreezeSink::freeze` now takes `FrozenBlock`, a stored block without \
+its chainwork. Cumulative work needs an unbroken chain below a block, so the \
+store derives its own rather than trusting a value measured elsewhere — a \
+field a caller could fill is a field a caller could fill wrongly."""
+migration = """
+Drop the `chainwork` field when building the batch: a `StoredBlock` becomes a \
+`FrozenBlock` by carrying `header`, `transactions` and `tree_roots` across. \
+Any value a caller was computing for it can go — the store derives its own, \
+and a caller's was measured from somewhere else."""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+description = """
+`ChainStoreError::FreezeGap` — a frozen batch starting above `tip + 1` is \
+refused rather than written into a hole, and carries both the store's tip and \
+the first height it could not take so a caller can repair it. Previously the \
+store stopped silently and returned `Ok(())`, which left it never advancing \
+again while every subsequent freeze also succeeded."""
+migration = """
+`ChainStoreError` is not `#[non_exhaustive]`, so a downstream `match` over it \
+must add a `FreezeGap` arm. Handle it by building to `first_frozen - 1` \
+through `ChainStoreIngest::build_to` and freezing the batch again; it is a \
+routine handover state, not a failure, so classifying it as an internal error \
+is only right on a path that cannot repair it."""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = """
+The backend derives each frozen block's chainwork from its own tip, and reports \
+a gap instead of stopping silently."""
+migration = """
+`FinalisedState`'s `ChainStoreFreezeSink` impl follows the port: it takes \
+`&[FrozenBlock]` rather than `&[StoredBlock]`, and a batch starting above \
+`tip + 1` now returns `ChainStoreError::FreezeGap` where it previously stopped \
+and returned `Ok(())`. A caller that relied on the silent stop was not \
+advancing the store and had no way to tell."""
+
+[[changes]]
+crate = "zaino-proto"
+kind = "internal"
+description = """
+Declares `librocksdb-sys` with `bindgen-runtime`, which fixes a cold build of \
+the workspace. Two bindgen major versions share one `clang-sys`: the newer \
+enables its `runtime` feature for the whole graph, while rocksdb's older one \
+re-enables neither of librocksdb-sys' `bindgen-*` features, so its \
+`ensure_libclang_is_loaded` compiles to a no-op and the first stub reached \
+panics. Remove once rocksdb enables one itself, or the two bindgen versions \
+converge."""
