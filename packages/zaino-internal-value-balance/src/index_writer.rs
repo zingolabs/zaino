@@ -572,44 +572,32 @@ mod tests {
     /// Both batch sizes: 1 byte = one block per run; 1 MiB = the queued chain as one run (1's
     /// spend of 0's output then resolves inside the run, not from a committed segment)
     #[tokio::test]
+    #[rustfmt::skip]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_a_replay_republishes_them() {
+        //      tx(tag,  spends (tag, vout),      outputs,           shielded balances
         let chain = [
-            block(0, 0, 0, vec![coinbase(0x10, 100_000)]),
-            block(
-                1,
-                0,
-                0,
-                vec![
-                    coinbase(0x11, 625_000_000),
-                    tx(0x21, &[(0x10, 0)], &[60_000, 39_000], [0; 4]),
-                    tx(0x22, &[(0x21, 1)], &[30_000], [0, -8_000, 0, 0]),
-                ],
-            ),
-            block(
-                2,
-                0,
-                0,
-                vec![coinbase(0x12, 625_000_000), tx(0x23, &[(0x21, 0)], &[], [0, 0, -59_000, 0])],
-            ),
-            block(
-                3,
-                0,
-                0,
-                vec![
-                    coinbase(0x13, 625_000_000),
-                    tx(0x24, &[(0x22, 0), (0x11, 0)], &[625_029_500], [500, 0, 0, 0]),
-                ],
-            ),
-            block(
-                4,
-                0,
-                0,
-                vec![
-                    coinbase(0x14, 625_000_000),
-                    tx(0x25, &[(0x24, 0)], &[625_000_000], [0, 0, 0, -29_000]),
-                ],
-            ),
+            block(0, 0, 0, vec![
+                coinbase(0x10, 100_000),
+            ]),
+            block(1, 0, 0, vec![
+                coinbase(0x11, 625_000_000),
+                tx(0x21, &[(0x10, 0)],            &[60_000, 39_000], [0; 4]),
+                tx(0x22, &[(0x21, 1)],            &[30_000],         [0, -8_000, 0, 0]),
+            ]),
+            block(2, 0, 0, vec![
+                coinbase(0x12, 625_000_000),
+                tx(0x23, &[(0x21, 0)],            &[],               [0, 0, -59_000, 0]),
+            ]),
+            block(3, 0, 0, vec![
+                coinbase(0x13, 625_000_000),
+                tx(0x24, &[(0x22, 0), (0x11, 0)], &[625_029_500],    [500, 0, 0, 0]),
+            ]),
+            block(4, 0, 0, vec![
+                coinbase(0x14, 625_000_000),
+                tx(0x25, &[(0x24, 0)],            &[625_000_000],    [0, 0, 0, -29_000]),
+            ]),
         ];
+        // per block, per tx (None = coinbase)
         let expected_fees = [
             vec![None],
             vec![None, Some(1_000), Some(1_000)],
@@ -672,11 +660,8 @@ mod tests {
                 match boot {
                     "first" => {
                         assert_eq!(durable, None, "fresh directory");
-                        assert_eq!(
-                            block_steps,
-                            ["A0f", "A1f", "A2f", "A3", "A4", "S"],
-                            "{context}"
-                        );
+                        let steps = ["A0f", "A1f", "A2f", "A3", "A4", "S"];
+                        assert_eq!(block_steps, steps, "{context}");
                         let published_fees: Vec<_> = published.iter().map(|b| fees(b)).collect();
                         assert_eq!(published_fees, expected_fees, "{context}: fees per tx");
                         first_boot = published;
@@ -684,11 +669,7 @@ mod tests {
                     _ => {
                         assert_eq!(durable, Some(h(2)), "0 to 2 (both inclusive) committed");
                         assert_eq!(block_steps, ["A1f", "A2f", "A3", "A4", "S"], "{context}");
-                        assert_eq!(
-                            published,
-                            first_boot[1..],
-                            "{context}: replay = identical fees"
-                        );
+                        assert_eq!(published, first_boot[1..], "{context}: replay = same fees");
                     }
                 }
             }
