@@ -9,7 +9,8 @@ use crate::{ChainInfo, ForkPoint, Locator, SpendStatus, TxStatus};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     CompactBlock, Height, HeightRange, Outpoint, RawTransaction, ShieldedPool, SubtreeRoot,
-    Transaction, TransactionId, TransparentAddress, TransparentReceive, Treestate, Utxo,
+    Transaction, TransactionId, TransparentAddress, TransparentReceive, TransparentSpend,
+    Treestate, Utxo,
 };
 
 use crate::error::{
@@ -146,6 +147,19 @@ pub trait AddressReceiveRead: Send + Sync {
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> impl Future<Output = Result<Vec<TransparentReceive>, AddressReadError>> + Send;
+
+    /// Which of `outpoints` this tier saw spent within `range`, and where.
+    ///
+    /// The caller supplies the outpoints because deciding *which* belong to an
+    /// address is the history this tier does not have. Given them, recognising
+    /// a spend needs only the outpoint an input names, so the answer is
+    /// complete for the range — and carries the location a balance delta is
+    /// reported at, which a bare spend status does not.
+    fn spends(
+        &self,
+        outpoints: &[Outpoint],
+        range: HeightRange,
+    ) -> impl Future<Output = Result<Vec<TransparentSpend>, AddressReadError>> + Send;
 }
 
 /// Backed by: spend index.

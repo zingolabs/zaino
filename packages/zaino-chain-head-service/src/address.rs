@@ -18,7 +18,8 @@
 use zaino_address::script_pays;
 use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 use zaino_primitives::types::{
-    Height, HeightRange, OutputIndex, Transaction, TransparentAddress, TransparentReceive,
+    Height, HeightRange, Outpoint, OutputIndex, Transaction, TransparentAddress,
+    TransparentReceive, TransparentSpend,
 };
 use zaino_service::error::AddressReadError;
 use zaino_service::AddressReceiveRead;
@@ -45,6 +46,55 @@ impl AddressReceiveRead for HeadSnapshot {
         }
         Ok(receives)
     }
+
+    async fn spends(
+        &self,
+        outpoints: &[Outpoint],
+        range: HeightRange,
+    ) -> Result<Vec<TransparentSpend>, AddressReadError> {
+        let mut spends = Vec::new();
+        for block in self.window().best_chain() {
+            let height = block.height();
+            if !covers(range, height) {
+                continue;
+            }
+            for transaction in transactions(block) {
+                spends.extend(consumed(transaction, outpoints, height));
+            }
+        }
+        Ok(spends)
+    }
+}
+
+/// Every input of `transaction` consuming one of `outpoints`, as spends at
+/// `height`.
+///
+/// An input's position in the transaction is its index, so enumeration is the
+/// numbering. A consensus-valid chain spends an outpoint once, so each one
+/// appears at most once across the window.
+fn consumed<'a>(
+    transaction: &'a Transaction,
+    outpoints: &'a [Outpoint],
+    height: Height,
+) -> impl Iterator<Item = TransparentSpend> + 'a {
+    transaction
+        .transparent
+        .inputs
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, input)| {
+            let outpoint = *outpoints.iter().find(|outpoint| {
+                input.prev_txid == outpoint.txid && input.prev_index == outpoint.index
+            })?;
+            // As in `paid_outputs`: an index past `u32` cannot occur in a block
+            // that parsed, and the spend it would describe is unrepresentable.
+            Some(TransparentSpend {
+                outpoint,
+                by: transaction.txid,
+                input_index: OutputIndex::try_from(index).ok()?,
+                height,
+            })
+        })
 }
 
 /// Whether `range` includes `height`.

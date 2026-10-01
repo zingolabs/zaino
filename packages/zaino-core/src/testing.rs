@@ -21,6 +21,7 @@ use zaino_primitives::types::{
 };
 use zaino_primitives::types::{
     Outpoint, OutputIndex, PreIndexCompactTx, TransparentAddress, TransparentReceive,
+    TransparentSpend,
 };
 use zaino_service::error::{
     AddressReadError, BlockReadError, ReadError, SpendReadError, Transient,
@@ -185,6 +186,35 @@ impl AddressReceiveRead for StubNonFinalised {
             }
         }
         Ok(receives)
+    }
+
+    async fn spends(
+        &self,
+        outpoints: &[Outpoint],
+        range: HeightRange,
+    ) -> Result<Vec<TransparentSpend>, AddressReadError> {
+        let mut spends = Vec::new();
+        for (height, block) in self.blocks.range(range.start..=range.end) {
+            for transaction in &block.transactions {
+                for (index, input) in transaction.transparent_inputs.iter().enumerate() {
+                    let Some(outpoint) = outpoints.iter().find(|outpoint| {
+                        input.prev_txid == outpoint.txid && input.prev_index == outpoint.index
+                    }) else {
+                        continue;
+                    };
+                    let Ok(input_index) = OutputIndex::try_from(index) else {
+                        continue;
+                    };
+                    spends.push(TransparentSpend {
+                        outpoint: *outpoint,
+                        by: transaction.txid,
+                        input_index,
+                        height: *height,
+                    });
+                }
+            }
+        }
+        Ok(spends)
     }
 }
 
