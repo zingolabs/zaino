@@ -1,0 +1,19 @@
+[package]
+name = "zaino-store-service"
+description = "Supervised-component runtime for Zaino's finalised store reader."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+zaino-store = { version = "0.1.0", path = "../zaino-store" }
+zaino-component = { version = "0.1.0", path = "../zaino-component" }
+zaino-persistence = { workspace = true }
+tokio = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

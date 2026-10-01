@@ -15,7 +15,8 @@ use zaino_component::{
 use zaino_indexes::sets::current_zaino::CurrentZaino;
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
-use zaino_store::{StoreComponent, StoreReader};
+use zaino_store::StoreReader;
+use zaino_store_service::StoreComponent;
 
 /// A validator that is reachable.
 struct Probe(bool);

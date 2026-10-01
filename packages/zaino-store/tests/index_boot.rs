@@ -24,7 +24,8 @@ use zaino_service::{Answerable, Capability};
 use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_store::{StoreComponent, StoreReader};
+use zaino_store::StoreReader;
+use zaino_store_service::StoreComponent;
 use zaino_sync::engine::SyncEngine;
 use zaino_sync::primitives::BlockHeight;
 

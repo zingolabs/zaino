@@ -29,5 +29,5 @@ route a gap of heights to the store and resume the indexer past them.
 
 ## Runtime component
 
-`StoreComponent` wraps the reader as a supervised component: it is `Ready`
-once opened and reports the watermark as progress.
+The supervised-component wrapper that presents this reader to the Orchestra
+lives in the `zaino-store-service` crate.

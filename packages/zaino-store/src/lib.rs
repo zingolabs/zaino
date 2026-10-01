@@ -35,10 +35,8 @@
 //! the executor.
 #![forbid(unsafe_code)]
 
-mod component;
 mod watermark_repair;
 
-pub use component::StoreComponent;
 pub use watermark_repair::{WatermarkRepair, WatermarkRepairError};
 
 use std::future::Future;

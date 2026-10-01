@@ -32,7 +32,8 @@ use zaino_persistence::{Namespace, OpenError};
 use zaino_persistence_codec::reserved_namespaces;
 use zaino_service::use_cases::{Serves, UseCase};
 use zaino_service::TakeSnapshot;
-use zaino_store::{StoreComponent, StoreReader, WatermarkRepairError};
+use zaino_store::{StoreReader, WatermarkRepairError};
+use zaino_store_service::StoreComponent;
 
 use crate::config::{FetchStrategy, IndexedDeploymentConfig};
 use crate::deployment::{compose, DeploymentEngine, IndexedSource};

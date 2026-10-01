@@ -29,7 +29,8 @@ use zaino_service::error::{BlockReadError, ReadError};
 use zaino_service::{ChainSegment, CompactBlockRead, Snapshot, TakeSnapshot};
 use zaino_source::mock::{MockChain, test_block};
 use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_store::{StoreComponent, StoreReader};
+use zaino_store::StoreReader;
+use zaino_store_service::StoreComponent;
 
 /// A reachable validator.
 struct Probe(bool);

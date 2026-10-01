@@ -28,6 +28,7 @@ zaino-persistence-codec = { path = "../zaino-persistence-codec" }
 zaino-service = { path = "../zaino-service" }
 zaino-source = { workspace = true }
 zaino-store = { path = "../zaino-store" }
+zaino-store-service = { version = "0.1.0", path = "../zaino-store-service" }
 
 [dev-dependencies]
 tokio = { workspace = true }

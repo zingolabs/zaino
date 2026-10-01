@@ -223,7 +223,7 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
 
     let indexer = RunComponent::new(ComponentName("indexer"), driver);
     let reader = StoreReader::new(Arc::new(backend.clone()));
-    let store = zaino_store::StoreComponent::new(ComponentName("store"), reader.clone());
+    let store = zaino_store_service::StoreComponent::new(ComponentName("store"), reader.clone());
     let validator = ValidatorComponent::connect(&Probe(true))
         .await
         .expect("validator reachable");

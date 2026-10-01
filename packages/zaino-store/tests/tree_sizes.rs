@@ -25,7 +25,8 @@ use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_service::{CompactBlockRead, TakeSnapshot};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_store::{StoreComponent, StoreReader};
+use zaino_store::StoreReader;
+use zaino_store_service::StoreComponent;
 
 struct Probe(bool);
 impl ReachabilityProbe for Probe {

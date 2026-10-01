@@ -1,8 +1,10 @@
-//! The finalised store reader as a supervised component.
+//! `zaino-store-service` — the finalised store, as a supervised component.
 //!
-//! [`StoreComponent`] presents a [`StoreReader`](crate::StoreReader) to the
-//! runtime as an **owned** ([`Managed`]) component, so the Orchestra can boot it
+//! The runtime half of the `zaino-store` tandem: it wraps the passive
+//! [`StoreReader`](zaino_store::StoreReader) so the Orchestra can own, boot it
 //! in dependency order — after the indexer it reads behind — and supervise it.
+//! This mirrors `zaino-chain-head-service` for the non-finalised tier;
+//! `zaino-store` itself stays a reader with no component dependency.
 //!
 //! Unlike the indexer (which runs the sync engine) or a server (which binds a
 //! socket), the reader is **passive**: it has no run-loop, so its lifecycle is
@@ -17,8 +19,7 @@ use zaino_component::{
     ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource, StatusWatch,
 };
 use zaino_persistence::Backend;
-
-use crate::StoreReader;
+use zaino_store::StoreReader;
 
 /// A [`StoreReader`] presented to the runtime as an owned component.
 pub struct StoreComponent<B, M> {

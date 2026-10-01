@@ -36,3 +36,4 @@ zaino-logging = { path = "../zaino-logging" }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 strum = { workspace = true }
+zaino-store-service = { path = "../zaino-store-service" }

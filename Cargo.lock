@@ -6049,6 +6049,7 @@ dependencies = [
  "zaino-service",
  "zaino-source",
  "zaino-store",
+ "zaino-store-service",
 ]
 
 [[package]]
@@ -6249,6 +6250,7 @@ dependencies = [
  "zaino-source",
  "zaino-status",
  "zaino-store",
+ "zaino-store-service",
 ]
 
 [[package]]
@@ -6445,7 +6447,18 @@ dependencies = [
  "zaino-runtime",
  "zaino-service",
  "zaino-source",
+ "zaino-store-service",
  "zaino-sync",
+]
+
+[[package]]
+name = "zaino-store-service"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "zaino-component",
+ "zaino-persistence",
+ "zaino-store",
 ]
 
 [[package]]

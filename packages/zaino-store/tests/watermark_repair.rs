@@ -19,7 +19,8 @@ use zaino_primitives::types::Height;
 use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_store::{StoreComponent, StoreReader, WatermarkRepair};
+use zaino_store::{StoreReader, WatermarkRepair};
+use zaino_store_service::StoreComponent;
 use zaino_sync::primitives::BlockHeight;
 
 struct Probe(bool);

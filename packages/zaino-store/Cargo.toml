@@ -11,7 +11,6 @@ description = "EXPLORATORY STUB — not for production. A throwaway spike provin
 
 [dependencies]
 zaino-service = { path = "../zaino-service" }
-zaino-component = { path = "../zaino-component" }
 zaino-persistence = { workspace = true }
 zaino-indexes = { workspace = true }
 tokio = { workspace = true }
@@ -31,3 +30,4 @@ zaino-sync = { path = "../zaino-sync" }
 zaino-indexes = { path = "../zaino-indexes" }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
+zaino-store-service = { path = "../zaino-store-service" }
