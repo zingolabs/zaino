@@ -14,6 +14,7 @@ use zaino_primitives::types::{
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ProvideContext;
 
+use crate::indexes::address_history::AddressCtx;
 use crate::indexes::chain_metadata::{ChainMetadataCtx, ChainMetadataIndex};
 use crate::indexes::hash_to_height::{HashToHeightCtx, HashToHeightIndex};
 use crate::indexes::headers::{HeaderCtx, HeadersIndex};
@@ -305,6 +306,39 @@ impl ProvideContext<TransparentDataCtx> for CurrentZainoContext {
         TransparentDataCtx {
             height: self.height,
             txs: self.transparent_txs.clone(),
+        }
+    }
+}
+
+impl ProvideContext<AddressCtx> for CurrentZainoContext {
+    fn context(&self) -> AddressCtx {
+        // The address index wants each output tagged with its own index, which
+        // the transparent data carries positionally: an output's place in the
+        // list *is* its index. `txids` and `transparent_txs` are both per
+        // transaction in block order, so zipping pairs each transaction with
+        // its own outputs.
+        AddressCtx {
+            height: self.height,
+            txs: self
+                .txids
+                .iter()
+                .zip(&self.transparent_txs)
+                .map(|(txid, tx)| {
+                    let outputs = tx
+                        .outputs
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, (value, script))| {
+                            // An output index past `u32` cannot occur in a
+                            // block that parsed, and there is no receive to
+                            // record for one that could not be addressed.
+                            let index = OutputIndex::try_from(index).ok()?;
+                            Some((index, *value, script.clone()))
+                        })
+                        .collect();
+                    (*txid, outputs)
+                })
+                .collect(),
         }
     }
 }

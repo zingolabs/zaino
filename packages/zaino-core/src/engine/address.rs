@@ -29,7 +29,7 @@ use zaino_primitives::types::{
     TransparentAddress, TransparentReceive, TransparentSpend, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::error::AddressReadError;
-use zaino_service::{AddressRead, AddressReceiveRead, ChainSegment};
+use zaino_service::{AddressRead, AddressReceiveRead};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 
 use super::EngineSnapshot;
@@ -165,20 +165,6 @@ where
 
 // --- Local --------------------------------------------------------------------
 
-/// Join two balances over disjoint runs of blocks. Overflow is reported, not
-/// saturated: a wrong total must never be served as a right one.
-fn join_balances(a: AddressBalance, b: AddressBalance) -> Result<AddressBalance, AddressReadError> {
-    let balance = a
-        .balance
-        .checked_add(b.balance)
-        .ok_or_else(|| AddressReadError::Fatal("balance exceeds the supply bound".to_owned()))?;
-    let received = a
-        .received
-        .checked_join(b.received)
-        .ok_or_else(|| AddressReadError::Fatal("received total overflowed".to_owned()))?;
-    Ok(AddressBalance { balance, received })
-}
-
 /// The balance of nothing: what an empty half of a split range contributes.
 fn empty_balance() -> Result<AddressBalance, AddressReadError> {
     let balance = Zatoshis::sum_balances(core::iter::empty())
@@ -226,14 +212,6 @@ struct WindowPart {
 }
 
 impl WindowPart {
-    /// Nothing: what a range entirely at or below the watermark contributes.
-    fn empty() -> Self {
-        Self {
-            receives: Vec::new(),
-            spends: Vec::new(),
-        }
-    }
-
     /// Whether the window spent `outpoint`.
     fn spent(&self, outpoint: Outpoint) -> bool {
         self.spends.iter().any(|spend| spend.outpoint == outpoint)
@@ -253,10 +231,19 @@ impl WindowPart {
 /// cannot be spent again; one spent inside the window is still in that set,
 /// because the store has not seen the spend. So every outpoint of this address
 /// that the window could spend is a candidate.
+/// The two ranges are separate because the questions are.
+///
+/// Which receives count is bounded by what the caller asked about: a receive is
+/// an event at its own height. Which spends count is not always: a *balance* is
+/// what is held now, so a receive inside the asked range is spent if anything in
+/// the window spent it, whether or not the asked range reaches that far. A
+/// *delta* is an event too, so there the spend range is the asked one as well.
+/// Passing both explicitly keeps each caller's choice visible.
 async fn window_part<F, N>(
     local: &ChainViewSnapshot<F, N>,
     addr: &TransparentAddress,
-    range: HeightRange,
+    receives_in: Option<HeightRange>,
+    spends_in: Option<HeightRange>,
     held: &[Utxo],
 ) -> Result<WindowPart, AddressReadError>
 where
@@ -264,8 +251,17 @@ where
     N: ChainTier + AddressReceiveRead,
 {
     let window = local.non_finalised();
-    let receives = window.receives(addr, range).await?;
+    let receives = match receives_in {
+        Some(range) => window.receives(addr, range).await?,
+        None => Vec::new(),
+    };
 
+    let Some(spends_in) = spends_in else {
+        return Ok(WindowPart {
+            receives,
+            spends: Vec::new(),
+        });
+    };
     let candidates: Vec<Outpoint> = held
         .iter()
         .map(|utxo| Outpoint {
@@ -277,7 +273,7 @@ where
             index: receive.output_index,
         }))
         .collect();
-    let spends = window.spends(&candidates, range).await?;
+    let spends = window.spends(&candidates, spends_in).await?;
     Ok(WindowPart { receives, spends })
 }
 
@@ -327,11 +323,13 @@ where
             Some(range) => store.balance(addr, range).await?,
             None => empty_balance()?,
         };
+        // A balance is what is held *now*, so a receive inside the asked range
+        // counts as spent if anything in the window spent it — even when the
+        // asked range stops at or below the watermark. That matches the store's
+        // own half, which nets every spend it saw rather than only those inside
+        // the asked range.
         let held = store.unspent_outpoints(addr).await?;
-        let part = match nfs {
-            Some(range) => window_part(local, addr, range, &held).await?,
-            None => WindowPart::empty(),
-        };
+        let part = window_part(local, addr, nfs, local.non_finalised().coverage(), &held).await?;
 
         // Gross receipts are additive: the halves cover disjoint heights, and a
         // receive is counted where it arrived.
@@ -385,7 +383,7 @@ where
         let Some(window_range) = local.non_finalised().coverage() else {
             return Ok(held);
         };
-        let part = window_part(local, addr, window_range, &held).await?;
+        let part = window_part(local, addr, Some(window_range), Some(window_range), &held).await?;
 
         let mut unspent: Vec<Utxo> = held
             .into_iter()
@@ -430,8 +428,10 @@ where
         let Some(nfs) = nfs else {
             return Ok(deltas);
         };
+        // Both ranges are the asked one: a delta is an event, so a spend
+        // outside the asked range is not one of its deltas.
         let held = store.unspent_outpoints(addr).await?;
-        let part = window_part(local, addr, nfs, &held).await?;
+        let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
         let values = values(&held, &part.receives);
 
         for receive in &part.receives {
@@ -480,8 +480,10 @@ where
         let Some(nfs) = nfs else {
             return Ok(txids);
         };
+        // As for deltas: a transaction appears because of what it did inside the
+        // asked range.
         let held = store.unspent_outpoints(addr).await?;
-        let part = window_part(local, addr, nfs, &held).await?;
+        let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
 
         // Every transaction that moved value for the address in the window: the
         // ones that paid it, and the ones that spent what it held. One can do

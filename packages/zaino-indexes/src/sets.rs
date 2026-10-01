@@ -6,3 +6,4 @@
 
 pub mod compact_blocks;
 pub mod current_zaino;
+pub mod transparent_history;
