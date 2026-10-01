@@ -466,7 +466,13 @@ mod tests {
         }
         block_sink.shutdown();
         running.await.expect("clean stop");
-        consumer.skip_to_shutdown().await;
+        for (height, expected) in (0u32..).zip(&expected[..4]) {
+            let Step::Apply { data, .. } = consumer.next().await else {
+                panic!("fees of block {height} expected");
+            };
+            assert_eq!(fees(&data), *expected, "fees of block {height}");
+        }
+        assert!(matches!(consumer.next().await, Step::Shutdown), "Shutdown after block 3's fees");
         let tip_after = |commits: u64| (commits > 0).then(|| h((commits - 1).min(3) as u32));
 
         let states = fs.crash_states();

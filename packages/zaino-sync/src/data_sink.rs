@@ -109,11 +109,6 @@ impl<T> Subscription<T> {
         self.popped(queued)
     }
 
-    /// Every step through `Shutdown`, discarded (a consumer that stopped using the queue)
-    pub async fn skip_to_shutdown(&mut self) {
-        while !matches!(self.next().await, Step::Shutdown) {}
-    }
-
     /// Next step if one is already queued (never waits)
     pub fn try_next(&mut self) -> Option<Step<T>> {
         let queued = self.rx.try_recv().ok()?;
@@ -337,8 +332,10 @@ mod tests {
 
         blocks.shutdown();
         fees.shutdown();
+        assert_eq!(popped(one.next().await), h(2));
+        assert_eq!(popped(two.next().await), h(2));
         for sub in [&mut one, &mut two, &mut fees_one] {
-            sub.skip_to_shutdown().await;
+            assert!(matches!(sub.next().await, Step::Shutdown), "Shutdown last");
         }
         assert_eq!(
             queued(),
