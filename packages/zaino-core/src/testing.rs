@@ -14,13 +14,20 @@ use std::future::Future;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
+use zaino_address::script_pays;
 use zaino_primitives::types::CompactDifficulty;
 use zaino_primitives::types::{
     BlockHash, BlockRef, BlockSelector, ChainMetadata, CompactBlock, Height, HeightRange,
 };
-use zaino_primitives::types::{Outpoint, PreIndexCompactTx};
-use zaino_service::error::{BlockReadError, ReadError, SpendReadError, Transient};
-use zaino_service::{ChainSegment, CompactBlockRead, SpendRead, SpendStatus, TakeSnapshot};
+use zaino_primitives::types::{
+    Outpoint, OutputIndex, PreIndexCompactTx, TransparentAddress, TransparentReceive,
+};
+use zaino_service::error::{
+    AddressReadError, BlockReadError, ReadError, SpendReadError, Transient,
+};
+use zaino_service::{
+    AddressReceiveRead, ChainSegment, CompactBlockRead, SpendRead, SpendStatus, TakeSnapshot,
+};
 
 /// A fixed non-finalised window backed by an in-memory map.
 ///
@@ -140,6 +147,44 @@ impl SpendRead for StubNonFinalised {
             true => SpendStatus::Unspent,
             false => SpendStatus::NoSuchOutput,
         })
+    }
+}
+
+/// The window reports the receives it holds, deriving each output's recipient
+/// from its script, exactly as the real head does.
+///
+/// Mirrors `zaino_chain_head_service`'s implementation, including why this is
+/// the narrower read: a compact input carries only the outpoint it spends, so a
+/// spend cannot be attributed to an address here.
+impl AddressReceiveRead for StubNonFinalised {
+    async fn receives(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+    ) -> Result<Vec<TransparentReceive>, AddressReadError> {
+        let mut receives = Vec::new();
+        // The map is height-keyed and ordered, so the range selects a run and
+        // walking it yields height order.
+        for (height, block) in self.blocks.range(range.start..=range.end) {
+            for transaction in &block.transactions {
+                for (index, output) in transaction.transparent_outputs.iter().enumerate() {
+                    if !script_pays(output.script.as_bytes(), addr) {
+                        continue;
+                    }
+                    let Ok(output_index) = OutputIndex::try_from(index) else {
+                        continue;
+                    };
+                    receives.push(TransparentReceive {
+                        txid: transaction.txid,
+                        output_index,
+                        script: output.script.clone(),
+                        value: output.value,
+                        height: *height,
+                    });
+                }
+            }
+        }
+        Ok(receives)
     }
 }
 

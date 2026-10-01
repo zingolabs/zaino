@@ -37,6 +37,7 @@
 #[cfg(feature = "prometheus")]
 pub mod metric_names;
 
+mod address;
 mod error;
 mod graph;
 mod serve;

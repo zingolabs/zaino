@@ -18,7 +18,7 @@
 //! it is the layer that knows which network this is; see
 //! [`validate_address`](crate::validate_address), which does check.
 
-use zaino_primitives::types::{ScriptType, TransparentAddress};
+use zaino_primitives::types::{classify_script, ScriptType, TransparentAddress};
 use zcash_address::{ConversionError, TryFromAddress, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
 
@@ -69,10 +69,26 @@ pub fn transparent_address_key(address: &TransparentAddress) -> Option<(ScriptTy
     Some((key.script_type, key.hash))
 }
 
+/// Whether `script` locks its value to `address`.
+///
+/// The read-side counterpart of the write-side classification: a tier scanning
+/// outputs for an address asks this per output, rather than deriving a key and
+/// comparing by hand, so the one comparison lives here beside the two
+/// derivations it joins.
+///
+/// `false` for a non-transparent address, which no script can pay, and for a
+/// non-standard script, which [`classify_script`] reports under a hash no
+/// address resolves to.
+pub fn script_pays(script: &[u8], address: &TransparentAddress) -> bool {
+    let Some((script_type, hash)) = transparent_address_key(address) else {
+        return false;
+    };
+    classify_script(script) == (hash, script_type)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::classify_script;
 
     // Canonical source: `crate::classify`'s test vectors.
     const TESTNET_P2PKH: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
@@ -114,5 +130,39 @@ mod tests {
         assert!(key(REGTEST_SAPLING).is_none(), "shielded");
         assert!(key("not an address").is_none(), "malformed");
         assert!(key("").is_none(), "empty");
+    }
+
+    fn address(s: &str) -> TransparentAddress {
+        TransparentAddress::new(s.to_owned())
+    }
+
+    /// The script that pays an address is the one whose classification matches
+    /// the address's own key — and no other.
+    #[test]
+    fn a_script_pays_exactly_the_address_it_locks_to() {
+        let (_, hash) = key(TESTNET_P2PKH).expect("a p2pkh address");
+        let mut p2pkh = vec![0x76, 0xa9, 0x14];
+        p2pkh.extend_from_slice(&hash);
+        p2pkh.extend_from_slice(&[0x88, 0xac]);
+
+        assert!(script_pays(&p2pkh, &address(TESTNET_P2PKH)));
+        assert!(
+            !script_pays(&p2pkh, &address(TESTNET_P2SH)),
+            "same hash bytes, different script shape, so a different address"
+        );
+        assert!(
+            !script_pays(&p2pkh, &address(REGTEST_SAPLING)),
+            "no script pays a shielded address"
+        );
+    }
+
+    /// A non-standard script classifies under a hash no address resolves to, so
+    /// it pays nobody this lookup can name.
+    #[test]
+    fn a_non_standard_script_pays_no_address() {
+        assert!(!script_pays(
+            &[0xde, 0xad, 0xbe, 0xef],
+            &address(TESTNET_P2PKH)
+        ));
     }
 }
