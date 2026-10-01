@@ -12,11 +12,7 @@ fn protoc_available() -> bool {
     if env::var_os("PROTOC").is_some() {
         return true;
     }
-    #[cfg(feature = "heavy")]
-    if which::which("protoc").is_ok() {
-        return true;
-    }
-    false
+    which::which("protoc").is_ok()
 }
 
 /// Copy a generated file into the source tree and force non-executable

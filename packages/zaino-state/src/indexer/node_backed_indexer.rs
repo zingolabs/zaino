@@ -31,10 +31,7 @@ use zaino_proto::proto::{
         PingResponse, RawTransaction, SendResponse, TransparentAddressBlockFilter, TreeState,
         TxFilter,
     },
-    utils::{
-        blockid_to_hashorheight, compact_block_to_nullifiers, PoolTypeFilter,
-        ValidatedBlockRangeRequest,
-    },
+    utils::{compact_block_to_nullifiers, PoolTypeFilter, ValidatedBlockRangeRequest},
 };
 
 use crate::{
@@ -60,6 +57,20 @@ use crate::{
     utils::{get_build_info, ServiceMetadata},
 };
 use zaino_status::{Status, StatusType};
+
+/// Converts a wire [`BlockId`] into Zebra's [`HashOrHeight`] request identifier.
+fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
+    <[u8; 32]>::try_from(block_id.hash)
+        .map(zebra_chain::block::Hash)
+        .map(HashOrHeight::from)
+        .or_else(|_| {
+            block_id
+                .height
+                .try_into()
+                .map(|height| HashOrHeight::Height(Height(height)))
+        })
+        .ok()
+}
 
 /// A single node-backed chain-fetch + tx-submission service, generic over its
 /// [`BlockchainSource`].
