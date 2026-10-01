@@ -567,8 +567,8 @@ where
 {
     /// A chain-head block's work, made absolute.
     ///
-    /// The chain head measures work from its own anchor — the parent of the
-    /// window floor — which contributes none, so this is one addition:
+    /// The chain head counts work from the block above its anchor, and the
+    /// anchor's chainwork includes the anchor itself, so this is one addition:
     ///
     /// ```text
     /// absolute(B) = chainwork(anchor) + work(B)

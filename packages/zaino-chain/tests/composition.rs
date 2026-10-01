@@ -708,8 +708,8 @@ async fn a_minimal_store_yields_a_working_view() {
 /// store has built as far as the anchor, and it is the value the store itself
 /// would hold.
 ///
-/// This is the whole point of the rebase. The chain head measures work from its
-/// own anchor — the parent of the window floor — so the absolute value is
+/// This is the whole point of the rebase. The chain head counts work from the
+/// block above its anchor, so the absolute value is
 /// `chainwork(anchor) + work(B)`. Asserting the number rather than
 /// `is_some` is what makes this a test of the arithmetic: an off-by-one in the
 /// anchor, counting the floor's work twice, or rebasing against the wrong
