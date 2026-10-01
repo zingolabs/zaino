@@ -56,6 +56,8 @@ pub struct MapBackedSnapshot {
     tip: ChainHeadBlock,
     others: HashMap<BlockHash, ChainHeadBlock>,
     heights_to_hashes: HashMap<Height, BlockHash>,
+    /// The block this graph's work is measured from, recorded at anchoring because retention prunes that block while every surviving block's work still counts from it.
+    work_anchor: BlockRef,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
     ///
     /// Private even to the rest of this crate, and written only by
@@ -126,6 +128,7 @@ impl ChainGraph for MapBackedSnapshot {
     fn from_initial_block(block: ChainHeadBlock) -> Self {
         let heights_to_hashes = HashMap::from([(block.height(), block.hash())]);
         Self {
+            work_anchor: block.reference,
             tip: block,
             others: HashMap::new(),
             heights_to_hashes,
@@ -198,6 +201,10 @@ impl ChainGraph for MapBackedSnapshot {
 impl ChainHeadSnapshot for MapBackedSnapshot {
     fn best_tip(&self) -> BlockRef {
         self.tip.reference
+    }
+
+    fn work_anchor(&self) -> BlockRef {
+        self.work_anchor
     }
 
     fn epoch(&self) -> ChainStateEpoch {

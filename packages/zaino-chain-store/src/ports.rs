@@ -31,10 +31,10 @@ use core::future::Future;
 use futures::Stream;
 
 use tokio::sync::watch;
+use zaino_component::StatusSource;
 use zaino_primitives::types::{
     BlockHash, BlockTxPosition, CompactBlock, Height, Outpoint, TransactionId,
 };
-use zaino_status::StatusType;
 
 use crate::block::{FrozenBlock, PoolFilter, StoredBlock};
 use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
@@ -94,15 +94,12 @@ impl<T> ChainStoreSource for T where
 /// store build, stop, or roll back: that is [`ChainStoreIngest`], which the
 /// owner holds and a reader never sees. Observing how a store is faring is not
 /// the same as sequencing it.
-pub trait ChainStoreService: Clone + Send + Sync + 'static {
+pub trait ChainStoreService: StatusSource + Clone + Send + Sync + 'static {
     /// The reader this handle produces.
     type Reader: ChainStoreReader;
 
     /// A read handle. Cheap: readers share the store rather than opening it.
     fn reader(&self) -> Self::Reader;
-
-    /// How the store is faring.
-    fn status(&self) -> StatusType;
 
     /// Watches the finalised watermark.
     ///
@@ -122,7 +119,9 @@ pub trait ChainStoreService: Clone + Send + Sync + 'static {
 /// discovers what range it covers and resolves a height to a block. Everything
 /// beyond this is an index a deployment may or may not build, and is a
 /// separate trait so that a bound names exactly what its holder uses.
-pub trait ChainStoreReader: Clone + Send + Sync + core::fmt::Debug + 'static {
+pub trait ChainStoreReader:
+    StatusSource + Clone + Send + Sync + core::fmt::Debug + 'static
+{
     /// The highest block this store can answer for.
     ///
     /// Infallible and synchronous: it is held in memory and updated on commit,
@@ -161,10 +160,6 @@ pub trait ChainStoreReader: Clone + Send + Sync + core::fmt::Debug + 'static {
         &self,
         hash: BlockHash,
     ) -> impl Future<Output = Result<Option<Height>, ChainStoreError>> + Send;
-
-    /// How this store is faring, readable from a reader as well as the
-    /// service.
-    fn status(&self) -> StatusType;
 }
 
 /// Reading indexed blocks.

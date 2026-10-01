@@ -94,6 +94,10 @@ name = "zaino-status"
 path = "packages/zaino-status"
 
 [[target]]
+name = "zaino-component"
+path = "packages/zaino-component"
+
+[[target]]
 name = "zaino-encoding"
 path = "packages/zaino-encoding"
 
