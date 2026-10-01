@@ -1,0 +1,9 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f893-77a3-b2b1-4f96ff02844c"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "internal"
+description = "The snapshot's tip lookup goes through a single `tip_block` accessor."
+issues = ["#1482"]
