@@ -13,6 +13,10 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.1.1] - 2026-09-26
+### Internal
+- The published package carries a README, keywords and categories.
+
 ## [0.1.0] - 2026-09-11
 
 ### Added
