@@ -269,7 +269,8 @@ durable manifest.
   whose best chain moves at random, with reorgs up to the window depth.
 - **Live.** `zaino_index_construction` builds every index on mainnet and every 5 s compares
   `GetTreeState` at the tree-state index's durable tip with Zebra's `z_gettreestate`, byte for
-  byte. At completion it runs `zainod verify` over every sealed file.
+  byte, and `GetBlock` at the compact-block index's durable tip with Zebra's `getblock 2`. At
+  completion it runs `zainod verify` over every sealed file.
 - **Not yet done.** `cargo-fuzz` targets for the decoders, and a nightly run of the store scenarios
   on a [LazyFS](https://github.com/dsrhaslab/lazyfs) mount to check `SimFs` against real syscalls.
 

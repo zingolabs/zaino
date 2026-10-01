@@ -4271,9 +4271,9 @@ dependencies = [
 name = "sync"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "serde_json",
  "tokio",
- "tonic",
  "ztest",
 ]
 
@@ -6044,6 +6044,7 @@ dependencies = [
 name = "ztest"
 version = "0.1.29"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bip0039",
