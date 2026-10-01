@@ -44,6 +44,18 @@ pub struct StoredBlock {
     pub chainwork: AbsoluteChainWork,
 }
 
+/// A block handed to a store to freeze.
+#[derive(Debug, Clone)]
+pub struct FrozenBlock {
+    /// The block's header: its hash, parent, height, time, difficulty, roots
+    /// and nonce.
+    pub header: BlockHeader,
+    /// Per-transaction indexed data, in block order.
+    pub transactions: Vec<StoredTx>,
+    /// Commitment tree roots and sizes *after* this block is applied.
+    pub tree_roots: TreeRoots,
+}
+
 /// A transaction in a stored block.
 ///
 /// A compact transaction, plus the per-pool value balances that sit beside it
@@ -57,11 +69,11 @@ pub struct StoredBlock {
 /// compact transactions cannot be written back without inventing them, and a
 /// block read out of a store and written into another would silently lose them.
 ///
-/// That is not hypothetical. It is exactly what [`StoredBlock`] is for — it is
-/// what [`ChainStoreFreezeSink`](crate::ChainStoreFreezeSink) takes and what
-/// [`StoredBlockRead`](crate::StoredBlockRead) yields — so the read and the
-/// write have to describe the same block or the port is lossy in the one
-/// direction that writes to disk.
+/// That is not hypothetical. It is exactly what [`StoredBlock`] and
+/// [`FrozenBlock`] are for — what [`StoredBlockRead`](crate::StoredBlockRead)
+/// yields and what [`ChainStoreFreezeSink`](crate::ChainStoreFreezeSink) takes
+/// — so the read and the write have to describe the same block or the port is
+/// lossy in the one direction that writes to disk.
 /// Not `PartialEq`, because [`PreIndexCompactTx`] is not: comparing two blocks
 /// field-by-field is a test's business, and the fields are public.
 #[derive(Debug, Clone)]

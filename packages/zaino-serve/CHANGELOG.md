@@ -13,6 +13,26 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.9.0] - 2026-09-26
+### Added
+- Serve `IndexedTipService/SubscribeIndexedTips` on the gRPC server. A subscription first receives the current indexed tip, then each canonical tip change, including a same-height reorg. A slow client receives only the latest tip, and graceful shutdown ends open subscriptions.
+- JSON-RPC serving metrics `zaino.jsonrpc.request_duration_seconds{method}` and `zaino.jsonrpc.errors_total{method,code}`; unregistered method names are labelled `unknown`.
+### Changed
+- `BlockDeltas::from_domain` and the `getblockchaininfo` pool-balance rendering are infallible, because the domain types already guarantee the range. The `DeltaAmountOutOfRange` and `PoolBalanceOutOfRange` errors are removed.
+  _Migration:_ Remove handling for `DeltaAmountOutOfRange` and `PoolBalanceOutOfRange`, and drop the `?` on the now-infallible conversions.
+- Removed `zaino.grpc.requests_total` (= `zaino.grpc.request_duration_seconds` `_count`); `zaino.grpc.errors_total{code}` now carries the status name (`NotFound`). Feature `prometheus` removed.
+  _Migration:_ Use `zaino.grpc.request_duration_seconds_count` for request volume.
+- dependency `zaino-consensus` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-state` 0.9.0→0.10.0 crossed the requirement `^0.9.0`
+### Fixed
+- Confirmation counts in verbose blocks, verbose headers, block deltas and transaction outputs are checked: a value below -1, a block value of 0, or a count past `u32` is rejected instead of passed through.
+- `getaddressdeltas` rejects an invalid address as invalid params instead of admitting it.
+- `z_gettreestate` writes the Orchard and Ironwood `finalRoot` in display order. Only the Sapling root is byte-reversed for display, so both pools previously named a root no chain ever had.
+- `getblockchaininfo` renders `chainSupply` with its value; every backend previously reported it as zero.
+### Internal
+- The block-header render test builds its chainwork from a compile-time constant.
+
 ## [0.8.0] - 2026-09-11
 
 ### Added
