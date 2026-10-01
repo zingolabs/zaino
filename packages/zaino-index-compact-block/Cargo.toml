@@ -21,7 +21,6 @@ zaino-sync = { version = "0.1.0", path = "../zaino-sync" }
 tokio = { workspace = true, features = ["macros", "sync"] }
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zcash_protocol.workspace = true
-tokio-util.workspace = true
 
 [features]
 # Sample blocks for consumers that test against a real index.

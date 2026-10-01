@@ -318,6 +318,10 @@ impl TreeStateStore {
         self.committed.committed.tip
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
     /// [`finalized_tip`](Self::finalized_tip)'s height
     pub(crate) fn finalized_height(&self) -> Option<Height> {
         self.committed.committed.height()

@@ -155,7 +155,7 @@ mod tests {
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
         let blocks = sink.subscribe(TreeStateIndexWriter::NAME, queue);
-        let running = tokio::spawn(index.run(blocks, cancel.clone()));
+        let running = tokio::spawn(index.run(blocks));
         let within = Duration::from_secs(5);
         for (height, finalized) in [(0, true), (1, false)] {
             sink.send(Step::Apply { height: h(height), finalized, data: block(height) }).await;
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(service.treestate(h(2)), Err(ServeError::NotFound { height: h(2) }));
 
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
         cancel.cancel();
         gate.await.expect("gate ends on cancel");
     }

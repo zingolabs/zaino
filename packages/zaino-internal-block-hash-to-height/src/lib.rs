@@ -119,6 +119,10 @@ impl BlockHashStore {
         self.segments.committed().tip
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        self.segments.path()
+    }
+
     /// Makes `blocks` durable and visible as one new segment
     ///
     /// - `blocks` contiguous from the height after the committed tip (asserted)

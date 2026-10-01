@@ -62,7 +62,7 @@ mod view;
 pub mod testing;
 
 pub use build::{compact_tx, encode_compact_block};
-pub use index_writer::{CompactBlockIndexWriter, IndexWriterError};
+pub use index_writer::CompactBlockIndexWriter;
 pub(crate) use non_finalized::NonFinalizedState;
 pub use project::Pools;
 pub(crate) use record::{HASH, OFFSET};
@@ -289,6 +289,10 @@ impl CompactBlockStore {
     /// Independent of the writer's lifetime
     pub fn reader(&self) -> CompactBlockReader {
         CompactBlockReader { snapshot: Arc::clone(&self.snapshot) }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        self.dir.path()
     }
 
     /// Last appended height, inclusive, committed or not (`None` = empty; [`append`](Self::append)

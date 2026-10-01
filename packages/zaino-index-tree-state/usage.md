@@ -16,7 +16,7 @@ let index = TreeStateIndexWriter::new(store, batch_bytes)?;
 let blocks = block_sink.subscribe(TreeStateIndexWriter::NAME, queue);
 let service = TreeStateService::new(index.published().served(), network);
 tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
-tokio::spawn(index.run(blocks, cancel.clone()));
+tokio::spawn(index.run(blocks));
 ```
 
 - `TreeStateIndexWriter` runs its own loop over the `zaino_sync::BlockSink`
@@ -25,8 +25,11 @@ tokio::spawn(index.run(blocks, cancel.clone()));
   are held and folded at commit, one commit per `batch_bytes`; once following
   the tip, each `Finalized { height }` commits everything through `height` as
   it arrives. `durable_tip()` = the last committed block, for the producer's
-  start and chain check. `new` is fallible: it reseeds the running frontiers
-  from disk on every boot.
+  start and chain check.
+- Fallible only at boot: `open` (`StoreError`) and `new`, which reseeds the
+  running frontiers from disk (`IndexWriterError`). `run` is infallible: it
+  returns at `Shutdown` and panics on a failed commit or an unfoldable block
+  ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - `ReadView` binds the non-finalized tier and the committed snapshot into one publication:
   a request loads it once, so the seam between them cannot move under it.
   `treestate(height)`, `latest()` and `subtree_roots(..)` answer from it, with no
@@ -99,10 +102,11 @@ Every file carries page checksums (`zaino_persistence::pages`).
 - `TreeStateStore::open(fs, path, network)` opens each file at its seal: bytes
   past it dropped, a shorter file (`PageError::Lost`) or a bad tail page
   (`PageError::Tail`) refused, as `zaino_persistence::StoreError`. Nothing else
-  is read; the writer then reseeds its carries from ≤ 33 nodes per pool. Writer
-  failures are `IndexWriterError`: `Store`, `Inconsistent` (stored nodes will not
-  rebuild a frontier) or `Commitment` (a non-canonical note commitment off the
-  wire).
+  is read; the writer then reseeds its carries from ≤ 33 nodes per pool.
+- `IndexWriterError` = `Store`, `Inconsistent` (stored nodes will not rebuild
+  a frontier) or `Commitment` (a non-canonical note commitment off the wire).
+  `new` returns it at boot; inside `run` the same errors panic as
+  `tree_state index: <error>`.
 - Subtrees are the protocol's 2^16-leaf shards (`SUBTREE_LEVEL`, a constant).
 - `committed_files(dir, network)` = every sealed file, for `zainod verify`.
 - `heights.idx` and `subtrees.dat` records are fixed arrays with

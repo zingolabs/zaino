@@ -29,15 +29,17 @@ let index = ValueBalanceIndexWriter::open(fs, &path, network, batch_bytes)?;
 let durable = index.durable_tip(); // for the producer's start and chain check
 let published = index.published(); // tips + gate for metrics and status
 let blocks = block_sink.subscribe(ValueBalanceIndexWriter::NAME, queue);
-tokio::spawn(index.run(blocks, fee_sink, cancel.clone()));
+tokio::spawn(index.run(blocks, fee_sink));
 ```
 
 - `run` = the index's own loop over its `BlockSink` subscription, through
-  `Shutdown`; a failure cancels `cancel` (the whole pipeline) first.
-- Every step it follows goes into the fee sink, 1:1, `Shutdown` last (clean
-  stop and failure alike): the stream is the block stream's, step for step,
-  from the same start. A consumer awaits one fee step after each of its own
-  block steps.
+  `Shutdown`. Fallible only at boot (`open` → `StoreError`). `run` is
+  infallible: a failed commit or an unresolvable fee panics
+  ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
+- Every step it follows goes into the fee sink, 1:1, from the same start, with
+  `Shutdown` last. A consumer awaits one fee step after each of its own block
+  steps. On a panic the fee sink drops without `Shutdown`, so the consumer
+  panics on its next pop.
 - `published()` carries `()` as its view (no service reads this index), plus
   its durable and applied tips.
 
@@ -62,9 +64,10 @@ page fault each.
 | at or below this index's durable tip | already stored | yes (a consumer behind this index pairs it) |
 | above it | recorded (`Pending`) | yes |
 
-A spend of an output the index never recorded is fatal
-(`IndexWriterError::MissingPrevout`): the index runs from genesis, so it means
-a foreign directory or a bug, never a gap to work around.
+A spend of an output the index never recorded panics
+(`value_balance index: ` + `IndexWriterError::MissingPrevout`): the index runs
+from genesis, so it means a foreign directory or a bug, never a gap to work
+around.
 
 ## Fees
 
@@ -85,8 +88,8 @@ These are the same terms as librustzcash's `fee_paid`.
 - A coinbase transaction (decoded as `TransparentData::coinbase`) pays no fee
   (§3.11), so it is `Fee::Coinbase`, never a computed sum.
 - A negative sum is consensus-invalid for any other transaction (§3.4: "MUST
-  be nonnegative"), so it is fatal (`IndexWriterError::NegativeFee`), never
-  clamped. So is a sum past the money supply (`ValueOverflow`, ZIP 209).
+  be nonnegative"), so it panics (`IndexWriterError::NegativeFee`) and is never
+  clamped. So does a sum past the money supply (`ValueOverflow`, ZIP 209).
 
 Mempool fees do not come from here:
 the validator lists them (`getrawmempool true`), since it resolved those

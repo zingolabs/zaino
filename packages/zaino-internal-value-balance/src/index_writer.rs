@@ -14,7 +14,6 @@ use std::{
     sync::Arc,
 };
 
-use tokio_util::sync::CancellationToken;
 use zaino_persistence::{
     fs::Fs,
     lsm::{LsmStore, SegmentSet, Snapshot},
@@ -24,9 +23,7 @@ use zaino_primitives::types::{
     Block, BlockFees, BlockRef, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId,
     Zatoshis,
 };
-use zaino_sync::{
-    blocking, FeeSink, IndexFailed, Offloaded, Published, Step, Subscription, Weight,
-};
+use zaino_sync::{blocking, FeeSink, Offloaded, Published, Step, Subscription, Weight};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::{key::OutputRow, pending::Pending, ValueBalanceIndex};
@@ -109,28 +106,10 @@ impl ValueBalanceIndexWriter {
         &self.published
     }
 
-    /// Follows `blocks` through its `Shutdown`, republishing into `fees`; a failure cancels
-    /// `cancel` (the pipeline) first, and `fees` ends with `Shutdown` either way
-    pub async fn run(
-        mut self,
-        mut blocks: Subscription<Block>,
-        fees: FeeSink,
-        cancel: CancellationToken,
-    ) -> Result<(), IndexFailed<IndexWriterError>> {
-        let followed = self.follow(&mut blocks, &fees).await;
-        if followed.is_err() {
-            cancel.cancel();
-        }
-        blocks.skip_to_shutdown().await;
-        fees.shutdown();
-        followed.map_err(|source| IndexFailed { index: Self::NAME, source })
-    }
-
-    async fn follow(
-        &mut self,
-        blocks: &mut Subscription<Block>,
-        fees: &FeeSink,
-    ) -> Result<(), IndexWriterError> {
+    /// Follows `blocks` through its `Shutdown`, republished into `fees`
+    ///
+    /// - a failure panics (dropped `fees` = no `Shutdown`: compact-block panics too)
+    pub async fn run(mut self, mut blocks: Subscription<Block>, fees: FeeSink) {
         // non-`Apply` step popped while gathering a run (handled next, keeping step order)
         let mut held: Option<Step<Block>> = None;
         loop {
@@ -168,8 +147,9 @@ impl ValueBalanceIndexWriter {
                     let run_blocks: Vec<Arc<Block>> =
                         run.iter().map(|(_, _, block)| Arc::clone(block)).collect();
                     let (pending, outputs) = (self.pending.clone(), self.outputs.pin());
-                    let run_fees =
-                        blocking(move || resolve(&run_blocks, &pending, &outputs)).await?;
+                    let run_fees = blocking(move || resolve(&run_blocks, &pending, &outputs))
+                        .await
+                        .unwrap_or_else(|error| panic!("{} index: {error}", Self::NAME));
 
                     for ((height, finalized, block), block_fees) in run.into_iter().zip(run_fees) {
                         let data = Arc::new(block_fees);
@@ -187,12 +167,12 @@ impl ValueBalanceIndexWriter {
                             self.final_through = Some(height);
                             self.bulk_bytes += block.weight();
                             if self.bulk_bytes >= self.batch_bytes.get() {
-                                self.commit(height).await?;
+                                self.commit(height).await;
                             }
                         } else {
                             // bulk → tip: what bulk staged commits before the first apply
                             if let Some(through) = self.final_through {
-                                self.commit(through).await?;
+                                self.commit(through).await;
                             }
                             let next = self.applied.map_or(Height::GENESIS, Height::next);
                             assert_eq!(
@@ -206,7 +186,7 @@ impl ValueBalanceIndexWriter {
                 }
                 Step::Finalized { height } => {
                     fees.send(Step::Finalized { height }).await;
-                    self.commit(height).await?;
+                    self.commit(height).await;
                 }
                 Step::Reorg => {
                     assert!(
@@ -223,9 +203,10 @@ impl ValueBalanceIndexWriter {
                 }
                 Step::Shutdown => {
                     if let Some(through) = self.final_through {
-                        self.commit(through).await?;
+                        self.commit(through).await;
                     }
-                    return Ok(());
+                    fees.shutdown();
+                    return;
                 }
             }
             self.publish();
@@ -234,7 +215,7 @@ impl ValueBalanceIndexWriter {
 
     /// Outputs of every block through `through` → disk, then they leave `pending` (segments answer
     /// for them)
-    async fn commit(&mut self, through: Height) -> Result<(), IndexWriterError> {
+    async fn commit(&mut self, through: Height) {
         let mut next = self.durable.map_or(Height::GENESIS, |tip| tip.height.next());
         let mut tip = None;
         while self.unwritten.front().is_some_and(|block| block.height <= through) {
@@ -252,9 +233,12 @@ impl ValueBalanceIndexWriter {
 
         let rows = self.pending.rows_through(Some(through));
         let written: Vec<OutPoint> = rows.iter().map(|row| row.key).collect();
-        self.store.blocking(move |store| store.commit(rows, tip)).await?;
-
-        self.durable = self.store.get().committed().tip;
+        let committed = self.store.blocking(move |store| store.commit(rows, tip)).await;
+        let store = self.store.get();
+        if let Err(error) = committed {
+            error.commit_failed(Self::NAME, store.path());
+        }
+        self.durable = store.committed().tip;
         self.pending.remove(&written);
         if self.final_through <= Some(through) {
             self.final_through = None;
@@ -265,7 +249,6 @@ impl ValueBalanceIndexWriter {
         // view first: a reader woken by the durable tip pins the view holding it
         self.publish();
         self.published.durable(durable);
-        Ok(())
     }
 
     fn publish(&self) {
@@ -473,7 +456,7 @@ mod tests {
         let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
         let mut consumer = fee_sink.subscribe("consumer", QUEUE);
         let blocks = block_sink.subscribe("value_balance", QUEUE);
-        let running = tokio::spawn(index.run(blocks, fee_sink, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks, fee_sink));
         for (acked, block) in (1u64..).zip(&chain[..4]) {
             let height = block.header().height;
             block_sink.send(Step::Apply { height, finalized: true, data: Arc::clone(block) }).await;
@@ -482,7 +465,7 @@ mod tests {
             fs.set_tag(acked);
         }
         block_sink.shutdown();
-        running.await.expect("joined").expect("clean stop");
+        running.await.expect("clean stop");
         consumer.skip_to_shutdown().await;
         let tip_after = |commits: u64| (commits > 0).then(|| h((commits - 1).min(3) as u32));
 
@@ -501,12 +484,13 @@ mod tests {
             let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
             let mut consumer = fee_sink.subscribe("consumer", QUEUE);
             let blocks = block_sink.subscribe("value_balance", QUEUE);
-            let running = tokio::spawn(index.run(blocks, fee_sink, CancellationToken::new()));
+            let running = tokio::spawn(index.run(blocks, fee_sink));
             let data = Arc::clone(&chain[next as usize]);
             block_sink.send(Step::Apply { height: h(next), finalized: true, data }).await;
             block_sink.shutdown();
-            let stopped = running.await.expect("joined");
-            stopped.unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
+            running
+                .await
+                .unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
 
             let resolved = match consumer.next().await {
                 Step::Apply { data, .. } => fees(&data),
@@ -544,7 +528,7 @@ mod tests {
         let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
         let mut consumer = fee_sink.subscribe("consumer", QUEUE);
         let blocks = block_sink.subscribe("value_balance", QUEUE);
-        let running = tokio::spawn(index.run(blocks, fee_sink, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks, fee_sink));
 
         let first = Arc::clone(&chain[0]);
         block_sink.send(Step::Apply { height: h(0), finalized: true, data: first }).await;
@@ -555,7 +539,7 @@ mod tests {
             block_sink.send(Step::Apply { height, finalized: true, data }).await;
         }
         block_sink.shutdown();
-        running.await.expect("joined").expect("clean stop");
+        running.await.expect("clean stop");
 
         let mut steps = Vec::new();
         loop {
@@ -646,8 +630,7 @@ mod tests {
                 let mut consumer = fee_sink.subscribe("consumer", QUEUE);
                 let subscription = block_sink.subscribe("value_balance", QUEUE);
                 let mut blocks = block_sink.subscribe("downstream", QUEUE);
-                let running =
-                    tokio::spawn(index.run(subscription, fee_sink, CancellationToken::new()));
+                let running = tokio::spawn(index.run(subscription, fee_sink));
 
                 // tip 4, depth 2: final through 2; from after the rearmost durable tip
                 let start = durable.min(downstream).map_or(0, |tip| u32::from(tip) as usize + 1);
@@ -657,7 +640,7 @@ mod tests {
                     block_sink.send(Step::Apply { height, finalized, data }).await;
                 }
                 block_sink.shutdown();
-                running.await.expect("joined").expect("clean stop");
+                running.await.expect("clean stop");
 
                 let (mut block_steps, mut fee_steps, mut published) = (vec![], vec![], vec![]);
                 loop {
@@ -754,7 +737,7 @@ mod tests {
         let mut fee_sink = FeeSink::new("fees");
         let mut consumer = fee_sink.subscribe("consumer", QUEUE);
         let subscription = block_sink.subscribe("value_balance", QUEUE);
-        let running = tokio::spawn(index.run(subscription, fee_sink, CancellationToken::new()));
+        let running = tokio::spawn(index.run(subscription, fee_sink));
 
         // tip 3, depth 2: 0 and 1 final, 2 and 3 not; reorg → 2 and 3 again, from fork 1
         let apply = |block: &Arc<Block>| {
@@ -769,7 +752,7 @@ mod tests {
             block_sink.send(apply(block)).await;
         }
         block_sink.shutdown();
-        running.await.expect("joined").expect("clean stop");
+        running.await.expect("clean stop");
 
         let mut published = Vec::new();
         loop {
@@ -799,10 +782,10 @@ mod tests {
         );
     }
 
-    /// Tx 0x20 of block 0 unresolvable or consensus-invalid: fatal, named; the pipeline is
-    /// cancelled, and `Shutdown` still reaches the downstream consumer
+    /// Tx 0x20 of block 0 unresolvable or consensus-invalid: the index panics, named; the
+    /// downstream consumer never sees `Shutdown` (its sink dropped → it panics too)
     #[tokio::test]
-    async fn an_unrecorded_prevout_or_a_negative_fee_stops_the_index() {
+    async fn an_unrecorded_prevout_or_a_negative_fee_panics_the_index_and_its_consumer() {
         let id = |byte| TransactionId::from([byte; 32]);
         let cases = [
             // spends an outpoint never recorded (a foreign directory, a gap)
@@ -840,24 +823,23 @@ mod tests {
             let mut fee_sink = FeeSink::new("fees");
             let mut consumer = fee_sink.subscribe("consumer", QUEUE);
             let subscription = block_sink.subscribe("value_balance", QUEUE);
-            let cancel = CancellationToken::new();
-            let running = tokio::spawn(index.run(subscription, fee_sink, cancel.clone()));
+            let running = tokio::spawn(index.run(subscription, fee_sink));
+            let downstream = tokio::spawn(async move { consumer.next().await });
 
             let data = block(0, 0, 0, vec![coinbase(0x10, 100_000), invalid]);
             block_sink.send(Step::Apply { height: h(0), finalized: false, data }).await;
-            tokio::time::timeout(Duration::from_secs(5), cancel.cancelled())
-                .await
-                .expect("the failure cancels the pipeline");
-            block_sink.shutdown();
 
-            let stopped = running.await.expect("joined");
-            assert!(
-                matches!(consumer.next().await, Step::Shutdown),
-                "{expected}: no fees for the failed block, then Shutdown"
-            );
-            let Err(IndexFailed { index, source }) = &stopped else { panic!("{stopped:?}") };
-            assert_eq!(*index, "value_balance");
-            assert_eq!(format!("{source:?}"), format!("{expected:?}"));
+            let message = |joined: Result<_, tokio::task::JoinError>| {
+                let payload = joined.expect_err("panicked").into_panic();
+                payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
+            };
+            let index = message(running.await);
+            assert_eq!(index, Some(format!("value_balance index: {expected}")));
+            let consumer = message(downstream.await.map(drop));
+            assert_eq!(consumer.as_deref(), Some("sink dropped without Shutdown"), "{expected}");
         }
     }
 }

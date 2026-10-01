@@ -1732,7 +1732,6 @@ mod transparent_address {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_util::sync::CancellationToken;
     use zaino_index_transparent_address::TransparentAddressService;
     use zaino_sync::Served;
 
@@ -1812,13 +1811,12 @@ mod tests {
 
     /// An index loop (`follow` = its `run` over the queue given) fed `blocks` as bulk, each a
     /// final `Apply` then `Shutdown` as the producer sends them, awaited through `Shutdown`
-    async fn indexed<F, E>(
+    async fn indexed<F>(
         blocks: &[std::sync::Arc<zaino_primitives::types::Block>],
         name: &'static str,
         follow: impl FnOnce(zaino_sync::Subscription<zaino_primitives::types::Block>) -> F,
     ) where
-        F: Future<Output = Result<(), E>> + Send + 'static,
-        E: std::fmt::Debug + Send + 'static,
+        F: Future<Output = ()> + Send + 'static,
     {
         let mut sink = zaino_sync::BlockSink::new("blocks");
         let queue = std::num::NonZeroUsize::new(1 << 20).expect("non-zero");
@@ -1828,7 +1826,7 @@ mod tests {
             sink.send(zaino_sync::Step::Apply { height, finalized: true, data }).await;
         }
         sink.shutdown();
-        running.await.expect("no panic").expect("indexed through Shutdown");
+        running.await.expect("indexed through Shutdown");
     }
 
     /// The router claims a method only when an index is wired for it; everything else reaches
@@ -2500,7 +2498,7 @@ mod tests {
         })
         .collect();
         let name = TransparentAddressIndexWriter::NAME;
-        indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
+        indexed(&blocks, name, |queue| index.run(queue)).await;
         let view = (*served.pin_any()).clone();
 
         let mut router = unwired(SpyInner::default()).with_transparent_address(
@@ -2764,7 +2762,7 @@ mod tests {
         );
         let name = TransparentAddressIndexWriter::NAME;
         let blocks = [std::sync::Arc::new(funded)];
-        indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
+        indexed(&blocks, name, |queue| index.run(queue)).await;
         let view = (*served.pin_any()).clone();
 
         let mut router = unwired(SpyInner::default())
@@ -2871,7 +2869,7 @@ mod tests {
         );
         let name = TreeStateIndexWriter::NAME;
         let blocks = [std::sync::Arc::new(block)];
-        indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
+        indexed(&blocks, name, |queue| index.run(queue)).await;
 
         let service = TreeStateService::new(
             Served::fixed((*served.pin_any()).clone()),
@@ -2961,7 +2959,7 @@ mod tests {
             );
             let blocks = [std::sync::Arc::new(block)];
             let name = BlockHashIndexWriter::NAME;
-            indexed(&blocks, name, |queue| index.run(queue, CancellationToken::new())).await;
+            indexed(&blocks, name, |queue| index.run(queue)).await;
             let view = (*served.pin_any()).clone();
             zaino_internal_block_hash_to_height::BlockHashService::new(Served::fixed(view))
         };

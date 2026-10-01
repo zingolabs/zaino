@@ -36,19 +36,20 @@ offsets.idx   8 bytes per height: where its record ends in blocks.dat   (OFFSET)
 let index = CompactBlockIndexWriter::new(store, batch_bytes);
 let durable = index.durable_tip(); // for the producer's start and chain check
 let service = CompactBlockService::new(index.published().served());
-tokio::spawn(index.run(blocks, fees, cancel.clone()));
+tokio::spawn(index.run(blocks, fees));
 ```
 
-- `NAME` = `"compact_block"`. `run(blocks, fees, cancel)` is its own loop over
-  its `BlockSink` subscription and its subscription to the value-balance index's
+- `NAME` = `"compact_block"`. `run(blocks, fees)` is its own loop over its
+  `BlockSink` subscription and its subscription to the value-balance index's
   `FeeSink`
   ([`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md)):
-  one step off each per step: the block step, then its fee step. Every
-  `CompactTx.fee` comes from them; a fee queue that ends first means
-  value-balance failed, and this index commits what is final and stops. The two
-  steps are asserted to match (kind, height, `finalized`, fees of that block).
-  It ends at `Shutdown`; a failure cancels `cancel` first, and both
-  subscriptions are popped through their `Shutdown` either way.
+  one step off each per step, the block step then its fee step. Every
+  `CompactTx.fee` comes from them. The two steps are asserted to match (kind,
+  height, `finalized`, fees of that block), so they end on the same `Shutdown`.
+- Fallible only at boot (`CompactBlockStore::open` → `StoreError`); `new` is
+  infallible. `run` is infallible: it panics on a failed commit, on a tree size
+  past `u32` (#549), and when value-balance's fee sink drops
+  ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - Per step: a final block (bulk) joins `bulk` and commits once `batch_bytes`
   is held (a replay at or below the durable tip is skipped); a non-final block
   commits what bulk holds, then is applied; `Finalized { h }` commits through

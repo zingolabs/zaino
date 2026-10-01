@@ -62,8 +62,13 @@ Each index runs its own loop over its queue until `Shutdown`, one `match` arm pe
 ([`zaino-sync` usage](../../packages/zaino-sync/usage.md#an-index-loop)). In bulk, final blocks
 stage until a byte batch fills, so one write is one fsync of a steady size; at the tip every
 `Finalized` is written at once, so the durable tip trails the chain tip by exactly
-`finalised_depth`. A loop that fails cancels the whole pipeline, but it keeps draining its queue
-through `Shutdown` so the sink never sees a dropped queue.
+`finalised_depth`.
+
+An index loop cannot fail with an error, because its `run` returns `()`. Anything it cannot
+recover from panics where it happens: a failed commit (naming the index and its directory, and
+whether the disk is full), chain data it cannot take, or a broken invariant. zainod aborts on the
+first panic, and every index reopens at its last durable manifest on restart. Nothing drains and
+nothing cancels; see [Failure](../../packages/zaino-sync/usage.md#failure-panic-never-err).
 
 ## Fees: an index publishing to another index
 

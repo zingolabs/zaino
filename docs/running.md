@@ -104,10 +104,15 @@ page fails its checksum.
 
 Once booted, each stage (the index writers, the block producer, the chainview pollers
 and the gRPC server) runs as its own task. SIGINT or SIGTERM cancels them all and
-waits for each index to write what is final before exiting 0. If any task stops on
-its own, for example on an error or because a chainview endpoint was ejected, it stops
-the rest the same way and zainod exits 1. A panic, including a page checksum mismatch,
-aborts the process at once.
+waits for each index to write what is final before exiting 0. If the producer, a
+chainview poller or the gRPC server stops on its own, for example because a chainview
+endpoint was ejected, it stops the rest the same way and zainod exits 1.
+
+An index writer never stops with an error. A failure panics and aborts the process at
+once, and so does a page checksum mismatch. A failed write names the index and its
+directory, for example `compact_block index commit failed: disk
+/home/zaino/.cache/zaino/indexes/compact_block full`. Free space or fix the disk, then
+restart: every index resumes from its last committed batch.
 
 zainod never restarts in-process, so run it under a service manager that restarts it
 with backoff. Opening an index only reads file lengths and one tail page per file, so

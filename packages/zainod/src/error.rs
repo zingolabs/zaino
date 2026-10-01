@@ -1,7 +1,5 @@
 //! Error types for the zainod daemon.
 
-use zaino_sync::IndexFailed;
-
 /// Errors from configuring, booting, or running the Zaino daemon.
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
@@ -14,23 +12,11 @@ pub enum IndexerError {
     /// Opening an index directory failed.
     #[error(transparent)]
     OpenIndex(#[from] zaino_persistence::StoreError),
-    /// The compact-block index could not resume — its stored tree sizes will not decode.
-    #[error(transparent)]
-    ResumeIndex(#[from] zaino_index_compact_block::IndexWriterError),
     /// The tree-state index's carries would not reseed off disk.
     #[error(transparent)]
     OpenTreeStateIndex(#[from] zaino_index_tree_state::IndexWriterError),
-    /// An index with no errors of its own (block-hash, transparent-address) stopped.
-    #[error(transparent)]
-    Index(#[from] IndexFailed<zaino_persistence::StoreError>),
-    #[error(transparent)]
-    CompactBlockIndex(#[from] IndexFailed<zaino_index_compact_block::IndexWriterError>),
-    #[error(transparent)]
-    TreeStateIndex(#[from] IndexFailed<zaino_index_tree_state::IndexWriterError>),
     #[error(transparent)]
     OpenValueBalanceIndex(#[from] zaino_internal_value_balance::IndexWriterError),
-    #[error(transparent)]
-    ValueBalanceIndex(#[from] IndexFailed<zaino_internal_value_balance::IndexWriterError>),
     /// The configured validator set is empty or beyond the endpoint-set bound.
     #[error(transparent)]
     ChainView(#[from] zaino_chainview::ConfigError),

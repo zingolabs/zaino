@@ -11,11 +11,10 @@ use std::{num::NonZeroUsize, sync::Arc};
 
 use incrementalmerkletree::Hashable;
 use orchard::tree::MerkleHashOrchard;
-use tokio_util::sync::CancellationToken;
 use zaino_primitives::types::{
     Block, BlockRef, Height, PerPool, ShieldedPool, TreeSize, TreeSizes,
 };
-use zaino_sync::{IndexFailed, Offloaded, Published, Step, Subscription, Weight};
+use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 use zcash_primitives::merkle_tree::HashSer;
 
 use crate::{
@@ -250,21 +249,8 @@ impl TreeStateIndexWriter {
         &self.published
     }
 
-    /// Follows `blocks` through its `Shutdown`; a failure cancels `cancel` (the pipeline) first
-    pub async fn run(
-        mut self,
-        mut blocks: Subscription<Block>,
-        cancel: CancellationToken,
-    ) -> Result<(), IndexFailed<IndexWriterError>> {
-        let followed = self.follow(&mut blocks).await;
-        if followed.is_err() {
-            cancel.cancel();
-        }
-        blocks.skip_to_shutdown().await;
-        followed.map_err(|source| IndexFailed { index: Self::NAME, source })
-    }
-
-    async fn follow(&mut self, blocks: &mut Subscription<Block>) -> Result<(), IndexWriterError> {
+    /// Follows `blocks` through its `Shutdown` (a failure panics: its dropped queue fails the rest)
+    pub async fn run(mut self, mut blocks: Subscription<Block>) {
         loop {
             match blocks.next().await {
                 Step::Apply { height, finalized: true, data } => {
@@ -278,26 +264,30 @@ impl TreeStateIndexWriter {
                     self.bulk_bytes += data.weight();
                     self.bulk.push(data);
                     if self.bulk_bytes >= self.batch_bytes.get() {
-                        self.commit(height).await?;
+                        self.commit(height).await;
                     }
                 }
                 Step::Apply { height, finalized: false, data } => {
                     // bulk → tip: what bulk staged commits before the first apply builds on it
                     if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await?;
+                        self.commit(last.header().height).await;
                     }
                     let next = self.view.tip.map_or(Height::GENESIS, Height::next);
                     assert_eq!(height, next, "tree_state: blocks must arrive contiguously");
-                    self.folds
+                    let folded = self
+                        .folds
                         .compute(move |folds| {
                             folds
                                 .applied
                                 .fold(std::slice::from_ref(&data), &mut folds.non_finalized)
                         })
-                        .await?;
+                        .await;
+                    if let Err(error) = folded {
+                        panic!("{} index: {error}", Self::NAME);
+                    }
                     self.view = self.folds.get().non_finalized.clone();
                 }
-                Step::Finalized { height } => self.commit(height).await?,
+                Step::Finalized { height } => self.commit(height).await,
                 Step::Reorg => {
                     assert!(self.bulk.is_empty(), "tree_state: reorg with bulk blocks staged");
                     // back to the durable carry, the winning branch applied from there (= restart)
@@ -311,9 +301,9 @@ impl TreeStateIndexWriter {
                 }
                 Step::Shutdown => {
                     if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await?;
+                        self.commit(last.header().height).await;
                     }
-                    return Ok(());
+                    return;
                 }
             }
             self.publish();
@@ -322,21 +312,24 @@ impl TreeStateIndexWriter {
 
     /// Every final block through `through` → folded (bulk ones), written, then the written prefix
     /// leaves the non-finalized tier
-    async fn commit(&mut self, through: Height) -> Result<(), IndexWriterError> {
+    async fn commit(&mut self, through: Height) {
         let bulk = std::mem::take(&mut self.bulk);
         self.bulk_bytes = 0;
         let on_disk = Arc::clone(&self.snapshot);
+        let landed = self.folds.compute(move |folds| folds.land(&bulk, through, &on_disk)).await;
         let Landing { chunk, sizes, durable } =
-            self.folds.compute(move |folds| folds.land(&bulk, through, &on_disk)).await?;
+            landed.unwrap_or_else(|error| panic!("{} index: {error}", Self::NAME));
         let first = self.durable.map_or(Height::GENESIS, |tip| tip.height.next());
         assert_eq!(
             chunk.heights.keys().next().copied(),
             Some(first),
             "tree_state: final blocks not contiguous from durable"
         );
-        self.store.blocking(move |store| store.write(&chunk)).await?;
-
+        let written = self.store.blocking(move |store| store.write(&chunk)).await;
         let store = self.store.get();
+        if let Err(error) = written {
+            error.commit_failed(Self::NAME, store.path());
+        }
         self.durable = store.finalized_tip();
         self.snapshot = store.snapshot();
         assert_eq!(self.durable.map(|tip| tip.height), Some(through), "tree_state: wrote short");
@@ -347,7 +340,6 @@ impl TreeStateIndexWriter {
         // view first: a reader woken by the durable tip pins the view holding it
         self.publish();
         self.published.durable(Some(through));
-        Ok(())
     }
 
     fn publish(&self) {
@@ -523,14 +515,14 @@ mod tests {
             let mut durable = index.published().subscribe_finalized();
             let mut sink = BlockSink::new("blocks");
             let blocks = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-            let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+            let running = tokio::spawn(index.run(blocks));
             for (acked, block) in (1u64..).zip(&chain[..4]) {
                 sink.send(apply(block, true)).await;
                 reached(&mut durable, Some(block.header().height)).await;
                 fs.set_tag(acked);
             }
             sink.shutdown();
-            running.await.expect("no panic").expect("followed through Shutdown");
+            running.await.expect("followed through Shutdown");
         }
 
         let states = fs.crash_states();
@@ -552,11 +544,10 @@ mod tests {
             let next = count as usize;
             let mut sink = BlockSink::new("blocks");
             let blocks = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-            let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+            let running = tokio::spawn(index.run(blocks));
             sink.send(apply(&chain[next], true)).await;
             sink.shutdown();
-            let followed = running.await.expect("no panic");
-            followed.unwrap_or_else(|error| panic!("{label}: {error}"));
+            running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let trees = served.pin_any().treestate(h(next as u32)).expect("folded on");
             let trees = (trees.sapling, trees.orchard, trees.ironwood);
             assert_eq!(trees, seen(next + 1), "{label}: folding on after recovery");
@@ -571,12 +562,12 @@ mod tests {
         let index = open(&fs, BULK).expect("open");
         let mut sink = BlockSink::new("blocks");
         let blocks = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
         for block in &chain() {
             sink.send(apply(block, true)).await;
         }
         sink.shutdown();
-        running.await.expect("no panic").expect("bulk written at Shutdown");
+        running.await.expect("bulk written at Shutdown");
 
         let leaves = Path::new(PATH).join("sapling").join("l00.dat");
         // a reopen truncates to the seal: what is left = exactly the committed bytes (the zeroed
@@ -691,7 +682,7 @@ mod tests {
                 (watched.0, watched.1, published.subscribe_finalized());
             let mut sink = BlockSink::new("blocks");
             let blocks = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-            let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+            let running = tokio::spawn(index.run(blocks));
             (sink, running, served, applied, durable)
         };
         let (mut sink, mut running, mut served, mut applied, mut durable) = boot();
@@ -723,7 +714,7 @@ mod tests {
                 }
                 Move::Reopen => {
                     sink.shutdown();
-                    running.await.expect("no panic").expect("followed through Shutdown");
+                    running.await.expect("followed through Shutdown");
                     (sink, running, served, applied, durable) = boot();
                     window.clear();
                     sent = finals;
@@ -753,7 +744,7 @@ mod tests {
             assert_eq!(view.treestate(past), absent, "{label}: past applied");
         }
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
     }
 
     /// A gap, or a first block above the durable tip = every later commitment silently
@@ -767,7 +758,7 @@ mod tests {
             let index = open(&SimFs::new(), BULK).expect("open");
             let mut sink = BlockSink::new("blocks");
             let blocks = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-            let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+            let running = tokio::spawn(index.run(blocks));
             for (height, finalized) in steps {
                 sink.send(apply(&block(height, &[1], &[101], &[201]), finalized)).await;
             }
@@ -825,7 +816,7 @@ mod tests {
             (index.published().subscribe_applied(), index.published().subscribe_finalized());
         let mut sink = BlockSink::new("blocks");
         let feed = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(index.run(feed, CancellationToken::new()));
+        let running = tokio::spawn(index.run(feed));
         for pending in &blocks {
             sink.send(apply(pending, false)).await;
         }
@@ -853,16 +844,16 @@ mod tests {
             sink.send(zaino_sync::Step::Finalized { height: h(height) }).await;
         }
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
         let resumed = open(&fs, BULK).expect("reopen");
         let served = resumed.published().served();
         let mut sink = BlockSink::new("blocks");
         let feed = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(resumed.run(feed, CancellationToken::new()));
+        let running = tokio::spawn(resumed.run(feed));
         let fifth = block(4, &[], &orchard(1 + 4 * HALF, 2 * HALF), &[]);
         sink.send(apply(&fifth, true)).await;
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
 
         let view = served.pin_any();
         let resumed_roots = view.subtree_roots(Orchard, 0, 0).expect("roots");
@@ -878,11 +869,11 @@ mod tests {
         let served = index.published().served();
         let mut sink = BlockSink::new("blocks");
         let blocks = sink.subscribe(TreeStateIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
         // ironwood-only block: sapling and orchard empty at this height
         sink.send(apply(&block(0, &[], &[], &[201, 202, 203]), true)).await;
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
         let trees = served.pin_any().treestate(h(0)).expect("served");
 
         let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())

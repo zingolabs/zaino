@@ -209,7 +209,6 @@ mod tests {
         TransactionId, TransparentData, TransparentOutput, Zatoshis,
     };
 
-    use tokio_util::sync::CancellationToken;
     use zaino_sync::{BlockSink, FeeSink, Step};
 
     /// A live daemon's merge retiring a file between the manifest read and its scrub is not a
@@ -325,27 +324,19 @@ mod tests {
         let transparent =
             TransparentAddressIndexWriter::open(fs, &ta, net, batch).expect("ta writer");
 
-        let cancel = CancellationToken::new;
         let mut loops = tokio::task::JoinSet::new();
-        let failed = |e: &dyn std::fmt::Display| e.to_string();
-        loops.spawn(async move {
-            compact.run(compact_blocks, compact_fees, cancel()).await.map_err(|e| failed(&e))
-        });
-        loops.spawn(async move {
-            fees.run(fee_blocks, fee_sink, cancel()).await.map_err(|e| failed(&e))
-        });
-        loops.spawn(async move { hashes.run(hash_blocks, cancel()).await.map_err(|e| failed(&e)) });
-        loops.spawn(async move { trees.run(tree_blocks, cancel()).await.map_err(|e| failed(&e)) });
-        loops.spawn(async move {
-            transparent.run(transparent_blocks, cancel()).await.map_err(|e| failed(&e))
-        });
+        loops.spawn(compact.run(compact_blocks, compact_fees));
+        loops.spawn(fees.run(fee_blocks, fee_sink));
+        loops.spawn(hashes.run(hash_blocks));
+        loops.spawn(trees.run(tree_blocks));
+        loops.spawn(transparent.run(transparent_blocks));
         for block in &blocks {
             let height = block.header().height;
             block_sink.send(Step::Apply { height, finalized: true, data: Arc::clone(block) }).await;
         }
         block_sink.shutdown();
         while let Some(indexed) = loops.join_next().await {
-            indexed.expect("no panic").expect("indexed through Shutdown");
+            indexed.expect("indexed through Shutdown");
         }
 
         let config_path = root.path().join("zainod.toml");

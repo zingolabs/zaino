@@ -48,12 +48,3 @@ impl Weight for BlockFees {
         self.footprint()
     }
 }
-
-/// Why an index's loop stopped (fatal: zainod exits, never retries)
-#[derive(Debug, thiserror::Error)]
-#[error("{index} index failed: {source}")]
-pub struct IndexFailed<E> {
-    pub index: &'static str,
-    #[source]
-    pub source: E,
-}

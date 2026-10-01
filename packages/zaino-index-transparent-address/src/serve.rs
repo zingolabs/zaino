@@ -249,7 +249,7 @@ mod tests {
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
         let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, queue);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
         // heights 0 and 1, only 1 pays the address (0 = bare coinbase)
         for height in 0..2u32 {
             let (txid, outputs) = if height == 1 {
@@ -317,7 +317,7 @@ mod tests {
         assert_eq!(service.transactions(&address, h(0), h(1)), Ok(vec![paying]));
 
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
         cancel.cancel();
         gate.await.expect("gate ends on cancel");
     }
@@ -349,7 +349,7 @@ mod tests {
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
         let subscription = sink.subscribe(TransparentAddressIndexWriter::NAME, queue);
-        let running = tokio::spawn(index.run(subscription, CancellationToken::new()));
+        let running = tokio::spawn(index.run(subscription));
         // heights 0 to 2 (both inclusive) sent final (bulk), 3 non-final (written at the bulk →
         // tip handoff, so 0..=2 durable): `first` paid at 1, 2 and 3, `second` at 2
         let mut blocks = Vec::new();
@@ -413,6 +413,6 @@ mod tests {
         assert_eq!(sums, [30, 10].map(|zat| Zatoshis::new(zat).expect("in supply")));
 
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
     }
 }

@@ -243,21 +243,20 @@ async fn boot(
         disabled: disabled.into_iter().filter_map(|(name, off)| off.then_some(name)).collect(),
     });
 
-    // index loops: the root token (a failure cancels everything), stopped by the producer's
-    // Shutdown
+    // index loops: stopped by the producer's Shutdown (a failure panics)
     let (blocks, fees) = compact_block_feeds;
-    let run = compact_block.run(blocks, fees, cancel.clone());
-    spawn(&mut tasks, "compact-block", compact_block_span, run);
-    let run = value_balance.run(value_balance_blocks, fee_sink, cancel.clone());
-    spawn(&mut tasks, "value-balance", value_balance_span, run);
+    let run = compact_block.run(blocks, fees);
+    spawn_index(&mut tasks, "compact-block", compact_block_span, run);
+    let run = value_balance.run(value_balance_blocks, fee_sink);
+    spawn_index(&mut tasks, "value-balance", value_balance_span, run);
     if let (Some((span, index)), Some(blocks)) = (block_hash, block_hash_blocks) {
-        spawn(&mut tasks, "block-hash", span, index.run(blocks, cancel.clone()));
+        spawn_index(&mut tasks, "block-hash", span, index.run(blocks));
     }
     if let (Some((span, index)), Some(blocks)) = (tree_state, tree_state_blocks) {
-        spawn(&mut tasks, "tree-state", span, index.run(blocks, cancel.clone()));
+        spawn_index(&mut tasks, "tree-state", span, index.run(blocks));
     }
     if let (Some((span, index)), Some(blocks)) = (transparent, transparent_blocks) {
-        spawn(&mut tasks, "transparent-address", span, index.run(blocks, cancel.clone()));
+        spawn_index(&mut tasks, "transparent-address", span, index.run(blocks));
     }
     for poller in chainview.pollers {
         spawn(&mut tasks, "chainview", chainview_span.clone(), poller.run(cancel.child_token()));
@@ -278,7 +277,6 @@ async fn boot(
 /// Signal → `Ok(())`; else the first failure (ending cleanly before shutdown is one)
 ///
 /// - Either way: cancel the rest, then wait for them (followers flush what is final)
-/// - Failed follower = cancel, its error joined once the producer's `Shutdown` reaches it
 async fn supervise(
     mut tasks: JoinSet<TaskExit>,
     cancel: CancellationToken,
@@ -329,6 +327,18 @@ fn spawn<E>(
     IndexerError: From<E>,
 {
     tasks.spawn(async move { (task, run.await.map_err(IndexerError::from)) }.instrument(component));
+}
+
+fn spawn_index(
+    tasks: &mut JoinSet<TaskExit>,
+    task: &'static str,
+    component: Span,
+    run: impl Future<Output = ()> + Send + 'static,
+) {
+    spawn(tasks, task, component, async move {
+        run.await;
+        Ok::<_, IndexerError>(())
+    });
 }
 
 /// `open` under the index's component span, logged; the span then carries the index's task

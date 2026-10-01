@@ -87,9 +87,15 @@ zainod dies rather than serve from a state it cannot vouch for
 
 - any panic aborts the process, including a page checksum mismatch on the read
   that first touches a corrupt page
-- the first task to end, cleanly or not, cancels the rest and `zainod start`
-  exits 1 (`IndexerError::TaskEnded` or the task's own error); there is no
-  in-process restart, so run it under a service manager that restarts it
+- index loops are infallible and panic on any failure. A failed commit names
+  the index and its directory: `<index> index commit failed: disk <dir> full`,
+  or `… failed at <dir>: <error>`
+  ([zaino-sync: Failure](../zaino-sync/usage.md#failure-panic-never-err))
+- any other task that ends first (producer, chainview poller, gRPC), cleanly or
+  not, cancels the rest and `zainod start` exits 1 (`IndexerError::TaskEnded` or
+  the task's own error)
+- there is no in-process restart, so run it under a service manager that
+  restarts it
 - an index directory built for another network or format, shorter than its
   seals, or whose tail page fails its checksum refuses to open: resync it
 - `fetch.finalised_depth` defaults to Zebra's reorg bound (1000,

@@ -27,8 +27,7 @@ let index = MyIndex::new(store, batch_bytes);
 let durable = [index.durable_tip()]; // every subscriber's durable tip (height + hash)
 let service = MyService::new(index.published().served());
 tokio::spawn(index.published().gate(tips.clone(), finalised_depth, cancel.child_token()));
-// ends at the producer's Shutdown; a failure cancels `cancel` (the whole pipeline) first
-tokio::spawn(index.run(blocks, cancel.clone()));
+tokio::spawn(index.run(blocks)); // infallible: returns at Shutdown, panics on any failure
 
 let producer = Producer::new(block_sink, pool, tips, finalised_depth, durable);
 tokio::spawn(producer.run(cancel.child_token()));
@@ -111,10 +110,11 @@ in [the data sink](../../docs/design/data-sink.md); this section is the API.
 
 `Step` = `Apply { height, finalized, data }`, `Finalized { height }`,
 `Reorg`, `Shutdown`: blocks and what happens to them, never the chain tip.
-None of these fail. A subscriber holds its
-queue until it pops `Shutdown`, so a queue dropped before then panics the sink,
-and a sink dropped without `shutdown()` (its publisher panicked) panics the
-subscriber.
+
+`send`, `shutdown` and `next` are infallible. Their one panic is the failure
+path ([Failure](#failure-panic-never-err)): a queue dropped before it pops
+`Shutdown` panics the publisher's next `send`, and a sink dropped without
+`shutdown()` panics the subscriber's next pop.
 
 ### Backpressure
 
@@ -141,15 +141,13 @@ An index that derives per-block data another index needs sends it into a plain
 `IndexerDataSink<Item>` from its own loop: every step it follows, 1:1. Each
 `Apply` carries the derived item and the upstream's `finalized` flag (heights
 it already holds included: a downstream index behind it still needs them),
-each `Finalized` and `Reorg` is forwarded, and `shutdown()` ends the sink last,
-on a clean stop and on a failure alike. The stream is the upstream's, step for
-step.
+each `Finalized` and `Reorg` is forwarded, and `shutdown()` ends the sink after
+the upstream `Shutdown`. The stream is the upstream's, step for step.
 
 A consumer awaits one step off each queue per step: `blocks.next().await`,
-then `fees.next().await`. The publisher's loop guarantees they line up (one
-derived step per step, in order). A derived `Shutdown` ahead of the block's
-means the publisher failed: the consumer commits what is final and stops, and
-the publisher reports the failure.
+then `fees.next().await`. The publisher's loop guarantees they line up, so the
+two `Shutdown`s arrive together and any mismatch is asserted. A publisher that
+fails panics without `shutdown()`, so the consumer's next pop panics too.
 
 `FeeSink` = `IndexerDataSink<BlockFees>`, published by
 [`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md) and
@@ -157,33 +155,35 @@ read by the compact-block index.
 
 ## An index loop
 
-Every index spawns the same shape of loop over its subscription. Nothing
-drives it and nothing hides it; the arms are the whole policy:
+Every index's `run` is the same loop over its subscription. Nothing drives it
+and nothing hides it; the arms are the whole policy:
 
 ```rust,ignore
-loop {
-    match blocks.next().await {
-        Step::Apply { height, finalized: true, data } => {
-            if Some(height) <= self.durable.map(|tip| tip.height) {
-                continue;                                       // replay: already on disk
+pub async fn run(mut self, mut blocks: Subscription<Block>) {
+    loop {
+        match blocks.next().await {
+            Step::Apply { height, finalized: true, data } => {
+                if Some(height) <= self.durable.map(|tip| tip.height) {
+                    continue;                                   // replay: already on disk
+                }
+                self.bulk_bytes += data.weight();
+                self.bulk.push(data);
+                if self.bulk_bytes >= self.batch_bytes.get() {
+                    self.commit(height).await;                  // one bulk batch = one fsync
+                }
             }
-            self.bulk_bytes += data.weight();
-            self.bulk.push(data);
-            if self.bulk_bytes >= self.batch_bytes.get() {
-                self.commit(height).await?;                     // one bulk batch = one fsync
+            Step::Apply { height, finalized: false, data } => {
+                if let Some(last) = self.bulk.last() {
+                    self.commit(last.header().height).await;    // bulk → tip handoff
+                }
+                // assert contiguous, then fold into the non-finalized state
             }
+            Step::Finalized { height } => self.commit(height).await,
+            Step::Reorg => { /* assert bulk empty, drop non-finalized, publish, reorged() */ }
+            Step::Shutdown => { /* commit bulk leftovers */ return; }
         }
-        Step::Apply { height, finalized: false, data } => {
-            if let Some(last) = self.bulk.last() {
-                self.commit(last.header().height).await?;       // bulk → tip handoff
-            }
-            // assert contiguous, then fold into the non-finalized state
-        }
-        Step::Finalized { height } => self.commit(height).await?,
-        Step::Reorg => { /* assert bulk empty, drop non-finalized, publish, reorged() */ }
-        Step::Shutdown => { /* commit bulk leftovers */ return Ok(()); }
+        self.publish();
     }
-    self.publish();
 }
 ```
 
@@ -193,9 +193,8 @@ they run contiguously from the durable tip, writes them
 (`Offloaded::blocking`: the store hops to the blocking pool and back), drops
 them from memory, and publishes the view, then `Published::durable(height)`.
 It returns once the blocks are on disk: one write at a time, nothing in
-flight. `run(blocks, cancel)` wraps the loop: a failure cancels `cancel` (the
-pipeline) first, then the loop pops its subscription through `Shutdown` either
-way, and returns `IndexFailed { index, source }`. Each index keeps its loop in
+flight. Like `run`, it returns `()`: a failed write panics
+([Failure](#failure-panic-never-err)). Each index keeps its loop in
 `src/index_writer.rs`; the arms repeat across indexes by design
 (`.dupes-ignore.toml`).
 
@@ -224,7 +223,11 @@ use zaino_sync::{compute, Offloaded};
 
 // commit: fold on the CPU pool, then write on the blocking pool; the store comes back after
 let chunk = compute(move || fold(&blocks)).await;
-self.store.blocking(move |store| store.write(&chunk)).await?;
+let written = self.store.blocking(move |store| store.write(&chunk)).await;
+let store = self.store.get();
+if let Err(error) = written {
+    error.commit_failed(Self::NAME, store.path()); // -> !
+}
 ```
 
 | helper | runs `f` on | for |
@@ -270,23 +273,46 @@ written; never moves back), and `reorged()` after publishing the dropped view.
 ### Testing an index
 
 Drive it as production does: send `Step`s into a real `BlockSink` (and
-`FeeSink`), spawn `index.run(subscription, cancel)`, and assert through
-`published()` (`served().pin_any()`, `subscribe_finalized().wait_for(..)`) and
-`run`'s result; reopen the store after `run` returns for durability. No index
-exposes a test-only entry point.
+`FeeSink`), `tokio::spawn(index.run(subscription))`, and assert through
+`published()` (`served().pin_any()`, `subscribe_finalized().wait_for(..)`).
+`.await` on the handle = `Ok(())` after `Shutdown`; a failure is its
+`JoinError::into_panic()`, asserted on its message. Reopen the store after `run`
+returns for durability. No index exposes a test-only entry point.
 
-### Shutdown drains
+### Shutdown
 
 The `Producer` owns the `BlockSink`; when it stops, `Step::Shutdown` goes last
 into every queue. An index stops there: it writes what is final, ends any sink
 it publishes to with `Shutdown`, and returns. A step that reached a queue is
 never dropped.
 
-`run(.., cancel)` takes the pipeline's root `CancellationToken` only to raise
-it. A loop that fails cancels it, keeps popping its queues through `Shutdown`
-(the sink never sees a dropped queue), ends the sink it publishes to, then
-returns its error. The failure is the only error: nothing upstream reports a
-dead consumer, and a consumer of a failed publisher stops cleanly.
+### Failure: panic, never `Err`
+
+`run`, `commit` and every step in between are infallible by signature. An index
+cannot recover from a failed write (an `fsync` error is never retried,
+[durability.md](../../docs/design/durability.md) §6), so an `Err` would only be
+carried to the same exit. Every failure panics where it happens instead:
+
+| Failure | Panic message |
+|---|---|
+| commit hits a full disk (`StorageFull` / `QuotaExceeded` anywhere in the error chain) | `<index> index commit failed: disk <dir> full` |
+| any other commit error | `<index> index commit failed at <dir>: <error>` |
+| chain data the index cannot take (an unrecorded prevout, a tree size past `u32`, a non-canonical commitment) | `<index> index: <error>` |
+| a broken invariant (a gap, a reorg with bulk staged, out-of-step fees) | the `assert!` message, prefixed with the index |
+
+`StoreError::commit_failed(index, dir) -> !` (in `zaino-persistence`) formats
+both commit messages, so every index reports a failed commit the same way.
+
+In zainod the panic hook logs the panic as an `error` event and aborts the
+process at once. The service manager restarts it, and every index reopens at its
+last durable manifest. Without that hook (tests, embedders) the panic stops the
+pipeline through the sink, with no cancel token and no draining: the failed
+index's queues drop, the producer's next `send` panics, and a downstream consumer
+(compact-block, after value-balance) panics on its next pop.
+
+The only fallible calls are the ones made at boot, before the pipeline exists:
+`open` / `new` return `StoreError` or the index's `IndexWriterError`, and
+`zainod start` exits 1 with that error.
 
 `zainod::indexer`'s module docs diagram the full pipeline;
 [`docs/design/persistence-architecture.md`](../../docs/design/persistence-architecture.md)

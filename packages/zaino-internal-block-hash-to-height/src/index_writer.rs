@@ -6,10 +6,9 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use imbl::HashMap;
-use tokio_util::sync::CancellationToken;
-use zaino_persistence::{lsm, StoreError};
+use zaino_persistence::lsm;
 use zaino_primitives::types::{Block, BlockRef, Height};
-use zaino_sync::{IndexFailed, Offloaded, Published, Step, Subscription, Weight};
+use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
 use crate::{by_hash::HashKey, BlockHashStore, ReadView, HASH};
 
@@ -60,21 +59,8 @@ impl BlockHashIndexWriter {
         &self.published
     }
 
-    /// Follows `blocks` through its `Shutdown`; a failure cancels `cancel` (the pipeline) first
-    pub async fn run(
-        mut self,
-        mut blocks: Subscription<Block>,
-        cancel: CancellationToken,
-    ) -> Result<(), IndexFailed<StoreError>> {
-        let followed = self.follow(&mut blocks).await;
-        if followed.is_err() {
-            cancel.cancel();
-        }
-        blocks.skip_to_shutdown().await;
-        followed.map_err(|source| IndexFailed { index: Self::NAME, source })
-    }
-
-    async fn follow(&mut self, blocks: &mut Subscription<Block>) -> Result<(), StoreError> {
+    /// Follows `blocks` through its `Shutdown` (a failure panics: its dropped queue fails the rest)
+    pub async fn run(mut self, mut blocks: Subscription<Block>) {
         loop {
             match blocks.next().await {
                 Step::Apply { height, finalized: true, data } => {
@@ -85,20 +71,20 @@ impl BlockHashIndexWriter {
                     self.bulk_bytes += data.weight();
                     self.bulk.push(data);
                     if self.bulk_bytes >= self.batch_bytes.get() {
-                        self.commit(height).await?;
+                        self.commit(height).await;
                     }
                 }
                 Step::Apply { height, finalized: false, data } => {
                     // bulk → tip: what bulk staged commits before the first apply builds on it
                     if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await?;
+                        self.commit(last.header().height).await;
                     }
                     let next = self.applied.map_or(Height::GENESIS, Height::next);
                     assert_eq!(height, next, "block_hash: blocks must arrive contiguously");
                     self.non_finalized.insert(data.header().hash.into(), height);
                     self.applied = Some(height);
                 }
-                Step::Finalized { height } => self.commit(height).await?,
+                Step::Finalized { height } => self.commit(height).await,
                 Step::Reorg => {
                     assert!(self.bulk.is_empty(), "block_hash: reorg with bulk blocks staged");
                     // back to the durable tip, the winning branch applied from there
@@ -109,9 +95,9 @@ impl BlockHashIndexWriter {
                 }
                 Step::Shutdown => {
                     if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await?;
+                        self.commit(last.header().height).await;
                     }
-                    return Ok(());
+                    return;
                 }
             }
             self.publish();
@@ -120,7 +106,7 @@ impl BlockHashIndexWriter {
 
     /// Every final block through `through` → disk (bulk ones, then applied ones), then their
     /// hashes leave `bulk` / `non_finalized` for the segments
-    async fn commit(&mut self, through: Height) -> Result<(), StoreError> {
+    async fn commit(&mut self, through: Height) {
         let bulk = std::mem::take(&mut self.bulk);
         self.bulk_bytes = 0;
         let mut rows: Vec<(Height, [u8; HASH])> =
@@ -146,9 +132,11 @@ impl BlockHashIndexWriter {
         );
 
         let written: Vec<[u8; HASH]> = rows.iter().map(|(_, hash)| *hash).collect();
-        self.store.blocking(move |store| store.commit(&rows)).await?;
-
+        let committed = self.store.blocking(move |store| store.commit(&rows)).await;
         let store = self.store.get();
+        if let Err(error) = committed {
+            error.commit_failed(Self::NAME, store.path());
+        }
         self.durable = store.finalized_tip();
         self.segments = store.reader().pin_segments();
         for hash in &written {
@@ -159,7 +147,6 @@ impl BlockHashIndexWriter {
         // view first: a reader woken by the durable tip pins the view holding it
         self.publish();
         self.published.durable(durable);
-        Ok(())
     }
 
     fn publish(&self) {
@@ -219,7 +206,7 @@ mod tests {
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
         let blocks = sink.subscribe(BlockHashIndexWriter::NAME, queue);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
         let apply = |height, finalized, hash, parent| Step::Apply {
             height: h(height),
             finalized,
@@ -247,7 +234,7 @@ mod tests {
         sink.send(Step::Reorg).await;
         sink.send(apply(3, false, 13, 12)).await;
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
         assert_eq!(located(&[12, 13, 0xee]), [through(2), through(3), None], "losing branch gone");
 
         let index = BlockHashIndexWriter::new(open(&fs), batch);
@@ -256,5 +243,25 @@ mod tests {
         let view = index.published().served().pin_any();
         let reopened = [10, 11, 12, 13].map(|hash| view.height_of_hash(&[hash; 32]));
         assert_eq!(reopened, [through(0), through(1), through(2), None], "non-finalized gone");
+    }
+
+    /// Commit I/O failure = panic naming the index and its directory (never an `Err` to drain)
+    #[tokio::test]
+    async fn a_failed_commit_panics_naming_the_index_and_its_directory() {
+        let fs = SimFs::new();
+        let store =
+            BlockHashStore::open(fs.clone(), Path::new("/bh"), NetworkType::Regtest).expect("open");
+        let index = BlockHashIndexWriter::new(store, NonZeroUsize::MIN);
+        fs.fail_from(fs.mutations());
+        let mut sink = BlockSink::new("blocks");
+        let blocks = sink.subscribe(BlockHashIndexWriter::NAME, NonZeroUsize::MIN);
+        let running = tokio::spawn(index.run(blocks));
+        let data = block(0, 10, 0);
+        sink.send(Step::Apply { height: h(0), finalized: true, data }).await;
+
+        let payload = running.await.expect_err("commit failure panics").into_panic();
+        let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
+        assert!(message.starts_with("block_hash index commit failed at /bh: "), "{message}");
+        assert!(message.contains("sim: injected EIO"), "{message}");
     }
 }

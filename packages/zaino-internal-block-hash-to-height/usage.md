@@ -16,7 +16,7 @@ let blocks = block_sink.subscribe(BlockHashIndexWriter::NAME, queue);
 let service = BlockHashService::new(index.published().served());
 router = router.with_block_hash(service);
 tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
-tokio::spawn(index.run(blocks, cancel.clone()));
+tokio::spawn(index.run(blocks));
 ```
 
 - `BlockHashIndexWriter` runs its own loop over its `Subscription<Block>`
@@ -24,6 +24,9 @@ tokio::spawn(index.run(blocks, cancel.clone()));
   `NAME` = `"block_hash"`). It derives nothing: one hash per block, taken from
   the header. A non-final block goes into a hash → height map; a commit moves
   its hashes into the store's segments.
+- Fallible only at boot (`BlockHashStore::open` → `StoreError`). `run` is
+  infallible: it returns at `Shutdown` and panics on a failed commit
+  ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - zainod builds it only when `index.block_hash.enabled`. When it is off, a
   by-hash `GetBlock` / `GetTreeState` is `UNIMPLEMENTED`; the by-height forms
   are unaffected.

@@ -117,7 +117,8 @@ A few mistakes are made impossible or loud rather than silent:
   subscribe once data is flowing.
 - A subscriber that drops its queue before `Shutdown` panics the sink, and a sink dropped without
   `shutdown()` panics its subscribers. Either way the process stops instead of quietly losing
-  blocks.
+  blocks. This is also the failure path: a failing index panics, its queues drop, and the
+  pipeline stops through these two panics. There is no error channel.
 - The chain tip is deliberately not part of the stream. Indexes read it from `zaino-chainview`
   directly, which keeps the sink purely about blocks.
 

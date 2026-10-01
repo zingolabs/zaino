@@ -7,14 +7,13 @@
 
 use std::{collections::VecDeque, num::NonZeroUsize, path::Path, sync::Arc};
 
-use tokio_util::sync::CancellationToken;
 use zaino_persistence::{
     fs::Fs,
     lsm::{LsmStore, Snapshot},
     StoreError,
 };
 use zaino_primitives::types::{Block, BlockRef, Height, OutPoint};
-use zaino_sync::{IndexFailed, Offloaded, Published, Step, Subscription, Weight};
+use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::{
@@ -116,21 +115,8 @@ impl TransparentAddressIndexWriter {
         &self.published
     }
 
-    /// Follows `blocks` through its `Shutdown`; a failure cancels `cancel` (the pipeline) first
-    pub async fn run(
-        mut self,
-        mut blocks: Subscription<Block>,
-        cancel: CancellationToken,
-    ) -> Result<(), IndexFailed<StoreError>> {
-        let followed = self.follow(&mut blocks).await;
-        if followed.is_err() {
-            cancel.cancel();
-        }
-        blocks.skip_to_shutdown().await;
-        followed.map_err(|source| IndexFailed { index: Self::NAME, source })
-    }
-
-    async fn follow(&mut self, blocks: &mut Subscription<Block>) -> Result<(), StoreError> {
+    /// Follows `blocks` through its `Shutdown` (a failure panics: its dropped queue fails the rest)
+    pub async fn run(mut self, mut blocks: Subscription<Block>) {
         loop {
             match blocks.next().await {
                 Step::Apply { height, finalized: true, data } => {
@@ -142,13 +128,13 @@ impl TransparentAddressIndexWriter {
                     self.bulk_bytes += data.weight();
                     self.bulk.push(data);
                     if self.bulk_bytes >= self.batch_bytes.get() {
-                        self.commit(height).await?;
+                        self.commit(height).await;
                     }
                 }
                 Step::Apply { height, finalized: false, data } => {
                     // bulk → tip: what bulk staged commits before the first apply builds on it
                     if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await?;
+                        self.commit(last.header().height).await;
                     }
                     let next = self.non_finalized.applied().map_or(Height::GENESIS, Height::next);
                     assert_eq!(
@@ -165,7 +151,7 @@ impl TransparentAddressIndexWriter {
                     self.non_finalized.advance(height);
                     self.window.push_back(BlockRef { hash: data.header().hash, height });
                 }
-                Step::Finalized { height } => self.commit(height).await?,
+                Step::Finalized { height } => self.commit(height).await,
                 Step::Reorg => {
                     assert!(self.bulk.is_empty(), "transparent_address: reorg with bulk staged");
                     // back to the durable tip (segments untouched: commits final-only), the
@@ -178,9 +164,9 @@ impl TransparentAddressIndexWriter {
                 }
                 Step::Shutdown => {
                     if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await?;
+                        self.commit(last.header().height).await;
                     }
-                    return Ok(());
+                    return;
                 }
             }
             self.publish();
@@ -190,7 +176,7 @@ impl TransparentAddressIndexWriter {
     /// Every final block through `through` → disk: bulk blocks (projected on the blocking pool)
     /// or applied ones (rows drained from `non_finalized`), then segments pinned and the written
     /// rows dropped in one step (a row sits in exactly one tier)
-    async fn commit(&mut self, through: Height) -> Result<(), StoreError> {
+    async fn commit(&mut self, through: Height) {
         let bulk = std::mem::take(&mut self.bulk);
         self.bulk_bytes = 0;
         let mut committed: Vec<BlockRef> = bulk
@@ -210,7 +196,8 @@ impl TransparentAddressIndexWriter {
         assert_eq!(tip.height, through, "transparent_address: final blocks short of {through}");
 
         let (mut receives, mut spent) = self.non_finalized.rows_through(Some(through));
-        self.segments
+        let written = self
+            .segments
             .blocking(move |segments| {
                 for block in &bulk {
                     let (block_receives, block_spent) = project(block);
@@ -220,9 +207,11 @@ impl TransparentAddressIndexWriter {
                 // segment writes, fsyncs, the manifest and any merges
                 segments.commit((receives, spent), tip)
             })
-            .await?;
-
+            .await;
         let segments = self.segments.get();
+        if let Err(error) = written {
+            error.commit_failed(Self::NAME, segments.path());
+        }
         let (receives, spent) = segments.sets();
         (self.receives, self.spent) = (receives.pin(), spent.pin());
         self.durable = segments.committed().tip;
@@ -231,7 +220,6 @@ impl TransparentAddressIndexWriter {
         // view first: a reader woken by the durable tip pins the view holding it
         self.publish();
         self.published.durable(durable);
-        Ok(())
     }
 
     fn publish(&self) {
@@ -377,14 +365,14 @@ mod tests {
             let mut durable = index.published().subscribe_finalized();
             let mut sink = BlockSink::new("blocks");
             let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-            let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+            let running = tokio::spawn(index.run(blocks));
             for (acked, block) in (1u64..).zip(&chain[..10]) {
                 sink.send(step(block, true)).await;
                 until(&mut durable, Some(block.header().height)).await;
                 fs.set_tag(acked);
             }
             sink.shutdown();
-            running.await.expect("no panic").expect("followed through Shutdown");
+            running.await.expect("followed through Shutdown");
         }
 
         let states = fs.crash_states();
@@ -441,11 +429,10 @@ mod tests {
 
             let mut sink = BlockSink::new("blocks");
             let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-            let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+            let running = tokio::spawn(index.run(blocks));
             sink.send(step(&chain[count as usize], true)).await;
             sink.shutdown();
-            let next = running.await.expect("no panic");
-            next.unwrap_or_else(|error| panic!("{label}: {error}"));
+            running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let resumed = open(Arc::clone(&state.fs));
             let after = observed(&service(&resumed.published().served()));
             assert_eq!(after, expected(count + 1), "{label}: next after recovery");
@@ -590,7 +577,7 @@ mod tests {
             let served = published.served();
             let mut sink = BlockSink::new("blocks");
             let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-            (sink, tokio::spawn(index.run(blocks, CancellationToken::new())), tips, served)
+            (sink, tokio::spawn(index.run(blocks)), tips, served)
         };
         let (mut sink, mut running, (mut applied_tip, mut durable_tip), mut served) = start();
         // blocks held from genesis: applied (every tier), finalized (durable)
@@ -620,7 +607,7 @@ mod tests {
                 }
                 Move::Reopen => {
                     sink.shutdown();
-                    running.await.expect("no panic").expect("followed through Shutdown");
+                    running.await.expect("followed through Shutdown");
                     (sink, running, (applied_tip, durable_tip), served) = start();
                     applied = finalized;
                 }
@@ -677,7 +664,7 @@ mod tests {
             assert_eq!(balances, one_by_one, "move {at} {next:?}: balances of all");
         }
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
     }
 
     /// Receive in one segment, its spend in the next, queried across both, then again after a
@@ -717,12 +704,12 @@ mod tests {
         ];
         let mut sink = BlockSink::new("blocks");
         let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
         for block in &segment_0 {
             sink.send(step(block, true)).await;
         }
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
 
         let index = open();
         let two = (Some(h(1)), Some(h(1)));
@@ -737,7 +724,7 @@ mod tests {
         let mut durable = index.published().subscribe_finalized();
         let mut sink = BlockSink::new("blocks");
         let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
         sink.send(step(&spend, false)).await;
         sink.send(Step::Finalized { height: h(2) }).await;
         until(&mut durable, Some(h(2))).await;
@@ -755,7 +742,7 @@ mod tests {
         let opaque = service_2.balance_of(AddressKey::opaque()).expect("opaque balance");
         assert_eq!(opaque, zat(1));
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
 
         // reopen → committed height, both segments still read
         let resumed = open();
@@ -772,7 +759,7 @@ mod tests {
         let mut durable = resumed.published().subscribe_finalized();
         let mut sink = BlockSink::new("blocks");
         let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(resumed.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(resumed.run(blocks));
         sink.send(step(&after_restart, false)).await;
         sink.send(Step::Finalized { height: h(3) }).await;
         until(&mut durable, Some(h(3))).await;
@@ -782,7 +769,7 @@ mod tests {
         let recent = resumed_service.utxos(&alice, h(3)).expect("utxos").len();
         assert_eq!(recent, 1, "start_height filters the reply, not the spend resolution");
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
     }
 
     /// Receives and spends above the committed tip answer from the non-finalized tier alone; a
@@ -804,7 +791,7 @@ mod tests {
             (index.published().subscribe_applied(), index.published().subscribe_finalized());
         let mut sink = BlockSink::new("blocks");
         let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
         let balances = |service: &TransparentAddressService| {
             (service.balance(&alice).expect("alice"), service.balance(&bob).expect("bob"))
         };
@@ -853,7 +840,7 @@ mod tests {
         assert_eq!(applied_view, (zat(500), zat(190)), "view pinned before the commit");
         assert_eq!(committed, applied_view, "same answers from the segments");
         sink.shutdown();
-        running.await.expect("no panic").expect("followed through Shutdown");
+        running.await.expect("followed through Shutdown");
     }
 
     /// Gap = dropped receives (later spends probe unwritten rows, the address keeps a balance it no
@@ -870,7 +857,7 @@ mod tests {
         .expect("open");
         let mut sink = BlockSink::new("blocks");
         let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, QUEUE);
-        let running = tokio::spawn(index.run(blocks, CancellationToken::new()));
+        let running = tokio::spawn(index.run(blocks));
 
         sink.send(step(&block(0, vec![tx(0xc0, vec![], vec![])]), false)).await;
         sink.send(step(&block(2, vec![tx(0xc2, vec![], vec![])]), false)).await;

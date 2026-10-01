@@ -11,22 +11,10 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use bytes::Bytes;
-use tokio_util::sync::CancellationToken;
-use zaino_persistence::StoreError;
-use zaino_primitives::types::{Block, BlockFees, BlockRef, Height, TreeSizeOutOfRange, TreeSizes};
-use zaino_sync::{IndexFailed, Offloaded, Published, Step, Subscription, Weight};
+use zaino_primitives::types::{Block, BlockFees, BlockRef, Height, TreeSizes};
+use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
 use crate::{encode_compact_block, CompactBlockStore, NonFinalizedState, ReadView, Snapshot, HASH};
-
-#[derive(Debug, thiserror::Error)]
-pub enum IndexWriterError {
-    #[error(transparent)]
-    Store(#[from] StoreError),
-
-    /// Pool's cumulative size left the compact protocol's `u32` range (#549)
-    #[error("commitment tree size out of range: {0}")]
-    TreeSize(#[from] TreeSizeOutOfRange),
-}
 
 /// - `non_finalized` = records applied, encoded and readable, not yet fsynced (no second fold,
 ///   `docs/design/non-finalized-state.md`)
@@ -97,28 +85,9 @@ impl CompactBlockIndexWriter {
         self.non_finalized.tip_height().or(self.durable.tip.map(|tip| tip.height))
     }
 
-    /// Follows `blocks` and `fees` (value-balance's, step for step) through their `Shutdown`; a
-    /// failure cancels `cancel` (the pipeline) first
-    pub async fn run(
-        mut self,
-        mut blocks: Subscription<Block>,
-        mut fees: Subscription<BlockFees>,
-        cancel: CancellationToken,
-    ) -> Result<(), IndexFailed<IndexWriterError>> {
-        let followed = self.follow(&mut blocks, &mut fees).await;
-        if followed.is_err() {
-            cancel.cancel();
-        }
-        // concurrently: value-balance blocked on a full fee queue never reaches its Shutdown
-        tokio::join!(blocks.skip_to_shutdown(), fees.skip_to_shutdown());
-        followed.map_err(|source| IndexFailed { index: Self::NAME, source })
-    }
-
-    async fn follow(
-        &mut self,
-        blocks: &mut Subscription<Block>,
-        fees: &mut Subscription<BlockFees>,
-    ) -> Result<(), IndexWriterError> {
+    /// Follows `blocks` and `fees` (value-balance's, step for step) through their `Shutdown` (a
+    /// failure panics: its dropped queues fail the rest)
+    pub async fn run(mut self, mut blocks: Subscription<Block>, mut fees: Subscription<BlockFees>) {
         loop {
             let block_step = blocks.next().await;
             let fee_step = fees.next().await;
@@ -130,7 +99,7 @@ impl CompactBlockIndexWriter {
                     assert_eq!(
                         (height, finalized),
                         (fee_height, fee_finalized),
-                        "fees out of step"
+                        "compact_block: fees out of step"
                     );
                     assert!(
                         fees.belongs_to(&block),
@@ -144,17 +113,19 @@ impl CompactBlockIndexWriter {
                         self.bulk_bytes += block.weight() + fees.weight();
                         self.bulk.push((block, fees));
                         if self.bulk_bytes >= self.batch_bytes.get() {
-                            self.commit(height).await?;
+                            self.commit(height).await;
                         }
                     } else {
                         // bulk → tip: what bulk staged commits before the first apply builds on it
                         if let Some((last, _)) = self.bulk.last() {
-                            self.commit(last.header().height).await?;
+                            self.commit(last.header().height).await;
                         }
                         let next = self.applied_height().map_or(Height::GENESIS, Height::next);
                         // gap = every later commitment tree silently mis-sized
                         assert_eq!(height, next, "compact_block: blocks must arrive contiguously");
-                        let carry = self.carry.advance(&block)?;
+                        let carry = self.carry.advance(&block).unwrap_or_else(|error| {
+                            panic!("{} index at {height}: {error}", Self::NAME)
+                        });
                         // encoded once, here: serving reads these bytes, and so does the commit
                         let record = encode_compact_block(&block, &fees, &carry);
                         self.carry = carry;
@@ -163,7 +134,7 @@ impl CompactBlockIndexWriter {
                 }
                 (Step::Finalized { height }, Step::Finalized { height: fee_height }) => {
                     assert_eq!(height, fee_height, "compact_block: fee Finalized out of step");
-                    self.commit(height).await?;
+                    self.commit(height).await;
                 }
                 (Step::Reorg, Step::Reorg) => {
                     assert!(self.bulk.is_empty(), "compact_block: reorg with bulk blocks staged");
@@ -173,12 +144,11 @@ impl CompactBlockIndexWriter {
                     self.publish();
                     self.published.reorged();
                 }
-                // `Shutdown` from value-balance first = it failed (it reports; the pipeline stops)
-                (Step::Shutdown, _) | (_, Step::Shutdown) => {
+                (Step::Shutdown, Step::Shutdown) => {
                     if let Some((last, _)) = self.bulk.last() {
-                        self.commit(last.header().height).await?;
+                        self.commit(last.header().height).await;
                     }
-                    return Ok(());
+                    return;
                 }
                 _ => panic!("compact_block: block and fee steps out of step"),
             }
@@ -188,7 +158,7 @@ impl CompactBlockIndexWriter {
 
     /// Every final block through `through` → disk (bulk ones encoded here, applied ones already
     /// encoded), then applied records leave the non-finalized tier for the files
-    async fn commit(&mut self, through: Height) -> Result<(), IndexWriterError> {
+    async fn commit(&mut self, through: Height) {
         let bulk = std::mem::take(&mut self.bulk);
         self.bulk_bytes = 0;
         let mut next = self.durable.tip.map_or(Height::GENESIS, |tip| tip.height.next());
@@ -198,7 +168,9 @@ impl CompactBlockIndexWriter {
         for (block, fees) in bulk {
             assert_eq!(block.header().height, next, "compact_block: final blocks not contiguous");
             next = next.next();
-            sizes = sizes.advance(&block)?;
+            sizes = sizes.advance(&block).unwrap_or_else(|error| {
+                panic!("{} index at {}: {error}", Self::NAME, block.header().height)
+            });
             unencoded.push((block, fees, sizes));
         }
         let mut encoded: Vec<(Height, [u8; HASH], Bytes)> = Vec::new();
@@ -212,7 +184,8 @@ impl CompactBlockIndexWriter {
         }
         assert_eq!(next.checked_sub(1), Some(through), "compact_block: final blocks short");
 
-        self.store
+        let written = self
+            .store
             .blocking(move |store| {
                 for (block, fees, sizes) in unencoded {
                     let framed = encode_compact_block(&block, &fees, &sizes);
@@ -223,9 +196,12 @@ impl CompactBlockIndexWriter {
                 }
                 store.commit(sizes)
             })
-            .await?;
-
-        self.durable = Durable::of(self.store.get());
+            .await;
+        let store = self.store.get();
+        if let Err(error) = written {
+            error.commit_failed(Self::NAME, store.path());
+        }
+        self.durable = Durable::of(store);
         let durable = self.durable.tip.map(|tip| tip.height);
         assert_eq!(durable, Some(through), "compact_block: committed tip off the batch");
         // durable now: no second copy in RAM
@@ -238,7 +214,6 @@ impl CompactBlockIndexWriter {
         // view first: a reader woken by the durable tip pins the view that includes it
         self.publish();
         self.published.durable(durable);
-        Ok(())
     }
 
     /// Non-finalized + durable as one value, taken at one consistent moment (a reader resolves
@@ -353,7 +328,7 @@ mod tests {
         served: Served<ReadView>,
         applied: watch::Receiver<Option<Height>>,
         durable: watch::Receiver<Option<Height>>,
-        run: JoinHandle<Result<(), zaino_sync::IndexFailed<IndexWriterError>>>,
+        run: JoinHandle<()>,
     }
 
     impl Running {
@@ -372,7 +347,7 @@ mod tests {
                 blocks.subscribe(CompactBlockIndexWriter::NAME, queue),
                 fees.subscribe(CompactBlockIndexWriter::NAME, queue),
             );
-            let run = tokio::spawn(index.run(block_sub, fee_sub, CancellationToken::new()));
+            let run = tokio::spawn(index.run(block_sub, fee_sub));
             Self { blocks, fees, served, applied, durable, run }
         }
 
@@ -413,7 +388,7 @@ mod tests {
         async fn stop(self) {
             self.blocks.shutdown();
             self.fees.shutdown();
-            self.run.await.expect("no panic").expect("followed through Shutdown");
+            self.run.await.expect("followed through Shutdown");
         }
     }
 

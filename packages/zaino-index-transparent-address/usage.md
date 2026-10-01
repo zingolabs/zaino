@@ -23,7 +23,7 @@ let index = TransparentAddressIndexWriter::open(fs, &path, network, batch_bytes)
 let service = TransparentAddressService::new(index.published().served(), network);
 tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
 let subscription = block_sink.subscribe(TransparentAddressIndexWriter::NAME, queue_bytes);
-tokio::spawn(index.run(subscription, cancel.clone())); // through the sink's Shutdown
+tokio::spawn(index.run(subscription)); // infallible: returns at Shutdown
 
 let address = TransparentAddress::PublicKeyHash(hash160);
 let unspent = service.utxos(&address, start)?;              // start (inclusive) to the tip; oldest first
@@ -50,6 +50,8 @@ let balances = service.balances(&addresses)?;            // Vec<Zatoshis>
   `zaino_sync::BlockSink` subscription (one `match` per `Step`), keeping its
   own final blocks until they commit. Services read what it publishes
   (`published().served()`), gated by `published().gate(..)`'s task.
+- Fallible only at boot (`open` → `StoreError`). `run` is infallible: it panics
+  on a failed commit ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - zainod builds it only when `index.transparent_address.enabled`; `zaino-grpc`'s
   `with_transparent_address` claims the methods and pairs `transactions` with
   the validator's `GetTransaction` to return bytes.

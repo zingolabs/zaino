@@ -10,6 +10,7 @@ and this crate adheres to Rust's notion of
 
 ### Added
 ### Changed
+- A failing index now aborts zainod with a panic that names the index and its directory, for example `compact_block index commit failed: disk <dir> full`. It used to exit through a returned error.
 ### Deprecated
 ### Removed
 ### Fixed
