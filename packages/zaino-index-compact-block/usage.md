@@ -85,8 +85,12 @@ let service = CompactBlockService::new(index.published().served());
 ```
 
 - `published().served()` (`zaino_sync::Served<ReadView>`) = the view the loop
-  republishes after every step and commit, gated on `synced`: every
-  method answers `ServeError::Syncing` until the index reaches the tip.
+  republishes after every step and commit, gated on `synced`. Until the index
+  reaches the tip, `block`, `resident_block`, `block_at_hash` and `range`
+  answer heights at or below the durable tip (final: the producer stops on a
+  contradiction and never rewrites one) and return `ServeError::Syncing` for
+  anything above it. A range is judged by the `end` it asked for, so it is
+  refused rather than cut at the durable tip. `latest_id` stays `Syncing`.
 - A test with no loop serves the files alone with
   `Served::fixed(store.reader().pin())` (the committed-only `ReadView`).
 - `block(h)` returns one framed record with every pool; `latest_id()` = the

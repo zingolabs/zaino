@@ -79,9 +79,10 @@ status when no validator accepted and at least one could not be reached.
 
 A syncing index refuses **every** request with one error, carrying no height and
 no progress, so a client cannot tell "no such block" from "not indexed yet". The
-one exception is `GetTreeState` at a height the tree-state index has already
-committed. That answer is final, so we serve it while the index is still
-building.
+exceptions are `GetTreeState`, `GetBlock` and `GetBlockRange` at heights their
+index has already committed. Those answers are final, so we serve them while the
+index is still building. A range whose `end` is past the committed height is
+refused whole. Cutting it short would read as the end of the chain.
 
 ## Pool filtering
 

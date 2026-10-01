@@ -158,6 +158,12 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- `GetBlock` and `GetBlockRange` (and the deprecated `GetBlockRangeNullifiers`)
+  answer while the compact-block index is still syncing, for heights at or
+  below its durable tip, which are final. A request reaching past the durable
+  tip is still `UNAVAILABLE`, and a range is judged by the `end` it asked for,
+  so it is refused whole rather than cut short. `GetLatestBlock` stays
+  `UNAVAILABLE` until the index is synced.
 - **Crate consolidation: 25 workspace crates → 16.** Each merge keeps the
   absorbed crate's modules and moves its users over:
   - `zaino-persistence-codec` + `zaino-runs` → `zaino-persistence` (the storage

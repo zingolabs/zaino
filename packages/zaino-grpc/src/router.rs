@@ -2202,8 +2202,7 @@ mod tests {
     }
 
     /// Three indexes on one router each answer their own paths and nobody else's, and an index
-    /// that is still syncing answers `Unavailable` on every one of them — one code for one
-    /// state, rather than a different answer per height.
+    /// that is still syncing with nothing committed answers `Unavailable` on every one of them
     #[tokio::test]
     async fn every_index_claims_its_own_paths_and_a_syncing_one_says_retry() {
         use prost::Message as _;
@@ -2298,9 +2297,8 @@ mod tests {
         }
         assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), unclaimed.len());
 
-        // Every claimed path, on all three indexes: UNAVAILABLE (14), never UNIMPLEMENTED and
-        // never a per-height answer. The sweep is exhaustive on purpose — a path that forgot the
-        // gate would leak a partial index, and only a path-by-path check catches that.
+        // Every claimed path, all three indexes: UNAVAILABLE (14), never UNIMPLEMENTED/NOT_FOUND
+        // - exhaustive: a path missing the gate leaks a partial index (only per-path catches it)
         let syncing = [
             (path::GET_LATEST_BLOCK, proto::ChainSpec::default().encode_to_vec()),
             (path::GET_BLOCK, proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),

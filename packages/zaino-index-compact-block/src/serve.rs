@@ -21,8 +21,8 @@ pub(crate) const SPAN_BUDGET: usize = 1 << 20;
 /// Small (transport maps these onto gRPC codes; this crate names no transport)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
-    /// Every method until the index reaches the tip; no progress carried (a partial index
-    /// answering what it holds = "no such block" and "not indexed yet" read the same)
+    /// Until the index reaches the tip: any request past the durable tip, and `GetLatestBlock`
+    /// (a partial tip answered = "no such block" and "not indexed yet" read the same)
     #[error("the compact-block index is still syncing")]
     Syncing,
 
@@ -49,7 +49,7 @@ pub struct CompactBlockService {
 }
 
 impl CompactBlockService {
-    /// Unsynced → every method [`ServeError::Syncing`]
+    /// Unsynced → [`ServeError::Syncing`] past the durable tip, committed heights answered
     pub fn new(served: Served<ReadView>) -> Self {
         Self { served }
     }
@@ -58,6 +58,16 @@ impl CompactBlockService {
     /// validation (a syncing index = one answer, not one per request shape)
     fn pin(&self) -> Result<Arc<ReadView>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
+    }
+
+    /// [`pin`](Self::pin), or while syncing a view whose files reach `last` (durable = final: the
+    /// producer stops on a contradiction, never rewrites)
+    fn pin_through(&self, last: Height) -> Result<Arc<ReadView>, ServeError> {
+        let view = self.served.pin_any();
+        match Some(last) <= view.finalized_tip() || self.served.synced() {
+            true => Ok(view),
+            false => Err(ServeError::Syncing),
+        }
     }
 
     /// Last height any tier can serve, inclusive, synced or not (non-finalized included: what
@@ -69,13 +79,13 @@ impl CompactBlockService {
     /// `GetBlock`: every pool, transparent included (only `GetBlockRange` filters: the protocol's
     /// asymmetry, lightwalletd's shape)
     pub fn block(&self, height: Height) -> Result<Bytes, ServeError> {
-        self.pin()?.block(height).ok_or(ServeError::NotFound { height })
+        self.pin_through(height)?.block(height).ok_or(ServeError::NotFound { height })
     }
 
     /// [`block`](Self::block) when the non-finalized tier holds it (RAM, no page read: a transport
     /// may answer inline); `Ok(None)` = ask [`block`](Self::block)
     pub fn resident_block(&self, height: Height) -> Result<Option<Bytes>, ServeError> {
-        Ok(self.pin()?.resident_block(height))
+        Ok(self.pin_through(height)?.resident_block(height))
     }
 
     /// `GetBlock` by hash, `height` located by the block-hash index
@@ -83,7 +93,7 @@ impl CompactBlockService {
     /// - served only if this index holds `hash` there (independent publications: a reorg can
     ///   land between the locate and this read)
     pub fn block_at_hash(&self, height: Height, hash: &[u8; HASH]) -> Result<Bytes, ServeError> {
-        let record = self.pin()?.block(height).ok_or(ServeError::HashNotFound)?;
+        let record = self.pin_through(height)?.block(height).ok_or(ServeError::HashNotFound)?;
         match record_hash(&record) {
             Some(held) if held == *hash => Ok(record),
             Some(_) => Err(ServeError::HashNotFound),
@@ -107,6 +117,8 @@ impl CompactBlockService {
     /// - `start <= end` (callers refuse a reversed request)
     /// - no length cap (pepper-sync asks a whole shard, unbounded in blocks; work bounded per window)
     /// - no read here (the first file window = the cursor's first blocking step)
+    /// - syncing: served only if `end` (as asked, before the clamp) is committed (a range cut at
+    ///   the durable tip = a wallet reading it as the chain tip)
     pub fn range(
         &self,
         start: Height,
@@ -125,7 +137,7 @@ impl CompactBlockService {
         budget: usize,
     ) -> Result<RangeCursor, ServeError> {
         assert!(start <= end, "reversed range {start:?}..={end:?} past the request boundary");
-        let view = self.pin()?;
+        let view = self.pin_through(end)?;
         let Some(tip) = view.tip().filter(|&tip| start <= tip) else {
             return Err(ServeError::NotFound { height: start });
         };
@@ -348,6 +360,51 @@ mod tests {
         assert!(service.block(h(3)).is_ok(), "finalised blocks are untouched");
         let gone = Err(ServeError::NotFound { height: h(4) });
         assert_eq!(service.block(h(4)), gone, "every non-finalized block gone, not only a fork's");
+    }
+
+    /// Syncing: committed heights final → answered; anything reaching past them = `Syncing`, never
+    /// a cut or a miss (either reads as the chain's end)
+    #[test]
+    fn a_syncing_index_serves_only_what_it_has_committed() {
+        // finalized 0 to 3 (both inclusive), non-finalized from 4
+        let reader = committed(4);
+        let mut non_finalized = NonFinalizedState::default();
+        for height in 4..7u32 {
+            let (block, balances, sizes) = block(height);
+            non_finalized.apply(
+                h(height),
+                [height as u8; HASH],
+                encode_compact_block(&block, &balances, &sizes),
+                sizes,
+            );
+        }
+        let window = Arc::new(arc_swap::ArcSwap::from_pointee(reader.pin_with(non_finalized)));
+        let (synced, synced_rx) = tokio::sync::watch::channel(false);
+        let service = CompactBlockService::new(Served::new(Arc::clone(&window), synced_rx));
+
+        let single = |height| decode(&service.block(h(height)).expect("committed"))[0].height;
+        assert_eq!((single(0), single(3)), (0, 3), "both ends of the files");
+        assert!(service.block_at_hash(h(2), &[2u8; HASH]).is_ok(), "committed, by hash");
+        assert_eq!(service.resident_block(h(2)), Ok(None), "committed: not resident, ask block");
+        let committed = drain(service.range(h(1), h(3), Pools::ALL).expect("committed range"));
+        assert_eq!(heights(&committed), [1, 2, 3]);
+
+        let syncing = Err(ServeError::Syncing);
+        assert_eq!(service.block(h(4)), syncing, "non-finalized: a reorg can still take it");
+        assert_eq!(service.block(h(99)), syncing, "past every tier: not a NotFound");
+        assert_eq!(service.resident_block(h(5)), Err(ServeError::Syncing), "resident, not final");
+        assert_eq!(service.block_at_hash(h(5), &[5u8; HASH]), syncing);
+        assert_eq!(service.latest_id(), Err(ServeError::Syncing), "tip mid-sync != chain tip");
+        for (start, end) in [(2, 4), (3, 99), (4, 6)] {
+            let refused = service.range(h(start), h(end), Pools::ALL).err();
+            assert_eq!(refused, Some(ServeError::Syncing), "range {start}..={end}: no cut at 3");
+        }
+
+        synced.send(true).expect("service holds the receiver");
+        assert_eq!(decode(&service.block(h(5)).expect("synced"))[0].height, 5);
+        assert_eq!(service.latest_id().expect("synced").0, h(6));
+        let clamped = drain(service.range(h(3), h(99), Pools::ALL).expect("synced range"));
+        assert_eq!(heights(&clamped), [3, 4, 5, 6], "synced: clamped at the tip, not refused");
     }
 
     #[test]

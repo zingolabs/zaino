@@ -76,10 +76,12 @@ time. Each index persists to its own directory and resumes from its own committe
 height on restart.
 
 **While an index is still building, every method it backs is refused with gRPC
-`UNAVAILABLE`.** The one exception is `GetTreeState`, which answers any height the
-tree-state index has already committed, since that answer is final and will not
-change. We refuse rather than proxy to the validator because a derived answer comes
-from Zaino's own index or not at all (see [design/boundaries.md](./design/boundaries.md)).
+`UNAVAILABLE`.** The exceptions are `GetTreeState`, `GetBlock` and `GetBlockRange`
+(and its deprecated `GetBlockRangeNullifiers` alias), which answer any height their
+index has already committed, since that answer is final and will not change. A range
+reaching past the committed height is refused whole, never cut short. We refuse
+rather than proxy to the validator because a derived answer comes from Zaino's own
+index or not at all (see [design/boundaries.md](./design/boundaries.md)).
 A client MUST read `UNAVAILABLE` as "retry later", never as "the chain ends here".
 
 ## Disk
