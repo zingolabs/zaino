@@ -106,11 +106,11 @@ pub trait ChainHeadSnapshot: Send + Sync + 'static {
     /// The canonical tip of this view.
     fn best_tip(&self) -> BlockRef;
 
-    /// The block every retained block's work is counted from, exclusive.
+    /// The block the chain head's work is counted up from, not itself counted.
     ///
-    /// The block this window was anchored on. Its own work is
-    /// `RelativeChainWork::ZERO`, so for any retained block `B`,
-    /// [`work`](ChainHeadBlock::work) sums block work over `(anchor, B]` and
+    /// The block this window was anchored on. A retained block `B`'s
+    /// [`work`](ChainHeadBlock::work) sums block work from the block above the
+    /// anchor up to and including `B`, so
     ///
     /// ```text
     /// absolute(B) = chainwork(anchor) + work(B)

@@ -52,8 +52,8 @@ pub(crate) struct Coverage {
     pub(crate) store_top: Option<Height>,
     /// The recent window's retained range.
     pub(crate) head: Option<(Height, Height)>,
-    /// The block the chain head's work is counted from, exclusive: the block
-    /// the window was anchored on, whose own work is zero.
+    /// The block the chain head's work is counted up from, not itself counted:
+    /// a retained block's work starts at the block above the anchor.
     ///
     /// Carried here so the rebase to absolute chainwork is pinned with
     /// everything else: a re-anchor changes it, and a snapshot must answer for
