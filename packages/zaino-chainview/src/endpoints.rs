@@ -96,6 +96,18 @@ impl EndpointState {
     pub(crate) fn votes(self) -> bool {
         matches!(self, Self::Live | Self::CatchingUp)
     }
+
+    /// Metric label + status text
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Live => "live",
+            Self::Degraded => "degraded",
+            Self::Down => "down",
+            Self::Syncing => "syncing",
+            Self::CatchingUp => "catching_up",
+        }
+    }
 }
 
 /// This endpoint's chain vs the quorum tip, right now
@@ -113,6 +125,17 @@ pub enum Agreement {
 }
 
 impl Agreement {
+    /// Metric label + status text
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Agreed => "agreed",
+            Self::Ahead => "ahead",
+            Self::Behind => "behind",
+            Self::Diverged => "diverged",
+        }
+    }
+
     /// `agreer` = any chain holding the quorum tip
     pub(crate) fn of(theirs: &EndpointChain, quorum: BlockRef, agreer: &EndpointChain) -> Self {
         let tip = theirs.tip();
@@ -193,7 +216,7 @@ impl ValidatorMetadata {
     }
 
     /// Blocks its tip trails its own clock estimate by (an eclipsed or stalled node's tell)
-    pub(crate) fn stale_blocks(&self) -> Option<u32> {
+    pub fn stale_blocks(&self) -> Option<u32> {
         let (tip, estimated) = (self.tip()?, self.estimated_height?);
         Some(u32::from(estimated).saturating_sub(u32::from(tip.height)))
     }

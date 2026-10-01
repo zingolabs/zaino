@@ -1,8 +1,8 @@
-//! Admin surface: `/metrics`, `/livez`, on a runtime of its own.
+//! Admin surface: `/metrics`, `/livez`, `/readyz`, `/statusz`, on a runtime of its own.
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/readyz` TODO: per-component `ComponentStatus` (see `usage.md`)
+//! - `/readyz` + `/statusz` = [`crate::status`] (watch borrows only, answered inline)
 
 use std::{
     convert::Infallible,
@@ -165,6 +165,16 @@ async fn route(
                 body(StatusCode::SERVICE_UNAVAILABLE, PLAIN_CONTENT_TYPE, "unavailable".to_string())
             }
         },
+        "/readyz" => {
+            let (ready, json) = crate::status::readiness_json(is_fresh(last_heartbeat()));
+            let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+            body(status, JSON_CONTENT_TYPE, json)
+        }
+        "/statusz" => body(
+            StatusCode::OK,
+            JSON_CONTENT_TYPE,
+            crate::status::status_json(is_fresh(last_heartbeat())),
+        ),
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
     }
 }
@@ -175,6 +185,8 @@ async fn route(
 const EXPOSITION_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 const PLAIN_CONTENT_TYPE: &str = "text/plain; charset=utf-8";
+
+const JSON_CONTENT_TYPE: &str = "application/json";
 
 fn body(status: StatusCode, content_type: &'static str, payload: String) -> Response<Full<Bytes>> {
     Response::builder()
@@ -190,7 +202,7 @@ mod tests {
 
     /// End-to-end over a real socket: bind, accept loop, hyper wiring, routing
     #[tokio::test]
-    async fn the_admin_surface_answers_metrics_and_livez() {
+    async fn the_admin_surface_answers_metrics_and_probes() {
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         metrics::with_local_recorder(&recorder, || {
@@ -227,7 +239,14 @@ mod tests {
             "{metrics}"
         );
         assert!(get("/livez").await.starts_with("HTTP/1.1 200"));
-        assert!(get("/readyz").await.starts_with("HTTP/1.1 404"));
+        // no indexer booted in this test = sources unpublished
+        let readyz = get("/readyz").await;
+        assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
+        assert!(readyz.ends_with(r#"{"ready":false,"reasons":["starting"]}"#), "{readyz}");
+        let statusz = get("/statusz").await;
+        assert!(statusz.starts_with("HTTP/1.1 200"), "{statusz}");
+        assert!(statusz.contains(r#""reasons":["starting"]"#), "{statusz}");
+        assert!(get("/nope").await.starts_with("HTTP/1.1 404"));
     }
 
     /// A port held by another socket fails the bind with an error that names the endpoint.

@@ -136,6 +136,11 @@ impl ChainViewSnapshot {
         self.tip
     }
 
+    /// Partition / eclipse / stale-tip conditions as of the last fold (telemetry, never a vote)
+    pub fn alarms(&self) -> Alarms {
+        self.alarms
+    }
+
     /// Per-endpoint metadata, in configured order
     pub fn endpoints(&self) -> &Vector<ValidatorMetadata> {
         &self.endpoints

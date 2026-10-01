@@ -13,6 +13,18 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 | ---------- | -------------------------------------- | ------------------------------ |
 | `/metrics` | Prometheus exposition, process metrics | render panic (`500`)           |
 | `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)   |
+| `/readyz`  | `{"ready", "reasons"}`                 | any reason below (`503`)       |
+| `/statusz` | one JSON snapshot (below)              | never (readiness in the body)  |
+
+`/readyz` reasons: `starting` (indexer not booted), `heartbeat_stale`, `no_quorum_tip`,
+`<index>_syncing` (an enabled index's serving gate is closed).
+
+`/statusz` = version, network, uptime, readiness, the quorum tip (`agreed` of `configured`,
+`threshold`), each configured validator (state, agreement, tip height, stale blocks, latency,
+failures, the p2p peers its `getpeerinfo` reports), the chainview alarms, and every index (enabled,
+synced, durable + applied heights, bytes on disk and per subdirectory, requests answered).
+Index sizes come from the last status-line walk, so they are absent until the first one
+(2 minutes while syncing). Request counts make it traffic data: keep the listener private.
 
 - A supervised task on the serving runtime republishes the heartbeat every 100ms.
 - The listener binds before the recorder installs, so a bind failure fails startup.

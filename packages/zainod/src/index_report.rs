@@ -32,10 +32,11 @@ pub(crate) struct Watched {
     pub(crate) reads: Option<Reads>,
 }
 
-/// Until `cancel`; `dir` = the index's directory
+/// Until `cancel`; `dir` = the index's directory; each walk also lands in `measured` (`/statusz`)
 pub(crate) async fn run(
     mut index: Watched,
     dir: PathBuf,
+    measured: watch::Sender<Option<Usage>>,
     cancel: CancellationToken,
 ) -> Result<(), IndexerError> {
     loop {
@@ -61,14 +62,15 @@ pub(crate) async fn run(
             }
             let durable = (*index.finalized.borrow()).map(u32::from);
             let walk = dir.clone();
-            let Usage { total, subdirs } =
-                match tokio::task::spawn_blocking(move || usage(&walk)).await? {
-                    Ok(usage) => usage,
-                    Err(error) => {
-                        warn!(durable, %error, "Index size unreadable");
-                        continue;
-                    }
-                };
+            let walked = match tokio::task::spawn_blocking(move || usage(&walk)).await? {
+                Ok(usage) => usage,
+                Err(error) => {
+                    warn!(durable, %error, "Index size unreadable");
+                    continue;
+                }
+            };
+            measured.send_replace(Some(walked.clone()));
+            let Usage { total, subdirs } = walked;
             let size = display(Size(total));
             let parts = (!subdirs.is_empty()).then(|| {
                 let shares = subdirs.into_iter().map(|(name, bytes)| (name, Size(bytes)));
@@ -88,11 +90,11 @@ pub(crate) async fn run(
 }
 
 /// Bytes under an index directory
-#[derive(Debug, PartialEq, Eq)]
-struct Usage {
-    total: u64,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Usage {
+    pub(crate) total: u64,
     /// Each top-level subdirectory's bytes, by name
-    subdirs: Vec<(String, u64)>,
+    pub(crate) subdirs: Vec<(String, u64)>,
 }
 
 /// One pass over `dir`: its own files count towards `total` only; a file removed mid-walk counts

@@ -99,6 +99,7 @@ async fn boot(
     validator: Arc<ZebraRpcAdapter>,
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    let started = std::time::Instant::now();
     // --- the chain view: quorum tip, mempool and broadcast fan-out, over every validator
     let chainview_span = crate::logging::component("ChainView");
     let chainview = crate::chainview::connect(Arc::clone(&validator), &config)
@@ -209,7 +210,8 @@ async fn boot(
     // --- run: nothing fallible left, every stage one task
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
-    let mut watchers = Watchers { tasks: &mut tasks, tips, depth, cancel: cancel.clone() };
+    let mut watchers =
+        Watchers { tasks: &mut tasks, tips, depth, cancel: cancel.clone(), indexes: Vec::new() };
     let config_cb = &index.compact_block;
     let published = compact_block.published();
     watchers.watch(CompactBlockIndexWriter::NAME, &compact_block_span, published, config_cb, true);
@@ -228,6 +230,18 @@ async fn boot(
         let name = TransparentAddressIndexWriter::NAME;
         watchers.watch(name, span, writer.published(), &index.transparent_address, true);
     }
+    let disabled = [
+        (BlockHashIndexWriter::NAME, block_hash.is_none()),
+        (TreeStateIndexWriter::NAME, tree_state.is_none()),
+        (TransparentAddressIndexWriter::NAME, transparent.is_none()),
+    ];
+    crate::status::publish(crate::status::Sources {
+        network: crate::config::network_name(config.network),
+        started,
+        chainview: chainview.handles.view.clone(),
+        indexes: std::mem::take(&mut watchers.indexes),
+        disabled: disabled.into_iter().filter_map(|(name, off)| off.then_some(name)).collect(),
+    });
 
     // index loops: the root token (a failure cancels everything), stopped by the producer's
     // Shutdown
@@ -388,6 +402,8 @@ struct Watchers<'a> {
     tips: watch::Receiver<Option<QuorumTip>>,
     depth: ReorgDepth,
     cancel: CancellationToken,
+    /// `/statusz` sources, published once every index is watched
+    indexes: Vec<crate::status::IndexSource>,
 }
 
 impl Watchers<'_> {
@@ -407,8 +423,21 @@ impl Watchers<'_> {
             reads: served.then(|| published.reads()),
         };
         crate::metrics::track_index(name, &watched);
-        let report =
-            crate::index_report::run(watched, config.path.clone(), self.cancel.child_token());
+        let (measured, usage) = watch::channel(None);
+        self.indexes.push(crate::status::IndexSource {
+            name,
+            finalized: watched.finalized.clone(),
+            applied: watched.applied.clone(),
+            synced: watched.synced.clone(),
+            reads: watched.reads.clone(),
+            usage,
+        });
+        let report = crate::index_report::run(
+            watched,
+            config.path.clone(),
+            measured,
+            self.cancel.child_token(),
+        );
         spawn(self.tasks, "index-report", span.clone(), report);
         let gate = published.gate(self.tips.clone(), self.depth, self.cancel.child_token());
         let gate = async move {

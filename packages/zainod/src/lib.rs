@@ -20,6 +20,7 @@ pub mod indexer;
 pub mod logging;
 mod metrics;
 pub mod paths;
+mod status;
 pub mod verify;
 
 /// Runs the Zaino indexer until a shutdown signal (`Ok`) or the first failure (`Err`).

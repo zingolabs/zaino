@@ -47,10 +47,27 @@ pub fn describe_metrics() {
 
 /// Raised conditions; logged on each edge, not each fold
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Alarms {
+pub struct Alarms {
     stale: EndpointSet,
     partitioned: bool,
     eclipsed: bool,
+}
+
+impl Alarms {
+    /// Live endpoints whose tip trails their own clock estimate by >= `STALE_TIP_BLOCKS`
+    pub fn stale(&self) -> EndpointSet {
+        self.stale
+    }
+
+    /// Two live endpoints share no outbound peer
+    pub fn partitioned(&self) -> bool {
+        self.partitioned
+    }
+
+    /// Live endpoints together reach at most `ECLIPSE_OUTBOUND_MAX` outbound peers
+    pub fn eclipsed(&self) -> bool {
+        self.eclipsed
+    }
 }
 
 /// Outbound peers per live endpoint that reported any (inbound addrs = ephemeral ports)
@@ -90,27 +107,6 @@ pub(crate) fn alarms(endpoints: &imbl::Vector<ValidatorMetadata>) -> Alarms {
     }
 }
 
-fn state_label(state: EndpointState) -> &'static str {
-    match state {
-        EndpointState::Pending => "pending",
-        EndpointState::Live => "live",
-        EndpointState::Degraded => "degraded",
-        EndpointState::Down => "down",
-        EndpointState::Syncing => "syncing",
-        EndpointState::CatchingUp => "catching_up",
-    }
-}
-
-fn agreement_label(agreement: Agreement) -> &'static str {
-    match agreement {
-        Agreement::Unknown => "unknown",
-        Agreement::Agreed => "agreed",
-        Agreement::Ahead => "ahead",
-        Agreement::Behind => "behind",
-        Agreement::Diverged => "diverged",
-    }
-}
-
 const STATES: [EndpointState; 6] = [
     EndpointState::Pending,
     EndpointState::Live,
@@ -133,11 +129,11 @@ pub(crate) fn emit(snapshot: &ChainViewSnapshot, previous: Alarms) {
     for meta in snapshot.endpoints.iter() {
         let endpoint = meta.address.clone();
         for state in STATES {
-            let labels = [("endpoint", endpoint.clone()), ("state", state_label(state).to_owned())];
+            let labels = [("endpoint", endpoint.clone()), ("state", state.label().to_owned())];
             metrics::gauge!(names::ENDPOINT_STATE, &labels).set(f64::from(meta.state == state));
         }
         for agreement in AGREEMENTS {
-            let label = agreement_label(agreement).to_owned();
+            let label = agreement.label().to_owned();
             let labels = [("endpoint", endpoint.clone()), ("agreement", label)];
             metrics::gauge!(names::AGREEMENT, &labels).set(f64::from(meta.agreement == agreement));
         }

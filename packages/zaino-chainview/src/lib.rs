@@ -24,5 +24,5 @@ pub use error::{BelowQuorum, BroadcastError, ConfigError, EndpointPollError};
 pub use ports::EndpointSource;
 pub use quorum::{Quorum, QuorumTip};
 pub use snapshot::{ChainViewSnapshot, MempoolEntry, MempoolView};
-pub use telemetry::describe_metrics;
+pub use telemetry::{describe_metrics, Alarms};
 pub use view::{ChainView, ChainViewSubscriber, Endpoint, MempoolTail};
