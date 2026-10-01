@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use zaino_chainview::QuorumTip;
-use zaino_grpc::{GrpcLimits, GrpcServer, TrustedProxies, ValidatorHandler};
+use zaino_grpc::{GrpcLimits, GrpcServer, Tls, TlsFiles, TrustedProxies, ValidatorHandler};
 use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockService, CompactBlockStore};
 use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressService};
 use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateStore};
@@ -196,6 +196,10 @@ async fn boot(
     }
     if let Some(service) = transparent_service {
         server = server.with_transparent_address(service);
+    }
+    if let Some(tls) = &config.serve.tls {
+        let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
+        server = server.with_tls(Tls::load(files)?);
     }
     let server = server.bind().await?;
     let grpc_span = crate::logging::component("Grpc");

@@ -8,7 +8,7 @@
 //! The stack around it, outermost first:
 //!
 //! ```text
-//!   accept ─ connection caps ─ h2 conn ─ metrics ─ admission ─ Router
+//!   accept ─ connection caps ─ PROXY header ─ TLS ─ h2 conn ─ metrics ─ admission ─ Router
 //! ```
 //!
 //! Serving hyper directly rather than `tonic::transport::Server` is what makes the caps
@@ -56,6 +56,9 @@ const NOTSENT_LOWAT: u32 = 128 * 1024;
 const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 
+/// TLS handshake deadline (a silent client holds a connection slot at most this long)
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Ping cadence on an idle connection, and how long a pong may take.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -72,6 +75,7 @@ pub struct GrpcServer<S> {
     bind: SocketAddr,
     limits: GrpcLimits,
     proxies: TrustedProxies,
+    tls: Option<crate::Tls>,
 }
 
 /// Why the gRPC server could not run.
@@ -95,7 +99,13 @@ impl<S: ValidatorPorts> GrpcServer<S> {
             ReadLanes::new(&limits),
         );
 
-        Self { routed, bind, limits, proxies: TrustedProxies::default() }
+        Self { routed, bind, limits, proxies: TrustedProxies::default(), tls: None }
+    }
+
+    /// Terminates TLS on the listener (else plaintext h2c, for a TLS-terminating proxy in front)
+    pub fn with_tls(mut self, tls: crate::Tls) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Peers that front this server and name each client in a PROXY header (v1 or v2)
@@ -187,6 +197,7 @@ type Stack<S> = TowerToHyperService<Measured<Admission<Routed<S>>>>;
 struct Shared<S> {
     caps: ConnectionCaps,
     proxies: TrustedProxies,
+    tls: Option<tokio_rustls::TlsAcceptor>,
     http2: auto::Builder<TokioExecutor>,
     routed: Routed<S>,
     permits: Permits,
@@ -214,9 +225,13 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
     ///   retries, the listener recovering as connections close
     pub async fn run(self, cancel: CancellationToken) -> Result<(), GrpcServeError> {
         let Self { server, listener } = self;
+        if let Some(tls) = &server.tls {
+            tokio::spawn(tls.reload(cancel.clone()).instrument(Span::current()));
+        }
         let shared = Arc::new(Shared {
             caps: ConnectionCaps::new(&server.limits),
             proxies: server.proxies,
+            tls: server.tls.as_ref().map(crate::Tls::acceptor),
             http2: http2(&server.limits),
             routed: server.routed,
             permits: Permits::new(&server.limits),
@@ -303,7 +318,7 @@ impl<S: ValidatorPorts> Shared<S> {
             let Some(_connection) = self.caps.admit(reserved, peer_ip) else {
                 return;
             };
-            return self.serve(socket).await;
+            return self.secure(socket, peer).await;
         }
 
         let header = tokio::time::timeout(
@@ -327,7 +342,23 @@ impl<S: ValidatorPorts> Shared<S> {
         // Bytes read past the header belong to the client's HTTP/2 stream: replayed first
         let (reader, writer) = socket.into_split();
         let io = tokio::io::join(std::io::Cursor::new(read_ahead).chain(reader), writer);
-        self.serve(io).await;
+        self.secure(io, peer).await;
+    }
+
+    /// TLS handshake when configured (bounded by [`TLS_HANDSHAKE_TIMEOUT`]), then [`Self::serve`]
+    async fn secure<I>(&self, io: I, peer: SocketAddr)
+    where
+        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let Some(acceptor) = &self.tls else {
+            return self.serve(io).await;
+        };
+        match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(io)).await {
+            Ok(Ok(stream)) => self.serve(stream).await,
+            // scanners and plaintext clients: routine, not an operator signal
+            Ok(Err(error)) => debug!(%error, %peer, "TLS handshake failed"),
+            Err(_) => debug!(%peer, "TLS handshake timed out"),
+        }
     }
 
     /// Until the peer closes, `cancel` (graceful), or a stream holds unread data past

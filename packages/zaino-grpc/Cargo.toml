@@ -43,14 +43,18 @@ ipnet = "2.12"
 socket2 = { version = "0.6", features = ["all"] }
 tracing.workspace = true
 hyper-util = { workspace = true, features = ["http2", "server", "server-auto", "server-graceful", "service", "tokio"] }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+arc-swap = { workspace = true }
 
 [dev-dependencies]
+rcgen = { workspace = true }
+tempfile = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 zaino-index-compact-block = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 # Router tests: index loops fed through a `BlockSink`, and the `ArcSwap` behind a
 # test-flipped serving gate.
 zaino-sync = { workspace = true }
-arc-swap = { workspace = true }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }

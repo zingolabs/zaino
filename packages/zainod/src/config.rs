@@ -219,6 +219,22 @@ pub struct ServeConfig {
     /// request is `RESOURCE_EXHAUSTED`, never a short list or a partial balance. Every address
     /// method walks the whole history, whatever height range it asks about.
     pub max_address_rows: NonZeroUsize,
+    /// TLS on the gRPC listener. Absent, it serves plaintext HTTP/2 for a TLS-terminating proxy
+    /// in front.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsConfig>,
+}
+
+/// PEM files the gRPC listener terminates TLS with (rustls + ring). Both are re-read within a
+/// minute of changing, so a certificate renewal needs no restart; a pair that fails to load
+/// keeps the previous one serving.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Certificate chain, leaf first.
+    pub cert_path: PathBuf,
+    /// The certificate's private key (PKCS#8, PKCS#1 or SEC1).
+    pub key_path: PathBuf,
 }
 
 impl Default for ServeConfig {
@@ -226,6 +242,7 @@ impl Default for ServeConfig {
         Self {
             grpc_listen_address: "127.0.0.1:8137".parse().expect("valid default addr"),
             max_address_rows: DEFAULT_MAX_ADDRESS_ROWS,
+            tls: None,
         }
     }
 }
@@ -662,6 +679,24 @@ path = "/tmp/zaino-ta"
         assert!(content.starts_with(GENERATED_CONFIG_HEADER));
         let body = content.strip_prefix(GENERATED_CONFIG_HEADER).expect("header present");
         toml::from_str::<DaemonConfig>(body).expect("body parses");
+    }
+
+    #[test]
+    fn serve_tls_parses_and_rejects_unknown_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base =
+            "network = \"mainnet\"\n[source]\njsonrpc_address = \"127.0.0.1:8232\"\n[serve]\n";
+        let plain = load_config(&write(&dir, "plain.toml", base)).expect("no tls table");
+        assert_eq!(plain.serve.tls, None, "absent = plaintext");
+
+        let tls = format!("{base}[serve.tls]\ncert_path = \"/c.pem\"\nkey_path = \"/k.pem\"\n");
+        let config = load_config(&write(&dir, "tls.toml", &tls)).expect("tls table");
+        let expected = TlsConfig { cert_path: "/c.pem".into(), key_path: "/k.pem".into() };
+        assert_eq!(config.serve.tls, Some(expected));
+
+        let typo = tls.replace("key_path", "keyfile");
+        let err = load_config(&write(&dir, "typo.toml", &typo)).expect_err("typo");
+        assert!(err.to_string().contains("unknown field"), "{err}");
     }
 
     #[test]

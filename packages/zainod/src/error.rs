@@ -28,6 +28,9 @@ pub enum IndexerError {
     /// Binding or running the gRPC server failed.
     #[error(transparent)]
     Grpc(#[from] zaino_grpc::GrpcServeError),
+    /// The `[serve.tls]` certificate pair failed to load.
+    #[error(transparent)]
+    Tls(#[from] zaino_grpc::TlsError),
     /// A background task panicked or was cancelled.
     #[error(transparent)]
     TokioJoinError(#[from] tokio::task::JoinError),

@@ -26,10 +26,15 @@ jsonrpc_address = "127.0.0.1:18232"
 # jsonrpc_address = "127.0.0.1:18242"
 
 [serve]
-# CompactTxStreamer gRPC, plaintext HTTP/2
+# CompactTxStreamer gRPC: plaintext HTTP/2, or TLS with [serve.tls]
 grpc_listen_address = "127.0.0.1:8137"
 # Max transparent receives one address request walks (all its addresses); over = RESOURCE_EXHAUSTED
 # max_address_rows = 100000
+
+# TLS on the gRPC listener (rustls + ring); PEM files re-read on change (renewal = no restart)
+# [serve.tls]
+# cert_path = "/etc/zaino/fullchain.pem"
+# key_path = "/etc/zaino/key.pem"
 
 # Serving caps (defaults shown); every cap refuses rather than queues, except the read lanes
 [grpc]

@@ -125,9 +125,23 @@ directory to resync it.
 
 ## Network exposure
 
-zainod links no TLS stack and serves plaintext HTTP/2, and it reaches the validator
-over plain HTTP JSON-RPC. Expose the gRPC listener beyond a trusted network only
-behind a TLS-terminating proxy.
+zainod reaches the validator over plain HTTP JSON-RPC. Its gRPC listener serves
+plaintext HTTP/2 unless `[serve.tls]` names a certificate pair, in which case zainod
+terminates TLS itself (rustls with the ring provider, ALPN `h2`). Expose the listener
+beyond a trusted network only with `[serve.tls]` or behind a TLS-terminating proxy.
+
+```toml
+[serve.tls]
+cert_path = "/etc/zaino/fullchain.pem"   # chain, leaf first
+key_path = "/etc/zaino/key.pem"          # PKCS#8, PKCS#1 or SEC1
+```
+
+- A missing, unreadable or mismatched pair fails startup.
+- Both files are checked every minute. A changed pair is swapped in for new connections
+  without a restart, so an ACME client renewing them in place needs no hook. A changed
+  pair that fails to load is logged and the previous one keeps serving.
+- A client that does not finish its handshake within 10 seconds is dropped.
+- With a proxy in front that sends a PROXY header, the header precedes the handshake.
 
 The `[grpc]` caps, listed with their defaults in the example config, all refuse
 rather than queue. A connection over a cap is closed at accept and a stream over one

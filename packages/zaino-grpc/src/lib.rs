@@ -18,6 +18,7 @@ mod observe;
 mod report;
 mod router;
 mod stall;
+mod tls;
 mod transport;
 mod validator;
 
@@ -27,6 +28,7 @@ pub use grpc::GrpcService;
 pub use limits::{GrpcLimits, ReadLanes};
 pub use router::ChainViewHandles;
 pub use router::Router;
+pub use tls::{Tls, TlsError, TlsFiles};
 pub use transport::{BoundGrpcServer, GrpcServeError, GrpcServer};
 pub use validator::{ProjectCompact, Relay};
 pub use validator::{ValidatorHandler, ValidatorPorts};

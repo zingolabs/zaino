@@ -131,6 +131,10 @@ config = { version = "0.15", default-features = false, features = ["toml"] }
 # < 1.7 = librustzcash's `test-dependencies` strategies (rand 0.8)
 proptest = "1.6"
 arc-swap = "1.7.1"
+# TLS: ring provider only (both default to aws-lc-rs; deny.toml bans it)
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+rcgen = "0.14.10"
 # Persistent collections: a published snapshot shares structure with the one it
 # came from rather than copying.
 imbl = "7.0"
