@@ -9,7 +9,7 @@ use crate::{ChainInfo, ForkPoint, Locator, SpendStatus, TxStatus};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     CompactBlock, Height, HeightRange, Outpoint, RawTransaction, ShieldedPool, SubtreeRoot,
-    Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
+    Transaction, TransactionId, TransparentAddress, TransparentReceive, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -116,6 +116,36 @@ pub trait AddressRead: Send + Sync {
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> impl Future<Output = Result<Vec<TransactionId>, AddressReadError>> + Send;
+}
+
+/// Backed by: transparent/address index. The receive side of address history,
+/// on its own.
+///
+/// What a tier holding no history behind itself can say about an address. An
+/// output names its recipient in its script, so any tier that holds the output
+/// can report the receive. A *spend* names only the outpoint it consumes, so
+/// attributing one to an address needs the output that outpoint created — which
+/// a bounded window does not have once that output predates it.
+///
+/// So this is deliberately narrower than [`AddressRead`]: receives only, no
+/// netting and no spend attribution. A tier that can answer the full history
+/// implements `AddressRead` and has no need of this; the volatile window
+/// implements this and [`SpendRead`], and the composer turns the pair into the
+/// full answer by supplying the history the window lacks.
+///
+/// ```text
+/// receives(addr, range)                  this trait — every tier holding the outputs
+/// spends(addr, range) = owned(addr) ∩ spent(range)
+///                                        needs owned(addr), which is history
+/// ```
+pub trait AddressReceiveRead: Send + Sync {
+    /// Every output in `range` paying `addr`, in height order, whether or not
+    /// it was later spent.
+    fn receives(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+    ) -> impl Future<Output = Result<Vec<TransparentReceive>, AddressReadError>> + Send;
 }
 
 /// Backed by: spend index.

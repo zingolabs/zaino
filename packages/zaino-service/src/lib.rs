@@ -49,8 +49,9 @@ pub use locator::{ForkPoint, Locator};
 pub use node_query::{NodeQuery, NodeQueryAnswer};
 pub use read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads, WalletReadCore};
 pub use reads::{
-    AddressRead, BlockRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, ForkReconcile,
-    RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
+    AddressRead, AddressReceiveRead, BlockRead, ChainInfoRead, CompactBlockRead,
+    CompactNullifierRead, ForkReconcile, RawTransactionRead, SpendRead, TransactionRead,
+    TreestateRead,
 };
 pub use status::{SpendStatus, TxStatus};
 pub use upgrades::{ReportedUpgrade, UpgradeStatus};
