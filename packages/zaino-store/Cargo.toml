@@ -20,6 +20,7 @@ zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-code
 futures.workspace = true
 zaino-primitives = { version = "0.2.0", path = "../zaino-primitives" }
 thiserror.workspace = true
+zaino-address = { version = "0.1.0", path = "../zaino-address" }
 
 [dev-dependencies]
 zaino-runtime = { path = "../zaino-runtime" }

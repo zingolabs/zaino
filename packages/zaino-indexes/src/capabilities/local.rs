@@ -98,7 +98,19 @@ local_capability! {
 
 local_capability! {
     /// Transparent address history.
-    AddressHistory = AddressHistory backed by [AddressHistoryIndex]
+    ///
+    /// Four indexes, because the address index is the receive side alone and a
+    /// spend is three lookups from a receive. Netting a balance needs the
+    /// spends index; reporting a spend as a *delta* needs the location a
+    /// balance change is attributed to, which is the spending transaction's
+    /// height and position (txid location) and which of its inputs consumed the
+    /// outpoint (that block's transparent data).
+    AddressHistory = AddressHistory backed by [
+        AddressHistoryIndex,
+        TransparentSpendsIndex,
+        TxidLocationIndex,
+        TransparentDataIndex,
+    ]
 }
 
 local_capability! {

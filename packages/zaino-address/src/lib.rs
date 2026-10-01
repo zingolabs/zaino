@@ -38,5 +38,5 @@ mod validated;
 
 pub use classify::{validate_address, z_validate_address};
 pub use sapling::sapling_key_bytes;
-pub use transparent::{script_pays, transparent_address_key};
+pub use transparent::{script_paying, script_pays, transparent_address_key};
 pub use validated::{ValidatedAddress, ZValidatedAddress, DEPRECATION_NOTICE};

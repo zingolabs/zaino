@@ -18,7 +18,7 @@
 //! it is the layer that knows which network this is; see
 //! [`validate_address`](crate::validate_address), which does check.
 
-use zaino_primitives::types::{classify_script, ScriptType, TransparentAddress};
+use zaino_primitives::types::{classify_script, Script, ScriptType, TransparentAddress};
 use zcash_address::{ConversionError, TryFromAddress, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
 
@@ -84,6 +84,38 @@ pub fn script_pays(script: &[u8], address: &TransparentAddress) -> bool {
         return false;
     };
     classify_script(script) == (hash, script_type)
+}
+
+/// The output script that pays `address`, or `None` if it is not a transparent
+/// address.
+///
+/// Every standard script shape is determined by its `(type, hash160)` pair, and
+/// [`classify_script`] recognises each only in its exact canonical encoding. So
+/// an output that pays a transparent address has *this* script and no other,
+/// which is what lets a reader holding only an address and a matched index entry
+/// reconstruct the script rather than fetch the output that carried it.
+pub fn script_paying(address: &TransparentAddress) -> Option<Script> {
+    let (script_type, hash) = transparent_address_key(address)?;
+    let mut bytes = Vec::new();
+    match script_type {
+        // OP_DUP OP_HASH160 <20> … OP_EQUALVERIFY OP_CHECKSIG
+        ScriptType::P2PKH => {
+            bytes.extend_from_slice(&[0x76, 0xa9, 0x14]);
+            bytes.extend_from_slice(&hash);
+            bytes.extend_from_slice(&[0x88, 0xac]);
+        }
+        // OP_HASH160 <20> … OP_EQUAL
+        ScriptType::P2SH => {
+            bytes.extend_from_slice(&[0xa9, 0x14]);
+            bytes.extend_from_slice(&hash);
+            bytes.push(0x87);
+        }
+        // No address resolves to a non-standard classification, so this arm is
+        // unreachable through `transparent_address_key`; there is no canonical
+        // script to name if it ever were.
+        ScriptType::NonStandard => return None,
+    }
+    Some(Script::new(bytes))
 }
 
 #[cfg(test)]
@@ -164,5 +196,20 @@ mod tests {
             &[0xde, 0xad, 0xbe, 0xef],
             &address(TESTNET_P2PKH)
         ));
+    }
+
+    /// The reconstructed script is the one that pays the address — the property
+    /// a reader relies on when it rebuilds a script it never read.
+    #[test]
+    fn the_reconstructed_script_pays_its_own_address() {
+        for encoded in [TESTNET_P2PKH, TESTNET_P2SH] {
+            let addr = address(encoded);
+            let script = script_paying(&addr).expect("a transparent address");
+            assert!(script_pays(script.as_bytes(), &addr), "{encoded}");
+        }
+        assert!(
+            script_paying(&address(REGTEST_SAPLING)).is_none(),
+            "no script pays a shielded address"
+        );
     }
 }

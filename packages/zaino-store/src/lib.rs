@@ -35,6 +35,7 @@
 //! the executor.
 #![forbid(unsafe_code)]
 
+mod address;
 mod component;
 mod spend;
 mod watermark_repair;
