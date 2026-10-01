@@ -101,11 +101,9 @@ For more details see our [testing document](./docs/testing.md).
 To see more included documentation, please see [our docs directory](./docs/).
 
 Architecture decision records live in
-[zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs). This repository
-holds only a submodule pointer to it at `docs/adr/`; run
-`git submodule update --init docs/adr` to read the records. Propose a record as
-a pull request to zingo-adrs, not to this repository; its README explains the
-record shape and how to advance the pointer. A code pull request may advance
+[zingo-adrs](https://github.com/zingolabs/zingo-adrs), whose
+[README](https://github.com/zingolabs/zingo-adrs#pointing-a-code-repository-at-zingo-adrs) explains how to read them through the submodule at
+`docs/adr/`, advance the pointer, and propose a record. A code pull request may advance
 the pointer, for example when the code cites a record newer than the pinned
 commit; the change is one line and needs no separate pull request.
 ## Software Philosophy
