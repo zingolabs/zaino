@@ -13,6 +13,10 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.2] - 2026-09-26
+### Changed
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+
 ## [0.2.1] - 2026-09-11
 
 ### Added
@@ -46,7 +50,7 @@ and this library adheres to Rust's notion of
 - New crate: `zaino-mempool`, the hexagonal *ports + foundational types* of
   Zaino's mempool subsystem — a bounded, coherent, local read model of the
   validator's mempool, separated from `zaino-state` (see
-  `docs/adr/0010-mempool-subsystem-separation.md`). It depends on nothing in
+  [zingo-adrs zaino/0010](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0010-mempool-subsystem-separation.md)). It depends on nothing in
   `zaino-state`; it declares the data it needs as consumer-owned ports which
   `zaino-state` adapts. The concrete runtime lives one layer out in
   `zaino-mempool-service`.

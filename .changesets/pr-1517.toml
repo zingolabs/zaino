@@ -1,0 +1,27 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f885-7093-87e8-7e218917a3dd"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-proto"
+kind = "feature"
+description = "Add the `zaino.index.v1.IndexedTipService` protocol with the `SubscribeIndexedTips` server-streaming call."
+
+[[changes]]
+crate = "zaino-serve"
+kind = "feature"
+description = """
+Serve `IndexedTipService/SubscribeIndexedTips` on the gRPC server. A subscription \
+first receives the current indexed tip, then each canonical tip change, including a \
+same-height reorg. A slow client receives only the latest tip, and graceful shutdown \
+ends open subscriptions."""
+
+[[changes]]
+crate = "zaino-state"
+kind = "feature"
+description = "Add a stream of indexed-tip changes, driven by the existing watch notifications instead of polling."
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = "The gRPC server offers `zaino.index.v1.IndexedTipService`, a Zaino extension that lets a client wait for a newly indexed block without polling. The lightwalletd protocol is unchanged."
