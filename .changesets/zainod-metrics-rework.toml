@@ -1,3 +1,4 @@
+consumed_in = "zainod-0-10-1"
 [[changes]]
 crate = "zainod"
 kind = "feature"
@@ -72,3 +73,9 @@ description = "Adapter call helpers take `&'static str` method names, following 
 crate = "zainod"
 kind = "fix"
 description = "A `metrics_endpoint` that fails to bind now fails startup with the error, instead of leaving the process running with no `/metrics`, no `/livez`, and no upkeep of the recorder's histogram samples. The listener is bound before the recorder is installed."
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = "The `prometheus` feature and the implicit `metrics` feature are removed; reorg metrics are always emitted and cost nothing without an installed recorder."
+migration = "Remove `prometheus` or `metrics` from this crate's feature list in dependent manifests."
