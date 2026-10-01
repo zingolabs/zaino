@@ -73,9 +73,13 @@ impl<F, N, Src, R> EngineSnapshot<F, N, Src, R> {
 /// (heights `> w`). Either half is `None` when empty.
 ///
 /// ```text
-/// fs  = [start, min(end, w + 1))     if start ≤ w
-/// nfs = [max(start, w + 1), end)     if end > w + 1
+/// fs  = [start, min(end, w)]        if start ≤ min(end, w)
+/// nfs = [max(start, w + 1), end]    if max(start, w + 1) ≤ end
 /// ```
+///
+/// Both halves are inclusive, like the [`HeightRange`] they split: the
+/// watermark height itself is the store's, and the height above it is the
+/// head's.
 ///
 /// With no watermark the store holds nothing and the whole range is the
 /// head's; a watermark at the height ceiling makes the whole range the
@@ -92,11 +96,12 @@ where
         return (None, non_empty(range));
     };
     let Some(seam) = watermark.checked_add(1) else {
+        // The watermark is at the height ceiling, so nothing is above it.
         return (non_empty(range), None);
     };
     let fs = HeightRange {
         start: range.start,
-        end: range.end.min(seam),
+        end: range.end.min(watermark),
     };
     let nfs = HeightRange {
         start: range.start.max(seam),
@@ -105,9 +110,12 @@ where
     (non_empty(fs), non_empty(nfs))
 }
 
-/// `None` for an empty half-open range.
+/// `None` when the range names no height.
+///
+/// [`HeightRange`] is inclusive, so a range is empty only when its start is
+/// *above* its end; `[h, h]` names one height and is not empty.
 fn non_empty(range: HeightRange) -> Option<HeightRange> {
-    (range.start < range.end).then_some(range)
+    (range.start <= range.end).then_some(range)
 }
 
 impl<F: Clone, N: Clone, Src: Clone, R> Clone for EngineSnapshot<F, N, Src, R> {
