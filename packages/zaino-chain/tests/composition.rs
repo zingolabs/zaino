@@ -10,8 +10,8 @@ use zaino_chain::testing::{
     chainwork_at, hash_of, height, Chain, FakeHead, FakeSource, FakeStore, SourceCall,
 };
 use zaino_chain::{
-    Answerable, BlockId, BlockRead as _, ChainCapability, ChainScope, ChainView as _,
-    ChainViewComposer, ChainViewConfig, ChainViewError, ChainViewSnapshot as _,
+    AddressRead as _, Answerable, BlockId, BlockRead as _, ChainCapability, ChainScope,
+    ChainView as _, ChainViewComposer, ChainViewConfig, ChainViewError, ChainViewSnapshot as _,
     CompactBlockRead as _, ForkReconcile as _, Locator, SpendRead as _, SpendStatus,
     TreestateRead as _,
 };
@@ -148,6 +148,92 @@ async fn a_stream_spanning_all_three_providers_is_contiguous() {
 
     let heights: Vec<u32> = chunks.into_iter().flatten().map(|b| b.height).collect();
     assert_eq!(heights, (98..=1102).collect::<Vec<_>>());
+}
+
+/// Every range read streams descending when `start > end`, contiguous across
+/// all three providers.
+#[tokio::test]
+async fn every_range_streams_descending_across_all_three_providers() {
+    let chain = chain();
+    let snapshot = syncing(&chain).snapshot();
+    let expected: Vec<u32> = (98..=1102).rev().collect();
+
+    let compact: Vec<u32> = snapshot
+        .stream_compact(height(1102), height(98), PoolFilter::all())
+        .try_concat()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .map(|block| block.height)
+        .collect();
+    assert_eq!(compact, expected);
+
+    let blocks: Vec<u32> = snapshot
+        .stream_blocks(height(1102), height(98))
+        .try_concat()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .map(|block| u32::from(block.header.height))
+        .collect();
+    assert_eq!(blocks, expected);
+
+    let raw: Vec<Vec<u8>> = snapshot
+        .stream_raw_blocks(height(1102), height(98))
+        .try_concat()
+        .await
+        .expect("serviceable");
+    let raw_expected: Vec<Vec<u8>> = expected
+        .iter()
+        .map(|at| <[u8; 32]>::from(hash_of(*at)).to_vec())
+        .collect();
+    assert_eq!(raw, raw_expected);
+}
+
+/// A descending stream chunks like an ascending one, and the chunks tile the
+/// range top-down.
+#[tokio::test]
+async fn a_descending_stream_yields_multiple_chunks_that_tile_the_range() {
+    let chain = chain();
+    let chunks: Vec<Vec<_>> = caught_up(&chain)
+        .snapshot()
+        .stream_compact(height(1200), height(0), PoolFilter::all())
+        .try_collect()
+        .await
+        .expect("serviceable");
+
+    assert!(chunks.len() > 1, "expected chunking, got {}", chunks.len());
+    let heights: Vec<u32> = chunks.into_iter().flatten().map(|b| b.height).collect();
+    assert_eq!(heights, (0..=1200).rev().collect::<Vec<_>>());
+}
+
+/// A descending range starting above the tip starts at the tip.
+#[tokio::test]
+async fn a_descending_range_is_truncated_at_the_tip() {
+    let chain = chain();
+    let heights: Vec<u32> = caught_up(&chain)
+        .snapshot()
+        .stream_compact(height(1300), height(1195), PoolFilter::all())
+        .try_concat()
+        .await
+        .expect("serviceable")
+        .into_iter()
+        .map(|block| block.height)
+        .collect();
+    assert_eq!(heights, (1195..=1200).rev().collect::<Vec<_>>());
+}
+
+/// Streaming to the tip from above it is empty, never a walk back down.
+#[tokio::test]
+async fn streaming_to_the_tip_from_above_it_is_empty() {
+    let chain = chain();
+    let blocks = caught_up(&chain)
+        .snapshot()
+        .stream_blocks_to_tip(height(1300))
+        .try_concat()
+        .await
+        .expect("serviceable");
+    assert!(blocks.is_empty());
 }
 
 /// The same, for indexed blocks, and chainwork marks who answered.
@@ -370,25 +456,188 @@ async fn a_raw_block_by_height_is_fetched_by_height() {
     assert_eq!(source.calls(), vec![SourceCall::RawBlock(height(500))]);
 }
 
-/// A treestate by height goes straight to the validator, no resolution hop.
+/// A raw block at a height a local provider covers is fetched by the hash this
+/// snapshot pins there.
 #[tokio::test]
-async fn a_treestate_by_height_is_fetched_by_height() {
+async fn a_raw_block_at_a_covered_height_is_fetched_by_its_pinned_hash() {
+    let chain = chain();
+    for at in [50, 1150] {
+        let source = FakeSource::over(&chain);
+        let composer = ChainViewComposer::new(
+            FakeStore::covering(&chain, 100),
+            FakeHead::covering(&chain, 1100, 1200),
+            Arc::new(source.clone()),
+            ChainViewConfig::default(),
+        );
+
+        assert!(composer
+            .snapshot()
+            .raw_block(BlockId::Height(height(at)))
+            .await
+            .expect("serviceable")
+            .is_some());
+        assert_eq!(
+            source.calls(),
+            vec![SourceCall::RawBlockByHash(hash_of(at))]
+        );
+    }
+}
+
+/// A raw range fetches by pinned hash where a local provider covers it, and by
+/// height only inside the hole.
+#[tokio::test]
+async fn a_raw_range_is_pinned_wherever_a_provider_covers_it() {
     let chain = chain();
     let source = FakeSource::over(&chain);
     let composer = ChainViewComposer::new(
-        FakeStore::covering(&chain, 1000),
-        FakeHead::covering(&chain, 1000, 1200),
+        FakeStore::covering(&chain, 100),
+        FakeHead::covering(&chain, 1100, 1200),
         Arc::new(source.clone()),
         ChainViewConfig::default(),
     );
 
-    assert!(composer
+    let blocks: Vec<Vec<u8>> = composer
         .snapshot()
-        .treestate(BlockId::Height(height(500)))
+        .stream_raw_blocks(height(99), height(1101))
+        .try_concat()
+        .await
+        .expect("serviceable");
+    assert_eq!(blocks.len(), 1101 - 99 + 1);
+
+    let calls = source.calls();
+    for at in [99, 100, 1100, 1101] {
+        assert!(calls.contains(&SourceCall::RawBlockByHash(hash_of(at))));
+    }
+    for at in [101, 1099] {
+        assert!(calls.contains(&SourceCall::RawBlock(height(at))));
+    }
+}
+
+/// A validator that no longer serves a pinned block is a transient failure,
+/// never a silently short answer.
+#[tokio::test]
+async fn a_pinned_block_the_validator_dropped_is_transient() {
+    let chain = chain();
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::covering(&chain, 1000, 1200),
+        Arc::new(FakeSource::over(&Chain::of_length(1150))),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert!(matches!(
+        snapshot.raw_block(BlockId::Height(height(1180))).await,
+        Err(ChainViewError::Transient(_))
+    ));
+    assert!(matches!(
+        snapshot
+            .stream_raw_blocks(height(1140), height(1160))
+            .try_concat()
+            .await,
+        Err(ChainViewError::Transient(_))
+    ));
+}
+
+/// A treestate by height is fetched by the hash this snapshot pins where a
+/// provider covers the height, and by height only in the hole; its roots are
+/// then read by the hash the treestate names.
+#[tokio::test]
+async fn a_treestate_by_height_is_pinned_where_a_provider_covers_it() {
+    let chain = chain();
+    for (at, fetched) in [
+        (50, SourceCall::TreestateByHash(hash_of(50))),
+        (500, SourceCall::Treestate(height(500))),
+        (1150, SourceCall::TreestateByHash(hash_of(1150))),
+    ] {
+        let source = FakeSource::over(&chain);
+        let composer = ChainViewComposer::new(
+            FakeStore::covering(&chain, 100),
+            FakeHead::covering(&chain, 1100, 1200),
+            Arc::new(source.clone()),
+            ChainViewConfig::default(),
+        );
+
+        assert!(composer
+            .snapshot()
+            .treestate(BlockId::Height(height(at)))
+            .await
+            .expect("serviceable")
+            .is_some());
+        assert_eq!(
+            source.calls(),
+            vec![fetched, SourceCall::TreeRoots(hash_of(at))]
+        );
+    }
+}
+
+/// An invalid address or subtree request is rejected, never answered empty.
+#[tokio::test]
+async fn an_invalid_request_is_rejected() {
+    let chain = chain();
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::covering(&chain, 1000, 1200),
+        Arc::new(FakeSource::over(&chain).rejecting_requests()),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert!(matches!(
+        snapshot.address_balance(&[]).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot.address_utxos(&[]).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot.address_txids(&[], height(0), height(10)).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot.address_deltas(&[], height(0), height(10)).await,
+        Err(ChainViewError::Rejected(_))
+    ));
+    assert!(matches!(
+        snapshot
+            .subtree_roots(zaino_primitives::types::ShieldedPool::Sapling, 0, None)
+            .await,
+        Err(ChainViewError::Rejected(_))
+    ));
+}
+
+/// A treestate carries each present pool's root.
+#[tokio::test]
+async fn a_treestate_carries_its_roots() {
+    let chain = chain();
+    let sapling = zaino_primitives::types::TreeRootInfo {
+        root: zaino_primitives::types::TreeRoot::from([7; 32]),
+        size: zaino_primitives::types::TreeSize::ZERO,
+    };
+    let source = FakeSource::over(&chain).with_tree_roots(zaino_primitives::types::TreeRoots {
+        sapling: Some(sapling.clone()),
+        orchard: None,
+        ironwood: None,
+    });
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::covering(&chain, 1000, 1200),
+        Arc::new(source),
+        ChainViewConfig::default(),
+    );
+
+    let treestate = composer
+        .snapshot()
+        .treestate(BlockId::Hash(hash_of(500)))
         .await
         .expect("serviceable")
-        .is_some());
-    assert_eq!(source.calls(), vec![SourceCall::Treestate(height(500))]);
+        .expect("the validator holds the block");
+    assert_eq!(
+        treestate.sapling.expect("sapling has a tree").final_root,
+        Some(sapling.root)
+    );
+    assert!(treestate.orchard.is_none());
 }
 
 // ***** Fork reconciliation *****
@@ -431,6 +680,35 @@ async fn a_locator_finds_the_newest_surviving_hash() {
     );
 }
 
+/// A lone competing-branch hash resolves to where its branch forks.
+#[tokio::test]
+async fn a_competing_branch_hash_resolves_to_its_fork_point() {
+    use zaino_chain::testing::FakeHeadSnapshot;
+
+    let chain = chain();
+    let orphan = FakeHeadSnapshot::branch_block(1150, 9_999);
+    let orphan_hash = orphan.reference.hash;
+
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 1000),
+        FakeHead::new(FakeHeadSnapshot::covering(1100, 1200).with_branch_block(orphan)),
+        Arc::new(FakeSource::over(&chain)),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert_eq!(
+        snapshot
+            .fork_point(&Locator::new(vec![orphan_hash]))
+            .await
+            .expect("serviceable"),
+        Some(BlockRef {
+            hash: hash_of(1149),
+            height: height(1149)
+        })
+    );
+}
+
 /// A branch hash has no best-chain height.
 #[tokio::test]
 async fn a_competing_branch_hash_has_no_best_chain_height() {
@@ -461,6 +739,75 @@ async fn a_competing_branch_hash_has_no_best_chain_height() {
             .await
             .expect("serviceable"),
         Some(hash_of(1150))
+    );
+}
+
+/// A hash neither tier holds takes its height from the validator only when it
+/// is on the validator's best chain at a height this view does not pin.
+#[tokio::test]
+async fn a_validator_answered_height_must_be_best_chain_and_unpinned() {
+    use zaino_chain::testing::FakeHeadSnapshot;
+
+    let chain = chain();
+    let competing = FakeHeadSnapshot::branch_block(600, 9_999).block;
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 100),
+        FakeHead::covering(&chain, 1100, 1200),
+        Arc::new(FakeSource::over(&chain).with_competing_block(competing)),
+        ChainViewConfig::default(),
+    );
+    let snapshot = composer.snapshot();
+
+    assert_eq!(
+        snapshot
+            .block_height(hash_of(600))
+            .await
+            .expect("serviceable"),
+        Some(height(600)),
+        "a best-chain block in the hole"
+    );
+    assert_eq!(
+        snapshot
+            .block_height(hash_of(9_999))
+            .await
+            .expect("serviceable"),
+        None,
+        "a block off the validator's best chain"
+    );
+}
+
+/// A block the validator calls best-chain at a height this view pins to a
+/// different block has no height in this view.
+#[tokio::test]
+async fn a_validator_best_chain_block_at_a_pinned_height_has_no_height() {
+    use zaino_chain::testing::FakeHeadSnapshot;
+
+    let chain = chain();
+    let viewed = Chain::from_blocks(
+        (0..=1200)
+            .map(|h| {
+                if h == 1150 {
+                    FakeHeadSnapshot::branch_block(1150, 9_999).block
+                } else {
+                    zaino_chain::testing::block_at(h)
+                }
+            })
+            .collect(),
+    );
+    let composer = ChainViewComposer::new(
+        FakeStore::covering(&chain, 100),
+        FakeHead::covering(&viewed, 1100, 1200),
+        Arc::new(FakeSource::over(&chain)),
+        ChainViewConfig::default(),
+    );
+
+    assert_eq!(
+        composer
+            .snapshot()
+            .block_height(hash_of(1150))
+            .await
+            .expect("serviceable"),
+        None
     );
 }
 
@@ -625,12 +972,15 @@ async fn a_snapshot_survives_a_reorg_underneath_it() {
     );
 
     let before = composer.snapshot();
+    let pinned = before.epoch();
     assert_eq!(before.tip().height, height(1200));
 
     head.publish(FakeHeadSnapshot::covering(1100, 1150).at_generation(1));
 
     assert_eq!(before.tip().height, height(1200), "the pinned view moved");
+    assert_eq!(before.epoch(), pinned, "the pinned epoch moved");
     assert_eq!(composer.snapshot().tip().height, height(1150));
+    assert_eq!(composer.snapshot().epoch().generation, 1);
 }
 
 #[tokio::test]

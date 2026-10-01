@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use zaino_chain_head::{
     snapshot::{
         ChainHeadBlockIter, ChainHeadTransactionLocations, ChainHeadTransactionService,
-        ChainHeadTxPosition, SpenderLocation,
+        ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,
     },
     ChainHeadBlock, ChainHeadError, ChainHeadSnapshot,
 };
@@ -329,6 +329,8 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
         )))
     }
 }
+
+impl ChainHeadTxOutSetService for MapBackedSnapshot {}
 
 impl ChainHeadTransactionService for MapBackedSnapshot {
     /// A bounded scan of the window. The window is small and this is not on a

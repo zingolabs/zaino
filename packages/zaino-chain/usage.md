@@ -66,9 +66,17 @@ Anything addressed by a block takes a [`BlockId`] — `Height` or `Hash` — rat
 than appearing twice. That is how the chain is addressed (zebra takes a
 `HashOrHeight`), and it halves the surface without removing anything.
 
-A read is asked the way the caller asked it. A raw block wanted by height costs
-one round trip, not a hash resolution and a fetch — and still works for a height
-in a hole, where there is nothing local to resolve against.
+Every read answers for the snapshot's chain, even when the validator serves the
+bytes. A raw block wanted by height is fetched by the hash the snapshot pins at
+that height, so a reorg since the snapshot was taken cannot substitute a block
+the snapshot never saw. Only a height in a hole, where nothing local pins a
+hash, is fetched by height — and there the chain is below the reorg seam anyway.
+A pinned block the validator no longer serves is `Transient`: retry on a fresh
+snapshot. A treestate wanted by height is pinned the same way.
+
+A treestate carries each pool's root. The validator's tree port leaves roots
+unset, so the view reads them by the treestate's own block hash and joins them
+in.
 
 ## Ranges stream
 
@@ -89,6 +97,9 @@ endpoint. Three properties matter at scale:
   the chain, so a fixed count would make memory per client swing with them. The
   walk starts small — latency to first byte — and adapts toward the budget from
   what it has seen.
+- **Either direction.** `start > end` streams descending — the order a
+  wallet scanning back from the tip wants. The walk plans the same segments
+  top-down and reverses each chunk, so it costs no more than ascending.
 - **Lazy.** A stream does no work until polled, so a slow client applies
   backpressure by not reading. A producer task filling a channel would buffer
   per client instead, which with thousands of them is the difference between
@@ -105,6 +116,13 @@ no spend index yields a view that does not have the trait:
 ```rust,ignore
 fn serve(chain: impl ChainViewSnapshot + SpendRead) { .. }   // names what it needs
 ```
+
+`TxOutSetRead::txout_set` answers at the snapshot's tip, for the whole chain:
+the store's accumulator extended by the chain head's `txout_delta` above the
+store's top, with the window's spends of older outputs resolved through the
+store's `SpentOutputIndex`. It needs the store's `TxOutSet`, `SpentOutputs` and
+`Transactions` indexes, and refuses while a hole separates the store from the
+window.
 
 That is the point of splitting them: a capability the providers cannot support
 must be absent, not present and always failing, and an impl can only be absent
@@ -156,6 +174,10 @@ covers a height the pinned head still thinks is recent, and a read there would
 be answered by a store holding it under a *different hash* than the caller's
 view believes.
 
+`snapshot.epoch()` is the pinned chain state, so a consumer gating on chain
+state (such as mempool coherence) checks the view it is reading, not the live
+head.
+
 ## Three outcomes, not two
 
 `block_height` and `transaction_locations` distinguish **absent**, **on the best
@@ -165,6 +187,16 @@ best-chain-only index is correct there rather than deficient.
 
 `block_height` returns `None` for a branch hash — it answers about the chain the
 caller is reading. `fork_point` is the branch question, and still finds it.
+
+For a hash neither tier holds, `block_height` asks the validator for the
+block's header, which is why `ChainViewSource` includes `OneShotGetBlockHeader`.
+The validator's height is accepted only if it places the block on its best
+chain at a height no tier covers; at a covered height the view pins a different
+block, and above the tip there is none.
+
+A miss is not a rejection. An address never paid is an empty answer, but an
+invalid request — an unparseable address, a range the validator cannot serve,
+a pool not yet active — is `ChainViewError::Rejected`, never an empty result.
 
 ## Configuration
 
@@ -245,13 +277,14 @@ let view = Arc::new(ChainViewComposer::new(store, head, source, config));
 let sync = view.spawn_sync(cancel.clone());
 ```
 
-**There is no separate catch-up phase, and that is the design.** The chain head
-emits a block once it falls below the consensus seam; the store accepts one only
-at `tip + 1`. An empty store handed a block from the middle of the chain
-therefore answers `ChainStoreError::FreezeGap`, which carries the height to build
-to — and building to it *is* the initial sync. A cold start and a chain head that
-re-anchored after an outage take the same path, so that path is exercised on
-every run rather than being a startup branch nothing reaches twice.
+**On launch it builds, then follows.** The loop first builds the store up to the
+chain head's floor — its lowest canonical block — so a store comes up even on a
+chain that is not moving, where no freeze would ever arrive. Freezes sent during
+the build wait in the stream, and those the build already covered are skipped.
+After that the chain head emits a block once it falls below the consensus seam,
+and the store accepts one only at `tip + 1`. A block that does not follow the
+store answers `ChainStoreError::FreezeGap`, which carries the height to build
+to, so a chain head that re-anchored after an outage is repaired the same way.
 
 The repair runs once per batch, not until it succeeds. A second gap means the
 chain moved while the build was running; the next batch reports it again with a
@@ -275,8 +308,9 @@ lagged rather than blocking the chain head, and a chain head that re-anchors
 never emits what it skipped. Neither is handled specially, because a missed block
 becomes a gap on the next freeze and the gap repairs itself.
 
-`ChainViewSync::status()` reports `Syncing` while a gap is open, `Ready` once
-freezes are landing, and `Offline` once the loop has stopped. This is separate
+`ChainViewSync::status()` reports `Syncing` until the store holds the floor and
+while a gap is open, `Ready` once it holds the floor or freezes are landing, and
+`Offline` once the loop has stopped. This is separate
 from the store's own status, which says whether the *database* is healthy;
 this says whether anything is still feeding it. Cancelling the token stops the
 loop, and so does dropping the handle — `shutdown()` additionally publishes

@@ -23,22 +23,24 @@ pub(crate) mod fetch;
 pub(crate) mod stream;
 pub(crate) mod sync;
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::Stream;
 use tokio::sync::{watch, Semaphore};
 use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockService, ChainHeadSnapshot, ChainHeadTransactionService,
+    ChainHeadTxOutSetService, CreatedTxOut,
 };
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreReader, ChainStoreService,
-    CompactBlockRead as StoreCompactBlockRead, SpentOutputIndex, StoredBlockRead, TransactionIndex,
-    TxOutSetAccumulator, TxOutSetIndex,
+    is_unspendable, ChainStoreError, ChainStoreReader, ChainStoreService,
+    CompactBlockRead as StoreCompactBlockRead, SpentOutputIndex, StoredBlockRead, StoredTxOut,
+    TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex, TXOUT_SET_ENTRY_LEN,
 };
 use zaino_primitives::types::{
-    rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockHash, BlockHeader,
-    BlockRef, ChainStateEpoch, CompactBlock, Height, Outpoint, ShieldedPool, SubtreeIndex,
-    SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
+    rpc::ChainTip, AbsoluteChainWork, AddressBalance, AddressDelta, BlockConfirmations, BlockHash,
+    BlockHeader, BlockRef, ChainStateEpoch, CompactBlock, Height, Outpoint, ShieldedPool,
+    SubtreeIndex, SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 
 use crate::block::ChainBlock;
@@ -284,13 +286,20 @@ fn serviceability(
             }
             local_ceiling.map_or(Answerable::NotAnswerable, Answerable::ToHeight)
         }
+        // The store's accumulator extended by the window, so it needs the
+        // store's spend indexes to resolve the window's spends, and no hole
+        // between the two.
         ChainCapability::TxOutSet => {
-            if !has(StoreCapability::TxOutSet) {
+            if !has(StoreCapability::TxOutSet)
+                || !has(StoreCapability::SpentOutputs)
+                || !has(StoreCapability::Transactions)
+            {
                 return Answerable::Absent;
             }
-            coverage
-                .store_top
-                .map_or(Answerable::NotAnswerable, Answerable::ToHeight)
+            if coverage.store_top.is_none() || !coverage.contiguous() {
+                return Answerable::NotAnswerable;
+            }
+            Answerable::ToHeight(tip)
         }
         // Zaino builds no transparent address index yet, so this is the
         // validator's answer for now. When the index lands it joins the group
@@ -382,13 +391,14 @@ where
         self
     }
 
-    /// Offers the unspent transparent output set's running totals.
+    /// Offers the unspent transparent output set's running totals at the tip.
     ///
-    /// The store's alone: the accumulator is a finalised-chain quantity and the
-    /// window contributes nothing to it.
+    /// A merge like spend status: the store's accumulator extended by what the
+    /// window created and spent, resolved through the store's spend indexes.
     pub fn serving_txout_set(mut self) -> Self
     where
-        Store::Reader: TxOutSetIndex,
+        Store::Reader: TxOutSetIndex + SpentOutputIndex + TransactionIndex,
+        Head::Snapshot: ChainHeadTxOutSetService,
     {
         self.served = self.served.with(ChainCapability::TxOutSet);
         self
@@ -656,6 +666,10 @@ where
         self.head.best_tip()
     }
 
+    fn epoch(&self) -> ChainStateEpoch {
+        self.head.epoch()
+    }
+
     fn serviceable_range(&self) -> ServiceableRange {
         ServiceableRange {
             finalised_tip: self.coverage.store_top,
@@ -676,17 +690,12 @@ where
     }
 
     async fn fork_point(&self, locator: &Locator) -> Result<Option<BlockRef>> {
-        // The locator is most-recent-first, so the first hash still on the
-        // canonical chain is the newest common ancestor — the point a client
-        // resumes from.
         for hash in locator.hashes() {
-            if let Some(block) = self.head.block_by_hash(hash) {
-                if self.head.is_on_best_chain(block.reference) {
-                    return Ok(Some(block.reference));
+            if self.head.block_by_hash(hash).is_some() {
+                match self.head.find_fork_point(hash) {
+                    Some(fork) => return Ok(Some(fork)),
+                    None => continue,
                 }
-                // Retained, but on a competing branch: the client is on a fork
-                // this view rejected, so keep looking further back.
-                continue;
             }
             if self.coverage.store_top.is_some() {
                 if let Some(height) = self.reader.block_height(*hash).await.map_err(store_err)? {
@@ -705,7 +714,11 @@ where
         from: Height,
     ) -> impl Stream<Item = Result<Vec<ChainBlock>>> + Send + use<Reader, HeadSnapshot, Source>
     {
-        let end = self.coverage.chain_tip().unwrap_or(Height::GENESIS);
+        let end = self
+            .coverage
+            .chain_tip()
+            .unwrap_or(Height::GENESIS)
+            .max(from);
         self.stream_blocks(from, end)
     }
 }
@@ -758,14 +771,22 @@ where
         // Neither holds it. During catch-up that is the ordinary case for any
         // historical hash, so ask the validator rather than reporting a block
         // that plainly exists as absent.
+        //
+        // The validator answers against its own best chain, so its answer
+        // stands only at a height no provider pins: a covered height holds a
+        // different block in this view, and one above the tip is not in it.
         if !self.fetch.enabled() {
             return Ok(None);
         }
-        Ok(self
-            .fetch
-            .block_by_hash(hash)
-            .await?
-            .map(|block| block.header.height))
+        let Some(header) = self.fetch.block_header(hash).await? else {
+            return Ok(None);
+        };
+        let canonical = header.confirmations != BlockConfirmations::NotInBestChain;
+        let unpinned = matches!(
+            self.coverage.provider_at(header.height),
+            Ok(Some(Provider::Source))
+        );
+        Ok((canonical && unpinned).then_some(header.height))
     }
 
     async fn block(&self, at: BlockId) -> Result<Option<ChainBlock>> {
@@ -829,15 +850,22 @@ where
     }
 
     async fn raw_block(&self, at: BlockId) -> Result<Option<Vec<u8>>> {
-        // Consensus bytes: no provider retains them, so this is the validator's
-        // answer wherever the block sits — asked the way the caller asked, so a
-        // by-height request costs one round trip rather than a resolution and a
-        // fetch, and still works for a height no provider covers.
-        self.fetch
-            .require("raw blocks need the validator, which is disabled")?;
         match at {
-            BlockId::Height(height) => self.fetch.raw_block_at(height).await,
+            BlockId::Height(height) => match self
+                .coverage
+                .provider_at(height)
+                .map_err(|()| uncoverable())?
+            {
+                None => Ok(None),
+                Some(provider) => Ok(self
+                    .raw_blocks_from(provider, vec![height])
+                    .await?
+                    .into_iter()
+                    .next()),
+            },
             BlockId::Hash(hash) => {
+                self.fetch
+                    .require("raw blocks need the validator, which is disabled")?;
                 fetch::miss(self.fetch.source().get_raw_block_by_hash(hash).await)
             }
         }
@@ -864,25 +892,78 @@ where
         start: Height,
         end: Height,
     ) -> impl Stream<Item = Result<Vec<Vec<u8>>>> + Send + use<Reader, HeadSnapshot, Source> {
-        // Always the validator, so the plan is only used to bound the range at
-        // the chain tip — no provider holds consensus bytes.
         stream::walk(
             self.clone(),
             start,
             end,
-            move |snapshot, _segment, heights| {
-                Box::pin(async move {
-                    snapshot
-                        .fetch
-                        .require("raw blocks need the validator, which is disabled")?;
-                    snapshot.fetch.fill_raw_blocks(heights).await
-                })
+            move |snapshot, segment, heights| {
+                Box::pin(async move { snapshot.raw_blocks_from(segment.provider, heights).await })
             },
         )
     }
 }
 
 // ***** Per-provider batch reads, shared by the point and range paths *****
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader,
+    HeadSnapshot: ChainHeadSnapshot,
+    Source: ChainViewSource,
+{
+    /// The hash this snapshot holds at `height`, or `None` where no local
+    /// provider covers it.
+    async fn pinned_hash(&self, provider: Provider, height: Height) -> Result<Option<BlockHash>> {
+        let hash = match provider {
+            Provider::Source => return Ok(None),
+            Provider::Store => self.reader.block_hash(height).await.map_err(store_err)?,
+            Provider::Head => self.head_block(height).map(ChainHeadBlock::hash),
+        };
+        hash.map(Some).ok_or_else(|| unpinned(height))
+    }
+
+    /// Consensus bytes for a run of heights, pinned to this snapshot.
+    ///
+    /// No provider retains consensus bytes, so the validator serves them all.
+    /// Where a local provider covers the run, each block is fetched by the hash
+    /// this snapshot holds at that height, so a reorg since the snapshot was
+    /// taken cannot substitute a block the snapshot never saw.
+    async fn raw_blocks_from(
+        &self,
+        provider: Provider,
+        heights: Vec<Height>,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.fetch
+            .require("raw blocks need the validator, which is disabled")?;
+        if provider == Provider::Source {
+            return self.fetch.fill_raw_blocks(heights).await;
+        }
+        let mut hashes = Vec::with_capacity(heights.len());
+        for height in heights {
+            hashes.push(
+                self.pinned_hash(provider, height)
+                    .await?
+                    .ok_or_else(|| unpinned(height))?,
+            );
+        }
+
+        let expected = hashes.len();
+        let blocks = self.fetch.fill_raw_blocks_by_hash(hashes).await?;
+        if blocks.len() != expected {
+            return Err(ChainViewError::Transient(String::from(
+                "the validator no longer serves a block this snapshot pins; retry with a fresh snapshot",
+            )));
+        }
+        Ok(blocks)
+    }
+}
+
+/// Coverage named a local provider for a height it holds no block at.
+fn unpinned(height: Height) -> ChainViewError {
+    ChainViewError::Fatal(format!(
+        "chain view routed height {height} to a provider holding no block there"
+    ))
+}
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
@@ -1112,16 +1193,42 @@ where
     async fn treestate(&self, at: BlockId) -> Result<Option<Treestate>> {
         // A treestate carries the *serialized* commitment tree; both providers
         // keep only a root and a size per pool, and a root is not a tree. So
-        // this is the validator's answer, asked the way the caller asked it —
-        // `z_gettreestate` takes either.
+        // this is the validator's answer: by the hash this snapshot pins where
+        // a provider covers the height, by height only in a hole. The tree port
+        // leaves each pool's root unset, so the roots are read by the
+        // treestate's own hash and joined in.
         self.fetch
             .require("treestates need the validator, which is disabled")?;
-        match at {
-            BlockId::Height(height) => fetch::miss(self.fetch.source().get_treestate(height).await),
-            BlockId::Hash(hash) => {
-                fetch::miss(self.fetch.source().get_treestate_by_hash(hash).await)
+        let source = self.fetch.source();
+        let treestate = match at {
+            BlockId::Hash(hash) => fetch::miss(source.get_treestate_by_hash(hash).await),
+            BlockId::Height(height) => {
+                let Some(provider) = self
+                    .coverage
+                    .provider_at(height)
+                    .map_err(|()| uncoverable())?
+                else {
+                    return Ok(None);
+                };
+                match self.pinned_hash(provider, height).await? {
+                    Some(hash) => fetch::miss(source.get_treestate_by_hash(hash).await),
+                    None => fetch::miss(source.get_treestate(height).await),
+                }
             }
-        }
+        }?;
+        let Some(mut treestate) = treestate else {
+            return Ok(None);
+        };
+        let roots = fetch::miss(source.get_commitment_tree_roots(treestate.block_hash).await)?
+            .ok_or_else(|| {
+                ChainViewError::Transient(String::from(
+                    "the validator no longer holds the block its treestate named",
+                ))
+            })?;
+        treestate.sapling = with_root(treestate.sapling, roots.sapling);
+        treestate.orchard = with_root(treestate.orchard, roots.orchard);
+        treestate.ironwood = with_root(treestate.ironwood, roots.ironwood);
+        Ok(Some(treestate))
     }
 
     async fn subtree_roots(
@@ -1133,16 +1240,27 @@ where
         // Indexed by subtree completion rather than by height, and no provider
         // keeps that index — deriving the boundaries from per-block roots means
         // walking the chain from genesis.
+        // The port's only domain error is an inactive pool, an invalid request.
         self.fetch
             .require("subtree roots need the validator, which is disabled")?;
-        Ok(fetch::miss(
+        fetch::answered(
             self.fetch
                 .source()
                 .get_subtree_roots(pool, start_index, limit)
                 .await,
-        )?
-        .unwrap_or_default())
+        )
     }
+}
+
+/// A pool's treestate with its root filled in.
+fn with_root(
+    pool: Option<zaino_primitives::types::PoolTreestate>,
+    root: Option<zaino_primitives::types::TreeRootInfo>,
+) -> Option<zaino_primitives::types::PoolTreestate> {
+    pool.map(|pool| zaino_primitives::types::PoolTreestate {
+        final_root: root.map(|info| info.root),
+        ..pool
+    })
 }
 
 // ***** Optional capabilities *****
@@ -1216,21 +1334,170 @@ where
 
 impl<Reader, HeadSnapshot, Source> TxOutSetRead for ComposerSnapshot<Reader, HeadSnapshot, Source>
 where
-    Reader: ChainStoreReader + TxOutSetIndex,
-    HeadSnapshot: ChainHeadSnapshot,
+    Reader: ChainStoreReader + TxOutSetIndex + SpentOutputIndex + TransactionIndex,
+    HeadSnapshot: ChainHeadTxOutSetService,
     Source: ChainViewSource,
 {
     async fn txout_set(&self) -> Result<TxOutSetAccumulator> {
         if !self.served.contains(ChainCapability::TxOutSet) {
             return Err(withheld(ChainCapability::TxOutSet));
         }
-        if self.coverage.store_top.is_none() {
+        let Some(store_top) = self.coverage.store_top else {
             return Err(ChainViewError::NotServiceable(
                 "the txout set needs the finalised store, which is disabled",
             ));
+        };
+        if !self.coverage.contiguous() {
+            return Err(ChainViewError::NotServiceable(
+                "the txout set cannot span a range neither the store nor the chain head holds",
+            ));
         }
-        self.reader.txout_set().await.map_err(store_err)
+
+        let mut set = self.reader.txout_set().await.map_err(store_err)?;
+        let Some(start) = store_top.checked_add(1) else {
+            return Ok(set);
+        };
+        let delta = self
+            .head
+            .txout_delta(start)
+            .map_err(|error| ChainViewError::Fatal(error.to_string()))?;
+        apply_created(&mut set, &delta.created)?;
+        self.apply_spent_below(&mut set, &delta.spent_below).await?;
+
+        let expected_bytes = set
+            .transaction_outputs
+            .checked_mul(TXOUT_SET_ENTRY_LEN)
+            .ok_or_else(|| {
+                ChainViewError::Fatal(String::from("txout set byte count overflowed"))
+            })?;
+        if set.bytes_serialized != expected_bytes {
+            return Err(ChainViewError::Fatal(format!(
+                "txout set byte count {} disagrees with its {} outputs",
+                set.bytes_serialized, set.transaction_outputs
+            )));
+        }
+        Ok(set)
     }
+}
+
+impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
+where
+    Reader: ChainStoreReader + SpentOutputIndex + TransactionIndex,
+{
+    /// Removes the window's spends of outputs the store created.
+    ///
+    /// The store resolves what each spend removes, and how many of each
+    /// creating transaction's outputs it still holds unspent — which decides
+    /// whether that transaction leaves the set's transaction count.
+    async fn apply_spent_below(
+        &self,
+        set: &mut TxOutSetAccumulator,
+        spent: &[Outpoint],
+    ) -> Result<()> {
+        if spent.is_empty() {
+            return Ok(());
+        }
+        let previous = self
+            .reader
+            .previous_outputs(spent)
+            .await
+            .map_err(store_err)?;
+
+        let mut removed: HashMap<TransactionId, u64> = HashMap::new();
+        for (outpoint, previous) in spent.iter().zip(previous) {
+            let previous = previous.ok_or_else(|| {
+                ChainViewError::Fatal(String::from(
+                    "the chain head spends an output the store does not hold",
+                ))
+            })?;
+            if is_unspendable(&previous) {
+                continue;
+            }
+            set.apply_removed_output(outpoint, &previous)
+                .map_err(accumulator_err)?;
+            *removed.entry(outpoint.txid).or_default() += 1;
+        }
+
+        for (txid, removed) in removed {
+            match self
+                .finalised_unspent_outputs(txid)
+                .await?
+                .checked_sub(removed)
+            {
+                Some(0) => {
+                    set.transactions = set.transactions.checked_sub(1).ok_or_else(|| {
+                        accumulator_err(TxOutSetError::Underflow("transactions"))
+                    })?;
+                }
+                Some(_) => {}
+                None => {
+                    return Err(ChainViewError::Fatal(String::from(
+                        "the chain head spends more of a transaction's outputs than the store holds unspent",
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// How many of `txid`'s spendable outputs the store holds unspent.
+    async fn finalised_unspent_outputs(&self, txid: TransactionId) -> Result<u64> {
+        let missing = || {
+            ChainViewError::Fatal(String::from(
+                "the chain head spends from a transaction the store does not hold",
+            ))
+        };
+        let position = self
+            .reader
+            .tx_position(&txid)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(missing)?;
+        let outputs = self
+            .reader
+            .transparent_outputs(position)
+            .await
+            .map_err(store_err)?
+            .ok_or_else(missing)?;
+
+        let outpoints: Vec<Outpoint> = outputs
+            .iter()
+            .zip(0..)
+            .filter(|(output, _)| !is_unspendable(output))
+            .map(|(_, index)| Outpoint { txid, index })
+            .collect();
+        let spenders = self
+            .reader
+            .outpoint_spenders(&outpoints)
+            .await
+            .map_err(store_err)?;
+        Ok(spenders.iter().filter(|spender| spender.is_none()).count() as u64)
+    }
+}
+
+/// Adds the window's surviving outputs, and counts each transaction holding
+/// one into the set.
+fn apply_created(set: &mut TxOutSetAccumulator, created: &[CreatedTxOut]) -> Result<()> {
+    let mut holders = HashSet::new();
+    for created in created {
+        let output = StoredTxOut::from_output(&created.output);
+        if is_unspendable(&output) {
+            continue;
+        }
+        set.apply_added_output(&created.outpoint, &output)
+            .map_err(accumulator_err)?;
+        holders.insert(created.outpoint.txid);
+    }
+    set.transactions = set
+        .transactions
+        .checked_add(holders.len() as u64)
+        .ok_or_else(|| accumulator_err(TxOutSetError::Overflow("transactions")))?;
+    Ok(())
+}
+
+/// An accumulator counter left its range: two providers disagree about the set.
+fn accumulator_err(error: TxOutSetError) -> ChainViewError {
+    ChainViewError::Fatal(error.to_string())
 }
 
 impl<Reader, HeadSnapshot, Source> ComposerSnapshot<Reader, HeadSnapshot, Source>
@@ -1241,20 +1508,19 @@ where
     ///
     /// Each one refuses the same two ways before it asks anything — the
     /// deployment may withhold the capability, and the validator may be
-    /// disabled — and each treats "the validator does not know this address" as
-    /// an absent answer rather than a failure. Only the port call differs, so
-    /// it arrives as the future it returns and the rest is written once.
+    /// disabled. Only the port call differs, so it arrives as the future it
+    /// returns and the rest is written once.
+    ///
+    /// An address never paid is an ordinary answer from these ports, so every
+    /// domain error they raise is an invalid request.
     ///
     /// A caller builds that future before the guards run, which costs nothing:
     /// an `async fn` does no work until awaited, so a withheld capability still
     /// never reaches the validator.
-    ///
-    /// Returns `Option` rather than defaulting here because the callers do not
-    /// agree on what absence means: a balance is zero, a list is empty.
     async fn address_query<T, E>(
         &self,
         call: impl core::future::Future<Output = core::result::Result<T, zaino_source::QueryError<E>>>,
-    ) -> Result<Option<T>>
+    ) -> Result<T>
     where
         E: core::fmt::Debug + core::fmt::Display,
     {
@@ -1263,7 +1529,7 @@ where
         }
         self.fetch
             .require("address history needs the validator, which is disabled")?;
-        fetch::miss(call.await)
+        fetch::answered(call.await)
     }
 }
 
@@ -1279,22 +1545,13 @@ where
     // fillable — the validator runs no such index either.
 
     async fn address_balance(&self, addresses: &[TransparentAddress]) -> Result<AddressBalance> {
-        Ok(self
-            .address_query(self.fetch.source().get_address_balance(encoded(addresses)))
-            .await?
-            // An address the validator does not know has no balance, which is
-            // an answer rather than a failure.
-            .unwrap_or(AddressBalance {
-                balance: zaino_primitives::types::Zatoshis::ZERO,
-                received: zaino_primitives::types::ZatoshisFlowSum::from_summed(0),
-            }))
+        self.address_query(self.fetch.source().get_address_balance(encoded(addresses)))
+            .await
     }
 
     async fn address_utxos(&self, addresses: &[TransparentAddress]) -> Result<Vec<Utxo>> {
-        Ok(self
-            .address_query(self.fetch.source().get_address_utxos(encoded(addresses)))
-            .await?
-            .unwrap_or_default())
+        self.address_query(self.fetch.source().get_address_utxos(encoded(addresses)))
+            .await
     }
 
     async fn address_txids(
@@ -1303,14 +1560,12 @@ where
         start: Height,
         end: Height,
     ) -> Result<Vec<TransactionId>> {
-        Ok(self
-            .address_query(
-                self.fetch
-                    .source()
-                    .get_address_txids(encoded(addresses), start, end),
-            )
-            .await?
-            .unwrap_or_default())
+        self.address_query(
+            self.fetch
+                .source()
+                .get_address_txids(encoded(addresses), start, end),
+        )
+        .await
     }
 
     async fn address_deltas(
@@ -1319,14 +1574,12 @@ where
         start: Height,
         end: Height,
     ) -> Result<Vec<AddressDelta>> {
-        Ok(self
-            .address_query(
-                self.fetch
-                    .source()
-                    .get_address_deltas(encoded(addresses), start, end),
-            )
-            .await?
-            .unwrap_or_default())
+        self.address_query(
+            self.fetch
+                .source()
+                .get_address_deltas(encoded(addresses), start, end),
+        )
+        .await
     }
 }
 

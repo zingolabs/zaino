@@ -102,6 +102,32 @@ pub(crate) fn take(segment: Segment, count: u32) -> (Vec<Height>, Option<Segment
     (heights, remainder)
 }
 
+/// The top `count` heights of a segment, ascending, and what remains below.
+///
+/// The descending counterpart of [`take`]. The run is still ascending because
+/// every provider reads ascending; the walk reverses the chunk it produces.
+pub(crate) fn take_top(segment: Segment, count: u32) -> (Vec<Height>, Option<Segment>) {
+    let start = u32::from(segment.start);
+    let end = u32::from(segment.end);
+    let first = end.saturating_sub(count.saturating_sub(1)).max(start);
+
+    let heights = (first..=end)
+        .filter_map(|height| Height::try_from(height).ok())
+        .collect();
+
+    let remainder = first
+        .checked_sub(1)
+        .filter(|below| *below >= start)
+        .and_then(|below| Height::try_from(below).ok())
+        .map(|below| Segment {
+            provider: segment.provider,
+            start: segment.start,
+            end: below,
+        });
+
+    (heights, remainder)
+}
+
 /// A rough serialized size, for chunk sizing only.
 ///
 /// Never a wire size and never used as one: it exists so the walk can adapt its
@@ -144,8 +170,8 @@ pub(crate) fn approx_size(block: &CompactBlock) -> usize {
 /// families decode at all. There is nothing to push it into for an
 /// already-projected block, so above the store it is applied afterwards. That
 /// is a performance difference and must not become a semantic one: a caller
-/// filtering to sapling gets the same shape from every provider, including the
-/// same transactions omitted.
+/// filtering to sapling gets the same shape from every provider. Like the
+/// store's, the block keeps every transaction, since position is the index.
 pub(crate) fn compact_from_pre_index(
     pre_index: PreIndexCompactBlock,
     chain_metadata: ChainMetadata,
@@ -155,7 +181,6 @@ pub(crate) fn compact_from_pre_index(
         .transactions
         .into_iter()
         .map(|tx| filter_tx(tx, pools))
-        .filter(retains_anything)
         .collect();
 
     CompactBlock {
@@ -201,16 +226,6 @@ fn filter_tx(mut tx: PreIndexCompactTx, pools: PoolFilter) -> PreIndexCompactTx 
     tx
 }
 
-/// Whether a filtered transaction still carries anything asked for.
-fn retains_anything(tx: &PreIndexCompactTx) -> bool {
-    !tx.transparent_inputs.is_empty()
-        || !tx.transparent_outputs.is_empty()
-        || !tx.sapling_nullifiers.is_empty()
-        || !tx.sapling_outputs.is_empty()
-        || !tx.orchard_actions.is_empty()
-        || !tx.ironwood_actions.is_empty()
-}
-
 // ***** The walk *****
 
 use futures::stream::Stream;
@@ -229,7 +244,12 @@ use crate::error::{ChainViewError, Result};
 /// fetch from disk or over a network.
 pub(crate) type ChunkFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
-/// Walks `start..=end` across providers, yielding a chunk at a time.
+/// Walks from `start` to `end` across providers, yielding a chunk at a time.
+///
+/// Ascending when `start <= end`, descending when `start > end`; either way the
+/// range is truncated at the chain tip. A descending walk plans the same
+/// segments top-down, reads each chunk ascending — the only way any provider
+/// reads — and reverses it, so it holds no more than one chunk either way.
 ///
 /// The chunk length adapts by bytes; `size_of` measures a produced chunk so the
 /// next one can be sized from what the chain actually holds there.
@@ -247,7 +267,18 @@ where
     M: Fn(&[T]) -> usize + Send + Sync + 'static,
 {
     let budget = snapshot.chunk_budget_bytes();
-    let plan = snapshot.coverage().segments(start, end);
+    let descending = start > end;
+    let (lo, hi) = if descending {
+        (end, start)
+    } else {
+        (start, end)
+    };
+    let plan = snapshot.coverage().segments(lo, hi).map(|mut segments| {
+        if descending {
+            segments.reverse();
+        }
+        segments
+    });
 
     futures::stream::unfold(
         Walk {
@@ -261,6 +292,7 @@ where
                     segments: segments.into_iter(),
                     current: None,
                     chunker: Chunker::new(budget),
+                    descending,
                 },
             },
             fetch,
@@ -308,6 +340,7 @@ enum WalkState {
         segments: std::vec::IntoIter<Segment>,
         current: Option<Segment>,
         chunker: Chunker,
+        descending: bool,
     },
     /// The range could not be planned; yield one error and stop.
     Failed,
@@ -341,20 +374,26 @@ where
                     segments,
                     current,
                     chunker,
+                    descending,
                 } => {
+                    let descending = *descending;
                     let Some(segment) = current.take().or_else(|| segments.next()) else {
                         self.state = WalkState::Done;
                         return None;
                     };
 
-                    let (heights, remainder) = take(segment, chunker.count());
+                    let (heights, remainder) = if descending {
+                        take_top(segment, chunker.count())
+                    } else {
+                        take(segment, chunker.count())
+                    };
                     *current = remainder;
                     if heights.is_empty() {
                         continue;
                     }
 
                     let asked = heights.len();
-                    let chunk = match (self.fetch)(&self.snapshot, segment, heights).await {
+                    let mut chunk = match (self.fetch)(&self.snapshot, segment, heights).await {
                         Ok(chunk) => chunk,
                         Err(error) => {
                             self.state = WalkState::Done;
@@ -373,10 +412,19 @@ where
 
                     if short {
                         self.state = WalkState::Done;
+                        // A short ascending read is missing its top, which is
+                        // this chunk's head when walking down: nothing in it
+                        // continues the run.
+                        if descending {
+                            return None;
+                        }
                     }
                     if chunk.is_empty() {
                         self.state = WalkState::Done;
                         return None;
+                    }
+                    if descending {
+                        chunk.reverse();
                     }
                     return Some(Ok(chunk));
                 }
@@ -439,6 +487,44 @@ mod tests {
         assert_eq!(seen.last().copied(), Some(height(99)));
         for pair in seen.windows(2) {
             assert_eq!(u32::from(pair[0]) + 1, u32::from(pair[1]));
+        }
+    }
+
+    /// A top-down chunk smaller than the segment leaves the bottom behind.
+    #[test]
+    fn take_top_splits_a_segment() {
+        let (heights, rest) = take_top(segment(10, 20), 4);
+        assert_eq!(heights.first().copied(), Some(height(17)));
+        assert_eq!(heights.last().copied(), Some(height(20)));
+        assert_eq!(heights.len(), 4);
+        assert_eq!(rest, Some(segment(10, 16)));
+    }
+
+    /// A top-down chunk covering the segment leaves nothing, down to genesis.
+    #[test]
+    fn take_top_consumes_a_segment() {
+        let (heights, rest) = take_top(segment(0, 2), 100);
+        assert_eq!(heights.len(), 3);
+        assert_eq!(rest, None);
+    }
+
+    /// Every height is yielded exactly once across repeated top-down takes,
+    /// each run ascending and the runs descending.
+    #[test]
+    fn repeated_top_takes_tile_the_segment() {
+        let mut current = Some(segment(0, 99));
+        let mut seen = Vec::new();
+        while let Some(segment) = current {
+            let (heights, rest) = take_top(segment, 7);
+            assert!(heights.windows(2).all(|pair| pair[0] < pair[1]));
+            seen.extend(heights.into_iter().rev());
+            current = rest;
+        }
+        assert_eq!(seen.len(), 100);
+        assert_eq!(seen.first().copied(), Some(height(99)));
+        assert_eq!(seen.last().copied(), Some(height(0)));
+        for pair in seen.windows(2) {
+            assert_eq!(u32::from(pair[0]), u32::from(pair[1]) + 1);
         }
     }
 

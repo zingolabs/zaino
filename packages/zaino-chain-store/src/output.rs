@@ -1,6 +1,8 @@
 //! Transparent outputs, as the store indexes them.
 
-use zaino_primitives::types::{BlockTxPosition, TransactionId, TransparentAddressKey, Zatoshis};
+use zaino_primitives::types::{
+    BlockTxPosition, TransactionId, TransparentAddressKey, TransparentOutput, Zatoshis,
+};
 
 /// A transparent output, as the store holds it.
 ///
@@ -24,6 +26,14 @@ impl StoredTxOut {
     /// An output from its parts.
     pub fn new(value: Zatoshis, address: TransparentAddressKey) -> Self {
         Self { value, address }
+    }
+
+    /// A domain output, reduced to what the store indexes.
+    pub fn from_output(output: &TransparentOutput) -> Self {
+        Self::new(
+            output.value,
+            TransparentAddressKey::from_script(output.script.as_bytes()),
+        )
     }
 }
 

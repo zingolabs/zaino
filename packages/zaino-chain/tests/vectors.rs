@@ -163,22 +163,41 @@ async fn transactions_survive_every_provider() {
             ChainViewConfig::default(),
         );
 
-        let block = composer
-            .snapshot()
-            .compact_block(height(busiest), PoolFilter::all())
-            .await
-            .unwrap_or_else(|error| panic!("{who} could not serve height {busiest}: {error}"))
-            .unwrap_or_else(|| panic!("{who} had no block at height {busiest}"));
+        let expected_txids: Vec<_> = chain
+            .block(busiest)
+            .expect("in range")
+            .transactions()
+            .iter()
+            .map(|tx| tx.txid)
+            .collect();
 
-        assert_eq!(
-            block.transactions.len(),
-            expected,
-            "{who} lost transactions at height {busiest}"
-        );
-        assert_eq!(
-            block.hash,
-            chain.block(busiest).expect("in range").header.hash
-        );
+        for pools in [PoolFilter::all(), PoolFilter::none()] {
+            let block = composer
+                .snapshot()
+                .compact_block(height(busiest), pools)
+                .await
+                .unwrap_or_else(|error| panic!("{who} could not serve height {busiest}: {error}"))
+                .unwrap_or_else(|| panic!("{who} had no block at height {busiest}"));
+
+            assert_eq!(
+                block.transactions.len(),
+                expected,
+                "{who} lost transactions at height {busiest}"
+            );
+            assert_eq!(
+                block
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.txid)
+                    .collect::<Vec<_>>(),
+                expected_txids,
+                "{who} moved a transaction at height {busiest}"
+            );
+            assert_eq!(
+                block.hash,
+                chain.block(busiest).expect("in range").header.hash
+            );
+        }
     }
 }
 

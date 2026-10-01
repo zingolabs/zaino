@@ -15,6 +15,11 @@
 //! would otherwise materialise it — with thousands of clients doing so at once,
 //! that is the difference between bounded and unbounded memory.
 //!
+//! Every range runs from `start` to `end` inclusive, in either direction:
+//! ascending when `start <= end`, descending when `start > end`. Either way it
+//! is truncated at the chain tip, and a descending read costs no more memory
+//! than an ascending one.
+//!
 //! The streams are lazy, so a slow client applies backpressure by not polling
 //! rather than by filling a buffer. `use<Self>` excludes the `&self` lifetime,
 //! making them `'static` so a consumer can move one into a spawned task; an
@@ -85,6 +90,9 @@ pub trait ChainViewSnapshot:
     /// The tip this view is pinned to.
     fn tip(&self) -> BlockRef;
 
+    /// The chain state this view is pinned to.
+    fn epoch(&self) -> ChainStateEpoch;
+
     /// The heights this view can answer between.
     fn serviceable_range(&self) -> ServiceableRange;
 }
@@ -110,9 +118,16 @@ pub trait BlockRead: Send + Sync {
         -> impl Future<Output = Result<Option<BlockHeader>>> + Send;
 
     /// The consensus bytes of the block at `at`.
+    ///
+    /// Pinned to the snapshot: a height a local provider covers is fetched by
+    /// the hash the snapshot holds there, so the answer is the block this view
+    /// believes in even if the validator has since reorged. A pinned block the
+    /// validator no longer serves is
+    /// [`ChainViewError::Transient`](crate::ChainViewError::Transient).
     fn raw_block(&self, at: BlockId) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
 
-    /// The indexed blocks in `start..=end`, ascending, as a stream of chunks.
+    /// The indexed blocks from `start` to `end`, in either direction, as a stream
+    /// of chunks.
     ///
     /// May be answered by several providers at once — the store below its
     /// watermark, the validator across a range it has not built, the chain head
@@ -124,7 +139,10 @@ pub trait BlockRead: Send + Sync {
         end: Height,
     ) -> impl Stream<Item = Result<Vec<ChainBlock>>> + Send + use<Self>;
 
-    /// The consensus bytes of the blocks in `start..=end`, ascending.
+    /// The consensus bytes of the blocks from `start` to `end`, in either
+    /// direction.
+    ///
+    /// Pinned to the snapshot exactly as [`Self::raw_block`] is.
     fn stream_raw_blocks(
         &self,
         start: Height,
@@ -146,7 +164,8 @@ pub trait CompactBlockRead: Send + Sync {
         pools: PoolFilter,
     ) -> impl Future<Output = Result<Option<CompactBlock>>> + Send;
 
-    /// The compact blocks in `start..=end`, ascending, as a stream of chunks.
+    /// The compact blocks from `start` to `end`, in either direction, as a stream
+    /// of chunks.
     ///
     /// The wallet-sync hot path, and the read this crate is shaped around.
     fn stream_compact(
@@ -178,13 +197,14 @@ pub trait TransactionRead: Send + Sync {
 
 /// Commitment tree state.
 pub trait TreestateRead: Send + Sync {
-    /// The commitment trees as of the block at `at`.
+    /// The commitment trees as of the block at `at`, each with its root.
     fn treestate(&self, at: BlockId) -> impl Future<Output = Result<Option<Treestate>>> + Send;
 
     /// Subtree roots for `pool`, from `start_index`, at most `limit`.
     ///
     /// Indexed by subtree completion rather than by height, and the two do not
     /// correspond — a subtree completes when it fills, not on a block boundary.
+    /// An inactive pool is [`Rejected`](crate::ChainViewError::Rejected).
     fn subtree_roots(
         &self,
         pool: ShieldedPool,
@@ -198,12 +218,7 @@ pub trait ForkReconcile: Send + Sync {
     /// Every tip of the retained graph, canonical and competing.
     fn chain_tips(&self) -> Vec<ChainTip>;
 
-    /// The most recent block in `locator` that is on the canonical chain.
-    ///
-    /// What a client resyncing after a reorg asks. It offers the hashes it
-    /// believes in, most recent first, and gets back the newest one still on
-    /// the chain — the point from which to resume. `None` when it recognises
-    /// none of them, which means resyncing from further back.
+    /// The newest canonical block common to `locator` and this chain.
     fn fork_point(
         &self,
         locator: &Locator,
@@ -225,6 +240,9 @@ pub trait ForkReconcile: Send + Sync {
 // store lacks the backing index does not get these impls at all.
 
 /// Transparent address history.
+///
+/// An address never paid is an empty answer; an invalid request is
+/// [`Rejected`](crate::ChainViewError::Rejected).
 pub trait AddressRead: Send + Sync {
     /// The total transparent balance of these addresses.
     fn address_balance(
@@ -273,10 +291,11 @@ pub trait SpendRead: Send + Sync {
 
 /// The unspent transparent output set's running totals.
 pub trait TxOutSetRead: Send + Sync {
-    /// The accumulator as of the finalised watermark.
+    /// The accumulator at the snapshot's tip, over the whole chain.
     ///
-    /// A partial fold, not an answer at the tip: a consumer serving
-    /// `gettxoutsetinfo` extends it with what the recent window created and
-    /// spent.
+    /// The answer `gettxoutsetinfo` serves. A composition extends the store's
+    /// accumulator with what the recent window created and spent, so it refuses
+    /// while a hole separates the two: the validator keeps no such set, and an
+    /// answer spanning a hole would be silently wrong.
     fn txout_set(&self) -> impl Future<Output = Result<TxOutSetAccumulator>> + Send;
 }

@@ -48,12 +48,28 @@ async fn eventually(mut condition: impl FnMut() -> bool) -> bool {
     false
 }
 
-/// The ordinary case: the store is behind, so the first frozen block gaps, the
-/// loop builds to close it, and the block lands.
-///
-/// This is the whole mechanism in one test. There is no separate catch-up
-/// phase — the gap error *is* the trigger — so a cold start and a chain head
-/// that ran ahead take exactly this path.
+/// A chain that is not moving: no freeze ever comes, so the launch build is
+/// what brings the store up to the chain head's floor.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_store_is_built_to_the_floor_on_launch() {
+    let chain = chain();
+    let store = FakeStore::empty().buildable_from(&chain, 1200);
+    let head = FakeHead::covering(&chain, 1000, 1200);
+    let composer = composed(store.clone(), head.clone(), &chain);
+
+    let sync = composer.spawn_sync(CancellationToken::new());
+
+    assert!(
+        eventually(|| store.heights().last() == Some(&1000)).await,
+        "the store should have built to the floor, holding {:?}",
+        store.heights().last(),
+    );
+    assert_eq!(store.heights().len(), 1001, "genesis through the floor");
+    assert_eq!(sync.status().lifecycle, Lifecycle::Ready);
+}
+
+/// A frozen block that does not follow the store gaps, the loop builds to
+/// close it, and the block lands.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_gap_is_closed_and_the_block_lands() {
     let chain = chain();
@@ -62,16 +78,16 @@ async fn a_gap_is_closed_and_the_block_lands() {
     let composer = composed(store.clone(), head.clone(), &chain);
 
     let sync = composer.spawn_sync(CancellationToken::new());
-    head.freeze(&chain, 1000);
+    head.freeze(&chain, 1005);
 
     assert!(
-        eventually(|| store.heights().last() == Some(&1000)).await,
-        "the store should have built to 999 and frozen 1000, holding {:?}",
+        eventually(|| store.heights().last() == Some(&1005)).await,
+        "the store should have built to 1004 and frozen 1005, holding {:?}",
         store.heights().last(),
     );
     assert_eq!(
         store.heights().len(),
-        1001,
+        1006,
         "genesis through the frozen block, with no hole",
     );
     assert_eq!(sync.status().lifecycle, Lifecycle::Ready);
@@ -162,7 +178,7 @@ async fn a_gap_that_cannot_be_closed_leaves_the_store_untouched() {
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_stops_the_loop() {
     let chain = chain();
-    let store = FakeStore::covering(&chain, 999).buildable_from(&chain, 1200);
+    let store = FakeStore::covering(&chain, 1000).buildable_from(&chain, 1200);
     let head = FakeHead::covering(&chain, 1000, 1200);
     let composer = composed(store.clone(), head.clone(), &chain);
 
@@ -176,9 +192,9 @@ async fn cancelling_stops_the_loop() {
         sync.status().lifecycle,
     );
 
-    head.freeze(&chain, 1000);
+    head.freeze(&chain, 1001);
     assert!(
-        !eventually(|| store.heights().last() == Some(&1000)).await,
+        !eventually(|| store.heights().last() == Some(&1001)).await,
         "a stopped loop must not still be writing",
     );
 }
@@ -191,15 +207,15 @@ async fn cancelling_stops_the_loop() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dropping_the_handle_stops_the_loop() {
     let chain = chain();
-    let store = FakeStore::covering(&chain, 999).buildable_from(&chain, 1200);
+    let store = FakeStore::covering(&chain, 1000).buildable_from(&chain, 1200);
     let head = FakeHead::covering(&chain, 1000, 1200);
     let composer = composed(store.clone(), head.clone(), &chain);
 
     drop(composer.spawn_sync(CancellationToken::new()));
 
-    head.freeze(&chain, 1000);
+    head.freeze(&chain, 1001);
     assert!(
-        !eventually(|| store.heights().last() == Some(&1000)).await,
+        !eventually(|| store.heights().last() == Some(&1001)).await,
         "a dropped handle must not leave a task writing",
     );
 }

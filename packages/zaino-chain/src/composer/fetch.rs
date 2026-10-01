@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use futures::{stream, StreamExt as _, TryStreamExt as _};
 use tokio::sync::Semaphore;
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, CompactBlock, Height, TreeRoots};
+use zaino_primitives::types::{
+    rpc::BlockHeaderVerbose, Block, BlockHash, ChainMetadata, CompactBlock, Height, TreeRoots,
+};
 use zaino_source::QueryError;
 
 use crate::composer::config::ChainViewConfig;
@@ -31,6 +33,19 @@ where
     match result {
         Ok(value) => Ok(Some(value)),
         Err(QueryError::Domain(_)) => Ok(None),
+        Err(QueryError::Fetch(error)) => Err(ChainViewError::SourceUnavailable(error)),
+    }
+}
+
+/// A validator answer from a port whose domain errors all mean an invalid
+/// request, never an absent answer.
+pub(crate) fn answered<T, E>(result: core::result::Result<T, QueryError<E>>) -> Result<T>
+where
+    E: core::fmt::Debug + core::fmt::Display,
+{
+    match result {
+        Ok(value) => Ok(value),
+        Err(QueryError::Domain(error)) => Err(ChainViewError::Rejected(error.to_string())),
         Err(QueryError::Fetch(error)) => Err(ChainViewError::SourceUnavailable(error)),
     }
 }
@@ -121,9 +136,9 @@ impl<Source: ChainViewSource> Fetcher<Source> {
     /// Stops at the first height the validator does not have rather than
     /// leaving a hole mid-range: a caller walking heights would read a hole as
     /// "these blocks are empty".
-    async fn fill<T, F, Fut>(&self, heights: Vec<Height>, fetch: F) -> Result<Vec<T>>
+    async fn fill<K, T, F, Fut>(&self, keys: Vec<K>, fetch: F) -> Result<Vec<T>>
     where
-        F: Fn(Height) -> Fut,
+        F: Fn(K) -> Fut,
         Fut: core::future::Future<Output = Result<Option<T>>>,
     {
         let concurrency = self
@@ -132,8 +147,8 @@ impl<Source: ChainViewSource> Fetcher<Source> {
             .min(self.config.passthrough_permits)
             .max(1);
 
-        let filled: Vec<Option<T>> = stream::iter(heights)
-            .map(|height| self.permitted(fetch(height)))
+        let filled: Vec<Option<T>> = stream::iter(keys)
+            .map(|key| self.permitted(fetch(key)))
             .buffered(concurrency)
             .try_collect()
             .await?;
@@ -228,9 +243,20 @@ impl<Source: ChainViewSource> Fetcher<Source> {
         self.fill(heights, |height| self.raw_block_at(height)).await
     }
 
-    /// A parsed block by hash, for an id-addressed read no provider covers.
-    pub(crate) async fn block_by_hash(&self, hash: BlockHash) -> Result<Option<Block>> {
-        self.permitted(async { miss(self.source.get_block_by_hash(hash).await) })
+    /// Fills `hashes` with consensus bytes.
+    pub(crate) async fn fill_raw_blocks_by_hash(
+        &self,
+        hashes: Vec<BlockHash>,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.fill(hashes, |hash| async move {
+            miss(self.source.get_raw_block_by_hash(hash).await)
+        })
+        .await
+    }
+
+    /// A block's header, for an id-addressed read no provider covers.
+    pub(crate) async fn block_header(&self, hash: BlockHash) -> Result<Option<BlockHeaderVerbose>> {
+        self.permitted(async { miss(self.source.get_block_header(hash).await) })
             .await
     }
 }

@@ -40,15 +40,15 @@ use zaino_chain_head::{
     ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
 };
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
-    ChainStoreSourceError, CompactBlockRead, FrozenBlock, MigrationState, PoolFilter, Provenance,
-    SchemaVersion, SpenderRef, SpentOutputIndex, StoreCapabilities, StoreCapability, StoreSchema,
-    StoreWatermark, StoredBlock, StoredBlockRead, StoredTx, StoredTxOut, TransactionIndex,
-    TxOutSetAccumulator, TxOutSetIndex,
+    is_unspendable, ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader,
+    ChainStoreService, ChainStoreSourceError, CompactBlockRead, FrozenBlock, MigrationState,
+    PoolFilter, Provenance, SchemaVersion, SpenderRef, SpentOutputIndex, StoreCapabilities,
+    StoreCapability, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead, StoredTx,
+    StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetError, TxOutSetIndex,
 };
 use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
-    rpc::{ChainTip, ChainTipStatus},
+    rpc::{BlockHeaderVerbose, ChainTip, ChainTipStatus},
     AbsoluteChainWork, AddressBalance, AddressDelta, Block, BlockConfirmations, BlockHash,
     BlockHeader, BlockRef, BlockTreeSizes, BlockTxPosition, BlockVerbose, ChainMetadata,
     ChainStateEpoch, CompactDifficulty, EquihashNonce, EquihashSolution, Height, MerkleRoot,
@@ -58,13 +58,14 @@ use zaino_primitives::types::{
 };
 use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockByHashError, GetBlockError, GetBlockVerboseError, GetCommitmentTreeRootsError,
-    GetSubtreeRootsError, GetTransactionError, GetTreestateByHashError, GetTreestateError,
-    OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
-    OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetBlockVerbose,
-    OneShotGetCommitmentTreeRoots, OneShotGetPreIndexCompactBlock, OneShotGetRawBlock,
-    OneShotGetRawBlockByHash, OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate,
-    OneShotGetTreestateByHash, QueryError, TransactionResponse,
+    GetBlockByHashError, GetBlockError, GetBlockHeaderError, GetBlockVerboseError,
+    GetCommitmentTreeRootsError, GetSubtreeRootsError, GetTransactionError,
+    GetTreestateByHashError, GetTreestateError, OneShotGetAddressBalance, OneShotGetAddressDeltas,
+    OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash,
+    OneShotGetBlockHeader, OneShotGetBlockVerbose, OneShotGetCommitmentTreeRoots,
+    OneShotGetPreIndexCompactBlock, OneShotGetRawBlock, OneShotGetRawBlockByHash,
+    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate, OneShotGetTreestateByHash,
+    QueryError, TransactionResponse,
 };
 
 // ***** The chain everything draws from *****
@@ -648,13 +649,69 @@ fn compact_of(block: &StoredBlock) -> zaino_primitives::types::CompactBlock {
     }
 }
 
+/// The store's own index over what it holds.
+///
+/// Derived from the held blocks rather than configured, so the spend reads and
+/// the accumulator describe the same chain the block reads do. The explicit
+/// `with_transaction` and `with_spender` entries still take precedence, for
+/// tests that need an answer the chain does not hold.
+impl FakeStore {
+    fn held_transactions(&self) -> Vec<(BlockTxPosition, PreIndexCompactTx)> {
+        self.held()
+            .iter()
+            .flat_map(|block| {
+                let height = block.header.height;
+                block.transactions.iter().zip(0..).map(move |(tx, index)| {
+                    (BlockTxPosition::new(height, index), tx.compact.clone())
+                })
+            })
+            .collect()
+    }
+
+    fn held_position(&self, txid: &TransactionId) -> Option<BlockTxPosition> {
+        self.held_transactions()
+            .into_iter()
+            .find(|(_, tx)| tx.txid == *txid)
+            .map(|(position, _)| position)
+    }
+
+    fn held_spender(&self, outpoint: &Outpoint) -> Option<SpenderRef> {
+        self.held_transactions()
+            .into_iter()
+            .find_map(|(position, tx)| {
+                tx.transparent_inputs
+                    .iter()
+                    .any(|input| {
+                        input.prev_txid == outpoint.txid && input.prev_index == outpoint.index
+                    })
+                    .then(|| SpenderRef::new(position, tx.txid))
+            })
+    }
+
+    fn held_output(&self, outpoint: &Outpoint) -> Option<StoredTxOut> {
+        self.held_transactions()
+            .into_iter()
+            .find(|(_, tx)| tx.txid == outpoint.txid)
+            .and_then(|(_, tx)| {
+                tx.transparent_outputs
+                    .get(outpoint.index as usize)
+                    .map(StoredTxOut::from_output)
+            })
+    }
+}
+
 impl TransactionIndex for FakeStore {
     async fn tx_position(
         &self,
         txid: &TransactionId,
     ) -> Result<Option<BlockTxPosition>, ChainStoreError> {
         self.require(StoreCapability::Transactions)?;
-        Ok(self.inner.positions.get(&<[u8; 32]>::from(*txid)).copied())
+        Ok(self
+            .inner
+            .positions
+            .get(&<[u8; 32]>::from(*txid))
+            .copied()
+            .or_else(|| self.held_position(txid)))
     }
 
     async fn txid_at(
@@ -679,7 +736,13 @@ impl SpentOutputIndex for FakeStore {
         self.require(StoreCapability::SpentOutputs)?;
         Ok(outpoints
             .iter()
-            .map(|outpoint| self.inner.spenders.get(outpoint).copied())
+            .map(|outpoint| {
+                self.inner
+                    .spenders
+                    .get(outpoint)
+                    .copied()
+                    .or_else(|| self.held_spender(outpoint))
+            })
             .collect())
     }
 
@@ -688,30 +751,80 @@ impl SpentOutputIndex for FakeStore {
         outpoints: &[Outpoint],
     ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
         self.require(StoreCapability::SpentOutputs)?;
-        Ok(outpoints.iter().map(|_| None).collect())
+        Ok(outpoints
+            .iter()
+            .map(|outpoint| self.held_output(outpoint))
+            .collect())
     }
 
     async fn unspent_output(
         &self,
-        _outpoint: Outpoint,
+        outpoint: Outpoint,
     ) -> Result<Option<StoredTxOut>, ChainStoreError> {
         self.require(StoreCapability::SpentOutputs)?;
-        Ok(None)
+        Ok(self
+            .held_spender(&outpoint)
+            .is_none()
+            .then(|| self.held_output(&outpoint))
+            .flatten())
     }
 
     async fn transparent_outputs(
         &self,
-        _position: BlockTxPosition,
+        position: BlockTxPosition,
     ) -> Result<Option<Vec<StoredTxOut>>, ChainStoreError> {
         self.require(StoreCapability::SpentOutputs)?;
-        Ok(None)
+        Ok(self
+            .held_transactions()
+            .into_iter()
+            .find(|(held, _)| *held == position)
+            .map(|(_, tx)| {
+                tx.transparent_outputs
+                    .iter()
+                    .map(StoredTxOut::from_output)
+                    .collect()
+            }))
     }
 }
 
+/// Folded from scratch over the held chain, independently of how the composer
+/// extends it — which is what lets a test compare the two.
 impl TxOutSetIndex for FakeStore {
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
         self.require(StoreCapability::TxOutSet)?;
-        Ok(TxOutSetAccumulator::default())
+        let backend = |error: TxOutSetError| ChainStoreError::backend(error.to_string());
+        let transactions = self.held_transactions();
+        let spent: std::collections::HashSet<Outpoint> = transactions
+            .iter()
+            .flat_map(|(_, tx)| {
+                tx.transparent_inputs.iter().map(|input| Outpoint {
+                    txid: input.prev_txid,
+                    index: input.prev_index,
+                })
+            })
+            .collect();
+
+        let mut set = TxOutSetAccumulator::empty();
+        for (_, tx) in &transactions {
+            let mut holds_one = false;
+            for (output, index) in tx.transparent_outputs.iter().zip(0..) {
+                let outpoint = Outpoint {
+                    txid: tx.txid,
+                    index,
+                };
+                let output = StoredTxOut::from_output(output);
+                if spent.contains(&outpoint) || is_unspendable(&output) {
+                    continue;
+                }
+                set.apply_added_output(&outpoint, &output)
+                    .map_err(backend)?;
+                holds_one = true;
+            }
+            if holds_one {
+                set.transactions += 1;
+            }
+        }
+        Ok(set)
     }
 }
 
@@ -996,6 +1109,8 @@ impl ChainHeadSnapshot for FakeHeadSnapshot {
     }
 }
 
+impl zaino_chain_head::ChainHeadTxOutSetService for FakeHeadSnapshot {}
+
 impl ChainHeadTransactionService for FakeHeadSnapshot {
     fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {
         let best_chain = self.blocks.iter().find_map(|block| {
@@ -1039,6 +1154,8 @@ pub enum SourceCall {
     Block(Height),
     /// A parsed block, by hash.
     BlockByHash(BlockHash),
+    /// A block header, by hash.
+    BlockHeader(BlockHash),
     /// Consensus bytes, by height.
     RawBlock(Height),
     /// Consensus bytes, by hash.
@@ -1077,6 +1194,12 @@ pub struct FakeSource {
     /// other test in this crate while melting a real validator under load.
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     peak_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    /// Blocks off the best chain, known by hash only.
+    competing: Vec<Block>,
+    /// The commitment roots reported for every block.
+    tree_roots: TreeRoots,
+    /// Whether address and subtree requests are rejected as invalid.
+    rejecting: bool,
 }
 
 /// Counts one request for as long as it is in flight.
@@ -1096,7 +1219,30 @@ impl FakeSource {
             calls: Arc::new(Mutex::new(Vec::new())),
             in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             peak_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            competing: Vec::new(),
+            tree_roots: empty_tree_roots(),
+            rejecting: false,
         }
+    }
+
+    /// The same validator rejecting every address and subtree request as
+    /// invalid.
+    pub fn rejecting_requests(mut self) -> Self {
+        self.rejecting = true;
+        self
+    }
+
+    /// The same validator reporting `roots` for every block, and a tree with
+    /// no root, as a real tree port answers, for each pool given one.
+    pub fn with_tree_roots(mut self, roots: TreeRoots) -> Self {
+        self.tree_roots = roots;
+        self
+    }
+
+    /// The same validator also knowing `block` off its best chain.
+    pub fn with_competing_block(mut self, block: Block) -> Self {
+        self.competing.push(block);
+        self
     }
 
     /// The most requests this validator ever had in flight at once.
@@ -1164,6 +1310,50 @@ impl OneShotGetBlockByHash for FakeSource {
         self.height_of(hash)
             .and_then(|h| self.chain.block(h).cloned())
             .ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
+    }
+}
+
+impl OneShotGetBlockHeader for FakeSource {
+    async fn get_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> Result<BlockHeaderVerbose, QueryError<GetBlockHeaderError>> {
+        let _in_flight = self.begin(SourceCall::BlockHeader(hash)).await;
+        if let Some(block) = self.height_of(hash).and_then(|h| self.chain.block(h)) {
+            let depth = self.chain.tip() - u32::from(block.header.height) + 1;
+            let confirmations = BlockConfirmations::Confirmed(
+                NonZeroU32::new(depth)
+                    .expect("a best-chain block is at least its own confirmation"),
+            );
+            return Ok(header_of(block, confirmations));
+        }
+        self.competing
+            .iter()
+            .find(|block| block.header.hash == hash)
+            .map(|block| header_of(block, BlockConfirmations::NotInBestChain))
+            .ok_or(QueryError::Domain(GetBlockHeaderError::BlockNotFound(hash)))
+    }
+}
+
+/// A block's verbose header, as the fake validator reports it.
+fn header_of(block: &Block, confirmations: BlockConfirmations) -> BlockHeaderVerbose {
+    let header = &block.header;
+    BlockHeaderVerbose {
+        hash: header.hash,
+        confirmations,
+        height: header.height,
+        version: header.version,
+        merkle_root: header.merkle_root,
+        time: header.time,
+        nonce: header.nonce,
+        solution: header.solution.as_bytes().to_vec(),
+        bits: header.bits,
+        difficulty: 1.0,
+        block_commitments: Some(header.block_commitments),
+        final_sapling_root: None,
+        chainwork: None,
+        previous_block_hash: Some(header.prev_hash),
+        next_block_hash: None,
     }
 }
 
@@ -1236,7 +1426,7 @@ impl OneShotGetCommitmentTreeRoots for FakeSource {
         block: BlockHash,
     ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
         let _in_flight = self.begin(SourceCall::TreeRoots(block)).await;
-        Ok(empty_tree_roots())
+        Ok(self.tree_roots.clone())
     }
 }
 
@@ -1256,9 +1446,11 @@ impl OneShotGetTreestate for FakeSource {
         height: Height,
     ) -> Result<Treestate, QueryError<GetTreestateError>> {
         self.record(SourceCall::Treestate(height));
-        self.at(height).map(treestate_of).ok_or(QueryError::Domain(
-            GetTreestateError::HeightNotFound(height),
-        ))
+        self.at(height)
+            .map(|block| treestate_of(block, &self.tree_roots))
+            .ok_or(QueryError::Domain(GetTreestateError::HeightNotFound(
+                height,
+            )))
     }
 }
 
@@ -1270,22 +1462,30 @@ impl OneShotGetTreestateByHash for FakeSource {
         self.record(SourceCall::TreestateByHash(hash));
         self.height_of(hash)
             .and_then(|h| self.chain.block(h))
-            .map(treestate_of)
+            .map(|block| treestate_of(block, &self.tree_roots))
             .ok_or(QueryError::Domain(GetTreestateByHashError::BlockNotFound(
                 hash,
             )))
     }
 }
 
-/// The treestate a block leaves behind, as the fake validator reports it.
-fn treestate_of(block: &Block) -> Treestate {
+/// The treestate a block leaves behind, as the fake validator reports it: a
+/// tree without its root for each pool that has one.
+fn treestate_of(block: &Block, roots: &TreeRoots) -> Treestate {
+    let tree = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
+        root.as_ref()
+            .map(|_| zaino_primitives::types::PoolTreestate {
+                final_root: None,
+                final_state: Vec::new(),
+            })
+    };
     Treestate {
         block_hash: block.header.hash,
         height: block.header.height,
         time: block.header.time,
-        sapling: None,
-        orchard: None,
-        ironwood: None,
+        sapling: tree(&roots.sapling),
+        orchard: tree(&roots.orchard),
+        ironwood: tree(&roots.ironwood),
     }
 }
 
@@ -1297,7 +1497,28 @@ impl OneShotGetSubtreeRoots for FakeSource {
         _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, QueryError<GetSubtreeRootsError>> {
         self.record(SourceCall::SubtreeRoots(pool));
+        if self.rejecting {
+            return Err(QueryError::Domain(GetSubtreeRootsError::PoolUnavailable(
+                pool,
+            )));
+        }
         Ok(Vec::new())
+    }
+}
+
+impl FakeSource {
+    /// Records an address request, rejecting it when this validator rejects.
+    fn address_request<E: core::fmt::Debug + core::fmt::Display>(
+        &self,
+        invalid_address: impl FnOnce(String) -> E,
+    ) -> Result<(), QueryError<E>> {
+        self.record(SourceCall::Address);
+        if self.rejecting {
+            return Err(QueryError::Domain(invalid_address(String::from(
+                "not an address",
+            ))));
+        }
+        Ok(())
     }
 }
 
@@ -1306,7 +1527,7 @@ impl OneShotGetAddressBalance for FakeSource {
         &self,
         _addresses: Vec<String>,
     ) -> Result<AddressBalance, QueryError<GetAddressBalanceError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressBalanceError::InvalidAddress)?;
         Ok(AddressBalance {
             balance: zaino_primitives::types::Zatoshis::ZERO,
             received: zaino_primitives::types::ZatoshisFlowSum::from_summed(0),
@@ -1319,7 +1540,7 @@ impl OneShotGetAddressUtxos for FakeSource {
         &self,
         _addresses: Vec<String>,
     ) -> Result<Vec<Utxo>, QueryError<GetAddressUtxosError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressUtxosError::InvalidAddress)?;
         Ok(Vec::new())
     }
 }
@@ -1331,7 +1552,7 @@ impl OneShotGetAddressTxids for FakeSource {
         _start: Height,
         _end: Height,
     ) -> Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressTxidsError::InvalidAddress)?;
         Ok(Vec::new())
     }
 }
@@ -1343,7 +1564,7 @@ impl OneShotGetAddressDeltas for FakeSource {
         _start: Height,
         _end: Height,
     ) -> Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError>> {
-        self.record(SourceCall::Address);
+        self.address_request(GetAddressDeltasError::InvalidAddress)?;
         Ok(Vec::new())
     }
 }

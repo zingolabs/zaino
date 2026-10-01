@@ -166,6 +166,22 @@ finalised state and the mempool, and that combining belongs to the consumer.
 A retained block is a parsed projection, not the consensus bytes, so raw
 transaction and raw block queries cannot be served from here.
 
+### Contributions, not complete answers
+
+Where a complete answer spans the floor, the chain head reports its window's
+contribution and stops there. `ChainHeadTxOutSetService::txout_delta(start)` is
+the shape: the outputs the canonical blocks from `start` created and did not
+spend, and the outpoints they spent that were created below `start`. A spend and
+its output both inside the range cancel. The spent-below outpoints are only
+outpoints — the value and script they remove are the finalised state's to
+supply — and a `start` below the window is refused rather than answered from a
+partial range.
+
+```rust
+let delta = snapshot.txout_delta(store_top.checked_add(1)?)?;
+// delta.created: apply to the set; delta.spent_below: resolve, then remove.
+```
+
 ## Freeze events are best-effort
 
 `ChainHeadFreezeEvents` carries blocks that have fallen below the consensus seam,
