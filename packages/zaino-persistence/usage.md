@@ -179,6 +179,11 @@ Failures are `zaino_persistence::StoreError` (`Io`, `Manifest`, `Page`,
 - A `commit` that returns `Err` ends the store: any later `commit` panics (an
   `fsync` error is never retried; `docs/design/durability.md` §6). Drop it and
   reopen; recovery lands on the last durable manifest.
+- The store returns `Err`; an index writer turns it into a panic with
+  `error.commit_failed(index, store.path()) -> !`:
+  `<index> index commit failed: disk <dir> full` when `StorageFull` /
+  `QuotaExceeded` sits anywhere in the error chain, else
+  `<index> index commit failed at <dir>: <error>`.
 - `commit` asserts `tip` above the committed one, and runs `LsmIndex::check`
   on the lists it is about to write as well as on the lists it reads at open.
 

@@ -185,6 +185,10 @@ impl<I: LsmIndex> LsmStore<I> {
         self.committed
     }
 
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
     /// Read handles onto the committed segments (shared: readers never block the writer)
     pub fn sets(&self) -> <I::Logs as SegmentLogs>::Sets {
         self.logs.sets()
