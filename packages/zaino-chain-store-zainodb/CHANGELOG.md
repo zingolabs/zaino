@@ -13,6 +13,34 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-09-26
+### Changed
+- The crate's own chain-work type is replaced by a re-export of the `zaino-primitives` type. The on-disk format is unchanged.
+  _Migration:_ Import chain work from `zaino_primitives`.
+- The crate's difficulty wrapper and its ciphertext pad-or-truncate helpers are removed in favour of the `zaino-primitives` types.
+  _Migration:_ Use `zaino_primitives`' `CompactDifficulty` and `CompactCiphertext`.
+- - BlockContext, BlockHeaderData and IndexedBlock take a Work parameter: AbsoluteChainWork or Option<AbsoluteChainWork> (default).
+- Only the AbsoluteChainWork form has a stored encoding.
+- DbWrite::write_block takes IndexedBlock<AbsoluteChainWork>.
+- StoredBlockRead answers from the v1 backend only.
+- On-disk format unchanged.
+  _Migration:_ - BlockContext::new and conversion::indexed_block take the chainwork in either form.
+- indexed_block_from_stored yields IndexedBlock<AbsoluteChainWork>; widen with map_chainwork(Some).
+- Chain-head blocks carry None and do not type-check against the writer.
+
+- Sync and store metrics reworked. Added: `zaino.sync.fetched_height`, `block_fetch_seconds`, `treestate_fetch_seconds`, `block_assemble_seconds`, `batch_write_seconds`, `fsync_seconds`, `batch_blocks`, `accumulator_seconds{mode}`, `accumulator_height`, `zaino.sync.fetched_{transactions,transparent_inputs,transparent_outputs,sapling_spends,sapling_outputs,orchard_actions,ironwood_actions}_total`, `zaino.db.validated_height`, `validation_seconds`, `on_demand_validations_total`, `map_size_bytes`, `used_bytes`, `zaino.migration.progress_height`. `zaino.sync.finalized_height` now means committed and fsynced.
+  _Migration:_ Removed: `zaino.sync.block_build_seconds` (sum of the three per-block spans), `zaino.sync.block_write_seconds` (→ `batch_write_seconds` + `fsync_seconds`), `zaino.sync.{transactions,sapling_outputs,orchard_actions}_total` (→ `fetched_*_total`), `zaino.sync.last_block_written_at`, `zaino.db.tip_height` (→ `zaino.sync.finalized_height`), `zaino.db.finalised_ephemeral`, `zaino.db.accumulator_built_height` (→ `zaino.sync.accumulator_height`), `zaino.db.accumulator_rebuild_active` (rebuild progress is logged). Throughput counters count fetched blocks: a failed commit or restart re-counts. Feature `prometheus` removed; emission is unconditional (no-op without a recorder).
+- `FinalisedStateMode::EphemeralRouted` split into `EphemeralSyncing` and `EphemeralMigrating`.
+  _Migration:_ Match both new variants wherever `EphemeralRouted` was matched.
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Fixed
+- A signed zatoshi value outside `-supply ..= supply` read from disk fails as a typed error.
+- - chainwork_from_parent takes the block's height; genesis seeds its own work, an unknown parent above genesis is ParentChainWorkUnknown.
+- chainwork_from_parent_if_known maps that error to None for the zebra-block builder.
+- A missing parent chainwork is StoreError::DataUnavailable on every build path.
+### Internal
+- The persistent chainwork row is written from the primitive's wire render and read back through its integer, with the width and non-zero checks at the store boundary. The on-disk format is unchanged.
+
 ## [0.1.0] - 2026-09-11
 
 ### Added

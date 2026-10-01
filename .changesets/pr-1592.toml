@@ -1,0 +1,8 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f8ad-7920-b415-121824a73664"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-source-macros"
+kind = "internal"
+description = "The macros build on `syn` 3."

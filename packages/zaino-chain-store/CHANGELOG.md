@@ -13,6 +13,12 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.1.1] - 2026-09-26
+### Changed
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Internal
+- Address balances use the checked zatoshi quantity types.
+
 ## [0.1.0] - 2026-09-11
 
 ### Added

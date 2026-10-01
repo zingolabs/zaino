@@ -13,6 +13,11 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-09-26
+### Changed
+- `work_from_bits`, `WorkError` and the `work` module are removed; `zaino-primitives` owns the one native difficulty pipeline.
+  _Migration:_ Compute work through `zaino_primitives`' `CompactDifficulty`.
+
 ## [0.1.1] - 2026-09-11
 
 ### Added
