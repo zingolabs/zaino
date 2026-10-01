@@ -11,10 +11,11 @@
 //! neither half alone is an answer.
 
 use zaino_primitives::types::{
-    BlockTxPosition, Height, Outpoint, SignedZatoshis, TransactionId, ZatoshisFlowSum,
+    BlockTxPosition, Height, Outpoint, SignedZatoshis, TransactionId, TransparentAddressKey,
+    ZatoshisFlowSum,
 };
 
-use crate::output::{StoredAddress, StoredTxOut};
+use crate::output::StoredTxOut;
 
 /// What to report on, and over what range.
 ///
@@ -24,11 +25,7 @@ use crate::output::{StoredAddress, StoredTxOut};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransparentHistoryQuery {
     /// The addresses to report on, as the store keys them.
-    ///
-    /// [`StoredAddress`] rather than a wallet-facing address type, because the
-    /// store indexes outputs that have no address at all and a caller may
-    /// legitimately ask about one.
-    pub addresses: Vec<StoredAddress>,
+    pub addresses: Vec<TransparentAddressKey>,
     /// Lowest height to include.
     pub start: Height,
     /// Highest height to include.
@@ -137,7 +134,7 @@ mod tests {
     fn amount(value: u64) -> StoredTxOut {
         StoredTxOut::new(
             Zatoshis::new(value).expect("a valid amount"),
-            StoredAddress {
+            TransparentAddressKey {
                 hash: [0u8; 20],
                 script_type: ScriptType::P2PKH,
             },
