@@ -225,19 +225,9 @@ where
                 match routed {
                     Ok(Some(block)) => Some(Ok(block)),
                     Ok(None) => None,
-                    Err(error) => Some(Err(block_read_to_read_error(error))),
+                    Err(error) => Some(Err(error.into())),
                 }
             })
             .boxed()
-    }
-}
-
-/// Map a [`BlockReadError`] onto the generic [`ReadError`] used by streamed
-/// reads, preserving the not-serviceable / transient / fatal distinction.
-fn block_read_to_read_error(error: BlockReadError) -> ReadError {
-    match error {
-        BlockReadError::NotServiceable(capability) => ReadError::NotServiceable(capability),
-        BlockReadError::Transient(message) => ReadError::Transient(message),
-        BlockReadError::Fatal(message) => ReadError::Fatal(message),
     }
 }

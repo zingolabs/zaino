@@ -55,6 +55,45 @@ read_error!(/// Errors from [`crate::MempoolContent`].
 read_error!(/// Generic read error for streamed surfaces and [`crate::ForkReconcile`].
     ReadError);
 
+/// A [`BlockReadError`] folds into the generic [`ReadError`] 1:1 — same three
+/// cases. A per-height block read ([`crate::BlockRead::block`]) fails with
+/// [`BlockReadError`], while the streamed read ([`crate::BlockRead::stream_blocks`])
+/// yields [`ReadError`], so a per-height failure lifts into the stream's error
+/// with no reclassification. Context-free, so `From` is the right tool: the
+/// named-method boundary rule governs `Persistent*`/`proto::` conversions, not
+/// two business error types.
+impl From<BlockReadError> for ReadError {
+    fn from(error: BlockReadError) -> Self {
+        match error {
+            BlockReadError::NotServiceable(capability) => Self::NotServiceable(capability),
+            BlockReadError::Transient(message) => Self::Transient(message),
+            BlockReadError::Fatal(message) => Self::Fatal(message),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlockReadError, ReadError};
+    use crate::Capability;
+
+    #[test]
+    fn block_read_error_lifts_into_read_error_by_variant() {
+        assert!(matches!(
+            ReadError::from(BlockReadError::NotServiceable(Capability::Blocks)),
+            ReadError::NotServiceable(Capability::Blocks)
+        ));
+        assert!(matches!(
+            ReadError::from(BlockReadError::Transient("race".to_owned())),
+            ReadError::Transient(message) if message == "race"
+        ));
+        assert!(matches!(
+            ReadError::from(BlockReadError::Fatal("corrupt".to_owned())),
+            ReadError::Fatal(message) if message == "corrupt"
+        ));
+    }
+}
+
 /// Failure to *acquire* a snapshot — the one reorg race ADR-0003 admits.
 /// Reads *through* a snapshot never race, so they never yield this.
 #[derive(Debug, thiserror::Error)]
