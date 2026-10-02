@@ -1597,12 +1597,41 @@ In `rpc.rs`'s `to_error_object`, add:
         RpcError::TxRead(TxReadError::Transient(cause)) => {
             (ErrorCode::InternalError, cause)
         }
-        RpcError::TxRead(e) => (ErrorCode::InternalError, e.to_string()),
+        RpcError::TxRead(TxReadError::Fatal(cause)) => (ErrorCode::InternalError, cause),
+        RpcError::TxRead(e @ TxReadError::NotServiceable(_)) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
 ```
 
-Replace the second arm with one arm per remaining `TxReadError` variant if
-clippy's wildcard lint rejects the catch-all; add
-`use zaino_service::error::TxReadError;`.
+One arm per `TxReadError` variant, no catch-all — `clippy::wildcard_enum_match_arm`
+is denied, and a catch-all would also silently absorb a variant added later.
+Add `use zaino_service::error::TxReadError;`.
+
+Note all three are **internal** errors. `Fatal` is "unrecoverable backend
+failure" — a server fault, not bad client input — so it must not render as
+`InvalidParams`. Task 1 made exactly that mistake with `AddressReadError::Fatal`
+and had to correct it; the only params error here is a txid that failed
+validation, and `NotFound` for a txid this indexer does not hold.
+
+Add a covering test to `rpc.rs`'s own test module, beside Task 1's
+`fatal_address_read_is_an_internal_error`, so `to_error_object` stays private:
+
+```rust
+    /// A read failure is the server's fault, never the caller's. Only a
+    /// malformed txid is a params error.
+    #[test]
+    fn tx_read_failures_render_as_internal_errors() {
+        for err in [
+            RpcError::TxRead(TxReadError::Transient("gone".into())),
+            RpcError::TxRead(TxReadError::Fatal("broken".into())),
+        ] {
+            assert_eq!(
+                to_error_object(err).code(),
+                ErrorCode::InternalError.code()
+            );
+        }
+    }
+```
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
