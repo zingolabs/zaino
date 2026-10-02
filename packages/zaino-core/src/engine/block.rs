@@ -64,26 +64,35 @@ where
     }
 
     fn stream_blocks(&self, range: HeightRange) -> BoxStream<'_, Result<Block, ReadError>> {
-        // Ascending over the inclusive `[start, end]` span, one block per height.
-        // A height the validator does not hold is a domain absence and is
-        // skipped; the first transport error is yielded and ends the stream, so a
-        // consumer cannot mistake a truncated stream for a complete one. The
-        // `Option` state carries that stop: it becomes `None` after an error, and
-        // the next poll ends.
+        // Ascending over the requested range **clamped to the snapshot's pinned
+        // tip** — the coordinate the whole snapshot is coherent against. Clamping
+        // excludes above-tip heights by construction, so any `Ok(None)` that
+        // remains is a genuine hole below the tip: the validator and our view
+        // disagree, a reorg race that resolves on retry, surfaced as a transient
+        // error that ends the stream. A read error is yielded and ends it too, so
+        // a consumer cannot mistake a truncated stream for a complete one. With no
+        // pinned tip the snapshot serves nothing, matching [`tip`](Self::tip). The
+        // `Option` state carries the stop: it becomes `None` after a hole or an
+        // error, and the next poll ends.
+        let Some(tip) = self.local().pinned_tip() else {
+            return stream::once(async { Err(ReadError::NotServiceable(Capability::Blocks)) })
+                .boxed();
+        };
         let first = u32::from(range.start);
-        let last = u32::from(range.end);
+        let last = u32::from(range.end).min(u32::from(tip.height));
         let heights = (first..=last).filter_map(|height| Height::try_from(height).ok());
         stream::unfold(Some(heights), move |state| async move {
             let mut heights = state?;
-            loop {
-                let height = heights.next()?;
-                match self.passthrough().block(height).await {
-                    Ok(Some(block)) => return Some((Ok(block), Some(heights))),
-                    Ok(None) => continue,
-                    Err(error) => {
-                        return Some((Err(block_read_to_read_error(error)), None));
-                    }
-                }
+            let height = heights.next()?;
+            match self.passthrough().block(height).await {
+                Ok(Some(block)) => Some((Ok(block), Some(heights))),
+                Ok(None) => Some((
+                    Err(ReadError::Transient(format!(
+                        "block {height} missing below the pinned tip; view and validator disagree"
+                    ))),
+                    None,
+                )),
+                Err(error) => Some((Err(block_read_to_read_error(error)), None)),
             }
         })
         .boxed()

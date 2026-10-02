@@ -360,29 +360,42 @@ mod block_reads {
     use zaino_source::FailureMode;
     use zaino_source::mock::test_block;
 
-    /// A single-attempt engine: one injected failure is terminal, so an error
+    /// A single-attempt policy: one injected failure is terminal, so an error
     /// test cannot be masked by the default policy's retries.
+    fn single_attempt() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 1,
+            ..RetryPolicy::default()
+        }
+    }
+
+    /// An engine with an empty local view (no pinned tip) over `source`.
     fn engine_single_attempt(source: MockChain) -> LightEngine {
         Engine::new(
             StubNonFinalised::empty(),
             StubNonFinalised::empty(),
-            ValidatorClient::new(
-                source,
-                RetryPolicy {
-                    max_attempts: 1,
-                    ..RetryPolicy::default()
-                },
-            ),
+            ValidatorClient::new(source, single_attempt()),
         )
     }
 
-    /// An engine whose local view is pinned to a finalised tip at `tip`.
-    fn engine_with_fs_tip(tip: u32) -> LightEngine {
+    /// An engine whose local view is pinned to a tip at `tip`, over `source` and
+    /// `policy`. `stream_blocks` clamps to the local tip; the passthrough block
+    /// reads draw their blocks from `source`.
+    fn engine_with_tip(tip: u32, source: MockChain, policy: RetryPolicy) -> LightEngine {
         Engine::new(
             StubNonFinalised::from_blocks((0..=tip).map(|h| stub_compact_block(h, 1)).collect()),
             StubNonFinalised::empty(),
-            ValidatorClient::new(MockChain::new(), RetryPolicy::default()),
+            ValidatorClient::new(source, policy),
         )
+    }
+
+    /// A validator holding one block at each of `heights`.
+    fn source_with_blocks(heights: impl IntoIterator<Item = u32>) -> MockChain {
+        let mut mock = MockChain::new();
+        for h in heights {
+            mock = mock.with_block(test_block(h, u8::try_from(h + 1).expect("fits in u8")));
+        }
+        mock
     }
 
     #[tokio::test]
@@ -461,11 +474,8 @@ mod block_reads {
 
     #[tokio::test]
     async fn stream_blocks_yields_every_block_in_the_inclusive_range() {
-        let mut mock = MockChain::new();
-        for h in 3..=6 {
-            mock = mock.with_block(test_block(h, u8::try_from(h).expect("fits in u8")));
-        }
-        let engine = engine_with(mock);
+        // Tip at 6 so `[3, 6]` is not clamped; the validator holds 3..=6.
+        let engine = engine_with_tip(6, source_with_blocks(3..=6), RetryPolicy::default());
         let snapshot = engine.snapshot().await.expect("snapshot acquired");
         let served: Vec<u32> = BlockRead::stream_blocks(&snapshot, range(3, 6))
             .map(|block| u32::from(block.expect("served").header.height))
@@ -473,6 +483,75 @@ mod block_reads {
             .await;
         // Inclusive `[3, 6]` is four blocks, both endpoints included, ascending.
         assert_eq!(served, vec![3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn stream_blocks_clamps_a_range_past_the_tip() {
+        // Tip at 3; the validator holds 0..=3. Asking `[1, 9]` covers only up to
+        // the pinned tip, with no error for the above-tip tail.
+        let engine = engine_with_tip(3, source_with_blocks(0..=3), RetryPolicy::default());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let heights: Vec<u32> = BlockRead::stream_blocks(&snapshot, range(1, 9))
+            .map(|block| u32::from(block.expect("served, no error past the tip").header.height))
+            .collect()
+            .await;
+        assert_eq!(heights, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn stream_blocks_entirely_above_the_tip_yields_nothing() {
+        // Tip at 3; `[4, 6]` is wholly above it — the caller asked past the end.
+        let engine = engine_with_tip(3, source_with_blocks(0..=6), RetryPolicy::default());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let items: Vec<_> = BlockRead::stream_blocks(&snapshot, range(4, 6))
+            .collect()
+            .await;
+        assert!(
+            items.is_empty(),
+            "a range entirely above the tip yields nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_blocks_surfaces_a_hole_below_the_tip() {
+        // Tip at 4; the validator holds 2 and 4 but not 3. Asking `[2, 4]` yields
+        // block 2, then an error naming the missing height 3, and ends: block 4
+        // must NOT be served past the hole. This is the regression check on the
+        // former silent skip.
+        let engine = engine_with_tip(4, source_with_blocks([2, 4]), RetryPolicy::default());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let items: Vec<_> = BlockRead::stream_blocks(&snapshot, range(2, 4))
+            .collect()
+            .await;
+        assert_eq!(items.len(), 2, "block 2, then the hole error, then end");
+        assert_eq!(
+            u32::from(items[0].as_ref().expect("block 2 served").header.height),
+            2
+        );
+        match &items[1] {
+            Err(ReadError::Transient(msg)) => {
+                assert!(
+                    msg.contains('3'),
+                    "the error names the missing height: {msg}"
+                )
+            }
+            other => panic!("a hole below the tip is a transient error, not {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_blocks_with_no_pinned_tip_is_not_serviceable() {
+        // Empty local view: the snapshot is coherent against nothing, like `tip`.
+        let engine = engine_with(source_with_blocks(0..=3));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let items: Vec<_> = BlockRead::stream_blocks(&snapshot, range(0, 3))
+            .collect()
+            .await;
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            items.into_iter().next(),
+            Some(Err(ReadError::NotServiceable(Capability::Blocks)))
+        ));
     }
 
     #[tokio::test]
@@ -490,14 +569,14 @@ mod block_reads {
     }
 
     #[tokio::test]
-    async fn stream_blocks_stops_at_the_first_error() {
-        let mut mock = MockChain::new();
-        for h in 0..=2 {
-            mock = mock.with_block(test_block(h, u8::try_from(h + 1).expect("fits in u8")));
-        }
-        // One terminal failure hits the first height; a stream that continued
-        // past the error would still serve heights 1 and 2.
-        let engine = engine_single_attempt(mock.fail_next(1, FailureMode::Connection));
+    async fn stream_blocks_stops_at_a_read_error() {
+        // Tip at 2 so `[0, 2]` is unclamped; one terminal failure hits the first
+        // height. A stream that continued past the error would still serve 1 and 2.
+        let engine = engine_with_tip(
+            2,
+            source_with_blocks(0..=2).fail_next(1, FailureMode::Connection),
+            single_attempt(),
+        );
         let snapshot = engine.snapshot().await.expect("snapshot acquired");
         let items: Vec<_> = BlockRead::stream_blocks(&snapshot, range(0, 2))
             .collect()
@@ -515,7 +594,7 @@ mod block_reads {
 
     #[tokio::test]
     async fn tip_returns_the_pinned_tip() {
-        let engine = engine_with_fs_tip(4);
+        let engine = engine_with_tip(4, MockChain::new(), RetryPolicy::default());
         let snapshot = engine.snapshot().await.expect("snapshot acquired");
         let tip = BlockRead::tip(&snapshot)
             .await
