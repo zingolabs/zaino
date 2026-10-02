@@ -1093,6 +1093,7 @@ mod transaction_view_reads {
         TransactionLocation, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
     };
     use zaino_service::TransactionViewRead;
+    use zaino_service::error::TransactionViewError;
     use zaino_source::mock::sample_decoded_block;
 
     fn id(byte: u8) -> TransactionId {
@@ -1208,6 +1209,30 @@ mod transaction_view_reads {
             .await
             .expect("a domain miss is a served None, not an error");
         assert!(answer.is_none());
+    }
+
+    /// R52: the validator serves the spending transaction but does not know the
+    /// txid its one input spends, so the prevout cannot be resolved. The read
+    /// surfaces a named `MissingPrevout` — the exact outpoint, not a blank value —
+    /// rather than inventing a zero input. The whitelist serves only the spender's
+    /// own txid; the prevout misses. No failure is injected, so the terminal domain
+    /// not-found is not something retries could mask, and `engine_with`'s default
+    /// policy is correct here.
+    #[tokio::test]
+    async fn transaction_view_of_an_unknown_prevout_is_missing_prevout() {
+        let spender = spending_tx();
+        let engine = engine_with(
+            MockChain::new()
+                .respond_transaction_verbose(spender.clone(), TransactionLocation::Mempool)
+                .restrict_transaction_verbose_to(spender.txid),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match TransactionViewRead::transaction_view(&snapshot, id(7)).await {
+            Err(TransactionViewError::MissingPrevout { outpoint }) => {
+                assert_eq!(outpoint, spender.transparent.inputs[0]);
+            }
+            other => panic!("an unknown prevout must be a named MissingPrevout, got {other:?}"),
+        }
     }
 
     #[tokio::test]

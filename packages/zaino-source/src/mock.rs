@@ -59,6 +59,11 @@ pub struct MockChain {
     /// Canned decoded-transaction response, returned for any txid; `None` answers
     /// a domain not-found.
     transaction_verbose_response: Option<DecodedTransaction>,
+    /// When `Some`, `get_transaction_verbose` answers the canned response only for
+    /// these txids and reports every other txid not-found; `None` (the default)
+    /// answers for any txid. Lets a test serve a spending transaction while a
+    /// prevout it spends is unknown to the validator.
+    transaction_verbose_only_for: Option<Vec<TransactionId>>,
     /// Canned blockchain-info response, returned for any query; `None` answers a
     /// domain not-ready.
     blockchain_info_response: Option<BlockchainInfo>,
@@ -113,6 +118,7 @@ impl MockChain {
             address_rejection: None,
             transaction_response: None,
             transaction_verbose_response: None,
+            transaction_verbose_only_for: None,
             blockchain_info_response: None,
             block_header_verbose_response: None,
             block_verbose_response: None,
@@ -149,6 +155,18 @@ impl MockChain {
             detail: default_verbose_detail(),
             location,
         });
+        self
+    }
+
+    /// Restrict the canned `get_transaction_verbose` response to `txid`, reporting
+    /// every other txid not-found. Call after
+    /// [`respond_transaction_verbose`](Self::respond_transaction_verbose) to seed a
+    /// spending transaction the validator serves while a prevout it spends is
+    /// unknown — a `MissingPrevout` in a consumer that resolves inputs.
+    pub fn restrict_transaction_verbose_to(mut self, txid: TransactionId) -> Self {
+        self.transaction_verbose_only_for
+            .get_or_insert_with(Vec::new)
+            .push(txid);
         self
     }
 
@@ -337,6 +355,7 @@ impl Clone for MockChain {
             address_rejection: self.address_rejection.clone(),
             transaction_response: self.transaction_response.clone(),
             transaction_verbose_response: self.transaction_verbose_response.clone(),
+            transaction_verbose_only_for: self.transaction_verbose_only_for.clone(),
             blockchain_info_response: self.blockchain_info_response.clone(),
             block_header_verbose_response: self.block_header_verbose_response.clone(),
             block_verbose_response: self.block_verbose_response.clone(),
@@ -600,6 +619,16 @@ impl crate::OneShotGetTransactionVerbose for MockChain {
     ) -> Result<DecodedTransaction, QueryError<GetTransactionVerboseError>> {
         if let Some(err) = self.maybe_fail() {
             return Err(err);
+        }
+        // A restricted whitelist serves only its txids; any other is not-found,
+        // even while a canned response is seeded — so a prevout the validator does
+        // not know misses while the spending transaction itself is served.
+        if let Some(allowed) = &self.transaction_verbose_only_for {
+            if !allowed.contains(&txid) {
+                return Err(QueryError::Domain(GetTransactionVerboseError::NotFound(
+                    txid,
+                )));
+            }
         }
         self.transaction_verbose_response
             .clone()

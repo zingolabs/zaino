@@ -350,6 +350,54 @@ mod tests {
         );
     }
 
+    /// R52: a `MissingPrevout` raised while serving `getblock 2` reaches the client
+    /// as a JSON-RPC internal error, driven through the generated surface rather
+    /// than asserted on `to_error_object` alone. The service mock scripts the
+    /// resolved-block read to fail with `MissingPrevout` for a named outpoint, and
+    /// the call must surface the internal-error code with the outpoint in the
+    /// message — never a params error blaming the caller, and never a partial block.
+    #[tokio::test]
+    async fn getblock_missing_prevout_drives_a_json_rpc_internal_error() {
+        use super::NodeRpcApiServer;
+        use crate::NodeRpc;
+        use jsonrpsee::core::params::ArrayParams;
+        use jsonrpsee::core::server::MethodsError;
+        use zaino_primitives::types::{TransactionId, TransparentInput};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let module = NodeRpc::new(
+            MockIndexerService::new(MockChain {
+                block_transaction_views_missing_prevout: Some(TransparentInput {
+                    prev_txid: TransactionId::from([0x01; 32]),
+                    prev_index: 0,
+                }),
+                ..MockChain::default()
+            }),
+            Network::MainNetwork,
+        )
+        .into_rpc();
+
+        let mut params = ArrayParams::new();
+        params.insert("2468").expect("block id param");
+        params.insert(2u32).expect("verbosity param");
+        let err = module
+            .call::<_, serde_json::Value>("getblock", params)
+            .await
+            .expect_err("a missing prevout must fail the call, not render a partial block");
+        match err {
+            MethodsError::JsonRpc(obj) => {
+                assert_eq!(obj.code(), ErrorCode::InternalError.code());
+                assert!(
+                    obj.message().contains("unknown to the validator"),
+                    "the message names the inconsistency: {}",
+                    obj.message()
+                );
+            }
+            other => panic!("expected a JSON-RPC internal error, got {other:?}"),
+        }
+    }
+
     /// An out-of-range prevout index is likewise a source inconsistency, internal.
     #[test]
     fn prevout_index_out_of_range_is_an_internal_error() {
