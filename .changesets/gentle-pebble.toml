@@ -2,18 +2,6 @@
 id = "01a0fd65-988c-73a2-acc1-e52108c4523a"
 
 [[changes]]
-crate = "zaino-sync"
-kind = "breaking"
-description = "The sync engine publishes the durable watermark through the finality seam. `SyncEngine::subscribe_confirmed_watermark` is gone; instead `with_watermark` attaches the seam's `DurableWatermark` half and `set_authorisation` records the horizon a range is built under, and each atomic batch advances the watermark across the seam. `SyncError` gains a `Seam` variant for a watermark the seam refuses."
-migration = "Read the confirmed watermark across the seam rather than through `subscribe_confirmed_watermark` (the chain head reads it via its `ReorgHorizon` half). A composed runtime attaches the `DurableWatermark` half with `with_watermark`; standalone callers pass `None` and are otherwise unaffected."
-
-[[changes]]
-crate = "zaino-indexer"
-kind = "breaking"
-description = "The indexer consumes the reorg horizon instead of deriving the boundary itself. `SyncTuning` drops `finalised_depth`; the boundary now comes from a new `SyncTarget` (`Seam(DurableWatermark)` composed, `Depth { depth }` standalone) passed to `SourceSyncDriver::new`/`resuming`/`resuming_compact`. `SourceFetch` gains `item_hash`, `IndexerError` gains `HorizonBranchMismatch` (refused before any write when the source disagrees with the seam at the horizon), and `subscribe_confirmed_watermark` is removed."
-migration = "Replace `tuning.finalised_depth` with a `SyncTarget`: `SyncTarget::Depth { depth }` reproduces the old standalone behaviour; a composed runtime passes `SyncTarget::Seam(watermark)` so the indexer consumes the chain head's horizon and publishes the watermark back through the same seam."
-
-[[changes]]
 crate = "zaino-finality"
 kind = "feature"
 description = "`DurableWatermark::reader` returns a cloneable `HorizonReader`, a read-only view of the reorg horizon for parties that only observe it (a progress poller, the durable tier's own loop) without holding the publishing capability."

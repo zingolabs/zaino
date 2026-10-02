@@ -110,6 +110,10 @@ name = "zaino-chain-head-service"
 path = "packages/zaino-chain-head-service"
 
 [[target]]
+name = "zaino-finality"
+path = "packages/zaino-finality"
+
+[[target]]
 name = "zaino-chain-store"
 path = "packages/zaino-chain-store"
 
