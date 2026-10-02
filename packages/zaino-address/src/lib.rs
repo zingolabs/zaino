@@ -40,5 +40,5 @@ mod validated;
 pub use classify::{validate_address, z_validate_address};
 pub use receivers::{list_unified_receivers, UnifiedReceivers};
 pub use sapling::sapling_key_bytes;
-pub use script::transparent_address_from_script;
+pub use script::{transparent_address_from_script, ScriptAddress, TransparentScriptKind};
 pub use validated::{ValidatedAddress, ZValidatedAddress, DEPRECATION_NOTICE};

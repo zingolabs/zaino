@@ -72,19 +72,23 @@ variant here and in `wire/address.rs` together.
 ## Decoding a script to an address
 
 `transparent_address_from_script(script, params)` decodes a transparent output's
-locking script to the address it pays, for the explorer's
-`scriptPubKey.addresses`:
+locking script to the address it pays **and which standard template it is**, for
+the explorer's `scriptPubKey.addresses` and `scriptPubKey.type`:
 
 ```rust
-use zaino_address::transparent_address_from_script;
+use zaino_address::{transparent_address_from_script, ScriptAddress, TransparentScriptKind};
 
-let address: Option<String> = transparent_address_from_script(&script_bytes, network);
+let decoded: Option<ScriptAddress> = transparent_address_from_script(&script_bytes, network);
+// decoded.kind is PubKeyHash | ScriptHash; decoded.address is the encoded string.
 ```
 
 Only the two standard templates decode: the 25-byte pay-to-public-key-hash
-(`t1…`) and the 23-byte pay-to-script-hash (`t3…`). Every other script —
-multisig, `OP_RETURN`, a malformed template — returns `None`, because it is not
-an address a user controls.
+(`t1…`, `PubKeyHash`) and the 23-byte pay-to-script-hash (`t3…`, `ScriptHash`).
+Every other script — multisig, `OP_RETURN`, a malformed template — returns
+`None`, because it is not an address a user controls.
+
+The kind travels with the address so a caller labels `scriptPubKey.type` from the
+same decision — it never re-inspects the script bytes to tell P2PKH from P2SH.
 
 This is **narrower** than `zaino-primitives`' `classify_script`, which keys
 *every* script (non-standard ones included) for indexing and reads a 21-byte

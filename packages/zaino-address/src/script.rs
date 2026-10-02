@@ -1,10 +1,14 @@
 //! Decode a transparent output script to the address it pays.
 //!
 //! The explorer's `scriptPubKey.addresses` is the address a transparent output
-//! locks funds to. Only the two standard templates carry one: pay-to-public-key-
-//! hash and pay-to-script-hash. Every other script — a bare multisig, an
-//! `OP_RETURN`, a malformed standard template — is not an address, and the
-//! caller renders no `addresses` for it.
+//! locks funds to, and `scriptPubKey.type` is which standard template it is. Only
+//! the two standard templates carry an address: pay-to-public-key-hash and
+//! pay-to-script-hash. Every other script — a bare multisig, an `OP_RETURN`, a
+//! malformed standard template — is not an address, and the caller renders no
+//! `addresses`/`type` for it.
+//!
+//! The address and its kind are decided here together, in one pass, so a caller
+//! never re-inspects the script bytes to label what this already classified.
 
 use zcash_keys::encoding::AddressCodec as _;
 use zcash_protocol::consensus::Parameters;
@@ -17,9 +21,29 @@ const P2PKH_SUFFIX: [u8; 2] = [0x88, 0xac];
 const P2SH_PREFIX: [u8; 2] = [0xa9, 0x14];
 const P2SH_SUFFIX: [u8; 1] = [0x87];
 
+/// Which standard transparent template a script is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransparentScriptKind {
+    /// Pay-to-public-key-hash — a `t1…` address.
+    PubKeyHash,
+    /// Pay-to-script-hash — a `t3…` address.
+    ScriptHash,
+}
+
+/// A decoded transparent output script: the address it pays and which standard
+/// template it is. The two travel together so a caller labels the address kind
+/// without re-reading the script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptAddress {
+    /// Which standard template the script is.
+    pub kind: TransparentScriptKind,
+    /// The address, encoded for the queried network.
+    pub address: String,
+}
+
 /// Decodes a standard pay-to-public-key-hash or pay-to-script-hash locking
-/// script to the address it pays on `params`' network, or `None` for any other
-/// script.
+/// script to the address it pays on `params`' network and its kind, or `None`
+/// for any other script.
 ///
 /// Strict: only the exact 25-byte P2PKH and 23-byte P2SH templates decode. This
 /// is deliberately narrower than [`zaino_primitives`'s `classify_script`], which
@@ -27,17 +51,31 @@ const P2SH_SUFFIX: [u8; 1] = [0x87];
 /// 21-byte script as a bare `tag || hash`. An address is a user-facing claim
 /// about who controls an output, so the two lenient cases that index fine are
 /// `None` here rather than an address nobody can verify.
-pub fn transparent_address_from_script<P: Parameters>(script: &[u8], params: &P) -> Option<String> {
-    Some(transparent_address(script)?.encode(params))
+pub fn transparent_address_from_script<P: Parameters>(
+    script: &[u8],
+    params: &P,
+) -> Option<ScriptAddress> {
+    let (kind, address) = transparent_address(script)?;
+    Some(ScriptAddress {
+        kind,
+        address: address.encode(params),
+    })
 }
 
-/// The standard transparent address a script locks to, independent of network.
-fn transparent_address(script: &[u8]) -> Option<TransparentAddress> {
+/// The standard transparent address a script locks to and its kind, independent
+/// of network.
+fn transparent_address(script: &[u8]) -> Option<(TransparentScriptKind, TransparentAddress)> {
     if let Some(hash) = template_hash(script, &P2PKH_PREFIX, &P2PKH_SUFFIX) {
-        return Some(TransparentAddress::PublicKeyHash(hash));
+        return Some((
+            TransparentScriptKind::PubKeyHash,
+            TransparentAddress::PublicKeyHash(hash),
+        ));
     }
     if let Some(hash) = template_hash(script, &P2SH_PREFIX, &P2SH_SUFFIX) {
-        return Some(TransparentAddress::ScriptHash(hash));
+        return Some((
+            TransparentScriptKind::ScriptHash,
+            TransparentAddress::ScriptHash(hash),
+        ));
     }
     None
 }
@@ -104,19 +142,22 @@ mod tests {
         let hash = hash_of(TESTNET_P2PKH, &TESTNET);
         let script = p2pkh_script(hash);
 
-        assert_eq!(
-            transparent_address_from_script(&script, &TESTNET).as_deref(),
-            Some(TESTNET_P2PKH)
-        );
+        let testnet =
+            transparent_address_from_script(&script, &TESTNET).expect("a valid testnet address");
+        assert_eq!(testnet.kind, TransparentScriptKind::PubKeyHash);
+        assert_eq!(testnet.address, TESTNET_P2PKH);
+
         // Mainnet re-encodes the identical hash under the mainnet P2PKH prefix.
         let mainnet = transparent_address_from_script(&script, &MAINNET)
             .expect("the same hash is a valid mainnet address");
+        assert_eq!(mainnet.kind, TransparentScriptKind::PubKeyHash);
         assert!(
-            mainnet.starts_with("t1"),
-            "mainnet P2PKH is a t1 address: {mainnet}"
+            mainnet.address.starts_with("t1"),
+            "mainnet P2PKH is a t1 address: {}",
+            mainnet.address
         );
-        assert_eq!(hash_of(&mainnet, &MAINNET), hash);
-        assert_ne!(mainnet.as_str(), TESTNET_P2PKH);
+        assert_eq!(hash_of(&mainnet.address, &MAINNET), hash);
+        assert_ne!(mainnet.address.as_str(), TESTNET_P2PKH);
     }
 
     /// A P2SH script decodes to the pay-to-script-hash address on both networks.
@@ -125,17 +166,20 @@ mod tests {
         let hash = hash_of(TESTNET_P2SH, &TESTNET);
         let script = p2sh_script(hash);
 
-        assert_eq!(
-            transparent_address_from_script(&script, &TESTNET).as_deref(),
-            Some(TESTNET_P2SH)
-        );
+        let testnet =
+            transparent_address_from_script(&script, &TESTNET).expect("a valid testnet address");
+        assert_eq!(testnet.kind, TransparentScriptKind::ScriptHash);
+        assert_eq!(testnet.address, TESTNET_P2SH);
+
         let mainnet = transparent_address_from_script(&script, &MAINNET)
             .expect("the same hash is a valid mainnet address");
+        assert_eq!(mainnet.kind, TransparentScriptKind::ScriptHash);
         assert!(
-            mainnet.starts_with("t3"),
-            "mainnet P2SH is a t3 address: {mainnet}"
+            mainnet.address.starts_with("t3"),
+            "mainnet P2SH is a t3 address: {}",
+            mainnet.address
         );
-        assert_eq!(hash_of(&mainnet, &MAINNET), hash);
+        assert_eq!(hash_of(&mainnet.address, &MAINNET), hash);
     }
 
     /// Non-standard scripts are not addresses, so they decode to `None` rather
