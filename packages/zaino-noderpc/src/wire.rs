@@ -155,7 +155,7 @@ fn zatoshi_magnitude_to_zec(negative: bool, magnitude: u64) -> f64 {
 /// Render an unsigned zatoshi amount as a ZEC-denominated `f64` (domain -> wire).
 ///
 /// The shared renderer for zcashd's `chainValue` / transaction `value` family.
-pub(crate) fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
+fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
     zatoshi_magnitude_to_zec(false, amount.as_u64())
 }
 
@@ -165,7 +165,7 @@ pub(crate) fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
 /// The shared renderer for zcashd's `valueDelta` / `valueBalance` family.
 /// [`i64::unsigned_abs`] takes the magnitude without an `as` cast and without
 /// overflowing at [`i64::MIN`].
-pub(crate) fn signed_zatoshis_to_zec(amount: SignedZatoshis) -> f64 {
+fn signed_zatoshis_to_zec(amount: SignedZatoshis) -> f64 {
     let raw = amount.as_i64();
     zatoshi_magnitude_to_zec(raw.is_negative(), raw.unsigned_abs())
 }
