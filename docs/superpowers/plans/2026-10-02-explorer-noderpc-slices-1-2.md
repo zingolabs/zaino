@@ -33,8 +33,27 @@ MockIndexerService`.
   domain type.
 - No wildcard match arms. `clippy::wildcard_enum_match_arm` is denied; opt out
   per-site with `#[expect(..., reason = "...")]`.
-- Errors carry typed causes via `#[source]`. Never stringify a cause that has a
-  type, never `expect`/swallow in non-test code.
+- **Errors: typed causes via `#[source]`, decided context by context.** Never
+  `format!` a cause that has a type into a message string, never `expect`, never
+  swallow. `#[from]` only where the conversion needs no added context.
+  - Every error type **this plan introduces** carries its cause as
+    `#[source]`, so the chain survives to the wire boundary.
+  - `zaino-service` cannot depend on `zaino-source`, so a service-layer error
+    holds a source-layer cause as
+    `#[source] Box<dyn std::error::Error + Send + Sync + 'static>`.
+  - Pick the variant that matches *this* site's meaning. An arithmetic overflow
+    in the adapter is not a "read failure"; a validator that is starting is not
+    the same as one that is unreachable. Reusing a nearby variant because it is
+    nearby is a defect.
+  - The existing `read_error!`-generated types (`AddressReadError`,
+    `TxReadError`, …) are a stringly scaffold with no `#[source]`. Do not add
+    new `format!("...: {cause}")` sites against them; where one is unavoidable,
+    say so in the report. Repairing the macro is a separate PR (see ledger
+    ruling R11).
+- **Coverage: every error path gets a unit test, not just the happy path.** A
+  task's tests must cover each arm the task introduces — the miss, the
+  transient, the invalid input — and must fail if the implementation is removed.
+  A test whose assertion holds for a trivially empty input proves nothing.
 - `makers fmt` and `makers clippy` must pass before each commit.
 - Verify per-crate (`cargo test -p <crate>`), never `--workspace`: this host's
   binutils cannot link `aws-lc-sys`, so a workspace build fails for reasons
@@ -462,7 +481,7 @@ Replace the `deltas` arm of `impl AddressRead for MockSnapshot`:
             .deltas
             .iter()
             .filter(|delta| delta.address.as_str() == addr.as_str())
-            .filter(|delta| delta.height >= range.start && delta.height < range.end)
+            .filter(|delta| delta.height >= range.start && delta.height <= range.end)
             .cloned()
             .collect())
     }
@@ -538,6 +557,61 @@ Append to `packages/zaino-noderpc/src/lib.rs`'s `mod tests`:
         let range = got.range.expect("chain_info true carries the range");
         assert_eq!(range.start, 0);
         assert_eq!(range.end, 200);
+    }
+
+    /// `HeightRange` is inclusive, so a range whose start equals its end is a
+    /// one-block query that must return that block's delta — not nothing. This
+    /// is the boundary a half-open reading gets wrong, and it is silent.
+    #[tokio::test]
+    async fn a_single_height_range_is_inclusive_not_empty() {
+        let engine = MockIndexerService::new(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(200).expect("valid height"),
+                hash: BlockHash::from([1u8; 32]),
+            }),
+            deltas: vec![delta(150, -3, "t1abc")],
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine);
+        let got = node
+            .get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: vec!["t1abc".to_string()],
+                start: Some(150),
+                end: Some(150),
+                chain_info: false,
+            })
+            .await
+            .expect("deltas");
+        assert_eq!(
+            got.deltas.len(),
+            1,
+            "[150, 150] is one block, not an empty range"
+        );
+    }
+
+    /// A chain with no coverage has no history to report. This must not query a
+    /// synthesised range — it must short-circuit, which is why `full_range`
+    /// returns `Option`. Scripting a delta that would match proves the
+    /// short-circuit actually happens.
+    #[tokio::test]
+    async fn no_coverage_answers_empty_without_querying() {
+        let engine = MockIndexerService::new(MockChain {
+            tip: None,
+            deltas: vec![delta(0, 5, "t1abc")],
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine);
+        let got = node
+            .get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: vec!["t1abc".to_string()],
+                start: None,
+                end: None,
+                chain_info: true,
+            })
+            .await
+            .expect("no coverage is a valid query");
+        assert!(got.deltas.is_empty(), "nothing is serviceable, so no deltas");
+        assert!(got.range.is_none(), "no range to report without coverage");
     }
 
     /// Review Focus 3: a backwards range is empty, not a failure. The explorer
@@ -644,10 +718,12 @@ Add to `impl<S: NodeRpcService> NodeRpc<S>` in `lib.rs`:
     /// `getaddressdeltas`: every balance change touching the requested
     /// addresses over an inclusive height range.
     ///
-    /// The wire range is inclusive and the read's [`HeightRange`] is half-open,
-    /// so `end` converts by adding one. A range whose start exceeds its end is
+    /// Both the wire range and [`HeightRange`] are inclusive, so the bounds
+    /// pass through unconverted. A range whose start exceeds its end is
     /// answered empty rather than rejected: callers derive these bounds from
-    /// user-supplied dates, where an empty day is ordinary.
+    /// user-supplied dates, where an empty day is ordinary. A chain with no
+    /// coverage at all answers empty for the same reason — there is no history
+    /// to report, which is a result, not a failure.
     pub async fn get_address_deltas(
         &self,
         params: AddressDeltasParam,
@@ -658,14 +734,22 @@ Add to `impl<S: NodeRpcService> NodeRpc<S>` in `lib.rs`:
             ));
         }
         let snapshot = self.engine.snapshot().await?;
-        let coverage = full_range(&snapshot);
+        // No coverage means no indexed history, so there are no deltas to
+        // report. `full_range` returns `None` rather than a synthesised
+        // genesis-only range precisely so this case is distinguishable.
+        let Some(coverage) = full_range(&snapshot) else {
+            return Ok(AddressDeltasResponse {
+                deltas: Vec::new(),
+                range: None,
+            });
+        };
         let start = params
             .start
             .map(Height::try_from)
             .transpose()
             .map_err(|_| RpcError::InvalidParams("start is not a valid height".into()))?
             .unwrap_or(coverage.start);
-        let end_inclusive = params
+        let end = params
             .end
             .map(Height::try_from)
             .transpose()
@@ -673,10 +757,9 @@ Add to `impl<S: NodeRpcService> NodeRpc<S>` in `lib.rs`:
             .unwrap_or(coverage.end);
 
         let mut deltas = Vec::new();
-        if start <= end_inclusive {
-            let end = end_inclusive
-                .checked_add(1)
-                .ok_or_else(|| RpcError::InvalidParams("end is at the height ceiling".into()))?;
+        // `HeightRange` is inclusive, so `start == end` is a one-block query
+        // and only `start > end` is empty.
+        if start <= end {
             let range = HeightRange { start, end };
             for address in &params.addresses {
                 let read = snapshot
@@ -689,7 +772,7 @@ Add to `impl<S: NodeRpcService> NodeRpc<S>` in `lib.rs`:
 
         let range = params.chain_info.then(|| DeltaRange {
             start: start.into(),
-            end: end_inclusive.into(),
+            end: end.into(),
         });
         Ok(AddressDeltasResponse { deltas, range })
     }
@@ -1553,8 +1636,8 @@ without method noise, and so branches rebasing onto it get one clear conflict.
 - Consumes: `zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo}`,
   `zaino_primitives::types::{Difficulty, Height}`.
 - Produces:
-  - `zaino_service::NodeStatusRead` with `node_info`, `mining_info`,
-    `peer_info`, `network_sol_ps`
+  - `zaino_service::{NodeStatusRead, NodeStatusError}` with `node_info`,
+    `mining_info`, `peer_info`, `network_sol_ps`
   - `Capability::NodeStatus`
   - `NodeRpcService` bound on `NodeStatusRead` instead of `NodeQueryRelay`
   - `NodeQuery`, `NodeQueryAnswer`, `NodeQueryRelay` no longer exist
@@ -1606,9 +1689,44 @@ Create `packages/zaino-service/src/node_status.rs`:
 use std::future::Future;
 
 use zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo};
-use zaino_primitives::types::{Difficulty, Height};
+use zaino_primitives::types::Height;
 
-use crate::error::Transient;
+/// Why a node-status read could not be answered.
+///
+/// Distinct from [`Transient`](crate::error::Transient), which is about
+/// acquiring a snapshot: no snapshot is involved here. The distinction that
+/// matters to a caller is whether the validator is *starting*, in which case
+/// the same request succeeds shortly, or *unreachable*, which is a different
+/// problem with a different fix.
+///
+/// The cause is held as a boxed `#[source]` rather than a `zaino-source` type
+/// because this crate is the inner driving port and must not depend on the
+/// driven one. Boxing keeps the chain intact without the dependency.
+#[derive(Debug, thiserror::Error)]
+pub enum NodeStatusError {
+    /// The validator is running but not yet ready to describe itself.
+    #[error("validator not ready")]
+    NotReady,
+    /// The validator could not be reached, or its answer was unusable.
+    #[error("validator unreachable")]
+    Unreachable {
+        /// The underlying source-layer failure.
+        #[source]
+        cause: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+}
+
+impl NodeStatusError {
+    /// An unreachable validator, preserving `cause` in the source chain.
+    pub fn unreachable<E>(cause: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::Unreachable {
+            cause: Box::new(cause),
+        }
+    }
+}
 
 /// Node-operator status, relayed from the validator.
 ///
@@ -1616,13 +1734,13 @@ use crate::error::Transient;
 /// live, and nothing pins them to a chain view.
 pub trait NodeStatusRead: Send + Sync {
     /// `getinfo`: version, connections, fee floors and health.
-    fn node_info(&self) -> impl Future<Output = Result<NodeInfo, Transient>> + Send;
+    fn node_info(&self) -> impl Future<Output = Result<NodeInfo, NodeStatusError>> + Send;
 
     /// `getmininginfo`: the validator's mining view.
-    fn mining_info(&self) -> impl Future<Output = Result<MiningInfo, Transient>> + Send;
+    fn mining_info(&self) -> impl Future<Output = Result<MiningInfo, NodeStatusError>> + Send;
 
     /// `getpeerinfo`: the validator's connected peers.
-    fn peer_info(&self) -> impl Future<Output = Result<Vec<PeerInfo>, Transient>> + Send;
+    fn peer_info(&self) -> impl Future<Output = Result<Vec<PeerInfo>, NodeStatusError>> + Send;
 
     /// `getnetworksolps`: the network solution rate in solutions per second,
     /// averaged over `blocks` ending at `height`. `None` for either asks the
@@ -1631,10 +1749,7 @@ pub trait NodeStatusRead: Send + Sync {
         &self,
         blocks: Option<u32>,
         height: Option<Height>,
-    ) -> impl Future<Output = Result<u64, Transient>> + Send;
-
-    /// `getdifficulty`: the current proof-of-work difficulty.
-    fn difficulty(&self) -> impl Future<Output = Result<Difficulty, Transient>> + Send;
+    ) -> impl Future<Output = Result<u64, NodeStatusError>> + Send;
 }
 ```
 
@@ -1649,7 +1764,7 @@ and remove `NodeQuery`/`NodeQueryAnswer` from its `use crate::{...}` list.
 
 In `packages/zaino-service/src/lib.rs`, replace `mod node_query;` with
 `mod node_status;`, and replace the `pub use node_query::{NodeQuery,
-NodeQueryAnswer};` export with `pub use node_status::NodeStatusRead;`. Remove
+NodeQueryAnswer};` export with `pub use node_status::{NodeStatusError, NodeStatusRead};`. Remove
 `NodeQueryRelay` from the `controls` re-export list.
 
 - [ ] **Step 5: Add the capability variant**
@@ -1689,33 +1804,30 @@ MockIndexerService` and add:
 
 ```rust
 impl NodeStatusRead for MockIndexerService {
-    async fn node_info(&self) -> Result<NodeInfo, Transient> {
-        Err(Transient::new("mock serves no node info"))
+    async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
+        // The mock has no validator behind it, so "not ready" is the honest
+        // answer — and it is the arm the adapter must surface as retryable.
+        Err(NodeStatusError::NotReady)
     }
-    async fn mining_info(&self) -> Result<MiningInfo, Transient> {
-        Err(Transient::new("mock serves no mining info"))
+    async fn mining_info(&self) -> Result<MiningInfo, NodeStatusError> {
+        Err(NodeStatusError::NotReady)
     }
-    async fn peer_info(&self) -> Result<Vec<PeerInfo>, Transient> {
+    async fn peer_info(&self) -> Result<Vec<PeerInfo>, NodeStatusError> {
         Ok(Vec::new())
     }
     async fn network_sol_ps(
         &self,
         _blocks: Option<u32>,
         _height: Option<Height>,
-    ) -> Result<u64, Transient> {
+    ) -> Result<u64, NodeStatusError> {
         Ok(0)
-    }
-    async fn difficulty(&self) -> Result<Difficulty, Transient> {
-        Ok(0.0)
     }
 }
 ```
 
 Update the imports: drop `NodeQuery`/`NodeQueryAnswer`/`NodeQueryRelay`, add
-`NodeStatusRead` and `zaino_primitives::types::rpc::{MiningInfo, NodeInfo,
-PeerInfo}` plus `Difficulty`. Check `Transient`'s constructor in
-`packages/zaino-service/src/error.rs` and use its actual API rather than
-`Transient::new` if it differs.
+`NodeStatusRead`, `NodeStatusError` and
+`zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo}`.
 
 - [ ] **Step 9: Run the tests to verify they pass**
 
