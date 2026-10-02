@@ -1063,9 +1063,9 @@ impl zaino_source::OneShotGetBlockHeader for MockchainSource {
         &self,
         hash: domain::BlockHash,
     ) -> Result<domain::rpc::BlockHeaderVerbose, PortError<zaino_source::GetBlockHeaderError>> {
-        let index = self.served_index_at_hash(hash).ok_or_else(|| {
-            port_fault::<zaino_source::GetBlockHeaderError>("block height not in best chain")
-        })?;
+        let index = self.served_index_at_hash(hash).ok_or(PortError::Domain(
+            zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+        ))?;
         let block = &self.blocks[index];
         let height = block.coinbase_height().ok_or_else(|| {
             port_fault::<zaino_source::GetBlockHeaderError>("block missing coinbase height")

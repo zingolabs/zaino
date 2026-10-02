@@ -1,12 +1,12 @@
 //! Zcash chain fetch and tx submission service backed by the validator's JsonRPC service.
 
+use crate::chain_index::chain_view::BestTip as _;
 use futures::StreamExt;
 use hex::FromHex;
-use std::sync::Arc;
 use std::{io::Cursor, str::FromStr, time};
-use tokio::{sync::mpsc, time::timeout};
+use tokio::time::timeout;
 use tracing::{info, instrument, warn};
-use zaino_chain_head::ChainHeadSnapshot as _;
+use zaino_chain::ForkReconcile;
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{
@@ -39,8 +39,8 @@ use zaino_proto::proto::{
 
 use crate::{
     chain_index::chain_head::WithChainHeadSource, chain_index::chain_store::WithChainStoreSource,
-    ChainIndex, ChainIndexRpcExt, MapBackedSnapshot, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber,
+    chain_index::chain_view::WithChainViewSource, ChainIndex, ChainIndexRpcExt,
+    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
 use crate::{
@@ -50,9 +50,7 @@ use crate::{
         ValidatorConnectionType,
     },
     error::NodeBackedIndexerServiceError,
-    indexer::{
-        handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
-    },
+    indexer::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
@@ -77,7 +75,7 @@ use zaino_status::{Status, StatusType};
 /// NOTE: We do not implement `Clone` for the central service: it owns and closes its
 /// child processes. Subscribers are the clone-safe read handles.
 pub struct NodeBackedIndexerService<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     indexer: NodeBackedChainIndex<Source>,
@@ -87,16 +85,18 @@ pub struct NodeBackedIndexerService<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
-    for NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > Status for NodeBackedIndexerService<Source>
 {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerService<Source>
 {
     /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
     /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
@@ -211,8 +211,9 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Drop
-    for NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > Drop for NodeBackedIndexerService<Source>
 {
     fn drop(&mut self) {
         self.shutdown_blocking();
@@ -222,7 +223,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Drop
 /// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
 #[derive(Debug, Clone)]
 pub struct NodeBackedIndexerServiceSubscriber<
-    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber<Source>,
@@ -232,24 +233,27 @@ pub struct NodeBackedIndexerServiceSubscriber<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Status
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > Status for NodeBackedIndexerServiceSubscriber<Source>
 {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> crate::IndexedTipIndexer
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > crate::IndexedTipIndexer for NodeBackedIndexerServiceSubscriber<Source>
 {
     fn subscribe_indexed_tips(&self) -> crate::IndexedTipStream {
         self.indexer.indexed_tip_stream()
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Fetches the current status
     #[deprecated(note = "Use the Status trait method instead")]
@@ -264,94 +268,66 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     }
 }
 
-/// Renders a compact transaction in the light-wallet protocol's proto shape.
-///
-/// The mempool stream's only conversion. Blocks reach the same proto type
-/// through the finalised state, which builds it from the indexed persistence
-/// types instead — one shape, two producers, because a mempool transaction has
-/// no indexed form to read from.
-///
-/// Every byte string here is in protocol (internal) order, as the proto
-/// comments require. The domain holds identifiers the same way, so nothing is
-/// reversed on this path.
-fn compact_tx_to_proto(
-    tx: &zaino_primitives::types::PreIndexCompactTx,
-) -> zaino_proto::proto::compact_formats::CompactTx {
-    use zaino_proto::proto::compact_formats::{
-        CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx, CompactTxIn,
-        TxOut,
-    };
-
-    // Ironwood actions are packed into `CompactOrchardAction` deliberately:
-    // they are the same shape, kept in a separate field rather than a separate
-    // type.
-    let orchard_action = |action: &zaino_primitives::types::OrchardAction| CompactOrchardAction {
-        nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
-        cmx: <[u8; 32]>::from(action.cmx).to_vec(),
-        ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: <[u8; 52]>::from(action.enc_ciphertext).to_vec(),
-    };
-
-    CompactTx {
-        // A mempool transaction is in no block, so it has no position in one.
-        index: 0,
-        txid: <[u8; 32]>::from(tx.txid).to_vec(),
-        // Not computable without the spent outputs, which a stateless
-        // conversion does not have. The proto documents the field as optional
-        // for exactly this case.
-        fee: 0,
-        spends: tx
-            .sapling_nullifiers
-            .iter()
-            .map(|nullifier| CompactSaplingSpend {
-                nf: <[u8; 32]>::from(*nullifier).to_vec(),
-            })
-            .collect(),
-        outputs: tx
-            .sapling_outputs
-            .iter()
-            .map(|output| CompactSaplingOutput {
-                cmu: <[u8; 32]>::from(output.cmu).to_vec(),
-                ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
-                // Already truncated to the compact head at the domain
-                // boundary, so there is no second truncation here.
-                ciphertext: <[u8; 52]>::from(output.enc_ciphertext).to_vec(),
-            })
-            .collect(),
-        actions: tx.orchard_actions.iter().map(orchard_action).collect(),
-        ironwood_actions: tx.ironwood_actions.iter().map(orchard_action).collect(),
-        // A coinbase transaction's single null-outpoint input is already absent
-        // from the domain, which is what the proto asks for.
-        vin: tx
-            .transparent_inputs
-            .iter()
-            .map(|input| CompactTxIn {
-                prevout_txid: <[u8; 32]>::from(input.prev_txid).to_vec(),
-                prevout_index: input.prev_index,
-            })
-            .collect(),
-        vout: tx
-            .transparent_outputs
-            .iter()
-            .map(|output| TxOut {
-                value: u64::from(output.value),
-                script_pub_key: Vec::<u8>::from(output.script.clone()),
-            })
-            .collect(),
-    }
+/// A `getrawtransaction` txid, rejected as the legacy RPC rejects it.
+#[allow(deprecated)]
+fn parse_txid(txid_hex: &str) -> Result<types::TransactionHash, NodeBackedIndexerServiceError> {
+    types::TransactionHash::from_hex(txid_hex).map_err(|error| {
+        NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
+            zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+            error.to_string(),
+        ))
+    })
 }
 
-/// `getchaintips`, derived from the chain head's retained graph.
-///
-/// No validator fallback any more: the chain head always holds a window, so
-/// there is no startup period during which this could not be answered locally.
-/// The tips it reports are the branches the chain head itself retains, which
-/// is what makes the answer consistent with every other query served from the
-/// same snapshot.
-pub(crate) fn chain_tips_for_snapshot(
-    snapshot: &Arc<MapBackedSnapshot>,
-) -> Vec<zaino_primitives::types::rpc::ChainTip> {
-    snapshot.chain_tips()
+/// The legacy RPC's answer for a transaction it cannot find.
+#[allow(deprecated)]
+fn no_such_transaction() -> NodeBackedIndexerServiceError {
+    NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
+        zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
+        "No such mempool or main chain transaction",
+    ))
+}
+
+/// The UTXOs at or above `start_height`, at most `max_entries` of them (0 is
+/// unlimited).
+fn requested_utxos(
+    utxos: Vec<zaino_primitives::types::Utxo>,
+    start_height: u64,
+    max_entries: u32,
+) -> impl Iterator<Item = zaino_primitives::types::Utxo> {
+    let limit = if max_entries > 0 {
+        max_entries as usize
+    } else {
+        usize::MAX
+    };
+    utxos
+        .into_iter()
+        .filter(move |utxo| u64::from(u32::from(utxo.height)) >= start_height)
+        .take(limit)
+}
+
+/// A UTXO as the light-wallet protocol's reply.
+fn utxo_reply(utxo: zaino_primitives::types::Utxo) -> Result<GetAddressUtxosReply, tonic::Status> {
+    let zaino_primitives::types::Utxo {
+        address,
+        txid,
+        output_index,
+        script,
+        satoshis,
+        height,
+    } = utxo;
+    Ok(GetAddressUtxosReply {
+        address: String::from(address),
+        txid: <[u8; 32]>::from(txid).to_vec(),
+        index: i32::try_from(output_index).map_err(|_| {
+            tonic::Status::unknown("Error: Index out of range. Failed to convert to i32.")
+        })?,
+        script: Vec::<u8>::from(script),
+        value_zat: i64::try_from(u64::from(satoshis)).map_err(|_| {
+            tonic::Status::unknown("Error: Satoshis out of range. Failed to convert to i64.")
+        })?,
+        height: u64::from(u32::from(height)),
+    })
 }
 
 /// Placeholder metadata and config for test-only service construction. Takes the
@@ -384,8 +360,9 @@ fn test_service_parts(
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerService<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerService<Source>
 {
     /// Wraps a chain index in a service for tests, with placeholder
     /// metadata/config. Lets unit tests exercise the service lifecycle over a
@@ -405,8 +382,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
     /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
@@ -443,8 +421,9 @@ impl ChainTipSubscriber {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
-    NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > NodeBackedIndexerServiceSubscriber<Source>
 {
     /// A subscriber to chain-tip updates, when the backing source exposes a
     /// local tip-change stream. `Some` only on the `Direct` connection; the
@@ -453,6 +432,105 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
     pub fn chaintip_update_subscriber(&self) -> Option<ChainTipSubscriber> {
         Some(ChainTipSubscriber {
             monitor: self.indexer.source().chain_tip_change()?,
+        })
+    }
+
+    /// A transaction as the light-wallet `RawTransaction`: its best-chain
+    /// height, `u64::MAX` if mined only on a non-best chain, or 0 in the mempool.
+    async fn light_wallet_transaction(
+        &self,
+        snapshot: &crate::chain_index::chain_view::ChainIndexSnapshot<Source>,
+        txid_hex: &str,
+    ) -> Result<RawTransaction, NodeBackedIndexerServiceError> {
+        let txid = parse_txid(txid_hex)?;
+        let (bytes, _branch_id) = self
+            .indexer
+            .get_raw_transaction(snapshot, &txid)
+            .await?
+            .ok_or_else(no_such_transaction)?;
+        let (best, non_best) = self.indexer.get_transaction_status(snapshot, &txid).await?;
+        let height = match best {
+            Some(types::BestChainLocation::Block(_, height)) => u64::from(height.0),
+            _ if non_best
+                .iter()
+                .any(|location| matches!(location, types::NonBestChainLocation::Block(..))) =>
+            {
+                u64::MAX
+            }
+            _ => 0,
+        };
+        Ok(RawTransaction {
+            data: bytes::Bytes::from(bytes),
+            height,
+        })
+    }
+
+    /// Shared body of `get_block` and `get_block_nullifiers`.
+    async fn compact_block_by_id(
+        &self,
+        request: BlockId,
+        nullifiers_only: bool,
+    ) -> Result<CompactBlock, NodeBackedIndexerServiceError> {
+        let status = NodeBackedIndexerServiceError::TonicStatusError;
+        let hash_or_height =
+            blockid_to_hashorheight(request).ok_or(status(tonic::Status::invalid_argument(
+                "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
+            )))?;
+
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        let height = match hash_or_height {
+            HashOrHeight::Height(height) => height.0,
+            HashOrHeight::Hash(hash) => {
+                match self.indexer.get_block_height(&snapshot, hash.into()).await {
+                    Ok(Some(height)) => height.0,
+                    Ok(None) => {
+                        return Err(status(tonic::Status::invalid_argument(
+                            "Error: Invalid hash and/or height out of range. Hash not found in chain",
+                        )));
+                    }
+                    Err(_e) => {
+                        return Err(status(tonic::Status::internal("Error: Internal db error.")));
+                    }
+                }
+            }
+        };
+
+        let block = self
+            .indexer
+            .get_compact_block(
+                &snapshot,
+                types::Height(height),
+                // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
+                // `GetBlockRange` serves an empty one.
+                PoolTypeFilter::default(),
+            )
+            .await;
+        let failure = match block {
+            Ok(Some(block)) if nullifiers_only => return Ok(compact_block_to_nullifiers(block)),
+            Ok(Some(block)) => return Ok(block),
+            Ok(None) => status(tonic::Status::not_found(
+                "Error: Failed to retrieve block from state.",
+            )),
+            Err(e) => NodeBackedIndexerServiceError::from(e),
+        };
+
+        let chain_height = u32::from(snapshot.best_tip().height);
+        let sapling_activation = self.data.network().sapling_activation_height();
+        Err(match hash_or_height {
+            HashOrHeight::Height(Height(height)) if height > chain_height => {
+                status(tonic::Status::out_of_range(format!(
+                    "Error: Height out of range [{hash_or_height}]. Height requested \
+                    is greater than the best chain tip [{chain_height}].",
+                )))
+            }
+            HashOrHeight::Height(height) if nullifiers_only && height < sapling_activation => {
+                status(tonic::Status::out_of_range(format!(
+                    "Error: Height out of range [{hash_or_height}]. Height requested \
+                    is below sapling activation height [{}].",
+                    sapling_activation.0,
+                )))
+            }
+            _otherwise => failure,
         })
     }
 
@@ -474,88 +552,47 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         let start = validated_request.start();
         let end = validated_request.end();
 
-        let service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = service_clone.indexer.snapshot_nonfinalized_state();
+        let indexer = self.indexer.clone();
+        let snapshot = indexer.snapshot_nonfinalized_state();
+        let chain_height = u32::from(snapshot.best_tip().height);
 
-        tokio::spawn(async move {
-            let timeout_result = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    let non_finalized_snapshot = &snapshot;
-                    // Use the snapshot tip directly, as this function doesn't support passthrough
-                    let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
-
-                    let height_out_of_range_status = move || {
+        Ok(CompactBlockStream::new(super::spawn_timed_stream(
+            self.timeout_channel_size(),
+            4,
+            tonic::Status::deadline_exceeded(format!("Error: {rpc_name} gRPC request timed out.")),
+            |channel_tx| async move {
+                let stream = indexer
+                    .get_compact_block_stream(
+                        &snapshot,
+                        types::Height(start),
+                        types::Height(end),
+                        pool_type_filter,
+                    )
+                    .await;
+                let failure = match stream {
+                    Ok(Some(mut compact_block_stream)) => {
+                        while let Some(stream_item) = compact_block_stream.next().await {
+                            if channel_tx.send(stream_item.map(&map_block)).await.is_err() {
+                                return;
+                            }
+                        }
+                        return;
+                    }
+                    Err(_) | Ok(None) if start > chain_height || end > chain_height => {
                         let offending_height = if start > chain_height { start } else { end };
                         tonic::Status::out_of_range(format!(
-                            "Error: Height out of range [{offending_height}]. \
-                            Height requested is greater than the best \
-                            chain tip [{chain_height}].",
+                            "Error: Height out of range [{offending_height}]. Height requested \
+                            is greater than the best chain tip [{chain_height}].",
                         ))
-                    };
-
-                    match service_clone
-                        .indexer
-                        .get_compact_block_stream(
-                            &snapshot,
-                            types::Height(start),
-                            types::Height(end),
-                            pool_type_filter.clone(),
-                        )
-                        .await
-                    {
-                        Ok(Some(mut compact_block_stream)) => {
-                            while let Some(stream_item) = compact_block_stream.next().await {
-                                if channel_tx.send(stream_item.map(&map_block)).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
-                            if let Err(e) = channel_tx.send(Err(height_out_of_range_status())).await
-                            {
-                                warn!(%e, "{rpc_name} channel closed unexpectedly");
-                            }
-                        }
-                        Err(e) => {
-                            // Preserve previous behaviour: if the request is above tip, surface OutOfRange;
-                            // otherwise return the error (currently exposed for dev).
-                            if start > chain_height || end > chain_height {
-                                if let Err(e) =
-                                    channel_tx.send(Err(height_out_of_range_status())).await
-                                {
-                                    warn!(%e, "{rpc_name} channel closed unexpectedly");
-                                }
-                            } else {
-                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(e.to_string())))
-                                    .await
-                                    .is_err()
-                                {
-                                    warn!(%e, "{rpc_name} stream closed unexpectedly");
-                                }
-                            }
-                        }
                     }
-                },
-            )
-            .await;
-
-            if timeout_result.is_err() {
-                channel_tx
-                    .send(Err(tonic::Status::deadline_exceeded(
-                        "Error: get_block_range gRPC request timed out.",
-                    )))
-                    .await
-                    .ok();
-            }
-        });
-
-        Ok(CompactBlockStream::new(channel_rx))
+                    Ok(None) => tonic::Status::not_found("Error: Failed to retrieve blocks."),
+                    Err(e) => NodeBackedIndexerServiceError::from(e).into(),
+                };
+                if let Err(e) = channel_tx.send(Err(failure)).await {
+                    warn!(%e, "{rpc_name} channel closed unexpectedly");
+                }
+            },
+        )))
     }
 }
 
@@ -587,8 +624,9 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> ZcashIndexer
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > ZcashIndexer for NodeBackedIndexerServiceSubscriber<Source>
 {
     type Error = NodeBackedIndexerServiceError;
 
@@ -823,9 +861,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let tip = self.indexer.best_chaintip(&snapshot).await?;
-        Ok(GetBlockHashResponse::new(tip.hash.into()))
+        let tip = self.indexer.snapshot_nonfinalized_state().best_tip();
+        Ok(GetBlockHashResponse::new(zebra_chain::block::Hash(
+            tip.hash.into(),
+        )))
     }
 
     /// Returns the current block count in the best valid block chain.
@@ -834,17 +873,14 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let tip = self.indexer.best_chaintip(&snapshot).await?;
-        Ok(tip.height.into())
+        self.chain_height().await
     }
 
     #[allow(deprecated)]
     async fn get_chain_tips(
         &self,
     ) -> Result<Vec<zaino_primitives::types::rpc::ChainTip>, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        Ok(chain_tips_for_snapshot(&snapshot))
+        Ok(self.indexer.snapshot_nonfinalized_state().chain_tips())
     }
 
     /// Return information about the given Zcash address.
@@ -900,87 +936,43 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
-    ///
-    /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
-    ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
-    ///       required, this second call could be removed, improving the performance of this method.
-    // Pre-existing lint: `NodeBackedIndexerServiceError` is a large error type; returning it by value here is
-    // flagged by `result_large_err`. Suppressed to satisfy `-D warnings` without an invasive
-    // boxing refactor of the shared error enum.
+    // `NodeBackedIndexerServiceError` is large enough to trip `result_large_err`.
     #[allow(clippy::result_large_err)]
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
     ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
-        let fallback_hash_or_height = hash_or_height.clone();
-        let local_result: Result<zaino_primitives::types::Treestate, Self::Error> = async {
-            let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
-            let snapshot = self.indexer.snapshot_nonfinalized_state();
-
-            let block_data = match hash_or_height_struct {
-                HashOrHeight::Hash(hash) => self
-                    .indexer
-                    .get_indexed_block_by_hash(&snapshot, &hash.into())
-                    .await?
-                    .ok_or(
-                        #[allow(deprecated)]
-                        NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                            "Failed to fetch block data.",
-                        )),
-                    )?,
-                HashOrHeight::Height(height) => self
-                    .indexer
-                    .get_indexed_block_by_height(&snapshot, &height.into())
-                    .await?
-                    .ok_or(
-                        #[allow(deprecated)]
-                        NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                            "Failed to fetch block data.",
-                        )),
-                    )?,
-            };
-
-            let treestates = self.indexer.get_treestate(block_data.hash()).await?;
-            let time: u32 = block_data.data().time().try_into().map_err(|_error| {
-                #[allow(deprecated)]
-                NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Block time is out of range for u32.",
-                ))
-            })?;
-
-            Ok(super::build_treestate_response(
-                zaino_primitives::types::BlockHash::from(block_data.hash().0),
-                zaino_primitives::types::Height::try_from(block_data.height().0).map_err(|e| {
-                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
-                        format!("indexed block height out of range: {e}"),
-                    ))
-                })?,
-                time,
-                treestates,
-            ))
-        }
-        .await;
-
-        if let Ok(response) = local_result {
-            return Ok(response);
-        }
-
         let snapshot = self.indexer.snapshot_nonfinalized_state();
         if !self
             .indexer
-            .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
+            .hash_or_height_known_for_treestate(&snapshot, &hash_or_height)
             .await?
         {
-            return local_result;
+            #[allow(deprecated)]
+            return Err(NodeBackedIndexerServiceError::RpcError(
+                crate::error::LegacyRpcError::new(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Failed to fetch block data.",
+                ),
+            ));
         }
 
-        Ok(self
-            .indexer
-            .get_treestate_by_id(fallback_hash_or_height)
-            .await?)
+        let at = match HashOrHeight::from_str(&hash_or_height)? {
+            HashOrHeight::Hash(hash) => {
+                zaino_chain::BlockId::Hash(zaino_primitives::types::BlockHash::from(hash.0))
+            }
+            HashOrHeight::Height(height) => zaino_chain::BlockId::Height(
+                zaino_primitives::types::Height::try_from(height.0).map_err(|e| {
+                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
+                        format!("block height out of range: {e}"),
+                    ))
+                })?,
+            ),
+        };
+        match zaino_chain::TreestateRead::treestate(&snapshot, at).await {
+            Ok(Some(treestate)) => Ok(treestate),
+            _ => Ok(self.indexer.get_treestate_by_id(hash_or_height).await?),
+        }
     }
 
     /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
@@ -1008,43 +1000,14 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
     ) -> Result<zaino_primitives::types::rpc::SubtreeRoots, Self::Error> {
-        // The pool name arrived as a string and was parsed at the serving
-        // boundary, so there is nothing left to reject here.
-        // The index's own pool enum, which is not the domain's; the two are
-        // matched by hand so a fourth pool breaks this at compile time.
-        let index_pool = match pool {
-            zaino_primitives::types::ShieldedPool::Sapling => {
-                crate::chain_index::ShieldedPool::Sapling
-            }
-            zaino_primitives::types::ShieldedPool::Orchard => {
-                crate::chain_index::ShieldedPool::Orchard
-            }
-            zaino_primitives::types::ShieldedPool::Ironwood => {
-                crate::chain_index::ShieldedPool::Ironwood
-            }
-        };
-
-        let roots = self
-            .indexer
-            .get_subtree_roots(index_pool, start_index.0, limit.map(|index| index.0))
-            .await?;
-
-        // Built with a loop rather than a fallible closure: the error type is
-        // large enough that `Result`-returning closures trip
-        // `clippy::result_large_err` here.
-        let mut subtrees = Vec::with_capacity(roots.len());
-        for (root, end_height) in roots {
-            let end_height =
-                zaino_primitives::types::Height::try_from(end_height).map_err(|e| {
-                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
-                        format!("subtree end height out of range: {e}"),
-                    ))
-                })?;
-            subtrees.push(zaino_primitives::types::SubtreeRoot {
-                root: zaino_primitives::types::TreeRoot::from(root),
-                end_height,
-            });
-        }
+        let subtrees = zaino_chain::TreestateRead::subtree_roots(
+            &self.indexer.snapshot_nonfinalized_state(),
+            pool,
+            start_index.0,
+            limit.map(|index| index.0),
+        )
+        .await
+        .map_err(crate::error::ChainIndexError::from)?;
 
         Ok(zaino_primitives::types::rpc::SubtreeRoots {
             pool,
@@ -1073,31 +1036,16 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         txid_hex: String,
         verbose: Option<u8>,
     ) -> Result<GetRawTransaction, Self::Error> {
-        #[allow(deprecated)]
-        let txid = types::TransactionHash::from_hex(&txid_hex).map_err(|error| {
-            NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
-                error.to_string(),
-            ))
-        })?;
-
-        #[allow(deprecated)]
-        let not_found_error = || {
-            NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
-                "No such mempool or main chain transaction",
-            ))
-        };
-
+        let txid = parse_txid(&txid_hex)?;
         let snapshot = self.indexer.snapshot_nonfinalized_state();
 
         let Some((serialized_transaction, _consensus_branch_id)) =
             self.indexer.get_raw_transaction(&snapshot, &txid).await?
         else {
-            return Err(not_found_error());
+            return Err(no_such_transaction());
         };
 
-        if verbose.is_none() {
+        if verbose.unwrap_or(0) == 0 {
             return Ok(GetRawTransaction::Raw(
                 zebra_chain::transaction::SerializedTransaction::from(serialized_transaction),
             ));
@@ -1106,7 +1054,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
         let transaction = zebra_chain::transaction::Transaction::zcash_deserialize(
             serialized_transaction.as_slice(),
         )
-        .map_err(|_| not_found_error())?;
+        .map_err(|_| no_such_transaction())?;
 
         let (best_chain_location, _non_best_chain_locations) = self
             .indexer
@@ -1138,11 +1086,13 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
                         ),
                     );
 
-                    let block_time = self
-                        .indexer
-                        .get_indexed_block_by_hash(&snapshot, &block_hash)
-                        .await?
-                        .and_then(|block| chrono::DateTime::from_timestamp(block.data().time(), 0));
+                    let block_time = zaino_chain::BlockRead::block_header(
+                        &snapshot,
+                        zaino_chain::BlockId::Hash(types::domain_hash(block_hash)),
+                    )
+                    .await
+                    .map_err(crate::error::ChainIndexError::from)?
+                    .and_then(|header| chrono::DateTime::from_timestamp(i64::from(header.time), 0));
 
                     (
                         Some(zebra_chain::block::Height::from(height)),
@@ -1202,8 +1152,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        Ok(self.indexer.best_chaintip(&snapshot).await?.height.into())
+        Ok(Height(u32::from(
+            self.indexer.snapshot_nonfinalized_state().best_tip().height,
+        )))
     }
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -1279,204 +1230,27 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
 }
 
 #[allow(deprecated)]
-impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> LightWalletIndexer
-    for NodeBackedIndexerServiceSubscriber<Source>
+impl<
+        Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource + WithChainViewSource,
+    > LightWalletIndexer for NodeBackedIndexerServiceSubscriber<Source>
 {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        let tip = self.indexer.snapshot_nonfinalized_state().best_tip();
         Ok(crate::chain_index::wire_types::block_index_to_wire(
-            &types::BlockIndex {
-                height: types::Height(u32::from(tip.height)),
-                hash: types::BlockHash(tip.hash.into()),
-            },
+            &types::block_index(self.indexer.snapshot_nonfinalized_state().best_tip()),
         ))
     }
 
     /// Return the compact block corresponding to the given block identifier
     async fn get_block(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
-        let hash_or_height = blockid_to_hashorheight(request).ok_or(
-            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
-                "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
-            )),
-        )?;
-
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let height = match hash_or_height {
-            HashOrHeight::Height(height) => height.0,
-            HashOrHeight::Hash(hash) => {
-                match self.indexer.get_block_height(&snapshot, hash.into()).await {
-                    Ok(Some(height)) => height.0,
-                    Ok(None) => {
-                        return Err(NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
-                            "Error: Invalid hash and/or height out of range. Hash not founf in chain",
-                        )));
-                    }
-                    Err(_e) => {
-                        return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::internal("Error: Internal db error."),
-                        ));
-                    }
-                }
-            }
-        };
-
-        let non_finalized_snapshot = &snapshot;
-
-        match self
-            .indexer
-            .get_compact_block(
-                &snapshot,
-                types::Height(height),
-                // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
-                // `GetBlockRange` serves an empty one. `includes_all` here would make a
-                // height's content depend on which RPC asked.
-                PoolTypeFilter::default(),
-            )
-            .await
-        {
-            Ok(Some(block)) => Ok(block),
-            Ok(None) => {
-                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
-                match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{hash_or_height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
-                            )),
-                        ))
-                    }
-                    _otherwise => Err(NodeBackedIndexerServiceError::TonicStatusError(
-                        tonic::Status::unknown("Error: Failed to retrieve block from state."),
-                    )),
-                }
-            }
-            Err(e) => {
-                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
-                match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{hash_or_height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
-                            )),
-                        ))
-                    }
-                    _otherwise =>
-                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                    {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::unknown(format!(
-                                "Error: Failed to retrieve block from node. Server Error: {e}",
-                            )),
-                        ))
-                    }
-                }
-            }
-        }
+        self.compact_block_by_id(request, false).await
     }
 
     /// Same as GetBlock except actions contain only nullifiers
     ///
     /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
     async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
-        let hash_or_height = blockid_to_hashorheight(request).ok_or(
-            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
-                "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
-            )),
-        )?;
-        let snapshot = self.indexer.snapshot_nonfinalized_state();
-        let height = match hash_or_height {
-            HashOrHeight::Height(height) => height.0,
-            HashOrHeight::Hash(hash) => {
-                match self.indexer.get_block_height(&snapshot, hash.into()).await {
-                    Ok(Some(height)) => height.0,
-                    Ok(None) => {
-                        return Err(NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
-                            "Error: Invalid hash and/or height out of range. Hash not founf in chain",
-                        )));
-                    }
-                    Err(_e) => {
-                        return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::internal("Error: Internal db error."),
-                        ));
-                    }
-                }
-            }
-        };
-        let non_finalized_snapshot = &snapshot;
-        match self
-            .indexer
-            .get_compact_block(
-                &snapshot,
-                types::Height(height),
-                // As `get_block`. `includes_all` here leaks transparent-only txs as
-                // nullifier-less husks the range form never emits.
-                PoolTypeFilter::default(),
-            )
-            .await
-        {
-            Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),
-            Ok(None) => {
-                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
-                match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{hash_or_height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
-                            )),
-                        ))
-                    }
-                    HashOrHeight::Height(height)
-                        if height > self.data.network().sapling_activation_height() =>
-                    {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{hash_or_height}]. Height requested \
-                                is below sapling activation height [{chain_height}].",
-                            )),
-                        ))
-                    }
-                    _otherwise => Err(NodeBackedIndexerServiceError::TonicStatusError(
-                        tonic::Status::unknown("Error: Failed to retrieve block from state."),
-                    )),
-                }
-            }
-            Err(e) => {
-                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
-                match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{hash_or_height}]. Height requested \
-                                is greater than the best chain tip [{chain_height}].",
-                            )),
-                        ))
-                    }
-                    HashOrHeight::Height(height)
-                        if height > self.data.network().sapling_activation_height() =>
-                    {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::out_of_range(format!(
-                                "Error: Height out of range [{hash_or_height}]. Height requested \
-                                is below sapling activation height [{chain_height}].",
-                            )),
-                        ))
-                    }
-                    _otherwise =>
-                    // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                    {
-                        Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::unknown(format!(
-                                "Error: Failed to retrieve block from node. Server Error: {e}",
-                            )),
-                        ))
-                    }
-                }
-            }
-        }
+        self.compact_block_by_id(request, true).await
     }
 
     /// Return a list of consecutive compact blocks
@@ -1508,36 +1282,14 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
     /// Return the requested full (not compact) transaction (as from the legacy full node)
     async fn get_transaction(&self, request: TxFilter) -> Result<RawTransaction, Self::Error> {
         let hash = request.hash;
-        if hash.len() == 32 {
-            let reversed_hash = hash.iter().rev().copied().collect::<Vec<u8>>();
-            let hash_hex = hex::encode(reversed_hash);
-            let tx = self.get_raw_transaction(hash_hex, Some(1)).await?;
-
-            let (hex, height) = if let GetRawTransaction::Object(tx_object) = tx {
-                (tx_object.hex().clone(), tx_object.height())
-            } else {
-                return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                    tonic::Status::not_found("Error: Transaction not received"),
-                ));
-            };
-            // A `None` height means the validator has the transaction but it is
-            // unmined. `0` is the wire sentinel for that, and is the honest
-            // answer: this used to report the chain tip, which claimed the
-            // transaction was mined at a height it is not in, and to fail with
-            // `UnavailableNotSyncedEnough` when there was no non-finalized state
-            // — an error for the ordinary case of asking about a mempool
-            // transaction.
-            let height: u64 = height.map_or(0, |h| h as u64);
-
-            Ok(RawTransaction {
-                data: bytes::Bytes::copy_from_slice(hex.as_ref()),
-                height,
-            })
-        } else {
-            Err(NodeBackedIndexerServiceError::TonicStatusError(
+        if hash.len() != 32 {
+            return Err(NodeBackedIndexerServiceError::TonicStatusError(
                 tonic::Status::invalid_argument("Error: Transaction hash incorrect"),
-            ))
+            ));
         }
+        let hash_hex = hex::encode(hash.iter().rev().copied().collect::<Vec<u8>>());
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        self.light_wallet_transaction(&snapshot, &hash_hex).await
     }
 
     /// Submit the given transaction to the Zcash network
@@ -1558,44 +1310,25 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
         &self,
         request: TransparentAddressBlockFilter,
     ) -> Result<RawTransactionStream, Self::Error> {
-        let chain_height = self.chain_height().await?;
         let txids = self.get_taddress_txids_helper(request).await?;
-        let service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
-        tokio::spawn(async move {
-            let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    for txid in txids {
-                        let transaction = service_clone.get_raw_transaction(txid, Some(1)).await;
-                        if handle_raw_transaction::<Self>(
-                            chain_height.0 as u64,
-                            transaction,
-                            transmitter.clone(),
-                        )
+        let service = self.clone();
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        Ok(RawTransactionStream::new(super::spawn_timed_stream(
+            self.timeout_channel_size(),
+            4,
+            tonic::Status::internal("Error: get_taddress_transactions gRPC request timed out"),
+            |transmitter| async move {
+                for txid in txids {
+                    let transaction = service
+                        .light_wallet_transaction(&snapshot, &txid)
                         .await
-                        .is_err()
-                        {
-                            break;
-                        }
+                        .map_err(tonic::Status::from);
+                    if transmitter.send(transaction).await.is_err() {
+                        break;
                     }
-                },
-            )
-            .await;
-            match timeout {
-                Ok(_) => {}
-                Err(_) => {
-                    transmitter
-                        .send(Err(tonic::Status::internal(
-                            "Error: get_taddress_txids gRPC request timed out",
-                        )))
-                        .await
-                        .ok();
                 }
-            }
-        });
-        Ok(RawTransactionStream::new(receiver))
+            },
+        )))
     }
 
     /// Return the txids corresponding to the given t-address within the given block range
@@ -1631,117 +1364,47 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
         &self,
         mut request: AddressStream,
     ) -> Result<Balance, Self::Error> {
-        let service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.service.channel_size as usize);
-        let fetcher_task_handle = tokio::spawn(async move {
-            let fetcher_timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    // Per-address balances coexist at one moment, so their
-                    // running total is itself a supply-bounded balance: the
-                    // incremental form of `Zatoshis::sum_balances`, demanded
-                    // by the streaming shape. A total past the supply means
-                    // the request's addresses overlap or the source
-                    // double-counts, and is refused rather than wrapped.
-                    let mut total_balance = zaino_primitives::types::Zatoshis::ZERO;
-                    loop {
-                        match channel_rx.recv().await {
-                            Some(taddr) => {
-                                let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
-                                let balance = service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance = total_balance
-                                    .checked_add(balance.balance)
-                                    .ok_or_else(|| {
-                                        tonic::Status::data_loss(
-                                            "Error: address balances total past the money \
-                                                 supply; the requested addresses overlap or the \
-                                                 source data is corrupt.",
-                                        )
-                                    })?;
-                            }
-                            None => {
-                                return Ok(u64::from(total_balance));
-                            }
-                        }
-                    }
-                },
-            )
-            .await;
-            match fetcher_timeout {
-                Ok(result) => result,
-                Err(_) => Err(tonic::Status::deadline_exceeded(
-                    "Error: get_taddress_balance_stream request timed out.",
-                )),
-            }
-        });
-        // NOTE: This timeout is so slow due to the blockcache not
-        // being implemented. This should be reduced to 30s once functionality is in place.
-        // TODO: Make [rpc_timout] a configurable system variable
-        // with [default = 30s] and [mempool_rpc_timout = 4*rpc_timeout]
-        let addr_recv_timeout = timeout(
-            time::Duration::from_secs((service_timeout * 4) as u64),
+        let status = NodeBackedIndexerServiceError::TonicStatusError;
+        let total_balance = timeout(
+            time::Duration::from_secs(u64::from(self.config.service.timeout) * 4),
             async {
-                while let Some(address_result) = request.next().await {
-                    // TODO: Hide server error from clients before release.
-                    // Currently useful for dev purposes.
-                    let address = address_result.map_err(|e| {
+                // A running total past the money supply means the addresses
+                // overlap or the source double-counts, and is refused.
+                let mut total_balance = zaino_primitives::types::Zatoshis::ZERO;
+                while let Some(address) = request.next().await {
+                    let address = address.map_err(|e| {
                         tonic::Status::unknown(format!("Failed to read from stream: {e}"))
                     })?;
-                    if channel_tx.send(address.address).await.is_err() {
-                        // TODO: Hide server error from clients before release.
-                        // Currently useful for dev purposes.
-                        return Err(tonic::Status::unknown(
-                            "Error: Failed to send address to balance task.",
-                        ));
-                    }
+                    let balance = self
+                        .z_get_address_balance(GetAddressBalanceRequest::new(vec![address.address]))
+                        .await
+                        .map_err(tonic::Status::from)?;
+                    total_balance =
+                        total_balance.checked_add(balance.balance).ok_or_else(|| {
+                            tonic::Status::data_loss(
+                                "Error: address balances total past the money supply; the \
+                                     requested addresses overlap or the source data is corrupt.",
+                            )
+                        })?;
                 }
-                drop(channel_tx);
-                Ok::<(), tonic::Status>(())
+                Ok(u64::from(total_balance))
             },
         )
-        .await;
-        match addr_recv_timeout {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                fetcher_task_handle.abort();
-                return Err(NodeBackedIndexerServiceError::TonicStatusError(e));
-            }
-            Err(_) => {
-                fetcher_task_handle.abort();
-                return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                    tonic::Status::deadline_exceeded(
-                        "Error: get_taddress_balance_stream request timed out in address loop.",
-                    ),
-                ));
-            }
-        }
-        match fetcher_task_handle.await {
-            Ok(Ok(total_balance)) => {
-                let checked_balance: i64 = match i64::try_from(total_balance) {
-                    Ok(balance) => balance,
-                    Err(_) => {
-                        // TODO: Hide server error from clients before release.
-                        // Currently useful for dev purposes.
-                        return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                            tonic::Status::unknown(
-                                "Error: Error converting balance from u64 to i64.",
-                            ),
-                        ));
-                    }
-                };
-                Ok(Balance {
-                    value_zat: checked_balance,
-                })
-            }
-            Ok(Err(e)) => Err(NodeBackedIndexerServiceError::TonicStatusError(e)),
-            // TODO: Hide server error from clients before release.
-            // Currently useful for dev purposes.
-            Err(e) => Err(NodeBackedIndexerServiceError::TonicStatusError(
-                tonic::Status::unknown(format!("Fetcher Task failed: {e}")),
-            )),
-        }
+        .await
+        .unwrap_or_else(|_| {
+            Err(tonic::Status::deadline_exceeded(
+                "Error: get_taddress_balance_stream request timed out.",
+            ))
+        })
+        .map_err(status)?;
+
+        Ok(Balance {
+            value_zat: i64::try_from(total_balance).map_err(|_| {
+                status(tonic::Status::unknown(
+                    "Error: Error converting balance from u64 to i64.",
+                ))
+            })?,
+        })
     }
 
     /// Returns a stream of the compact transaction representation for transactions
@@ -1770,84 +1433,62 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
         let exclude_txids = request.exclude_txid_suffixes.clone();
 
         let mempool = self.indexer.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        Ok(CompactTransactionStream::new(super::spawn_timed_stream(
+            self.timeout_channel_size(),
+            4,
+            tonic::Status::internal("Error: get_mempool_tx gRPC request timed out"),
+            |channel_tx| async move {
+                match mempool.get_mempool_transactions(exclude_txids).await {
+                    Ok(entries) => {
+                        for entry in entries {
+                            // One parse, not two. This used to deserialize
+                            // the same bytes into a `zebra_chain`
+                            // transaction and then again into
+                            // `zaino-fetch`'s `FullTransaction`, purely to
+                            // reach the latter's `to_compact`. The domain
+                            // conversion reaches the same compact shape
+                            // from the zebra transaction directly, which is
+                            // what the TODO this replaces asked for.
+                            let compact = zebra_chain::transaction::Transaction::zcash_deserialize(
+                                &mut Cursor::new(entry.serialized_bytes()),
+                            )
+                            .map_err(|e| {
+                                tonic::Status::unknown(format!(
+                                    "mempool transaction did not deserialize: {e}"
+                                ))
+                            })
+                            .and_then(|transaction| {
+                                zaino_convert_zebra::transaction_from_zebra(&transaction)
+                                    .map_err(|e| tonic::Status::unknown(e.to_string()))
+                            })
+                            .map(|transaction| {
+                                // A mempool transaction is in no block, so index 0.
+                                zaino_chain_store_zainodb::conversion::compact_tx_to_wire(
+                                    0,
+                                    &zaino_primitives::types::PreIndexCompactTx::from(&transaction),
+                                )
+                            });
 
-        tokio::spawn(async move {
-            let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    match mempool.get_mempool_transactions(exclude_txids).await {
-                        Ok(entries) => {
-                            for entry in entries {
-                                // One parse, not two. This used to deserialize
-                                // the same bytes into a `zebra_chain`
-                                // transaction and then again into
-                                // `zaino-fetch`'s `FullTransaction`, purely to
-                                // reach the latter's `to_compact`. The domain
-                                // conversion reaches the same compact shape
-                                // from the zebra transaction directly, which is
-                                // what the TODO this replaces asked for.
-                                let compact =
-                                    zebra_chain::transaction::Transaction::zcash_deserialize(
-                                        &mut Cursor::new(entry.serialized_bytes()),
-                                    )
-                                    .map_err(|e| {
-                                        tonic::Status::unknown(format!(
-                                            "mempool transaction did not deserialize: {e}"
-                                        ))
-                                    })
-                                    .and_then(|transaction| {
-                                        // A mempool transaction is in no block, so
-                                        // it carries no position. The served
-                                        // `CompactTx.index` is set to 0 at the
-                                        // proto boundary (`compact_tx_to_proto`),
-                                        // not on the domain type.
-                                        zaino_convert_zebra::transaction_from_zebra(&transaction)
-                                            .map_err(|e| tonic::Status::unknown(e.to_string()))
-                                    })
-                                    .map(|transaction| {
-                                        compact_tx_to_proto(
-                                            &zaino_primitives::types::PreIndexCompactTx::from(
-                                                &transaction,
-                                            ),
-                                        )
-                                    });
-
-                                if channel_tx.send(compact).await.is_err() {
-                                    break;
-                                }
+                            if channel_tx.send(compact).await.is_err() {
+                                break;
                             }
                         }
-                        Err(e) => {
-                            // The ChainIndex error already carries its own gRPC
-                            // status — `invalid_argument` for a malformed
-                            // exclude list, `unavailable` for a retryable one.
-                            // Flattening every one to `unknown` told the client
-                            // nothing and made a caller mistake look like a
-                            // server fault.
-                            channel_tx
-                                .send(Err(NodeBackedIndexerServiceError::from(e).into()))
-                                .await
-                                .ok();
-                        }
                     }
-                },
-            )
-            .await;
-            match timeout {
-                Ok(_) => {}
-                Err(_) => {
-                    channel_tx
-                        .send(Err(tonic::Status::internal(
-                            "Error: get_mempool_tx gRPC request timed out",
-                        )))
-                        .await
-                        .ok();
+                    Err(e) => {
+                        // The ChainIndex error already carries its own gRPC
+                        // status — `invalid_argument` for a malformed
+                        // exclude list, `unavailable` for a retryable one.
+                        // Flattening every one to `unknown` told the client
+                        // nothing and made a caller mistake look like a
+                        // server fault.
+                        channel_tx
+                            .send(Err(NodeBackedIndexerServiceError::from(e).into()))
+                            .await
+                            .ok();
+                    }
                 }
-            }
-        });
-        Ok(CompactTransactionStream::new(channel_rx))
+            },
+        )))
     }
 
     /// Return a stream of current Mempool transactions. This will keep the output stream open while
@@ -1855,83 +1496,66 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
     #[allow(deprecated)]
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let indexer = self.indexer.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let snapshot = indexer.snapshot_nonfinalized_state();
-        tokio::spawn(async move {
-            let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 6) as u64),
-                async {
-                    // The snapshot is passed in, not dropped: the stream must be
-                    // coherent with the tip this request was admitted against,
-                    // and `None` would take whatever the mempool is coherent
-                    // with instead.
-                    match indexer.get_mempool_stream(Some(&snapshot)) {
-                        Some(mempool_stream) => {
-                            let mut mempool_stream = std::pin::pin!(mempool_stream);
-                            while let Some(result) = mempool_stream.next().await {
-                                match result {
-                                    Ok(transaction_bytes) => {
-                                        if channel_tx
-                                            .send(Ok(RawTransaction {
-                                                data: transaction_bytes,
-                                                // A mempool transaction is
-                                                // unmined, and `0` is the wire
-                                                // sentinel for that. Reporting
-                                                // the chain tip claimed it was
-                                                // mined at a height it is not in.
-                                                height: 0,
-                                            }))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        channel_tx
-                                            .send(
-                                                Err(NodeBackedIndexerServiceError::from(e).into()),
-                                            )
-                                            .await
-                                            .ok();
+        Ok(RawTransactionStream::new(super::spawn_timed_stream(
+            self.timeout_channel_size(),
+            6,
+            tonic::Status::internal("Error: get_mempool_stream gRPC request timed out"),
+            |channel_tx| async move {
+                // The snapshot is passed in, not dropped: the stream must be
+                // coherent with the tip this request was admitted against,
+                // and `None` would take whatever the mempool is coherent
+                // with instead.
+                match indexer.get_mempool_stream(Some(&snapshot)) {
+                    Some(mempool_stream) => {
+                        let mut mempool_stream = std::pin::pin!(mempool_stream);
+                        while let Some(result) = mempool_stream.next().await {
+                            match result {
+                                Ok(transaction_bytes) => {
+                                    if channel_tx
+                                        .send(Ok(RawTransaction {
+                                            data: transaction_bytes,
+                                            // A mempool transaction is
+                                            // unmined, and `0` is the wire
+                                            // sentinel for that. Reporting
+                                            // the chain tip claimed it was
+                                            // mined at a height it is not in.
+                                            height: 0,
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
                                         break;
                                     }
                                 }
+                                Err(e) => {
+                                    channel_tx
+                                        .send(Err(NodeBackedIndexerServiceError::from(e).into()))
+                                        .await
+                                        .ok();
+                                    break;
+                                }
                             }
                         }
-                        None => {
-                            // The caller's snapshot is older than the one the
-                            // mempool is coherent with. Retryable, and
-                            // `failed_precondition` says so — `internal` read as
-                            // a server fault and gave the client nothing to act
-                            // on.
-                            warn!("mempool stream requested against a stale snapshot");
-                            channel_tx
-                                .send(Err(tonic::Status::failed_precondition(
-                                    "mempool is not coherent with the requested snapshot; \
+                    }
+                    None => {
+                        // The caller's snapshot is older than the one the
+                        // mempool is coherent with. Retryable, and
+                        // `failed_precondition` says so — `internal` read as
+                        // a server fault and gave the client nothing to act
+                        // on.
+                        warn!("mempool stream requested against a stale snapshot");
+                        channel_tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "mempool is not coherent with the requested snapshot; \
                                      retry with a fresh snapshot",
-                                )))
-                                .await
-                                .ok();
-                        }
-                    };
-                },
-            )
-            .await;
-            match timeout {
-                Ok(_) => {}
-                Err(_) => {
-                    channel_tx
-                        .send(Err(tonic::Status::internal(
-                            "Error: get_mempool_stream gRPC request timed out",
-                        )))
-                        .await
-                        .ok();
-                }
-            }
-        });
-        Ok(RawTransactionStream::new(channel_rx))
+                            )))
+                            .await
+                            .ok();
+                    }
+                };
+            },
+        )))
     }
 
     /// GetTreeState returns the note commitment tree state corresponding to the given block.
@@ -1956,12 +1580,13 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
 
     /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
     async fn get_latest_tree_state(&self) -> Result<TreeState, Self::Error> {
-        let latest_block = self.chain_height().await?;
-        self.get_tree_state(BlockId {
-            height: latest_block.0 as u64,
-            hash: vec![],
-        })
-        .await
+        // By hash, so the treestate is the tip's even if the chain moves.
+        let tip = self.indexer.snapshot_nonfinalized_state().best_tip();
+        let treestate = self.z_get_treestate(tip.hash.to_string()).await?;
+        Ok(super::tree_state_from_treestate_response(
+            self.data.network().bip70_network_name(),
+            treestate,
+        ))
     }
 
     #[allow(deprecated)]
@@ -1985,54 +1610,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
         super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
-        let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
-        let mut entries: u32 = 0;
-        for utxo in utxos {
-            let zaino_primitives::types::Utxo {
-                address,
-                txid,
-                output_index,
-                script,
-                satoshis,
-                height,
-            } = utxo;
-            if u64::from(u32::from(height)) < request.start_height {
-                continue;
-            }
-            entries += 1;
-            if request.max_entries > 0 && entries > request.max_entries {
-                break;
-            }
-            let checked_index = match i32::try_from(output_index) {
-                Ok(index) => index,
-                Err(_) => {
-                    return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                        tonic::Status::unknown(
-                            "Error: Index out of range. Failed to convert to i32.",
-                        ),
-                    ));
-                }
-            };
-            let checked_satoshis = match i64::try_from(u64::from(satoshis)) {
-                Ok(satoshis) => satoshis,
-                Err(_) => {
-                    return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                        tonic::Status::unknown(
-                            "Error: Satoshis out of range. Failed to convert to i64.",
-                        ),
-                    ));
-                }
-            };
-            let utxo_reply = GetAddressUtxosReply {
-                address: String::from(address),
-                txid: <[u8; 32]>::from(txid).to_vec(),
-                index: checked_index,
-                script: Vec::<u8>::from(script),
-                value_zat: checked_satoshis,
-                height: u64::from(u32::from(height)),
-            };
-            address_utxos.push(utxo_reply)
-        }
+        let address_utxos = requested_utxos(utxos, request.start_height, request.max_entries)
+            .map(utxo_reply)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
         Ok(GetAddressUtxosReplyList { address_utxos })
     }
 
@@ -2050,79 +1631,23 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
         super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        tokio::spawn(async move {
-            let timeout = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    let mut entries: u32 = 0;
-                    for utxo in utxos {
-                        let zaino_primitives::types::Utxo {
-                            address,
-                            txid,
-                            output_index,
-                            script,
-                            satoshis,
-                            height,
-                        } = utxo;
-                        if u64::from(u32::from(height)) < request.start_height {
-                            continue;
-                        }
-                        entries += 1;
-                        if request.max_entries > 0 && entries > request.max_entries {
-                            break;
-                        }
-                        let checked_index = match i32::try_from(output_index) {
-                            Ok(index) => index,
-                            Err(_) => {
-                                let _ = channel_tx
-                                    .send(Err(tonic::Status::unknown(
-                                        "Error: Index out of range. Failed to convert to i32.",
-                                    )))
-                                    .await;
-                                return;
-                            }
-                        };
-                        let checked_satoshis = match i64::try_from(u64::from(satoshis)) {
-                            Ok(satoshis) => satoshis,
-                            Err(_) => {
-                                let _ = channel_tx
-                                    .send(Err(tonic::Status::unknown(
-                                        "Error: Satoshis out of range. Failed to convert to i64.",
-                                    )))
-                                    .await;
-                                return;
-                            }
-                        };
-                        let utxo_reply = GetAddressUtxosReply {
-                            address: String::from(address),
-                            txid: <[u8; 32]>::from(txid).to_vec(),
-                            index: checked_index,
-                            script: Vec::<u8>::from(script),
-                            value_zat: checked_satoshis,
-                            height: u64::from(u32::from(height)),
-                        };
-                        if channel_tx.send(Ok(utxo_reply)).await.is_err() {
-                            return;
-                        }
+        Ok(UtxoReplyStream::new(super::spawn_timed_stream(
+            self.timeout_channel_size(),
+            4,
+            tonic::Status::deadline_exceeded(
+                "Error: get_address_utxos_stream gRPC request timed out",
+            ),
+            |channel_tx| async move {
+                for reply in requested_utxos(utxos, request.start_height, request.max_entries)
+                    .map(utxo_reply)
+                {
+                    let failed = reply.is_err();
+                    if channel_tx.send(reply).await.is_err() || failed {
+                        return;
                     }
-                },
-            )
-            .await;
-            match timeout {
-                Ok(_) => {}
-                Err(_) => {
-                    channel_tx
-                        .send(Err(tonic::Status::deadline_exceeded(
-                            "Error: get_mempool_stream gRPC request timed out",
-                        )))
-                        .await
-                        .ok();
                 }
-            }
-        });
-        Ok(UtxoReplyStream::new(channel_rx))
+            },
+        )))
     }
 
     /// Return information about this lightwalletd instance and the blockchain
@@ -2189,101 +1714,5 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             (https://github.com/zingolabs/zaino.git).",
             ),
         ))
-    }
-}
-
-#[cfg(test)]
-mod compact_tx_to_proto_tests {
-    use super::compact_tx_to_proto;
-    use zaino_primitives::types::{
-        CompactCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
-        TransparentInput, TransparentOutput, Zatoshis,
-    };
-
-    fn action(tag: u8) -> OrchardAction {
-        OrchardAction {
-            nullifier: [tag; 32].into(),
-            cmx: [tag.wrapping_add(1); 32].into(),
-            ephemeral_key: [tag.wrapping_add(2); 32].into(),
-            enc_ciphertext: CompactCiphertext::from([tag; 52]),
-        }
-    }
-
-    fn sample() -> PreIndexCompactTx {
-        PreIndexCompactTx {
-            txid: TransactionId::from([0xaa; 32]),
-            transparent_inputs: vec![TransparentInput {
-                prev_txid: TransactionId::from([0xbb; 32]),
-                prev_index: 3,
-            }],
-            transparent_outputs: vec![TransparentOutput {
-                value: Zatoshis::new(50_000).unwrap(),
-                script: Script::new(vec![0x76, 0xa9]),
-            }],
-            sapling_nullifiers: vec![[0xcc; 32].into()],
-            sapling_outputs: Vec::new(),
-            orchard_actions: vec![action(1)],
-            ironwood_actions: vec![action(2)],
-        }
-    }
-
-    /// The proto documents every byte string on this message as protocol
-    /// order, explicitly not reversed. The domain holds identifiers the same
-    /// way, so this path must not reverse — a reversal here would hand wallets
-    /// txids that name nothing.
-    #[test]
-    fn identifiers_stay_in_protocol_order() {
-        let proto = compact_tx_to_proto(&sample());
-
-        assert_eq!(proto.txid, vec![0xaa; 32]);
-        assert_eq!(proto.vin[0].prevout_txid, vec![0xbb; 32]);
-        assert_eq!(proto.spends[0].nf, vec![0xcc; 32]);
-    }
-
-    /// A mempool transaction is in no block, so it has no position in one, and
-    /// its fee is not computable without the outputs it spends. Both fields are
-    /// zero by contract rather than by accident.
-    #[test]
-    fn a_mempool_transaction_has_no_index_or_fee() {
-        let proto = compact_tx_to_proto(&sample());
-
-        assert_eq!(proto.index, 0);
-        assert_eq!(proto.fee, 0);
-    }
-
-    /// Ironwood actions share `CompactOrchardAction`'s shape but not its field.
-    /// Merging them would misattribute notes to the wrong pool, which a wallet
-    /// cannot detect.
-    #[test]
-    fn ironwood_actions_stay_in_their_own_field() {
-        let proto = compact_tx_to_proto(&sample());
-
-        assert_eq!(proto.actions.len(), 1);
-        assert_eq!(proto.ironwood_actions.len(), 1);
-        assert_eq!(proto.actions[0].nullifier, vec![1u8; 32]);
-        assert_eq!(proto.ironwood_actions[0].nullifier, vec![2u8; 32]);
-    }
-
-    #[test]
-    fn transparent_outputs_carry_value_and_script() {
-        let proto = compact_tx_to_proto(&sample());
-
-        assert_eq!(proto.vout[0].value, 50_000);
-        assert_eq!(proto.vout[0].script_pub_key, vec![0x76, 0xa9]);
-    }
-
-    /// A coinbase transaction's null-outpoint input is dropped at the domain
-    /// boundary, which is what the proto asks for: clients test `index == 0`
-    /// instead of looking for the input.
-    #[test]
-    fn a_transaction_with_no_spends_emits_empty_lists() {
-        let mut tx = sample();
-        tx.transparent_inputs.clear();
-        tx.sapling_nullifiers.clear();
-
-        let proto = compact_tx_to_proto(&tx);
-
-        assert!(proto.vin.is_empty());
-        assert!(proto.spends.is_empty());
     }
 }

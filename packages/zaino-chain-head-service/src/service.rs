@@ -324,6 +324,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 Ok(()) => {
                     consecutive_failures = 0;
                     backoff = self.config.initial_backoff();
+                    record_sync_failures(0, Duration::ZERO);
                     // `Ready` is already published from inside `tick`, before
                     // the advanced snapshot becomes observable to readers.
                     if self.wait_for_work(&mut wake).await.is_break() {
@@ -332,6 +333,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 }
                 Err(error) => {
                     consecutive_failures += 1;
+                    record_sync_failures(consecutive_failures, backoff);
                     if consecutive_failures >= self.config.max_consecutive_failures() {
                         warn!(
                             %error,
@@ -389,6 +391,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     #[instrument(name = "ChainHeadService::tick", skip(self))]
     async fn tick(&self) -> Result<(), ChainHeadAdvanceError> {
         let tip = self.chain_tip().await?;
+        metrics::gauge!(crate::metric_names::CHAIN_TIP_HEIGHT)
+            .set(f64::from(u32::from(tip.height)));
         let previous = self.current.load_full();
 
         // Nothing to do when the source's tip is the one we hold. A block hash
@@ -1039,6 +1043,14 @@ pub(crate) fn classify_tip_change(
         None if old.height < retained_floor => TipChange::Advance,
         None => TipChange::Reorg(None),
     }
+}
+
+/// Sets the sync failure gauges; zero failures means healthy.
+fn record_sync_failures(consecutive_failures: u32, backoff: Duration) {
+    use crate::metric_names::{SYNC_BACKOFF_SECONDS, SYNC_CONSECUTIVE_FAILURES};
+
+    metrics::gauge!(SYNC_CONSECUTIVE_FAILURES).set(f64::from(consecutive_failures));
+    metrics::gauge!(SYNC_BACKOFF_SECONDS).set(backoff.as_secs_f64());
 }
 
 /// Reports a tip change that rewrote part of the chain.
