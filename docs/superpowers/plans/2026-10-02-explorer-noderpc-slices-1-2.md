@@ -54,7 +54,20 @@ MockIndexerService`.
   task's tests must cover each arm the task introduces — the miss, the
   transient, the invalid input — and must fail if the implementation is removed.
   A test whose assertion holds for a trivially empty input proves nothing.
-- `makers fmt` and `makers clippy` must pass before each commit.
+- `makers fmt` must pass before each commit.
+- **Clippy needs `--no-deps`, and `zaino-service` also needs `--features testing`.**
+  Without `--no-deps` it lints path dependencies and trips a pre-existing
+  `manual_is_multiple_of` in `zaino-component` that predates this branch.
+  Without `--features testing`, `zaino-service`'s mock and its test module are
+  compiled out, so new test code there is never linted:
+
+  ```
+  cargo clippy -p zaino-service --no-deps --all-targets --features testing -- -D warnings
+  cargo clippy -p zaino-noderpc --no-deps --all-targets -- -D warnings
+  ```
+
+  Other crates reach the mock through a dev-dependency, so `--all-targets`
+  already covers their tests; only `zaino-service` gates it behind a feature.
 - Verify per-crate (`cargo test -p <crate>`), never `--workspace`: this host's
   binutils cannot link `aws-lc-sys`, so a workspace build fails for reasons
   unrelated to the change.
