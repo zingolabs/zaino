@@ -564,6 +564,84 @@ pub struct BlockchainInfoResponse {
     pub consensus: TipConsensusResponse,
 }
 
+/// The `getinfo` response.
+///
+/// `build` is load-bearing for the explorer, which pattern-matches it as a
+/// string on its homepage; it is always present and never optional.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NodeInfoResponse {
+    /// Validator version, as its own numeric encoding.
+    pub version: u64,
+    /// Validator build identifier.
+    pub build: String,
+    /// Network protocol user-agent string.
+    pub subversion: String,
+    /// Peer-to-peer protocol version.
+    pub protocolversion: u32,
+    /// Height of the validator's best chain.
+    pub blocks: u32,
+    /// Total peer connections, inbound and outbound.
+    pub connections: u64,
+    /// Current difficulty as a multiple of the network minimum.
+    pub difficulty: f64,
+    /// Whether the validator considers itself on a test network.
+    pub testnet: bool,
+    /// Configured proxy, when the validator reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+    /// Minimum transaction fee, in zatoshis per kilobyte.
+    pub paytxfee: u64,
+    /// Minimum relay fee, in zatoshis per kilobyte.
+    pub relayfee: u64,
+    /// The validator's last error or warning, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<String>,
+    /// When `errors` was raised, in seconds since the Unix epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errorstimestamp: Option<i64>,
+}
+
+/// The `getmininginfo` response, in zcashd's wire field names.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MiningInfoResponse {
+    /// Height of the current best-chain tip.
+    pub blocks: u32,
+    /// Size in bytes of the last block the validator built, when it tracks it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currentblocksize: Option<u64>,
+    /// Transaction count in the last block the validator built, when it tracks it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currentblocktx: Option<u64>,
+    /// Current difficulty as a multiple of the network minimum, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<f64>,
+    /// Estimated network solution rate, in solutions per second, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub networksolps: Option<u64>,
+    /// Estimated network hash rate, in hashes per second, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub networkhashps: Option<u64>,
+    /// Name of the chain being served.
+    pub chain: String,
+    /// Whether the validator considers itself on a test network.
+    pub testnet: bool,
+    /// Validator status or error message, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<String>,
+}
+
+/// One entry of the `getpeerinfo` list.
+///
+/// The explorer reads `addr` tolerantly and nothing else, but `inbound` is the
+/// only other fact the supported validators report, so both travel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PeerInfoEntry {
+    /// Remote peer address as the validator reports it.
+    pub addr: String,
+    /// Whether the peer initiated the connection to the validator.
+    pub inbound: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

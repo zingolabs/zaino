@@ -34,14 +34,15 @@ use zaino_primitives::types::BlockSelector;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    DeltaRange, GetBlockResponse, GetRawTransactionResponse, RawTransactionResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    DeltaRange, GetBlockResponse, GetRawTransactionResponse, MiningInfoResponse, NodeInfoResponse,
+    PeerInfoEntry, RawTransactionResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_header_to_wire, block_to_wire_v1, block_to_wire_v2,
     blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire,
-    to_hex, transaction_view_to_wire, txid_from_hex, unified_receivers_to_wire, validated_to_wire,
-    z_validated_to_wire,
+    mining_info_to_wire, node_info_to_wire, peer_info_to_wire, to_hex, transaction_view_to_wire,
+    txid_from_hex, unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -270,6 +271,45 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(block_header_to_wire(header))
     }
 
+    /// `getinfo`: the validator's self-description, relayed. Not indexed. An
+    /// unreachable or not-ready validator is an RPC error (via `?`), never a
+    /// response with defaulted fields.
+    pub async fn get_info(&self) -> Result<NodeInfoResponse, RpcError> {
+        Ok(node_info_to_wire(self.engine.node_info().await?))
+    }
+
+    /// `getmininginfo`: the validator's mining view, relayed. Not indexed.
+    pub async fn get_mining_info(&self) -> Result<MiningInfoResponse, RpcError> {
+        Ok(mining_info_to_wire(self.engine.mining_info().await?))
+    }
+
+    /// `getpeerinfo`: the validator's connected peers, relayed. Not indexed. An
+    /// empty list is a valid answer from an isolated validator.
+    pub async fn get_peer_info(&self) -> Result<Vec<PeerInfoEntry>, RpcError> {
+        Ok(self
+            .engine
+            .peer_info()
+            .await?
+            .into_iter()
+            .map(peer_info_to_wire)
+            .collect())
+    }
+
+    /// `getnetworksolps`: the network solution rate, relayed. `blocks` and
+    /// `height` are forwarded as given, so `None` means the validator's own
+    /// defaults rather than a value this adapter invents.
+    pub async fn get_network_sol_ps(
+        &self,
+        blocks: Option<u32>,
+        height: Option<u32>,
+    ) -> Result<u64, RpcError> {
+        let height = height
+            .map(Height::try_from)
+            .transpose()
+            .map_err(|_| RpcError::InvalidParams("height is not a valid height".into()))?;
+        Ok(self.engine.network_sol_ps(blocks, height).await?)
+    }
+
     /// `getaddressbalance`: the transparent balance of the requested addresses,
     /// summed. zcashd accepts a list and returns one total, so a multi-address
     /// request sums rather than returning a per-address breakdown.
@@ -440,6 +480,57 @@ mod tests {
             node.send_raw_transaction("odd").await,
             Err(RpcError::InvalidParams(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn peer_info_and_network_solps_read_the_node_status_port() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(node.get_peer_info().await.expect("peers").is_empty());
+        assert_eq!(node.get_network_sol_ps(None, None).await.expect("solps"), 0);
+    }
+
+    /// Review Focus 1 at the adapter boundary: a node-status failure becomes an
+    /// RPC error, not a default-valued success. The service mock answers
+    /// `getinfo` with `NotReady`.
+    #[tokio::test]
+    async fn an_unavailable_node_info_is_an_rpc_error() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_info().await,
+            Err(RpcError::NodeStatus(_))
+        ));
+    }
+
+    /// Explorer contract: `getinfo` MUST carry a string `build`. The explorer's
+    /// homepage pattern-matches `{:ok, %{"build" => build}}` and 500s without it,
+    /// so this golden test pins both its presence and its type.
+    #[tokio::test]
+    async fn getinfo_build_is_a_present_string() {
+        use zaino_primitives::types::rpc::NodeInfo;
+        use zaino_primitives::types::Zatoshis;
+        let info = NodeInfo {
+            version: 5_008_025,
+            build: "v5.8.0".to_string(),
+            subversion: "/MagicBean:5.8.0/".to_string(),
+            protocol_version: 170_100,
+            blocks: Height::try_from(2_500_000).expect("valid height"),
+            connections: 8,
+            difficulty: 1_234.5,
+            testnet: false,
+            proxy: None,
+            pay_tx_fee: Zatoshis::new(1_000).expect("valid amount"),
+            relay_fee: Zatoshis::new(100).expect("valid amount"),
+            errors: None,
+            errors_timestamp: None,
+        };
+        let wire = crate::wire::node_info_to_wire(info);
+        let json = serde_json::to_value(&wire).expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        assert_eq!(
+            obj.get("build").and_then(serde_json::Value::as_str),
+            Some("v5.8.0"),
+            "the explorer's homepage reads build as a string: {obj:?}"
+        );
     }
 
     #[tokio::test]

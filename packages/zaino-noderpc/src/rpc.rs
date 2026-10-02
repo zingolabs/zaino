@@ -11,13 +11,14 @@ use zaino_service::error::AddressReadError;
 use zaino_service::error::TransactionViewError;
 use zaino_service::error::TxReadError;
 use zaino_service::NodeRpcService;
+use zaino_service::NodeStatusError;
 
 use crate::error::RpcError;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    GetBlockResponse, GetRawTransactionResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    GetBlockResponse, GetRawTransactionResponse, MiningInfoResponse, NodeInfoResponse,
+    PeerInfoEntry, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -52,6 +53,22 @@ pub trait NodeRpcApi {
 
     #[method(name = "getblockchaininfo")]
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned>;
+
+    #[method(name = "getinfo")]
+    async fn info(&self) -> Result<NodeInfoResponse, ErrorObjectOwned>;
+
+    #[method(name = "getmininginfo")]
+    async fn mining_info(&self) -> Result<MiningInfoResponse, ErrorObjectOwned>;
+
+    #[method(name = "getpeerinfo")]
+    async fn peer_info(&self) -> Result<Vec<PeerInfoEntry>, ErrorObjectOwned>;
+
+    #[method(name = "getnetworksolps")]
+    async fn network_sol_ps(
+        &self,
+        blocks: Option<u32>,
+        height: Option<i64>,
+    ) -> Result<u64, ErrorObjectOwned>;
 
     #[method(name = "getaddressbalance")]
     async fn address_balance(
@@ -120,6 +137,24 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned> {
         self.get_blockchain_info().await.map_err(to_error_object)
+    }
+    async fn info(&self) -> Result<NodeInfoResponse, ErrorObjectOwned> {
+        self.get_info().await.map_err(to_error_object)
+    }
+    async fn mining_info(&self) -> Result<MiningInfoResponse, ErrorObjectOwned> {
+        self.get_mining_info().await.map_err(to_error_object)
+    }
+    async fn peer_info(&self) -> Result<Vec<PeerInfoEntry>, ErrorObjectOwned> {
+        self.get_peer_info().await.map_err(to_error_object)
+    }
+    async fn network_sol_ps(
+        &self,
+        blocks: Option<u32>,
+        height: Option<i64>,
+    ) -> Result<u64, ErrorObjectOwned> {
+        self.get_network_sol_ps(blocks, crate::wire::network_solps_height(height))
+            .await
+            .map_err(to_error_object)
     }
     async fn address_balance(
         &self,
@@ -204,6 +239,17 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::TransactionView(e @ TransactionViewError::PrevoutIndexOutOfRange { .. }) => {
             (ErrorCode::InternalError, e.to_string())
         }
+        // Both are internal, and that is Review Focus 1: `NotReady` means the
+        // validator will answer shortly, and `Unreachable` means it cannot be
+        // reached — neither is the caller's fault, and neither may render as a
+        // success a warmer would cache. Each variant's own `Display` is used,
+        // which does not stringify the `#[source]` cause.
+        RpcError::NodeStatus(e @ NodeStatusError::NotReady) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+        RpcError::NodeStatus(e @ NodeStatusError::Unreachable { .. }) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
     };
     ErrorObjectOwned::owned(code.code(), message, None::<()>)
 }
@@ -217,6 +263,7 @@ mod tests {
     use zaino_service::error::TransactionViewError;
     use zaino_service::error::TxReadError;
     use zaino_service::Capability;
+    use zaino_service::NodeStatusError;
 
     /// A fatal address read is an unrecoverable backend failure — a server
     /// fault, not bad client input — so it maps to the internal-error code.
@@ -325,6 +372,22 @@ mod tests {
             },
         ));
         assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// A node-status failure must render as an internal error, never as a
+    /// success with default values: the explorer's warmers cache successes and
+    /// ignore errors, so a defaulted `Ok` would poison their cache for 15
+    /// seconds while an error leaves the previous value intact.
+    #[test]
+    fn node_status_failures_render_as_internal_errors() {
+        for err in [
+            RpcError::NodeStatus(NodeStatusError::NotReady),
+            RpcError::NodeStatus(NodeStatusError::unreachable(std::io::Error::other(
+                "unreachable",
+            ))),
+        ] {
+            assert_eq!(to_error_object(err).code(), ErrorCode::InternalError.code());
+        }
     }
 
     /// `gettxout` is no longer served: the generated surface answers it with

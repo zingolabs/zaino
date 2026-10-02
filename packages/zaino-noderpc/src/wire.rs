@@ -11,7 +11,7 @@ use zaino_address::{
     transparent_address_from_script, ScriptAddress, TransparentScriptKind, UnifiedReceivers,
     ValidatedAddress, ZValidatedAddress,
 };
-use zaino_primitives::types::rpc::BlockHeaderVerbose;
+use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::BlockHash;
@@ -27,10 +27,11 @@ use zcash_protocol::consensus::Network;
 use crate::error::RpcError;
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltaEntry, BlockHeaderResponse, BlockResponse,
-    BlockchainInfoResponse, JoinSplitObject, NetworkUpgradeResponse, OrchardActionObject,
-    OrchardObject, ScriptPubKey, ShieldedOutput, ShieldedSpend, TipConsensusResponse,
-    TransactionInput, TransactionObject, TransactionOutput, UnifiedReceiversResponse,
-    ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
+    BlockchainInfoResponse, JoinSplitObject, MiningInfoResponse, NetworkUpgradeResponse,
+    NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry, ScriptPubKey,
+    ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput, TransactionObject,
+    TransactionOutput, UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse,
+    ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -568,6 +569,61 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
             diversified_transmission_key: None,
         },
     }
+}
+
+/// Render the validator's `getinfo` as the wire response (domain -> wire). The
+/// fee floors are integer zatoshis via [`Zatoshis::as_u64`], the height via
+/// `u32::from`.
+pub(crate) fn node_info_to_wire(info: NodeInfo) -> NodeInfoResponse {
+    NodeInfoResponse {
+        version: info.version,
+        build: info.build,
+        subversion: info.subversion,
+        protocolversion: info.protocol_version,
+        blocks: u32::from(info.blocks),
+        connections: info.connections,
+        difficulty: info.difficulty,
+        testnet: info.testnet,
+        proxy: info.proxy,
+        paytxfee: info.pay_tx_fee.as_u64(),
+        relayfee: info.relay_fee.as_u64(),
+        errors: info.errors,
+        errorstimestamp: info.errors_timestamp,
+    }
+}
+
+/// Render the validator's `getmininginfo` as the wire response (domain -> wire).
+pub(crate) fn mining_info_to_wire(info: MiningInfo) -> MiningInfoResponse {
+    MiningInfoResponse {
+        blocks: u32::from(info.tip_height),
+        currentblocksize: info.current_block_size,
+        currentblocktx: info.current_block_tx,
+        difficulty: info.difficulty,
+        networksolps: info.network_solution_rate,
+        networkhashps: info.network_hash_rate,
+        chain: info.chain,
+        testnet: info.testnet,
+        errors: info.errors,
+    }
+}
+
+/// Render one peer as a `getpeerinfo` entry (domain -> wire).
+pub(crate) fn peer_info_to_wire(peer: PeerInfo) -> PeerInfoEntry {
+    PeerInfoEntry {
+        addr: peer.addr,
+        inbound: peer.inbound,
+    }
+}
+
+/// Map `getnetworksolps`'s wire `height` onto the port's optional height
+/// (wire -> domain input validation).
+///
+/// zcashd documents `-1` as "the tip", and the explorer's client sends exactly
+/// `[120, -1]`. Any negative value — or one too large to be a height — is the
+/// validator's own default (`None`), so a negative height is never a client
+/// error here; it is the convention the caller relies on.
+pub(crate) fn network_solps_height(height: Option<i64>) -> Option<u32> {
+    height.and_then(|h| u32::try_from(h).ok())
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@
 use zaino_service::error::{
     AddressReadError, BroadcastRejection, ReadError, TransactionViewError, Transient, TxReadError,
 };
+use zaino_service::NodeStatusError;
 
 /// A node-RPC handler failure.
 #[derive(Debug, thiserror::Error)]
@@ -40,4 +41,7 @@ pub enum RpcError {
     /// transport failure or a source inconsistency, never bad client input.
     #[error(transparent)]
     TransactionView(#[from] TransactionViewError),
+    /// A node-status read failed.
+    #[error(transparent)]
+    NodeStatus(#[from] NodeStatusError),
 }
