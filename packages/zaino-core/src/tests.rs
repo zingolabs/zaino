@@ -820,19 +820,12 @@ mod transaction_reads {
     /// `NodeRpcService` — the milestone this task gates. Compile-time only.
     #[test]
     fn the_engine_satisfies_node_rpc_service() {
-        use crate::routing::{Local, Passthrough, Routing};
+        use crate::routing::NodeRpcRouting;
         use zaino_service::NodeRpcService;
 
-        // Node-RPC routing: spend status is local (the validator has no
-        // "who-spent" port), address and treestate pass through.
-        struct NodeRpcRouting;
-        impl Routing for NodeRpcRouting {
-            type Address = Passthrough;
-            type Treestate = Passthrough;
-            type Spend = Local;
-            type TransactionLocation = Passthrough;
-        }
-
+        // The production passthrough node-RPC routing: address and treestate pass
+        // through, spend status and transaction location withheld. One
+        // definition, in `crate::routing`.
         fn assert_node_rpc<T: NodeRpcService>() {}
         assert_node_rpc::<
             Engine<

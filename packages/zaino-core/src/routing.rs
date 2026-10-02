@@ -138,9 +138,66 @@ impl Routing for LightWalletRouting {
     type TransactionLocation = Withheld;
 }
 
+/// The node-RPC / explorer routing of the **passthrough** deployment: compact
+/// blocks local, and every read the explorer surface serves relayed live to the
+/// validator — transparent address history and treestate passed through.
+///
+/// Spend status and transaction location are withheld: no method this deployment
+/// serves reads an outpoint's spend state (see [`NodeRpcReads`]'s doc for why
+/// `SpendRead` is absent), and no engine read dispatches on the transaction
+/// location placement. Withholding them keeps the manifest honest — a capability
+/// no served method consumes and no passthrough tier provides is `Absent`, not a
+/// false `Live`.
+///
+/// Passthrough-first: every placement here is passthrough or withheld, so this
+/// deployment depends on no local tier read this branch lacks. The local sibling —
+/// address history and spend status composed from a transparent index — is a
+/// separate routing beside this one, not a change to it, exactly as the local
+/// light-wallet routing is a sibling of [`LightWalletRouting`]. Flipping a read
+/// to [`Local`] is a one-line change here plus an index set that backs it; the
+/// compiler names anything missing.
+///
+/// [`NodeRpcReads`]: zaino_service::read_sets::NodeRpcReads
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NodeRpcRouting;
+
+impl Routing for NodeRpcRouting {
+    type Address = Passthrough;
+    type Treestate = Passthrough;
+    type Spend = Withheld;
+    type TransactionLocation = Withheld;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_rpc_routing_places_every_capability() {
+        use strum::IntoEnumIterator;
+        for capability in Capability::iter() {
+            // Exhaustiveness is rustc's; this pins the passthrough node-RPC
+            // table's shape — in particular that spend status and transaction
+            // location are withheld, not silently passed through.
+            let placement = NodeRpcRouting::placement(capability);
+            match capability {
+                Capability::Blocks => assert_eq!(placement, PlacementKind::Local),
+                Capability::SpendStatus | Capability::TransactionLocation => {
+                    assert_eq!(placement, PlacementKind::Withheld)
+                }
+                Capability::AddressHistory
+                | Capability::Treestate
+                | Capability::SubtreeRoots
+                | Capability::RawTransaction
+                | Capability::Mempool
+                | Capability::Broadcast
+                | Capability::NodeStatus
+                | Capability::ReportedUpgrades => {
+                    assert_eq!(placement, PlacementKind::Passthrough)
+                }
+            }
+        }
+    }
 
     #[test]
     fn light_routing_places_every_capability() {
