@@ -18,9 +18,10 @@
 //! to passthrough (the validator's state cannot be pinned to our view). That is
 //! sound for the immutable, historical data light clients query.
 
+use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockchainInfo, Height, HeightRange,
-    PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot, TransactionId,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockVerbose, BlockchainInfo, Height,
+    HeightRange, PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot, TransactionId,
     TransparentAddress, Treestate, Utxo,
 };
 use zaino_service::error::{
@@ -31,11 +32,13 @@ use zaino_source::{
     DecodedTransaction, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
     GetAddressDeltasError, GetAddressTxids, GetAddressTxidsError, GetAddressUtxos,
     GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
-    GetBlockchainInfo, GetBlockchainInfoError, GetMempoolCompactTransaction, GetMempoolSourceTip,
-    GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction, GetRawMempoolTransactionError,
-    GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
-    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError,
-    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
+    GetBlockHeader, GetBlockHeaderError, GetBlockVerbose, GetBlockVerboseByHash,
+    GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError, GetMempoolCompactTransaction,
+    GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction,
+    GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError, GetTransaction,
+    GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError, GetTreestate,
+    GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
+    TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -126,6 +129,88 @@ where
         match self.source.get_block_by_hash(hash).await {
             Ok(block) => Ok(Some(block)),
             Err(SourceError::Domain(GetBlockByHashError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockHeader,
+{
+    /// The verbose block header for `hash`, live from the validator. Passthrough:
+    /// confirmations, difficulty, chainwork and the neighbouring hashes are
+    /// cumulative chain state the validator derives, not facts in the stored
+    /// block. A hash no chain the validator retains holds is a domain miss
+    /// (`Ok(None)`); a transport failure is transient.
+    pub(crate) async fn block_header_verbose(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<BlockHeaderVerbose>, BlockReadError> {
+        match self.source.get_block_header(hash).await {
+            Ok(header) => Ok(Some(header)),
+            Err(SourceError::Domain(GetBlockHeaderError::BlockNotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockVerbose,
+{
+    /// The verbose chain-position facts for the block at `height`, live from the
+    /// validator. See [`block_header_verbose`](Self::block_header_verbose) for
+    /// why this is always passthrough. A height with no block is a domain miss
+    /// (`Ok(None)`); a transport failure is transient.
+    pub(crate) async fn block_verbose(
+        &self,
+        height: Height,
+    ) -> Result<Option<BlockVerbose>, BlockReadError> {
+        match self.source.get_block_verbose(height).await {
+            Ok(block) => Ok(Some(block)),
+            // The by-height port reports a miss as `HeightNotFound`; the shared
+            // error's by-hash variant cannot arise here but is a miss all the
+            // same, so both map to `Ok(None)` rather than a wildcard arm.
+            Err(SourceError::Domain(GetBlockVerboseError::HeightNotFound(_))) => Ok(None),
+            Err(SourceError::Domain(GetBlockVerboseError::BlockNotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockVerboseByHash,
+{
+    /// The verbose chain-position facts for the block with `hash`, live from the
+    /// validator. See [`block_verbose`](Self::block_verbose); addressing by hash
+    /// can name a side-chain block, where confirmations are negative and there is
+    /// no next block. A hash no retained chain holds is a domain miss
+    /// (`Ok(None)`); a transport failure is transient.
+    pub(crate) async fn block_verbose_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<BlockVerbose>, BlockReadError> {
+        match self.source.get_block_verbose_by_hash(hash).await {
+            Ok(block) => Ok(Some(block)),
+            Err(SourceError::Domain(GetBlockVerboseError::HeightNotFound(_))) => Ok(None),
+            Err(SourceError::Domain(GetBlockVerboseError::BlockNotFound(_))) => Ok(None),
             Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
                 "validator unavailable: {cause}"
             ))),

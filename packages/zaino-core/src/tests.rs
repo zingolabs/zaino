@@ -783,6 +783,120 @@ mod transaction_reads {
     }
 }
 
+// --- verbose block reads: always passthrough -------------------------------
+//
+// `BlockVerboseRead` relays the validator's verbose header/block, carrying the
+// chain-position facts (confirmations, difficulty, chainwork, neighbouring
+// hashes) the stored block cannot give. A domain miss is `Ok(None)`; an
+// unreachable validator errors.
+mod block_verbose_reads {
+    use super::*;
+    use zaino_primitives::types::{BlockHash, BlockSelector};
+    use zaino_service::BlockVerboseRead;
+    use zaino_service::error::BlockReadError;
+    use zaino_source::FailureMode;
+    use zaino_source::mock::{sample_block_header_verbose, sample_block_verbose};
+
+    /// A single-attempt policy: one injected failure is terminal, so an error
+    /// test cannot be masked by the default policy's retries.
+    fn single_attempt() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 1,
+            ..RetryPolicy::default()
+        }
+    }
+
+    /// An engine with an empty local view over `source`, single-attempt, so an
+    /// injected transport failure is terminal.
+    fn engine_single_attempt(source: MockChain) -> LightEngine {
+        Engine::new(
+            StubNonFinalised::empty(),
+            StubNonFinalised::empty(),
+            ValidatorClient::new(source, single_attempt()),
+        )
+    }
+
+    #[tokio::test]
+    async fn block_header_verbose_passes_the_validators_header_through() {
+        let engine =
+            engine_with(MockChain::new().with_block_header_verbose(sample_block_header_verbose()));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let header = BlockVerboseRead::block_header_verbose(&snapshot, BlockHash::from([1u8; 32]))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(header, sample_block_header_verbose());
+    }
+
+    #[tokio::test]
+    async fn block_verbose_by_height_passes_through() {
+        let engine = engine_with(MockChain::new().with_block_verbose(sample_block_verbose()));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let block = BlockVerboseRead::block_verbose(&snapshot, BlockSelector::Height(height(5)))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(block, sample_block_verbose());
+    }
+
+    #[tokio::test]
+    async fn block_verbose_by_hash_passes_through() {
+        let engine = engine_with(MockChain::new().with_block_verbose(sample_block_verbose()));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let block = BlockVerboseRead::block_verbose(
+            &snapshot,
+            BlockSelector::Hash(BlockHash::from([2u8; 32])),
+        )
+        .await
+        .expect("served")
+        .expect("present");
+        assert_eq!(block, sample_block_verbose());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_block_is_a_served_none_not_an_error() {
+        // No scripted response: the validator answers a domain not-found, which
+        // the passthrough maps to `Ok(None)`, never a failure.
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        assert!(
+            BlockVerboseRead::block_header_verbose(&snapshot, BlockHash::from([9u8; 32]))
+                .await
+                .expect("a domain miss is a served None, not an error")
+                .is_none()
+        );
+        assert!(
+            BlockVerboseRead::block_verbose(&snapshot, BlockSelector::Height(height(99)))
+                .await
+                .expect("a domain miss is a served None, not an error")
+                .is_none()
+        );
+        assert!(
+            BlockVerboseRead::block_verbose(&snapshot, BlockSelector::Hash(BlockHash::from([9u8; 32])))
+                .await
+                .expect("a domain miss is a served None, not an error")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_validator_errors_rather_than_missing() {
+        // A scripted header is present, but the single-attempt transport failure
+        // is terminal: the read must surface it, not report Ok(None).
+        let engine = engine_single_attempt(
+            MockChain::new()
+                .with_block_header_verbose(sample_block_header_verbose())
+                .with_block_verbose(sample_block_verbose())
+                .fail_next(1, FailureMode::Connection),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match BlockVerboseRead::block_header_verbose(&snapshot, BlockHash::from([1u8; 32])).await {
+            Err(BlockReadError::Transient(_)) => {}
+            other => panic!("an unreachable validator must error, not answer None: {other:?}"),
+        }
+    }
+}
+
 mod chain_info_reads {
     use super::*;
     use zaino_service::ChainInfoRead;

@@ -6,10 +6,11 @@ use std::future::Future;
 use futures::stream::BoxStream;
 
 use crate::{ForkPoint, Locator, SpendStatus, TxStatus};
+use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockchainInfo, CompactBlock, Height, HeightRange, Outpoint, RawTransaction, ShieldedPool,
-    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
+    BlockVerbose, BlockchainInfo, CompactBlock, Height, HeightRange, Outpoint, RawTransaction,
+    ShieldedPool, SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -42,6 +43,34 @@ pub trait CompactBlockRead: Send + Sync {
         at: BlockSelector,
     ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send;
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>>;
+}
+
+/// The chain-position overlay on a block — confirmations, difficulty,
+/// chainwork, and the neighbouring block hashes — that the block's own contents
+/// cannot give, because they describe the block's place in the current chain
+/// rather than its bytes. The explorer surface behind `getblock(_, 2)` and
+/// `getblockheader`.
+///
+/// A separate trait, not methods on [`BlockRead`], for the same reason
+/// [`RawTransactionRead`] and [`TransactionRead`] are separate: [`BlockRead`]
+/// returns the domain block every consumer uses, while chain position is an
+/// explorer-only surface a wallet never asks for. A caller assembling a verbose
+/// response combines [`BlockRead::block`] with this.
+///
+/// Backed by: passthrough to the validator's verbose header / block reads.
+pub trait BlockVerboseRead: Send + Sync {
+    /// The verbose block header for `hash` — hash-addressed, matching both the
+    /// source port and `getblockheader`. `Ok(None)` when no block has that hash.
+    fn block_header_verbose(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<Output = Result<Option<BlockHeaderVerbose>, BlockReadError>> + Send;
+    /// The verbose chain-position facts for the block `at`. `Ok(None)` when the
+    /// selector names no block.
+    fn block_verbose(
+        &self,
+        at: BlockSelector,
+    ) -> impl Future<Output = Result<Option<BlockVerbose>, BlockReadError>> + Send;
 }
 
 /// The pool-decomposed transaction read: the transaction parsed into its

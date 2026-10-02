@@ -55,6 +55,7 @@ that capability and on the provider ports that placement needs:
 |---|---|---|
 | compact blocks, nullifier projection | always local | the two tiers' compact reads |
 | full blocks (the tip excepted) | always passthrough | `GetBlock`, `GetBlockByHash` |
+| verbose header / block (chain position) | always passthrough | `GetBlockHeader`, `GetBlockVerbose`, `GetBlockVerboseByHash` |
 | chain-info aggregate | always passthrough | `GetBlockchainInfo` |
 | pool-decomposed transaction and its status | always passthrough | `GetTransactionVerbose` |
 | raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
@@ -76,9 +77,15 @@ decomposition needs the validator's chain library, which this crate must not
 depend on, so the decoding lives in the source adapter. `transaction_status`
 maps `BestChain(h)` to `Mined(h)`, `NonBestChain` to `Orphaned`, and both
 `Mempool` and an absent transaction to `Unknown` — a mempool transaction is
-neither mined nor reorged out. With `BlockRead` and
-`TransactionRead` both present, `EngineSnapshot` satisfies `NodeRpcReads`, so a
-node-RPC-routed engine satisfies `NodeRpcService`.
+neither mined nor reorged out.
+
+`BlockVerboseRead` (`block_header_verbose`, and `block_verbose` over a selector)
+is always passthrough: confirmations, difficulty, chainwork and the neighbouring
+hashes are cumulative chain state the validator derives, not facts in the stored
+block. A domain miss is `Ok(None)`; an unreachable validator is a transient read
+failure. With `BlockRead`, `BlockVerboseRead` and `TransactionRead` all present,
+`EngineSnapshot` satisfies `NodeRpcReads`, so a node-RPC-routed engine satisfies
+`NodeRpcService`.
 
 `ChainInfoRead` (the `getblockchaininfo` aggregate) is always passthrough, as one
 piece: the aggregate describes a single chain position, so mixing a locally-read

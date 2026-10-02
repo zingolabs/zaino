@@ -38,7 +38,13 @@ Sibling read-sets share a core rather than inheriting from each other, so a
 wallet-only addition never leaks into the served light protocol. `NodeRpcReads`
 adds `ChainInfoRead`, whose `chain_info` answers the `getblockchaininfo`
 aggregate as the validator's whole `BlockchainInfo` — one type describing one
-chain position, not a reassembled subset.
+chain position, not a reassembled subset. It also adds `BlockVerboseRead`
+alongside `BlockRead`: `block_header_verbose` and `block_verbose` carry the
+chain-position overlay (confirmations, difficulty, chainwork, neighbouring
+hashes) a block's own bytes cannot give, kept a separate trait from `BlockRead`
+for the same reason `RawTransactionRead` and `TransactionRead` are split — one
+returns the domain block every consumer uses, the other an explorer-only
+surface. The block page composes the two into one `getblock(_, 2)` response.
 
 `Serves<U>` carries a use case's demand as a bound a generic wiring names
 without naming the service trait; one blanket impl per use case forwards to

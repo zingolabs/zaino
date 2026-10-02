@@ -22,11 +22,12 @@ use crate::{
     Answerable, Capability, ForkPoint, Locator, MempoolTx, NodeQuery, NodeQueryAnswer,
     ReportedUpgrade, ServiceabilityManifest, ServiceableRange, SpendStatus, TxStatus,
 };
+use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds, Height, HeightRange,
-    Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot, Transaction,
-    TransactionId, TransparentAddress, Treestate, Utxo, ValuePoolBalance, Zatoshis,
+    BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds, Height,
+    HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot,
+    Transaction, TransactionId, TransparentAddress, Treestate, Utxo, ValuePoolBalance, Zatoshis,
     ZatoshisFlowSum,
 };
 
@@ -35,10 +36,10 @@ use crate::error::{
     SpendReadError, Transient, TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, BlockRead, Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead,
-    CompactNullifierRead, ForkReconcile, IndexerService, MempoolContent, MempoolSubscribe,
-    NodeQueryRelay, RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead,
-    TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, BlockVerboseRead, Broadcast, ChainInfoRead, ChainSegment,
+    CompactBlockRead, CompactNullifierRead, ForkReconcile, IndexerService, MempoolContent,
+    MempoolSubscribe, NodeQueryRelay, RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot,
+    SpendRead, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -60,6 +61,13 @@ pub struct MockChain {
     /// pinned tip with neutral values for everything else. A test that needs to
     /// distinguish a rendered field from a defaulted one scripts this.
     pub blockchain_info: Option<BlockchainInfo>,
+    /// Scripted verbose block header. When `Some`,
+    /// [`BlockVerboseRead::block_header_verbose`] returns it for any hash; when
+    /// `None`, it answers `Ok(None)`.
+    pub block_header_verbose: Option<BlockHeaderVerbose>,
+    /// Scripted verbose block. When `Some`, [`BlockVerboseRead::block_verbose`]
+    /// returns it for any selector; when `None`, it answers `Ok(None)`.
+    pub block_verbose: Option<BlockVerbose>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -360,6 +368,23 @@ impl ChainInfoRead for MockSnapshot {
                 next_block: ConsensusBranchId::new(0),
             },
         })
+    }
+}
+
+impl BlockVerboseRead for MockSnapshot {
+    async fn block_header_verbose(
+        &self,
+        _hash: BlockHash,
+    ) -> Result<Option<BlockHeaderVerbose>, BlockReadError> {
+        // A scripted header is returned verbatim for any hash, so a test can pin
+        // every field through the serving adapter; absent it, a served `None`.
+        Ok(self.chain.block_header_verbose.clone())
+    }
+    async fn block_verbose(
+        &self,
+        _at: BlockSelector,
+    ) -> Result<Option<BlockVerbose>, BlockReadError> {
+        Ok(self.chain.block_verbose.clone())
     }
 }
 
