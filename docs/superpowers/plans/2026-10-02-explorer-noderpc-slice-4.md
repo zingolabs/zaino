@@ -563,3 +563,20 @@ a different consequence at each. (3) Task 2. (4) Task 3. (5) Task 4.
 `NodeRpcReads`, so a real engine satisfies `NodeRpcService`. That is the gate on
 the deployment + wiring plan, and it is worth noting in the branch's eventual PR
 as the thing that changed.
+
+---
+
+### Task 2b (inserted, user-directed): Harden the node-RPC adapter's wire layer
+
+Golden JSON tests for every response type, one conversion form, and removal of
+`gettxout` until it can be served properly. Full brief:
+`.superpowers/sdd/2026-10-02-explorer-noderpc-slice-4/task-2b-brief.md`.
+Runs between Tasks 2 and 3; touches only `zaino-noderpc`, so it does not
+conflict with the engine work.
+
+Correction recorded with it: serving `gettxout` properly is cheaper than first
+stated. `zaino-source` already has a typed `GetTxOut` port returning the domain
+`TxOut`, the zebra-rpc adapter implements it, and legacy `zaino-serve` has the
+matching wire type. Restoring it is a passthrough of slice 4's shape — a
+service-level read, an engine impl, and a DTO — so it joins the legacy-parity
+list rather than needing new capability.
