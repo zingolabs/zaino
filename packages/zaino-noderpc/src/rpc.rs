@@ -8,6 +8,7 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 
 use zaino_service::error::AddressReadError;
+use zaino_service::error::MempoolReadError;
 use zaino_service::error::TransactionViewError;
 use zaino_service::error::TxReadError;
 use zaino_service::NodeRpcService;
@@ -17,8 +18,9 @@ use crate::error::RpcError;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    GetBlockResponse, GetRawTransactionResponse, MiningInfoResponse, NodeInfoResponse,
-    PeerInfoEntry, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse,
+    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -69,6 +71,15 @@ pub trait NodeRpcApi {
         blocks: Option<u32>,
         height: Option<i64>,
     ) -> Result<u64, ErrorObjectOwned>;
+
+    #[method(name = "getrawmempool")]
+    async fn raw_mempool(
+        &self,
+        verbose: Option<bool>,
+    ) -> Result<RawMempoolResponse, ErrorObjectOwned>;
+
+    #[method(name = "getmempoolinfo")]
+    async fn mempool_info(&self) -> Result<MempoolInfoResponse, ErrorObjectOwned>;
 
     #[method(name = "getaddressbalance")]
     async fn address_balance(
@@ -155,6 +166,17 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         self.get_network_sol_ps(blocks, crate::wire::network_solps_height(height))
             .await
             .map_err(to_error_object)
+    }
+    async fn raw_mempool(
+        &self,
+        verbose: Option<bool>,
+    ) -> Result<RawMempoolResponse, ErrorObjectOwned> {
+        self.get_raw_mempool(verbose.unwrap_or(false))
+            .await
+            .map_err(to_error_object)
+    }
+    async fn mempool_info(&self) -> Result<MempoolInfoResponse, ErrorObjectOwned> {
+        self.get_mempool_info().await.map_err(to_error_object)
     }
     async fn address_balance(
         &self,
@@ -256,6 +278,20 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::NodeStatus(e @ NodeStatusError::Unreachable { .. }) => {
             (ErrorCode::InternalError, e.to_string())
         }
+        // A mempool read is passthrough to the validator: none of its three
+        // cases is bad client input, so each is an internal error. `Transient`
+        // is the live one — a transport failure the explorer's warmer must not
+        // cache as a success. Each variant's own `Display` is used, which does
+        // not stringify a `#[source]` cause.
+        RpcError::MempoolRead(e @ MempoolReadError::Transient(_)) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+        RpcError::MempoolRead(e @ MempoolReadError::Fatal(_)) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+        RpcError::MempoolRead(e @ MempoolReadError::NotServiceable(_)) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
     };
     ErrorObjectOwned::owned(code.code(), message, None::<()>)
 }
@@ -266,10 +302,22 @@ mod tests {
     use crate::error::RpcError;
     use jsonrpsee::types::ErrorCode;
     use zaino_service::error::AddressReadError;
+    use zaino_service::error::MempoolReadError;
     use zaino_service::error::TransactionViewError;
     use zaino_service::error::TxReadError;
     use zaino_service::Capability;
     use zaino_service::NodeStatusError;
+
+    /// Review Focus 1 on the mempool path: a transient mempool read is a
+    /// transport failure, a server-side concern, so it is an internal error —
+    /// never a success the explorer's warmer would cache.
+    #[test]
+    fn transient_mempool_read_is_an_internal_error() {
+        let obj = to_error_object(RpcError::MempoolRead(MempoolReadError::Transient(
+            "validator unavailable".to_string(),
+        )));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
 
     /// A fatal address read is an unrecoverable backend failure — a server
     /// fault, not bad client input — so it maps to the internal-error code.

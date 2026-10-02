@@ -10,14 +10,24 @@ a slice, not the production `zaino-serve`.
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
 `getblockheader`, `getrawtransaction`, `sendrawtransaction`, `getinfo`,
-`getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getaddressbalance`,
-`getaddressdeltas`, `validateaddress`, `z_validateaddress`,
-`z_listunifiedreceivers`.
+`getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
+`getmempoolinfo`, `getaddressbalance`, `getaddressdeltas`, `validateaddress`,
+`z_validateaddress`, `z_listunifiedreceivers`.
 
 The four node-status methods (`getinfo`, `getmininginfo`, `getpeerinfo`,
 `getnetworksolps`) read through `NodeStatusRead`, a typed passthrough of the
 validator's own status. `getinfo` always carries `build` as a string: clients
 pattern-match on it.
+
+`getrawmempool` and `getmempoolinfo` read through `MempoolListing`. `getrawmempool`
+has two shapes, chosen by its `verbose` parameter (default false): non-verbose is
+an array of txid hex; verbose is an *object* keyed by txid, each value carrying
+`size`, `fee` (the ZEC float, from the shared `zatoshis_to_zec` helper), `feeZat`
+(the exact zatoshi integer beside it), `height` (the entry height), and `time`
+(the entry's unix seconds, omitted when the source reports none — absent, not
+null). The verbose form is an object rather than an array because the explorer's
+warmer pattern-matches its entries as key/value pairs. `getmempoolinfo` reports
+the transaction count (`size`) and total serialized bytes (`bytes`).
 
 ## The explorer transaction view
 
@@ -78,6 +88,12 @@ policy refusal `PrevoutFanoutTooLarge` (the request would fan out past the
 per-request prevout ceiling) all map to the internal-error code, not
 invalid-params — the caller asked for a well-formed, valid object in each case. A
 malformed txid or block id is the only input the caller is blamed for.
+
+A mempool read (`MempoolReadError`) is likewise internal in all three cases: it
+is a validator passthrough, so a `Transient` transport failure, a `Fatal` one, or
+a `NotServiceable` stub is a server-side concern, never bad client input. The
+transient case must surface as an error rather than a zero-valued success, so the
+explorer's metric warmer does not cache an empty mempool over a transport blip.
 
 ## Not modelled here
 

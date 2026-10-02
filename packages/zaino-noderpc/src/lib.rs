@@ -34,15 +34,17 @@ use zaino_primitives::types::BlockSelector;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    DeltaRange, GetBlockResponse, GetRawTransactionResponse, MiningInfoResponse, NodeInfoResponse,
-    PeerInfoEntry, RawTransactionResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    DeltaRange, GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse,
+    MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
+    RawTransactionResponse, UnifiedReceiversResponse, ValidateAddressResponse,
     ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_header_to_wire, block_to_wire_v1, block_to_wire_v2,
     blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire,
-    mining_info_to_wire, node_info_to_wire, peer_info_to_wire, to_hex, transaction_view_to_wire,
-    txid_from_hex, unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
+    mempool_entry_to_wire, mining_info_to_wire, node_info_to_wire, peer_info_to_wire, to_hex,
+    transaction_view_to_wire, txid_from_hex, unified_receivers_to_wire, validated_to_wire,
+    z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -321,6 +323,41 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(self.engine.network_sol_ps(blocks, height).await?)
     }
 
+    /// `getrawmempool`: the current mempool. Non-verbose (the default) is an
+    /// array of txid hex; verbose is an object keyed by txid, each value the
+    /// transaction's size, fee (ZEC float with the exact `feeZat` beside it),
+    /// entry time and height.
+    pub async fn get_raw_mempool(&self, verbose: bool) -> Result<RawMempoolResponse, RpcError> {
+        if verbose {
+            let entries = self
+                .engine
+                .mempool_entries()
+                .await?
+                .into_iter()
+                .map(mempool_entry_to_wire)
+                .collect();
+            Ok(RawMempoolResponse::Verbose(entries))
+        } else {
+            let txids = self
+                .engine
+                .mempool_txids()
+                .await?
+                .into_iter()
+                .map(|txid| to_hex(txid.into()))
+                .collect();
+            Ok(RawMempoolResponse::Txids(txids))
+        }
+    }
+
+    /// `getmempoolinfo`: the count and total serialized size of the mempool.
+    pub async fn get_mempool_info(&self) -> Result<MempoolInfoResponse, RpcError> {
+        let summary = self.engine.mempool_summary().await?;
+        Ok(MempoolInfoResponse {
+            size: summary.size,
+            bytes: summary.bytes,
+        })
+    }
+
     /// `getaddressbalance`: the transparent balance of the requested addresses,
     /// summed. zcashd accepts a list and returns one total, so a multi-address
     /// request sums rather than returning a per-address breakdown.
@@ -498,6 +535,78 @@ mod tests {
         let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(node.get_peer_info().await.expect("peers").is_empty());
         assert_eq!(node.get_network_sol_ps(None, None).await.expect("solps"), 0);
+    }
+
+    /// `getrawmempool` and `getmempoolinfo` agree on the mempool contents, and
+    /// each renders its zcashd shape: the non-verbose listing is an array of
+    /// txid hex, the verbose listing is an object keyed by txid, and the info
+    /// counts the same set. The mempool is scripted non-empty so the count
+    /// assertion is not vacuous.
+    #[tokio::test]
+    async fn raw_mempool_lists_txids_and_info_counts_them() {
+        use crate::wire::response::RawMempoolResponse;
+        use zaino_service::testing::MockChain;
+        use zaino_service::MempoolTx;
+
+        let tip = BlockRef {
+            height: Height::try_from(100).expect("valid height"),
+            hash: BlockHash::from([0x11u8; 32]),
+        };
+        let mempool = vec![
+            MempoolTx {
+                txid: TransactionId::from([0xAAu8; 32]),
+                validated_against: tip,
+            },
+            MempoolTx {
+                txid: TransactionId::from([0xBBu8; 32]),
+                validated_against: tip,
+            },
+        ];
+        let node = NodeRpc::new(
+            MockIndexerService::new(MockChain {
+                tip: Some(tip),
+                mempool,
+                ..Default::default()
+            }),
+            Network::MainNetwork,
+        );
+
+        // Non-verbose (and absent-param): a bare array of txid hex.
+        let RawMempoolResponse::Txids(txids) =
+            node.get_raw_mempool(false).await.expect("mempool listing")
+        else {
+            panic!("the non-verbose listing must be an array of txids");
+        };
+        assert_eq!(txids.len(), 2);
+        assert!(txids.contains(&"aa".repeat(32)));
+
+        // getmempoolinfo counts the same set.
+        let info = node.get_mempool_info().await.expect("mempool info");
+        assert_eq!(
+            u64::try_from(txids.len()).expect("fits"),
+            info.size,
+            "the listing and the count must agree"
+        );
+
+        // Verbose: an object keyed by txid — the shape the explorer's warmer
+        // pattern-matches as `{k, v}` pairs, which an array would crash.
+        let RawMempoolResponse::Verbose(entries) = node
+            .get_raw_mempool(true)
+            .await
+            .expect("verbose mempool listing")
+        else {
+            panic!("the verbose listing must be an object keyed by txid");
+        };
+        assert_eq!(entries.len(), 2);
+        let entry = entries
+            .get(&"aa".repeat(32))
+            .expect("the entry is keyed by its txid");
+        assert_eq!(entry.height, 100);
+        assert_eq!(entry.fee_zat, 0, "feeZat is the exact integer beside fee");
+        assert!(
+            entry.time.is_none(),
+            "the mock reports no entry time, so the key is omitted"
+        );
     }
 
     /// Review Focus 1 at the adapter boundary: a node-status failure becomes an

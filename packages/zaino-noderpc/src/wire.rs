@@ -21,17 +21,17 @@ use zaino_primitives::types::{
     BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, ValuePoolBalance,
     Zatoshis,
 };
-use zaino_service::{BlockTransactionViews, TransactionView};
+use zaino_service::{BlockTransactionViews, MempoolEntry, TransactionView};
 use zcash_protocol::consensus::Network;
 
 use crate::error::RpcError;
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltaEntry, BlockHeaderResponse, BlockResponse,
-    BlockchainInfoResponse, JoinSplitObject, MiningInfoResponse, NetworkUpgradeResponse,
-    NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry, ScriptPubKey,
-    ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput, TransactionObject,
-    TransactionOutput, UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse,
-    ZValidateAddressResponse,
+    BlockchainInfoResponse, JoinSplitObject, MempoolEntryObject, MiningInfoResponse,
+    NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry,
+    ScriptPubKey, ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput,
+    TransactionObject, TransactionOutput, UnifiedReceiversResponse, ValidateAddressResponse,
+    ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -159,6 +159,23 @@ fn zatoshi_magnitude_to_zec(negative: bool, magnitude: u64) -> f64 {
 /// The shared renderer for zcashd's `chainValue` / transaction `value` family.
 fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
     zatoshi_magnitude_to_zec(false, amount.as_u64())
+}
+
+/// Render one verbose mempool entry for the wire (domain -> wire): the txid hex
+/// key and its entry object. `fee` is the shared ZEC float, with the exact
+/// zatoshi integer beside it as `feeZat`; `time` is carried only when the source
+/// reported one.
+pub(crate) fn mempool_entry_to_wire(entry: MempoolEntry) -> (String, MempoolEntryObject) {
+    (
+        to_hex(entry.txid.into()),
+        MempoolEntryObject {
+            size: entry.size,
+            fee: zatoshis_to_zec(entry.fee),
+            fee_zat: entry.fee.as_u64(),
+            time: entry.entry_time,
+            height: entry.entry_height.into(),
+        },
+    )
 }
 
 /// Render a signed zatoshi amount as a ZEC-denominated `f64` (domain -> wire),
@@ -630,8 +647,8 @@ pub(crate) fn network_solps_height(height: Option<i64>) -> Option<u32> {
 mod tests {
     use super::{
         block_header_to_wire, block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire,
-        signed_zatoshis_to_zec, transaction_view_to_wire, validated_to_wire, z_validated_to_wire,
-        zatoshis_to_zec,
+        mempool_entry_to_wire, signed_zatoshis_to_zec, transaction_view_to_wire, validated_to_wire,
+        z_validated_to_wire, zatoshis_to_zec,
     };
     use serde_json::Value;
     use zaino_address::{ValidatedAddress, ZValidatedAddress};
@@ -645,8 +662,35 @@ mod tests {
         SaplingSpend, Script, SignedZatoshis, Transaction, TransactionDetail, TransactionId,
         TransparentData, TransparentInput, TransparentOutput, TreeSize, ValuePoolBalance, Zatoshis,
     };
+    use zaino_service::MempoolEntry;
     use zaino_service::{BlockTransactionViews, ResolvedInput, TransactionView};
     use zcash_protocol::consensus::Network;
+
+    /// A verbose mempool entry renders its fee as a ZEC float with the exact
+    /// `feeZat` integer beside it, keys on the txid hex, and omits `time` when
+    /// the source reported none.
+    #[test]
+    fn mempool_entry_renders_fee_as_zec_with_exact_fee_zat() {
+        let (key, object) = mempool_entry_to_wire(MempoolEntry {
+            txid: TransactionId::from([0xABu8; 32]),
+            size: 211,
+            fee: Zatoshis::new(1_000).expect("valid"),
+            entry_time: None,
+            entry_height: Height::try_from(2_500_000).expect("valid height"),
+        });
+
+        assert_eq!(key, "ab".repeat(32));
+        assert_eq!(object.size, 211);
+        assert_eq!(object.fee_zat, 1_000);
+        assert_eq!(object.fee, 0.00001, "1000 zat renders as 0.00001 ZEC");
+        assert_eq!(object.height, 2_500_000);
+        assert!(object.time.is_none());
+
+        // The serialized object omits the absent time rather than sending null.
+        let json = serde_json::to_value(&object).expect("serializes");
+        assert!(json.get("time").is_none(), "an absent time is omitted");
+        assert_eq!(json["feeZat"], serde_json::json!(1_000));
+    }
 
     /// A chain-info aggregate with a distinguishable, non-zero value in every
     /// field, so a golden assertion over it fails if any field is dropped,

@@ -6,7 +6,8 @@
 //! decided by the adapter, not the port.
 
 use zaino_service::error::{
-    AddressReadError, BroadcastRejection, ReadError, TransactionViewError, Transient, TxReadError,
+    AddressReadError, BroadcastRejection, MempoolReadError, ReadError, TransactionViewError,
+    Transient, TxReadError,
 };
 use zaino_service::NodeStatusError;
 
@@ -44,4 +45,7 @@ pub enum RpcError {
     /// A node-status read failed.
     #[error(transparent)]
     NodeStatus(#[from] NodeStatusError),
+    /// A mempool listing read failed.
+    #[error(transparent)]
+    MempoolRead(#[from] MempoolReadError),
 }

@@ -8,6 +8,51 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+/// The `getmempoolinfo` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MempoolInfoResponse {
+    /// Number of transactions in the mempool.
+    pub size: u64,
+    /// Total serialized size of those transactions, in bytes.
+    pub bytes: u64,
+}
+
+/// One entry of a verbose `getrawmempool` object.
+///
+/// `fee` renders as zcashd's ZEC float, with the exact zatoshi integer beside it
+/// as `feeZat`. `time` is omitted when the source reports no entry time, never
+/// sent as null or zero.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MempoolEntryObject {
+    /// Serialized byte length of the transaction.
+    pub size: u64,
+    /// The transaction's fee, as a ZEC float.
+    pub fee: f64,
+    /// The transaction's fee in zatoshis — the exact integer beside `fee`.
+    #[serde(rename = "feeZat")]
+    pub fee_zat: u64,
+    /// Unix time (seconds) the transaction entered the mempool, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<i64>,
+    /// Chain tip height when the transaction entered the mempool.
+    pub height: u32,
+}
+
+/// The `getrawmempool` response: an array of txid hex (non-verbose) or an object
+/// keyed by txid (verbose).
+///
+/// Two JSON shapes from one method, chosen by the `verbose` parameter. The
+/// verbose form is an object, not an array, because the explorer's warmer
+/// pattern-matches its entries as key/value pairs.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum RawMempoolResponse {
+    /// Non-verbose: the txids currently in the mempool, as hex.
+    Txids(Vec<String>),
+    /// Verbose: each txid mapped to its entry detail.
+    Verbose(BTreeMap<String, MempoolEntryObject>),
+}
+
 /// The `getaddressbalance` response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AddressBalanceResponse {
