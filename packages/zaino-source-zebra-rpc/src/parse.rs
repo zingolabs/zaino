@@ -321,7 +321,7 @@ pub(crate) enum ParseError {
 
     /// A ZEC-denominated amount (e.g. a mempool entry's `fee`) could not be
     /// converted to zatoshis.
-    #[error("zec amount")]
+    #[error(transparent)]
     ZecAmount(#[from] ZecAmountError),
 
     /// Block deserialization failed.
@@ -428,21 +428,24 @@ fn zec_text_to_zatoshis(text: &str) -> Result<Zatoshis, ZecAmountError> {
     let value: u128 = digits.parse::<u128>().map_err(malformed)?;
 
     // Power of ten to reach zatoshis: eight for the ZEC→zatoshi scale, less the
-    // fractional digits already shifted in, plus the exponent.
-    let frac_len = i32::try_from(frac_digits.len()).map_err(|_| ZecAmountError::OutOfRange {
+    // fractional digits already shifted in, plus the exponent. Every step is
+    // checked — a fractional run or an exponent large enough to overflow the
+    // scale is an out-of-range amount, not a wrapped one.
+    let out_of_range = || ZecAmountError::OutOfRange {
         text: text.to_owned(),
-    })?;
-    let scale = 8 - frac_len + exponent;
+    };
+    let frac_len = i32::try_from(frac_digits.len()).map_err(|_| out_of_range())?;
+    let scale = 8i32
+        .checked_sub(frac_len)
+        .and_then(|partial| partial.checked_add(exponent))
+        .ok_or_else(out_of_range)?;
 
     let zatoshis: u128 = if scale >= 0 {
         let factor = power_of_ten(scale, text)?;
-        value
-            .checked_mul(factor)
-            .ok_or_else(|| ZecAmountError::OutOfRange {
-                text: text.to_owned(),
-            })?
+        value.checked_mul(factor).ok_or_else(out_of_range)?
     } else {
-        let divisor = power_of_ten(-scale, text)?;
+        let negated = scale.checked_neg().ok_or_else(out_of_range)?;
+        let divisor = power_of_ten(negated, text)?;
         if !value.is_multiple_of(divisor) {
             return Err(ZecAmountError::TooPrecise {
                 text: text.to_owned(),
@@ -1741,6 +1744,40 @@ mod tests {
             ),
             "a fee finer than one zatoshi is refused, not rounded"
         );
+    }
+
+    /// A fee above the money supply is out of range, not a wrapped amount. An
+    /// integer one zatoshi-worth of ZEC over the ceiling fails, and so does the
+    /// finest fractional step past it.
+    #[test]
+    fn a_fee_above_the_supply_is_out_of_range() {
+        for fee in [json!(21_000_001), json!(21_000_000.000_000_01f64)] {
+            let value = json!({ ASYMMETRIC_HEX: { "height": 1, "size": 1, "fee": fee } });
+            assert!(
+                matches!(
+                    parse_mempool_metadata(&value),
+                    Err(ParseError::ZecAmount(ZecAmountError::OutOfRange { .. }))
+                ),
+                "{fee} ZEC is above the supply and must be rejected"
+            );
+        }
+    }
+
+    /// An absurd exponent overflows the scale rather than wrapping or panicking.
+    /// These texts cannot arrive through a `serde_json` number (an f64 cannot
+    /// hold `1e400`), so the converter is exercised directly, which is the unit
+    /// that must stay loud.
+    #[test]
+    fn an_absurd_exponent_is_out_of_range() {
+        for text in ["1e400", "1e-400"] {
+            assert!(
+                matches!(
+                    zec_text_to_zatoshis(text),
+                    Err(ZecAmountError::OutOfRange { .. })
+                ),
+                "{text} must be out of range, not a wrapped or panicking value"
+            );
+        }
     }
 
     /// The cap is checked on the declared entry count, before any entry is
