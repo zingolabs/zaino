@@ -19,18 +19,21 @@
 //! sound for the immutable, historical data light clients query.
 
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, BlockRef, Height, HeightRange, PreIndexCompactTx, RawTransaction,
-    ShieldedPool, SubtreeRoot, TransactionId, TransparentAddress, Treestate, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockRef, Height, HeightRange,
+    PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot, TransactionId,
+    TransparentAddress, Treestate, Utxo,
 };
 use zaino_service::error::{
-    AddressReadError, BroadcastRejection, MempoolReadError, TreestateReadError, TxReadError,
+    AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, TreestateReadError,
+    TxReadError,
 };
 use zaino_source::{
     GetAddressBalance, GetAddressBalanceError, GetAddressDeltas, GetAddressDeltasError,
-    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError,
-    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
-    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
-    GetTransaction, GetTransactionError, GetTreestate, GetTreestateError, SendRawTransaction,
+    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError, GetBlock,
+    GetBlockByHash, GetBlockByHashError, GetBlockError, GetMempoolCompactTransaction,
+    GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction,
+    GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError, GetTransaction,
+    GetTransactionError, GetTreestate, GetTreestateError, SendRawTransaction,
     SendRawTransactionError, SourceError, TransactionResponse,
 };
 
@@ -78,6 +81,54 @@ where
                 "validator unavailable: {cause}"
             ))),
             Err(SourceError::Unavailable(cause)) => Err(BroadcastRejection::Invalid(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlock,
+{
+    /// The full block at `height`, live from the validator. Passthrough: the
+    /// finalised store holds compact projections, not full block bytes, so a
+    /// full block can only come from the validator, which already returns the
+    /// domain [`Block`]. A height with no block is a domain miss (`Ok(None)`); a
+    /// transport failure is transient.
+    pub(crate) async fn block(&self, height: Height) -> Result<Option<Block>, BlockReadError> {
+        match self.source.get_block(height).await {
+            Ok(block) => Ok(Some(block)),
+            Err(SourceError::Domain(GetBlockError::HeightNotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockByHash,
+{
+    /// The full block with `hash`, live from the validator. See
+    /// [`block`](Self::block) for why a full block is always passthrough. A hash
+    /// no chain the validator retains holds is a domain miss (`Ok(None)`); a
+    /// transport failure is transient.
+    pub(crate) async fn block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<Block>, BlockReadError> {
+        match self.source.get_block_by_hash(hash).await {
+            Ok(block) => Ok(Some(block)),
+            Err(SourceError::Domain(GetBlockByHashError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(BlockReadError::Transient(format!(
                 "validator unavailable: {cause}"
             ))),
         }

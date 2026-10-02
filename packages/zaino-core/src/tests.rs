@@ -346,3 +346,190 @@ async fn with_no_watermark_the_whole_range_is_the_heads() {
         (None, Some(range(3, 9)))
     );
 }
+
+// --- full block reads: always passthrough, except the tip --------------------
+//
+// `BlockRead` routes a `BlockSelector` to the by-height or by-hash source port
+// and reads the header off the block it already has; the tip is read locally off
+// the pinned view. A domain miss is `Ok(None)`; an unreachable validator errors.
+mod block_reads {
+    use super::*;
+    use zaino_primitives::types::{BlockHash, BlockSelector};
+    use zaino_service::BlockRead;
+    use zaino_service::error::{BlockReadError, ReadError};
+    use zaino_source::FailureMode;
+    use zaino_source::mock::test_block;
+
+    /// A single-attempt engine: one injected failure is terminal, so an error
+    /// test cannot be masked by the default policy's retries.
+    fn engine_single_attempt(source: MockChain) -> LightEngine {
+        Engine::new(
+            StubNonFinalised::empty(),
+            StubNonFinalised::empty(),
+            ValidatorClient::new(
+                source,
+                RetryPolicy {
+                    max_attempts: 1,
+                    ..RetryPolicy::default()
+                },
+            ),
+        )
+    }
+
+    /// An engine whose local view is pinned to a finalised tip at `tip`.
+    fn engine_with_fs_tip(tip: u32) -> LightEngine {
+        Engine::new(
+            StubNonFinalised::from_blocks((0..=tip).map(|h| stub_compact_block(h, 1)).collect()),
+            StubNonFinalised::empty(),
+            ValidatorClient::new(MockChain::new(), RetryPolicy::default()),
+        )
+    }
+
+    #[tokio::test]
+    async fn block_by_height_returns_the_scripted_block() {
+        let engine = engine_with(MockChain::new().with_block(test_block(7, 7)));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let block = BlockRead::block(&snapshot, BlockSelector::Height(height(7)))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(block.header.height, height(7));
+        assert_eq!(block.header.hash, BlockHash::from([7u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn block_by_hash_returns_the_same_block() {
+        let engine = engine_with(MockChain::new().with_block(test_block(7, 7)));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let by_height = BlockRead::block(&snapshot, BlockSelector::Height(height(7)))
+            .await
+            .expect("served")
+            .expect("present");
+        let by_hash = BlockRead::block(&snapshot, BlockSelector::Hash(BlockHash::from([7u8; 32])))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(by_height.header, by_hash.header);
+    }
+
+    #[tokio::test]
+    async fn block_header_returns_the_named_blocks_header() {
+        let engine = engine_with(MockChain::new().with_block(test_block(7, 7)));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let header = BlockRead::block_header(&snapshot, BlockSelector::Height(height(7)))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(header.height, height(7));
+        assert_eq!(header.hash, BlockHash::from([7u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn block_height_resolves_a_hash_to_its_height() {
+        let engine = engine_with(MockChain::new().with_block(test_block(7, 7)));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let resolved = BlockRead::block_height(&snapshot, BlockHash::from([7u8; 32]))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(resolved, height(7));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_height_is_a_served_none_not_an_error() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let answer = BlockRead::block(&snapshot, BlockSelector::Height(height(99)))
+            .await
+            .expect("a domain miss is a served None, not an error");
+        assert!(answer.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_hash_is_a_served_none() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let block = BlockRead::block(&snapshot, BlockSelector::Hash(BlockHash::from([3u8; 32])))
+            .await
+            .expect("a domain miss is a served None, not an error");
+        assert!(block.is_none());
+        let resolved = BlockRead::block_height(&snapshot, BlockHash::from([3u8; 32]))
+            .await
+            .expect("a domain miss is a served None, not an error");
+        assert!(resolved.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_blocks_yields_every_block_in_the_inclusive_range() {
+        let mut mock = MockChain::new();
+        for h in 3..=6 {
+            mock = mock.with_block(test_block(h, u8::try_from(h).expect("fits in u8")));
+        }
+        let engine = engine_with(mock);
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let served: Vec<u32> = BlockRead::stream_blocks(&snapshot, range(3, 6))
+            .map(|block| u32::from(block.expect("served").header.height))
+            .collect()
+            .await;
+        // Inclusive `[3, 6]` is four blocks, both endpoints included, ascending.
+        assert_eq!(served, vec![3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_validator_errors_rather_than_missing() {
+        let engine = engine_single_attempt(
+            MockChain::new()
+                .with_block(test_block(5, 5))
+                .fail_next(1, FailureMode::Connection),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match BlockRead::block(&snapshot, BlockSelector::Height(height(5))).await {
+            Err(BlockReadError::Transient(_)) => {}
+            other => panic!("an unreachable validator must error, not answer None: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_blocks_stops_at_the_first_error() {
+        let mut mock = MockChain::new();
+        for h in 0..=2 {
+            mock = mock.with_block(test_block(h, u8::try_from(h + 1).expect("fits in u8")));
+        }
+        // One terminal failure hits the first height; a stream that continued
+        // past the error would still serve heights 1 and 2.
+        let engine = engine_single_attempt(mock.fail_next(1, FailureMode::Connection));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let items: Vec<_> = BlockRead::stream_blocks(&snapshot, range(0, 2))
+            .collect()
+            .await;
+        assert_eq!(
+            items.len(),
+            1,
+            "the stream stops at the first error, not after it"
+        );
+        assert!(matches!(
+            items.into_iter().next(),
+            Some(Err(ReadError::Transient(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn tip_returns_the_pinned_tip() {
+        let engine = engine_with_fs_tip(4);
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let tip = BlockRead::tip(&snapshot)
+            .await
+            .expect("a pinned snapshot has a tip");
+        assert_eq!(tip.height, height(4));
+    }
+
+    #[tokio::test]
+    async fn tip_errors_when_there_is_no_pinned_tip() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match BlockRead::tip(&snapshot).await {
+            Err(BlockReadError::NotServiceable(Capability::Blocks)) => {}
+            other => panic!("an empty snapshot has no tip to serve: {other:?}"),
+        }
+    }
+}

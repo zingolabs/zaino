@@ -54,10 +54,19 @@ that capability and on the provider ports that placement needs:
 | capability | placement | needs |
 |---|---|---|
 | compact blocks, nullifier projection, chain info | always local | the two tiers' compact reads |
+| full blocks (the tip excepted) | always passthrough | `GetBlock`, `GetBlockByHash` |
 | raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
 | address history | `R::Address` | `Local`: both tiers `AddressRead`, head `SpendRead`; `Passthrough`: the four address source ports |
 | treestate, subtree roots | `R::Treestate` | `Passthrough` only today; a local tree index adds a `Local` impl beside it |
 | spend status | `R::Spend` | `Local` only: both tiers `SpendRead` |
+
+`BlockRead` (full `Block`, header, by-hash height, and the ascending
+`stream_blocks` over an inclusive range) is always passthrough: the finalised
+store keeps compact projections, not full block bytes. Its one exception is
+`tip`, read locally off the pinned view — it is the coordinate the rest of the
+snapshot is coherent against, and the validator's tip is one the snapshot does
+not share. A domain miss (an unknown height or hash) is `Ok(None)`; an
+unreachable validator is a transient read failure, never a miss.
 
 A placement whose providers are missing is an impl that does not exist, so the
 use case's demand bound fails where the engine is wired. The crate docs on

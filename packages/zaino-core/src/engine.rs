@@ -128,6 +128,7 @@
 //! ```
 
 mod address;
+mod block;
 mod snapshot;
 mod spend;
 mod treestate;
