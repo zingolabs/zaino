@@ -202,9 +202,24 @@ mod tests {
         assert!(got.diversified_transmission_key.is_none());
     }
 
+    /// The sorted key set of a JSON object, for pinning the exact wire shape:
+    /// an extra key fails the comparison as surely as a missing one.
+    fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = value
+            .as_object()
+            .expect("a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
     /// The two serde renames are the only thing aligning Rust field names with
     /// zcashd's: `address_type` must serialize as `address_type`, and
-    /// `diversified_transmission_key` as `diversifiedtransmissionkey`. Also pins
+    /// `diversified_transmission_key` as `diversifiedtransmissionkey`. Pins the
+    /// full key set in both the Sapling (all components present) and unified (all
+    /// components absent) cases, so an added/dropped/renamed key fails; and pins
     /// that a `None` component is omitted rather than serialized as `null`.
     #[test]
     fn sapling_response_serializes_zcashd_field_names() {
@@ -214,7 +229,18 @@ mod tests {
             diversified_transmission_key: [0u8; 32],
         }))
         .expect("serialize");
+        assert_eq!(
+            sorted_keys(&json),
+            [
+                "address",
+                "address_type",
+                "diversifiedtransmissionkey",
+                "diversifier",
+                "isvalid",
+            ]
+        );
         let obj = json.as_object().expect("a JSON object");
+        assert_eq!(obj.get("isvalid").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
             obj.get("address_type").and_then(|v| v.as_str()),
             Some("sapling")
@@ -230,6 +256,10 @@ mod tests {
             address: "u1unified".to_string(),
         }))
         .expect("serialize");
+        assert_eq!(
+            sorted_keys(&unified),
+            ["address", "address_type", "isvalid"]
+        );
         let unified = unified.as_object().expect("a JSON object");
         assert!(!unified.contains_key("diversifier"));
         assert!(!unified.contains_key("diversifiedtransmissionkey"));
