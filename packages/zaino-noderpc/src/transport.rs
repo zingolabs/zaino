@@ -70,11 +70,15 @@ impl<S: NodeRpcService + Clone + 'static> RunLoop for JsonRpcServer<S> {
 mod tests {
     use super::*;
     use zaino_service::testing::{MockChain, MockIndexerService};
+    use zcash_protocol::consensus::Network;
 
     /// A real jsonrpsee server binds and shuts down cleanly when the token fires.
     #[tokio::test]
     async fn binds_and_shuts_down_on_cancel() {
-        let handler = NodeRpc::new(MockIndexerService::new(MockChain::default()));
+        let handler = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        );
         let server = Arc::new(JsonRpcServer::new(
             handler,
             "127.0.0.1:0".parse().expect("valid addr"),

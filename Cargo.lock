@@ -6159,9 +6159,11 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tokio",
+ "zaino-address",
  "zaino-component",
  "zaino-primitives",
  "zaino-service",
+ "zcash_protocol",
 ]
 
 [[package]]

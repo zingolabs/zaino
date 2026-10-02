@@ -25,22 +25,34 @@ use zaino_service::queries;
 use zaino_service::NodeQuery;
 use zaino_service::RawTransactionRead;
 use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
+use zcash_protocol::consensus::Network;
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
-use crate::wire::response::{AddressBalanceResponse, AddressDeltasResponse, DeltaRange};
+use crate::wire::response::{
+    AddressBalanceResponse, AddressDeltasResponse, DeltaRange, ValidateAddressResponse,
+    ZValidateAddressResponse,
+};
 use crate::wire::{
     bytes_from_hex, bytes_to_hex, delta_to_wire, spend_status_to_wire, to_hex, txid_from_hex,
+    validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
+///
+/// Carries the network because two served methods — `validateaddress` and
+/// `z_validateaddress` — are pure functions of an address and a network, with
+/// no chain read at all. The network is a serving parameter, not a capability,
+/// so it lives on the adapter.
 #[derive(Clone)]
 pub struct NodeRpc<S: NodeRpcService> {
     engine: S,
+    network: Network,
 }
 
 impl<S: NodeRpcService> NodeRpc<S> {
-    pub fn new(engine: S) -> Self {
-        Self { engine }
+    /// Build the handler over `engine`, validating addresses against `network`.
+    pub fn new(engine: S, network: Network) -> Self {
+        Self { engine, network }
     }
 
     /// `getblockcount`: the height of the pinned tip.
@@ -195,6 +207,29 @@ impl<S: NodeRpcService> NodeRpc<S> {
                 }),
         })
     }
+
+    /// `validateaddress`: classify a transparent address against the serving
+    /// network. No chain read — a pure function of the string and the network.
+    pub async fn validate_address(
+        &self,
+        address: &str,
+    ) -> Result<ValidateAddressResponse, RpcError> {
+        Ok(validated_to_wire(zaino_address::validate_address(
+            address.to_owned(),
+            &self.network,
+        )))
+    }
+
+    /// `z_validateaddress`: the deprecated shielded-aware classification.
+    pub async fn z_validate_address(
+        &self,
+        address: &str,
+    ) -> Result<ZValidateAddressResponse, RpcError> {
+        Ok(z_validated_to_wire(zaino_address::z_validate_address(
+            address.to_owned(),
+            &self.network,
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +237,7 @@ mod tests {
     use super::{NodeRpc, RpcError};
     use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId};
     use zaino_service::testing::{MockChain, MockIndexerService};
+    use zcash_protocol::consensus::Network;
 
     fn engine_with_tip(tip: Option<BlockRef>) -> MockIndexerService {
         MockIndexerService::new(MockChain {
@@ -216,7 +252,7 @@ mod tests {
             height: Height::try_from(291).expect("valid height"),
             hash: BlockHash::from([0xCDu8; 32]),
         };
-        let node = NodeRpc::new(engine_with_tip(Some(tip)));
+        let node = NodeRpc::new(engine_with_tip(Some(tip)), Network::MainNetwork);
         assert_eq!(node.get_block_count().await.expect("count"), 291);
         assert_eq!(
             node.get_best_block_hash().await.expect("hash"),
@@ -226,7 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_tx_out_validates_the_txid_then_reads() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         // Well-formed txid -> the (mock) read runs and reports no such output.
         let ok = node.get_tx_out(&"ab".repeat(32), 0).await.expect("read");
         assert_eq!(ok, "none");
@@ -239,7 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_raw_transaction_decodes_and_relays() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         let txid = node
             .send_raw_transaction("deadbeef")
             .await
@@ -257,7 +293,7 @@ mod tests {
             height: Height::try_from(77).expect("valid height"),
             hash: BlockHash::from([0u8; 32]),
         };
-        let node = NodeRpc::new(engine_with_tip(Some(tip)));
+        let node = NodeRpc::new(engine_with_tip(Some(tip)), Network::MainNetwork);
         // Chain-info aggregate: a node-rpc-specific indexed read.
         assert_eq!(
             node.get_blockchain_info().await.expect("chain info"),
@@ -289,7 +325,7 @@ mod tests {
             )],
             ..Default::default()
         });
-        let node = NodeRpc::new(engine);
+        let node = NodeRpc::new(engine, Network::MainNetwork);
         let got = node
             .get_address_balance(crate::wire::params::AddressesParam {
                 addresses: vec!["t1abc".to_string()],
@@ -319,7 +355,7 @@ mod tests {
             )],
             ..Default::default()
         });
-        let node = NodeRpc::new(engine);
+        let node = NodeRpc::new(engine, Network::MainNetwork);
         let got = node
             .get_address_balance(crate::wire::params::AddressesParam {
                 addresses: vec!["t1abc".to_string()],
@@ -339,7 +375,7 @@ mod tests {
             height: Height::try_from(10).expect("valid height"),
             hash: BlockHash::from([0u8; 32]),
         };
-        let node = NodeRpc::new(engine_with_tip(Some(tip)));
+        let node = NodeRpc::new(engine_with_tip(Some(tip)), Network::MainNetwork);
         let got = node
             .get_address_balance(crate::wire::params::AddressesParam {
                 addresses: vec!["t1nohistory".to_string()],
@@ -352,7 +388,7 @@ mod tests {
 
     #[tokio::test]
     async fn address_balance_rejects_an_empty_address_list() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(matches!(
             node.get_address_balance(crate::wire::params::AddressesParam {
                 addresses: Vec::new()
@@ -383,7 +419,7 @@ mod tests {
             deltas: vec![scripted],
             ..Default::default()
         };
-        let node = NodeRpc::new(MockIndexerService::new(chain));
+        let node = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
 
         let with = node
             .get_address_deltas(crate::wire::params::AddressDeltasParam {
@@ -413,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn address_deltas_rejects_an_empty_address_list() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(matches!(
             node.get_address_deltas(crate::wire::params::AddressDeltasParam {
                 addresses: Vec::new(),
@@ -442,7 +478,7 @@ mod tests {
             )],
             ..Default::default()
         });
-        let node = NodeRpc::new(engine);
+        let node = NodeRpc::new(engine, Network::MainNetwork);
         let got = node
             .get_raw_transaction(&"ab".repeat(32), Some(0))
             .await
@@ -452,7 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_transaction_reports_an_unknown_txid_as_not_found() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(matches!(
             node.get_raw_transaction(&"cd".repeat(32), Some(0)).await,
             Err(RpcError::NotFound(_))
@@ -463,7 +499,7 @@ mod tests {
     /// honest; answering raw hex to a caller expecting the decoded object is not.
     #[tokio::test]
     async fn raw_transaction_refuses_verbose_until_the_capability_exists() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(matches!(
             node.get_raw_transaction(&"ab".repeat(32), Some(1)).await,
             Err(RpcError::InvalidParams(_))
@@ -473,12 +509,35 @@ mod tests {
     /// Review Focus 4: well-formed hex of the wrong length never reaches a read.
     #[tokio::test]
     async fn a_wrong_length_txid_is_rejected_at_the_boundary() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         for bad in [&"ab".repeat(31), &"ab".repeat(33)] {
             assert!(matches!(
                 node.get_raw_transaction(bad, Some(0)).await,
                 Err(RpcError::InvalidParams(_))
             ));
         }
+    }
+
+    /// Review Focus 5: garbage is `isvalid: false`, never an error. zcashd
+    /// answers rather than failing, and the explorer's search box relies on it.
+    #[tokio::test]
+    async fn validate_address_reports_garbage_as_invalid_not_an_error() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        let got = node
+            .validate_address("definitely not an address")
+            .await
+            .expect("validation answers, it does not fail");
+        assert!(!got.isvalid);
+        assert!(got.address.is_none());
+    }
+
+    #[tokio::test]
+    async fn z_validate_address_reports_garbage_as_invalid_not_an_error() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        let got = node
+            .z_validate_address("definitely not an address")
+            .await
+            .expect("validation answers, it does not fail");
+        assert!(!got.isvalid);
     }
 }

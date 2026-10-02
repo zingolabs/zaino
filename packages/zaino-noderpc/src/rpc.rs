@@ -13,7 +13,10 @@ use zaino_service::NodeRpcService;
 
 use crate::error::RpcError;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
-use crate::wire::response::{AddressBalanceResponse, AddressDeltasResponse};
+use crate::wire::response::{
+    AddressBalanceResponse, AddressDeltasResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
+};
 use crate::NodeRpc;
 
 /// The node JSON-RPC surface this adapter serves.
@@ -55,6 +58,18 @@ pub trait NodeRpcApi {
         &self,
         params: AddressDeltasParam,
     ) -> Result<AddressDeltasResponse, ErrorObjectOwned>;
+
+    #[method(name = "validateaddress")]
+    async fn validate_addr(
+        &self,
+        address: String,
+    ) -> Result<ValidateAddressResponse, ErrorObjectOwned>;
+
+    #[method(name = "z_validateaddress")]
+    async fn z_validate_addr(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned>;
 }
 
 #[jsonrpsee::core::async_trait]
@@ -101,6 +116,22 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         params: AddressDeltasParam,
     ) -> Result<AddressDeltasResponse, ErrorObjectOwned> {
         self.get_address_deltas(params)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn validate_addr(
+        &self,
+        address: String,
+    ) -> Result<ValidateAddressResponse, ErrorObjectOwned> {
+        self.validate_address(&address)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn z_validate_addr(
+        &self,
+        address: String,
+    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned> {
+        self.z_validate_address(&address)
             .await
             .map_err(to_error_object)
     }

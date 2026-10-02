@@ -52,3 +52,39 @@ pub struct AddressDeltasResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<DeltaRange>,
 }
+
+/// The `validateaddress` response. zcashd reports an unusable address as
+/// `isvalid: false` with no other fields, rather than as an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValidateAddressResponse {
+    /// Whether the address is a transparent address on the queried network.
+    pub isvalid: bool,
+    /// The address as supplied, when valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Whether the address is pay-to-script-hash, when valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isscript: Option<bool>,
+}
+
+/// The `z_validateaddress` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZValidateAddressResponse {
+    /// Whether the address is one Zaino classifies on the queried network.
+    pub isvalid: bool,
+    /// The address, re-encoded for the queried network, when valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// zcashd's address-kind tag: `p2pkh`, `p2sh` or `sapling`.
+    #[serde(rename = "address_type", skip_serializing_if = "Option::is_none")]
+    pub address_type: Option<String>,
+    /// Sapling diversifier as hex, for a Sapling address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diversifier: Option<String>,
+    /// Sapling `pk_d` as hex, for a Sapling address.
+    #[serde(
+        rename = "diversifiedtransmissionkey",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub diversified_transmission_key: Option<String>,
+}
