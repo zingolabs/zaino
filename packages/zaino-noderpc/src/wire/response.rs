@@ -4,6 +4,8 @@
 //! `u64`, while `received` is a lifetime flow total that is not supply-bounded
 //! and so renders from `u128`.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 /// The `getaddressbalance` response.
@@ -105,6 +107,103 @@ pub struct UnifiedReceiversResponse {
     /// Transparent pay-to-script-hash receiver.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub p2sh: Option<String>,
+}
+
+/// One value pool in a `getblockchaininfo` response.
+///
+/// zcashd reports each amount twice — once as a ZEC-denominated float
+/// (`chainValue`) and once in zatoshis (`chainValueZat`). Only the exact integer
+/// is carried, so this renders `chainValueZat` (and `valueDeltaZat`) and omits
+/// the floats, matching the domain's single-source-of-truth choice.
+///
+/// The same shape serves the unnamed chain-supply total and the named pools: a
+/// pool has an `id`, the total has none, so an empty id is omitted rather than
+/// rendered as `""`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValuePoolResponse {
+    /// Pool name — `transparent`, `sapling`, `orchard`, … Absent for the
+    /// chain-supply total, which zcashd reports unnamed.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// Whether the validator is tracking this pool's balance.
+    pub monitored: bool,
+    /// Total value currently in the pool, in zatoshis.
+    #[serde(rename = "chainValueZat")]
+    pub chain_value_zat: u64,
+    /// Change to the pool's balance from the latest block, in zatoshis. Absent
+    /// when the validator does not report a delta; signed, as value leaves a
+    /// pool as well as entering it.
+    #[serde(rename = "valueDeltaZat", skip_serializing_if = "Option::is_none")]
+    pub value_delta_zat: Option<i64>,
+}
+
+/// One network upgrade in a `getblockchaininfo` response, keyed in the enclosing
+/// map by its consensus branch id (zcashd's layout).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NetworkUpgradeResponse {
+    /// The validator's descriptive name for the upgrade, e.g. `Canopy`, `NU5`.
+    pub name: String,
+    /// Height at which the upgrade activates.
+    #[serde(rename = "activationheight")]
+    pub activation_height: u32,
+    /// Status at the validator's current tip: `active`, `pending` or `disabled`.
+    pub status: String,
+}
+
+/// The consensus branches in force around the tip, as `getblockchaininfo`
+/// reports them: 8-digit lowercase hex branch ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TipConsensusResponse {
+    /// Branch in force at the current tip.
+    pub chaintip: String,
+    /// Branch that will be in force for the next block.
+    pub nextblock: String,
+}
+
+/// The `getblockchaininfo` response, in zcashd's field names and encodings.
+///
+/// `chainwork` is absent rather than zero when the validator does not track
+/// cumulative work (zebra hardcodes it): zero is not a possible amount of work,
+/// so the honest wire form is omission.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlockchainInfoResponse {
+    /// Network name as defined in BIP70 — `main`, `test`, `regtest`.
+    pub chain: String,
+    /// Number of blocks the validator has fully processed.
+    pub blocks: u32,
+    /// Height of the best header chain the validator has validated.
+    pub headers: u32,
+    /// Hash of the current best block, as hex.
+    #[serde(rename = "bestblockhash")]
+    pub best_block_hash: String,
+    /// Current difficulty, as a multiple of the network minimum.
+    pub difficulty: f64,
+    /// Verification progress relative to the estimated network tip, in `0.0..=1.0`.
+    #[serde(rename = "verificationprogress")]
+    pub verification_progress: f64,
+    /// Total work in the best chain, as 64-character big-endian hex. Absent when
+    /// the validator does not track it.
+    #[serde(rename = "chainwork", skip_serializing_if = "Option::is_none")]
+    pub chain_work: Option<String>,
+    /// Whether the validator has pruned block data.
+    pub pruned: bool,
+    /// Approximate on-disk size of the validator's block and undo data, in bytes.
+    pub size_on_disk: u64,
+    /// Total note commitments across the shielded pools.
+    pub commitments: u64,
+    /// Height the validator estimates the network tip to be at.
+    #[serde(rename = "estimatedheight")]
+    pub estimated_height: u32,
+    /// Total transparent and shielded value on the chain, unnamed.
+    #[serde(rename = "chainSupply")]
+    pub chain_supply: ValuePoolResponse,
+    /// Per-pool value balances.
+    #[serde(rename = "valuePools")]
+    pub value_pools: Vec<ValuePoolResponse>,
+    /// Network upgrade schedule, keyed by 8-digit lowercase hex branch id.
+    pub upgrades: BTreeMap<String, NetworkUpgradeResponse>,
+    /// Consensus branches in force at the tip and for the next block.
+    pub consensus: TipConsensusResponse,
 }
 
 #[cfg(test)]

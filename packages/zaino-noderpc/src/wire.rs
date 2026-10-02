@@ -11,10 +11,14 @@ use zaino_address::{UnifiedReceivers, ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::TransactionId;
+use zaino_primitives::types::{
+    BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, ValuePoolBalance,
+};
 
 use crate::error::RpcError;
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltaEntry, UnifiedReceiversResponse, ValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltaEntry, BlockchainInfoResponse, NetworkUpgradeResponse,
+    TipConsensusResponse, UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse,
     ZValidateAddressResponse,
 };
 
@@ -93,6 +97,74 @@ pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
     }
 }
 
+/// Render one value pool for the wire (domain -> wire). Only the exact zatoshi
+/// integer is carried; the ZEC-denominated float zcashd also reports is dropped.
+/// An empty id (the unnamed chain-supply total) is omitted by the response type.
+fn value_pool_to_wire(pool: &ValuePoolBalance) -> ValuePoolResponse {
+    ValuePoolResponse {
+        id: pool.id.clone(),
+        monitored: pool.monitored,
+        chain_value_zat: pool.chain_value.as_u64(),
+        value_delta_zat: pool.value_delta.map(|delta| delta.as_i64()),
+    }
+}
+
+/// Render a network upgrade's status (domain -> wire) in zcashd's lowercase
+/// vocabulary. Exhaustive by design — a new status should force a decision here.
+fn upgrade_status_to_wire(status: NetworkUpgradeStatus) -> String {
+    match status {
+        NetworkUpgradeStatus::Active => "active".to_string(),
+        NetworkUpgradeStatus::Pending => "pending".to_string(),
+        NetworkUpgradeStatus::Disabled => "disabled".to_string(),
+    }
+}
+
+/// Render one network upgrade for the wire (domain -> wire), returning the
+/// consensus-branch-id key it is filed under and its body. The branch id is the
+/// map key in zcashd's layout, written as 8-digit lowercase hex.
+fn upgrade_to_wire(upgrade: &NetworkUpgradeInfo) -> (String, NetworkUpgradeResponse) {
+    (
+        upgrade.branch_id.to_string(),
+        NetworkUpgradeResponse {
+            name: upgrade.name.clone(),
+            activation_height: upgrade.activation_height.into(),
+            status: upgrade_status_to_wire(upgrade.status),
+        },
+    )
+}
+
+/// Render the validator's chain-info aggregate as the `getblockchaininfo`
+/// response (domain -> wire).
+///
+/// Cumulative work renders as 64-character big-endian hex when the validator
+/// tracks it, and is omitted otherwise — zero is not a possible amount of work,
+/// so absence is the honest wire form rather than a zero a consumer could
+/// compare.
+pub(crate) fn blockchain_info_to_wire(info: BlockchainInfo) -> BlockchainInfoResponse {
+    BlockchainInfoResponse {
+        chain: info.chain,
+        blocks: info.blocks.into(),
+        headers: info.headers.into(),
+        best_block_hash: to_hex(info.best_block_hash.into()),
+        difficulty: info.difficulty,
+        verification_progress: info.verification_progress,
+        chain_work: info
+            .chain_work
+            .map(|work| bytes_to_hex(&work.to_be_bytes())),
+        pruned: info.pruned,
+        size_on_disk: info.size_on_disk,
+        commitments: info.commitments,
+        estimated_height: info.estimated_height.into(),
+        chain_supply: value_pool_to_wire(&info.chain_supply),
+        value_pools: info.value_pools.iter().map(value_pool_to_wire).collect(),
+        upgrades: info.upgrades.iter().map(upgrade_to_wire).collect(),
+        consensus: TipConsensusResponse {
+            chaintip: info.consensus.chain_tip.to_string(),
+            nextblock: info.consensus.next_block.to_string(),
+        },
+    }
+}
+
 /// Render a transparent-address validation for the wire (domain -> wire).
 /// Exhaustive by design — a new variant should force a decision here.
 pub(crate) fn validated_to_wire(validated: ValidatedAddress) -> ValidateAddressResponse {
@@ -161,8 +233,198 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
 
 #[cfg(test)]
 mod tests {
-    use super::{validated_to_wire, z_validated_to_wire};
+    use super::{blockchain_info_to_wire, validated_to_wire, z_validated_to_wire};
+    use serde_json::Value;
     use zaino_address::{ValidatedAddress, ZValidatedAddress};
+    use zaino_primitives::types::{
+        AbsoluteChainWork, BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds,
+        Height, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, ValuePoolBalance,
+        Zatoshis,
+    };
+
+    /// A chain-info aggregate with a distinguishable, non-zero value in every
+    /// field, so a golden assertion over it fails if any field is dropped,
+    /// defaulted, or mis-mapped. Chainwork is `…deadbeef`, each height differs,
+    /// `pruned` is the non-default `true`, and the two value pools exercise the
+    /// named / unnamed and present / absent-delta cases.
+    fn scripted_info() -> BlockchainInfo {
+        let mut work_bytes = [0u8; 32];
+        work_bytes[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        BlockchainInfo {
+            chain: "main".to_string(),
+            blocks: Height::try_from(800_001).expect("valid height"),
+            headers: Height::try_from(800_002).expect("valid height"),
+            estimated_height: Height::try_from(800_003).expect("valid height"),
+            best_block_hash: BlockHash::from([0x11u8; 32]),
+            difficulty: 123.5,
+            verification_progress: 0.75,
+            chain_work: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+            pruned: true,
+            size_on_disk: 4_096,
+            commitments: 7,
+            chain_supply: ValuePoolBalance {
+                id: String::new(),
+                chain_value: Zatoshis::new(21_000_000).expect("valid amount"),
+                monitored: true,
+                value_delta: None,
+            },
+            value_pools: vec![ValuePoolBalance {
+                id: "orchard".to_string(),
+                chain_value: Zatoshis::new(2_000).expect("valid amount"),
+                monitored: true,
+                value_delta: Some(SignedZatoshis::try_new(-5).expect("valid delta")),
+            }],
+            upgrades: vec![NetworkUpgradeInfo {
+                branch_id: ConsensusBranchId::new(0xc2d6_d0b4),
+                name: "Canopy".to_string(),
+                activation_height: Height::try_from(1_046_400).expect("valid height"),
+                status: NetworkUpgradeStatus::Active,
+            }],
+            consensus: ConsensusBranchIds {
+                chain_tip: ConsensusBranchId::new(0xc2d6_d0b4),
+                next_block: ConsensusBranchId::new(0xc2d6_d0b4),
+            },
+        }
+    }
+
+    /// The full golden shape of `getblockchaininfo`: the exact sorted key set
+    /// under zcashd's spellings, a typed value per key, the unnamed chain-supply
+    /// total omitting `id` while a named pool carries it, the upgrade map keyed
+    /// by branch id, and consensus branches as 8-digit hex. A dropped or
+    /// mis-mapped field fails, because every scripted value is distinct and
+    /// non-zero.
+    #[test]
+    fn blockchain_info_response_golden_shape() {
+        let json =
+            serde_json::to_value(blockchain_info_to_wire(scripted_info())).expect("serialize");
+        assert_eq!(
+            sorted_keys(&json),
+            [
+                "bestblockhash",
+                "blocks",
+                "chain",
+                "chainSupply",
+                "chainwork",
+                "commitments",
+                "consensus",
+                "difficulty",
+                "estimatedheight",
+                "headers",
+                "pruned",
+                "size_on_disk",
+                "upgrades",
+                "valuePools",
+                "verificationprogress",
+            ]
+        );
+        let obj = json.as_object().expect("a JSON object");
+        assert_eq!(obj.get("chain").and_then(Value::as_str), Some("main"));
+        assert_eq!(obj.get("blocks").and_then(Value::as_u64), Some(800_001));
+        assert_eq!(obj.get("headers").and_then(Value::as_u64), Some(800_002));
+        assert_eq!(
+            obj.get("estimatedheight").and_then(Value::as_u64),
+            Some(800_003)
+        );
+        assert_eq!(
+            obj.get("bestblockhash").and_then(Value::as_str),
+            Some("11".repeat(32).as_str())
+        );
+        assert_eq!(obj.get("difficulty").and_then(Value::as_f64), Some(123.5));
+        assert_eq!(
+            obj.get("verificationprogress").and_then(Value::as_f64),
+            Some(0.75)
+        );
+        // 64-character big-endian hex, so the trailing `deadbeef` is zero-padded.
+        assert_eq!(
+            obj.get("chainwork").and_then(Value::as_str),
+            Some(format!("{}deadbeef", "0".repeat(56)).as_str())
+        );
+        assert_eq!(obj.get("pruned").and_then(Value::as_bool), Some(true));
+        assert_eq!(obj.get("size_on_disk").and_then(Value::as_u64), Some(4_096));
+        assert_eq!(obj.get("commitments").and_then(Value::as_u64), Some(7));
+
+        // chainSupply is the unnamed total: no `id`, exact zatoshis.
+        let supply = obj.get("chainSupply").expect("chainSupply present");
+        assert_eq!(sorted_keys(supply), ["chainValueZat", "monitored"]);
+        let supply = supply.as_object().expect("an object");
+        assert!(
+            !supply.contains_key("id"),
+            "the unnamed total omits id, it is not rendered as empty"
+        );
+        assert_eq!(
+            supply.get("chainValueZat").and_then(Value::as_u64),
+            Some(21_000_000)
+        );
+        assert_eq!(supply.get("monitored").and_then(Value::as_bool), Some(true));
+
+        // A named pool carries its id and a signed delta.
+        let pools = obj
+            .get("valuePools")
+            .and_then(Value::as_array)
+            .expect("array");
+        assert_eq!(pools.len(), 1);
+        let pool = &pools[0];
+        assert_eq!(
+            sorted_keys(pool),
+            ["chainValueZat", "id", "monitored", "valueDeltaZat"]
+        );
+        let pool = pool.as_object().expect("an object");
+        assert_eq!(pool.get("id").and_then(Value::as_str), Some("orchard"));
+        assert_eq!(
+            pool.get("chainValueZat").and_then(Value::as_u64),
+            Some(2_000)
+        );
+        assert_eq!(pool.get("valueDeltaZat").and_then(Value::as_i64), Some(-5));
+
+        // The upgrade map is keyed by the branch id, written as 8-digit hex.
+        let upgrades = obj.get("upgrades").expect("upgrades present");
+        assert_eq!(sorted_keys(upgrades), ["c2d6d0b4"]);
+        let upgrade = upgrades
+            .as_object()
+            .and_then(|m| m.get("c2d6d0b4"))
+            .expect("the scripted upgrade");
+        assert_eq!(sorted_keys(upgrade), ["activationheight", "name", "status"]);
+        let upgrade = upgrade.as_object().expect("an object");
+        assert_eq!(upgrade.get("name").and_then(Value::as_str), Some("Canopy"));
+        assert_eq!(
+            upgrade.get("activationheight").and_then(Value::as_u64),
+            Some(1_046_400)
+        );
+        assert_eq!(
+            upgrade.get("status").and_then(Value::as_str),
+            Some("active")
+        );
+
+        // Consensus branches as 8-digit hex, both fields present.
+        let consensus = obj.get("consensus").expect("consensus present");
+        assert_eq!(sorted_keys(consensus), ["chaintip", "nextblock"]);
+        let consensus = consensus.as_object().expect("an object");
+        assert_eq!(
+            consensus.get("chaintip").and_then(Value::as_str),
+            Some("c2d6d0b4")
+        );
+        assert_eq!(
+            consensus.get("nextblock").and_then(Value::as_str),
+            Some("c2d6d0b4")
+        );
+    }
+
+    /// Cumulative work the validator does not track is `None` in the domain and
+    /// absent on the wire — never a zero a consumer could compare. Pins the
+    /// `skip_serializing_if` on `chainwork`.
+    #[test]
+    fn blockchain_info_omits_chainwork_when_untracked() {
+        let mut info = scripted_info();
+        info.chain_work = None;
+        let json = serde_json::to_value(blockchain_info_to_wire(info)).expect("serialize");
+        assert!(
+            !json
+                .as_object()
+                .expect("a JSON object")
+                .contains_key("chainwork"),
+            "untracked chainwork is omitted, not rendered as zero or null"
+        );
+    }
 
     /// A script-hash transparent address renders `isscript: true` with the
     /// address echoed. Fails if the `is_script` flag is dropped or inverted.
