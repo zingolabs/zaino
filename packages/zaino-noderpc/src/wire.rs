@@ -13,14 +13,16 @@ use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::BlockHash;
 use zaino_primitives::types::TransactionId;
+use zaino_primitives::types::{Block, BlockVerbose, Transaction};
 use zaino_primitives::types::{
     BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, ValuePoolBalance,
 };
 
 use crate::error::RpcError;
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltaEntry, BlockHeaderResponse, BlockchainInfoResponse,
-    NetworkUpgradeResponse, TipConsensusResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltaEntry, BlockHeaderResponse, BlockResponse,
+    BlockchainInfoResponse, NetworkUpgradeResponse, TipConsensusResponse, TransactionInput,
+    TransactionObject, TransactionOutput, UnifiedReceiversResponse, ValidateAddressResponse,
     ValuePoolResponse, ZValidateAddressResponse,
 };
 
@@ -203,6 +205,86 @@ pub(crate) fn block_header_to_wire(header: BlockHeaderVerbose) -> BlockHeaderRes
     }
 }
 
+/// Render one transaction for a verbose response (domain -> wire). The single
+/// transaction renderer: `getblock` verbosity 2 calls it per transaction, and
+/// Task 5c extends it for `getrawtransaction` verbosity 1.
+///
+/// `is_coinbase` is the caller's knowledge of position: the coinbase is the
+/// block's first transaction, and the domain drops its coinbase input, so the
+/// coinbase marker cannot be recovered from the transaction's own fields and is
+/// supplied by the caller. A coinbase renders a single `{coinbase: true}` input.
+///
+/// A spend input carries `txid` and `vout` only — **not** the spent output's
+/// `address` or `value`. Those describe the *spent output*, which lives in an
+/// earlier transaction rather than in this one's bytes; resolving them needs a
+/// prevout lookup deferred to a follow-up (ruling R37).
+pub(crate) fn transaction_to_wire(
+    transaction: &Transaction,
+    is_coinbase: bool,
+) -> TransactionObject {
+    let vin = if is_coinbase {
+        vec![TransactionInput::Coinbase { coinbase: true }]
+    } else {
+        transaction
+            .transparent
+            .inputs
+            .iter()
+            .map(|input| TransactionInput::Spend {
+                txid: to_hex(input.prev_txid.into()),
+                vout: input.prev_index,
+            })
+            .collect()
+    };
+    let vout = transaction
+        .transparent
+        .outputs
+        .iter()
+        .enumerate()
+        .map(|(n, output)| TransactionOutput {
+            value_zat: output.value.as_u64(),
+            // The output index is a `u32` in the domain (`OutputIndex`); the
+            // consensus block-size limit bounds output counts far below 2^32, so
+            // the conversion restores that type and fails loud if ever violated.
+            n: u32::try_from(n).expect("a transaction has fewer than 2^32 outputs"),
+        })
+        .collect();
+    TransactionObject {
+        txid: to_hex(transaction.txid.into()),
+        vin,
+        vout,
+        vjoinsplit: Vec::new(),
+    }
+}
+
+/// Render a block and its chain-position facts as the `getblock` verbosity-2
+/// response (domain -> wire). The header fields come from the block, the
+/// confirmations/difficulty/chainwork from [`BlockVerbose`], and each
+/// transaction through [`transaction_to_wire`] (the first is the coinbase).
+pub(crate) fn block_to_wire(block: Block, verbose: BlockVerbose) -> BlockResponse {
+    let header = &block.header;
+    let tx = block
+        .transactions
+        .iter()
+        .enumerate()
+        .map(|(index, transaction)| transaction_to_wire(transaction, index == 0))
+        .collect();
+    BlockResponse {
+        hash: to_hex(header.hash.into()),
+        confirmations: verbose.confirmations,
+        height: header.height.into(),
+        version: header.version,
+        merkle_root: to_hex(header.merkle_root.into()),
+        time: header.time,
+        nonce: to_hex(header.nonce),
+        bits: format!("{:08x}", header.bits.as_bits()),
+        difficulty: verbose.difficulty,
+        chainwork: verbose
+            .chainwork
+            .map(|work| bytes_to_hex(&work.to_be_bytes())),
+        tx,
+    }
+}
+
 /// Render a transparent-address validation for the wire (domain -> wire).
 /// Exhaustive by design — a new variant should force a decision here.
 pub(crate) fn validated_to_wire(validated: ValidatedAddress) -> ValidateAddressResponse {
@@ -272,14 +354,17 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
 #[cfg(test)]
 mod tests {
     use super::{
-        block_header_to_wire, blockchain_info_to_wire, validated_to_wire, z_validated_to_wire,
+        block_header_to_wire, block_to_wire, blockchain_info_to_wire, transaction_to_wire,
+        validated_to_wire, z_validated_to_wire,
     };
     use serde_json::Value;
     use zaino_address::{ValidatedAddress, ZValidatedAddress};
     use zaino_primitives::types::rpc::BlockHeaderVerbose;
     use zaino_primitives::types::{
-        AbsoluteChainWork, BlockHash, BlockchainInfo, CompactDifficulty, ConsensusBranchId,
-        ConsensusBranchIds, Height, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis,
+        AbsoluteChainWork, Block, BlockHash, BlockHeader, BlockTreeSizes, BlockVerbose,
+        BlockchainInfo, ChainMetadata, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds,
+        EquihashSolution, Height, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis,
+        Transaction, TransactionId, TransparentData, TransparentInput, TransparentOutput, TreeSize,
         ValuePoolBalance, Zatoshis,
     };
 
@@ -608,6 +693,272 @@ mod tests {
                 "an absent {absent} is omitted, not rendered as null"
             );
         }
+    }
+
+    fn empty_pools() -> (
+        zaino_primitives::types::SaplingData,
+        zaino_primitives::types::OrchardData,
+        zaino_primitives::types::OrchardData,
+    ) {
+        Default::default()
+    }
+
+    /// A non-coinbase transaction renders its spends as `{txid, vout}` (no
+    /// `address` or `value` — ruling R37) and its outputs as `{valueZat, n}` with
+    /// an ascending index, and an always-empty `vjoinsplit`.
+    #[test]
+    fn transaction_to_wire_renders_spends_and_outputs() {
+        let (sapling, orchard, ironwood) = empty_pools();
+        let tx = Transaction {
+            txid: TransactionId::from([0xAB; 32]),
+            transparent: TransparentData {
+                inputs: vec![TransparentInput {
+                    prev_txid: TransactionId::from([0x01; 32]),
+                    prev_index: 3,
+                }],
+                outputs: vec![
+                    TransparentOutput {
+                        value: Zatoshis::new(1_000).expect("valid amount"),
+                        script: Script::new(vec![]),
+                    },
+                    TransparentOutput {
+                        value: Zatoshis::new(2_000).expect("valid amount"),
+                        script: Script::new(vec![]),
+                    },
+                ],
+            },
+            sapling,
+            orchard,
+            ironwood,
+        };
+        let json = serde_json::to_value(transaction_to_wire(&tx, false)).expect("serialize");
+        assert_eq!(sorted_keys(&json), ["txid", "vin", "vjoinsplit", "vout"]);
+        let obj = json.as_object().expect("a JSON object");
+        assert_eq!(
+            obj.get("txid").and_then(Value::as_str),
+            Some("ab".repeat(32).as_str())
+        );
+
+        let vin = obj.get("vin").and_then(Value::as_array).expect("vin array");
+        assert_eq!(vin.len(), 1);
+        assert_eq!(sorted_keys(&vin[0]), ["txid", "vout"]);
+        let input = vin[0].as_object().expect("an object");
+        assert_eq!(
+            input.get("txid").and_then(Value::as_str),
+            Some("01".repeat(32).as_str())
+        );
+        assert_eq!(input.get("vout").and_then(Value::as_u64), Some(3));
+        assert!(
+            !input.contains_key("address") && !input.contains_key("value"),
+            "a spend input carries no address or value (ruling R37)"
+        );
+
+        let vout = obj
+            .get("vout")
+            .and_then(Value::as_array)
+            .expect("vout array");
+        assert_eq!(vout.len(), 2);
+        assert_eq!(sorted_keys(&vout[0]), ["n", "valueZat"]);
+        let first = vout[0].as_object().expect("an object");
+        assert_eq!(first.get("valueZat").and_then(Value::as_u64), Some(1_000));
+        assert_eq!(first.get("n").and_then(Value::as_u64), Some(0));
+        let second = vout[1].as_object().expect("an object");
+        assert_eq!(second.get("valueZat").and_then(Value::as_u64), Some(2_000));
+        assert_eq!(second.get("n").and_then(Value::as_u64), Some(1));
+
+        assert_eq!(
+            obj.get("vjoinsplit").and_then(Value::as_array).map(Vec::len),
+            Some(0),
+            "vjoinsplit is always an empty array"
+        );
+    }
+
+    /// The coinbase transaction renders a single `{coinbase: true}` input, even
+    /// though the domain drops the coinbase input, so the marker comes from the
+    /// caller's `is_coinbase`, not the transaction's own fields.
+    #[test]
+    fn transaction_to_wire_renders_the_coinbase_marker() {
+        let (sapling, orchard, ironwood) = empty_pools();
+        let tx = Transaction {
+            txid: TransactionId::from([0xCD; 32]),
+            transparent: TransparentData::default(),
+            sapling,
+            orchard,
+            ironwood,
+        };
+        let json = serde_json::to_value(transaction_to_wire(&tx, true)).expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        let vin = obj.get("vin").and_then(Value::as_array).expect("vin array");
+        assert_eq!(vin.len(), 1);
+        assert_eq!(sorted_keys(&vin[0]), ["coinbase"]);
+        let input = vin[0].as_object().expect("an object");
+        assert_eq!(input.get("coinbase").and_then(Value::as_bool), Some(true));
+        assert!(
+            !input.contains_key("txid"),
+            "the coinbase input is a marker, not a spend"
+        );
+    }
+
+    /// A block header with distinguishable values, for the block golden test.
+    fn scripted_block_header() -> BlockHeader {
+        BlockHeader {
+            hash: BlockHash::from([0x11; 32]),
+            version: 4,
+            prev_hash: BlockHash::from([0x22; 32]),
+            height: Height::try_from(2_468).expect("valid height"),
+            time: 1_600_000_000,
+            merkle_root: [0x33; 32].into(),
+            block_commitments: [0x44; 32].into(),
+            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+            nonce: [0x55; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        }
+    }
+
+    /// Chain-position facts for the block golden test.
+    fn scripted_block_verbose() -> BlockVerbose {
+        let mut work_bytes = [0u8; 32];
+        work_bytes[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        BlockVerbose {
+            confirmations: 9,
+            difficulty: 123.5,
+            chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+            chain_supply: None,
+            value_pools: Vec::new(),
+            tree_sizes: BlockTreeSizes {
+                sapling: TreeSize::from(1u32),
+                orchard: TreeSize::from(2u32),
+                ironwood: TreeSize::from(3u32),
+            },
+            next_block_hash: Some(BlockHash::from([0x66; 32])),
+        }
+    }
+
+    fn coinbase_and_spend_block() -> Block {
+        let (sapling, orchard, ironwood) = empty_pools();
+        let coinbase = Transaction {
+            txid: TransactionId::from([0xC0; 32]),
+            transparent: TransparentData {
+                inputs: Vec::new(),
+                outputs: vec![TransparentOutput {
+                    value: Zatoshis::new(625_000_000).expect("valid amount"),
+                    script: Script::new(vec![]),
+                }],
+            },
+            sapling: sapling.clone(),
+            orchard: orchard.clone(),
+            ironwood: ironwood.clone(),
+        };
+        let spend = Transaction {
+            txid: TransactionId::from([0x7A; 32]),
+            transparent: TransparentData {
+                inputs: vec![TransparentInput {
+                    prev_txid: TransactionId::from([0x01; 32]),
+                    prev_index: 0,
+                }],
+                outputs: vec![TransparentOutput {
+                    value: Zatoshis::new(500).expect("valid amount"),
+                    script: Script::new(vec![]),
+                }],
+            },
+            sapling,
+            orchard,
+            ironwood,
+        };
+        Block {
+            header: scripted_block_header(),
+            transactions: vec![coinbase, spend],
+            chain_metadata: ChainMetadata::ZERO,
+        }
+    }
+
+    /// The full golden shape of `getblock` at verbosity 2: the header fields, the
+    /// chain-position facts, and the decoded transactions. `size` is absent — a
+    /// known divergence from zcashd: re-serializing the block to measure it needs
+    /// the validator's chain library this adapter lacks, so it is deferred to the
+    /// same follow-up as input prevout resolution. The first transaction renders
+    /// as the coinbase, the second as a spend.
+    #[test]
+    fn block_response_golden_shape() {
+        let json = serde_json::to_value(block_to_wire(
+            coinbase_and_spend_block(),
+            scripted_block_verbose(),
+        ))
+        .expect("serialize");
+        assert_eq!(
+            sorted_keys(&json),
+            [
+                "bits",
+                "chainwork",
+                "confirmations",
+                "difficulty",
+                "hash",
+                "height",
+                "merkleroot",
+                "nonce",
+                "time",
+                "tx",
+                "version",
+            ]
+        );
+        let obj = json.as_object().expect("a JSON object");
+        assert!(
+            !obj.contains_key("size"),
+            "block size is a known divergence: omitted, not rendered"
+        );
+        // Header fields come from the block.
+        assert_eq!(
+            obj.get("hash").and_then(Value::as_str),
+            Some("11".repeat(32).as_str())
+        );
+        assert_eq!(obj.get("height").and_then(Value::as_u64), Some(2_468));
+        assert_eq!(obj.get("version").and_then(Value::as_u64), Some(4));
+        assert_eq!(
+            obj.get("merkleroot").and_then(Value::as_str),
+            Some("33".repeat(32).as_str())
+        );
+        assert_eq!(obj.get("time").and_then(Value::as_u64), Some(1_600_000_000));
+        assert_eq!(obj.get("nonce").and_then(Value::as_str), Some("55".repeat(32).as_str()));
+        assert_eq!(obj.get("bits").and_then(Value::as_str), Some("1f07ffff"));
+        // Chain-position facts come from BlockVerbose.
+        assert_eq!(obj.get("confirmations").and_then(Value::as_i64), Some(9));
+        assert_eq!(obj.get("difficulty").and_then(Value::as_f64), Some(123.5));
+        assert_eq!(
+            obj.get("chainwork").and_then(Value::as_str),
+            Some(format!("{}deadbeef", "0".repeat(56)).as_str())
+        );
+        // The transactions: coinbase first, spend second.
+        let tx = obj.get("tx").and_then(Value::as_array).expect("tx array");
+        assert_eq!(tx.len(), 2);
+        let coinbase_vin = tx[0]
+            .as_object()
+            .and_then(|t| t.get("vin"))
+            .and_then(Value::as_array)
+            .expect("coinbase vin");
+        assert_eq!(sorted_keys(&coinbase_vin[0]), ["coinbase"]);
+        let spend_vin = tx[1]
+            .as_object()
+            .and_then(|t| t.get("vin"))
+            .and_then(Value::as_array)
+            .expect("spend vin");
+        assert_eq!(sorted_keys(&spend_vin[0]), ["txid", "vout"]);
+    }
+
+    /// Chainwork the validator does not track is absent on the wire, not zero or
+    /// null. Pins the `skip_serializing_if` on the block's `chainwork`.
+    #[test]
+    fn block_response_omits_chainwork_when_untracked() {
+        let mut verbose = scripted_block_verbose();
+        verbose.chainwork = None;
+        let json =
+            serde_json::to_value(block_to_wire(coinbase_and_spend_block(), verbose)).expect("serialize");
+        assert!(
+            !json
+                .as_object()
+                .expect("a JSON object")
+                .contains_key("chainwork"),
+            "untracked chainwork is omitted, not rendered as zero or null"
+        );
     }
 
     /// A script-hash transparent address renders `isscript: true` with the

@@ -26,18 +26,21 @@ use zaino_service::queries;
 use zaino_service::BlockVerboseRead;
 use zaino_service::NodeQuery;
 use zaino_service::RawTransactionRead;
-use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService};
+use zaino_service::{BlockRead, ChainInfoRead, ChainSegment, NodeRpcService};
 use zcash_protocol::consensus::Network;
+
+use zaino_primitives::types::BlockSelector;
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    DeltaRange, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockResponse,
+    BlockchainInfoResponse, DeltaRange, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, block_header_to_wire, blockchain_info_to_wire, blockhash_from_hex,
-    bytes_from_hex, bytes_to_hex, delta_to_wire, to_hex, txid_from_hex, unified_receivers_to_wire,
-    validated_to_wire, z_validated_to_wire,
+    address_balance_to_wire, block_header_to_wire, block_to_wire, blockchain_info_to_wire,
+    blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire, to_hex, txid_from_hex,
+    unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -114,6 +117,49 @@ impl<S: NodeRpcService> NodeRpc<S> {
         let snapshot = self.engine.snapshot().await?;
         let info = snapshot.chain_info().await?;
         Ok(blockchain_info_to_wire(info))
+    }
+
+    /// `getblock`: the full block object at verbosity 2 — the block page's read.
+    ///
+    /// The block id arrives as a string: all-digits is a height, otherwise a hex
+    /// block hash (the explorer sends a height as a decimal string). Only
+    /// verbosity 2 is served — the full block object with decoded transactions;
+    /// any other verbosity is a params error naming what this method serves.
+    ///
+    /// The response composes two reads for the same block — its contents
+    /// ([`BlockRead::block`]) and its chain position
+    /// ([`BlockVerboseRead::block_verbose`]). Both missing is a not-found error;
+    /// either read failing is an RPC error (via `?`), never a partially rendered
+    /// block.
+    pub async fn get_block(
+        &self,
+        blockid: &str,
+        verbosity: Option<u32>,
+    ) -> Result<BlockResponse, RpcError> {
+        // zcashd defaults getblock to verbosity 1, which this method does not
+        // serve, so an omitted verbosity is refused the same as any non-2.
+        let requested = verbosity.unwrap_or(1);
+        if requested != 2 {
+            return Err(RpcError::InvalidParams(format!(
+                "verbosity {requested} is not served; only 2 (the full block object with decoded transactions) is available"
+            )));
+        }
+        let selector = block_selector_from_str(blockid)?;
+        let snapshot = self.engine.snapshot().await?;
+        let block = snapshot.block(selector).await.map_err(ReadError::from)?;
+        let verbose = snapshot
+            .block_verbose(selector)
+            .await
+            .map_err(ReadError::from)?;
+        match (block, verbose) {
+            (Some(block), Some(verbose)) => Ok(block_to_wire(block, verbose)),
+            (None, None) => Err(RpcError::NotFound(format!("no block for {blockid}"))),
+            // The two live passthrough reads disagree — a reorg race between
+            // them. Not a partial render and not a definitive miss: transient.
+            (Some(_), None) | (None, Some(_)) => Err(RpcError::Read(ReadError::Transient(format!(
+                "block {blockid} and its chain position disagree; retry"
+            )))),
+        }
     }
 
     /// `getblockheader`: the verbose block header for a hash — zcashd's default
@@ -251,9 +297,25 @@ impl<S: NodeRpcService> NodeRpc<S> {
     }
 }
 
+/// Parse `getblock`'s block id (wire -> domain input validation): an all-digits
+/// string is a height, anything else a hex block hash. The explorer sends a
+/// height as a decimal string and a hash as hex.
+fn block_selector_from_str(blockid: &str) -> Result<BlockSelector, RpcError> {
+    if !blockid.is_empty() && blockid.bytes().all(|b| b.is_ascii_digit()) {
+        let height = blockid
+            .parse::<u32>()
+            .ok()
+            .and_then(|h| Height::try_from(h).ok())
+            .ok_or_else(|| RpcError::InvalidParams(format!("{blockid} is not a valid height")))?;
+        Ok(BlockSelector::Height(height))
+    } else {
+        Ok(BlockSelector::Hash(blockhash_from_hex(blockid)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{NodeRpc, RpcError};
+    use super::{block_selector_from_str, NodeRpc, RpcError};
     use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId};
     use zaino_service::testing::{MockChain, MockIndexerService};
     use zcash_protocol::consensus::Network;
@@ -357,6 +419,156 @@ mod tests {
             .await
             .expect("mining info")
             .contains("MiningInfo"));
+    }
+
+    fn scripted_block_and_verbose() -> (
+        zaino_primitives::types::Block,
+        zaino_primitives::types::BlockVerbose,
+    ) {
+        use zaino_primitives::types::{
+            AbsoluteChainWork, Block, BlockHeader, BlockTreeSizes, BlockVerbose, ChainMetadata,
+            CompactDifficulty, EquihashSolution, OrchardData, SaplingData, Script, TransparentData,
+            TransparentInput, TransparentOutput, TreeSize, Zatoshis,
+        };
+        let mut work_bytes = [0u8; 32];
+        work_bytes[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        let coinbase = zaino_primitives::types::Transaction {
+            txid: TransactionId::from([0xC0; 32]),
+            transparent: TransparentData {
+                inputs: Vec::new(),
+                outputs: vec![TransparentOutput {
+                    value: Zatoshis::new(625_000_000).expect("valid amount"),
+                    script: Script::new(vec![]),
+                }],
+            },
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        };
+        let spend = zaino_primitives::types::Transaction {
+            txid: TransactionId::from([0x7A; 32]),
+            transparent: TransparentData {
+                inputs: vec![TransparentInput {
+                    prev_txid: TransactionId::from([0x01; 32]),
+                    prev_index: 0,
+                }],
+                outputs: Vec::new(),
+            },
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        };
+        let block = Block {
+            header: BlockHeader {
+                hash: BlockHash::from([0x11; 32]),
+                version: 4,
+                prev_hash: BlockHash::from([0x22; 32]),
+                height: Height::try_from(2_468).expect("valid height"),
+                time: 1_600_000_000,
+                merkle_root: [0x33; 32].into(),
+                block_commitments: [0x44; 32].into(),
+                bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+                nonce: [0x55; 32],
+                solution: EquihashSolution::Regtest([0; 36]),
+            },
+            transactions: vec![coinbase, spend],
+            chain_metadata: ChainMetadata::ZERO,
+        };
+        let verbose = BlockVerbose {
+            confirmations: 9,
+            difficulty: 123.5,
+            chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+            chain_supply: None,
+            value_pools: Vec::new(),
+            tree_sizes: BlockTreeSizes {
+                sapling: TreeSize::from(1u32),
+                orchard: TreeSize::from(2u32),
+                ironwood: TreeSize::from(3u32),
+            },
+            next_block_hash: None,
+        };
+        (block, verbose)
+    }
+
+    #[tokio::test]
+    async fn get_block_composes_the_block_and_its_chain_position() {
+        let (block, verbose) = scripted_block_and_verbose();
+        let engine = MockIndexerService::new(MockChain {
+            block: Some(block),
+            block_verbose: Some(verbose),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        // A height arrives as a decimal string.
+        let got = node.get_block("2468", Some(2)).await.expect("block served");
+        assert_eq!(got.hash, "11".repeat(32));
+        assert_eq!(got.height, 2_468);
+        assert_eq!(got.confirmations, 9);
+        assert_eq!(got.difficulty, 123.5);
+        assert_eq!(got.tx.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_block_refuses_every_verbosity_but_two() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        // 0 and 1 and an omitted verbosity are all refused; the message names 2.
+        for verbosity in [Some(0), Some(1), None, Some(3)] {
+            assert!(matches!(
+                node.get_block(&"11".repeat(32), verbosity).await,
+                Err(RpcError::InvalidParams(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn get_block_reports_an_unknown_block_as_not_found() {
+        // Nothing scripted: both reads miss, which is a not-found error.
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_block("999999", Some(2)).await,
+            Err(RpcError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_block_never_renders_a_partial_block() {
+        // Only the chain position is scripted, not the block itself: the two live
+        // passthrough reads disagree, so the handler errors rather than rendering
+        // a block with a defaulted body.
+        let (_, verbose) = scripted_block_and_verbose();
+        let engine = MockIndexerService::new(MockChain {
+            block: None,
+            block_verbose: Some(verbose),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        match node.get_block("2468", Some(2)).await {
+            Err(RpcError::Read(_)) => {}
+            other => panic!("a half-present block must error, not render: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn block_selector_parses_height_digits_and_hash_hex() {
+        use zaino_primitives::types::BlockSelector;
+        assert_eq!(
+            block_selector_from_str("2468").expect("height"),
+            BlockSelector::Height(Height::try_from(2_468).expect("valid height"))
+        );
+        // A real hash contains hex letters, so it is never mistaken for a height.
+        assert_eq!(
+            block_selector_from_str(&"ab".repeat(32)).expect("hash"),
+            BlockSelector::Hash(BlockHash::from([0xab; 32]))
+        );
+        // Not all-digits and not 32-byte hex: a params error.
+        assert!(matches!(
+            block_selector_from_str("nothex"),
+            Err(RpcError::InvalidParams(_))
+        ));
+        assert!(matches!(
+            block_selector_from_str(&"ab".repeat(31)),
+            Err(RpcError::InvalidParams(_))
+        ));
     }
 
     #[tokio::test]

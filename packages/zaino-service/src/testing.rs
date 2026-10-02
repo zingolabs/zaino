@@ -68,6 +68,9 @@ pub struct MockChain {
     /// Scripted verbose block. When `Some`, [`BlockVerboseRead::block_verbose`]
     /// returns it for any selector; when `None`, it answers `Ok(None)`.
     pub block_verbose: Option<BlockVerbose>,
+    /// Scripted full block. When `Some`, [`BlockRead::block`] returns it for any
+    /// selector; when `None`, it answers `Ok(None)`.
+    pub block: Option<Block>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -191,7 +194,10 @@ impl BlockRead for MockSnapshot {
             .ok_or(BlockReadError::NotServiceable(Capability::Blocks))
     }
     async fn block(&self, _at: BlockSelector) -> Result<Option<Block>, BlockReadError> {
-        Ok(None)
+        // A scripted block is returned for any selector; absent it, a served
+        // `None`. The full block is otherwise a passthrough the service mock has
+        // no validator behind, so scripting is the only way to exercise it.
+        Ok(self.chain.block.clone())
     }
     async fn block_header(
         &self,

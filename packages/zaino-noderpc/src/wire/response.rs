@@ -157,6 +157,104 @@ pub struct BlockHeaderResponse {
     pub next_block_hash: Option<String>,
 }
 
+/// One input in a verbose transaction's `vin`: either the spend of a previous
+/// output, or the block's coinbase input.
+///
+/// A spend carries `txid` and `vout` only — not the spent output's `address` or
+/// `value`. Those name the *spent output*, which lives in an earlier
+/// transaction, not in this transaction's own bytes, so resolving them needs a
+/// prevout lookup deferred to a follow-up (ruling R37). The coinbase input is a
+/// bare marker: the domain drops the coinbase scriptSig, so the hex zcashd
+/// reports under `coinbase` is not available here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum TransactionInput {
+    /// The block's coinbase input — present once, on the coinbase transaction.
+    Coinbase {
+        /// Always `true`; marks this input as the coinbase.
+        coinbase: bool,
+    },
+    /// A spend of a previous transparent output.
+    Spend {
+        /// The spent transaction's id, as hex.
+        txid: String,
+        /// The spent output's index within that transaction.
+        vout: u32,
+    },
+}
+
+/// One output in a verbose transaction's `vout`.
+///
+/// `valueZat` is the exact zatoshi amount. The ZEC-denominated float zcashd also
+/// reports under `value` is omitted, matching the single-source-of-truth choice
+/// the chain-info value pools make (`chainValueZat`): only the exact integer
+/// crosses the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TransactionOutput {
+    /// Output value, in zatoshis.
+    #[serde(rename = "valueZat")]
+    pub value_zat: u64,
+    /// Index of this output within the transaction.
+    pub n: u32,
+}
+
+/// A Sprout JoinSplit description. Uninhabited: Zaino serves no Sprout, so a
+/// transaction's `vjoinsplit` array is always empty, which the type enforces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum JoinSplit {}
+
+/// One transaction in a verbose block's `tx` array: its id, inputs, outputs, and
+/// (always-empty) Sprout JoinSplits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TransactionObject {
+    /// Transaction id, as hex.
+    pub txid: String,
+    /// Inputs — one coinbase marker on the coinbase transaction, spends
+    /// otherwise.
+    pub vin: Vec<TransactionInput>,
+    /// Outputs, in order.
+    pub vout: Vec<TransactionOutput>,
+    /// Sprout JoinSplits — always empty; Zaino serves no Sprout.
+    pub vjoinsplit: Vec<JoinSplit>,
+}
+
+/// The `getblock` response at verbosity 2: the block's own header fields, its
+/// chain-position facts, and its transactions decoded.
+///
+/// `size` (the serialized block length) is omitted: re-serializing the block to
+/// measure it needs the validator's chain library, which this adapter does not
+/// have, so it is a known divergence from zcashd deferred to a follow-up (the
+/// same follow-up that resolves input prevouts). The explorer renders a missing
+/// `size` as blank rather than failing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlockResponse {
+    /// Hash of this block, as hex.
+    pub hash: String,
+    /// Depth in the best chain, or `-1` off it.
+    pub confirmations: i64,
+    /// Height of this block.
+    pub height: u32,
+    /// Header version.
+    pub version: u32,
+    /// Merkle root of the transaction tree, as hex.
+    #[serde(rename = "merkleroot")]
+    pub merkle_root: String,
+    /// Block time, in seconds since the Unix epoch.
+    pub time: u32,
+    /// Header nonce, as hex.
+    pub nonce: String,
+    /// Difficulty threshold in compact (nBits) form, as 8-digit hex.
+    pub bits: String,
+    /// Difficulty as a multiple of the network minimum.
+    pub difficulty: f64,
+    /// Cumulative chainwork, as 64-character big-endian hex. Absent when the
+    /// validator does not track it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chainwork: Option<String>,
+    /// The block's transactions, decoded.
+    pub tx: Vec<TransactionObject>,
+}
+
 /// One value pool in a `getblockchaininfo` response.
 ///
 /// zcashd reports each amount twice — once as a ZEC-denominated float

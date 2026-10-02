@@ -14,8 +14,9 @@ use zaino_service::NodeRpcService;
 use crate::error::RpcError;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockResponse,
+    BlockchainInfoResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -37,6 +38,13 @@ pub trait NodeRpcApi {
 
     #[method(name = "sendrawtransaction")]
     async fn send_raw(&self, hex: String) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "getblock")]
+    async fn block(
+        &self,
+        blockid: String,
+        verbosity: Option<u32>,
+    ) -> Result<BlockResponse, ErrorObjectOwned>;
 
     #[method(name = "getblockheader")]
     async fn block_header(&self, hash: String) -> Result<BlockHeaderResponse, ErrorObjectOwned>;
@@ -97,6 +105,15 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn send_raw(&self, hex: String) -> Result<String, ErrorObjectOwned> {
         self.send_raw_transaction(&hex)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn block(
+        &self,
+        blockid: String,
+        verbosity: Option<u32>,
+    ) -> Result<BlockResponse, ErrorObjectOwned> {
+        self.get_block(&blockid, verbosity)
             .await
             .map_err(to_error_object)
     }
