@@ -19,6 +19,7 @@
 - Mocks live in the crate they mock, behind a `testing` feature (pattern: `zaino-sync`'s `testing` module).
 - Error types use typed causes via `#[source]`; never stringify, `expect`, or swallow.
 - `Height` and `BlockHash` come from `zaino_primitives::types`.
+- **The algebra is load-bearing documentation and must not be trimmed.** The inequality chain, the ownership table, the `r = height(t) - d` derivation, and the gapless-coverage consequence appear verbatim in `packages/zaino-finality/src/lib.rs` (Task 1, Step 6) and again in `packages/zaino-finality/usage.md` (Task 1, Step 9). They are the specification; the types are its transcription. Do not shorten, paraphrase, or move them to a commit message.
 - Base branch: `refactor/store-service-split`. Work branch: `feat/finality-seam`. Worktree: `/home/chona/zingo/zingolabs/zaino/finality-seam`.
 - `makers set-worktree-parent-tools` and `makers use-system-rocksdb` do not exist on this branch (exit 404). Expect a vendored rocksdb compile on the first build; do not treat the long first build as a fault.
 
@@ -522,6 +523,17 @@ impl DurableWatermark {
 //! w      durable tier,  bounded by r           (read across the seam)
 //! floor  volatile tier, bounded by w - margin  (read across the seam)
 //! ```
+//!
+//! `r` is derived, not chosen:
+//!
+//! ```text
+//! r = height(t) - d        t = the volatile tier's canonical tip
+//! ```
+//!
+//! It depends only on `t`, which is external to the seam, so the ratchet has no
+//! cycle. Conditioning it on anything the volatile tier retains — competing
+//! branches it has not yet swept, say — would make `r` depend on retention,
+//! retention on `floor`, and `floor` on `w <= r`, closing one.
 //!
 //! So the seam carries exactly two quantities, `r` and `w`. `floor` is internal
 //! to the volatile tier and never crosses.
