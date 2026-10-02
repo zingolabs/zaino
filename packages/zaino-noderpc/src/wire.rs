@@ -8,14 +8,15 @@ pub mod params;
 pub mod response;
 
 use zaino_address::{
-    transparent_address_from_script, UnifiedReceivers, ValidatedAddress, ZValidatedAddress,
+    transparent_address_from_script, ScriptAddress, TransparentScriptKind, UnifiedReceivers,
+    ValidatedAddress, ZValidatedAddress,
 };
 use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::BlockHash;
 use zaino_primitives::types::TransactionId;
-use zaino_primitives::types::{Block, BlockVerbose, Script, Transaction};
+use zaino_primitives::types::{Block, BlockVerbose, DecodedBlock, Script, Transaction};
 use zaino_primitives::types::{
     BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, ValuePoolBalance,
     Zatoshis,
@@ -269,26 +270,26 @@ pub(crate) fn block_header_to_wire(header: BlockHeaderVerbose) -> BlockHeaderRes
     }
 }
 
-/// The P2PKH template's leading opcodes (`OP_DUP OP_HASH160 <push 20>`), used
-/// only to tell a decoded P2PKH output from a P2SH one for the `type` tag. The
-/// canonical decode lives in [`zaino_address::transparent_address_from_script`];
-/// this reads the kind off a script that already decoded.
-const P2PKH_SCRIPT_PREFIX: [u8; 3] = [0x76, 0xa9, 0x14];
+/// zcashd's `scriptPubKey.type` tag for a decoded transparent script kind.
+/// Exhaustive by design — a new kind should force a decision here.
+fn script_type_tag(kind: TransparentScriptKind) -> &'static str {
+    match kind {
+        TransparentScriptKind::PubKeyHash => "pubkeyhash",
+        TransparentScriptKind::ScriptHash => "scripthash",
+    }
+}
 
 /// Render a transparent output's locking script (domain -> wire). `addresses`
 /// (a one-element array) and `type` are present together when the script is a
 /// standard P2PKH/P2SH template, and absent together otherwise — a non-standard
 /// script is not an address, so the explorer gets no `addresses` key to iterate.
+/// The kind comes from the same decode as the address, so this never re-inspects
+/// the script bytes.
 fn script_pub_key_to_wire(script: &Script, network: &Network) -> ScriptPubKey {
     let bytes: Vec<u8> = script.clone().into();
     let (addresses, script_type) = match transparent_address_from_script(&bytes, network) {
-        Some(address) => {
-            let kind = if bytes.starts_with(&P2PKH_SCRIPT_PREFIX) {
-                "pubkeyhash"
-            } else {
-                "scripthash"
-            };
-            (Some(vec![address]), Some(kind.to_string()))
+        Some(ScriptAddress { kind, address }) => {
+            (Some(vec![address]), Some(script_type_tag(kind).to_string()))
         }
         None => (None, None),
     };
@@ -321,7 +322,7 @@ fn inputs_to_wire(view: &TransactionView, network: &Network) -> Vec<TransactionI
             value_sat: input.spent.value.as_u64(),
             address: {
                 let script: Vec<u8> = input.spent.script.clone().into();
-                transparent_address_from_script(&script, network)
+                transparent_address_from_script(&script, network).map(|decoded| decoded.address)
             },
         })
         .collect()
@@ -464,17 +465,21 @@ fn block_response<T>(
 
 /// Render a block as the `getblock` verbosity-1 response (domain -> wire): the
 /// header/position fields, the serialized size, and `tx` as the transaction ids.
+///
+/// Verbosity 1 is the explorer's hot per-page call, so it sources size and ids
+/// from the decoded block — which resolves no prevouts — rather than from the
+/// resolved [`BlockTransactionViews`] that verbosity 2 needs.
 pub(crate) fn block_to_wire_v1(
     block: &Block,
     verbose: &BlockVerbose,
-    views: &BlockTransactionViews,
+    decoded: &DecodedBlock,
 ) -> BlockResponse<String> {
-    let tx = views
+    let tx = decoded
         .transactions
         .iter()
-        .map(|view| to_hex(view.transaction.txid.into()))
+        .map(|detailed| to_hex(detailed.transaction.txid.into()))
         .collect();
-    block_response(block, verbose, views.size, tx)
+    block_response(block, verbose, decoded.size, tx)
 }
 
 /// Render a block as the `getblock` verbosity-2 response (domain -> wire): the
@@ -578,11 +583,11 @@ mod tests {
     use zaino_primitives::types::{
         AbsoluteChainWork, Block, BlockHash, BlockHeader, BlockTreeSizes, BlockVerbose,
         BlockchainInfo, ChainMetadata, CoinbaseInput, CompactCiphertext, CompactDifficulty,
-        ConsensusBranchId, ConsensusBranchIds, EphemeralKey, EquihashSolution, Height,
-        JoinSplitValues, NetworkUpgradeInfo, NetworkUpgradeStatus, NoteCommitment, Nullifier,
-        OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, Script,
-        SignedZatoshis, Transaction, TransactionDetail, TransactionId, TransparentData,
-        TransparentInput, TransparentOutput, TreeSize, ValuePoolBalance, Zatoshis,
+        ConsensusBranchId, ConsensusBranchIds, DecodedBlock, DetailedTransaction, EphemeralKey,
+        EquihashSolution, Height, JoinSplitValues, NetworkUpgradeInfo, NetworkUpgradeStatus,
+        NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput,
+        SaplingSpend, Script, SignedZatoshis, Transaction, TransactionDetail, TransactionId,
+        TransparentData, TransparentInput, TransparentOutput, TreeSize, ValuePoolBalance, Zatoshis,
     };
     use zaino_service::{BlockTransactionViews, ResolvedInput, TransactionView};
     use zcash_protocol::consensus::Network;
@@ -1462,6 +1467,41 @@ mod tests {
         }
     }
 
+    /// The same two transactions as [`scripted_views`], but unresolved — the
+    /// decoded block that verbosity 1 reads.
+    fn scripted_decoded_block() -> DecodedBlock {
+        let mut coinbase = empty_transaction(0xC0);
+        coinbase.transparent.outputs = vec![TransparentOutput {
+            value: Zatoshis::new(625_000_000).expect("valid amount"),
+            script: p2pkh_script(),
+        }];
+        let mut coinbase_detail = base_detail(4);
+        coinbase_detail.coinbase = Some(CoinbaseInput {
+            script: Script::new(vec![0x03, 0x01, 0x02, 0x03]),
+            sequence: 0xffff_ffff,
+        });
+
+        let mut spend = empty_transaction(0x7A);
+        spend.transparent.inputs = vec![TransparentInput {
+            prev_txid: TransactionId::from([0x01; 32]),
+            prev_index: 0,
+        }];
+
+        DecodedBlock {
+            size: 1_234,
+            transactions: vec![
+                DetailedTransaction {
+                    transaction: coinbase,
+                    detail: coinbase_detail,
+                },
+                DetailedTransaction {
+                    transaction: spend,
+                    detail: base_detail(4),
+                },
+            ],
+        }
+    }
+
     /// The common block key set shared by both verbosities, including `size`,
     /// `previousblockhash` and `nextblockhash`.
     const BLOCK_KEYS: [&str; 14] = [
@@ -1484,11 +1524,11 @@ mod tests {
     /// Verbosity 1: the header/position keys, `size`, and `tx` as id strings.
     #[test]
     fn block_v1_golden_shape() {
-        let views = scripted_views();
+        let decoded = scripted_decoded_block();
         let json = serde_json::to_value(block_to_wire_v1(
             &scripted_block(),
             &scripted_block_verbose(),
-            &views,
+            &decoded,
         ))
         .expect("serialize");
         assert_eq!(sorted_keys(&json), BLOCK_KEYS);
@@ -1571,7 +1611,7 @@ mod tests {
         let json = serde_json::to_value(block_to_wire_v1(
             &block,
             &scripted_block_verbose(),
-            &scripted_views(),
+            &scripted_decoded_block(),
         ))
         .expect("serialize");
         assert!(

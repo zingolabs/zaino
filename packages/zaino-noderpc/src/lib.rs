@@ -183,11 +183,14 @@ impl<S: NodeRpcService> NodeRpc<S> {
     ///
     /// The response composes three reads for the same block: its header
     /// ([`BlockRead::block`]), its chain position
-    /// ([`BlockVerboseRead::block_verbose`]), and its transactions with resolved
-    /// inputs and serialized size
-    /// ([`TransactionViewRead::block_transaction_views`]). All three missing is a
-    /// not-found error; a subset present is a reorg race (transient), never a
-    /// partially rendered block.
+    /// ([`BlockVerboseRead::block_verbose`]), and its transactions. The third read
+    /// differs by verbosity: verbosity 1 takes size and transaction ids from
+    /// [`TransactionViewRead::decoded_block`], which resolves **no** prevouts, so
+    /// the hot per-page call never fans out over every input or fails on a prevout
+    /// the validator cannot serve; verbosity 2 takes the decoded transactions with
+    /// every input resolved from [`TransactionViewRead::block_transaction_views`].
+    /// All three missing is a not-found error; a subset present is a reorg race
+    /// (transient), never a partially rendered block.
     pub async fn get_block(
         &self,
         blockid: &str,
@@ -214,28 +217,35 @@ impl<S: NodeRpcService> NodeRpc<S> {
             .block_verbose(selector)
             .await
             .map_err(ReadError::from)?;
-        let views = snapshot.block_transaction_views(selector).await?;
-        match (block, verbose, views) {
-            (Some(block), Some(verbose), Some(views)) => {
-                if requested == 1 {
-                    Ok(GetBlockResponse::Verbose1(block_to_wire_v1(
-                        &block, &verbose, &views,
-                    )))
-                } else {
-                    Ok(GetBlockResponse::Verbose2(block_to_wire_v2(
-                        &block,
-                        &verbose,
-                        &views,
-                        &self.network,
-                    )))
-                }
-            }
-            (None, None, None) => Err(RpcError::NotFound(format!("no block for {blockid}"))),
-            // The live passthrough reads disagree — a reorg race between them. Not
-            // a partial render and not a definitive miss: transient.
-            _ => Err(RpcError::Read(ReadError::Transient(format!(
+        // A subset of the reads present is a reorg race between them — transient,
+        // never a partial render; all absent is a genuine miss.
+        let disagree = || {
+            RpcError::Read(ReadError::Transient(format!(
                 "block {blockid} and its contents disagree; retry"
-            )))),
+            )))
+        };
+        let not_found = || RpcError::NotFound(format!("no block for {blockid}"));
+        if requested == 1 {
+            // Verbosity 1 (the hot per-page call) uses the decoded block, which
+            // resolves no prevouts: size and transaction ids only.
+            let decoded = snapshot.decoded_block(selector).await?;
+            match (block, verbose, decoded) {
+                (Some(block), Some(verbose), Some(decoded)) => Ok(GetBlockResponse::Verbose1(
+                    block_to_wire_v1(&block, &verbose, &decoded),
+                )),
+                (None, None, None) => Err(not_found()),
+                _ => Err(disagree()),
+            }
+        } else {
+            // Verbosity 2 resolves every transparent input to the output it spends.
+            let views = snapshot.block_transaction_views(selector).await?;
+            match (block, verbose, views) {
+                (Some(block), Some(verbose), Some(views)) => Ok(GetBlockResponse::Verbose2(
+                    block_to_wire_v2(&block, &verbose, &views, &self.network),
+                )),
+                (None, None, None) => Err(not_found()),
+                _ => Err(disagree()),
+            }
         }
     }
 
@@ -650,6 +660,71 @@ mod tests {
         }
     }
 
+    /// The same two transactions as [`scripted_views`], but as the *unresolved*
+    /// decoded block — what `getblock` verbosity 1 reads. No prevouts, no inputs.
+    fn scripted_decoded_block() -> zaino_primitives::types::DecodedBlock {
+        use zaino_primitives::types::{
+            CoinbaseInput, DecodedBlock, DetailedTransaction, OrchardData, SaplingData, Script,
+            TransactionDetail, TransparentData, TransparentInput,
+        };
+        let coinbase = zaino_primitives::types::Transaction {
+            txid: TransactionId::from([0xC0; 32]),
+            transparent: TransparentData::default(),
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        };
+        let coinbase_detail = TransactionDetail {
+            version: 4,
+            overwintered: true,
+            version_group_id: Some(0x892f_2085),
+            lock_time: 0,
+            expiry_height: Some(Height::try_from(0).expect("valid height")),
+            size: 100,
+            coinbase: Some(CoinbaseInput {
+                script: Script::new(vec![0x03, 0x01, 0x02, 0x03]),
+                sequence: 0xffff_ffff,
+            }),
+            joinsplits: Vec::new(),
+        };
+        let spend = zaino_primitives::types::Transaction {
+            txid: TransactionId::from([0x7A; 32]),
+            transparent: TransparentData {
+                inputs: vec![TransparentInput {
+                    prev_txid: TransactionId::from([0x01; 32]),
+                    prev_index: 0,
+                }],
+                outputs: Vec::new(),
+            },
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        };
+        let spend_detail = TransactionDetail {
+            version: 4,
+            overwintered: true,
+            version_group_id: Some(0x892f_2085),
+            lock_time: 0,
+            expiry_height: Some(Height::try_from(0).expect("valid height")),
+            size: 180,
+            coinbase: None,
+            joinsplits: Vec::new(),
+        };
+        DecodedBlock {
+            size: 999,
+            transactions: vec![
+                DetailedTransaction {
+                    transaction: coinbase,
+                    detail: coinbase_detail,
+                },
+                DetailedTransaction {
+                    transaction: spend,
+                    detail: spend_detail,
+                },
+            ],
+        }
+    }
+
     #[tokio::test]
     async fn get_block_composes_the_block_its_position_and_its_transactions() {
         let (block, verbose) = scripted_block_and_verbose();
@@ -680,7 +755,8 @@ mod tests {
         let engine = MockIndexerService::new(MockChain {
             block: Some(block),
             block_verbose: Some(verbose),
-            block_transaction_views: Some(scripted_views()),
+            // Verbosity 1 reads the decoded block, not the resolved views.
+            decoded_block: Some(scripted_decoded_block()),
             ..Default::default()
         });
         let node = NodeRpc::new(engine, Network::MainNetwork);
@@ -692,6 +768,39 @@ mod tests {
             }
             other => panic!("verbosity 1 must list transaction ids: {other:?}"),
         }
+    }
+
+    /// R46: verbosity 1 must not resolve prevouts. A block whose prevout
+    /// resolution would fail (`block_transaction_views` errors with
+    /// `MissingPrevout`) still renders at verbosity 1, which reads the unresolved
+    /// decoded block — while verbosity 2, which does resolve, surfaces the error.
+    #[tokio::test]
+    async fn get_block_verbosity_one_survives_a_prevout_resolution_failure() {
+        use zaino_primitives::types::TransparentInput;
+        let (block, verbose) = scripted_block_and_verbose();
+        let engine = MockIndexerService::new(MockChain {
+            block: Some(block),
+            block_verbose: Some(verbose),
+            decoded_block: Some(scripted_decoded_block()),
+            // Resolution would fail: a prevout the validator cannot serve.
+            block_transaction_views_missing_prevout: Some(TransparentInput {
+                prev_txid: TransactionId::from([0x01; 32]),
+                prev_index: 0,
+            }),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+
+        // Verbosity 1 renders — it never touched the failing resolution.
+        match node.get_block("2468", Some(1)).await.expect("v1 served") {
+            GetBlockResponse::Verbose1(got) => assert_eq!(got.tx.len(), 2),
+            other => panic!("verbosity 1 must render ids without resolving: {other:?}"),
+        }
+        // Verbosity 2 resolves, so the source inconsistency surfaces.
+        assert!(matches!(
+            node.get_block("2468", Some(2)).await,
+            Err(RpcError::TransactionView(_))
+        ));
     }
 
     #[tokio::test]
