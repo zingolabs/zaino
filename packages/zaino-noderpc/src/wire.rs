@@ -7,13 +7,17 @@
 pub mod params;
 pub mod response;
 
-use zaino_address::{ValidatedAddress, ZValidatedAddress};
+use zaino_address::{UnifiedReceivers, ValidatedAddress, ZValidatedAddress};
+use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::TransactionId;
 use zaino_service::SpendStatus;
 
 use crate::error::RpcError;
-use crate::wire::response::{AddressDeltaEntry, ValidateAddressResponse, ZValidateAddressResponse};
+use crate::wire::response::{
+    AddressBalanceResponse, AddressDeltaEntry, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
+};
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
     match c {
@@ -55,6 +59,27 @@ pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
 /// The fixed-length signature documents the hash case at its call sites.
 pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
     bytes_to_hex(&bytes)
+}
+
+/// Render a summed transparent balance for the wire (domain -> wire). The held
+/// balance is supply-bounded and fits `u64`; lifetime receipts are a flow total
+/// that is not supply-bounded and so render from `u128`.
+pub(crate) fn address_balance_to_wire(total: AddressBalance) -> AddressBalanceResponse {
+    AddressBalanceResponse {
+        balance: total.balance.as_u64(),
+        received: u128::from(total.received),
+    }
+}
+
+/// Render a unified address's receivers for the wire (domain -> wire). Each
+/// receiver kind is carried only when the address bundles one.
+pub(crate) fn unified_receivers_to_wire(receivers: UnifiedReceivers) -> UnifiedReceiversResponse {
+    UnifiedReceiversResponse {
+        orchard: receivers.orchard,
+        sapling: receivers.sapling,
+        p2pkh: receivers.p2pkh,
+        p2sh: receivers.p2sh,
+    }
 }
 
 /// Render an address delta for the wire (domain -> wire).

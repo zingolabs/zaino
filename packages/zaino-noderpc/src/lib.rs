@@ -33,8 +33,8 @@ use crate::wire::response::{
     ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
-    bytes_from_hex, bytes_to_hex, delta_to_wire, spend_status_to_wire, to_hex, txid_from_hex,
-    validated_to_wire, z_validated_to_wire,
+    address_balance_to_wire, bytes_from_hex, bytes_to_hex, delta_to_wire, spend_status_to_wire,
+    to_hex, txid_from_hex, unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -155,10 +155,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
         // shared query layer, not here; this handler only validates its wire
         // parameters and renders the domain answer.
         let total = queries::address_balance(&snapshot, &addrs).await?;
-        Ok(AddressBalanceResponse {
-            balance: total.balance.as_u64(),
-            received: u128::from(total.received),
-        })
+        Ok(address_balance_to_wire(total))
     }
 
     /// `getaddressdeltas`: every balance change touching the requested
@@ -245,12 +242,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
             .ok_or_else(|| {
                 RpcError::InvalidParams(format!("{address} is not a unified address"))
             })?;
-        Ok(UnifiedReceiversResponse {
-            orchard: receivers.orchard,
-            sapling: receivers.sapling,
-            p2pkh: receivers.p2pkh,
-            p2sh: receivers.p2sh,
-        })
+        Ok(unified_receivers_to_wire(receivers))
     }
 }
 
