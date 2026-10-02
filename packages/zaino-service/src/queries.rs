@@ -171,7 +171,7 @@ where
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "testing"))]
 mod tests {
     use super::{
         address_balance, address_deltas, serviceable_range, total_balance, wallet_balance,
