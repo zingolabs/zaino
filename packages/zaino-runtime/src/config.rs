@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_indexer::FetchConcurrency;
 
 /// The finalised index store (LMDB).
@@ -64,6 +65,24 @@ pub struct IndexerConfig {
     /// parallel engine fed rather than paced by a one-at-a-time loop. A
     /// `concurrency = 0` in the config is rejected at parse time (non-zero type).
     pub concurrency: FetchConcurrency,
+    /// The consensus reorg depth, in blocks: the number below the chain tip that
+    /// is still reorg-able and so must stay in the volatile tier. It is the one
+    /// value the [`Seam`](zaino_finality::Seam) is built from, and *both* tiers
+    /// derive their boundary from it *through* the seam — the chain head
+    /// publishes the horizon `tip - reorg_depth`, and the finalised store commits
+    /// no further than that. There is no second constant for the durable tier to
+    /// drift against; a single value, read once, at the one construction site.
+    ///
+    /// Defaults to [`MAX_BLOCK_REORG_HEIGHT`], the consensus bound. A deployment
+    /// may lower it — regtest sets it to `0`, so the horizon is the tip and the
+    /// finalised store builds all the way up, which is what keeps FS-backed reads
+    /// exercised on short test chains. This is **not** the drift the seam was
+    /// built to remove (two independent per-tier constants): the worst a bad
+    /// value can do here is shrink the reorg margin coherently on both sides — an
+    /// ordinary consensus-tuning risk — never commit reorg-able blocks into the
+    /// append-only store behind the volatile tier's back. Keep it a knob; do not
+    /// "simplify" it back to a hardcoded constant.
+    pub reorg_depth: u32,
 }
 
 impl Default for IndexerConfig {
@@ -73,6 +92,7 @@ impl Default for IndexerConfig {
             batch_size: 1000,
             channel_capacity: 256,
             concurrency: FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero")),
+            reorg_depth: MAX_BLOCK_REORG_HEIGHT,
         }
     }
 }

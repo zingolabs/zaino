@@ -154,8 +154,12 @@ where
     // depth and the retention overlap are read — making the single-owner
     // property true rather than merely documented. The volatile tier gets the
     // horizon half (it publishes `r = tip - reorg_depth`); the durable tier gets
-    // the watermark half, threaded into the indexer as its sync target.
-    let (horizon, watermark) = Seam::new(MAX_BLOCK_REORG_HEIGHT, DEFAULT_RETENTION_MARGIN).split();
+    // the watermark half, threaded into the indexer as its sync target. The reorg
+    // depth is the deployment's one knob (defaulting to the consensus bound);
+    // both tiers derive their boundary from it through the seam, never from a
+    // second constant of their own.
+    let (horizon, watermark) =
+        Seam::new(config.indexer.reorg_depth, DEFAULT_RETENTION_MARGIN).split();
 
     // The indexer builds the deployment's index set from what the validator
     // hands it per height, resuming from the backend watermark and bounded by

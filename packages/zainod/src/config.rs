@@ -243,12 +243,17 @@ pub(crate) fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
         serve: ServeConfig {
             grpc_listen_address,
         },
-        // A regtest chain is a handful of blocks, all within the reorg window, so
-        // the finalised store builds only up to the seam-derived horizon
-        // (tip − MAX_BLOCK_REORG_HEIGHT, i.e. genesis here) and the non-finalised
-        // chain head serves the mined blocks from its retained window. The
-        // boundary is owned by the seam now, not configured per deployment.
-        indexer: IndexerConfig::default(),
+        indexer: IndexerConfig {
+            // A regtest chain is a handful of blocks, all within the default reorg
+            // window. A zero reorg depth puts the seam horizon at the tip, so the
+            // finalised store builds all the way up and FS-backed reads (address,
+            // treestate) are actually exercised on the one topology the
+            // integration tests run against — rather than everything being served
+            // from the chain head's window. The seam derives both tiers' boundary
+            // from this one value.
+            reorg_depth: 0,
+            ..IndexerConfig::default()
+        },
     }
 }
 
