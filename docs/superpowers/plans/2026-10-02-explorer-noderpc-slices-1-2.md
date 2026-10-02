@@ -58,6 +58,22 @@ MockIndexerService`.
 - Verify per-crate (`cargo test -p <crate>`), never `--workspace`: this host's
   binutils cannot link `aws-lc-sys`, so a workspace build fails for reasons
   unrelated to the change.
+- **A task that touches `zaino-service/src/testing.rs` must verify every crate
+  that consumes the shared mock**, not only the one it is working in. The mock is
+  shared state, and per-crate verification otherwise hides the breakage:
+
+  ```
+  cargo test -p zaino-service --features testing
+  cargo test -p zaino-noderpc
+  cargo test -p zaino-lightserve
+  cargo test -p zaino-wallet
+  cargo test -p zaino-core
+  cargo test -p zaino-runtime
+  ```
+
+  Not hypothetical: Task 1 changed `MockSnapshot::balance` from
+  `Err(NotServiceable)` to `Ok(zero)` and left a `zaino-lightserve` test red,
+  which its own two-crate verification could not see.
 - Commit after every task. Never amend; always commit forward.
 
 ## Review Focus
