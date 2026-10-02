@@ -820,22 +820,30 @@ keeps returning NoBlocks."
 
 ### Task 2: `getaddressdeltas`
 
+The explorer's address page is `getaddressbalance` plus this, and it passes
+`chainInfo: true`. Following Task 1b's split: the domain answer (which range was
+queried, the ordered deltas, and what no coverage means) lives in
+`zaino-service::queries`; the adapter validates input, renders, and decides
+whether `chainInfo` means the range appears in the response.
+
 **Files:**
+- Modify: `packages/zaino-service/src/queries.rs`
+- Modify: `packages/zaino-service/usage.md`
+- Modify: `packages/zaino-service/src/testing.rs`
 - Modify: `packages/zaino-noderpc/src/wire/params.rs`
 - Modify: `packages/zaino-noderpc/src/wire/response.rs`
+- Modify: `packages/zaino-noderpc/src/wire.rs`
 - Modify: `packages/zaino-noderpc/src/lib.rs`
 - Modify: `packages/zaino-noderpc/src/rpc.rs`
-- Modify: `packages/zaino-service/src/testing.rs`
 
 **Interfaces:**
-- Consumes: `AddressRead::deltas(&TransparentAddress, HeightRange) ->
-  Result<Vec<AddressDelta>, AddressReadError>`; `wire::params::AddressesParam`.
+- Consumes: `queries::serviceable_range`, `AddressRead::deltas`.
 - Produces:
   - `MockChain.deltas: Vec<AddressDelta>`
-  - `wire::params::AddressDeltasParam { addresses, start, end, chain_info }`
-  - `wire::response::{AddressDeltaEntry, AddressDeltasResponse}`
-  - `NodeRpc::get_address_deltas(&self, AddressDeltasParam) ->
-    Result<AddressDeltasResponse, RpcError>`
+  - `queries::AddressDeltasAnswer { deltas: Vec<AddressDelta>, range: Option<HeightRange> }`
+  - `queries::address_deltas(&S, &[TransparentAddress], Option<Height>, Option<Height>) -> Result<AddressDeltasAnswer, AddressReadError>`
+  - `wire::params::AddressDeltasParam`, `wire::response::{AddressDeltaEntry, DeltaRange, AddressDeltasResponse}`
+  - `NodeRpc::get_address_deltas(&self, AddressDeltasParam) -> Result<AddressDeltasResponse, RpcError>`
 
 - [ ] **Step 1: Add the deltas fixture to the mock**
 
@@ -846,7 +854,8 @@ In `packages/zaino-service/src/testing.rs`, add to `MockChain`:
     pub deltas: Vec<AddressDelta>,
 ```
 
-Replace the `deltas` arm of `impl AddressRead for MockSnapshot`:
+Replace the `deltas` arm of `impl AddressRead for MockSnapshot`. `HeightRange` is
+**inclusive**, so the upper bound is `<=`:
 
 ```rust
     async fn deltas(
@@ -865,16 +874,19 @@ Replace the `deltas` arm of `impl AddressRead for MockSnapshot`:
     }
 ```
 
-- [ ] **Step 2: Write the failing tests**
+**This file is the shared mock.** After this step, verify all six consumers, not
+just the two you are working in — see the Global Constraints list.
 
-Append to `packages/zaino-noderpc/src/lib.rs`'s `mod tests`:
+- [ ] **Step 2: Write the failing query-layer tests**
+
+Append to `packages/zaino-service/src/queries.rs`'s test module:
 
 ```rust
     fn delta(height: u32, satoshis: i64, addr: &str) -> zaino_primitives::types::AddressDelta {
-        use zaino_primitives::types::{SignedZatoshis, TransparentAddress};
+        use zaino_primitives::types::SignedZatoshis;
         zaino_primitives::types::AddressDelta {
             satoshis: SignedZatoshis::try_new(satoshis).expect("valid delta"),
-            txid: TransactionId::from([7u8; 32]),
+            txid: zaino_primitives::types::TransactionId::from([7u8; 32]),
             index: 0,
             height: Height::try_from(height).expect("valid height"),
             address: TransparentAddress::new(addr.to_string()),
@@ -882,151 +894,205 @@ Append to `packages/zaino-noderpc/src/lib.rs`'s `mod tests`:
         }
     }
 
-    #[tokio::test]
-    async fn address_deltas_filters_by_address_and_height() {
-        let engine = MockIndexerService::new(MockChain {
+    fn tipped(deltas: Vec<zaino_primitives::types::AddressDelta>) -> MockChain {
+        MockChain {
             tip: Some(BlockRef {
                 height: Height::try_from(200).expect("valid height"),
                 hash: BlockHash::from([1u8; 32]),
             }),
-            deltas: vec![
-                delta(100, 5, "t1abc"),
-                delta(150, -3, "t1abc"),
-                delta(150, 9, "t1other"),
-            ],
+            deltas,
             ..Default::default()
-        });
-        let node = NodeRpc::new(engine);
-        let got = node
-            .get_address_deltas(crate::wire::params::AddressDeltasParam {
-                addresses: vec!["t1abc".to_string()],
-                start: Some(120),
-                end: Some(160),
-                chain_info: false,
-            })
-            .await
-            .expect("deltas");
-        assert_eq!(got.deltas.len(), 1);
-        assert_eq!(got.deltas[0].satoshis, -3);
-        assert_eq!(got.deltas[0].height, 150);
-        assert!(got.range.is_none(), "chain_info false omits the wrapper");
+        }
     }
 
     #[tokio::test]
-    async fn address_deltas_with_chain_info_carries_the_range() {
-        let engine = MockIndexerService::new(MockChain {
-            tip: Some(BlockRef {
-                height: Height::try_from(200).expect("valid height"),
-                hash: BlockHash::from([1u8; 32]),
-            }),
-            deltas: vec![delta(100, 5, "t1abc")],
-            ..Default::default()
-        });
-        let node = NodeRpc::new(engine);
-        let got = node
-            .get_address_deltas(crate::wire::params::AddressDeltasParam {
-                addresses: vec!["t1abc".to_string()],
-                start: Some(0),
-                end: Some(200),
-                chain_info: true,
-            })
-            .await
-            .expect("deltas");
-        let range = got.range.expect("chain_info true carries the range");
-        assert_eq!(range.start, 0);
-        assert_eq!(range.end, 200);
+    async fn address_deltas_filter_by_address_and_height() {
+        let snapshot = snapshot_with(tipped(vec![
+            delta(100, 5, "t1a"),
+            delta(150, -3, "t1a"),
+            delta(150, 9, "t1other"),
+        ]))
+        .await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(
+            &snapshot,
+            &addrs,
+            Some(Height::try_from(120).expect("valid height")),
+            Some(Height::try_from(160).expect("valid height")),
+        )
+        .await
+        .expect("deltas");
+        assert_eq!(answer.deltas.len(), 1);
+        assert_eq!(answer.deltas[0].satoshis.as_i64(), -3);
+        assert!(answer.range.is_some(), "a real query reports its range");
     }
 
-    /// `HeightRange` is inclusive, so a range whose start equals its end is a
-    /// one-block query that must return that block's delta — not nothing. This
-    /// is the boundary a half-open reading gets wrong, and it is silent.
+    /// `HeightRange` is inclusive, so start == end is a one-block query that
+    /// must return that block's delta. This is the boundary a half-open reading
+    /// gets wrong, and it gets it wrong silently.
     #[tokio::test]
-    async fn a_single_height_range_is_inclusive_not_empty() {
-        let engine = MockIndexerService::new(MockChain {
-            tip: Some(BlockRef {
-                height: Height::try_from(200).expect("valid height"),
-                hash: BlockHash::from([1u8; 32]),
-            }),
-            deltas: vec![delta(150, -3, "t1abc")],
-            ..Default::default()
-        });
-        let node = NodeRpc::new(engine);
-        let got = node
-            .get_address_deltas(crate::wire::params::AddressDeltasParam {
-                addresses: vec!["t1abc".to_string()],
-                start: Some(150),
-                end: Some(150),
-                chain_info: false,
-            })
+    async fn a_single_height_delta_range_is_inclusive() {
+        let snapshot = snapshot_with(tipped(vec![delta(150, -3, "t1a")])).await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let at = Height::try_from(150).expect("valid height");
+        let answer = address_deltas(&snapshot, &addrs, Some(at), Some(at))
             .await
             .expect("deltas");
         assert_eq!(
-            got.deltas.len(),
+            answer.deltas.len(),
             1,
             "[150, 150] is one block, not an empty range"
         );
     }
 
-    /// A chain with no coverage has no history to report. This must not query a
-    /// synthesised range — it must short-circuit, which is why `full_range`
-    /// returns `Option`. Scripting a delta that would match proves the
-    /// short-circuit actually happens.
+    /// Callers derive these bounds from user-supplied dates, where an empty day
+    /// is ordinary. A backwards range is a valid query with an empty answer.
     #[tokio::test]
-    async fn no_coverage_answers_empty_without_querying() {
-        let engine = MockIndexerService::new(MockChain {
-            tip: None,
-            deltas: vec![delta(0, 5, "t1abc")],
-            ..Default::default()
-        });
-        let node = NodeRpc::new(engine);
-        let got = node
-            .get_address_deltas(crate::wire::params::AddressDeltasParam {
-                addresses: vec!["t1abc".to_string()],
-                start: None,
-                end: None,
-                chain_info: true,
-            })
-            .await
-            .expect("no coverage is a valid query");
-        assert!(got.deltas.is_empty(), "nothing is serviceable, so no deltas");
-        assert!(got.range.is_none(), "no range to report without coverage");
+    async fn a_backwards_delta_range_is_empty_not_an_error() {
+        let snapshot = snapshot_with(tipped(vec![delta(100, 5, "t1a")])).await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(
+            &snapshot,
+            &addrs,
+            Some(Height::try_from(900).expect("valid height")),
+            Some(Height::try_from(100).expect("valid height")),
+        )
+        .await
+        .expect("a backwards range is a valid query");
+        assert!(answer.deltas.is_empty());
+        assert!(answer.range.is_none(), "no query ran, so no range to report");
     }
 
-    /// Review Focus 3: a backwards range is empty, not a failure. The explorer
-    /// derives `start`/`end` from user-supplied dates.
+    /// Explorer policy, matching `address_balance`: nothing serviceable means no
+    /// indexed history. Scripted, so a regression that queried a synthesised
+    /// range would read the scripted delta and fail.
     #[tokio::test]
-    async fn a_backwards_height_range_is_empty_not_an_error() {
-        let engine = MockIndexerService::new(MockChain {
-            deltas: vec![delta(100, 5, "t1abc")],
+    async fn address_deltas_are_empty_when_nothing_is_serviceable() {
+        let snapshot = snapshot_with(MockChain {
+            tip: None,
+            deltas: vec![delta(0, 5, "t1a")],
             ..Default::default()
-        });
-        let node = NodeRpc::new(engine);
-        let got = node
-            .get_address_deltas(crate::wire::params::AddressDeltasParam {
-                addresses: vec!["t1abc".to_string()],
-                start: Some(900),
-                end: Some(100),
-                chain_info: false,
-            })
+        })
+        .await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(&snapshot, &addrs, None, None)
             .await
-            .expect("a backwards range is a valid query");
-        assert!(got.deltas.is_empty());
+            .expect("no coverage is a valid query");
+        assert!(answer.deltas.is_empty());
+        assert!(answer.range.is_none());
+    }
+
+    /// zcashd documents the order as (height, blockindex, index). Ordering is a
+    /// property of the answer, so it belongs here rather than in each adapter.
+    #[tokio::test]
+    async fn address_deltas_are_ordered_by_height_then_position() {
+        let snapshot = snapshot_with(tipped(vec![
+            delta(150, 1, "t1a"),
+            delta(100, 2, "t1a"),
+            delta(120, 3, "t1a"),
+        ]))
+        .await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(&snapshot, &addrs, None, None)
+            .await
+            .expect("deltas");
+        let heights: Vec<u32> = answer.deltas.iter().map(|d| u32::from(d.height)).collect();
+        assert_eq!(heights, vec![100, 120, 150]);
     }
 ```
 
+Reuse the existing `snapshot_with` helper from Task 1b's test module. Add
+`BlockHash`, `BlockRef` and any other primitives to that module's imports if
+they are not already there.
+
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `cargo test -p zaino-noderpc address_deltas backwards_height`
-Expected: FAIL — `AddressDeltasParam` and `get_address_deltas` do not exist.
+Run: `cargo test -p zaino-service --features testing address_deltas`
+Expected: FAIL — `address_deltas` and `AddressDeltasAnswer` do not exist.
 
-- [ ] **Step 4: Add the param type**
+- [ ] **Step 4: Write the query-layer answer**
+
+Append to `packages/zaino-service/src/queries.rs`, above the test module:
+
+```rust
+/// The answer to a transparent-address delta query.
+///
+/// `range` is the range actually queried, and is `None` exactly when no query
+/// ran — nothing was serviceable, or the requested bounds were backwards. A
+/// caller that echoes the range back to its client has the authoritative value
+/// here rather than re-deriving it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddressDeltasAnswer {
+    /// The deltas, ordered by `(height, block_index, index)`.
+    pub deltas: Vec<AddressDelta>,
+    /// The range queried, or `None` when no query ran.
+    pub range: Option<HeightRange>,
+}
+
+/// Every balance change touching `addrs`, over the requested bounds.
+///
+/// `start` and `end` are inclusive and optional; an absent bound defaults to the
+/// snapshot's serviceable edge. Explorer policy, matching
+/// [`address_balance`]: nothing serviceable means no indexed history, so the
+/// answer is empty rather than an error.
+///
+/// Backwards bounds answer empty too. Callers derive these from user-supplied
+/// dates, where a day with no blocks is an ordinary result and not a fault.
+///
+/// Ordering is `(height, block_index, index)`, which is what zcashd documents.
+/// It is a property of the answer, so it is applied once here rather than in
+/// each adapter.
+pub async fn address_deltas<S>(
+    snapshot: &S,
+    addrs: &[TransparentAddress],
+    start: Option<Height>,
+    end: Option<Height>,
+) -> Result<AddressDeltasAnswer, AddressReadError>
+where
+    S: AddressRead + ChainSegment,
+{
+    let Some(coverage) = serviceable_range(snapshot) else {
+        return Ok(AddressDeltasAnswer {
+            deltas: Vec::new(),
+            range: None,
+        });
+    };
+    let start = start.unwrap_or(coverage.start);
+    let end = end.unwrap_or(coverage.end);
+    if start > end {
+        return Ok(AddressDeltasAnswer {
+            deltas: Vec::new(),
+            range: None,
+        });
+    }
+    let range = HeightRange { start, end };
+
+    let mut deltas = Vec::new();
+    for addr in addrs {
+        deltas.extend(snapshot.deltas(addr, range).await?);
+    }
+    deltas.sort_by_key(|delta| (delta.height, delta.block_index, delta.index));
+    Ok(AddressDeltasAnswer {
+        deltas,
+        range: Some(range),
+    })
+}
+```
+
+Extend the module's imports with `AddressDelta` and `Height`.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `cargo test -p zaino-service --features testing address_deltas`
+Expected: PASS, 5 tests.
+
+- [ ] **Step 6: Add the wire param type**
 
 Append to `packages/zaino-noderpc/src/wire/params.rs`:
 
 ```rust
-/// The `getaddressdeltas` object parameter. `start` and `end` are inclusive
-/// block heights, both optional; `chainInfo` asks for the range wrapper around
-/// the delta list.
+/// The `getaddressdeltas` object parameter, as `zcashex` sends it: one
+/// positional object, not a positional list.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AddressDeltasParam {
     /// The transparent addresses to query.
@@ -1037,13 +1103,13 @@ pub struct AddressDeltasParam {
     /// Last height to include, inclusive.
     #[serde(default)]
     pub end: Option<u32>,
-    /// Whether to wrap the list with range and chain-tip fields.
+    /// Whether the response wraps the list with the queried range.
     #[serde(default, rename = "chainInfo")]
     pub chain_info: bool,
 }
 ```
 
-- [ ] **Step 5: Add the response types**
+- [ ] **Step 7: Add the wire response types**
 
 Append to `packages/zaino-noderpc/src/wire/response.rs`:
 
@@ -1066,7 +1132,7 @@ pub struct AddressDeltaEntry {
     pub address: String,
 }
 
-/// The height range a `chainInfo` request reports alongside its deltas.
+/// The range a `chainInfo` request echoes alongside its deltas.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeltaRange {
     /// First height included.
@@ -1075,9 +1141,8 @@ pub struct DeltaRange {
     pub end: u32,
 }
 
-/// The `getaddressdeltas` response. `range` is present only when the request
-/// asked for `chainInfo`, which is how zcashd distinguishes the wrapped form
-/// from the bare list.
+/// The `getaddressdeltas` response. `range` appears only when the request asked
+/// for `chainInfo` and a query actually ran.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AddressDeltasResponse {
     /// The deltas, in `(height, blockindex, index)` order.
@@ -1088,75 +1153,7 @@ pub struct AddressDeltasResponse {
 }
 ```
 
-- [ ] **Step 6: Write the handler**
-
-Add to `impl<S: NodeRpcService> NodeRpc<S>` in `lib.rs`:
-
-```rust
-    /// `getaddressdeltas`: every balance change touching the requested
-    /// addresses over an inclusive height range.
-    ///
-    /// Both the wire range and [`HeightRange`] are inclusive, so the bounds
-    /// pass through unconverted. A range whose start exceeds its end is
-    /// answered empty rather than rejected: callers derive these bounds from
-    /// user-supplied dates, where an empty day is ordinary. A chain with no
-    /// coverage at all answers empty for the same reason — there is no history
-    /// to report, which is a result, not a failure.
-    pub async fn get_address_deltas(
-        &self,
-        params: AddressDeltasParam,
-    ) -> Result<AddressDeltasResponse, RpcError> {
-        if params.addresses.is_empty() {
-            return Err(RpcError::InvalidParams(
-                "addresses must not be empty".into(),
-            ));
-        }
-        let snapshot = self.engine.snapshot().await?;
-        // No coverage means no indexed history, so there are no deltas to
-        // report. `full_range` returns `None` rather than a synthesised
-        // genesis-only range precisely so this case is distinguishable.
-        let Some(coverage) = full_range(&snapshot) else {
-            return Ok(AddressDeltasResponse {
-                deltas: Vec::new(),
-                range: None,
-            });
-        };
-        let start = params
-            .start
-            .map(Height::try_from)
-            .transpose()
-            .map_err(|_| RpcError::InvalidParams("start is not a valid height".into()))?
-            .unwrap_or(coverage.start);
-        let end = params
-            .end
-            .map(Height::try_from)
-            .transpose()
-            .map_err(|_| RpcError::InvalidParams("end is not a valid height".into()))?
-            .unwrap_or(coverage.end);
-
-        let mut deltas = Vec::new();
-        // `HeightRange` is inclusive, so `start == end` is a one-block query
-        // and only `start > end` is empty.
-        if start <= end {
-            let range = HeightRange { start, end };
-            for address in &params.addresses {
-                let read = snapshot
-                    .deltas(&TransparentAddress::new(address.clone()), range)
-                    .await?;
-                deltas.extend(read.into_iter().map(delta_to_wire));
-            }
-            deltas.sort_by_key(|entry| (entry.height, entry.block_index, entry.index));
-        }
-
-        let range = params.chain_info.then(|| DeltaRange {
-            start: start.into(),
-            end: end.into(),
-        });
-        Ok(AddressDeltasResponse { deltas, range })
-    }
-```
-
-- [ ] **Step 7: Add the domain→wire conversion**
+- [ ] **Step 8: Add the domain→wire conversion**
 
 Append to `packages/zaino-noderpc/src/wire.rs`:
 
@@ -1174,25 +1171,152 @@ pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
 }
 ```
 
-Add to `wire.rs`'s imports:
+Extend `wire.rs`'s imports with `zaino_primitives::types::AddressDelta` and
+`crate::wire::response::AddressDeltaEntry`.
+
+- [ ] **Step 9: Write the failing adapter test**
+
+Append to `packages/zaino-noderpc/src/lib.rs`'s `mod tests`:
 
 ```rust
-use zaino_primitives::types::AddressDelta;
+    /// `chainInfo` is a wire choice: it decides whether the queried range is
+    /// echoed, not what gets queried.
+    #[tokio::test]
+    async fn chain_info_decides_whether_the_range_is_echoed() {
+        use zaino_primitives::types::{SignedZatoshis, TransparentAddress};
+        let scripted = zaino_primitives::types::AddressDelta {
+            satoshis: SignedZatoshis::try_new(-3).expect("valid delta"),
+            txid: TransactionId::from([7u8; 32]),
+            index: 0,
+            height: Height::try_from(150).expect("valid height"),
+            address: TransparentAddress::new("t1a".to_string()),
+            block_index: Some(1),
+        };
+        let chain = MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(200).expect("valid height"),
+                hash: BlockHash::from([1u8; 32]),
+            }),
+            deltas: vec![scripted],
+            ..Default::default()
+        };
+        let node = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
 
-use crate::wire::response::AddressDeltaEntry;
+        let with = node
+            .get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: vec!["t1a".to_string()],
+                start: None,
+                end: None,
+                chain_info: true,
+            })
+            .await
+            .expect("deltas");
+        assert_eq!(with.deltas.len(), 1);
+        assert_eq!(with.deltas[0].satoshis, -3);
+        assert!(with.range.is_some());
+
+        let without = node
+            .get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: vec!["t1a".to_string()],
+                start: None,
+                end: None,
+                chain_info: false,
+            })
+            .await
+            .expect("deltas");
+        assert_eq!(without.deltas.len(), 1, "the query is the same either way");
+        assert!(without.range.is_none());
+    }
+
+    #[tokio::test]
+    async fn address_deltas_rejects_an_empty_address_list() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: Vec::new(),
+                start: None,
+                end: None,
+                chain_info: false,
+            })
+            .await,
+            Err(RpcError::InvalidParams(_))
+        ));
+    }
 ```
 
-Import `delta_to_wire`, `AddressDeltasParam`, `AddressDeltasResponse` and
-`DeltaRange` in `lib.rs` alongside the Task 1 imports.
+Note `NodeRpc::new` takes a network only after Task 4. Until then, call it with
+one argument and drop the `Network` import; Task 4's step that updates every
+call site will pick this test up with the rest.
 
-- [ ] **Step 8: Run the tests to verify they pass**
+- [ ] **Step 10: Run it to verify it fails**
 
-Run: `cargo test -p zaino-noderpc address_deltas backwards_height`
-Expected: PASS, 3 tests.
+Run: `cargo test -p zaino-noderpc address_deltas chain_info_decides`
+Expected: FAIL — `get_address_deltas` does not exist.
 
-- [ ] **Step 9: Add the JSON-RPC method**
+- [ ] **Step 11: Write the handler**
 
-In `rpc.rs`, mirroring Task 1 step 12:
+Add to `impl<S: NodeRpcService> NodeRpc<S>` in `packages/zaino-noderpc/src/lib.rs`:
+
+```rust
+    /// `getaddressdeltas`: every balance change touching the requested
+    /// addresses.
+    ///
+    /// The domain answer — which range was queried, in what order, and what no
+    /// coverage means — comes from [`queries::address_deltas`]. This renders it,
+    /// and applies `chainInfo`, which is a wire choice about whether the range
+    /// is echoed back.
+    pub async fn get_address_deltas(
+        &self,
+        params: AddressDeltasParam,
+    ) -> Result<AddressDeltasResponse, RpcError> {
+        if params.addresses.is_empty() {
+            return Err(RpcError::InvalidParams(
+                "addresses must not be empty".into(),
+            ));
+        }
+        let start = params
+            .start
+            .map(Height::try_from)
+            .transpose()
+            .map_err(|_| RpcError::InvalidParams("start is not a valid height".into()))?;
+        let end = params
+            .end
+            .map(Height::try_from)
+            .transpose()
+            .map_err(|_| RpcError::InvalidParams("end is not a valid height".into()))?;
+        let addrs: Vec<TransparentAddress> = params
+            .addresses
+            .into_iter()
+            .map(TransparentAddress::new)
+            .collect();
+
+        let snapshot = self.engine.snapshot().await?;
+        let answer = queries::address_deltas(&snapshot, &addrs, start, end).await?;
+        Ok(AddressDeltasResponse {
+            deltas: answer.deltas.into_iter().map(delta_to_wire).collect(),
+            range: params
+                .chain_info
+                .then_some(answer.range)
+                .flatten()
+                .map(|range| DeltaRange {
+                    start: range.start.into(),
+                    end: range.end.into(),
+                }),
+        })
+    }
+```
+
+Add `Height` back to `lib.rs`'s imports if Task 1b dropped it, plus
+`crate::wire::delta_to_wire` and the new param/response types.
+
+- [ ] **Step 12: Run the tests to verify they pass**
+
+Run: `cargo test -p zaino-noderpc`
+Expected: PASS — the two new tests plus all of Task 1's and 1b's, unchanged.
+
+- [ ] **Step 13: Add the JSON-RPC method**
+
+In `packages/zaino-noderpc/src/rpc.rs`, add to the `#[rpc(server)]` trait:
 
 ```rust
     #[method(name = "getaddressdeltas")]
@@ -1201,6 +1325,8 @@ In `rpc.rs`, mirroring Task 1 step 12:
         params: AddressDeltasParam,
     ) -> Result<AddressDeltasResponse, ErrorObjectOwned>;
 ```
+
+and to the impl:
 
 ```rust
     async fn address_deltas(
@@ -1213,24 +1339,48 @@ In `rpc.rs`, mirroring Task 1 step 12:
     }
 ```
 
-- [ ] **Step 10: Verify lint and tests**
+Import the two types in `rpc.rs`.
 
-Run: `makers fmt && cargo clippy -p zaino-noderpc --all-targets -- -D warnings && cargo test -p zaino-noderpc && cargo test -p zaino-service --features testing`
-Expected: all pass.
+- [ ] **Step 14: Update the usage guide**
 
-- [ ] **Step 11: Commit**
+`packages/zaino-service/usage.md` gains `address_deltas` and
+`AddressDeltasAnswer`. Fold them into the "Shared queries" section Task 1b
+added, in that section's voice.
+
+- [ ] **Step 15: Verify lint and the full mock-consumer set**
+
+Run:
+```
+makers fmt
+cargo clippy -p zaino-service -p zaino-noderpc --no-deps --all-targets -- -D warnings
+cargo test -p zaino-service --features testing
+cargo test -p zaino-noderpc
+cargo test -p zaino-lightserve
+cargo test -p zaino-wallet
+cargo test -p zaino-core
+cargo test -p zaino-runtime
+```
+Expected: all pass. The last four are required because Step 1 touched the shared
+mock.
+
+- [ ] **Step 16: Commit**
 
 ```bash
-git add packages/zaino-noderpc packages/zaino-service/src/testing.rs
+git add packages/zaino-service packages/zaino-noderpc
 git commit -m "feat(noderpc): serve getaddressdeltas
 
-The explorer's address page is built from this plus getaddressbalance, and it
-passes chainInfo: true, so the response carries the queried range rather than a
-bare list.
+The explorer's address page is this plus getaddressbalance, and it passes
+chainInfo: true.
 
-The wire range is inclusive where the read's HeightRange is half-open. A range
-whose start exceeds its end answers empty instead of failing: callers derive the
-bounds from user-supplied dates, where an empty day is an ordinary result."
+The domain answer lives in the query layer beside address_balance and takes the
+same policy: nothing serviceable means no indexed history, so an empty answer
+rather than an error. Backwards bounds answer empty for the same reason --
+callers derive them from user-supplied dates, where a day with no blocks is an
+ordinary result. Ordering is (height, blockindex, index) per zcashd, applied
+once in the answer rather than in each adapter.
+
+chainInfo stays a wire choice: it decides whether the queried range is echoed
+back, not what gets queried."
 ```
 
 ---
