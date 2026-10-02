@@ -56,8 +56,10 @@ Key points of the shape:
 
 At verbosity 1 and 2, `size` comes from the decoded-block read
 (`BlockTransactionViews.size`), which is why both compose three reads: the block
-header, its chain position, and its transactions-with-resolved-inputs. Verbosity 0
-needs only the single raw-block read.
+header, its chain position, and its transactions-with-resolved-inputs. A by-height
+request resolves the height to a hash once — from the header read — and issues the
+position and transaction reads by that hash, so the three cannot straddle a tip
+reorg between them. Verbosity 0 needs only the single raw-block read.
 
 ## Error mapping
 

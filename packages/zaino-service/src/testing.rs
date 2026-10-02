@@ -67,8 +67,16 @@ pub struct MockChain {
     /// `None`, it answers `Ok(None)`.
     pub block_header_verbose: Option<BlockHeaderVerbose>,
     /// Scripted verbose block. When `Some`, [`BlockVerboseRead::block_verbose`]
-    /// returns it for any selector; when `None`, it answers `Ok(None)`.
+    /// returns it for a by-height selector (and for a by-hash one too, unless
+    /// [`block_verbose_by_hash`](Self::block_verbose_by_hash) overrides it); when
+    /// `None`, it answers `Ok(None)`.
     pub block_verbose: Option<BlockVerbose>,
+    /// Scripted verbose block for a [`BlockSelector::Hash`] read. When `Some`, a
+    /// by-hash [`BlockVerboseRead::block_verbose`] returns it, while a by-height
+    /// read still returns [`block_verbose`](Self::block_verbose). Lets a test give
+    /// the two selectors different answers and prove the serve adapter resolves a
+    /// height to a hash once, then reads the block's contents by that hash.
+    pub block_verbose_by_hash: Option<BlockVerbose>,
     /// Scripted full block. When `Some`, [`BlockRead::block`] returns it for any
     /// selector; when `None`, it answers `Ok(None)`.
     pub block: Option<Block>,
@@ -87,9 +95,17 @@ pub struct MockChain {
     /// prevout-resolution failure `decoded_block` must not be subject to.
     pub block_transaction_views_missing_prevout: Option<TransparentInput>,
     /// Scripted decoded block. When `Some`,
-    /// [`TransactionViewRead::decoded_block`] returns it for any selector; when
+    /// [`TransactionViewRead::decoded_block`] returns it for a by-height selector
+    /// (and for a by-hash one too, unless
+    /// [`decoded_block_by_hash`](Self::decoded_block_by_hash) overrides it); when
     /// `None`, it answers `Ok(None)`.
     pub decoded_block: Option<DecodedBlock>,
+    /// Scripted decoded block for a [`BlockSelector::Hash`] read. When `Some`, a
+    /// by-hash [`TransactionViewRead::decoded_block`] returns it, while a by-height
+    /// read still returns [`decoded_block`](Self::decoded_block). The decoded
+    /// counterpart of [`block_verbose_by_hash`](Self::block_verbose_by_hash), for
+    /// the same height-resolves-to-hash-once proof.
+    pub decoded_block_by_hash: Option<DecodedBlock>,
     /// Scripted raw block bytes. When `Some`, [`BlockVerboseRead::raw_block`]
     /// returns them for any selector; when `None`, it answers `Ok(None)`.
     pub raw_block: Option<Vec<u8>>,
@@ -425,9 +441,16 @@ impl BlockVerboseRead for MockSnapshot {
     }
     async fn block_verbose(
         &self,
-        _at: BlockSelector,
+        at: BlockSelector,
     ) -> Result<Option<BlockVerbose>, BlockReadError> {
-        Ok(self.chain.block_verbose.clone())
+        // A by-hash read takes the by-hash script when one is set, so a test can
+        // prove the serve adapter re-reads by the resolved hash, not by height.
+        match at {
+            BlockSelector::Hash(_) if self.chain.block_verbose_by_hash.is_some() => {
+                Ok(self.chain.block_verbose_by_hash.clone())
+            }
+            _ => Ok(self.chain.block_verbose.clone()),
+        }
     }
     async fn raw_block(&self, _at: BlockSelector) -> Result<Option<Vec<u8>>, BlockReadError> {
         // Scripted raw bytes returned for any selector; absent them, a served
@@ -457,11 +480,17 @@ impl TransactionViewRead for MockSnapshot {
     }
     async fn decoded_block(
         &self,
-        _at: BlockSelector,
+        at: BlockSelector,
     ) -> Result<Option<DecodedBlock>, TransactionViewError> {
         // The decoded block as scripted, with no prevout resolution — so a test
-        // can let `block_transaction_views` fail while this succeeds.
-        Ok(self.chain.decoded_block.clone())
+        // can let `block_transaction_views` fail while this succeeds. A by-hash
+        // read takes the by-hash script when one is set, mirroring `block_verbose`.
+        match at {
+            BlockSelector::Hash(_) if self.chain.decoded_block_by_hash.is_some() => {
+                Ok(self.chain.decoded_block_by_hash.clone())
+            }
+            _ => Ok(self.chain.decoded_block.clone()),
+        }
     }
 }
 

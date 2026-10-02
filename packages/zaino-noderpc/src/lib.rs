@@ -185,9 +185,11 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// served range. An unknown block is a not-found error at every verbosity.
     ///
     /// At verbosity 1 and 2 the response composes three reads for the same block:
-    /// its header
-    /// ([`BlockRead::block`]), its chain position
-    /// ([`BlockVerboseRead::block_verbose`]), and its transactions. The third read
+    /// its header ([`BlockRead::block`]), its chain position
+    /// ([`BlockVerboseRead::block_verbose`]), and its transactions. A by-height
+    /// request resolves the height to a hash once — from the header read — and
+    /// issues the position and transaction reads by that hash, so the three reads
+    /// cannot straddle a tip reorg between them. The third read
     /// differs by verbosity: verbosity 1 takes size and transaction ids from
     /// [`TransactionViewRead::decoded_block`], which resolves **no** prevouts, so
     /// the hot per-page call never fans out over every input or fails on a prevout
@@ -220,8 +222,17 @@ impl<S: NodeRpcService> NodeRpc<S> {
             return Ok(GetBlockResponse::Raw(bytes_to_hex(&raw)));
         }
         let block = snapshot.block(selector).await.map_err(ReadError::from)?;
+        // Resolve the height to a hash once, from this first read, so the chain
+        // position and transaction reads below cannot straddle a tip reorg between
+        // them: a by-hash read always names the one block the header came from.
+        // When the block read misses there is nothing to render, so the original
+        // selector still drives the subset/not-found detection.
+        let contents = match &block {
+            Some(block) => BlockSelector::Hash(block.header.hash),
+            None => selector,
+        };
         let verbose = snapshot
-            .block_verbose(selector)
+            .block_verbose(contents)
             .await
             .map_err(ReadError::from)?;
         // A subset of the reads present is a reorg race between them — transient,
@@ -235,7 +246,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
         if requested == 1 {
             // Verbosity 1 (the hot per-page call) uses the decoded block, which
             // resolves no prevouts: size and transaction ids only.
-            let decoded = snapshot.decoded_block(selector).await?;
+            let decoded = snapshot.decoded_block(contents).await?;
             match (block, verbose, decoded) {
                 (Some(block), Some(verbose), Some(decoded)) => Ok(GetBlockResponse::Verbose1(
                     block_to_wire_v1(&block, &verbose, &decoded),
@@ -245,7 +256,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
             }
         } else {
             // Verbosity 2 resolves every transparent input to the output it spends.
-            let views = snapshot.block_transaction_views(selector).await?;
+            let views = snapshot.block_transaction_views(contents).await?;
             match (block, verbose, views) {
                 (Some(block), Some(verbose), Some(views)) => Ok(GetBlockResponse::Verbose2(
                     block_to_wire_v2(&block, &verbose, &views, &self.network),
@@ -851,6 +862,56 @@ mod tests {
                 assert_eq!(got.tx, vec!["c0".repeat(32), "7a".repeat(32)]);
             }
             other => panic!("verbosity 1 must list transaction ids: {other:?}"),
+        }
+    }
+
+    /// R50: a by-height `getblock` resolves the height to a hash once — from the
+    /// block read — then reads the chain position and transactions by that hash,
+    /// so the three reads cannot straddle a tip reorg between them. The mock
+    /// answers the by-height and by-hash selectors with different blocks; every
+    /// component of the rendered response must come from the hash-selected one,
+    /// never the by-height re-read.
+    #[tokio::test]
+    async fn get_block_by_height_reads_contents_by_the_resolved_hash() {
+        use zaino_primitives::types::DecodedBlock;
+        let (block, mut by_height_verbose) = scripted_block_and_verbose();
+        // The block read (always by height here) fixes the hash the rest resolve
+        // by; its header hash is `0x11…`.
+        by_height_verbose.confirmations = 111;
+        let mut by_hash_verbose = by_height_verbose.clone();
+        by_hash_verbose.confirmations = 222;
+        // Distinct decoded blocks: the by-height one would render size 500 and no
+        // transaction ids, the by-hash one size 999 and the two scripted ids.
+        let by_height_decoded = DecodedBlock {
+            size: 500,
+            transactions: Vec::new(),
+        };
+        let engine = MockIndexerService::new(MockChain {
+            block: Some(block),
+            block_verbose: Some(by_height_verbose),
+            block_verbose_by_hash: Some(by_hash_verbose),
+            decoded_block: Some(by_height_decoded),
+            decoded_block_by_hash: Some(scripted_decoded_block()),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        match node.get_block("2468", Some(1)).await.expect("block served") {
+            GetBlockResponse::Verbose1(got) => {
+                assert_eq!(
+                    got.confirmations, 222,
+                    "the chain position is read by the resolved hash, not by height again"
+                );
+                assert_eq!(
+                    got.size, 999,
+                    "the size is read by the resolved hash, not by height again"
+                );
+                assert_eq!(
+                    got.tx,
+                    vec!["c0".repeat(32), "7a".repeat(32)],
+                    "the transaction ids are read by the resolved hash"
+                );
+            }
+            other => panic!("verbosity 1 must render the hash-selected block: {other:?}"),
         }
     }
 
