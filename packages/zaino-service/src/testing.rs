@@ -25,7 +25,8 @@ use crate::{
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     CompactBlock, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool,
-    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
+    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo, Zatoshis,
+    ZatoshisFlowSum,
 };
 
 use crate::error::{
@@ -46,6 +47,9 @@ pub struct MockChain {
     pub tip: Option<BlockRef>,
     pub serviceable: Option<ServiceableRange>,
     pub mempool: Vec<MempoolTx>,
+    /// Scripted transparent balances, keyed by address string. An address
+    /// absent here has no history, which reads as a zero balance.
+    pub balances: Vec<(String, AddressBalance)>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -235,10 +239,19 @@ impl TreestateRead for MockSnapshot {
 impl AddressRead for MockSnapshot {
     async fn balance(
         &self,
-        _addr: &TransparentAddress,
+        addr: &TransparentAddress,
         _range: HeightRange,
     ) -> Result<AddressBalance, AddressReadError> {
-        Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+        Ok(self
+            .chain
+            .balances
+            .iter()
+            .find(|(scripted, _)| scripted == addr.as_str())
+            .map(|(_, balance)| balance.clone())
+            .unwrap_or(AddressBalance {
+                balance: Zatoshis::ZERO,
+                received: ZatoshisFlowSum::from_summed(0),
+            }))
     }
     async fn unspent_outpoints(
         &self,

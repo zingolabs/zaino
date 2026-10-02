@@ -6156,6 +6156,7 @@ name = "zaino-noderpc"
 version = "0.1.0"
 dependencies = [
  "jsonrpsee",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
  "zaino-component",

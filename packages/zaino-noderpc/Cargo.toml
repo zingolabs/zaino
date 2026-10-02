@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 zaino-component = { path = "../zaino-component" }
 jsonrpsee = { workspace = true }
 tokio = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 zaino-service = { path = "../zaino-service", features = ["testing"] }

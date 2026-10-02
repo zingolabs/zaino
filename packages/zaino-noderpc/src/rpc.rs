@@ -7,9 +7,12 @@
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 
+use zaino_service::error::AddressReadError;
 use zaino_service::NodeRpcService;
 
 use crate::error::RpcError;
+use crate::wire::params::AddressesParam;
+use crate::wire::response::AddressBalanceResponse;
 use crate::NodeRpc;
 
 /// The node JSON-RPC surface this adapter serves.
@@ -32,6 +35,12 @@ pub trait NodeRpcApi {
 
     #[method(name = "getmininginfo")]
     async fn mining_info(&self) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "getaddressbalance")]
+    async fn address_balance(
+        &self,
+        params: AddressesParam,
+    ) -> Result<AddressBalanceResponse, ErrorObjectOwned>;
 }
 
 #[jsonrpsee::core::async_trait]
@@ -56,6 +65,14 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     async fn mining_info(&self) -> Result<String, ErrorObjectOwned> {
         self.get_mining_info().await.map_err(to_error_object)
     }
+    async fn address_balance(
+        &self,
+        params: AddressesParam,
+    ) -> Result<AddressBalanceResponse, ErrorObjectOwned> {
+        self.get_address_balance(params)
+            .await
+            .map_err(to_error_object)
+    }
 }
 
 /// Map a domain-side RPC error onto a JSON-RPC error object: invalid input is a
@@ -71,6 +88,13 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::Unavailable(t) => (ErrorCode::InternalError, t.to_string()),
         RpcError::SpendRead(e) => (ErrorCode::InternalError, e.to_string()),
         RpcError::Read(e) => (ErrorCode::InternalError, e.to_string()),
+        RpcError::AddressRead(AddressReadError::Transient(cause)) => {
+            (ErrorCode::InternalError, cause)
+        }
+        RpcError::AddressRead(AddressReadError::Fatal(cause)) => (ErrorCode::InvalidParams, cause),
+        RpcError::AddressRead(e @ AddressReadError::NotServiceable(_)) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
     };
     ErrorObjectOwned::owned(code.code(), message, None::<()>)
 }

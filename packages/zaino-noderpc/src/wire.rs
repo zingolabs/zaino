@@ -4,6 +4,9 @@
 //! validation (wire -> domain), and `to_hex` / `spend_status_to_wire` are the
 //! domain -> wire renderings. No domain crate depends on any wire schema.
 
+pub mod params;
+pub mod response;
+
 use zaino_primitives::types::TransactionId;
 use zaino_service::SpendStatus;
 
