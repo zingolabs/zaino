@@ -313,6 +313,25 @@ mod tests {
         }
     }
 
+    /// A delta with the sort-key positions (`block_index`, `index`) spelled out,
+    /// for the tests that exercise tie-breaking rather than just height.
+    fn delta_at(
+        height: u32,
+        block_index: Option<u32>,
+        index: u32,
+        addr: &str,
+    ) -> zaino_primitives::types::AddressDelta {
+        use zaino_primitives::types::SignedZatoshis;
+        zaino_primitives::types::AddressDelta {
+            satoshis: SignedZatoshis::try_new(1).expect("valid delta"),
+            txid: zaino_primitives::types::TransactionId::from([7u8; 32]),
+            index,
+            height: Height::try_from(height).expect("valid height"),
+            address: TransparentAddress::new(addr.to_string()),
+            block_index,
+        }
+    }
+
     fn tipped(deltas: Vec<zaino_primitives::types::AddressDelta>) -> MockChain {
         MockChain {
             tip: Some(BlockRef {
@@ -404,21 +423,44 @@ mod tests {
         assert!(answer.range.is_none());
     }
 
-    /// zcashd documents the order as (height, blockindex, index). Ordering is a
-    /// property of the answer, so it belongs here rather than in each adapter.
+    /// zcashd documents the order as (height, blockindex, index), so all three
+    /// keys must break ties, not height alone. The input is scrambled on each
+    /// key: out of order by height, and — at one shared height — differing on
+    /// `block_index` and then on `index`.
+    ///
+    /// `block_index` is `Option<u32>` because a source may not supply it; zcashd
+    /// documents no order for that case, so our choice is arbitrary. It is pinned
+    /// here so it cannot drift silently: Rust's derived `Option` ordering sorts
+    /// `None` before any `Some`, so an unknown-position delta sorts ahead of its
+    /// same-height siblings.
     #[tokio::test]
     async fn address_deltas_are_ordered_by_height_then_position() {
         let snapshot = snapshot_with(tipped(vec![
-            delta(150, 1, "t1a"),
-            delta(100, 2, "t1a"),
-            delta(120, 3, "t1a"),
+            delta_at(150, Some(1), 0, "t1a"),
+            delta_at(100, Some(2), 0, "t1a"), // out of order by height
+            delta_at(150, Some(0), 0, "t1a"), // same height, lower block_index
+            delta_at(150, Some(1), 5, "t1a"), // same height and block_index, higher index
+            delta_at(150, None, 0, "t1a"),    // unknown position sorts before Some
         ]))
         .await;
         let addrs = vec![TransparentAddress::new("t1a".to_string())];
         let answer = address_deltas(&snapshot, &addrs, None, None)
             .await
             .expect("deltas");
-        let heights: Vec<u32> = answer.deltas.iter().map(|d| u32::from(d.height)).collect();
-        assert_eq!(heights, vec![100, 120, 150]);
+        let order: Vec<(u32, Option<u32>, u32)> = answer
+            .deltas
+            .iter()
+            .map(|d| (u32::from(d.height), d.block_index, d.index))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (100, Some(2), 0),
+                (150, None, 0),
+                (150, Some(0), 0),
+                (150, Some(1), 0),
+                (150, Some(1), 5),
+            ]
+        );
     }
 }
