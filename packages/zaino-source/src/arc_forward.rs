@@ -16,7 +16,7 @@
 //! [`OneShotGetCommitmentTreeRoots`]), and the serving path's
 //! passthrough ports ([`OneShotGetTreestate`], [`OneShotSendRawTransaction`],
 //! [`OneShotGetTransaction`], [`OneShotGetTransactionVerbose`],
-//! [`OneShotGetSubtreeRoots`], the transparent-address
+//! [`OneShotGetBlockchainInfo`], [`OneShotGetSubtreeRoots`], the transparent-address
 //! reads, and the mempool reads ([`OneShotGetMempoolTxids`],
 //! [`OneShotGetRawMempoolTransaction`], [`OneShotGetMempoolCompactTransaction`],
 //! [`OneShotGetMempoolSourceTip`])). Each is a mechanical `Deref`-forward.
@@ -28,17 +28,18 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Block, BlockHash, Height, PreIndexCompactBlock,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockchainInfo, Height, PreIndexCompactBlock,
     PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
 };
 
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
-    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetChainTipError,
-    GetCommitmentTreeRootsError, GetMempoolTxidsError, GetRawMempoolTransactionError,
-    GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError, GetTreestateError,
-    OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
-    OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip,
+    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockchainInfoError,
+    GetChainTipError, GetCommitmentTreeRootsError, GetMempoolTxidsError,
+    GetRawMempoolTransactionError, GetSubtreeRootsError, GetTransactionError,
+    GetTransactionVerboseError, GetTreestateError, OneShotGetAddressBalance,
+    OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetBlock,
+    OneShotGetBlockByHash, OneShotGetBlockchainInfo, OneShotGetChainTip,
     OneShotGetCommitmentTreeRoots, OneShotGetMempoolCompactTransaction, OneShotGetMempoolSourceTip,
     OneShotGetMempoolTxids, OneShotGetPreIndexCompactBlock, OneShotGetRawMempoolTransaction,
     OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTransactionVerbose,
@@ -214,6 +215,16 @@ impl<V: OneShotGetTransactionVerbose + ?Sized> OneShotGetTransactionVerbose for 
         >,
     > + Send {
         (**self).get_transaction_verbose(txid)
+    }
+}
+
+impl<V: OneShotGetBlockchainInfo + ?Sized> OneShotGetBlockchainInfo for Arc<V> {
+    fn get_blockchain_info(
+        &self,
+    ) -> impl Future<
+        Output = Result<BlockchainInfo, QueryError<GetBlockchainInfoError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_blockchain_info()
     }
 }
 

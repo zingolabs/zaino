@@ -11,12 +11,13 @@ use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate
 use crate::error::{FailureMode, NonDomainError};
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
-    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetChainTipError,
-    GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError, GetTreestateError,
-    QueryError, SendRawTransactionError, TransactionResponse,
+    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockchainInfoError,
+    GetChainTipError, GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError,
+    GetTreestateError, QueryError, SendRawTransactionError, TransactionResponse,
 };
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, ShieldedPool, SubtreeRoot, Transaction, TransactionLocation, Utxo,
+    AddressBalance, AddressDelta, BlockchainInfo, ShieldedPool, SubtreeRoot, Transaction,
+    TransactionLocation, Utxo,
 };
 
 /// A pre-populated in-memory chain for testing.
@@ -39,6 +40,9 @@ pub struct MockChain {
     /// Canned decoded-transaction response, returned for any txid; `None` answers
     /// a domain not-found.
     transaction_verbose_response: Option<DecodedTransaction>,
+    /// Canned blockchain-info response, returned for any query; `None` answers a
+    /// domain not-ready.
+    blockchain_info_response: Option<BlockchainInfo>,
     /// Canned subtree roots, returned for any index query.
     subtree_roots: Vec<SubtreeRoot>,
 }
@@ -57,6 +61,7 @@ impl MockChain {
             address_rejection: None,
             transaction_response: None,
             transaction_verbose_response: None,
+            blockchain_info_response: None,
             subtree_roots: Vec::new(),
         }
     }
@@ -77,6 +82,12 @@ impl MockChain {
             transaction,
             location,
         });
+        self
+    }
+
+    /// Seed the response `get_blockchain_info` returns.
+    pub fn with_blockchain_info(mut self, info: BlockchainInfo) -> Self {
+        self.blockchain_info_response = Some(info);
         self
     }
 
@@ -169,6 +180,7 @@ impl Clone for MockChain {
             address_rejection: self.address_rejection.clone(),
             transaction_response: self.transaction_response.clone(),
             transaction_verbose_response: self.transaction_verbose_response.clone(),
+            blockchain_info_response: self.blockchain_info_response.clone(),
             subtree_roots: self.subtree_roots.clone(),
         }
     }
@@ -429,6 +441,19 @@ impl crate::OneShotGetTransactionVerbose for MockChain {
     }
 }
 
+impl crate::OneShotGetBlockchainInfo for MockChain {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.blockchain_info_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockchainInfoError::NotReady))
+    }
+}
+
 impl crate::OneShotGetSubtreeRoots for MockChain {
     async fn get_subtree_roots(
         &self,
@@ -466,6 +491,49 @@ pub fn test_block(height: u32, hash_byte: u8) -> Block {
         },
         transactions: vec![],
         chain_metadata: ChainMetadata::ZERO,
+    }
+}
+
+/// A [`BlockchainInfo`] fixture carrying a distinct, non-default value in every
+/// field, for seeding a [`MockChain`] (or asserting a passthrough carried each
+/// field intact) from downstream crates. Behind the `testing` feature so it is
+/// reusable, not just an in-crate test helper. The values are arbitrary but
+/// mutually distinguishable, so a consumer that drops or defaults any one field
+/// fails an equality check against this fixture.
+#[cfg(any(test, feature = "testing"))]
+pub fn sample_blockchain_info() -> BlockchainInfo {
+    use zaino_primitives::types::{
+        BlockHash, ConsensusBranchId, ConsensusBranchIds, Height, ValuePoolBalance, Zatoshis,
+    };
+    BlockchainInfo {
+        chain: "sample-chain".to_string(),
+        blocks: Height::try_from(111).expect("valid height"),
+        headers: Height::try_from(222).expect("valid height"),
+        estimated_height: Height::try_from(333).expect("valid height"),
+        best_block_hash: BlockHash::from([0xab; 32]),
+        difficulty: 44.5,
+        verification_progress: 0.75,
+        chain_work: None,
+        pruned: true,
+        size_on_disk: 555,
+        commitments: 666,
+        chain_supply: ValuePoolBalance {
+            id: "supply".to_string(),
+            chain_value: Zatoshis::new(7000).expect("valid amount"),
+            monitored: true,
+            value_delta: None,
+        },
+        value_pools: vec![ValuePoolBalance {
+            id: "orchard".to_string(),
+            chain_value: Zatoshis::new(8000).expect("valid amount"),
+            monitored: true,
+            value_delta: None,
+        }],
+        upgrades: Vec::new(),
+        consensus: ConsensusBranchIds {
+            chain_tip: ConsensusBranchId::new(0x1234),
+            next_block: ConsensusBranchId::new(0x5678),
+        },
     }
 }
 
@@ -616,6 +684,27 @@ mod tests {
         assert!(matches!(
             err,
             QueryError::Domain(GetTransactionVerboseError::NotFound(got)) if got == txid
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_blockchain_info_returns_the_scripted_info() {
+        let mock = MockChain::new().with_blockchain_info(sample_blockchain_info());
+        let info = crate::OneShotGetBlockchainInfo::get_blockchain_info(&mock)
+            .await
+            .expect("scripted info");
+        assert_eq!(info, sample_blockchain_info());
+    }
+
+    #[tokio::test]
+    async fn get_blockchain_info_not_ready_without_a_script() {
+        let mock = MockChain::new();
+        let err = crate::OneShotGetBlockchainInfo::get_blockchain_info(&mock)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockchainInfoError::NotReady)
         ));
     }
 
