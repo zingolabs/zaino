@@ -109,6 +109,54 @@ pub struct UnifiedReceiversResponse {
     pub p2sh: Option<String>,
 }
 
+/// The `getblockheader` response, in zcashd's verbose (`verbose = true`) shape.
+///
+/// Hashes, the merkle root, the nonce and the Equihash solution are hex; `bits`
+/// is the 8-digit hex nBits; `chainwork` is 64-character big-endian hex. The
+/// optional hashes and roots are absent rather than `null` when the source does
+/// not report them (genesis has no `previousblockhash`; the tip has no
+/// `nextblockhash`; pre-Sapling blocks have no `finalsaplingroot`; Zebra reports
+/// no `chainwork`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlockHeaderResponse {
+    /// Hash of this block, as hex.
+    pub hash: String,
+    /// Depth in the best chain, or `-1` off it. Signed for that reason.
+    pub confirmations: i64,
+    /// Height of this block.
+    pub height: u32,
+    /// Header version.
+    pub version: u32,
+    /// Merkle root of the transaction tree, as hex.
+    #[serde(rename = "merkleroot")]
+    pub merkle_root: String,
+    /// Sapling commitment tree root after this block, as hex. Absent before
+    /// Sapling activation and from validators that omit it.
+    #[serde(rename = "finalsaplingroot", skip_serializing_if = "Option::is_none")]
+    pub final_sapling_root: Option<String>,
+    /// Block time, in seconds since the Unix epoch.
+    pub time: u32,
+    /// Header nonce, as hex.
+    pub nonce: String,
+    /// Equihash solution, as hex.
+    pub solution: String,
+    /// Difficulty threshold in compact (nBits) form, as 8-digit hex.
+    pub bits: String,
+    /// Difficulty as a multiple of the network minimum.
+    pub difficulty: f64,
+    /// Cumulative chainwork, as 64-character big-endian hex. Absent when the
+    /// validator does not track it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chainwork: Option<String>,
+    /// Hash of the previous block, as hex. Absent for genesis.
+    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none")]
+    pub previous_block_hash: Option<String>,
+    /// Hash of the next block on the best chain, as hex. Absent for the tip or a
+    /// side-chain block.
+    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none")]
+    pub next_block_hash: Option<String>,
+}
+
 /// One value pool in a `getblockchaininfo` response.
 ///
 /// zcashd reports each amount twice — once as a ZEC-denominated float

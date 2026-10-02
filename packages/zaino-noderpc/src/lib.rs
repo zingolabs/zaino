@@ -21,7 +21,9 @@ pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
 use zaino_primitives::types::{Height, TransparentAddress};
+use zaino_service::error::ReadError;
 use zaino_service::queries;
+use zaino_service::BlockVerboseRead;
 use zaino_service::NodeQuery;
 use zaino_service::RawTransactionRead;
 use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService};
@@ -29,12 +31,13 @@ use zcash_protocol::consensus::Network;
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, BlockchainInfoResponse, DeltaRange,
-    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
+    DeltaRange, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, blockchain_info_to_wire, bytes_from_hex, bytes_to_hex, delta_to_wire,
-    to_hex, txid_from_hex, unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
+    address_balance_to_wire, block_header_to_wire, blockchain_info_to_wire, blockhash_from_hex,
+    bytes_from_hex, bytes_to_hex, delta_to_wire, to_hex, txid_from_hex, unified_receivers_to_wire,
+    validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -111,6 +114,21 @@ impl<S: NodeRpcService> NodeRpc<S> {
         let snapshot = self.engine.snapshot().await?;
         let info = snapshot.chain_info().await?;
         Ok(blockchain_info_to_wire(info))
+    }
+
+    /// `getblockheader`: the verbose block header for a hash — zcashd's default
+    /// `verbose = true` shape. `[hash]` only; the explorer's blocks-by-date list
+    /// fans this out per hash. A hash no retained chain holds is a not-found RPC
+    /// error, never a defaulted header.
+    pub async fn get_block_header(&self, hash_hex: &str) -> Result<BlockHeaderResponse, RpcError> {
+        let hash = blockhash_from_hex(hash_hex)?;
+        let snapshot = self.engine.snapshot().await?;
+        let header = snapshot
+            .block_header_verbose(hash)
+            .await
+            .map_err(ReadError::from)?
+            .ok_or_else(|| RpcError::NotFound(format!("no block with hash {hash_hex}")))?;
+        Ok(block_header_to_wire(header))
     }
 
     /// `getmininginfo`: not indexed — relayed to the validator through the
@@ -339,6 +357,68 @@ mod tests {
             .await
             .expect("mining info")
             .contains("MiningInfo"));
+    }
+
+    #[tokio::test]
+    async fn block_header_renders_the_scripted_header() {
+        use zaino_primitives::types::rpc::BlockHeaderVerbose;
+        use zaino_primitives::types::{AbsoluteChainWork, CompactDifficulty};
+        let mut work_bytes = [0u8; 32];
+        work_bytes[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        let header = BlockHeaderVerbose {
+            hash: BlockHash::from([0x11; 32]),
+            confirmations: 7,
+            height: Height::try_from(2_468).expect("valid height"),
+            version: 4,
+            merkle_root: [0x22; 32].into(),
+            final_sapling_root: Some([0x33; 32].into()),
+            time: 1_600_000_000,
+            nonce: [0x44; 32],
+            solution: vec![0xaa, 0xbb, 0xcc],
+            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+            difficulty: 123.5,
+            block_commitments: Some([0x55; 32].into()),
+            chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+            previous_block_hash: Some(BlockHash::from([0x66; 32])),
+            next_block_hash: Some(BlockHash::from([0x77; 32])),
+        };
+        let engine = MockIndexerService::new(MockChain {
+            block_header_verbose: Some(header),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let got = node
+            .get_block_header(&"11".repeat(32))
+            .await
+            .expect("header served");
+        assert_eq!(got.hash, "11".repeat(32));
+        assert_eq!(got.confirmations, 7);
+        assert_eq!(got.height, 2_468);
+        assert_eq!(got.merkle_root, "22".repeat(32));
+        assert_eq!(got.bits, "1f07ffff");
+        assert_eq!(got.next_block_hash.as_deref(), Some("77".repeat(32).as_str()));
+    }
+
+    #[tokio::test]
+    async fn block_header_reports_an_unknown_hash_as_not_found() {
+        // No scripted header: the read answers `Ok(None)`, which the handler
+        // turns into a not-found RPC error, never a defaulted header.
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_block_header(&"ab".repeat(32)).await,
+            Err(RpcError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn block_header_rejects_a_wrong_length_hash_at_the_boundary() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        for bad in [&"ab".repeat(31), &"ab".repeat(33), "xyz"] {
+            assert!(matches!(
+                node.get_block_header(bad).await,
+                Err(RpcError::InvalidParams(_))
+            ));
+        }
     }
 
     #[tokio::test]

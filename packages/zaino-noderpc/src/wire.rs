@@ -8,8 +8,10 @@ pub mod params;
 pub mod response;
 
 use zaino_address::{UnifiedReceivers, ValidatedAddress, ZValidatedAddress};
+use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
+use zaino_primitives::types::BlockHash;
 use zaino_primitives::types::TransactionId;
 use zaino_primitives::types::{
     BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, ValuePoolBalance,
@@ -17,9 +19,9 @@ use zaino_primitives::types::{
 
 use crate::error::RpcError;
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltaEntry, BlockchainInfoResponse, NetworkUpgradeResponse,
-    TipConsensusResponse, UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse,
-    ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltaEntry, BlockHeaderResponse, BlockchainInfoResponse,
+    NetworkUpgradeResponse, TipConsensusResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -51,6 +53,14 @@ pub(crate) fn txid_from_hex(s: &str) -> Result<TransactionId, RpcError> {
         .try_into()
         .map_err(|_| RpcError::InvalidParams("txid must be 32 bytes".into()))?;
     Ok(TransactionId::from(arr))
+}
+
+/// Decode a 32-byte block hash (wire -> domain input validation).
+pub(crate) fn blockhash_from_hex(s: &str) -> Result<BlockHash, RpcError> {
+    let arr: [u8; 32] = bytes_from_hex(s)?
+        .try_into()
+        .map_err(|_| RpcError::InvalidParams("block hash must be 32 bytes".into()))?;
+    Ok(BlockHash::from(arr))
 }
 
 /// Lowercase hex of an arbitrary-length byte payload (domain -> wire).
@@ -165,6 +175,34 @@ pub(crate) fn blockchain_info_to_wire(info: BlockchainInfo) -> BlockchainInfoRes
     }
 }
 
+/// Render a verbose block header as the `getblockheader` response
+/// (domain -> wire).
+///
+/// `bits` is the 8-digit hex nBits; the nonce and solution are hex; `chainwork`
+/// is 64-character big-endian hex, omitted when the validator does not track it.
+/// `block_commitments` is not emitted: the explorer's blocks-by-date list, the
+/// sole consumer of this method, does not render it.
+pub(crate) fn block_header_to_wire(header: BlockHeaderVerbose) -> BlockHeaderResponse {
+    BlockHeaderResponse {
+        hash: to_hex(header.hash.into()),
+        confirmations: header.confirmations,
+        height: header.height.into(),
+        version: header.version,
+        merkle_root: to_hex(header.merkle_root.into()),
+        final_sapling_root: header.final_sapling_root.map(|root| to_hex(root.into())),
+        time: header.time,
+        nonce: to_hex(header.nonce),
+        solution: bytes_to_hex(&header.solution),
+        bits: format!("{:08x}", header.bits.as_bits()),
+        difficulty: header.difficulty,
+        chainwork: header
+            .chainwork
+            .map(|work| bytes_to_hex(&work.to_be_bytes())),
+        previous_block_hash: header.previous_block_hash.map(|hash| to_hex(hash.into())),
+        next_block_hash: header.next_block_hash.map(|hash| to_hex(hash.into())),
+    }
+}
+
 /// Render a transparent-address validation for the wire (domain -> wire).
 /// Exhaustive by design — a new variant should force a decision here.
 pub(crate) fn validated_to_wire(validated: ValidatedAddress) -> ValidateAddressResponse {
@@ -233,13 +271,16 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
 
 #[cfg(test)]
 mod tests {
-    use super::{blockchain_info_to_wire, validated_to_wire, z_validated_to_wire};
+    use super::{
+        block_header_to_wire, blockchain_info_to_wire, validated_to_wire, z_validated_to_wire,
+    };
     use serde_json::Value;
     use zaino_address::{ValidatedAddress, ZValidatedAddress};
+    use zaino_primitives::types::rpc::BlockHeaderVerbose;
     use zaino_primitives::types::{
-        AbsoluteChainWork, BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds,
-        Height, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, ValuePoolBalance,
-        Zatoshis,
+        AbsoluteChainWork, BlockHash, BlockchainInfo, CompactDifficulty, ConsensusBranchId,
+        ConsensusBranchIds, Height, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis,
+        ValuePoolBalance, Zatoshis,
     };
 
     /// A chain-info aggregate with a distinguishable, non-zero value in every
@@ -424,6 +465,149 @@ mod tests {
                 .contains_key("chainwork"),
             "untracked chainwork is omitted, not rendered as zero or null"
         );
+    }
+
+    /// A verbose block header with a distinguishable, non-zero value in every
+    /// field, so a golden assertion fails if any field is dropped, defaulted or
+    /// mis-mapped. `block_commitments` is set so the test proves it is *not*
+    /// emitted.
+    fn scripted_header() -> BlockHeaderVerbose {
+        let mut work_bytes = [0u8; 32];
+        work_bytes[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        BlockHeaderVerbose {
+            hash: BlockHash::from([0x11; 32]),
+            confirmations: 7,
+            height: Height::try_from(2_468).expect("valid height"),
+            version: 4,
+            merkle_root: [0x22; 32].into(),
+            final_sapling_root: Some([0x33; 32].into()),
+            time: 1_600_000_000,
+            nonce: [0x44; 32],
+            solution: vec![0xaa, 0xbb, 0xcc],
+            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+            difficulty: 123.5,
+            block_commitments: Some([0x55; 32].into()),
+            chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+            previous_block_hash: Some(BlockHash::from([0x66; 32])),
+            next_block_hash: Some(BlockHash::from([0x77; 32])),
+        }
+    }
+
+    /// The full golden shape of `getblockheader`: the exact sorted key set under
+    /// zcashd's spellings, a typed value per key, `bits` as 8-digit hex, the
+    /// nonce and solution as hex, and `chainwork` as 64-character big-endian hex.
+    /// `blockcommitments` is absent: the explorer's blocks-by-date list does not
+    /// render it, so the conversion does not emit it even though the domain
+    /// carries it (a deliberate omission, not a bug).
+    #[test]
+    fn block_header_response_golden_shape() {
+        let json = serde_json::to_value(block_header_to_wire(scripted_header())).expect("serialize");
+        assert_eq!(
+            sorted_keys(&json),
+            [
+                "bits",
+                "chainwork",
+                "confirmations",
+                "difficulty",
+                "finalsaplingroot",
+                "hash",
+                "height",
+                "merkleroot",
+                "nextblockhash",
+                "nonce",
+                "previousblockhash",
+                "solution",
+                "time",
+                "version",
+            ]
+        );
+        let obj = json.as_object().expect("a JSON object");
+        assert_eq!(
+            obj.get("hash").and_then(Value::as_str),
+            Some("11".repeat(32).as_str())
+        );
+        assert_eq!(obj.get("confirmations").and_then(Value::as_i64), Some(7));
+        assert_eq!(obj.get("height").and_then(Value::as_u64), Some(2_468));
+        assert_eq!(obj.get("version").and_then(Value::as_u64), Some(4));
+        assert_eq!(
+            obj.get("merkleroot").and_then(Value::as_str),
+            Some("22".repeat(32).as_str())
+        );
+        assert_eq!(
+            obj.get("finalsaplingroot").and_then(Value::as_str),
+            Some("33".repeat(32).as_str())
+        );
+        assert_eq!(
+            obj.get("time").and_then(Value::as_u64),
+            Some(1_600_000_000)
+        );
+        assert_eq!(
+            obj.get("nonce").and_then(Value::as_str),
+            Some("44".repeat(32).as_str())
+        );
+        assert_eq!(obj.get("solution").and_then(Value::as_str), Some("aabbcc"));
+        // nBits as 8-digit hex, not an integer.
+        assert_eq!(obj.get("bits").and_then(Value::as_str), Some("1f07ffff"));
+        assert_eq!(obj.get("difficulty").and_then(Value::as_f64), Some(123.5));
+        // 64-character big-endian hex, trailing deadbeef zero-padded.
+        assert_eq!(
+            obj.get("chainwork").and_then(Value::as_str),
+            Some(format!("{}deadbeef", "0".repeat(56)).as_str())
+        );
+        assert_eq!(
+            obj.get("previousblockhash").and_then(Value::as_str),
+            Some("66".repeat(32).as_str())
+        );
+        assert_eq!(
+            obj.get("nextblockhash").and_then(Value::as_str),
+            Some("77".repeat(32).as_str())
+        );
+        // The domain carries block_commitments, but this method does not emit it.
+        assert!(
+            !obj.contains_key("blockcommitments"),
+            "block commitments are deliberately not rendered by getblockheader"
+        );
+    }
+
+    /// Genesis/tip/pre-Sapling/Zebra case: the four optional fields are absent,
+    /// not `null`. Pins each `skip_serializing_if`.
+    #[test]
+    fn block_header_response_omits_absent_optionals() {
+        let header = BlockHeaderVerbose {
+            final_sapling_root: None,
+            chainwork: None,
+            previous_block_hash: None,
+            next_block_hash: None,
+            ..scripted_header()
+        };
+        let json = serde_json::to_value(block_header_to_wire(header)).expect("serialize");
+        assert_eq!(
+            sorted_keys(&json),
+            [
+                "bits",
+                "confirmations",
+                "difficulty",
+                "hash",
+                "height",
+                "merkleroot",
+                "nonce",
+                "solution",
+                "time",
+                "version",
+            ]
+        );
+        let obj = json.as_object().expect("a JSON object");
+        for absent in [
+            "finalsaplingroot",
+            "chainwork",
+            "previousblockhash",
+            "nextblockhash",
+        ] {
+            assert!(
+                !obj.contains_key(absent),
+                "an absent {absent} is omitted, not rendered as null"
+            );
+        }
     }
 
     /// A script-hash transparent address renders `isscript: true` with the
