@@ -2197,7 +2197,7 @@ without method noise, and so branches rebasing onto it get one clear conflict.
 
 **Interfaces:**
 - Consumes: `zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo}`,
-  `zaino_primitives::types::{Difficulty, Height}`.
+  `zaino_primitives::types::Height`.
 - Produces:
   - `zaino_service::{NodeStatusRead, NodeStatusError}` with `node_info`,
     `mining_info`, `peer_info`, `network_sol_ps`
@@ -2446,10 +2446,10 @@ follow."
 
 **Interfaces:**
 - Consumes: `zaino_source::{GetNodeInfo, GetMiningInfo, GetPeerInfo,
-  GetNetworkSolPs, GetDifficulty}` and their `*Error` types;
-  `zaino_service::NodeStatusRead`.
+  GetNetworkSolPs}` and their `*Error` types;
+  `zaino_service::{NodeStatusRead, NodeStatusError}`.
 - Produces: `PassthroughProvider::{node_info, mining_info, peer_info,
-  network_sol_ps, difficulty}`; `impl NodeStatusRead for Engine<..>`.
+  network_sol_ps}`; `impl NodeStatusRead for Engine<..>`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2495,33 +2495,35 @@ impl<Src> PassthroughProvider<Src>
 where
     Src: GetNodeInfo,
 {
-    /// The validator's self-description, live. A validator that is not ready is
-    /// transient: it becomes ready.
-    pub(crate) async fn node_info(&self) -> Result<NodeInfo, Transient> {
+    /// The validator's self-description, live.
+    ///
+    /// A validator that is not ready becomes ready, so that is its own arm. An
+    /// unreachable one carries the source failure as a `#[source]` cause rather
+    /// than a formatted message, so the chain survives to the wire boundary.
+    pub(crate) async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
         match self.source.get_node_info().await {
             Ok(info) => Ok(info),
             Err(SourceError::Domain(GetNodeInfoError::NotReady)) => {
-                Err(Transient::new("validator not ready"))
+                Err(NodeStatusError::NotReady)
             }
-            Err(SourceError::NonDomain(cause)) => {
-                Err(Transient::new(format!("validator unavailable: {cause}")))
-            }
-            Err(SourceError::Unavailable(cause)) => {
-                Err(Transient::new(format!("validator unavailable: {cause}")))
-            }
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
         }
     }
 }
 ```
 
-Write `mining_info`, `peer_info`, `network_sol_ps` and `difficulty` the same
-way. `network_sol_ps` forwards its `blocks` and `height` arguments. Read each
-port's `*Error` enum in `packages/zaino-source/src/get_*.rs` and write one arm
-per variant — no wildcard. Extend the file's imports with the five port traits,
-their error types, and `NodeInfo`/`MiningInfo`/`PeerInfo`/`Difficulty`/`Height`.
+Write `mining_info`, `peer_info` and `network_sol_ps` the same way.
+`network_sol_ps` forwards its `blocks` and `height` arguments. Read each port's
+`*Error` enum in `packages/zaino-source/src/get_*.rs` and write one arm per
+variant — no wildcard. Extend the file's imports with the four port traits,
+their error types, `NodeStatusError`, and
+`NodeInfo`/`MiningInfo`/`PeerInfo`/`Height`.
 
-Use `Transient`'s real constructor from
-`packages/zaino-service/src/error.rs`.
+`SourceError::NonDomain` and `SourceError::Unavailable` both carry a typed
+cause, so both go through `NodeStatusError::unreachable`, which boxes it as a
+`#[source]`. Do not `format!` either into a string — that is the defect this
+port exists to avoid.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -2538,26 +2540,23 @@ was, add:
 /// no index backs any of them.
 impl<F, N, Src, R> NodeStatusRead for Engine<F, N, Src, R>
 where
-    Src: GetNodeInfo + GetMiningInfo + GetPeerInfo + GetNetworkSolPs + GetDifficulty,
+    Src: GetNodeInfo + GetMiningInfo + GetPeerInfo + GetNetworkSolPs,
 {
-    async fn node_info(&self) -> Result<NodeInfo, Transient> {
+    async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
         self.passthrough().node_info().await
     }
-    async fn mining_info(&self) -> Result<MiningInfo, Transient> {
+    async fn mining_info(&self) -> Result<MiningInfo, NodeStatusError> {
         self.passthrough().mining_info().await
     }
-    async fn peer_info(&self) -> Result<Vec<PeerInfo>, Transient> {
+    async fn peer_info(&self) -> Result<Vec<PeerInfo>, NodeStatusError> {
         self.passthrough().peer_info().await
     }
     async fn network_sol_ps(
         &self,
         blocks: Option<u32>,
         height: Option<Height>,
-    ) -> Result<u64, Transient> {
+    ) -> Result<u64, NodeStatusError> {
         self.passthrough().network_sol_ps(blocks, height).await
-    }
-    async fn difficulty(&self) -> Result<Difficulty, Transient> {
-        self.passthrough().difficulty().await
     }
 }
 ```
@@ -2625,8 +2624,28 @@ Append to `lib.rs`'s `mod tests`:
         let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(matches!(
             node.get_info().await,
-            Err(RpcError::Unavailable(_))
+            Err(RpcError::NodeStatus(_))
         ));
+    }
+
+    /// Review Focus 1 at the wire boundary: a node-status failure must render
+    /// as an internal error, never as a success with default values. The
+    /// explorer's warmers cache successes and ignore errors, so a defaulted
+    /// `Ok` would poison their cache for 15 seconds.
+    #[test]
+    fn node_status_failures_render_as_internal_errors() {
+        use jsonrpsee::types::ErrorCode;
+        for err in [
+            RpcError::NodeStatus(zaino_service::NodeStatusError::NotReady),
+            RpcError::NodeStatus(zaino_service::NodeStatusError::unreachable(
+                std::io::Error::other("unreachable"),
+            )),
+        ] {
+            assert_eq!(
+                crate::rpc::to_error_object(err).code(),
+                ErrorCode::InternalError.code()
+            );
+        }
     }
 ```
 
@@ -2731,8 +2750,34 @@ Add to `impl<S: NodeRpcService> NodeRpc<S>`:
 Add `use zaino_service::NodeStatusRead;` and import the three conversions and
 three response types.
 
-`RpcError::Unavailable` already has `#[from] Transient`, so `?` works on all
-four.
+`NodeStatusRead` returns `NodeStatusError`, not `Transient`, so add a variant
+for it in `packages/zaino-noderpc/src/error.rs`:
+
+```rust
+    /// A node-status read failed.
+    #[error(transparent)]
+    NodeStatus(#[from] NodeStatusError),
+```
+
+and one `to_error_object` arm per `NodeStatusError` variant. **Both are internal
+errors**, and that is the point of Review Focus 1: `NotReady` means the
+validator will answer shortly, and `Unreachable` means it cannot be reached —
+neither is the caller's fault, and neither may render as a success. A warmer
+that caches successes and ignores errors would otherwise cache a default value.
+
+```rust
+        RpcError::NodeStatus(e @ NodeStatusError::NotReady) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+        RpcError::NodeStatus(e @ NodeStatusError::Unreachable { .. }) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+```
+
+`e.to_string()` here renders only this error's own `Display`, at the JSON-RPC
+wire boundary where the protocol has no Rust types. The `#[source]` cause stays
+attached to the error value for anything that inspects the chain; do not
+flatten it into the message.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
