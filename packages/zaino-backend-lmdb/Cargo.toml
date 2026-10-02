@@ -11,6 +11,9 @@ description = "LMDB backend adapter implementing zaino-persistence traits."
 [dependencies]
 zaino-persistence = { path = "../zaino-persistence" }
 lmdb.workspace = true
+# The cursor-op constants (`MDB_FIRST`/`MDB_NEXT`) `scan` steps with: the `lmdb`
+# crate keeps its own `lmdb-sys` alias private. Already a workspace dependency.
+lmdb-sys.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

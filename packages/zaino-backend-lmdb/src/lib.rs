@@ -201,6 +201,16 @@ impl BackendReader for LmdbReader {
         }
     }
 
+    /// Every entry in `namespace`, in the backend's key order.
+    ///
+    /// The cursor is stepped explicitly rather than through `Cursor::iter`.
+    /// That iterator reports *every* `mdb_cursor_get` failure as the end of the
+    /// sequence, guarded only by a `debug_assert!` — so in a release build a
+    /// mid-scan `MDB_CORRUPTED` or `MDB_PAGE_NOTFOUND` would end iteration and
+    /// return `Ok` holding part of the namespace, which a caller cannot
+    /// distinguish from the whole of it. Stepping here keeps "the sequence
+    /// ended" (`MDB_NOTFOUND`) and "the read failed" as different outcomes, so
+    /// a partial scan is an error and never a short success.
     fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError> {
         let db = self.resolve_db(namespace)?;
         let txn = self
@@ -208,16 +218,24 @@ impl BackendReader for LmdbReader {
             .begin_ro_txn()
             .map_err(|e| read_error("begin read transaction", e))?;
 
-        let mut cursor = txn
+        let cursor = txn
             .open_ro_cursor(db)
             .map_err(|e| read_error("open cursor", e))?;
 
-        let entries: Vec<(RawKey, RawValue)> = cursor
-            .iter()
-            .map(|(k, v)| (k.to_vec(), v.to_vec()))
-            .collect();
-
-        Ok(entries)
+        let mut entries = Vec::new();
+        let mut step = lmdb_sys::MDB_FIRST;
+        loop {
+            match cursor.get(None, None, step) {
+                Ok((key, value)) => {
+                    let key = key.expect("MDB_FIRST/MDB_NEXT always yield a key");
+                    entries.push((key.to_vec(), value.to_vec()));
+                }
+                // The one non-failure: the cursor ran past the last entry.
+                Err(lmdb::Error::NotFound) => return Ok(entries),
+                Err(e) => return Err(read_error("scan", e)),
+            }
+            step = lmdb_sys::MDB_NEXT;
+        }
     }
 }
 
@@ -304,6 +322,46 @@ mod tests {
         let reader = backend.reader().expect("reader");
         let val = reader.get(ns, b"hello").expect("get").expect("exists");
         assert_eq!(val, b"world");
+    }
+
+    /// `scan` yields entries in key order, whatever order they were written
+    /// in — the property a height-keyed index relies on, and the reason keys
+    /// are encoded big-endian.
+    #[test]
+    fn scan_yields_entries_in_key_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ns = Namespace::new("order_ns");
+        let backend = LmdbBackend::open(test_config(tmp.path(), vec![ns])).expect("open");
+
+        // Written back to front, so insertion order cannot explain the result.
+        let keys: Vec<Vec<u8>> = [3u32, 1, 2, 0]
+            .iter()
+            .map(|n| n.to_be_bytes().to_vec())
+            .collect();
+        let mut writer = backend.writer().expect("writer");
+        writer
+            .commit(
+                keys.iter()
+                    .map(|key| WriteOp::Put {
+                        namespace: ns,
+                        key: key.clone(),
+                        value: key.clone(),
+                    })
+                    .collect(),
+            )
+            .expect("commit");
+
+        let reader = backend.reader().expect("reader");
+        let scanned: Vec<Vec<u8>> = reader
+            .scan(ns)
+            .expect("scan")
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+
+        let mut expected = keys;
+        expected.sort();
+        assert_eq!(scanned, expected);
     }
 
     #[test]
