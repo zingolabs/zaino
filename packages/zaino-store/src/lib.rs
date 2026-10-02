@@ -249,23 +249,13 @@ where
                 .filter_map(|height| Height::try_from(height).ok())
                 .filter_map(|height| {
                     read_compact_block::<B>(&reader, height)
-                        .map_err(block_read_to_read_error)
+                        .map_err(Into::into)
                         .transpose()
                 })
                 .collect(),
             Err(e) => vec![Err(ReadError::Fatal(format!("open reader: {e}")))],
         };
         Box::pin(futures::stream::iter(blocks))
-    }
-}
-
-/// Map a [`BlockReadError`] onto the generic [`ReadError`] used by streamed
-/// reads, preserving the transient/fatal distinction.
-fn block_read_to_read_error(error: BlockReadError) -> ReadError {
-    match error {
-        BlockReadError::NotServiceable(capability) => ReadError::NotServiceable(capability),
-        BlockReadError::Transient(message) => ReadError::Transient(message),
-        BlockReadError::Fatal(message) => ReadError::Fatal(message),
     }
 }
 
