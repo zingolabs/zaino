@@ -19,10 +19,10 @@ use std::sync::{Arc, Mutex};
 use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::{
-    Answerable, Capability, ForkPoint, Locator, MempoolTx, NodeQuery, NodeQueryAnswer,
-    ReportedUpgrade, ServiceabilityManifest, ServiceableRange, SpendStatus, TxStatus,
+    Answerable, Capability, ForkPoint, Locator, MempoolTx, ReportedUpgrade, ServiceabilityManifest,
+    ServiceableRange, SpendStatus, TxStatus,
 };
-use zaino_primitives::types::rpc::BlockHeaderVerbose;
+use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds,
@@ -38,9 +38,9 @@ use crate::error::{
 use crate::{
     AddressRead, BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead,
     ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile, IndexerService,
-    LocatedTransactionView, MempoolContent, MempoolSubscribe, NodeQueryRelay, RawTransactionRead,
-    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
-    TransactionRead, TransactionViewRead, TreestateRead,
+    LocatedTransactionView, MempoolContent, MempoolSubscribe, NodeStatusError, NodeStatusRead,
+    RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot,
+    TipSubscribe, TransactionRead, TransactionViewRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -199,9 +199,24 @@ impl ReportedUpgrades for MockIndexerService {
     }
 }
 
-impl NodeQueryRelay for MockIndexerService {
-    async fn relay_node_query(&self, query: NodeQuery) -> Result<NodeQueryAnswer, Transient> {
-        Ok(NodeQueryAnswer(format!("mock passthrough: {query:?}")))
+impl NodeStatusRead for MockIndexerService {
+    async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
+        // The mock has no validator behind it, so "not ready" is the honest
+        // answer — and it is the arm the adapter must surface as retryable.
+        Err(NodeStatusError::NotReady)
+    }
+    async fn mining_info(&self) -> Result<MiningInfo, NodeStatusError> {
+        Err(NodeStatusError::NotReady)
+    }
+    async fn peer_info(&self) -> Result<Vec<PeerInfo>, NodeStatusError> {
+        Ok(Vec::new())
+    }
+    async fn network_sol_ps(
+        &self,
+        _blocks: Option<u32>,
+        _height: Option<Height>,
+    ) -> Result<u64, NodeStatusError> {
+        Ok(0)
     }
 }
 
@@ -484,6 +499,18 @@ mod tests {
     fn mock_satisfies_every_use_case() {
         fn assert_services<T: FullWalletService + LightWalletService + NodeRpcService>() {}
         assert_services::<MockIndexerService>();
+    }
+
+    /// Every capability has a serviceability answer, including the node-status
+    /// passthrough bundle.
+    #[test]
+    fn node_status_is_a_capability() {
+        use crate::{Answerable, Capability, Serviceable};
+        let engine = MockIndexerService::new(MockChain::default());
+        assert_eq!(
+            engine.serviceability().get(Capability::NodeStatus),
+            Answerable::NotYet
+        );
     }
 
     fn block_id(height: u32, tag: u8) -> BlockRef {

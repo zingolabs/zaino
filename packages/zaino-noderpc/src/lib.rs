@@ -24,7 +24,6 @@ use zaino_primitives::types::{Height, TransactionLocation, TransparentAddress};
 use zaino_service::error::ReadError;
 use zaino_service::queries;
 use zaino_service::BlockVerboseRead;
-use zaino_service::NodeQuery;
 use zaino_service::RawTransactionRead;
 use zaino_service::TransactionViewRead;
 use zaino_service::{BlockRead, ChainInfoRead, ChainSegment, NodeRpcService};
@@ -271,13 +270,6 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(block_header_to_wire(header))
     }
 
-    /// `getmininginfo`: not indexed — relayed to the validator through the
-    /// passthrough seam and returned opaque.
-    pub async fn get_mining_info(&self) -> Result<String, RpcError> {
-        let answer = self.engine.relay_node_query(NodeQuery::MiningInfo).await?;
-        Ok(answer.0)
-    }
-
     /// `getaddressbalance`: the transparent balance of the requested addresses,
     /// summed. zcashd accepts a list and returns one total, so a multi-address
     /// request sums rather than returning a per-address breakdown.
@@ -451,7 +443,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chain_info_reads_and_mining_info_passes_through() {
+    async fn chain_info_reads_render_the_scripted_aggregate() {
         use zaino_primitives::types::{
             BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, ValuePoolBalance, Zatoshis,
         };
@@ -508,12 +500,6 @@ mod tests {
         assert_eq!(info.value_pools.len(), 1);
         assert_eq!(info.value_pools[0].id, "orchard");
         assert_eq!(info.value_pools[0].chain_value_zat, 500);
-        // Mining info: not indexed — relayed opaque through the passthrough seam.
-        assert!(node
-            .get_mining_info()
-            .await
-            .expect("mining info")
-            .contains("MiningInfo"));
     }
 
     fn scripted_block_and_verbose() -> (

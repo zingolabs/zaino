@@ -114,6 +114,7 @@ pub trait Routing: Send + Sync + 'static {
             Capability::RawTransaction
             | Capability::Mempool
             | Capability::Broadcast
+            | Capability::NodeStatus
             | Capability::ReportedUpgrades => PlacementKind::Passthrough,
         }
     }
@@ -158,6 +159,7 @@ mod tests {
                 | Capability::RawTransaction
                 | Capability::Mempool
                 | Capability::Broadcast
+                | Capability::NodeStatus
                 | Capability::ReportedUpgrades => {
                     assert_eq!(placement, PlacementKind::Passthrough)
                 }

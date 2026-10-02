@@ -6,9 +6,7 @@ use std::future::Future;
 
 use futures::stream::BoxStream;
 
-use crate::{
-    MempoolTx, NodeQuery, NodeQueryAnswer, ReportedUpgrade, ServiceabilityManifest, TipEvent,
-};
+use crate::{MempoolTx, ReportedUpgrade, ServiceabilityManifest, TipEvent};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 
 use crate::bundle::ChainSegment;
@@ -82,14 +80,4 @@ pub trait ReportedUpgrades: Send + Sync {
     fn reported_upgrades(
         &self,
     ) -> impl Future<Output = Result<Vec<ReportedUpgrade>, ReadError>> + Send;
-}
-
-/// Relay a node-operator query Zaino does not index (mining/peers/txoutset) to
-/// the validator. A control, not a read: the answer comes from the source, not a
-/// pinned snapshot, and is returned opaque. The node-rpc use case's delta.
-pub trait NodeQueryRelay: Send + Sync {
-    fn relay_node_query(
-        &self,
-        query: NodeQuery,
-    ) -> impl Future<Output = Result<NodeQueryAnswer, Transient>> + Send;
 }

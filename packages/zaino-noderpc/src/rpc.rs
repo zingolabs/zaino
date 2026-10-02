@@ -53,9 +53,6 @@ pub trait NodeRpcApi {
     #[method(name = "getblockchaininfo")]
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned>;
 
-    #[method(name = "getmininginfo")]
-    async fn mining_info(&self) -> Result<String, ErrorObjectOwned>;
-
     #[method(name = "getaddressbalance")]
     async fn address_balance(
         &self,
@@ -123,9 +120,6 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned> {
         self.get_blockchain_info().await.map_err(to_error_object)
-    }
-    async fn mining_info(&self) -> Result<String, ErrorObjectOwned> {
-        self.get_mining_info().await.map_err(to_error_object)
     }
     async fn address_balance(
         &self,

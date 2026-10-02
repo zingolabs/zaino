@@ -147,14 +147,15 @@ use futures::stream::{self, BoxStream, StreamExt};
 use crate::chain_view::ChainTier;
 use crate::chain_view::ChainView;
 use crate::routing::{PlacementKind, Routing};
+use zaino_primitives::types::Height;
+use zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::{
-    Answerable, MempoolTx, NodeQuery, NodeQueryAnswer, ReportedUpgrade, ServiceabilityManifest,
-    TipEvent,
+    Answerable, MempoolTx, NodeStatusError, ReportedUpgrade, ServiceabilityManifest, TipEvent,
 };
 use zaino_service::{
-    Broadcast, IndexerService, MempoolContent, MempoolSubscribe, NodeQueryRelay, ReportedUpgrades,
+    Broadcast, IndexerService, MempoolContent, MempoolSubscribe, NodeStatusRead, ReportedUpgrades,
     Serviceable, TakeSnapshot, TipSubscribe,
 };
 use zaino_source::{
@@ -362,16 +363,32 @@ where
     }
 }
 
-impl<Fs, Nfs, Src, R> NodeQueryRelay for Engine<Fs, Nfs, Src, R>
+/// Staged over the typed port: the bound change lands here, the passthrough
+/// wiring in the commit that follows. Until then every read answers
+/// [`NodeStatusError::NotReady`], the same "not wired yet" placeholder the opaque
+/// relay carried before it.
+impl<Fs, Nfs, Src, R> NodeStatusRead for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
     Src: Send + Sync + 'static,
     R: Routing,
 {
-    async fn relay_node_query(&self, _query: NodeQuery) -> Result<NodeQueryAnswer, Transient> {
-        // Follow-up: relay to the validator.
-        Err(Transient("passthrough not wired yet".into()))
+    async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
+        Err(NodeStatusError::NotReady)
+    }
+    async fn mining_info(&self) -> Result<MiningInfo, NodeStatusError> {
+        Err(NodeStatusError::NotReady)
+    }
+    async fn peer_info(&self) -> Result<Vec<PeerInfo>, NodeStatusError> {
+        Err(NodeStatusError::NotReady)
+    }
+    async fn network_sol_ps(
+        &self,
+        _blocks: Option<u32>,
+        _height: Option<Height>,
+    ) -> Result<u64, NodeStatusError> {
+        Err(NodeStatusError::NotReady)
     }
 }
 

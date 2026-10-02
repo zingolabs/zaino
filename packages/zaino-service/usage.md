@@ -64,6 +64,16 @@ answer (`Ok(None)`), while a miss on a *prevout* is a source inconsistency —
 `Unavailable` keeps the transport cause with `#[source]`, and
 `PrevoutIndexOutOfRange` is its own variant for an out-of-range `prev_index`.
 
+`NodeRpcService` also demands `NodeStatusRead`, the node-operator status control
+behind `getinfo`, `getmininginfo`, `getpeerinfo` and `getnetworksolps`. These are
+facts about the validator, not the chain, so Zaino indexes none of them and all
+four are passthrough — a single `Capability::NodeStatus`, always `Live`. The
+reads are typed (`NodeInfo`, `MiningInfo`, `Vec<PeerInfo>`, `u64`), not an opaque
+string, so a serving adapter renders them into its own wire shape. Their failure
+is the typed `NodeStatusError`: `NotReady` for a validator still starting (the
+same request succeeds shortly) versus `Unreachable`, which keeps the source-layer
+cause as a `#[source]` rather than flattening it to a message.
+
 `Serves<U>` carries a use case's demand as a bound a generic wiring names
 without naming the service trait; one blanket impl per use case forwards to
 its service. A use case says nothing about how it is served: routing and the

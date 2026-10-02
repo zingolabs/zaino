@@ -46,6 +46,7 @@ pub fn capability_indexes(capability: Capability) -> &'static [IndexId] {
         | Capability::SubtreeRoots
         | Capability::Mempool
         | Capability::Broadcast
+        | Capability::NodeStatus
         | Capability::ReportedUpgrades => &[],
     }
 }

@@ -1,13 +1,14 @@
 //! The node-RPC / explorer serving use case.
 
-use crate::controls::{Broadcast, MempoolSubscribe, NodeQueryRelay, TakeSnapshot, TipSubscribe};
+use crate::controls::{Broadcast, MempoolSubscribe, TakeSnapshot, TipSubscribe};
+use crate::node_status::NodeStatusRead;
 use crate::read_sets::NodeRpcReads;
 
 use super::{Serves, UseCase};
 
 /// Node-RPC / explorer serving: raw blocks, pool-decomposed transactions and
 /// spend lookups the wallet-shaped consumers never need, the chain-info
-/// aggregate, and the node-operator queries relayed to the validator.
+/// aggregate, and the node-operator status read from the validator.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeRpc;
 
@@ -16,9 +17,9 @@ impl UseCase for NodeRpc {
 }
 
 /// The node-RPC service: the read-set over a pin, plus broadcast, the
-/// subscriptions, and the node-query relay (mining/peers/txoutset).
+/// subscriptions, and the typed node-status read (info/mining/peers/solps).
 pub trait NodeRpcService:
-    TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe + NodeQueryRelay
+    TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe + NodeStatusRead
 {
 }
 impl<T> NodeRpcService for T where
@@ -26,7 +27,7 @@ impl<T> NodeRpcService for T where
         + Broadcast
         + MempoolSubscribe
         + TipSubscribe
-        + NodeQueryRelay
+        + NodeStatusRead
 {
 }
 

@@ -28,6 +28,8 @@ pub enum Capability {
     Mempool,
     Broadcast,
     ReportedUpgrades,
+    /// Node-operator status — served by the validator (no local index).
+    NodeStatus,
 }
 
 /// How far one capability can be answered right now.

@@ -24,7 +24,7 @@ mod controls;
 pub mod error;
 mod events;
 mod locator;
-mod node_query;
+mod node_status;
 pub mod queries;
 pub mod read_sets;
 mod reads;
@@ -40,12 +40,12 @@ pub mod testing;
 pub use bundle::{ChainSegment, IndexerService, ServiceableRange, Snapshot};
 pub use capability::{Answerable, Capability, ServiceabilityManifest};
 pub use controls::{
-    Broadcast, MempoolContent, MempoolSubscribe, NodeQueryRelay, ReportedUpgrades, Serviceable,
-    TakeSnapshot, TipSubscribe,
+    Broadcast, MempoolContent, MempoolSubscribe, ReportedUpgrades, Serviceable, TakeSnapshot,
+    TipSubscribe,
 };
 pub use events::{MempoolTx, TipEvent};
 pub use locator::{ForkPoint, Locator};
-pub use node_query::{NodeQuery, NodeQueryAnswer};
+pub use node_status::{NodeStatusError, NodeStatusRead};
 pub use read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads, WalletReadCore};
 pub use reads::{
     AddressRead, BlockRead, BlockTransactionViews, BlockVerboseRead, ChainInfoRead,
