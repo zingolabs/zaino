@@ -152,16 +152,17 @@ use zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::{
-    Answerable, MempoolTx, NodeStatusError, ReportedUpgrade, ServiceabilityManifest, TipEvent,
+    Answerable, MempoolEntry, MempoolSummary, MempoolTx, NodeStatusError, ReportedUpgrade,
+    ServiceabilityManifest, TipEvent,
 };
 use zaino_service::{
-    Broadcast, IndexerService, MempoolContent, MempoolSubscribe, NodeStatusRead, ReportedUpgrades,
-    Serviceable, TakeSnapshot, TipSubscribe,
+    Broadcast, IndexerService, MempoolContent, MempoolListing, MempoolSubscribe, NodeStatusRead,
+    ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
 };
 use zaino_source::{
-    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo,
-    GetNetworkSolPs, GetNodeInfo, GetPeerInfo, GetRawMempoolTransaction, GetTreestate,
-    SendRawTransaction,
+    GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolSourceTip, GetMempoolTxids,
+    GetMiningInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo, GetRawMempoolTransaction,
+    GetTreestate, SendRawTransaction,
 };
 
 use crate::passthrough::PassthroughProvider;
@@ -300,6 +301,28 @@ where
     ) -> Result<Option<PreIndexCompactTx>, MempoolReadError> {
         // Same live passthrough; the compact projection is done in the adapter.
         self.passthrough.mempool_compact_transaction(txid).await
+    }
+}
+
+impl<Fs, Nfs, Src, R> MempoolListing for Engine<Fs, Nfs, Src, R>
+where
+    Fs: Send + Sync + 'static,
+    Nfs: Send + Sync + 'static,
+    Src: GetMempoolTxids + GetMempoolMetadata + Send + Sync + 'static,
+    R: Routing,
+{
+    async fn mempool_txids(&self) -> Result<Vec<TransactionId>, MempoolReadError> {
+        // Live passthrough to the mempool's own source — never the finalised
+        // secondary, which holds no mempool. Routing lives in the source adapter.
+        self.passthrough.mempool_txids().await
+    }
+
+    async fn mempool_entries(&self) -> Result<Vec<MempoolEntry>, MempoolReadError> {
+        self.passthrough.mempool_entries().await
+    }
+
+    async fn mempool_summary(&self) -> Result<MempoolSummary, MempoolReadError> {
+        self.passthrough.mempool_summary().await
     }
 }
 

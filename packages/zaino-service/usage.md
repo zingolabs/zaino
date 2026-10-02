@@ -79,6 +79,16 @@ is the typed `NodeStatusError`: `NotReady` for a validator still starting (the
 same request succeeds shortly) versus `Unreachable`, which keeps the source-layer
 cause as a `#[source]` rather than flattening it to a message.
 
+`NodeRpcService` also demands `MempoolListing`, the one-shot mempool read behind
+`getrawmempool` and `getmempoolinfo`. It is distinct from `MempoolSubscribe` (a
+stream a wallet follows): node RPC asks what is in the mempool once and gets an
+answer. Three methods answer three questions — `mempool_txids` (the cheap txid
+listing), `mempool_entries` (per-transaction detail: `MempoolEntry` carries the
+id, size, a typed `Zatoshis` fee, and entry height/time), and `mempool_summary`
+(the count and total bytes behind `getmempoolinfo`). All are live passthrough to
+the source that serves the mempool, never a finalised secondary; a validator with
+no mempool is served as empty, and a transport failure is a `MempoolReadError`.
+
 `Serves<U>` carries a use case's demand as a bound a generic wiring names
 without naming the service trait; one blanket impl per use case forwards to
 its service. A use case says nothing about how it is served: routing and the

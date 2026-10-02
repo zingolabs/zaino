@@ -38,9 +38,10 @@ use crate::error::{
 use crate::{
     AddressRead, BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead,
     ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile, IndexerService,
-    LocatedTransactionView, MempoolContent, MempoolSubscribe, NodeStatusError, NodeStatusRead,
-    RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot,
-    TipSubscribe, TransactionRead, TransactionViewRead, TreestateRead,
+    LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing, MempoolSubscribe,
+    MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead, ReportedUpgrades,
+    Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead,
+    TransactionViewRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -168,6 +169,36 @@ impl TipSubscribe for MockIndexerService {
 impl MempoolSubscribe for MockIndexerService {
     fn subscribe_mempool(&self) -> BoxStream<'_, MempoolTx> {
         stream::iter(self.current().mempool.clone()).boxed()
+    }
+}
+
+impl MempoolListing for MockIndexerService {
+    async fn mempool_txids(&self) -> Result<Vec<TransactionId>, MempoolReadError> {
+        Ok(self.current().mempool.iter().map(|tx| tx.txid).collect())
+    }
+
+    async fn mempool_entries(&self) -> Result<Vec<MempoolEntry>, MempoolReadError> {
+        // The mock's listing carries no serialized size or fee, so both read as
+        // zero; the entry height is the tip each tx is validated against.
+        Ok(self
+            .current()
+            .mempool
+            .iter()
+            .map(|tx| MempoolEntry {
+                txid: tx.txid,
+                size: 0,
+                fee: Zatoshis::ZERO,
+                entry_time: None,
+                entry_height: tx.validated_against.height,
+            })
+            .collect())
+    }
+
+    async fn mempool_summary(&self) -> Result<MempoolSummary, MempoolReadError> {
+        let size = u64::try_from(self.current().mempool.len())
+            .map_err(|_| MempoolReadError::Transient("mempool length overflows u64".into()))?;
+        // The mock's listing carries no bytes, so the honest total is zero.
+        Ok(MempoolSummary { size, bytes: 0 })
     }
 }
 

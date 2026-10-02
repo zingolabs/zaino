@@ -473,6 +473,19 @@ impl crate::OneShotGetMempoolTxids for MockChain {
     }
 }
 
+impl crate::OneShotGetMempoolMetadata for MockChain {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<Vec<crate::MempoolTxMeta>, QueryError<crate::GetMempoolMetadataError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        // The static mock carries no mempool: an empty verbose listing is the
+        // honest answer, matching the txid listing above.
+        Ok(Vec::new())
+    }
+}
+
 impl crate::OneShotGetRawMempoolTransaction for MockChain {
     async fn get_raw_mempool_transaction(
         &self,

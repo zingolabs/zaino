@@ -142,6 +142,41 @@ async fn mempool_compact_transaction_maps_a_missing_txid_to_none() {
     assert!(answer.is_none());
 }
 
+#[tokio::test]
+async fn mempool_listing_over_an_empty_mempool_is_empty_and_consistent() {
+    use zaino_service::MempoolListing;
+    // A validator that exposes an empty mempool is served as empty across all
+    // three questions, and the summary agrees with the listings.
+    let engine = engine_with(MockChain::new());
+    assert!(engine.mempool_txids().await.expect("txids").is_empty());
+    assert!(engine.mempool_entries().await.expect("entries").is_empty());
+    let summary = engine.mempool_summary().await.expect("summary");
+    assert_eq!(summary.size, 0);
+    assert_eq!(summary.bytes, 0);
+}
+
+#[tokio::test]
+async fn an_unreachable_validator_fails_the_mempool_summary() {
+    use zaino_service::MempoolListing;
+    use zaino_source::FailureMode;
+    // Review Focus 1 on the mempool-info path: a transport failure is an error,
+    // never a zero-valued success the explorer's warmer would cache. The policy
+    // is single-attempt so the one injected failure is terminal.
+    let one_attempt = RetryPolicy {
+        max_attempts: 1,
+        ..RetryPolicy::default()
+    };
+    let engine: LightEngine = Engine::new(
+        StubNonFinalised::empty(),
+        StubNonFinalised::empty(),
+        ValidatorClient::new(
+            MockChain::new().fail_next(1, FailureMode::Connection),
+            one_attempt,
+        ),
+    );
+    assert!(engine.mempool_summary().await.is_err());
+}
+
 // The acceptance gate for the full light-wallet read-set: under `LightWalletRouting`
 // the composed engine serves every read `LightWalletService` demands — none
 // reporting itself `NotServiceable`. The per-cap tests below pin each

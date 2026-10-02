@@ -1,6 +1,7 @@
 //! The node-RPC / explorer serving use case.
 
 use crate::controls::{Broadcast, MempoolSubscribe, TakeSnapshot, TipSubscribe};
+use crate::mempool_listing::MempoolListing;
 use crate::node_status::NodeStatusRead;
 use crate::read_sets::NodeRpcReads;
 
@@ -17,15 +18,22 @@ impl UseCase for NodeRpc {
 }
 
 /// The node-RPC service: the read-set over a pin, plus broadcast, the
-/// subscriptions, and the typed node-status read (info/mining/peers/solps).
+/// subscriptions, the one-shot mempool listing (getrawmempool/getmempoolinfo),
+/// and the typed node-status read (info/mining/peers/solps).
 pub trait NodeRpcService:
-    TakeSnapshot<Snapshot: NodeRpcReads> + Broadcast + MempoolSubscribe + TipSubscribe + NodeStatusRead
+    TakeSnapshot<Snapshot: NodeRpcReads>
+    + Broadcast
+    + MempoolSubscribe
+    + MempoolListing
+    + TipSubscribe
+    + NodeStatusRead
 {
 }
 impl<T> NodeRpcService for T where
     T: TakeSnapshot<Snapshot: NodeRpcReads>
         + Broadcast
         + MempoolSubscribe
+        + MempoolListing
         + TipSubscribe
         + NodeStatusRead
 {

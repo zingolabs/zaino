@@ -24,6 +24,7 @@ mod controls;
 pub mod error;
 mod events;
 mod locator;
+mod mempool_listing;
 mod node_status;
 pub mod queries;
 pub mod read_sets;
@@ -45,6 +46,7 @@ pub use controls::{
 };
 pub use events::{MempoolTx, TipEvent};
 pub use locator::{ForkPoint, Locator};
+pub use mempool_listing::{MempoolEntry, MempoolListing, MempoolSummary};
 pub use node_status::{NodeStatusError, NodeStatusRead};
 pub use read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads, WalletReadCore};
 pub use reads::{

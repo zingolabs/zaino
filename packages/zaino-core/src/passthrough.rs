@@ -29,19 +29,20 @@ use zaino_service::error::{
     AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError,
     TransactionViewError, TreestateReadError, TxReadError,
 };
+use zaino_service::{MempoolEntry, MempoolSummary};
 use zaino_source::{
     DecodedTransaction, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
     GetAddressDeltasError, GetAddressTxids, GetAddressTxidsError, GetAddressUtxos,
     GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockDecoded,
     GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockVerbose,
     GetBlockVerboseByHash, GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError,
-    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
-    GetMiningInfo, GetMiningInfoError, GetNetworkSolPs, GetNetworkSolPsError, GetNodeInfo,
-    GetNodeInfoError, GetPeerInfo, GetPeerInfoError, GetRawBlock, GetRawBlockByHash,
-    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
-    GetTransaction, GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError,
-    GetTreestate, GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
-    TransactionResponse,
+    GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolMetadataError, GetMempoolSourceTip,
+    GetMempoolTxids, GetMempoolTxidsError, GetMiningInfo, GetMiningInfoError, GetNetworkSolPs,
+    GetNetworkSolPsError, GetNodeInfo, GetNodeInfoError, GetPeerInfo, GetPeerInfoError,
+    GetRawBlock, GetRawBlockByHash, GetRawMempoolTransaction, GetRawMempoolTransactionError,
+    GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
+    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError,
+    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -564,6 +565,67 @@ where
         match self.source.get_mempool_txids().await {
             Ok(txids) => Ok(txids),
             Err(SourceError::Domain(GetMempoolTxidsError::Unavailable)) => Ok(Vec::new()),
+            Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetMempoolMetadata,
+{
+    /// The verbose mempool listing, live: each transaction with its size, fee,
+    /// entry height and (optional) entry time. A validator that exposes no
+    /// mempool is served as an *empty* mempool, matching
+    /// [`mempool_txids`](Self::mempool_txids); a transport failure is transient.
+    pub(crate) async fn mempool_entries(&self) -> Result<Vec<MempoolEntry>, MempoolReadError> {
+        match self.source.get_mempool_metadata().await {
+            Ok(entries) => Ok(entries
+                .into_iter()
+                .map(|meta| MempoolEntry {
+                    txid: meta.txid,
+                    size: meta.size,
+                    fee: meta.fee,
+                    entry_time: meta.entry_time,
+                    entry_height: meta.entry_height,
+                })
+                .collect()),
+            Err(SourceError::Domain(GetMempoolMetadataError::Unavailable)) => Ok(Vec::new()),
+            Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(MempoolReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+
+    /// Count and total serialized size of the validator's mempool, live, summed
+    /// from the verbose listing. A validator that exposes no mempool is served as
+    /// an *empty* mempool (count and bytes both zero); a transport failure is
+    /// transient.
+    pub(crate) async fn mempool_summary(&self) -> Result<MempoolSummary, MempoolReadError> {
+        match self.source.get_mempool_metadata().await {
+            Ok(entries) => {
+                let size = u64::try_from(entries.len()).map_err(|_| {
+                    MempoolReadError::Transient("mempool length overflows u64".into())
+                })?;
+                let bytes = entries
+                    .iter()
+                    .try_fold(0u64, |acc, meta| acc.checked_add(meta.size))
+                    .ok_or_else(|| {
+                        MempoolReadError::Transient("mempool byte total overflows u64".into())
+                    })?;
+                Ok(MempoolSummary { size, bytes })
+            }
+            Err(SourceError::Domain(GetMempoolMetadataError::Unavailable)) => {
+                Ok(MempoolSummary::default())
+            }
             Err(SourceError::NonDomain(cause)) => Err(MempoolReadError::Transient(format!(
                 "validator unavailable: {cause}"
             ))),
