@@ -612,3 +612,173 @@ mod block_reads {
         }
     }
 }
+
+mod transaction_reads {
+    use super::*;
+    use zaino_primitives::types::Transaction;
+    use zaino_service::error::TxReadError;
+    use zaino_service::{TransactionRead, TxStatus};
+    use zaino_source::FailureMode;
+
+    /// A single-attempt policy: one injected failure is terminal, so an error
+    /// test cannot be masked by the default policy's retries.
+    fn single_attempt() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 1,
+            ..RetryPolicy::default()
+        }
+    }
+
+    /// An engine with an empty local view over `source`, single-attempt, so an
+    /// injected transport failure is terminal.
+    fn engine_single_attempt(source: MockChain) -> LightEngine {
+        Engine::new(
+            StubNonFinalised::empty(),
+            StubNonFinalised::empty(),
+            ValidatorClient::new(source, single_attempt()),
+        )
+    }
+
+    /// A decoded transaction whose txid is `[txid_byte; 32]` and whose pools are
+    /// empty — enough to assert identity without building pool data.
+    fn decoded_tx(txid_byte: u8) -> Transaction {
+        Transaction {
+            txid: TransactionId::from([txid_byte; 32]),
+            transparent: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scripted_txid_returns_the_decoded_transaction() {
+        let engine =
+            engine_with(MockChain::new().respond_transaction_verbose(
+                decoded_tx(7),
+                TransactionLocation::BestChain(height(9)),
+            ));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let tx = TransactionRead::transaction(&snapshot, TransactionId::from([7u8; 32]))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(tx.txid, TransactionId::from([7u8; 32]));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_txid_is_a_served_none_not_an_error() {
+        // No scripted response: the validator answers NotFound, which is a domain
+        // miss, not a transport failure.
+        let engine = engine_with(MockChain::new());
+        let answer = {
+            let snapshot = engine.snapshot().await.expect("snapshot acquired");
+            TransactionRead::transaction(&snapshot, TransactionId::from([3u8; 32]))
+                .await
+                .expect("a domain miss is a served None, not an error")
+        };
+        assert!(answer.is_none());
+    }
+
+    #[tokio::test]
+    async fn transaction_status_maps_best_chain_to_mined() {
+        let engine =
+            engine_with(MockChain::new().respond_transaction_verbose(
+                decoded_tx(1),
+                TransactionLocation::BestChain(height(9)),
+            ));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let status = TransactionRead::transaction_status(&snapshot, TransactionId::from([1u8; 32]))
+            .await
+            .expect("served");
+        assert_eq!(status, TxStatus::Mined(height(9)));
+    }
+
+    #[tokio::test]
+    async fn transaction_status_maps_non_best_chain_to_orphaned() {
+        let engine = engine_with(
+            MockChain::new()
+                .respond_transaction_verbose(decoded_tx(1), TransactionLocation::NonBestChain),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let status = TransactionRead::transaction_status(&snapshot, TransactionId::from([1u8; 32]))
+            .await
+            .expect("served");
+        assert_eq!(status, TxStatus::Orphaned);
+    }
+
+    #[tokio::test]
+    async fn transaction_status_maps_mempool_to_unknown_not_orphaned() {
+        // A mempool transaction is not mined and has not been reorged out.
+        // Collapsing it to Orphaned is how a consumer wrongly concludes a pending
+        // transaction failed, so this is the distinction the test exists to pin.
+        let engine = engine_with(
+            MockChain::new()
+                .respond_transaction_verbose(decoded_tx(1), TransactionLocation::Mempool),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let status = TransactionRead::transaction_status(&snapshot, TransactionId::from([1u8; 32]))
+            .await
+            .expect("served");
+        assert_eq!(status, TxStatus::Unknown);
+        assert_ne!(status, TxStatus::Orphaned);
+    }
+
+    #[tokio::test]
+    async fn transaction_status_of_an_absent_transaction_is_unknown() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let status = TransactionRead::transaction_status(&snapshot, TransactionId::from([3u8; 32]))
+            .await
+            .expect("an absent transaction is a served Unknown, not an error");
+        assert_eq!(status, TxStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_validator_errors_rather_than_missing() {
+        // A scripted transaction is present, but the single-attempt transport
+        // failure is terminal: the read must surface it, not report Ok(None).
+        let engine = engine_single_attempt(
+            MockChain::new()
+                .respond_transaction_verbose(
+                    decoded_tx(5),
+                    TransactionLocation::BestChain(height(5)),
+                )
+                .fail_next(1, FailureMode::Connection),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match TransactionRead::transaction(&snapshot, TransactionId::from([5u8; 32])).await {
+            Err(TxReadError::Transient(_)) => {}
+            other => panic!("an unreachable validator must error, not answer None: {other:?}"),
+        }
+    }
+
+    /// With `BlockRead` and `TransactionRead` both implemented, `EngineSnapshot`
+    /// satisfies `NodeRpcReads`, so a node-RPC-routed engine satisfies
+    /// `NodeRpcService` — the milestone this task gates. Compile-time only.
+    #[test]
+    fn the_engine_satisfies_node_rpc_service() {
+        use crate::routing::{Local, Passthrough, Routing};
+        use zaino_service::NodeRpcService;
+
+        // Node-RPC routing: spend status is local (the validator has no
+        // "who-spent" port), address and treestate pass through.
+        struct NodeRpcRouting;
+        impl Routing for NodeRpcRouting {
+            type Address = Passthrough;
+            type Treestate = Passthrough;
+            type Spend = Local;
+            type TransactionLocation = Passthrough;
+        }
+
+        fn assert_node_rpc<T: NodeRpcService>() {}
+        assert_node_rpc::<
+            Engine<
+                MockIndexerService,
+                MockIndexerService,
+                ValidatorClient<MockChain>,
+                NodeRpcRouting,
+            >,
+        >();
+    }
+}

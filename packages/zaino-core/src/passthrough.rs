@@ -28,13 +28,14 @@ use zaino_service::error::{
     TxReadError,
 };
 use zaino_source::{
-    GetAddressBalance, GetAddressBalanceError, GetAddressDeltas, GetAddressDeltasError,
-    GetAddressTxids, GetAddressTxidsError, GetAddressUtxos, GetAddressUtxosError, GetBlock,
-    GetBlockByHash, GetBlockByHashError, GetBlockError, GetMempoolCompactTransaction,
-    GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction,
-    GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError, GetTransaction,
-    GetTransactionError, GetTreestate, GetTreestateError, SendRawTransaction,
-    SendRawTransactionError, SourceError, TransactionResponse,
+    DecodedTransaction, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
+    GetAddressDeltasError, GetAddressTxids, GetAddressTxidsError, GetAddressUtxos,
+    GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
+    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
+    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
+    GetTransaction, GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError,
+    GetTreestate, GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
+    TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -311,6 +312,35 @@ where
                 location,
             })),
             Err(SourceError::Domain(GetTransactionError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(TxReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(TxReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetTransactionVerbose,
+{
+    /// The transaction decoded into its pool structure, plus where it lives,
+    /// live from the validator. Passthrough: the store holds no transaction
+    /// bytes, and the pool decomposition needs the validator's chain library,
+    /// which this crate must not depend on, so the decoding lives in the source
+    /// adapter. The [`DecodedTransaction::location`] rides along, so a caller
+    /// reporting status and the transaction itself read the same fetch and
+    /// cannot disagree. A missing txid is a domain miss (`Ok(None)`); a transport
+    /// failure is transient, with the cause formatted in.
+    pub(crate) async fn transaction(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<DecodedTransaction>, TxReadError> {
+        match self.source.get_transaction_verbose(id).await {
+            Ok(decoded) => Ok(Some(decoded)),
+            Err(SourceError::Domain(GetTransactionVerboseError::NotFound(_))) => Ok(None),
             Err(SourceError::NonDomain(cause)) => Err(TxReadError::Transient(format!(
                 "validator unavailable: {cause}"
             ))),

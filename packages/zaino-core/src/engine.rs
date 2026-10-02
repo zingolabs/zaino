@@ -131,6 +131,7 @@ mod address;
 mod block;
 mod snapshot;
 mod spend;
+mod transaction;
 mod treestate;
 
 pub use snapshot::EngineSnapshot;

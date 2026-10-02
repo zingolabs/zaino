@@ -55,6 +55,7 @@ that capability and on the provider ports that placement needs:
 |---|---|---|
 | compact blocks, nullifier projection, chain info | always local | the two tiers' compact reads |
 | full blocks (the tip excepted) | always passthrough | `GetBlock`, `GetBlockByHash` |
+| pool-decomposed transaction and its status | always passthrough | `GetTransactionVerbose` |
 | raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
 | address history | `R::Address` | `Local`: both tiers `AddressRead`, head `SpendRead`; `Passthrough`: the four address source ports |
 | treestate, subtree roots | `R::Treestate` | `Passthrough` only today; a local tree index adds a `Local` impl beside it |
@@ -67,6 +68,18 @@ store keeps compact projections, not full block bytes. Its one exception is
 snapshot is coherent against, and the validator's tip is one the snapshot does
 not share. A domain miss (an unknown height or hash) is `Ok(None)`; an
 unreachable validator is a transient read failure, never a miss.
+
+`TransactionRead` (the pool-decomposed transaction and its `transaction_status`)
+is always passthrough: the store holds no transaction bytes, and the pool
+decomposition needs the validator's chain library, which this crate must not
+depend on, so the decoding lives in the source adapter. Both reads answer from
+one `GetTransactionVerbose` fetch whose `location` rides alongside the
+transaction, so a caller's status and transaction cannot disagree.
+`transaction_status` maps `BestChain(h)` to `Mined(h)`, `NonBestChain` to
+`Orphaned`, and both `Mempool` and an absent transaction to `Unknown` — a
+mempool transaction is neither mined nor reorged out. With `BlockRead` and
+`TransactionRead` both present, `EngineSnapshot` satisfies `NodeRpcReads`, so a
+node-RPC-routed engine satisfies `NodeRpcService`.
 
 A placement whose providers are missing is an impl that does not exist, so the
 use case's demand bound fails where the engine is wired. The crate docs on
