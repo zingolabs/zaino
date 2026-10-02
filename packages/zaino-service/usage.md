@@ -43,6 +43,25 @@ its service. A use case says nothing about how it is served: routing and the
 index set are choices an implementation makes per deployment, below this
 crate, and a second implementation may make them differently.
 
+## Shared queries
+
+`queries` is the domain-side composition more than one adapter would otherwise
+each write — answered once, in one file, so two adapters cannot drift into two
+answers for the same question.
+
+Two **primitives** compute and nothing more: `serviceable_range(snapshot)` is
+the height range a snapshot can answer (its `coverage`, not a tip-derived
+guess), and `total_balance(snapshot, addrs, range)` sums transparent balances
+over a range through the checked `Zatoshis` / `ZatoshisFlowSum` helpers,
+reporting overflow rather than clamping it.
+
+**Policy** — what an *unserviceable* snapshot means — is named per use case, not
+left to the adapter, because consumers answer it differently: `address_balance`
+(explorer) reads nothing-serviceable as a zero balance, while `wallet_balance`
+returns `None` so a wallet never reports a user's funds as gone off an indexer
+that cannot answer. An adapter calls only its own policy function, then renders
+the domain answer to its wire shape and maps its error codes.
+
 ## Errors
 
 Every read error separates a *not-yet-serviceable* answer

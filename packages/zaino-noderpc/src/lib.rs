@@ -20,10 +20,10 @@ pub use error::RpcError;
 pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
-use zaino_primitives::types::{HeightRange, Outpoint, TransparentAddress};
-use zaino_service::error::ReadError;
+use zaino_primitives::types::{Outpoint, TransparentAddress};
+use zaino_service::queries;
 use zaino_service::NodeQuery;
-use zaino_service::{AddressRead, ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
+use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
 
 use crate::wire::params::AddressesParam;
 use crate::wire::response::AddressBalanceResponse;
@@ -105,39 +105,20 @@ impl<S: NodeRpcService> NodeRpc<S> {
             ));
         }
         let snapshot = self.engine.snapshot().await?;
-        let Some(range) = full_range(&snapshot) else {
-            // Nothing is serviceable, so the addresses have no history: the
-            // truthful answer is an empty total, not a query against a
-            // synthesised range.
-            return Ok(AddressBalanceResponse {
-                balance: 0,
-                received: 0,
-            });
-        };
-        let mut balance: u64 = 0;
-        let mut received: u128 = 0;
-        for address in params.addresses {
-            let read = snapshot
-                .balance(&TransparentAddress::new(address), range)
-                .await?;
-            balance = balance.checked_add(read.balance.as_u64()).ok_or_else(|| {
-                RpcError::Read(ReadError::Fatal("summed balance overflows u64".into()))
-            })?;
-            received = received
-                .checked_add(u128::from(read.received))
-                .ok_or_else(|| {
-                    RpcError::Read(ReadError::Fatal("summed receipts overflow u128".into()))
-                })?;
-        }
-        Ok(AddressBalanceResponse { balance, received })
+        let addrs: Vec<TransparentAddress> = params
+            .addresses
+            .into_iter()
+            .map(TransparentAddress::new)
+            .collect();
+        // Explorer policy (an unserviceable snapshot reads as zero) lives in the
+        // shared query layer, not here; this handler only validates its wire
+        // parameters and renders the domain answer.
+        let total = queries::address_balance(&snapshot, &addrs).await?;
+        Ok(AddressBalanceResponse {
+            balance: total.balance.as_u64(),
+            received: u128::from(total.received),
+        })
     }
-}
-
-/// The whole serviceable height range of `snapshot`, for the address RPCs,
-/// which take no range of their own. `None` when nothing is serviceable yet —
-/// the caller answers an empty result rather than inventing a range.
-fn full_range(snapshot: &impl ChainSegment) -> Option<HeightRange> {
-    snapshot.coverage()
 }
 
 #[cfg(test)]

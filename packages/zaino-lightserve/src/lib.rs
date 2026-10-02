@@ -31,6 +31,7 @@ use zaino_primitives::types::{
 };
 use zaino_proto::proto::compact_formats as compact;
 use zaino_proto::proto::service as proto;
+use zaino_service::queries;
 use zaino_service::MempoolTx;
 use zaino_service::{
     AddressRead, ChainSegment, CompactBlockRead, CompactNullifierRead, LightWalletService,
@@ -175,20 +176,14 @@ impl<S: LightWalletService> LightServe<S> {
         addrs: Vec<TransparentAddress>,
     ) -> Result<proto::Balance, ServeError> {
         let snapshot = self.engine.snapshot().await?;
-        let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
-        let range = HeightRange {
-            start: Height::GENESIS,
-            end: tip.height,
-        };
-        let mut total: u64 = 0;
-        for addr in &addrs {
-            let balance = snapshot.balance(addr, range).await?;
-            // Saturating: a sum of supply-bounded balances stays below the money
-            // supply, so this never actually saturates.
-            total = total.saturating_add(u64::from(balance.balance));
-        }
+        // Wallet policy (an unserviceable snapshot must not read as zero) lives
+        // in the shared query layer; this handler maps its `None` to the wire
+        // error a light client expects and renders the domain answer.
+        let total = queries::wallet_balance(&snapshot, &addrs)
+            .await?
+            .ok_or(ServeError::NoBlocks)?;
         Ok(proto::Balance {
-            value_zat: zat_to_i64(total),
+            value_zat: zat_to_i64(total.balance.as_u64()),
         })
     }
 
@@ -460,23 +455,40 @@ mod tests {
         assert!(tx.is_none());
     }
 
-    /// `GetTaddressBalance` needs a tip to bound the range; with one, it delegates
-    /// to the address balance read (the mock reports `NotServiceable`, surfacing
-    /// as the serviceability fact, not the old `unimplemented`).
+    /// With a serviceable snapshot the handler delegates to the shared wallet
+    /// query, sums the scripted balances through the checked path, and renders
+    /// the total as the wire `value_zat`.
     #[tokio::test]
-    async fn taddress_balance_delegates_over_the_indexed_range() {
-        use zaino_primitives::types::{BlockHash, BlockRef, Height, TransparentAddress};
-        let tip = BlockRef {
-            height: Height::try_from(500).expect("valid height"),
-            hash: BlockHash::from([0x44u8; 32]),
+    async fn taddress_balance_renders_the_summed_scripted_balance() {
+        use zaino_primitives::types::{
+            AddressBalance, BlockHash, BlockRef, Height, TransparentAddress, Zatoshis,
+            ZatoshisFlowSum,
         };
-        let serve = LightServe::new(engine_with_tip(Some(tip)));
-        assert!(matches!(
-            serve
-                .get_taddress_balance(vec![TransparentAddress::new("t1probe".to_string())])
-                .await,
-            Err(ServeError::NotServiceable(_))
-        ));
+        fn scripted(name: &str, zats: u64, received: u64) -> (String, AddressBalance) {
+            (
+                name.to_string(),
+                AddressBalance {
+                    balance: Zatoshis::new(zats).expect("valid amount"),
+                    received: ZatoshisFlowSum::from_summed(received),
+                },
+            )
+        }
+        let serve = LightServe::new(MockIndexerService::new(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(500).expect("valid height"),
+                hash: BlockHash::from([0x44u8; 32]),
+            }),
+            balances: vec![scripted("t1a", 500, 900), scripted("t1b", 250, 400)],
+            ..Default::default()
+        }));
+        let balance = serve
+            .get_taddress_balance(vec![
+                TransparentAddress::new("t1a".to_string()),
+                TransparentAddress::new("t1b".to_string()),
+            ])
+            .await
+            .expect("served balance");
+        assert_eq!(balance.value_zat, 750);
     }
 
     /// An empty chain has no tip to bound the balance range, so it is `NoBlocks`.
@@ -488,6 +500,18 @@ mod tests {
             serve
                 .get_taddress_balance(vec![TransparentAddress::new("t1probe".to_string())])
                 .await,
+            Err(ServeError::NoBlocks)
+        ));
+    }
+
+    /// A wallet must not be told "zero" by an indexer that cannot answer — even
+    /// for an empty address list, the unserviceable snapshot wins over the
+    /// empty-list-is-zero rule and the handler maps it to `NoBlocks`.
+    #[tokio::test]
+    async fn taddress_balance_errors_when_nothing_is_serviceable() {
+        let serve = LightServe::new(MockIndexerService::new(MockChain::default()));
+        assert!(matches!(
+            serve.get_taddress_balance(Vec::new()).await,
             Err(ServeError::NoBlocks)
         ));
     }
