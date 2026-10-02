@@ -68,6 +68,21 @@ MockIndexerService`.
 
   Other crates reach the mock through a dev-dependency, so `--all-targets`
   already covers their tests; only `zaino-service` gates it behind a feature.
+- **`zaino-service` must also build and pass with the feature OFF.** A
+  `#[cfg(test)]` module in that crate which imports `crate::testing` must be
+  gated `#[cfg(all(test, feature = "testing"))]`, or the crate fails to compile
+  for anyone who does not pass the feature. Both commands are part of the gate:
+
+  ```
+  cargo test -p zaino-service                     # compiles, query tests absent
+  cargo test -p zaino-service --features testing  # full count
+  ```
+
+  This has already bitten: `queries.rs` shipped with a bare `#[cfg(test)]`
+  module importing `crate::testing`, and every prescribed command passed the
+  feature, so the break was invisible to implementer, reviewer and controller
+  alike. A verification command that always supplies a feature cannot detect a
+  missing gate on it.
 - Verify per-crate (`cargo test -p <crate>`), never `--workspace`: this host's
   binutils cannot link `aws-lc-sys`, so a workspace build fails for reasons
   unrelated to the change.
