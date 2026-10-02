@@ -15,13 +15,16 @@ mod source_provisioner;
 pub use source_provisioner::CompactSource;
 pub use source_provisioner::{
     CompactBlocks, FetchConcurrency, FullBlocks, SourceFetch, SourceProvisioner, SourceSyncDriver,
-    SyncTuning,
+    SyncTarget, SyncTuning,
 };
+
+#[cfg(test)]
+mod tests;
 
 use std::sync::{Arc, Mutex};
 
 use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
-use zaino_primitives::types::Height;
+use zaino_primitives::types::{BlockHash, Height};
 use zaino_sync::backend::Backend;
 use zaino_sync::engine::SyncEngine;
 use zaino_sync::primitives::BlockHeight;
@@ -68,6 +71,18 @@ pub enum IndexerError {
     /// `run` was called after the engine had already been consumed.
     #[error("indexer already run")]
     AlreadyRun,
+    /// The source served a different block at the horizon than the volatile tier
+    /// named. Refused before anything is written: committing it would put a branch
+    /// the volatile tier does not hold into an append-only store.
+    #[error("source served {served:?} at horizon height {height:?}, but the seam named {named:?}")]
+    HorizonBranchMismatch {
+        /// The horizon's height.
+        height: Height,
+        /// The hash the seam named.
+        named: BlockHash,
+        /// The hash the source served.
+        served: BlockHash,
+    },
 }
 
 /// Where a sync run begins, derived from the backend's committed watermark.

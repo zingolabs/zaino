@@ -24,7 +24,8 @@ use tokio::sync::watch;
 use tracing::warn;
 use zaino_async::{panic_message, Task, TaskError, TaskName};
 use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
-use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
+use zaino_finality::{DurableWatermark, HorizonReader, Released};
+use zaino_primitives::types::{Block, BlockHash, Height, PreIndexCompactBlock};
 use zaino_source::{
     GetBlock, GetChainTip, GetPreIndexCompactBlock, SourceError, SubscribeChainTip, TipObservation,
 };
@@ -86,22 +87,53 @@ impl std::str::FromStr for FetchConcurrency {
     }
 }
 
-/// The run-tuning knobs for a [`SourceSyncDriver`]: how it batches, where the
-/// finalised boundary sits, how much it buffers between provisioner and engine,
-/// and how many fetches run concurrently. Grouped into one struct so the four
-/// are *named* at every call site rather than passed as a transposition-prone
-/// tail of positional numbers.
+/// The run-tuning knobs for a [`SourceSyncDriver`]: how it batches, how much it
+/// buffers between provisioner and engine, and how many fetches run
+/// concurrently. Grouped into one struct so the three are *named* at every call
+/// site rather than passed as a transposition-prone tail of positional numbers.
+///
+/// Where the sync *boundary* sits is a separate concern — see [`SyncTarget`],
+/// passed alongside this.
 pub struct SyncTuning {
     /// Blocks committed per atomic engine batch.
     pub batch_size: u32,
-    /// Depth below the tip treated as still volatile; only `tip - depth` and
-    /// below is indexed. `zaino_consensus::MAX_BLOCK_REORG_HEIGHT` standalone;
-    /// `0` over a non-reorging test source.
-    pub finalised_depth: u32,
     /// Bound on contexts buffered between the provisioner and the engine.
     pub channel_capacity: usize,
     /// How many fetches the provisioner keeps in flight (see [`FetchConcurrency`]).
     pub concurrency: FetchConcurrency,
+}
+
+/// Where the driver's sync target comes from.
+///
+/// In a composed runtime the seam has one owner, so the driver *consumes* the
+/// horizon the volatile tier publishes. Standalone — an isolated finalised
+/// store, or a benchmark over a non-reorging source — there is no volatile tier
+/// to own it, so the depth derivation is honest there and only there.
+pub enum SyncTarget {
+    /// The composed runtime: the target is the horizon the volatile tier
+    /// publishes, and the watermark is published back through the same seam. The
+    /// driver reads the horizon from the half; the engine advances the watermark.
+    Seam(DurableWatermark),
+    /// Standalone: `tip - depth`, with no volatile tier to coordinate with.
+    /// Pass `zaino_consensus::MAX_BLOCK_REORG_HEIGHT`, or `0` over a
+    /// non-reorging test source.
+    Depth {
+        /// Depth below the tip treated as still volatile.
+        depth: u32,
+    },
+}
+
+/// The driver's resolved target, after the watermark (if any) has been moved
+/// into the engine: the half's publishing capability lives in the engine, while
+/// the driver keeps only a cloneable *reader* of the horizon to drive its loop
+/// and progress poller.
+#[derive(Clone)]
+enum DriverTarget {
+    /// Seam mode: read the horizon through this reader; the engine owns the
+    /// publishing half.
+    Seam(HorizonReader),
+    /// Standalone depth mode: derive the boundary from the source tip.
+    Depth { depth: u32 },
 }
 
 /// Map a resilient-port [`SourceError`] onto an indexer error, preserving each
@@ -147,6 +179,13 @@ pub trait SourceFetch<S>: Send + Sync + 'static {
         source: &S,
         height: Height,
     ) -> impl std::future::Future<Output = Result<Self::Item, IndexerError>> + Send;
+
+    /// The block hash the fetched item carries.
+    ///
+    /// Used for the horizon branch check: the hash is in hand one level before
+    /// the item is projected into the engine's `Ctx`, so the check needs no bound
+    /// on `Ctx` and no second fetch.
+    fn item_hash(item: &Self::Item) -> BlockHash;
 }
 
 /// Source whole blocks via [`GetBlock`].
@@ -157,6 +196,10 @@ impl<S: GetBlock + Send + Sync + 'static> SourceFetch<S> for FullBlocks {
 
     async fn fetch(source: &S, height: Height) -> Result<Block, IndexerError> {
         source.get_block(height).await.map_err(map_source)
+    }
+
+    fn item_hash(item: &Block) -> BlockHash {
+        item.header.hash
     }
 }
 
@@ -174,6 +217,10 @@ impl<S: GetPreIndexCompactBlock + Send + Sync + 'static> SourceFetch<S> for Comp
             .get_pre_index_compact_block(height)
             .await
             .map_err(map_source)
+    }
+
+    fn item_hash(item: &PreIndexCompactBlock) -> BlockHash {
+        item.hash
     }
 }
 
@@ -220,6 +267,14 @@ where
             .await
             .map(|(_hash, height)| height)
             .map_err(map_source)
+    }
+
+    /// The block hash the source serves at `height`, fetched through the same
+    /// strategy the range uses. Used for the horizon branch check before a range
+    /// tops out at the seam's named horizon.
+    pub async fn item_hash_at(&self, height: Height) -> Result<BlockHash, IndexerError> {
+        let item = Fetch::fetch(&self.source, height).await?;
+        Ok(Fetch::item_hash(&item))
     }
 
     /// A push subscription to the source's tip, or `None` if the source does not
@@ -306,74 +361,60 @@ pub struct SourceSyncDriver<S, B: Backend, Ctx, F, Fetch> {
     engine: Mutex<Option<SyncEngine<Ctx, B>>>,
     provisioner: Arc<SourceProvisioner<S, Ctx, F, Fetch>>,
     start: Height,
-    finalised_depth: u32,
+    /// Where the sync boundary comes from: the seam's horizon (composed) or a
+    /// depth below the source tip (standalone). The publishing half, if any, has
+    /// been moved into the engine; this keeps only the reader.
+    target: DriverTarget,
     channel_capacity: usize,
     /// A read handle onto the same backend the engine writes, for the progress
     /// poller to read the committed watermark (concurrent with the engine's
     /// writer — the persisted watermark is the on-disk truth it reports).
     backend: B,
-    /// The engine's confirmed-watermark publisher, captured before the engine is
-    /// moved behind the run-once mutex. Handed to the non-finalised chain-head so
-    /// it can gate trimming on what the finalised store has confirmed
-    /// (confirm-before-trim). Exposed via
-    /// [`subscribe_confirmed_watermark`](Self::subscribe_confirmed_watermark).
-    confirmed_watermark: watch::Receiver<Option<Height>>,
 }
 
 impl<S, B: Backend, Ctx: Send + Sync + 'static, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
-    /// A driver syncing from `start` to the **finalised boundary**, buffering up
-    /// to `channel_capacity` contexts between the provisioner and the engine.
+    /// A driver syncing from `start` to the boundary [`SyncTarget`] names,
+    /// buffering up to `channel_capacity` contexts between the provisioner and the
+    /// engine.
     ///
     /// The engine builds only the finalised, append-only range, so bulk sync and
     /// tip-following are one operation and no reorg handling is needed here — the
     /// volatile window above the boundary is the chain-head's concern.
     ///
-    /// **`finalised_depth` is the *standalone* seam derivation** (`tip − depth`,
-    /// for an indexer with no chain-head — e.g. a benchmark or an isolated
-    /// finalised store). In the composed runtime the seam has a single owner —
-    /// the chain-head's floor — which the indexer must *consume*, not re-derive,
-    /// so FS-ceiling and NFS-floor cannot drift (see the design decision
-    /// "the seam has one owner"). That path replaces this depth with the
-    /// chain-head's published seam when the chain-head is wired in.
-    /// Pass `zaino_consensus::MAX_BLOCK_REORG_HEIGHT` standalone; `0` in tests
-    /// over a non-reorging source.
+    /// For [`SyncTarget::Seam`] the watermark half is moved into the engine (which
+    /// publishes against the horizon after each batch) and the driver keeps a
+    /// reader to drive its loop; for [`SyncTarget::Depth`] the engine holds no
+    /// half and the boundary is derived from the source tip.
     pub fn new(
         engine: SyncEngine<Ctx, B>,
         provisioner: Arc<SourceProvisioner<S, Ctx, F, Fetch>>,
         start: Height,
-        finalised_depth: u32,
+        target: SyncTarget,
         channel_capacity: usize,
         backend: B,
     ) -> Self {
-        // Capture the confirmed-watermark receiver before the engine is moved
-        // behind the run-once mutex — it is the only handle the chain-head has
-        // onto what the finalised store has committed.
-        let confirmed_watermark = engine.subscribe_confirmed_watermark();
+        // In seam mode the publishing half goes to the engine; the driver keeps a
+        // cloneable reader of the horizon for its loop and progress poller.
+        let (engine, target) = match target {
+            SyncTarget::Seam(watermark) => {
+                let reader = watermark.reader();
+                (
+                    engine.with_watermark(Some(watermark)),
+                    DriverTarget::Seam(reader),
+                )
+            }
+            SyncTarget::Depth { depth } => {
+                (engine.with_watermark(None), DriverTarget::Depth { depth })
+            }
+        };
         Self {
             engine: Mutex::new(Some(engine)),
             provisioner,
             start,
-            finalised_depth,
+            target,
             channel_capacity,
             backend,
-            confirmed_watermark,
         }
-    }
-
-    /// A receiver onto the engine's confirmed watermark — the highest height the
-    /// finalised store has durably committed, or `None` on a fresh backend.
-    ///
-    /// The composed runtime hands this to the non-finalised chain-head so it can
-    /// gate trimming on what the finalised store can already serve
-    /// (confirm-before-trim), closing the seam between the two.
-    pub fn subscribe_confirmed_watermark(&self) -> watch::Receiver<Option<Height>> {
-        self.confirmed_watermark.clone()
-    }
-
-    /// The finalised boundary for a given source tip: `tip − finalised_depth`,
-    /// saturating at genesis. Append-only, so it is a safe sync target.
-    fn finalised(&self, tip: Height) -> Height {
-        tip.saturating_sub(self.finalised_depth)
     }
 }
 
@@ -402,6 +443,7 @@ where
         source: Arc<S>,
         build: F,
         tuning: SyncTuning,
+        target: SyncTarget,
     ) -> Result<Self, IndexerError>
     where
         B: Clone,
@@ -424,20 +466,64 @@ where
             engine,
             provisioner,
             start,
-            tuning.finalised_depth,
+            target,
             tuning.channel_capacity,
             backend.clone(),
         ))
     }
 
+    /// Refuses a range whose top block is not the one the seam named.
+    ///
+    /// Checked where the fetched block's hash is in hand rather than at publish
+    /// time: the engine knows when a batch became durable but not which block it
+    /// was, and a mismatch must stop the write rather than be reported after
+    /// divergent data is on disk.
+    fn check_horizon_branch(
+        authorised_by: Option<&Released>,
+        at: Height,
+        served: BlockHash,
+    ) -> Result<(), IndexerError> {
+        let Some(released) = authorised_by else {
+            return Ok(());
+        };
+        if at != released.height() {
+            return Ok(());
+        }
+        if served == released.hash() {
+            return Ok(());
+        }
+        Err(IndexerError::HorizonBranchMismatch {
+            height: at,
+            named: released.hash(),
+            served,
+        })
+    }
+
     /// Provision `[from, to]` through the engine: the provisioner feeds a bounded
     /// channel which the engine drains, then both are joined typed.
+    ///
+    /// When `authorised_by` names the horizon this range tops out at, the block
+    /// the source serves there is verified against the seam's hash **before** any
+    /// block is provisioned — so a branch disagreement is refused before anything
+    /// is committed, never after divergent data is on disk.
     async fn sync_to(
         &self,
         engine: &mut SyncEngine<Ctx, B>,
         from: Height,
         to: Height,
+        authorised_by: Option<&Released>,
     ) -> Result<(), IndexerError> {
+        // Pre-flight horizon branch check: if this range tops out at the seam's
+        // horizon, the source must serve that exact block. Fetching the top block
+        // first costs one extra fetch of a single height, but it is the only point
+        // at which a mismatch can be refused before the engine commits any batch.
+        if let Some(released) = authorised_by {
+            if to == released.height() {
+                let served = self.provisioner.item_hash_at(to).await?;
+                Self::check_horizon_branch(Some(released), to, served)?;
+            }
+        }
+
         let (tx, rx) = mpsc::channel(self.channel_capacity);
         let provisioner = Arc::clone(&self.provisioner);
         // The pump is bounded (fetch `[from, to]` then end), so it ignores the
@@ -455,6 +541,46 @@ where
         pump.join().await??;
         Ok(())
     }
+
+    /// Index up to `target` under `authorised_by`, advancing `next_from` past the
+    /// range on success.
+    ///
+    /// A no-op when `target` is below `next_from` (nothing new). On success the
+    /// next range begins just past `target`; the authorisation is handed to the
+    /// engine first, so each batch it commits publishes its watermark under the
+    /// horizon that authorised the work.
+    async fn index_to(
+        &self,
+        engine: &mut SyncEngine<Ctx, B>,
+        next_from: &mut Height,
+        target: Height,
+        authorised_by: Option<Released>,
+    ) -> Result<(), IndexerError> {
+        if u32::from(target) < u32::from(*next_from) {
+            return Ok(());
+        }
+        engine.set_authorisation(authorised_by);
+        self.sync_to(engine, *next_from, target, authorised_by.as_ref())
+            .await?;
+        *next_from = target
+            .checked_add(1)
+            .expect("a target below the protocol limit has a successor");
+        Ok(())
+    }
+
+    /// The next height to index from after a follow-range failure: just past the
+    /// backend's committed watermark, or the unchanged `fallback` if nothing is
+    /// committed yet. Lets a follow range resume from durable truth rather than
+    /// re-running the whole failed range or taking the runtime down.
+    fn resume_from_committed(&self, fallback: Height) -> Height {
+        SyncEngine::<Ctx, B>::committed_height(&self.backend)
+            .ok()
+            .flatten()
+            .and_then(|height| u32::try_from(height.value()).ok())
+            .and_then(|height| Height::try_from(height).ok())
+            .and_then(|height| height.checked_add(1))
+            .unwrap_or(fallback)
+    }
 }
 
 impl<S, B, Ctx, F> SourceSyncDriver<S, B, Ctx, F, FullBlocks>
@@ -467,17 +593,18 @@ where
     /// A resume-safe driver that sources **whole blocks** ([`GetBlock`]).
     ///
     /// The constructor a runtime bringup should use: unlike [`new`](Self::new),
-    /// which takes an explicit start, it cannot forget to resume. Pass
-    /// `zaino_consensus::MAX_BLOCK_REORG_HEIGHT` as `finalised_depth` standalone;
-    /// `0` in tests over a non-reorging source.
+    /// which takes an explicit start, it cannot forget to resume. `target` selects
+    /// the boundary — [`SyncTarget::Seam`] in a composed runtime,
+    /// [`SyncTarget::Depth`] standalone.
     pub fn resuming(
         backend: &B,
         pipelines: IndexPipelines<Ctx>,
         source: Arc<S>,
         build: F,
         tuning: SyncTuning,
+        target: SyncTarget,
     ) -> Result<Self, IndexerError> {
-        Self::assemble_resuming(backend, pipelines, source, build, tuning)
+        Self::assemble_resuming(backend, pipelines, source, build, tuning, target)
     }
 }
 
@@ -512,8 +639,9 @@ where
         source: Arc<S>,
         build: F,
         tuning: SyncTuning,
+        target: SyncTarget,
     ) -> Result<Self, IndexerError> {
-        Self::assemble_resuming(backend, pipelines, source, build, tuning)
+        Self::assemble_resuming(backend, pipelines, source, build, tuning, target)
     }
 }
 
@@ -544,14 +672,19 @@ where
         // Self-report committed-watermark progress on a ~1s tick, for the run's
         // lifetime — the drop guard cancels the poller when `run` returns. The
         // poller reads the *persisted* watermark (the on-disk truth) concurrently
-        // with the engine's writer, and the source tip as the target.
+        // with the engine's writer, and the sync boundary as the target.
         let poll_cancel = cancel.child_token();
         let _poll_guard = poll_cancel.clone().drop_guard();
         {
             let backend = self.backend.clone();
             let tip_source = Arc::clone(&self.provisioner);
             let reporter = reporter.clone();
-            let finalised_depth = self.finalised_depth;
+            // The indexer only builds the append-only range below the boundary, so
+            // its progress target is that boundary — the horizon (seam) or
+            // tip − depth (standalone) — not the live tip. Reporting the live tip
+            // would peg it at a chronic 99.9%, never reaching its own caught-up
+            // height; the chain-head (NFS) is what tracks the live tip.
+            let poll_target = self.target.clone();
             let _poller = Task::spawn(TaskName("indexer-progress"), move |_unused| async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
                 loop {
@@ -568,18 +701,16 @@ where
                                 })
                                 .map(|height| u64::from(u32::from(height)))
                                 .unwrap_or(0);
-                            // The indexer only builds the append-only finalised
-                            // range, so its progress target is the finalised
-                            // boundary (tip − reorg margin), mirroring `finalised`
-                            // — not the live tip. Reporting the live tip would peg
-                            // it at a chronic 99.9%, never reaching its own
-                            // caught-up height; the chain-head (NFS) is what tracks
-                            // the live tip.
-                            let target = tip_source
-                                .current_tip()
-                                .await
-                                .ok()
-                                .map(|tip| u64::from(u32::from(tip.saturating_sub(finalised_depth))));
+                            let target = match &poll_target {
+                                DriverTarget::Seam(reader) => reader
+                                    .released()
+                                    .map(|released| u64::from(u32::from(released.height()))),
+                                DriverTarget::Depth { depth } => tip_source
+                                    .current_tip()
+                                    .await
+                                    .ok()
+                                    .map(|tip| u64::from(u32::from(tip.saturating_sub(*depth)))),
+                            };
                             reporter.progress(committed, target);
                         }
                     }
@@ -587,67 +718,106 @@ where
             });
         }
 
-        // Initial catch-up: sync [start, finalised-boundary], then Ready. Only
-        // the append-only finalised range is built; the volatile window above it
-        // is the chain-head's concern.
-        let mut synced = self.finalised(self.provisioner.current_tip().await?);
-        if u32::from(synced) >= u32::from(self.start) {
-            self.sync_to(&mut engine, self.start, synced).await?;
-        }
-        reporter.ready();
+        // The next height to index from: genesis on a fresh backend, or just past
+        // the resume point. Advanced past each range as it is built, so nothing is
+        // re-indexed and nothing below the start is ever touched.
+        let mut next_from = self.start;
 
-        // Steady-state follow: index each new range as the tip advances. A
-        // source that offers no tip subscription cannot be followed: the index
-        // stays at the caught-up height for the life of the run, which is a
-        // wiring fault (a composite synthesises the subscription by polling),
-        // so it is said loudly rather than parked on quietly.
-        let Some(mut tips) = self.provisioner.subscribe_tip() else {
-            warn!(
-                synced = u32::from(synced),
-                "source offers no tip subscription; the finalised index will not advance past its \
-                 caught-up height — wire a tip poller on the validator"
-            );
-            cancel.cancelled().await;
-            return Ok(());
-        };
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
-                changed = tips.changed() => {
-                    if changed.is_err() {
-                        // The source stopped publishing; nothing more to follow.
-                        return Ok(());
-                    }
-                    // Copy the height out before awaiting (drop the watch borrow),
-                    // then cap at the finalised boundary — we only index append-only.
-                    let tip = self.finalised(tips.borrow_and_update().height);
-                    if tip > synced {
-                        let from = synced
-                            .checked_add(1)
-                            .expect("tip below max height has a successor");
-                        match self.sync_to(&mut engine, from, tip).await {
-                            Ok(()) => synced = tip,
-                            Err(error) => {
-                                // The source could not serve part of the range —
-                                // a state cache that has not caught up to the
-                                // boundary, or a transport the fallback cannot
-                                // reach. Whatever was fetched before the failure
-                                // is committed and stamped; resume from there on
-                                // the next tip change rather than take the
-                                // runtime down for a range the next poll may
-                                // serve. Not retried here: the source has already
-                                // retried transient failures under its own policy.
-                                synced = SyncEngine::<Ctx, B>::committed_height(&self.backend)?
-                                    .and_then(|height| u32::try_from(height.value()).ok())
-                                    .and_then(|height| Height::try_from(height).ok())
-                                    .unwrap_or(synced);
+        match &self.target {
+            DriverTarget::Seam(reader) => {
+                let mut reader = reader.clone();
+                // Initial catch-up: whatever horizon the volatile tier has already
+                // published. None means it has not anchored yet — the follow loop
+                // awaits its first advance.
+                if let Some(released) = reader.released() {
+                    self.index_to(
+                        &mut engine,
+                        &mut next_from,
+                        released.height(),
+                        Some(released),
+                    )
+                    .await?;
+                }
+                reporter.ready();
+
+                // Steady-state follow: the horizon drives the loop. The volatile
+                // tier publishes it when its own tip advances, so the driver needs
+                // no tip subscription of its own to know when to build.
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok(()),
+                        released = reader.await_released() => {
+                            if let Err(error) = self
+                                .index_to(&mut engine, &mut next_from, released.height(), Some(released))
+                                .await
+                            {
+                                next_from = self.resume_from_committed(next_from);
                                 warn!(
                                     %error,
-                                    from = u32::from(from),
-                                    to = u32::from(tip),
-                                    resumed_at = u32::from(synced),
+                                    to = u32::from(released.height()),
+                                    resumed_at = u32::from(next_from),
                                     "follow sync failed; the finalised index resumes from its \
-                                     committed watermark on the next tip change"
+                                     committed watermark on the next horizon",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            DriverTarget::Depth { depth } => {
+                let depth = *depth;
+                // Initial catch-up: sync [start, tip − depth], then Ready. Only the
+                // append-only range is built; the volatile window above it is the
+                // chain-head's concern.
+                let target = self.provisioner.current_tip().await?.saturating_sub(depth);
+                self.index_to(&mut engine, &mut next_from, target, None)
+                    .await?;
+                reporter.ready();
+
+                // Steady-state follow: index each new range as the tip advances. A
+                // source that offers no tip subscription cannot be followed: the
+                // index stays at the caught-up height for the life of the run,
+                // which is a wiring fault (a composite synthesises the subscription
+                // by polling), so it is said loudly rather than parked on quietly.
+                let Some(mut tips) = self.provisioner.subscribe_tip() else {
+                    warn!(
+                        next_from = u32::from(next_from),
+                        "source offers no tip subscription; the finalised index will not advance \
+                         past its caught-up height — wire a tip poller on the validator"
+                    );
+                    cancel.cancelled().await;
+                    return Ok(());
+                };
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok(()),
+                        changed = tips.changed() => {
+                            if changed.is_err() {
+                                // The source stopped publishing; nothing more to follow.
+                                return Ok(());
+                            }
+                            // Copy the height out before awaiting (drop the watch
+                            // borrow), then cap at the boundary — we only index
+                            // append-only.
+                            let target = tips.borrow_and_update().height.saturating_sub(depth);
+                            if let Err(error) =
+                                self.index_to(&mut engine, &mut next_from, target, None).await
+                            {
+                                // The source could not serve part of the range — a
+                                // state cache that has not caught up to the boundary,
+                                // or a transport the fallback cannot reach. Whatever
+                                // was committed before the failure is durable; resume
+                                // from there on the next tip change rather than take
+                                // the runtime down for a range the next poll may
+                                // serve. Not retried here: the source has already
+                                // retried transient failures under its own policy.
+                                next_from = self.resume_from_committed(next_from);
+                                warn!(
+                                    %error,
+                                    to = u32::from(target),
+                                    resumed_at = u32::from(next_from),
+                                    "follow sync failed; the finalised index resumes from its \
+                                     committed watermark on the next tip change",
                                 );
                             }
                         }

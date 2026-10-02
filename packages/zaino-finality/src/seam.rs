@@ -181,6 +181,20 @@ pub struct DurableWatermark {
 }
 
 impl DurableWatermark {
+    /// A cloneable, read-only view of the reorg horizon this half publishes
+    /// against.
+    ///
+    /// Reading the horizon is not a capability the seam needs to ration — only
+    /// *publishing* the watermark must stay single-owner. A holder of this reader
+    /// can observe the horizon (for a progress target, say) without being able to
+    /// advance the watermark, which still requires the [`DurableWatermark`].
+    pub fn reader(&self) -> HorizonReader {
+        HorizonReader {
+            state: Arc::clone(&self.state),
+            released: self.state.released.subscribe(),
+        }
+    }
+
     /// The current horizon, or `None` while the volatile tier has published none.
     pub fn released(&self) -> Option<Released> {
         *self.released.borrow()
@@ -229,5 +243,46 @@ impl DurableWatermark {
         let committed = Committed { height: to };
         self.state.committed.send_replace(Some(committed));
         Ok(committed)
+    }
+}
+
+/// A read-only view of the reorg horizon.
+///
+/// `Clone`: many parties may observe the horizon, but only the holder of
+/// [`DurableWatermark`] may publish against it. Reading is not a capability the
+/// seam needs to ration, so this reader carries no authority — it exposes the
+/// horizon and nothing else. Obtained from [`DurableWatermark::reader`].
+#[derive(Clone)]
+pub struct HorizonReader {
+    /// Held only to keep the shared state — and so the publishing sender — alive
+    /// for the reader's lifetime, so [`await_released`](Self::await_released) can
+    /// treat a closed channel as unreachable rather than a value it cannot
+    /// produce. Never read directly.
+    #[allow(dead_code)]
+    state: Arc<SeamState>,
+    released: watch::Receiver<Option<Released>>,
+}
+
+impl HorizonReader {
+    /// The current horizon, or `None` while the volatile tier has published none.
+    pub fn released(&self) -> Option<Released> {
+        *self.released.borrow()
+    }
+
+    /// Resolves on the next horizon the volatile tier publishes.
+    ///
+    /// A `watch`, so a reader that falls behind skips to the present rather than
+    /// replaying every intermediate horizon.
+    pub async fn await_released(&mut self) -> Released {
+        loop {
+            if self.released.changed().await.is_err() {
+                // This reader holds the seam state, so the publishing sender
+                // cannot drop while the reader lives.
+                unreachable!("the seam state outlives this reader");
+            }
+            if let Some(released) = *self.released.borrow_and_update() {
+                return released;
+            }
+        }
     }
 }

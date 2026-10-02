@@ -1,19 +1,26 @@
-//! The indexer follows the source tip after initial catch-up.
+//! The indexer follows the source tip after initial catch-up (standalone mode).
 //!
 //! A growing mock source pushes tip updates as new blocks arrive; the
-//! `SourceSyncDriver` catches up to the initial tip (Ready), then indexes each
-//! new range as the tip advances — driven by `SubscribeChainTip`, supervised as
-//! an `RunComponent`.
+//! `SourceSyncDriver` in `SyncTarget::Depth` mode catches up to the initial
+//! boundary (ready), then indexes each new range as the tip advances — driven by
+//! `SubscribeChainTip`. A minimal direct-drive harness stands in for the
+//! runtime's `RunComponent`, so this crate's tests do not depend on
+//! `zaino-runtime`.
+
+#[path = "support/run_harness.rs"]
+mod run_harness;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use run_harness::drive;
 use tokio::sync::watch;
 
-use zaino_component::{ComponentName, Lifecycle, Managed, StatusWatch};
-use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner, SourceSyncDriver};
+use zaino_component::RunLoop;
+use zaino_indexer::{
+    FetchConcurrency, FullBlocks, IndexerError, SourceProvisioner, SourceSyncDriver, SyncTarget,
+};
 use zaino_primitives::types::{Block, BlockHash, Height};
-use zaino_runtime::RunComponent;
 use zaino_source::mock::test_block;
 use zaino_source::{
     GetBlockError, GetChainTipError, OneShotGetBlock, OneShotGetChainTip, QueryError, RetryPolicy,
@@ -108,75 +115,12 @@ fn indexed_block_count(backend: &InMemoryBackend) -> usize {
     backend.entries(value_index::ID.into()).len()
 }
 
-#[tokio::test]
-async fn the_indexer_follows_the_tip() {
-    let source = GrowingSource::new(3); // blocks 0..=3
-    let backend = InMemoryBackend::new();
-    let engine = SyncEngine::from_pipelines(
-        toy_pipelines(),
-        backend.clone(),
-        EngineConfig {
-            batch_size: 4,
-            start_height: BlockHeight::new(0),
-        },
-    )
-    .expect("valid index set");
-
-    let validator = ValidatorClient::new(source.clone(), RetryPolicy::default());
-    let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
-        Arc::new(validator),
-        to_context,
-        FetchConcurrency::SERIAL,
-    ));
-    let driver = SourceSyncDriver::new(
-        engine,
-        provisioner,
-        Height::try_from(0).expect("valid height"),
-        0, // finalised_depth: non-reorging mock, index right to the tip
-        16,
-        backend.clone(),
-    );
-    let indexer = RunComponent::new(ComponentName("indexer"), driver);
-
-    indexer.spawn().await.expect("spawn");
-
-    // Initial catch-up to tip 3 → Ready, 4 blocks indexed (0..=3).
-    let mut status = indexer.subscribe();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if status.borrow_and_update().lifecycle == Lifecycle::Ready {
-                return;
-            }
-            status.changed().await.expect("status stream open");
-        }
-    })
-    .await
-    .expect("initial catch-up");
-    assert_eq!(indexed_block_count(&backend), 4, "blocks 0..=3 indexed");
-
-    // The chain grows to 6 → the indexer follows and indexes 4..=6.
-    source.extend_to(6);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if indexed_block_count(&backend) == 7 {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("followed the tip to 6");
-
-    indexer.stop().await.expect("stop");
-}
-
-#[tokio::test]
-async fn the_indexer_stops_at_the_finalised_boundary() {
-    // Tip 6, finalised_depth 2 → the indexer builds only the append-only range
-    // [0, 4]; the volatile window (5, 6) is the chain-head's concern, not the
-    // finalised index's.
-    let source = GrowingSource::new(6);
-    let backend = InMemoryBackend::new();
+/// Build a `SourceSyncDriver` over `source` in `SyncTarget::Depth` mode.
+fn driver_over(
+    source: GrowingSource,
+    backend: &InMemoryBackend,
+    depth: u32,
+) -> impl RunLoop<Error = IndexerError> {
     let engine = SyncEngine::from_pipelines(
         toy_pipelines(),
         backend.clone(),
@@ -190,32 +134,60 @@ async fn the_indexer_stops_at_the_finalised_boundary() {
     let validator = ValidatorClient::new(source, RetryPolicy::default());
     let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
         Arc::new(validator),
-        to_context,
+        to_context as fn(Block) -> TestBlockContext,
         FetchConcurrency::SERIAL,
     ));
-    let driver = SourceSyncDriver::new(
+    SourceSyncDriver::new(
         engine,
         provisioner,
         Height::try_from(0).expect("valid height"),
-        2, // finalised_depth
+        SyncTarget::Depth { depth },
         16,
         backend.clone(),
-    );
-    let indexer = RunComponent::new(ComponentName("indexer"), driver);
+    )
+}
 
-    indexer.spawn().await.expect("spawn");
-
-    let mut status = indexer.subscribe();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if status.borrow_and_update().lifecycle == Lifecycle::Ready {
-                return;
-            }
-            status.changed().await.expect("status stream open");
+/// Spin until `cond` holds, failing the test if it never does.
+async fn wait_until(mut cond: impl FnMut() -> bool) {
+    for _ in 0..500 {
+        if cond() {
+            return;
         }
-    })
-    .await
-    .expect("caught up to the finalised boundary");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("condition never held");
+}
+
+#[tokio::test]
+async fn the_indexer_follows_the_tip() {
+    let source = GrowingSource::new(3); // blocks 0..=3
+    let backend = InMemoryBackend::new();
+    let driver = driver_over(source.clone(), &backend, 0);
+
+    let mut run = drive(driver);
+
+    // Initial catch-up to tip 3 → ready, 4 blocks indexed (0..=3).
+    run.await_ready().await;
+    assert_eq!(indexed_block_count(&backend), 4, "blocks 0..=3 indexed");
+
+    // The chain grows to 6 → the indexer follows and indexes 4..=6.
+    source.extend_to(6);
+    wait_until(|| indexed_block_count(&backend) == 7).await;
+
+    run.stop().await.expect("the run ends cleanly");
+}
+
+#[tokio::test]
+async fn the_indexer_stops_at_the_finalised_boundary() {
+    // Tip 6, depth 2 → the indexer builds only the append-only range [0, 4]; the
+    // volatile window (5, 6) is the chain-head's concern, not the finalised
+    // index's.
+    let source = GrowingSource::new(6);
+    let backend = InMemoryBackend::new();
+    let driver = driver_over(source, &backend, 2);
+
+    let mut run = drive(driver);
+    run.await_ready().await;
 
     assert_eq!(
         indexed_block_count(&backend),
@@ -223,5 +195,5 @@ async fn the_indexer_stops_at_the_finalised_boundary() {
         "only blocks 0..=4 (tip 6 − depth 2) are indexed; 5 and 6 stay volatile",
     );
 
-    indexer.stop().await.expect("stop");
+    run.stop().await.expect("the run ends cleanly");
 }

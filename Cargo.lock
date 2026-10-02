@@ -6081,9 +6081,9 @@ dependencies = [
  "tracing",
  "zaino-async",
  "zaino-component",
+ "zaino-finality",
  "zaino-persistence-codec",
  "zaino-primitives",
- "zaino-runtime",
  "zaino-source",
  "zaino-sync",
 ]
@@ -6482,6 +6482,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zaino-finality",
  "zaino-persistence",
  "zaino-persistence-codec",
  "zaino-primitives",

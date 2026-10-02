@@ -59,5 +59,6 @@ mod seam;
 
 pub use fault::SeamFault;
 pub use seam::{
-    Committed, DurableWatermark, Released, ReorgHorizon, Seam, DEFAULT_RETENTION_MARGIN,
+    Committed, DurableWatermark, HorizonReader, Released, ReorgHorizon, Seam,
+    DEFAULT_RETENTION_MARGIN,
 };
