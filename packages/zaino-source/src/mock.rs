@@ -519,7 +519,9 @@ impl crate::OneShotGetBlockVerboseByHash for MockChain {
         }
         self.block_verbose_response
             .clone()
-            .ok_or(QueryError::Domain(GetBlockVerboseError::BlockNotFound(hash)))
+            .ok_or(QueryError::Domain(GetBlockVerboseError::BlockNotFound(
+                hash,
+            )))
     }
 }
 
@@ -899,10 +901,9 @@ mod tests {
     #[tokio::test]
     async fn get_block_verbose_by_hash_not_found_without_a_script() {
         let mock = MockChain::new();
-        let err =
-            crate::OneShotGetBlockVerboseByHash::get_block_verbose_by_hash(&mock, hash(7))
-                .await
-                .unwrap_err();
+        let err = crate::OneShotGetBlockVerboseByHash::get_block_verbose_by_hash(&mock, hash(7))
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             QueryError::Domain(GetBlockVerboseError::BlockNotFound(got)) if got == hash(7)

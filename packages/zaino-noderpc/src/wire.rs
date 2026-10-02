@@ -586,7 +586,8 @@ mod tests {
     /// carries it (a deliberate omission, not a bug).
     #[test]
     fn block_header_response_golden_shape() {
-        let json = serde_json::to_value(block_header_to_wire(scripted_header())).expect("serialize");
+        let json =
+            serde_json::to_value(block_header_to_wire(scripted_header())).expect("serialize");
         assert_eq!(
             sorted_keys(&json),
             [
@@ -622,10 +623,7 @@ mod tests {
             obj.get("finalsaplingroot").and_then(Value::as_str),
             Some("33".repeat(32).as_str())
         );
-        assert_eq!(
-            obj.get("time").and_then(Value::as_u64),
-            Some(1_600_000_000)
-        );
+        assert_eq!(obj.get("time").and_then(Value::as_u64), Some(1_600_000_000));
         assert_eq!(
             obj.get("nonce").and_then(Value::as_str),
             Some("44".repeat(32).as_str())
@@ -767,7 +765,9 @@ mod tests {
         assert_eq!(second.get("n").and_then(Value::as_u64), Some(1));
 
         assert_eq!(
-            obj.get("vjoinsplit").and_then(Value::as_array).map(Vec::len),
+            obj.get("vjoinsplit")
+                .and_then(Value::as_array)
+                .map(Vec::len),
             Some(0),
             "vjoinsplit is always an empty array"
         );
@@ -918,7 +918,10 @@ mod tests {
             Some("33".repeat(32).as_str())
         );
         assert_eq!(obj.get("time").and_then(Value::as_u64), Some(1_600_000_000));
-        assert_eq!(obj.get("nonce").and_then(Value::as_str), Some("55".repeat(32).as_str()));
+        assert_eq!(
+            obj.get("nonce").and_then(Value::as_str),
+            Some("55".repeat(32).as_str())
+        );
         assert_eq!(obj.get("bits").and_then(Value::as_str), Some("1f07ffff"));
         // Chain-position facts come from BlockVerbose.
         assert_eq!(obj.get("confirmations").and_then(Value::as_i64), Some(9));
@@ -950,8 +953,8 @@ mod tests {
     fn block_response_omits_chainwork_when_untracked() {
         let mut verbose = scripted_block_verbose();
         verbose.chainwork = None;
-        let json =
-            serde_json::to_value(block_to_wire(coinbase_and_spend_block(), verbose)).expect("serialize");
+        let json = serde_json::to_value(block_to_wire(coinbase_and_spend_block(), verbose))
+            .expect("serialize");
         assert!(
             !json
                 .as_object()

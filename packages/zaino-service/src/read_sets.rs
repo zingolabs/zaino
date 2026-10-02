@@ -11,8 +11,8 @@
 //! constituent reads.
 
 use crate::reads::{
-    AddressRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead,
-    RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead,
+    CompactNullifierRead, RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
 };
 
 /// Reads shared by every wallet-shaped consumer — scan compact blocks, build

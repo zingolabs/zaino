@@ -872,10 +872,13 @@ mod block_verbose_reads {
                 .is_none()
         );
         assert!(
-            BlockVerboseRead::block_verbose(&snapshot, BlockSelector::Hash(BlockHash::from([9u8; 32])))
-                .await
-                .expect("a domain miss is a served None, not an error")
-                .is_none()
+            BlockVerboseRead::block_verbose(
+                &snapshot,
+                BlockSelector::Hash(BlockHash::from([9u8; 32]))
+            )
+            .await
+            .expect("a domain miss is a served None, not an error")
+            .is_none()
         );
     }
 

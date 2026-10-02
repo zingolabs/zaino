@@ -156,9 +156,9 @@ impl<S: NodeRpcService> NodeRpc<S> {
             (None, None) => Err(RpcError::NotFound(format!("no block for {blockid}"))),
             // The two live passthrough reads disagree — a reorg race between
             // them. Not a partial render and not a definitive miss: transient.
-            (Some(_), None) | (None, Some(_)) => Err(RpcError::Read(ReadError::Transient(format!(
-                "block {blockid} and its chain position disagree; retry"
-            )))),
+            (Some(_), None) | (None, Some(_)) => Err(RpcError::Read(ReadError::Transient(
+                format!("block {blockid} and its chain position disagree; retry"),
+            ))),
         }
     }
 
@@ -608,7 +608,10 @@ mod tests {
         assert_eq!(got.height, 2_468);
         assert_eq!(got.merkle_root, "22".repeat(32));
         assert_eq!(got.bits, "1f07ffff");
-        assert_eq!(got.next_block_hash.as_deref(), Some("77".repeat(32).as_str()));
+        assert_eq!(
+            got.next_block_hash.as_deref(),
+            Some("77".repeat(32).as_str())
+        );
     }
 
     #[tokio::test]
