@@ -1,0 +1,34 @@
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+section = "Removed"
+description = "Crate removed. The lightwalletd-compatible gRPC service is now provided by zaino-lightserve and the Zcash node JSON-RPC service by zaino-noderpc, over the greenfield inner-port trait algebra."
+migration = "Depend on zaino-lightserve and/or zaino-noderpc instead of zaino-serve."
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+section = "Removed"
+description = "Crate removed. The chain-index and indexer service is now provided by zaino-indexer, composing the typed index layer (zaino-indexes, zaino-sync) over the block spine (zaino-store, zaino-store-service, zaino-chainview)."
+migration = "Depend on zaino-indexer and the greenfield index/store crates instead of zaino-state."
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "breaking"
+section = "Removed"
+description = "Crate removed. The finalised-state ports are superseded by the greenfield persistence stack (zaino-store over zaino-persistence-codec and zaino-persistence)."
+migration = "Depend on zaino-store and zaino-persistence-codec instead of zaino-chain-store."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+section = "Removed"
+description = "Crate removed. The LMDB finalised-state implementation is superseded by zaino-backend-lmdb behind the zaino-persistence KV port, with zaino-store as the finalised provider."
+migration = "Depend on zaino-backend-lmdb and zaino-store instead of zaino-chain-store-zainodb."
+
+[[changes]]
+crate = "zaino-encoding"
+kind = "breaking"
+section = "Removed"
+description = "Crate removed. The versioned on-disk record format is superseded by zaino-persistence-codec (with zaino-persistence-macros)."
+migration = "Depend on zaino-persistence-codec instead of zaino-encoding."

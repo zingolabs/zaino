@@ -9,7 +9,7 @@ license = { workspace = true }
 version = "0.2.0"
 
 [dependencies]
-# The domain vocabulary. This crate names no wire, node, or `zaino-state` type.
+# The domain vocabulary. This crate names no wire, node, or indexer type.
 zaino-primitives = { workspace = true }
 
 # The validator ports the core reads through. Depending on the port crate rather

@@ -13,9 +13,9 @@ default = []
 
 # Declares the transparent-address-history capability: the domain types and the
 # `ChainHeadTransparentHistoryService` port. Declaration only — nothing
-# implements it, and no consumer is wired to it. Named to match
-# `zaino-state/transparent_address_history_experimental`, which gates the
-# finalised-state half of the same capability.
+# implements it, and no consumer is wired to it. It names the non-finalised
+# half of the capability; the finalised-state half is not yet built in the
+# greenfield stack.
 transparent_address_history_experimental = []
 
 [dependencies]

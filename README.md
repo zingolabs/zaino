@@ -54,7 +54,6 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-status/                      How a component reports whether it is working
   zaino-component/                   Supervised subsystems: lifecycle, health, and tasks
   zaino-consensus/                   Zcash consensus constants and protocol limits
-  zaino-encoding/                    Versioned on-disk encoding traits and byte helpers
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
   zaino-address/                     Zcash address classification
   zaino-source/                      Driven ports: one trait per chain question
@@ -69,10 +68,6 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-proto/                       Protocol buffer definitions
   zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
   zaino-chain-head-service/          Non-finalised chain head: the runtime
-  zaino-chain-store/                 Finalised state: vocabulary and ports
-  zaino-chain-store-zainodb/         Finalised state: the LMDB implementation
-  zaino-state/                       Chain state and indexer service library
-  zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
 
 live-tests/                        Live-test suite — standalone workspace, run on the ztest k8s harness
@@ -205,9 +200,6 @@ mistakes its design is trying to prevent.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
-- [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
-- [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
-- [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
 - [`zaino-runtime`](./packages/zaino-runtime/usage.md): deployments — how each use case is served, as types checked where the engine is composed — and the supervision they run under.
 - [`zaino-service`](./packages/zaino-service/usage.md): the inner driving surface — use cases as demand, read-sets as capability bundles, and the three layers of availability.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): materialisations as types, and each local capability declared once with the indexes it composes from.

@@ -46,13 +46,12 @@ landed. We do not cherry-pick from `dev` to cut releases — a release is always
 a **prefix** of `dev`'s history (the hotfix path, below, is the sole, contained
 exception).
 
-There are 23 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
-`zaino-proto`, `zaino-common`, `zaino-primitives`, `zaino-address`,
-`zaino-source`, `zaino-source-macros`, `zaino-rpc`, `zaino-convert-zebra`,
-`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`, `zaino-source-zebra`,
-`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status`,
-`zaino-encoding`, `zaino-chain-head`, `zaino-chain-head-service`,
-`zaino-chain-store`, `zaino-chain-store-zainodb`) and 3 internal-only
+There are 18 publishable crates (`zainod`, `zaino-proto`, `zaino-common`,
+`zaino-primitives`, `zaino-address`, `zaino-source`, `zaino-source-macros`,
+`zaino-rpc`, `zaino-convert-zebra`, `zaino-source-zebra-rpc`,
+`zaino-source-zebra-readstate`, `zaino-source-zebra`, `zaino-consensus`,
+`zaino-mempool`, `zaino-mempool-service`, `zaino-status`, `zaino-chain-head`,
+`zaino-chain-head-service`) and 3 internal-only
 (`e2e`, `clientless`, `zaino-testutils`). Each public crate is versioned and
 released **independently**. The authoritative, machine-read list of governed
 targets is [`relman.toml`](../../../relman.toml) at the repo root; this prose
