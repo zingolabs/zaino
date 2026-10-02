@@ -19,3 +19,4 @@ zcash_protocol.workspace = true
 [dev-dependencies]
 zaino-service = { path = "../zaino-service", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }
+serde_json.workspace = true

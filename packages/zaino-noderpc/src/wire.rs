@@ -201,4 +201,37 @@ mod tests {
         assert!(got.diversifier.is_none());
         assert!(got.diversified_transmission_key.is_none());
     }
+
+    /// The two serde renames are the only thing aligning Rust field names with
+    /// zcashd's: `address_type` must serialize as `address_type`, and
+    /// `diversified_transmission_key` as `diversifiedtransmissionkey`. Also pins
+    /// that a `None` component is omitted rather than serialized as `null`.
+    #[test]
+    fn sapling_response_serializes_zcashd_field_names() {
+        let json = serde_json::to_value(z_validated_to_wire(ZValidatedAddress::Sapling {
+            address: "zs1sapling".to_string(),
+            diversifier: [0u8; 11],
+            diversified_transmission_key: [0u8; 32],
+        }))
+        .expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        assert_eq!(
+            obj.get("address_type").and_then(|v| v.as_str()),
+            Some("sapling")
+        );
+        assert!(obj.contains_key("diversifiedtransmissionkey"));
+        assert!(
+            !obj.contains_key("diversified_transmission_key"),
+            "the Rust field name must not leak onto the wire"
+        );
+
+        // A unified response has no components: those keys are omitted, not null.
+        let unified = serde_json::to_value(z_validated_to_wire(ZValidatedAddress::Unified {
+            address: "u1unified".to_string(),
+        }))
+        .expect("serialize");
+        let unified = unified.as_object().expect("a JSON object");
+        assert!(!unified.contains_key("diversifier"));
+        assert!(!unified.contains_key("diversifiedtransmissionkey"));
+    }
 }

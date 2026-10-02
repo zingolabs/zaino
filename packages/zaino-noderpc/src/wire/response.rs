@@ -75,8 +75,8 @@ pub struct ZValidateAddressResponse {
     /// The address, re-encoded for the queried network, when valid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
-    /// zcashd's address-kind tag: `p2pkh`, `p2sh` or `sapling`.
-    #[serde(rename = "address_type", skip_serializing_if = "Option::is_none")]
+    /// zcashd's address-kind tag: `p2pkh`, `p2sh`, `sapling` or `unified`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub address_type: Option<String>,
     /// Sapling diversifier as hex, for a Sapling address.
     #[serde(skip_serializing_if = "Option::is_none")]
