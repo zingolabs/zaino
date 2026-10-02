@@ -23,3 +23,4 @@ zaino-finality.workspace = true
 zaino-sync = { path = "../zaino-sync", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 tokio = { workspace = true }
+zaino-runtime = { path = "../zaino-runtime" }

@@ -39,20 +39,34 @@ pub fn drive<L: RunLoop>(run_loop: L) -> TestRun<L::Error> {
     }
 }
 
+/// The bound on every wait in the harness: a run that never reaches its
+/// condition fails the test cleanly rather than hanging CI until the outer
+/// harness kills it.
+const DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl<E: std::fmt::Debug> TestRun<E> {
-    /// Resolve once the loop reports `Ready`.
+    /// Resolve once the loop reports `Ready`, or fail if it does not within the
+    /// [`DEADLINE`].
     pub async fn await_ready(&mut self) {
-        while !*self.ready.borrow_and_update() {
-            self.ready
-                .changed()
-                .await
-                .expect("the reporter lives until ready");
-        }
+        tokio::time::timeout(DEADLINE, async {
+            while !*self.ready.borrow_and_update() {
+                self.ready
+                    .changed()
+                    .await
+                    .expect("the reporter lives until ready");
+            }
+        })
+        .await
+        .expect("the loop reached Ready within the deadline");
     }
 
-    /// Cancel the loop and await a clean stop.
+    /// Cancel the loop and await a clean stop, or fail if it does not stop within
+    /// the [`DEADLINE`].
     pub async fn stop(self) -> Result<(), E> {
         self.cancel.cancel();
-        self.handle.await.expect("the run task joins")
+        tokio::time::timeout(DEADLINE, self.handle)
+            .await
+            .expect("the run task stops within the deadline")
+            .expect("the run task joins")
     }
 }

@@ -53,6 +53,14 @@ there is no `SeamFault` for `r <= t - d`.
 - Neither `ReorgHorizon` nor `DurableWatermark` is `Clone`, and both publish
   through `&mut self`: single-writer per quantity holds at the borrow checker as
   well as at the type level.
+- *Reading* a quantity is not rationed — only *publishing* is. The durable tier
+  holds the single `DurableWatermark`, but a quantity may have many readers, so
+  `DurableWatermark::reader` hands out a `HorizonReader`: a cloneable, read-only
+  view of the reorg horizon for parties that only observe it — the indexer's sync
+  loop drives its boundary from one, and its progress poller reports against
+  another — without holding the publishing capability. Observing the horizon
+  cannot advance the watermark; that still requires the `DurableWatermark`
+  itself.
 - `Released` (the authorisation `ReorgHorizon::advance` issues) has no public
   constructor, and `DurableWatermark::advance` requires one, so the durable tier
   cannot advance on its own authority — the cross-tier relation `w <= r` is held
