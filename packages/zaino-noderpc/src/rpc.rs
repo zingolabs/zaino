@@ -8,14 +8,15 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 
 use zaino_service::error::AddressReadError;
+use zaino_service::error::TransactionViewError;
 use zaino_service::error::TxReadError;
 use zaino_service::NodeRpcService;
 
 use crate::error::RpcError;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockResponse,
-    BlockchainInfoResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
+    GetBlockResponse, GetRawTransactionResponse, UnifiedReceiversResponse, ValidateAddressResponse,
     ZValidateAddressResponse,
 };
 use crate::NodeRpc;
@@ -34,7 +35,7 @@ pub trait NodeRpcApi {
         &self,
         txid: String,
         verbosity: Option<u32>,
-    ) -> Result<String, ErrorObjectOwned>;
+    ) -> Result<GetRawTransactionResponse, ErrorObjectOwned>;
 
     #[method(name = "sendrawtransaction")]
     async fn send_raw(&self, hex: String) -> Result<String, ErrorObjectOwned>;
@@ -44,7 +45,7 @@ pub trait NodeRpcApi {
         &self,
         blockid: String,
         verbosity: Option<u32>,
-    ) -> Result<BlockResponse, ErrorObjectOwned>;
+    ) -> Result<GetBlockResponse, ErrorObjectOwned>;
 
     #[method(name = "getblockheader")]
     async fn block_header(&self, hash: String) -> Result<BlockHeaderResponse, ErrorObjectOwned>;
@@ -98,7 +99,7 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         &self,
         txid: String,
         verbosity: Option<u32>,
-    ) -> Result<String, ErrorObjectOwned> {
+    ) -> Result<GetRawTransactionResponse, ErrorObjectOwned> {
         self.get_raw_transaction(&txid, verbosity)
             .await
             .map_err(to_error_object)
@@ -112,7 +113,7 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         &self,
         blockid: String,
         verbosity: Option<u32>,
-    ) -> Result<BlockResponse, ErrorObjectOwned> {
+    ) -> Result<GetBlockResponse, ErrorObjectOwned> {
         self.get_block(&blockid, verbosity)
             .await
             .map_err(to_error_object)
@@ -194,6 +195,22 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::TxRead(e @ TxReadError::NotServiceable(_)) => {
             (ErrorCode::InternalError, e.to_string())
         }
+        // Resolving a transaction's inputs is a server-side concern throughout:
+        // `Unavailable` is a transport failure, and `MissingPrevout` /
+        // `PrevoutIndexOutOfRange` are inconsistencies in what the validator
+        // served — the spending transaction without the output it spends. None of
+        // these is bad client input, so all map to the internal-error code. Each
+        // variant's own `Display` is used (which does not stringify the `#[source]`
+        // cause), per variant, rather than a blanket `to_string()` of the cause.
+        RpcError::TransactionView(e @ TransactionViewError::Unavailable { .. }) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+        RpcError::TransactionView(e @ TransactionViewError::MissingPrevout { .. }) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+        RpcError::TransactionView(e @ TransactionViewError::PrevoutIndexOutOfRange { .. }) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
     };
     ErrorObjectOwned::owned(code.code(), message, None::<()>)
 }
@@ -204,6 +221,7 @@ mod tests {
     use crate::error::RpcError;
     use jsonrpsee::types::ErrorCode;
     use zaino_service::error::AddressReadError;
+    use zaino_service::error::TransactionViewError;
     use zaino_service::error::TxReadError;
     use zaino_service::Capability;
 
@@ -260,6 +278,60 @@ mod tests {
         ] {
             assert_eq!(to_error_object(err).code(), ErrorCode::InternalError.code());
         }
+    }
+
+    /// A missing prevout is a source inconsistency — the validator served a
+    /// spending transaction but not the output it spends — not bad client input.
+    /// It is the server's fault, so it maps to the internal-error code, never
+    /// invalid-params (which would blame the caller for the validator's gap). The
+    /// outpoint is named in the message via the variant's own `Display`, without
+    /// stringifying a `#[source]` cause.
+    #[test]
+    fn missing_prevout_is_an_internal_error() {
+        use zaino_primitives::types::{TransactionId, TransparentInput};
+        let outpoint = TransparentInput {
+            prev_txid: TransactionId::from([0x01; 32]),
+            prev_index: 7,
+        };
+        let obj = to_error_object(RpcError::TransactionView(
+            TransactionViewError::MissingPrevout { outpoint },
+        ));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+        assert!(
+            obj.message().contains("unknown to the validator"),
+            "the message names the inconsistency: {}",
+            obj.message()
+        );
+    }
+
+    /// An out-of-range prevout index is likewise a source inconsistency, internal.
+    #[test]
+    fn prevout_index_out_of_range_is_an_internal_error() {
+        use zaino_primitives::types::{TransactionId, TransparentInput};
+        let outpoint = TransparentInput {
+            prev_txid: TransactionId::from([0x02; 32]),
+            prev_index: 9,
+        };
+        let obj = to_error_object(RpcError::TransactionView(
+            TransactionViewError::PrevoutIndexOutOfRange {
+                outpoint,
+                index: 9,
+                outputs: 2,
+            },
+        ));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// An unavailable validator while resolving inputs is a transport failure,
+    /// also internal — the same class as the other read transport failures.
+    #[test]
+    fn transaction_view_unavailable_is_an_internal_error() {
+        let obj = to_error_object(RpcError::TransactionView(
+            TransactionViewError::Unavailable {
+                cause: "connection reset".into(),
+            },
+        ));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
     }
 
     /// `gettxout` is no longer served: the generated surface answers it with

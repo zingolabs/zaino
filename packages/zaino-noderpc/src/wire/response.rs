@@ -162,77 +162,241 @@ pub struct BlockHeaderResponse {
     pub next_block_hash: Option<String>,
 }
 
-/// One input in a verbose transaction's `vin`: either the spend of a previous
-/// output, or the block's coinbase input.
+/// One input in a verbose transaction's `vin`: either the block's coinbase
+/// input, or the spend of a previous transparent output resolved to the value
+/// and address it spends.
 ///
-/// A spend carries `txid` and `vout` only — not the spent output's `address` or
-/// `value`. Those name the *spent output*, which lives in an earlier
-/// transaction, not in this transaction's own bytes, so resolving them needs a
-/// prevout lookup deferred to a follow-up (ruling R37). The coinbase input is a
-/// bare marker: the domain drops the coinbase scriptSig, so the hex zcashd
-/// reports under `coinbase` is not available here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// The two shapes are what the explorer reads differently: a coinbase input is a
+/// script with no prevout, so it carries `coinbase` (the scriptSig hex zcashd
+/// reports — a *string*, which the explorer decodes) and `sequence`. A spend
+/// carries the prevout reference (`txid`, `vout`) plus the spent output's value
+/// (both as a ZEC float and exact zatoshis) and the address it paid, resolved
+/// through [`crate::wire`]'s prevout lookup.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum TransactionInput {
     /// The block's coinbase input — present once, on the coinbase transaction.
     Coinbase {
-        /// Always `true`; marks this input as the coinbase.
-        coinbase: bool,
+        /// The coinbase scriptSig, as hex. A string, not a flag: the explorer
+        /// decodes it (block height, miner tag).
+        coinbase: String,
+        /// The input's sequence number.
+        sequence: u32,
     },
-    /// A spend of a previous transparent output.
+    /// A spend of a previous transparent output, resolved to that output.
     Spend {
         /// The spent transaction's id, as hex.
         txid: String,
         /// The spent output's index within that transaction.
         vout: u32,
+        /// The spent output's value, as a ZEC-denominated float — the key the
+        /// explorer sums for a transaction's input total.
+        value: f64,
+        /// The spent output's value, in zatoshis — the exact amount beside the
+        /// float.
+        #[serde(rename = "valueSat")]
+        value_sat: u64,
+        /// The address the spent output paid, when its script is a standard
+        /// P2PKH/P2SH template; absent otherwise.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        address: Option<String>,
     },
 }
 
 /// One output in a verbose transaction's `vout`.
 ///
-/// `valueZat` is the exact zatoshi amount. The ZEC-denominated float zcashd also
-/// reports under `value` is omitted, matching the single-source-of-truth choice
-/// the chain-info value pools make (`chainValueZat`): only the exact integer
-/// crosses the wire.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Each amount is emitted twice — `value` as the ZEC float the explorer sums and
+/// `valueZat` as the exact zatoshis beside it — mirroring the chain-info value
+/// pools.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TransactionOutput {
-    /// Output value, in zatoshis.
+    /// Output value, as a ZEC-denominated float.
+    pub value: f64,
+    /// Output value, in zatoshis — the exact amount.
     #[serde(rename = "valueZat")]
     pub value_zat: u64,
     /// Index of this output within the transaction.
     pub n: u32,
+    /// The output's locking script and the address it pays.
+    #[serde(rename = "scriptPubKey")]
+    pub script_pub_key: ScriptPubKey,
 }
 
-/// A Sprout JoinSplit description. Uninhabited: Zaino serves no Sprout, so a
-/// transaction's `vjoinsplit` array is always empty, which the type enforces.
+/// A transparent output's locking script, as the explorer reads it.
+///
+/// `addresses` and `type` are present together exactly when the script is a
+/// standard P2PKH/P2SH template, and absent together otherwise — a non-standard
+/// script is not an address.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub enum JoinSplit {}
+pub struct ScriptPubKey {
+    /// The locking script, as hex.
+    pub hex: String,
+    /// The address the output pays, as a one-element array; absent when the
+    /// script is non-standard. The explorer iterates it, so a non-standard
+    /// output omits the key rather than rendering an empty or null array.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addresses: Option<Vec<String>>,
+    /// zcashd's script-type tag — `pubkeyhash` or `scripthash`; absent for a
+    /// non-standard script.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub script_type: Option<String>,
+}
 
-/// One transaction in a verbose block's `tx` array: its id, inputs, outputs, and
-/// (always-empty) Sprout JoinSplits.
+/// One Sprout JoinSplit's transparent value movement, each amount as both the
+/// ZEC float the explorer sums and the exact zatoshis beside it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JoinSplitObject {
+    /// Value removed from the transparent pool, as a ZEC float.
+    pub vpub_old: f64,
+    /// Value removed from the transparent pool, in zatoshis.
+    #[serde(rename = "vpub_oldZat")]
+    pub vpub_old_zat: u64,
+    /// Value inserted into the transparent pool, as a ZEC float.
+    pub vpub_new: f64,
+    /// Value inserted into the transparent pool, in zatoshis.
+    #[serde(rename = "vpub_newZat")]
+    pub vpub_new_zat: u64,
+}
+
+/// One Sapling spend in `vShieldedSpend`. The explorer reads only the array's
+/// length, so a single field (the nullifier, in zcashd's spelling) carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShieldedSpend {
+    /// The spend's nullifier, as hex.
+    pub nullifier: String,
+}
+
+/// One Sapling output in `vShieldedOutput`. The explorer reads only the array's
+/// length; the fields are zcashd's spellings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShieldedOutput {
+    /// Note commitment (`cmu`), as hex.
+    pub cmu: String,
+    /// Ephemeral key for recipient detection, as hex.
+    #[serde(rename = "ephemeralKey")]
+    pub ephemeral_key: String,
+}
+
+/// A version-5 transaction's Orchard bundle, as the explorer reads it on the
+/// transaction page.
+///
+/// Emitted on every version-5 transaction, including one with no actions — the
+/// explorer dereferences `orchard.valueBalance` strictly on v5, so an absent
+/// `orchard` crashes it (Review Focus 5).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OrchardObject {
+    /// The Orchard actions. The explorer reads only the length.
+    pub actions: Vec<OrchardActionObject>,
+    /// Net Orchard value balance, as a ZEC float.
+    #[serde(rename = "valueBalance")]
+    pub value_balance: f64,
+    /// Net Orchard value balance, in zatoshis — signed, the exact amount.
+    #[serde(rename = "valueBalanceZat")]
+    pub value_balance_zat: i64,
+}
+
+/// One Orchard action. The explorer reads only `length(orchard.actions)`; the
+/// fields are zcashd's spellings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrchardActionObject {
+    /// Nullifier, as hex.
+    pub nullifier: String,
+    /// Note commitment (`cmx`), as hex.
+    pub cmx: String,
+    /// Ephemeral key for recipient detection, as hex.
+    #[serde(rename = "ephemeralKey")]
+    pub ephemeral_key: String,
+}
+
+/// One transaction, in the shape the explorer parses for both
+/// `getrawtransaction <txid> 1` and each element of `getblock <block> 2`'s `tx`.
+///
+/// The conditional keys follow the transaction's envelope: `versiongroupid` and
+/// `expiryheight` appear on an overwintered transaction; `valueBalance`,
+/// `valueBalanceZat`, `vShieldedSpend` and `vShieldedOutput` from version 4;
+/// `orchard` from version 5. Ironwood is deliberately not emitted — the explorer
+/// has no field for it (a recorded divergence).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TransactionObject {
     /// Transaction id, as hex.
     pub txid: String,
-    /// Inputs — one coinbase marker on the coinbase transaction, spends
+    /// Transaction version number.
+    pub version: u32,
+    /// Whether the Overwinter format flag is set.
+    pub overwintered: bool,
+    /// Version group id, as 8-digit hex; present only when overwintered.
+    #[serde(rename = "versiongroupid", skip_serializing_if = "Option::is_none")]
+    pub version_group_id: Option<String>,
+    /// Raw `nLockTime`.
+    pub locktime: u32,
+    /// Expiry height; present only when overwintered.
+    #[serde(rename = "expiryheight", skip_serializing_if = "Option::is_none")]
+    pub expiry_height: Option<u32>,
+    /// Serialized byte length of the transaction.
+    pub size: u64,
+    /// Inputs — one coinbase input on the coinbase transaction, spends
     /// otherwise.
     pub vin: Vec<TransactionInput>,
     /// Outputs, in order.
     pub vout: Vec<TransactionOutput>,
-    /// Sprout JoinSplits — always empty; Zaino serves no Sprout.
-    pub vjoinsplit: Vec<JoinSplit>,
+    /// Sprout JoinSplits, in order; empty on a non-Sprout transaction.
+    pub vjoinsplit: Vec<JoinSplitObject>,
+    /// Net Sapling value balance, as a ZEC float; present from version 4.
+    #[serde(rename = "valueBalance", skip_serializing_if = "Option::is_none")]
+    pub value_balance: Option<f64>,
+    /// Net Sapling value balance, in zatoshis; present from version 4.
+    #[serde(rename = "valueBalanceZat", skip_serializing_if = "Option::is_none")]
+    pub value_balance_zat: Option<i64>,
+    /// Sapling spends; present from version 4.
+    #[serde(rename = "vShieldedSpend", skip_serializing_if = "Option::is_none")]
+    pub shielded_spends: Option<Vec<ShieldedSpend>>,
+    /// Sapling outputs; present from version 4.
+    #[serde(rename = "vShieldedOutput", skip_serializing_if = "Option::is_none")]
+    pub shielded_outputs: Option<Vec<ShieldedOutput>>,
+    /// Orchard bundle; present from version 5.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchard: Option<OrchardObject>,
 }
 
-/// The `getblock` response at verbosity 2: the block's own header fields, its
-/// chain-position facts, and its transactions decoded.
+/// The `getrawtransaction <txid> 1` response: the shared [`TransactionObject`]
+/// plus where the transaction sits in the chain.
 ///
-/// `size` (the serialized block length) is omitted: re-serializing the block to
-/// measure it needs the validator's chain library, which this adapter does not
-/// have, so it is a known divergence from zcashd deferred to a follow-up (the
-/// same follow-up that resolves input prevouts). The explorer renders a missing
-/// `size` as blank rather than failing.
+/// The location keys are flattened onto the transaction object, matching zcashd,
+/// and are all absent for a mempool transaction, which has no containing block.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct BlockResponse {
+pub struct RawTransactionResponse {
+    /// The transaction, in the shared explorer shape.
+    #[serde(flatten)]
+    pub transaction: TransactionObject,
+    /// Height of the containing block; absent for a mempool transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// Depth of the containing block in the best chain; absent for a mempool
+    /// transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmations: Option<i64>,
+    /// Hash of the containing block, as hex; absent for a mempool transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blockhash: Option<String>,
+    /// Time of the containing block, in Unix seconds; absent for a mempool
+    /// transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<u32>,
+    /// Time of the containing block, in Unix seconds (zcashd emits it twice);
+    /// absent for a mempool transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocktime: Option<u32>,
+}
+
+/// The `getblock` response at verbosity 1 or 2. The two verbosities share every
+/// field but `tx`: verbosity 1 lists the transaction ids as strings, verbosity 2
+/// the decoded [`TransactionObject`]s — so `T` is `String` or
+/// [`TransactionObject`].
+///
+/// `size` is the serialized block length, from the decoded-block read (which
+/// closes the earlier divergence where it could not be measured).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlockResponse<T> {
     /// Hash of this block, as hex.
     pub hash: String,
     /// Depth in the best chain, or `-1` off it.
@@ -256,8 +420,41 @@ pub struct BlockResponse {
     /// validator does not track it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chainwork: Option<String>,
-    /// The block's transactions, decoded.
-    pub tx: Vec<TransactionObject>,
+    /// Serialized byte length of the whole block.
+    pub size: u64,
+    /// Hash of the previous block, as hex. Absent for genesis.
+    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none")]
+    pub previous_block_hash: Option<String>,
+    /// Hash of the next block on the best chain, as hex. Absent for the tip.
+    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none")]
+    pub next_block_hash: Option<String>,
+    /// The block's transactions — ids at verbosity 1, decoded at verbosity 2.
+    pub tx: Vec<T>,
+}
+
+/// The `getrawtransaction` response across the served verbosities. Serialized
+/// untagged, so each variant is its own JSON: verbosity 0 a bare hex string,
+/// verbosity 1 the decoded object. A single jsonrpsee method returns one type,
+/// and zcashd's `getrawtransaction` is polymorphic by verbosity, so the enum is
+/// that one type.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum GetRawTransactionResponse {
+    /// Verbosity 0: the raw consensus bytes as lowercase hex.
+    Raw(String),
+    /// Verbosity 1: the decoded transaction with its chain location.
+    Verbose(Box<RawTransactionResponse>),
+}
+
+/// The `getblock` response across the served verbosities. Serialized untagged:
+/// verbosity 1 carries `tx` as id strings, verbosity 2 as decoded transactions.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum GetBlockResponse {
+    /// Verbosity 1: `tx` is the list of transaction ids.
+    Verbose1(BlockResponse<String>),
+    /// Verbosity 2: `tx` is the list of decoded transactions.
+    Verbose2(BlockResponse<TransactionObject>),
 }
 
 /// One value pool in a `getblockchaininfo` response.

@@ -6,7 +6,8 @@
 //! decided by the adapter, not the port.
 
 use zaino_service::error::{
-    AddressReadError, BroadcastRejection, ReadError, SpendReadError, Transient, TxReadError,
+    AddressReadError, BroadcastRejection, ReadError, SpendReadError, TransactionViewError,
+    Transient, TxReadError,
 };
 
 /// A node-RPC handler failure.
@@ -39,4 +40,8 @@ pub enum RpcError {
     /// A transaction read failed.
     #[error(transparent)]
     TxRead(#[from] TxReadError),
+    /// Resolving a transaction's inputs to the outputs they spend failed — a
+    /// transport failure or a source inconsistency, never bad client input.
+    #[error(transparent)]
+    TransactionView(#[from] TransactionViewError),
 }

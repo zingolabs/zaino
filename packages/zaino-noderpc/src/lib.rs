@@ -20,12 +20,13 @@ pub use error::RpcError;
 pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
-use zaino_primitives::types::{Height, TransparentAddress};
+use zaino_primitives::types::{Height, TransactionLocation, TransparentAddress};
 use zaino_service::error::ReadError;
 use zaino_service::queries;
 use zaino_service::BlockVerboseRead;
 use zaino_service::NodeQuery;
 use zaino_service::RawTransactionRead;
+use zaino_service::TransactionViewRead;
 use zaino_service::{BlockRead, ChainInfoRead, ChainSegment, NodeRpcService};
 use zcash_protocol::consensus::Network;
 
@@ -33,14 +34,15 @@ use zaino_primitives::types::BlockSelector;
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockResponse,
-    BlockchainInfoResponse, DeltaRange, UnifiedReceiversResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
+    DeltaRange, GetBlockResponse, GetRawTransactionResponse, RawTransactionResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, block_header_to_wire, block_to_wire, blockchain_info_to_wire,
-    blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire, to_hex, txid_from_hex,
-    unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
+    address_balance_to_wire, block_header_to_wire, block_to_wire_v1, block_to_wire_v2,
+    blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire,
+    to_hex, transaction_view_to_wire, txid_from_hex, unified_receivers_to_wire, validated_to_wire,
+    z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -83,30 +85,81 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(to_hex(txid.into()))
     }
 
-    /// `getrawtransaction`: the transaction's consensus bytes as hex.
+    /// `getrawtransaction`: the transaction's consensus bytes as hex (verbosity
+    /// 0) or the decoded explorer object (verbosity 1).
     ///
-    /// Only verbosity 0 is served here. The decoded form is a different
-    /// capability — `TransactionRead`, which needs a verbose source port — so a
-    /// verbose request is refused rather than answered with the raw shape.
+    /// Verbosity 1 resolves every transparent input to the value and address of
+    /// the output it spends, and adds the chain-location fields (`height`,
+    /// `confirmations`, `blockhash`, `time`, `blocktime`) — all absent for a
+    /// mempool transaction, which has no containing block. A verbosity outside
+    /// `0..=1` is a parameter error naming the served range.
     pub async fn get_raw_transaction(
         &self,
         txid_hex: &str,
         verbosity: Option<u32>,
-    ) -> Result<String, RpcError> {
+    ) -> Result<GetRawTransactionResponse, RpcError> {
+        let txid = txid_from_hex(txid_hex)?;
         match verbosity.unwrap_or(0) {
-            0 => {}
-            other => {
-                return Err(RpcError::InvalidParams(format!(
-                    "verbosity {other} is not served yet; only 0 (raw hex) is available"
+            0 => {
+                let snapshot = self.engine.snapshot().await?;
+                let found = snapshot.raw_transaction(txid).await?;
+                let tx = found.ok_or_else(|| {
+                    RpcError::NotFound(format!("no transaction with id {txid_hex}"))
+                })?;
+                Ok(GetRawTransactionResponse::Raw(bytes_to_hex(&tx.data)))
+            }
+            1 => {
+                let snapshot = self.engine.snapshot().await?;
+                let located = snapshot.transaction_view(txid).await?.ok_or_else(|| {
+                    RpcError::NotFound(format!("no transaction with id {txid_hex}"))
+                })?;
+                let transaction = transaction_view_to_wire(&located.view, &self.network);
+                // Chain-location fields: present for a mined transaction, absent
+                // for one in the mempool or a side chain.
+                let (height, confirmations, blockhash, time, blocktime) = match &located.location {
+                    TransactionLocation::BestChain(block_height) => {
+                        let height: u32 = (*block_height).into();
+                        let confirmations = snapshot.pinned_tip().map(|tip| {
+                            let tip_height: u32 = tip.height.into();
+                            i64::from(tip_height) - i64::from(height) + 1
+                        });
+                        // The block carries the hash and time; a miss here is a
+                        // reorg race on an otherwise-located transaction, so the
+                        // three block fields are omitted rather than erroring.
+                        let block = snapshot
+                            .block(BlockSelector::Height(*block_height))
+                            .await
+                            .map_err(ReadError::from)?;
+                        match block {
+                            Some(block) => (
+                                Some(height),
+                                confirmations,
+                                Some(to_hex(block.header.hash.into())),
+                                Some(block.header.time),
+                                Some(block.header.time),
+                            ),
+                            None => (Some(height), confirmations, None, None, None),
+                        }
+                    }
+                    TransactionLocation::NonBestChain | TransactionLocation::Mempool => {
+                        (None, None, None, None, None)
+                    }
+                };
+                Ok(GetRawTransactionResponse::Verbose(Box::new(
+                    RawTransactionResponse {
+                        transaction,
+                        height,
+                        confirmations,
+                        blockhash,
+                        time,
+                        blocktime,
+                    },
                 )))
             }
+            other => Err(RpcError::InvalidParams(format!(
+                "verbosity {other} is out of range; getrawtransaction serves 0 (raw hex) and 1 (the decoded transaction)"
+            ))),
         }
-        let txid = txid_from_hex(txid_hex)?;
-        let snapshot = self.engine.snapshot().await?;
-        let found = snapshot.raw_transaction(txid).await?;
-        let tx = found
-            .ok_or_else(|| RpcError::NotFound(format!("no transaction with id {txid_hex}")))?;
-        Ok(bytes_to_hex(&tx.data))
     }
 
     /// `getblockchaininfo` (aggregate): reads the validator's `BlockchainInfo` —
@@ -119,30 +172,40 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(blockchain_info_to_wire(info))
     }
 
-    /// `getblock`: the full block object at verbosity 2 — the block page's read.
+    /// `getblock`: the block object at verbosity 1 (transaction ids) or 2
+    /// (decoded transactions) — the block page's read.
     ///
     /// The block id arrives as a string: all-digits is a height, otherwise a hex
-    /// block hash (the explorer sends a height as a decimal string). Only
-    /// verbosity 2 is served — the full block object with decoded transactions;
-    /// any other verbosity is a params error naming what this method serves.
+    /// block hash (the explorer sends a height as a decimal string). zcashd
+    /// defaults to verbosity 1, and the explorer calls verbosity 1 on every block
+    /// page, so an omitted verbosity is 1. Verbosity 0 (raw hex) is not served
+    /// yet; a verbosity outside the served range is a parameter error naming it.
     ///
-    /// The response composes two reads for the same block — its contents
-    /// ([`BlockRead::block`]) and its chain position
-    /// ([`BlockVerboseRead::block_verbose`]). Both missing is a not-found error;
-    /// either read failing is an RPC error (via `?`), never a partially rendered
-    /// block.
+    /// The response composes three reads for the same block: its header
+    /// ([`BlockRead::block`]), its chain position
+    /// ([`BlockVerboseRead::block_verbose`]), and its transactions with resolved
+    /// inputs and serialized size
+    /// ([`TransactionViewRead::block_transaction_views`]). All three missing is a
+    /// not-found error; a subset present is a reorg race (transient), never a
+    /// partially rendered block.
     pub async fn get_block(
         &self,
         blockid: &str,
         verbosity: Option<u32>,
-    ) -> Result<BlockResponse, RpcError> {
-        // zcashd defaults getblock to verbosity 1, which this method does not
-        // serve, so an omitted verbosity is refused the same as any non-2.
+    ) -> Result<GetBlockResponse, RpcError> {
         let requested = verbosity.unwrap_or(1);
-        if requested != 2 {
-            return Err(RpcError::InvalidParams(format!(
-                "verbosity {requested} is not served; only 2 (the full block object with decoded transactions) is available"
-            )));
+        match requested {
+            1 | 2 => {}
+            0 => {
+                return Err(RpcError::InvalidParams(
+                    "verbosity 0 (raw block hex) is not served yet; 1 (block with transaction ids) and 2 (block with decoded transactions) are available".into(),
+                ))
+            }
+            other => {
+                return Err(RpcError::InvalidParams(format!(
+                    "verbosity {other} is out of range; getblock serves 1 (transaction ids) and 2 (decoded transactions)"
+                )))
+            }
         }
         let selector = block_selector_from_str(blockid)?;
         let snapshot = self.engine.snapshot().await?;
@@ -151,14 +214,28 @@ impl<S: NodeRpcService> NodeRpc<S> {
             .block_verbose(selector)
             .await
             .map_err(ReadError::from)?;
-        match (block, verbose) {
-            (Some(block), Some(verbose)) => Ok(block_to_wire(block, verbose)),
-            (None, None) => Err(RpcError::NotFound(format!("no block for {blockid}"))),
-            // The two live passthrough reads disagree — a reorg race between
-            // them. Not a partial render and not a definitive miss: transient.
-            (Some(_), None) | (None, Some(_)) => Err(RpcError::Read(ReadError::Transient(
-                format!("block {blockid} and its chain position disagree; retry"),
-            ))),
+        let views = snapshot.block_transaction_views(selector).await?;
+        match (block, verbose, views) {
+            (Some(block), Some(verbose), Some(views)) => {
+                if requested == 1 {
+                    Ok(GetBlockResponse::Verbose1(block_to_wire_v1(
+                        &block, &verbose, &views,
+                    )))
+                } else {
+                    Ok(GetBlockResponse::Verbose2(block_to_wire_v2(
+                        &block,
+                        &verbose,
+                        &views,
+                        &self.network,
+                    )))
+                }
+            }
+            (None, None, None) => Err(RpcError::NotFound(format!("no block for {blockid}"))),
+            // The live passthrough reads disagree — a reorg race between them. Not
+            // a partial render and not a definitive miss: transient.
+            _ => Err(RpcError::Read(ReadError::Transient(format!(
+                "block {blockid} and its contents disagree; retry"
+            )))),
         }
     }
 
@@ -316,6 +393,7 @@ fn block_selector_from_str(blockid: &str) -> Result<BlockSelector, RpcError> {
 #[cfg(test)]
 mod tests {
     use super::{block_selector_from_str, NodeRpc, RpcError};
+    use crate::wire::response::{GetBlockResponse, GetRawTransactionResponse};
     use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId};
     use zaino_service::testing::{MockChain, MockIndexerService};
     use zcash_protocol::consensus::Network;
@@ -490,29 +568,138 @@ mod tests {
         (block, verbose)
     }
 
+    /// A block's transactions as views, for the `block_transaction_views` read:
+    /// a coinbase (its input from the detail) and a transparent spend with its
+    /// prevout resolved, plus a serialized size.
+    fn scripted_views() -> zaino_service::BlockTransactionViews {
+        use zaino_primitives::types::{
+            CoinbaseInput, OrchardData, SaplingData, Script, TransactionDetail, TransparentData,
+            TransparentInput, TransparentOutput, Zatoshis,
+        };
+        use zaino_service::{BlockTransactionViews, ResolvedInput, TransactionView};
+
+        let coinbase = zaino_primitives::types::Transaction {
+            txid: TransactionId::from([0xC0; 32]),
+            transparent: TransparentData::default(),
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        };
+        let coinbase_detail = TransactionDetail {
+            version: 4,
+            overwintered: true,
+            version_group_id: Some(0x892f_2085),
+            lock_time: 0,
+            expiry_height: Some(Height::try_from(0).expect("valid height")),
+            size: 100,
+            coinbase: Some(CoinbaseInput {
+                script: Script::new(vec![0x03, 0x01, 0x02, 0x03]),
+                sequence: 0xffff_ffff,
+            }),
+            joinsplits: Vec::new(),
+        };
+
+        let spend = zaino_primitives::types::Transaction {
+            txid: TransactionId::from([0x7A; 32]),
+            transparent: TransparentData {
+                inputs: vec![TransparentInput {
+                    prev_txid: TransactionId::from([0x01; 32]),
+                    prev_index: 0,
+                }],
+                outputs: Vec::new(),
+            },
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        };
+        let spend_detail = TransactionDetail {
+            version: 4,
+            overwintered: true,
+            version_group_id: Some(0x892f_2085),
+            lock_time: 0,
+            expiry_height: Some(Height::try_from(0).expect("valid height")),
+            size: 180,
+            coinbase: None,
+            joinsplits: Vec::new(),
+        };
+        let resolved = ResolvedInput {
+            outpoint: TransparentInput {
+                prev_txid: TransactionId::from([0x01; 32]),
+                prev_index: 0,
+            },
+            spent: TransparentOutput {
+                value: Zatoshis::new(500).expect("valid amount"),
+                script: Script::new(vec![]),
+            },
+        };
+
+        BlockTransactionViews {
+            size: 999,
+            transactions: vec![
+                TransactionView {
+                    transaction: coinbase,
+                    detail: coinbase_detail,
+                    inputs: Vec::new(),
+                },
+                TransactionView {
+                    transaction: spend,
+                    detail: spend_detail,
+                    inputs: vec![resolved],
+                },
+            ],
+        }
+    }
+
     #[tokio::test]
-    async fn get_block_composes_the_block_and_its_chain_position() {
+    async fn get_block_composes_the_block_its_position_and_its_transactions() {
         let (block, verbose) = scripted_block_and_verbose();
         let engine = MockIndexerService::new(MockChain {
             block: Some(block),
             block_verbose: Some(verbose),
+            block_transaction_views: Some(scripted_views()),
             ..Default::default()
         });
         let node = NodeRpc::new(engine, Network::MainNetwork);
-        // A height arrives as a decimal string.
-        let got = node.get_block("2468", Some(2)).await.expect("block served");
-        assert_eq!(got.hash, "11".repeat(32));
-        assert_eq!(got.height, 2_468);
-        assert_eq!(got.confirmations, 9);
-        assert_eq!(got.difficulty, 123.5);
-        assert_eq!(got.tx.len(), 2);
+        // A height arrives as a decimal string; verbosity 2 decodes the txs.
+        match node.get_block("2468", Some(2)).await.expect("block served") {
+            GetBlockResponse::Verbose2(got) => {
+                assert_eq!(got.hash, "11".repeat(32));
+                assert_eq!(got.height, 2_468);
+                assert_eq!(got.confirmations, 9);
+                assert_eq!(got.difficulty, 123.5);
+                assert_eq!(got.size, 999); // from BlockTransactionViews, not the header
+                assert_eq!(got.tx.len(), 2);
+            }
+            other => panic!("verbosity 2 must render decoded transactions: {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn get_block_refuses_every_verbosity_but_two() {
+    async fn get_block_verbosity_one_lists_transaction_ids() {
+        let (block, verbose) = scripted_block_and_verbose();
+        let engine = MockIndexerService::new(MockChain {
+            block: Some(block),
+            block_verbose: Some(verbose),
+            block_transaction_views: Some(scripted_views()),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        // Verbosity 1 is the hot block-page path: tx is a list of id strings.
+        match node.get_block("2468", Some(1)).await.expect("block served") {
+            GetBlockResponse::Verbose1(got) => {
+                assert_eq!(got.size, 999);
+                assert_eq!(got.tx, vec!["c0".repeat(32), "7a".repeat(32)]);
+            }
+            other => panic!("verbosity 1 must list transaction ids: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_block_refuses_verbosity_zero_and_out_of_range() {
         let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
-        // 0 and 1 and an omitted verbosity are all refused; the message names 2.
-        for verbosity in [Some(0), Some(1), None, Some(3)] {
+        // 0 is deferred to a later task; anything above 2 is out of range. Both are
+        // parameter errors naming what is served.
+        for verbosity in [Some(0), Some(3)] {
             assert!(matches!(
                 node.get_block(&"11".repeat(32), verbosity).await,
                 Err(RpcError::InvalidParams(_))
@@ -522,7 +709,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_block_reports_an_unknown_block_as_not_found() {
-        // Nothing scripted: both reads miss, which is a not-found error.
+        // Nothing scripted: all three reads miss, which is a not-found error.
         let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(matches!(
             node.get_block("999999", Some(2)).await,
@@ -532,9 +719,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_block_never_renders_a_partial_block() {
-        // Only the chain position is scripted, not the block itself: the two live
-        // passthrough reads disagree, so the handler errors rather than rendering
-        // a block with a defaulted body.
+        // Only the chain position is scripted, not the block or its transactions:
+        // the live passthrough reads disagree, so the handler errors rather than
+        // rendering a block with a defaulted body.
         let (_, verbose) = scripted_block_and_verbose();
         let engine = MockIndexerService::new(MockChain {
             block: None,
@@ -808,11 +995,14 @@ mod tests {
             ..Default::default()
         });
         let node = NodeRpc::new(engine, Network::MainNetwork);
-        let got = node
+        match node
             .get_raw_transaction(&"ab".repeat(32), Some(0))
             .await
-            .expect("raw tx");
-        assert_eq!(got, "deadbeef");
+            .expect("raw tx")
+        {
+            GetRawTransactionResponse::Raw(hex) => assert_eq!(hex, "deadbeef"),
+            other => panic!("verbosity 0 is the raw hex: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -824,15 +1014,126 @@ mod tests {
         ));
     }
 
-    /// Verbosity 1 needs a capability this slice does not have. Refusing is
-    /// honest; answering raw hex to a caller expecting the decoded object is not.
+    /// A verbosity above 1 is out of range — a parameter error naming what is
+    /// served, not a silently truncated answer.
     #[tokio::test]
-    async fn raw_transaction_refuses_verbose_until_the_capability_exists() {
+    async fn raw_transaction_refuses_verbosity_above_one() {
         let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         assert!(matches!(
-            node.get_raw_transaction(&"ab".repeat(32), Some(1)).await,
+            node.get_raw_transaction(&"ab".repeat(32), Some(2)).await,
             Err(RpcError::InvalidParams(_))
         ));
+    }
+
+    /// A located view, for the verbosity-1 location tests.
+    fn located_view(
+        location: zaino_primitives::types::TransactionLocation,
+    ) -> zaino_service::LocatedTransactionView {
+        use zaino_primitives::types::{
+            OrchardData, SaplingData, TransactionDetail, TransparentData,
+        };
+        use zaino_service::{LocatedTransactionView, TransactionView};
+        let transaction = zaino_primitives::types::Transaction {
+            txid: TransactionId::from([0xAB; 32]),
+            transparent: TransparentData::default(),
+            sapling: SaplingData::default(),
+            orchard: OrchardData::default(),
+            ironwood: OrchardData::default(),
+        };
+        let detail = TransactionDetail {
+            version: 5,
+            overwintered: true,
+            version_group_id: Some(0x26a7_270a),
+            lock_time: 0,
+            expiry_height: Some(Height::try_from(0).expect("valid height")),
+            size: 120,
+            coinbase: None,
+            joinsplits: Vec::new(),
+        };
+        LocatedTransactionView {
+            view: TransactionView {
+                transaction,
+                detail,
+                inputs: Vec::new(),
+            },
+            location,
+        }
+    }
+
+    /// A mempool transaction has no containing block, so verbosity 1 emits none
+    /// of the chain-location keys — they are absent, not null or zero.
+    #[tokio::test]
+    async fn raw_transaction_verbose_omits_location_for_a_mempool_tx() {
+        use zaino_primitives::types::TransactionLocation;
+        let engine = MockIndexerService::new(MockChain {
+            transaction_view: Some(located_view(TransactionLocation::Mempool)),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let response = node
+            .get_raw_transaction(&"ab".repeat(32), Some(1))
+            .await
+            .expect("verbose tx");
+        let json = serde_json::to_value(&response).expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        for absent in ["height", "confirmations", "blockhash", "time", "blocktime"] {
+            assert!(
+                !obj.contains_key(absent),
+                "a mempool tx omits {absent}, it is not rendered as null or zero"
+            );
+        }
+        // The transaction object itself is still present.
+        assert_eq!(
+            obj.get("txid").and_then(serde_json::Value::as_str),
+            Some("ab".repeat(32).as_str())
+        );
+    }
+
+    /// A mined transaction carries its location: the height and confirmations
+    /// from the tip, and the block hash and time from the containing block.
+    #[tokio::test]
+    async fn raw_transaction_verbose_renders_location_for_a_mined_tx() {
+        use zaino_primitives::types::TransactionLocation;
+        let (block, _) = scripted_block_and_verbose();
+        let engine = MockIndexerService::new(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(2_470).expect("valid height"),
+                hash: BlockHash::from([0x11; 32]),
+            }),
+            block: Some(block),
+            transaction_view: Some(located_view(TransactionLocation::BestChain(
+                Height::try_from(2_468).expect("valid height"),
+            ))),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let response = node
+            .get_raw_transaction(&"ab".repeat(32), Some(1))
+            .await
+            .expect("verbose tx");
+        let json = serde_json::to_value(&response).expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        assert_eq!(
+            obj.get("height").and_then(serde_json::Value::as_u64),
+            Some(2_468)
+        );
+        // tip 2470 - height 2468 + 1 = 3 confirmations.
+        assert_eq!(
+            obj.get("confirmations").and_then(serde_json::Value::as_i64),
+            Some(3)
+        );
+        assert_eq!(
+            obj.get("blockhash").and_then(serde_json::Value::as_str),
+            Some("11".repeat(32).as_str())
+        );
+        assert_eq!(
+            obj.get("time").and_then(serde_json::Value::as_u64),
+            Some(1_600_000_000)
+        );
+        assert_eq!(
+            obj.get("blocktime").and_then(serde_json::Value::as_u64),
+            Some(1_600_000_000)
+        );
     }
 
     /// Review Focus 4: well-formed hex of the wrong length never reaches a read.
