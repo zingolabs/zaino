@@ -6254,6 +6254,7 @@ dependencies = [
  "zaino-status",
  "zaino-store",
  "zaino-store-service",
+ "zcash_protocol",
 ]
 
 [[package]]

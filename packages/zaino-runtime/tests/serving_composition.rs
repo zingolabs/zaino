@@ -14,6 +14,7 @@ use zaino_lightserve::LightServe;
 use zaino_noderpc::NodeRpc;
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zaino_service::testing::{MockChain, MockIndexerService};
+use zcash_protocol::consensus::Network;
 
 #[tokio::test]
 async fn one_engine_drives_both_ports() {
@@ -28,7 +29,7 @@ async fn one_engine_drives_both_ports() {
 
     // One engine, two profile views: the light-serve port and the node-rpc port.
     let light = LightServe::new(engine.clone());
-    let node = NodeRpc::new(engine);
+    let node = NodeRpc::new(engine, Network::MainNetwork);
 
     // Both observe the same pinned tip, each rendering it in its own wire shape.
     let light_tip = light.get_latest_block().await.expect("light latest block");

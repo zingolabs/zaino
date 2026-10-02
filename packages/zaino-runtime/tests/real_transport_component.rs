@@ -11,6 +11,7 @@ use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_noderpc::{JsonRpcServer, NodeRpc};
 use zaino_runtime::RunComponent;
 use zaino_service::testing::{MockChain, MockIndexerService};
+use zcash_protocol::consensus::Network;
 
 /// Wait until the component reports `Ready` (its socket is bound).
 async fn wait_ready<C: StatusWatch>(component: &C) {
@@ -27,7 +28,7 @@ async fn wait_ready<C: StatusWatch>(component: &C) {
 async fn a_real_jsonrpc_server_boots_and_stops_as_a_component() {
     let engine = MockIndexerService::new(MockChain::default());
     let server = JsonRpcServer::new(
-        NodeRpc::new(engine),
+        NodeRpc::new(engine, Network::MainNetwork),
         "127.0.0.1:0".parse().expect("valid addr"),
     );
     let component = RunComponent::new(ComponentName("node-rpc"), server);

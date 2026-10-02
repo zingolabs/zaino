@@ -16,6 +16,7 @@ use zaino_runtime::{
     ValidatorComponent,
 };
 use zaino_service::testing::{MockChain, MockIndexerService};
+use zcash_protocol::consensus::Network;
 
 struct Probe(bool);
 impl ReachabilityProbe for Probe {
@@ -43,7 +44,7 @@ async fn boot_zaino(engine: MockIndexerService) -> (ValidatorComponent, Orchestr
     let node_rpc = RunComponent::new(
         ComponentName("node-rpc"),
         JsonRpcServer::new(
-            NodeRpc::new(engine),
+            NodeRpc::new(engine, Network::MainNetwork),
             "127.0.0.1:0".parse().expect("valid addr"),
         ),
     );
