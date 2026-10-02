@@ -1840,12 +1840,19 @@ pub(crate) fn validated_to_wire(validated: ValidatedAddress) -> ValidateAddressR
 }
 ```
 
-Write `z_validated_to_wire` the same way, one arm per `ZValidatedAddress`
-variant. Read `packages/zaino-address/src/validated.rs` for the exact variant
-list and field names before writing it — the Sapling arm carries the
-diversifier and `pk_d` as fixed-size byte arrays, which render through
-`bytes_to_hex`. Map `P2pkh` to `address_type: "p2pkh"`, `P2sh` to `"p2sh"` and
-`Sapling` to `"sapling"`.
+Write `z_validated_to_wire` the same way, with one arm per `ZValidatedAddress`
+variant. There are **five**, not four — `Invalid`, `P2pkh { address }`,
+`P2sh { address }`, `Sapling { address, diversifier: [u8; 11],
+diversified_transmission_key: [u8; 32] }`, and `Unified { address }`. Omitting
+`Unified` is a non-exhaustive match, and no wildcard is permitted.
+
+Map `address_type` to `"p2pkh"`, `"p2sh"`, `"sapling"` and `"unified"`
+respectively. The Sapling arm's two byte arrays render through `bytes_to_hex`
+(note `diversified_transmission_key` is already in zcashd's big-endian order —
+see `zaino_address::sapling_key_bytes` — so render it as-is, do not reverse it).
+The `Unified` arm carries only the address: zcashd reports no components for a
+unified address and neither does Zaino, so `diversifier` and
+`diversifiedtransmissionkey` stay `None` there.
 
 Add to `wire.rs`'s imports:
 
@@ -1961,6 +1968,23 @@ function over `zcash_address`, belonging beside the other two address functions.
   - `wire::response::UnifiedReceiversResponse`
   - `NodeRpc::z_list_unified_receivers(&self, &str)`
 
+- [ ] **Step 0: Enable the `orchard` feature on `zcash_keys`**
+
+`packages/zaino-address/Cargo.toml` currently has
+`zcash_keys = { workspace = true, features = ["sapling"] }`. Add `"orchard"`:
+
+```toml
+zcash_keys = { workspace = true, features = ["orchard", "sapling"] }
+```
+
+**This is not optional, and the failure mode is a wrong answer rather than a
+missing one.** `UnifiedAddress::orchard()` is `#[cfg(feature = "orchard")]`, so
+without the feature the receiver is unreachable — but `has_orchard()` is
+*always* callable and simply `return false` when the feature is off. So a
+feature-less implementation would report "no Orchard receiver" for a unified
+address that has one, silently. Most modern UAs are Orchard-primary, so that is
+the common case, not an edge.
+
 - [ ] **Step 1: Write the failing test in zaino-address**
 
 Create `packages/zaino-address/src/receivers.rs` with only the test module
@@ -1999,8 +2023,16 @@ Write the module body above the test in `receivers.rs`:
 //! bundles, re-encoded as a standalone address. Like the two validation
 //! entry points, it reads no chain state: it is a pure function of the address
 //! string and the network.
+//!
+//! Each receiver is re-encoded in the form a caller can actually pay to: the
+//! transparent and Sapling receivers have standalone encodings of their own,
+//! while an Orchard receiver does not — the only way to address it is a unified
+//! address carrying just that receiver, which is what this reports.
 
+use zcash_keys::address::{Address, UnifiedAddress};
+use zcash_keys::encoding::AddressCodec as _;
 use zcash_protocol::consensus::Parameters;
+use zcash_transparent::address::TransparentAddress;
 
 /// The receivers a unified address bundles, each re-encoded standalone.
 ///
@@ -2027,20 +2059,52 @@ pub fn list_unified_receivers<P: Parameters>(
     raw_address: String,
     params: &P,
 ) -> Option<UnifiedReceivers> {
-    // Implementation note for the engineer: parse with
-    // `zcash_address::ZcashAddress::try_from_encoded(&raw_address)`, then
-    // convert to the unified form. For each item in the unified address's
-    // receiver list, re-encode it for `params.network_type()` as a standalone
-    // address and place it in the matching field. Consult
-    // `packages/zaino-address/src/classify.rs` for how this crate already
-    // parses and re-encodes against a `Parameters`, and follow that idiom.
-    // Return `None` for any address that does not parse as unified.
-    todo!("decompose per the note above")
+    let parsed = raw_address.parse::<zcash_address::ZcashAddress>().ok()?;
+    let unified = match parsed.convert_if_network::<Address>(params.network_type()) {
+        Ok(Address::Unified(unified)) => unified,
+        Ok(_) => return None,
+        Err(err) => {
+            tracing::debug!(?err, "conversion error");
+            return None;
+        }
+    };
+
+    let orchard = unified.orchard().copied().and_then(|receiver| {
+        // An Orchard receiver has no standalone encoding, so it is reported as a
+        // unified address containing only itself. `from_receivers` returns
+        // `None` only without a shielded receiver, which cannot happen here.
+        UnifiedAddress::from_receivers(Some(receiver), None, None)
+            .map(|only_orchard| only_orchard.encode(params))
+    });
+    let sapling = unified
+        .sapling()
+        .map(|receiver| receiver.encode(params));
+    let (p2pkh, p2sh) = match unified.transparent() {
+        Some(TransparentAddress::PublicKeyHash(_)) => {
+            (unified.transparent().map(|t| t.encode(params)), None)
+        }
+        Some(TransparentAddress::ScriptHash(_)) => {
+            (None, unified.transparent().map(|t| t.encode(params)))
+        }
+        None => (None, None),
+    };
+
+    Some(UnifiedReceivers {
+        orchard,
+        sapling,
+        p2pkh,
+        p2sh,
+    })
 }
 ```
 
-Then replace the `todo!` with the real body, following `classify.rs`'s existing
-parse-and-re-encode idiom. The task is not complete while a `todo!` remains.
+`classify.rs` already parses and converts this way via its private
+`parse_for_network`; this mirrors that idiom rather than duplicating the helper,
+because this function needs the `Unified` variant specifically rather than any
+`Address`. If you prefer to widen `parse_for_network` to `pub(crate)` and reuse
+it, that is acceptable and arguably DRYer — say which you chose in the report.
+
+There must be no `todo!` or `unimplemented!` left anywhere in the diff.
 
 - [ ] **Step 4: Declare and export the module**
 
@@ -2078,6 +2142,26 @@ depend on a fixture this repo would have to maintain:
         assert!(
             got.orchard.is_some() || got.sapling.is_some(),
             "a unified address bundles at least one shielded receiver"
+        );
+    }
+
+    /// The Orchard receiver must actually be reported. Without the `orchard`
+    /// feature on `zcash_keys`, `has_orchard()` returns `false` rather than
+    /// failing to compile, so a misconfigured build answers "no Orchard
+    /// receiver" for an address that has one. This test is what catches that.
+    #[test]
+    fn an_orchard_receiver_is_reported_not_silently_dropped() {
+        let ua = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6\
+                  drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666k\
+                  gwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw\
+                  6uh7hyvzjse8ksx"
+            .to_string();
+        let got = list_unified_receivers(ua, &Network::MainNetwork)
+            .expect("a unified address decomposes");
+        assert!(
+            got.orchard.is_some(),
+            "this vector carries an Orchard receiver; a `false` here means the \
+             zcash_keys `orchard` feature is not enabled"
         );
     }
 ```
