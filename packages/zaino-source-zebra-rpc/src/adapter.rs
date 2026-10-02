@@ -1052,7 +1052,7 @@ fn decode_transaction_response(
             .zcash_deserialize_into()
             .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
     let transaction = zaino_convert_zebra::transaction_from_zebra(&zebra_tx)
-        .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+        .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
     Ok(zaino_source::DecodedTransaction {
         transaction,
         location: response.location,
