@@ -20,7 +20,7 @@ pub use error::RpcError;
 pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
-use zaino_primitives::types::{Height, HeightRange, Outpoint, TransparentAddress};
+use zaino_primitives::types::{HeightRange, Outpoint, TransparentAddress};
 use zaino_service::error::ReadError;
 use zaino_service::NodeQuery;
 use zaino_service::{AddressRead, ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
@@ -105,7 +105,15 @@ impl<S: NodeRpcService> NodeRpc<S> {
             ));
         }
         let snapshot = self.engine.snapshot().await?;
-        let range = full_range(&snapshot);
+        let Some(range) = full_range(&snapshot) else {
+            // Nothing is serviceable, so the addresses have no history: the
+            // truthful answer is an empty total, not a query against a
+            // synthesised range.
+            return Ok(AddressBalanceResponse {
+                balance: 0,
+                received: 0,
+            });
+        };
         let mut balance: u64 = 0;
         let mut received: u128 = 0;
         for address in params.addresses {
@@ -126,12 +134,10 @@ impl<S: NodeRpcService> NodeRpc<S> {
 }
 
 /// The whole serviceable height range of `snapshot`, for the address RPCs,
-/// which take no range of their own.
-fn full_range(snapshot: &impl ChainSegment) -> HeightRange {
-    snapshot.coverage().unwrap_or(HeightRange {
-        start: Height::GENESIS,
-        end: Height::GENESIS,
-    })
+/// which take no range of their own. `None` when nothing is serviceable yet —
+/// the caller answers an empty result rather than inventing a range.
+fn full_range(snapshot: &impl ChainSegment) -> Option<HeightRange> {
+    snapshot.coverage()
 }
 
 #[cfg(test)]
@@ -212,6 +218,11 @@ mod tests {
     async fn address_balance_renders_the_scripted_balance() {
         use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum};
         let engine = MockIndexerService::new(MockChain {
+            // A tip makes the chain serviceable, so the scripted balance is read.
+            tip: Some(BlockRef {
+                height: Height::try_from(10).expect("valid height"),
+                hash: BlockHash::from([0u8; 32]),
+            }),
             balances: vec![(
                 "t1abc".to_string(),
                 zaino_primitives::types::AddressBalance {
@@ -232,10 +243,46 @@ mod tests {
         assert_eq!(got.received, 12_000);
     }
 
-    /// Review Focus 2: an address with no history is zero, not an error.
+    /// With nothing serviceable (no tip, hence no coverage), the handler answers
+    /// an empty total without querying the read — even when a balance is
+    /// scripted for the address. Fails if `full_range` synthesises a range for a
+    /// chain that serves nothing, since the mock ignores the range and would
+    /// then return the scripted value.
+    #[tokio::test]
+    async fn address_balance_is_zero_when_nothing_is_serviceable() {
+        use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum};
+        let engine = MockIndexerService::new(MockChain {
+            tip: None,
+            balances: vec![(
+                "t1abc".to_string(),
+                zaino_primitives::types::AddressBalance {
+                    balance: Zatoshis::new(5_000).expect("valid amount"),
+                    received: ZatoshisFlowSum::from_summed(12_000),
+                },
+            )],
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine);
+        let got = node
+            .get_address_balance(crate::wire::params::AddressesParam {
+                addresses: vec!["t1abc".to_string()],
+            })
+            .await
+            .expect("an unserviceable chain is a valid query with an empty answer");
+        assert_eq!(got.balance, 0);
+        assert_eq!(got.received, 0);
+    }
+
+    /// Review Focus 2: on a serviceable chain, an address absent from history is
+    /// zero, not an error — the read's domain miss, distinct from the
+    /// nothing-serviceable case above.
     #[tokio::test]
     async fn an_address_with_no_history_is_zero_not_an_error() {
-        let node = NodeRpc::new(engine_with_tip(None));
+        let tip = BlockRef {
+            height: Height::try_from(10).expect("valid height"),
+            hash: BlockHash::from([0u8; 32]),
+        };
+        let node = NodeRpc::new(engine_with_tip(Some(tip)));
         let got = node
             .get_address_balance(crate::wire::params::AddressesParam {
                 addresses: vec!["t1nohistory".to_string()],

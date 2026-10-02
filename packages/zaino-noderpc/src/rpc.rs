@@ -91,10 +91,48 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::AddressRead(AddressReadError::Transient(cause)) => {
             (ErrorCode::InternalError, cause)
         }
-        RpcError::AddressRead(AddressReadError::Fatal(cause)) => (ErrorCode::InvalidParams, cause),
+        RpcError::AddressRead(AddressReadError::Fatal(cause)) => (ErrorCode::InternalError, cause),
         RpcError::AddressRead(e @ AddressReadError::NotServiceable(_)) => {
             (ErrorCode::InternalError, e.to_string())
         }
     };
     ErrorObjectOwned::owned(code.code(), message, None::<()>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_error_object;
+    use crate::error::RpcError;
+    use jsonrpsee::types::ErrorCode;
+    use zaino_service::error::AddressReadError;
+    use zaino_service::Capability;
+
+    /// A fatal address read is an unrecoverable backend failure — a server
+    /// fault, not bad client input — so it maps to the internal-error code.
+    /// Fails if the arm is remapped to invalid-params.
+    #[test]
+    fn fatal_address_read_is_an_internal_error() {
+        let obj = to_error_object(RpcError::AddressRead(AddressReadError::Fatal(
+            "backend failure".to_string(),
+        )));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// A transient address read is a retryable server-side race, also internal.
+    #[test]
+    fn transient_address_read_is_an_internal_error() {
+        let obj = to_error_object(RpcError::AddressRead(AddressReadError::Transient(
+            "mid-swap race".to_string(),
+        )));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// An unserviceable address read is a server-readiness fault, also internal.
+    #[test]
+    fn not_serviceable_address_read_is_an_internal_error() {
+        let obj = to_error_object(RpcError::AddressRead(AddressReadError::NotServiceable(
+            Capability::AddressHistory,
+        )));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
 }
