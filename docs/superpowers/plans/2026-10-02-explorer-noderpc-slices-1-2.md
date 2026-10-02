@@ -86,6 +86,13 @@ MockIndexerService`.
 - Verify per-crate (`cargo test -p <crate>`), never `--workspace`: this host's
   binutils cannot link `aws-lc-sys`, so a workspace build fails for reasons
   unrelated to the change.
+- **Before changing any public signature, find its call sites workspace-wide,
+  not in the crate you are editing.** `grep -rn "<name>" packages/ --include=*.rs`
+  — including `tests/` directories, which are separate compilation targets that
+  `cargo test -p <owning-crate>` cannot see. Then add every owning crate to the
+  gate. `NodeRpc::new` has 20 call sites across two crates, three of them in
+  `zaino-runtime/tests/`; a crate-scoped `src/` grep found 17 and the
+  corresponding gate would have shipped `zaino-runtime` broken.
 - **A task that touches `zaino-service/src/testing.rs` must verify every crate
   that consumes the shared mock**, not only the one it is working in. The mock is
   shared state, and per-crate verification otherwise hides the breakage:
