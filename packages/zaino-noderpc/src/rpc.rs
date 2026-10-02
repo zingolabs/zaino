@@ -194,6 +194,7 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::TxRead(e @ TxReadError::NotServiceable(_)) => {
             (ErrorCode::InternalError, e.to_string())
         }
+        RpcError::Render(e) => (ErrorCode::InternalError, e.to_string()),
     };
     ErrorObjectOwned::owned(code.code(), message, None::<()>)
 }

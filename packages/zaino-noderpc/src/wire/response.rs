@@ -80,6 +80,11 @@ pub struct ZValidateAddressResponse {
     /// zcashd's address-kind tag: `p2pkh`, `p2sh`, `sapling` or `unified`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address_type: Option<String>,
+    /// The same address-kind tag under zcashd's original `type` key. Emitted
+    /// alongside `address_type` because the explorer's search pattern-matches on
+    /// `type`; carries the identical value.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     /// Sapling diversifier as hex, for a Sapling address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diversifier: Option<String>,
@@ -258,14 +263,15 @@ pub struct BlockResponse {
 /// One value pool in a `getblockchaininfo` response.
 ///
 /// zcashd reports each amount twice — once as a ZEC-denominated float
-/// (`chainValue`) and once in zatoshis (`chainValueZat`). Only the exact integer
-/// is carried, so this renders `chainValueZat` (and `valueDeltaZat`) and omits
-/// the floats, matching the domain's single-source-of-truth choice.
+/// (`chainValue`) and once in zatoshis (`chainValueZat`). Both are emitted: the
+/// float is the key clients pattern-match on, and the exact integer travels
+/// beside it for callers that need it. The float is lossy by nature; the integer
+/// is authoritative.
 ///
 /// The same shape serves the unnamed chain-supply total and the named pools: a
 /// pool has an `id`, the total has none, so an empty id is omitted rather than
 /// rendered as `""`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ValuePoolResponse {
     /// Pool name — `transparent`, `sapling`, `orchard`, … Absent for the
     /// chain-supply total, which zcashd reports unnamed.
@@ -273,12 +279,19 @@ pub struct ValuePoolResponse {
     pub id: String,
     /// Whether the validator is tracking this pool's balance.
     pub monitored: bool,
-    /// Total value currently in the pool, in zatoshis.
+    /// Total value currently in the pool, as a ZEC-denominated float.
+    #[serde(rename = "chainValue")]
+    pub chain_value: f64,
+    /// Total value currently in the pool, in zatoshis — the exact amount.
     #[serde(rename = "chainValueZat")]
     pub chain_value_zat: u64,
-    /// Change to the pool's balance from the latest block, in zatoshis. Absent
-    /// when the validator does not report a delta; signed, as value leaves a
-    /// pool as well as entering it.
+    /// Change to the pool's balance from the latest block, as a ZEC float. Absent
+    /// when the validator does not report a delta.
+    #[serde(rename = "valueDelta", skip_serializing_if = "Option::is_none")]
+    pub value_delta: Option<f64>,
+    /// Change to the pool's balance from the latest block, in zatoshis — the
+    /// exact amount. Absent when the validator does not report a delta; signed,
+    /// as value leaves a pool as well as entering it.
     #[serde(rename = "valueDeltaZat", skip_serializing_if = "Option::is_none")]
     pub value_delta_zat: Option<i64>,
 }

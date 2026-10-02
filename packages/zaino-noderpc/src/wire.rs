@@ -15,7 +15,8 @@ use zaino_primitives::types::BlockHash;
 use zaino_primitives::types::TransactionId;
 use zaino_primitives::types::{Block, BlockVerbose, Transaction};
 use zaino_primitives::types::{
-    BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, ValuePoolBalance,
+    BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, ValuePoolBalance,
+    Zatoshis,
 };
 
 use crate::error::RpcError;
@@ -109,16 +110,70 @@ pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
     }
 }
 
-/// Render one value pool for the wire (domain -> wire). Only the exact zatoshi
-/// integer is carried; the ZEC-denominated float zcashd also reports is dropped.
-/// An empty id (the unnamed chain-supply total) is omitted by the response type.
-fn value_pool_to_wire(pool: &ValuePoolBalance) -> ValuePoolResponse {
-    ValuePoolResponse {
+/// The number of zatoshis in one ZEC.
+const ZATOSHIS_PER_ZEC: u64 = 100_000_000;
+
+/// Formatting an exact zatoshi amount as its ZEC-denominated `f64` produced a
+/// decimal that did not parse.
+///
+/// Carries its [`std::num::ParseFloatError`] cause rather than being asserted
+/// away. The decimal is built from an integer whole part, an 8-digit fraction,
+/// and at most one leading `-`, so no amount the domain can hold reaches this —
+/// but the parse is typed as fallible, so the failure is surfaced with its cause
+/// instead of panicking.
+/// Public because it is carried by the public [`crate::RpcError`]; its
+/// constructor and the functions that return it stay `pub(crate)`.
+#[derive(Debug, thiserror::Error)]
+#[error("zatoshi amount did not format to a parseable ZEC decimal")]
+pub struct ZecFloatError(#[source] std::num::ParseFloatError);
+
+/// Render an exact zatoshi magnitude (with its sign) as a ZEC-denominated `f64`
+/// (domain -> wire).
+///
+/// zcashd reports amounts as a ZEC float beside the exact integer. The float is
+/// derived by formatting the exact decimal `{whole}.{frac:08}` and parsing it —
+/// correctly rounded, and with no `as` cast (there is no `From<u64>` for `f64`).
+/// The split into magnitude and sign keeps a single leading `-`.
+fn zatoshi_magnitude_to_zec(negative: bool, magnitude: u64) -> Result<f64, ZecFloatError> {
+    let whole = magnitude / ZATOSHIS_PER_ZEC;
+    let frac = magnitude % ZATOSHIS_PER_ZEC;
+    let sign = if negative { "-" } else { "" };
+    format!("{sign}{whole}.{frac:08}")
+        .parse::<f64>()
+        .map_err(ZecFloatError)
+}
+
+/// Render an unsigned zatoshi amount as a ZEC-denominated `f64` (domain -> wire).
+///
+/// The shared renderer for zcashd's `chainValue` / transaction `value` family.
+pub(crate) fn zatoshis_to_zec(amount: Zatoshis) -> Result<f64, ZecFloatError> {
+    zatoshi_magnitude_to_zec(false, amount.as_u64())
+}
+
+/// Render a signed zatoshi amount as a ZEC-denominated `f64` (domain -> wire),
+/// preserving its sign.
+///
+/// The shared renderer for zcashd's `valueDelta` / `valueBalance` family.
+/// [`i64::unsigned_abs`] takes the magnitude without an `as` cast and without
+/// overflowing at [`i64::MIN`].
+pub(crate) fn signed_zatoshis_to_zec(amount: SignedZatoshis) -> Result<f64, ZecFloatError> {
+    let raw = amount.as_i64();
+    zatoshi_magnitude_to_zec(raw.is_negative(), raw.unsigned_abs())
+}
+
+/// Render one value pool for the wire (domain -> wire). Each amount is emitted
+/// twice: as zcashd's ZEC float (the key clients read) and as the exact zatoshi
+/// integer beside it. An empty id (the unnamed chain-supply total) is omitted by
+/// the response type.
+fn value_pool_to_wire(pool: &ValuePoolBalance) -> Result<ValuePoolResponse, ZecFloatError> {
+    Ok(ValuePoolResponse {
         id: pool.id.clone(),
         monitored: pool.monitored,
+        chain_value: zatoshis_to_zec(pool.chain_value)?,
         chain_value_zat: pool.chain_value.as_u64(),
+        value_delta: pool.value_delta.map(signed_zatoshis_to_zec).transpose()?,
         value_delta_zat: pool.value_delta.map(|delta| delta.as_i64()),
-    }
+    })
 }
 
 /// Render a network upgrade's status (domain -> wire) in zcashd's lowercase
@@ -152,8 +207,10 @@ fn upgrade_to_wire(upgrade: &NetworkUpgradeInfo) -> (String, NetworkUpgradeRespo
 /// tracks it, and is omitted otherwise — zero is not a possible amount of work,
 /// so absence is the honest wire form rather than a zero a consumer could
 /// compare.
-pub(crate) fn blockchain_info_to_wire(info: BlockchainInfo) -> BlockchainInfoResponse {
-    BlockchainInfoResponse {
+pub(crate) fn blockchain_info_to_wire(
+    info: BlockchainInfo,
+) -> Result<BlockchainInfoResponse, ZecFloatError> {
+    Ok(BlockchainInfoResponse {
         chain: info.chain,
         blocks: info.blocks.into(),
         headers: info.headers.into(),
@@ -167,14 +224,18 @@ pub(crate) fn blockchain_info_to_wire(info: BlockchainInfo) -> BlockchainInfoRes
         size_on_disk: info.size_on_disk,
         commitments: info.commitments,
         estimated_height: info.estimated_height.into(),
-        chain_supply: value_pool_to_wire(&info.chain_supply),
-        value_pools: info.value_pools.iter().map(value_pool_to_wire).collect(),
+        chain_supply: value_pool_to_wire(&info.chain_supply)?,
+        value_pools: info
+            .value_pools
+            .iter()
+            .map(value_pool_to_wire)
+            .collect::<Result<_, _>>()?,
         upgrades: info.upgrades.iter().map(upgrade_to_wire).collect(),
         consensus: TipConsensusResponse {
             chaintip: info.consensus.chain_tip.to_string(),
             nextblock: info.consensus.next_block.to_string(),
         },
-    }
+    })
 }
 
 /// Render a verbose block header as the `getblockheader` response
@@ -313,6 +374,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
             isvalid: false,
             address: None,
             address_type: None,
+            kind: None,
             diversifier: None,
             diversified_transmission_key: None,
         },
@@ -320,6 +382,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
             isvalid: true,
             address: Some(address),
             address_type: Some("p2pkh".to_string()),
+            kind: Some("p2pkh".to_string()),
             diversifier: None,
             diversified_transmission_key: None,
         },
@@ -327,6 +390,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
             isvalid: true,
             address: Some(address),
             address_type: Some("p2sh".to_string()),
+            kind: Some("p2sh".to_string()),
             diversifier: None,
             diversified_transmission_key: None,
         },
@@ -338,6 +402,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
             isvalid: true,
             address: Some(address),
             address_type: Some("sapling".to_string()),
+            kind: Some("sapling".to_string()),
             diversifier: Some(bytes_to_hex(&diversifier)),
             diversified_transmission_key: Some(bytes_to_hex(&diversified_transmission_key)),
         },
@@ -345,6 +410,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
             isvalid: true,
             address: Some(address),
             address_type: Some("unified".to_string()),
+            kind: Some("unified".to_string()),
             diversifier: None,
             diversified_transmission_key: None,
         },
@@ -354,8 +420,8 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
 #[cfg(test)]
 mod tests {
     use super::{
-        block_header_to_wire, block_to_wire, blockchain_info_to_wire, transaction_to_wire,
-        validated_to_wire, z_validated_to_wire,
+        block_header_to_wire, block_to_wire, blockchain_info_to_wire, signed_zatoshis_to_zec,
+        transaction_to_wire, validated_to_wire, z_validated_to_wire, zatoshis_to_zec,
     };
     use serde_json::Value;
     use zaino_address::{ValidatedAddress, ZValidatedAddress};
@@ -421,8 +487,10 @@ mod tests {
     /// non-zero.
     #[test]
     fn blockchain_info_response_golden_shape() {
-        let json =
-            serde_json::to_value(blockchain_info_to_wire(scripted_info())).expect("serialize");
+        let json = serde_json::to_value(
+            blockchain_info_to_wire(scripted_info()).expect("scripted info renders"),
+        )
+        .expect("serialize");
         assert_eq!(
             sorted_keys(&json),
             [
@@ -469,21 +537,28 @@ mod tests {
         assert_eq!(obj.get("size_on_disk").and_then(Value::as_u64), Some(4_096));
         assert_eq!(obj.get("commitments").and_then(Value::as_u64), Some(7));
 
-        // chainSupply is the unnamed total: no `id`, exact zatoshis.
+        // chainSupply is the unnamed total: no `id`, the ZEC float beside the
+        // exact zatoshis. 21_000_000 zat = 0.21 ZEC.
         let supply = obj.get("chainSupply").expect("chainSupply present");
-        assert_eq!(sorted_keys(supply), ["chainValueZat", "monitored"]);
+        assert_eq!(
+            sorted_keys(supply),
+            ["chainValue", "chainValueZat", "monitored"]
+        );
         let supply = supply.as_object().expect("an object");
         assert!(
             !supply.contains_key("id"),
             "the unnamed total omits id, it is not rendered as empty"
         );
+        assert_eq!(supply.get("chainValue").and_then(Value::as_f64), Some(0.21));
         assert_eq!(
             supply.get("chainValueZat").and_then(Value::as_u64),
             Some(21_000_000)
         );
         assert_eq!(supply.get("monitored").and_then(Value::as_bool), Some(true));
 
-        // A named pool carries its id and a signed delta.
+        // A named pool carries its id and a signed delta, each amount as both the
+        // ZEC float the client reads and the exact zatoshis. 2_000 zat =
+        // 0.00002 ZEC; a -5 zat delta = -0.00000005 ZEC.
         let pools = obj
             .get("valuePools")
             .and_then(Value::as_array)
@@ -492,13 +567,28 @@ mod tests {
         let pool = &pools[0];
         assert_eq!(
             sorted_keys(pool),
-            ["chainValueZat", "id", "monitored", "valueDeltaZat"]
+            [
+                "chainValue",
+                "chainValueZat",
+                "id",
+                "monitored",
+                "valueDelta",
+                "valueDeltaZat",
+            ]
         );
         let pool = pool.as_object().expect("an object");
         assert_eq!(pool.get("id").and_then(Value::as_str), Some("orchard"));
         assert_eq!(
+            pool.get("chainValue").and_then(Value::as_f64),
+            Some(0.00002)
+        );
+        assert_eq!(
             pool.get("chainValueZat").and_then(Value::as_u64),
             Some(2_000)
+        );
+        assert_eq!(
+            pool.get("valueDelta").and_then(Value::as_f64),
+            Some(-0.00000005)
         );
         assert_eq!(pool.get("valueDeltaZat").and_then(Value::as_i64), Some(-5));
 
@@ -542,7 +632,8 @@ mod tests {
     fn blockchain_info_omits_chainwork_when_untracked() {
         let mut info = scripted_info();
         info.chain_work = None;
-        let json = serde_json::to_value(blockchain_info_to_wire(info)).expect("serialize");
+        let json = serde_json::to_value(blockchain_info_to_wire(info).expect("renders"))
+            .expect("serialize");
         assert!(
             !json
                 .as_object()
@@ -1050,6 +1141,7 @@ mod tests {
                 "diversifiedtransmissionkey",
                 "diversifier",
                 "isvalid",
+                "type",
             ]
         );
         let obj = json.as_object().expect("a JSON object");
@@ -1058,6 +1150,9 @@ mod tests {
             obj.get("address_type").and_then(|v| v.as_str()),
             Some("sapling")
         );
+        // The legacy `type` key carries the identical kind; the explorer's search
+        // pattern-matches on it, so its absence crashes the LiveView.
+        assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("sapling"));
         assert!(obj.contains_key("diversifiedtransmissionkey"));
         assert!(
             !obj.contains_key("diversified_transmission_key"),
@@ -1071,10 +1166,51 @@ mod tests {
         .expect("serialize");
         assert_eq!(
             sorted_keys(&unified),
-            ["address", "address_type", "isvalid"]
+            ["address", "address_type", "isvalid", "type"]
         );
         let unified = unified.as_object().expect("a JSON object");
+        assert_eq!(
+            unified.get("type").and_then(|v| v.as_str()),
+            Some("unified")
+        );
         assert!(!unified.contains_key("diversifier"));
         assert!(!unified.contains_key("diversifiedtransmissionkey"));
+    }
+
+    /// The ZEC-float renderer is correctly rounded and signed, across the amounts
+    /// the follow-up tasks reuse it for. The parse of a self-formatted decimal is
+    /// infallible in practice; the test uses the fallible API honestly.
+    #[test]
+    fn zatoshis_render_as_correctly_rounded_zec() {
+        // Zero, the smallest unit, one ZEC, and the supply ceiling.
+        assert_eq!(zatoshis_to_zec(Zatoshis::ZERO).expect("renders"), 0.0);
+        assert_eq!(
+            zatoshis_to_zec(Zatoshis::new(1).expect("valid")).expect("renders"),
+            0.00000001
+        );
+        assert_eq!(
+            zatoshis_to_zec(Zatoshis::new(100_000_000).expect("valid")).expect("renders"),
+            1.0
+        );
+        // MAX_MONEY (Zatoshis::MAX) is 21_000_000 ZEC exactly.
+        assert_eq!(
+            zatoshis_to_zec(Zatoshis::MAX).expect("renders"),
+            21_000_000.0
+        );
+
+        // A negative delta keeps a single leading sign. -150_000_000 zat = -1.5 ZEC.
+        assert_eq!(
+            signed_zatoshis_to_zec(SignedZatoshis::try_new(-150_000_000).expect("valid"))
+                .expect("renders"),
+            -1.5
+        );
+
+        // Rounding is visible: 0.3 ZEC has no exact f64, so this pins that the
+        // decimal is correctly rounded to the nearest f64 (the `0.3_f64` literal,
+        // which prints as 0.3 but is actually 0.299999999999999988…).
+        assert_eq!(
+            zatoshis_to_zec(Zatoshis::new(30_000_000).expect("valid")).expect("renders"),
+            0.3_f64
+        );
     }
 }
