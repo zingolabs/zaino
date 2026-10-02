@@ -72,12 +72,10 @@ unreachable validator is a transient read failure, never a miss.
 `TransactionRead` (the pool-decomposed transaction and its `transaction_status`)
 is always passthrough: the store holds no transaction bytes, and the pool
 decomposition needs the validator's chain library, which this crate must not
-depend on, so the decoding lives in the source adapter. Both reads answer from
-one `GetTransactionVerbose` fetch whose `location` rides alongside the
-transaction, so a caller's status and transaction cannot disagree.
-`transaction_status` maps `BestChain(h)` to `Mined(h)`, `NonBestChain` to
-`Orphaned`, and both `Mempool` and an absent transaction to `Unknown` — a
-mempool transaction is neither mined nor reorged out. With `BlockRead` and
+depend on, so the decoding lives in the source adapter. `transaction_status`
+maps `BestChain(h)` to `Mined(h)`, `NonBestChain` to `Orphaned`, and both
+`Mempool` and an absent transaction to `Unknown` — a mempool transaction is
+neither mined nor reorged out. With `BlockRead` and
 `TransactionRead` both present, `EngineSnapshot` satisfies `NodeRpcReads`, so a
 node-RPC-routed engine satisfies `NodeRpcService`.
 

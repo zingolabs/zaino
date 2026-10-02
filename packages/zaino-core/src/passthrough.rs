@@ -326,14 +326,13 @@ impl<Src> PassthroughProvider<Src>
 where
     Src: GetTransactionVerbose,
 {
-    /// The transaction decoded into its pool structure, plus where it lives,
-    /// live from the validator. Passthrough: the store holds no transaction
-    /// bytes, and the pool decomposition needs the validator's chain library,
-    /// which this crate must not depend on, so the decoding lives in the source
-    /// adapter. The [`DecodedTransaction::location`] rides along, so a caller
-    /// reporting status and the transaction itself read the same fetch and
-    /// cannot disagree. A missing txid is a domain miss (`Ok(None)`); a transport
-    /// failure is transient, with the cause formatted in.
+    /// The transaction decoded into its pool structure, plus where it lives
+    /// ([`DecodedTransaction`]), live from the validator. Passthrough: the store
+    /// holds no transaction bytes, and the pool decomposition needs the
+    /// validator's chain library, which this crate must not depend on, so the
+    /// decoding lives in the source adapter. A missing txid is a domain miss
+    /// (`Ok(None)`); a transport failure is transient, with the cause formatted
+    /// in.
     pub(crate) async fn transaction(
         &self,
         id: TransactionId,

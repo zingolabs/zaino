@@ -6,13 +6,13 @@
 //! depend on. The source port returns the decoded [`Transaction`] already, so
 //! this routes straight to it.
 //!
-//! [`transaction_status`](TransactionRead::transaction_status) reads the
-//! [`location`](zaino_source::DecodedTransaction::location) that the same fetch
-//! returned, so the status and the transaction cannot disagree. A mempool
-//! transaction is [`TxStatus::Unknown`], never [`TxStatus::Orphaned`]: it is not
-//! mined and it has not been reorged out, and collapsing those two is how a
-//! consumer would wrongly conclude a pending transaction had failed. An absent
-//! transaction is [`TxStatus::Unknown`] too.
+//! Within one [`transaction_status`](TransactionRead::transaction_status) call the
+//! status is read off the [`location`](zaino_source::DecodedTransaction::location)
+//! of the single fetch that also yields the transaction. A mempool transaction is
+//! [`TxStatus::Unknown`], never [`TxStatus::Orphaned`]: it is not mined and it has
+//! not been reorged out, and collapsing those two is how a consumer would wrongly
+//! conclude a pending transaction had failed. An absent transaction is
+//! [`TxStatus::Unknown`] too.
 
 use crate::chain_view::ChainTier;
 use crate::routing::Routing;
@@ -41,9 +41,6 @@ where
     }
 
     async fn transaction_status(&self, id: TransactionId) -> Result<TxStatus, TxReadError> {
-        // The status is read off the same fetch's location, so it cannot disagree
-        // with the transaction a caller also reads. An absent transaction is
-        // `Unknown`.
         let status = match self.passthrough().transaction(id).await? {
             None => TxStatus::Unknown,
             Some(decoded) => match decoded.location {
