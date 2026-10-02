@@ -71,3 +71,74 @@ ztest cluster add kind --kind ztest --storage-driver topolvm.io --set-default
 # Rook-ceph is the preferred central-cluster option
 ztest cluster add kind --kind ztest --storage-driver rook-ceph.cephfs.csi.ceph.com --set-default
 ```
+
+## Which zebrad the live suite runs
+
+Live tests name their validator with `zebra!()`, never a version literal. It is
+declared once, in `live-tests/Cargo.toml`:
+
+```toml
+[workspace.metadata.zaino.zebra]
+source = "published"
+version = "6.2.3"
+dockerfile = "docker/Dockerfile"
+```
+
+`version` is both the `zfnd/zebra` image tag and the semver ztest gates the
+generated regtest config on — it decides which NU6.x activation-height keys are
+emitted — so it is declared for a fork build too.
+
+### Testing against a zebra fork
+
+zainod links zebra as libraries while the validator is a separate container
+image, so a fork has to reach both. Patch the libraries at the repo root, which
+`cargo install --locked` in the `Dockerfile` requires anyway, and the validator
+follows from the same commit:
+
+```toml
+# Cargo.toml (repo root)
+[patch.crates-io]
+zebra-chain = { git = "https://github.com/me/zebra", branch = "my-wip" }
+zebra-state = { git = "https://github.com/me/zebra", branch = "my-wip" }
+zebra-rpc = { git = "https://github.com/me/zebra", branch = "my-wip" }
+```
+
+```toml
+# live-tests/Cargo.toml
+[workspace.metadata.zaino.zebra]
+source = "patch"
+```
+
+```sh
+cargo update -p zebra-chain   # resolves the branch, records the commit
+cd live-tests && ztest run
+```
+
+Cargo records the resolved commit in the root `Cargo.lock` whether the patch
+asked for a `branch`, a `tag` or a `rev`, and the validator is built on-cluster
+from that commit. So the fork is named once and the validator cannot drift from
+the indexer. Iterate by pushing to the branch and re-running `cargo update`.
+
+Declaring a `branch` is preferred, and only the resolved commit ever reaches
+ztest — which matters, because ztest keys its git-fetch cache and its image tag
+on the ref it is given and treats both as immutable. A `path =` patch is
+refused: the cluster cannot reach your worktree.
+
+### Overrides
+
+Highest precedence first:
+
+| Variable                                | Effect                                                     |
+| --------------------------------------- | ---------------------------------------------------------- |
+| `ZAINO_ZEBRA_GIT` + `ZAINO_ZEBRA_REV`   | Build from this url and commit. Both or neither.           |
+| `ZAINO_ZEBRA_SOURCE`                    | `published` or `patch`, overriding the manifest.           |
+| `ZAINO_ZEBRA_VERSION`                   | Retag the release, or set a fork build's semver.           |
+| `ZAINO_ZEBRA_DOCKERFILE`                | Dockerfile path within the zebra tree.                     |
+
+To keep a local setting across runs without it showing up in `git status`, put
+it in `live-tests/.cargo/config.toml` — `.cargo` is gitignored:
+
+```toml
+[env]
+ZAINO_ZEBRA_VERSION = "6.3.0"
+```
