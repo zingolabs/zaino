@@ -224,13 +224,19 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
             (ErrorCode::InternalError, e.to_string())
         }
         // Resolving a transaction's inputs is a server-side concern throughout:
-        // `Unavailable` is a transport failure, and `MissingPrevout` /
+        // `Unavailable` is a transport failure, `MissingPrevout` /
         // `PrevoutIndexOutOfRange` are inconsistencies in what the validator
-        // served — the spending transaction without the output it spends. None of
-        // these is bad client input, so all map to the internal-error code. Each
-        // variant's own `Display` is used (which does not stringify the `#[source]`
-        // cause), per variant, rather than a blanket `to_string()` of the cause.
+        // served — the spending transaction without the output it spends — and
+        // `PrevoutFanoutTooLarge` is a server policy refusal to fan a single
+        // passthrough request out past its ceiling. None of these is bad client
+        // input (the client asked for a well-formed, valid block or transaction),
+        // so all map to the internal-error code. Each variant's own `Display` is
+        // used (which does not stringify the `#[source]` cause), per variant,
+        // rather than a blanket `to_string()` of the cause.
         RpcError::TransactionView(e @ TransactionViewError::Unavailable { .. }) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
+        RpcError::TransactionView(e @ TransactionViewError::PrevoutFanoutTooLarge { .. }) => {
             (ErrorCode::InternalError, e.to_string())
         }
         RpcError::TransactionView(e @ TransactionViewError::MissingPrevout { .. }) => {
@@ -360,6 +366,30 @@ mod tests {
             },
         ));
         assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// An over-large prevout fan-out is a server policy refusal, not bad client
+    /// input: the caller asked for a well-formed, valid block, and cannot
+    /// reformulate the request to need fewer prevout fetches — the block genuinely
+    /// spends that many distinct outputs. So it maps to the internal-error code
+    /// (the same class as the other server-side resolution failures), never
+    /// invalid-params, which would wrongly blame the caller for a limit Zaino
+    /// imposes during the passthrough phase. The message names both the needed
+    /// count and the ceiling, via the variant's own `Display`.
+    #[test]
+    fn prevout_fanout_too_large_is_an_internal_error() {
+        let obj = to_error_object(RpcError::TransactionView(
+            TransactionViewError::PrevoutFanoutTooLarge {
+                needed: 9000,
+                ceiling: 8192,
+            },
+        ));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+        assert!(
+            obj.message().contains("9000") && obj.message().contains("8192"),
+            "the message names the needed count and the ceiling: {}",
+            obj.message()
+        );
     }
 
     /// An unavailable validator while resolving inputs is a transport failure,

@@ -63,6 +63,11 @@ answer (`Ok(None)`), while a miss on a *prevout* is a source inconsistency —
 `TransactionViewError` is a typed enum, not a `read_error!` String type: its
 `Unavailable` keeps the transport cause with `#[source]`, and
 `PrevoutIndexOutOfRange` is its own variant for an out-of-range `prev_index`.
+`PrevoutFanoutTooLarge` is a policy refusal, separate from `Unavailable`: while
+prevouts are resolved by passthrough, a request whose distinct external prevouts
+exceed the per-request ceiling is refused — naming the needed count and the
+ceiling — before any fetch is issued, so one request cannot be amplified into an
+unbounded number of validator round trips.
 
 `NodeRpcService` also demands `NodeStatusRead`, the node-operator status control
 behind `getinfo`, `getmininginfo`, `getpeerinfo` and `getnetworksolps`. These are

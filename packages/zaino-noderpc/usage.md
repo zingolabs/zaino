@@ -65,11 +65,13 @@ reorg between them. Verbosity 0 needs only the single raw-block read.
 
 `to_error_object` maps each adapter error to a JSON-RPC code per variant, never a
 blanket `to_string()` of a `#[source]` cause. Resolving a transaction's inputs is
-a server-side concern throughout: a transport failure (`Unavailable`) and the two
+a server-side concern throughout: a transport failure (`Unavailable`), the two
 source inconsistencies (`MissingPrevout`, `PrevoutIndexOutOfRange` — the
-validator served a spending transaction but not the output it spends) all map to
-the internal-error code, not invalid-params. A malformed txid or block id is the
-only input the caller is blamed for.
+validator served a spending transaction but not the output it spends), and the
+policy refusal `PrevoutFanoutTooLarge` (the request would fan out past the
+per-request prevout ceiling) all map to the internal-error code, not
+invalid-params — the caller asked for a well-formed, valid object in each case. A
+malformed txid or block id is the only input the caller is blamed for.
 
 ## Not modelled here
 

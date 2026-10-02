@@ -25,6 +25,24 @@ use zaino_service::error::TransactionViewError;
 /// fetch entirely, at which point this bound no longer applies.
 pub(crate) const PREVOUT_FETCH_CONCURRENCY: usize = 16;
 
+/// The most distinct prevout transactions one request may fetch.
+///
+/// While prevouts are resolved by passthrough — one validator round trip per
+/// distinct external txid — this caps the total fan-out of a single request, so a
+/// request cannot be amplified into an unbounded number of validator round trips.
+/// It is checked on the count of *distinct* external txids, before any fetch is
+/// issued, and a request over it is refused rather than served.
+///
+/// The ceiling is sized for the passthrough phase. A block the explorer requests a
+/// transaction view for holds at most a few hundred transactions, each spending a
+/// handful of outputs; even a consolidation-heavy block stays in the low thousands
+/// of distinct prevouts. 8192 sits comfortably above a 250-transaction block's
+/// distinct prevouts while still bounding the fan-out — a pathological block
+/// crafted to spend tens of thousands of distinct outputs is refused rather than
+/// amplified into that many round trips. A local outpoint index removes the
+/// per-prevout fetch, at which point this bound no longer applies.
+const MAX_PREVOUT_FETCHES_PER_REQUEST: usize = 8192;
+
 /// Resolve every transparent input of `transactions` to the output it spends,
 /// returning one resolved-input list per transaction, in the same order.
 ///
@@ -33,6 +51,11 @@ pub(crate) const PREVOUT_FETCH_CONCURRENCY: usize = 16;
 /// through `fetch` — deduplicated, and at most [`PREVOUT_FETCH_CONCURRENCY`] at
 /// a time. `fetch` yields the spent transaction's outputs, `Ok(None)` when the
 /// validator does not know that txid, and `Err` for a transport failure.
+///
+/// A request whose distinct external txids exceed
+/// [`MAX_PREVOUT_FETCHES_PER_REQUEST`] is refused with
+/// [`TransactionViewError::PrevoutFanoutTooLarge`] before any fetch is issued — a
+/// policy refusal that bounds the passthrough fan-out, not a transport failure.
 ///
 /// A prevout the validator cannot find is a [`TransactionViewError::MissingPrevout`];
 /// one whose index is past the spent transaction's outputs is a
@@ -67,6 +90,16 @@ where
         }
         ordered
     };
+
+    // Refuse an over-large request before issuing any fetch: the ceiling is on the
+    // distinct external txids, so a block that would fan out past it costs no
+    // validator round trips at all.
+    if external.len() > MAX_PREVOUT_FETCHES_PER_REQUEST {
+        return Err(TransactionViewError::PrevoutFanoutTooLarge {
+            needed: external.len(),
+            ceiling: MAX_PREVOUT_FETCHES_PER_REQUEST,
+        });
+    }
 
     let fetch = &fetch;
     let fetched: HashMap<TransactionId, Option<Vec<TransparentOutput>>> = stream::iter(external)
@@ -116,7 +149,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{PREVOUT_FETCH_CONCURRENCY, resolve_prevouts};
+    use super::{MAX_PREVOUT_FETCHES_PER_REQUEST, PREVOUT_FETCH_CONCURRENCY, resolve_prevouts};
     use std::error::Error;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -341,5 +374,80 @@ mod tests {
     #[test]
     fn the_fetch_concurrency_bound_is_the_documented_value() {
         assert_eq!(PREVOUT_FETCH_CONCURRENCY, 16);
+    }
+
+    /// A distinct external txid per index, encoding the index so a request can be
+    /// built with an exact number of distinct prevouts to fetch.
+    fn external_txid(index: usize) -> TransactionId {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&index.to_le_bytes());
+        TransactionId::from(bytes)
+    }
+
+    /// One transaction spending output 0 of `count` distinct external txids, so it
+    /// has exactly `count` distinct prevouts to fetch. Its own txid is all-`0xFF`,
+    /// which no index-encoded external txid collides with, so none resolve
+    /// intra-block.
+    fn spender_over(count: usize) -> Transaction {
+        let inputs = (0..count)
+            .map(|index| TransparentInput {
+                prev_txid: external_txid(index),
+                prev_index: 0,
+            })
+            .collect();
+        Transaction {
+            txid: TransactionId::from([0xFF; 32]),
+            transparent: TransparentData {
+                inputs,
+                outputs: Vec::new(),
+            },
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn exactly_the_ceiling_many_prevouts_resolves() {
+        // A request whose distinct external prevouts equal the ceiling is served:
+        // every one is fetched, none refused.
+        let spender = spender_over(MAX_PREVOUT_FETCHES_PER_REQUEST);
+        let known = (0..MAX_PREVOUT_FETCHES_PER_REQUEST)
+            .map(|index| (external_txid(index), vec![output(1)]))
+            .collect();
+        let counting = Counting::new(known);
+
+        let resolved = resolve_prevouts(&[spender], counting.fetcher())
+            .await
+            .expect("a request at the ceiling is served");
+
+        assert_eq!(resolved[0].len(), MAX_PREVOUT_FETCHES_PER_REQUEST);
+        assert_eq!(counting.calls(), MAX_PREVOUT_FETCHES_PER_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn over_the_ceiling_is_refused_before_any_fetch() {
+        // One distinct prevout past the ceiling: the refusal names the needed count
+        // and the ceiling, and — being checked before the fetch stream — issues zero
+        // fetches, so the counting fetcher records none.
+        let needed = MAX_PREVOUT_FETCHES_PER_REQUEST + 1;
+        let spender = spender_over(needed);
+        let counting = Counting::new(Vec::new());
+
+        match resolve_prevouts(&[spender], counting.fetcher()).await {
+            Err(TransactionViewError::PrevoutFanoutTooLarge {
+                needed: got,
+                ceiling,
+            }) => {
+                assert_eq!(got, needed);
+                assert_eq!(ceiling, MAX_PREVOUT_FETCHES_PER_REQUEST);
+            }
+            other => panic!("expected PrevoutFanoutTooLarge, got {other:?}"),
+        }
+        assert_eq!(
+            counting.calls(),
+            0,
+            "the ceiling is checked before any fetch is issued"
+        );
     }
 }

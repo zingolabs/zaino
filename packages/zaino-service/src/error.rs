@@ -138,6 +138,22 @@ pub enum TransactionViewError {
         /// The input whose referenced output could not be found.
         outpoint: TransparentInput,
     },
+    /// Resolving this request would fetch more distinct prevout transactions than
+    /// the passthrough-phase ceiling allows — a policy refusal, not a transport
+    /// failure: the request is well-formed and the validator healthy, but serving
+    /// it by per-prevout passthrough would fan out beyond the bound. Distinct from
+    /// [`Unavailable`](Self::Unavailable), which is a validator that could not be
+    /// reached. A local outpoint index removes the fetch and lifts this ceiling.
+    #[error(
+        "resolving this request needs {needed} prevout fetches, over the per-request ceiling of {ceiling}"
+    )]
+    PrevoutFanoutTooLarge {
+        /// The number of distinct external prevout transactions the request would
+        /// fetch.
+        needed: usize,
+        /// The per-request ceiling that was exceeded.
+        ceiling: usize,
+    },
     /// The spent transaction exists but has no output at the referenced index.
     #[error("prevout {outpoint:?} names output {index} of a transaction with {outputs} outputs")]
     PrevoutIndexOutOfRange {
