@@ -46,6 +46,20 @@ for the same reason `RawTransactionRead` and `TransactionRead` are split — one
 returns the domain block every consumer uses, the other an explorer-only
 surface. The block page composes the two into one `getblock(_, 2)` response.
 
+`NodeRpcReads` also carries `TransactionViewRead`, the resolved-transaction
+surface behind `getrawtransaction <txid> 1` and `getblock <block> 2`:
+`transaction_view` returns one transaction and `block_transaction_views` a whole
+block, in both cases with every transparent input resolved to the
+`TransparentOutput` it spends (the value and script the wire form shows). It is a
+read distinct from `TransactionRead`, which returns the decoded transaction as it
+stands: resolving a prevout needs a further lookup per distinct outpoint that a
+wallet never asks for. A miss on the requested transaction or block is a domain
+answer (`Ok(None)`), while a miss on a *prevout* is a source inconsistency —
+`TransactionViewError::MissingPrevout`, naming the outpoint, never a blank value.
+`TransactionViewError` is a typed enum, not a `read_error!` String type: its
+`Unavailable` keeps the transport cause with `#[source]`, and
+`PrevoutIndexOutOfRange` is its own variant for an out-of-range `prev_index`.
+
 `Serves<U>` carries a use case's demand as a bound a generic wiring names
 without naming the service trait; one blanket impl per use case forwards to
 its service. A use case says nothing about how it is served: routing and the

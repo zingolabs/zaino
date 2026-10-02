@@ -28,6 +28,7 @@ pub mod chain_view;
 mod engine;
 mod nullifiers;
 mod passthrough;
+mod prevout;
 pub mod routing;
 
 #[cfg(any(test, feature = "testing"))]

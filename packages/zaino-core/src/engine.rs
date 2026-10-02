@@ -133,6 +133,7 @@ mod block_verbose;
 mod snapshot;
 mod spend;
 mod transaction;
+mod transaction_view;
 mod treestate;
 
 pub use snapshot::EngineSnapshot;

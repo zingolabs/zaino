@@ -10,11 +10,13 @@ use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     BlockVerbose, BlockchainInfo, CompactBlock, Height, HeightRange, Outpoint, RawTransaction,
-    ShieldedPool, SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
+    ShieldedPool, SubtreeRoot, Transaction, TransactionDetail, TransactionId, TransactionLocation,
+    TransparentAddress, TransparentInput, TransparentOutput, Treestate, Utxo,
 };
 
 use crate::error::{
-    AddressReadError, BlockReadError, ReadError, SpendReadError, TreestateReadError, TxReadError,
+    AddressReadError, BlockReadError, ReadError, SpendReadError, TransactionViewError,
+    TreestateReadError, TxReadError,
 };
 
 /// Backed by: headers + block-bytes indexes.
@@ -71,6 +73,87 @@ pub trait BlockVerboseRead: Send + Sync {
         &self,
         at: BlockSelector,
     ) -> impl Future<Output = Result<Option<BlockVerbose>, BlockReadError>> + Send;
+}
+
+/// A transparent input paired with the output it spends.
+///
+/// `getrawtransaction`/`getblock(_, 2)` render each transparent input with the
+/// value and script of the output being spent, which the input itself only
+/// references by outpoint. Resolving that reference is the work
+/// [`TransactionViewRead`] does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedInput {
+    /// The input, as it names the output it spends.
+    pub outpoint: TransparentInput,
+    /// The output that input spends.
+    pub spent: TransparentOutput,
+}
+
+/// A transaction with its envelope detail and every transparent input resolved
+/// to the output it spends.
+///
+/// The explorer shape: the indexing [`Transaction`] plus the
+/// [`TransactionDetail`] it drops, plus the resolved inputs the wire form needs
+/// to show each spend's value and address.
+#[derive(Debug, Clone)]
+pub struct TransactionView {
+    /// The transaction, decomposed by pool.
+    pub transaction: Transaction,
+    /// The envelope, coinbase input, and Sprout values the indexing shape drops.
+    pub detail: TransactionDetail,
+    /// The resolved transparent inputs, in the order of
+    /// [`transaction.transparent.inputs`](zaino_primitives::types::TransparentData::inputs).
+    pub inputs: Vec<ResolvedInput>,
+}
+
+/// A [`TransactionView`] with where the transaction lives in the chain — the
+/// `getrawtransaction` surface, which reports the containing block.
+#[derive(Debug, Clone)]
+pub struct LocatedTransactionView {
+    /// The resolved transaction.
+    pub view: TransactionView,
+    /// Where the transaction was found.
+    pub location: TransactionLocation,
+}
+
+/// Every transaction of a block as a [`TransactionView`], plus the block's
+/// serialized size — the `getblock(_, 2)` surface.
+#[derive(Debug, Clone)]
+pub struct BlockTransactionViews {
+    /// Serialized byte length of the whole block.
+    pub size: u64,
+    /// The block's transactions, in block order, each with its inputs resolved.
+    pub transactions: Vec<TransactionView>,
+}
+
+/// The resolved-transaction read: a transaction, or a whole block's
+/// transactions, with every transparent input resolved to the output it spends.
+/// The explorer surface behind `getrawtransaction <txid> 1` and
+/// `getblock <block> 2`.
+///
+/// Distinct from [`TransactionRead`], which returns the pool-decomposed
+/// transaction as it stands: resolving an input to its spent output needs a
+/// second lookup per distinct prevout, which the explorer wire shape requires
+/// and a wallet never asks for.
+///
+/// Backed by: passthrough to the validator's decoded transaction / decoded block
+/// reads. A prevout is resolved first from the same block, otherwise through the
+/// decoded-transaction read. A miss on the requested transaction or block is a
+/// domain answer (`Ok(None)`); a miss on a *prevout* is a source inconsistency
+/// ([`TransactionViewError::MissingPrevout`]), never a blank value.
+pub trait TransactionViewRead: Send + Sync {
+    /// The resolved view of the transaction `id`, with its location. `Ok(None)`
+    /// when no transaction has that id.
+    fn transaction_view(
+        &self,
+        id: TransactionId,
+    ) -> impl Future<Output = Result<Option<LocatedTransactionView>, TransactionViewError>> + Send;
+    /// The resolved views of every transaction in the block `at`. `Ok(None)`
+    /// when the selector names no block.
+    fn block_transaction_views(
+        &self,
+        at: BlockSelector,
+    ) -> impl Future<Output = Result<Option<BlockTransactionViews>, TransactionViewError>> + Send;
 }
 
 /// The pool-decomposed transaction read: the transaction parsed into its

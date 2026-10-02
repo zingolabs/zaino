@@ -6,6 +6,7 @@
 //! share a shape; a macro keeps them DRY (a `fn` cannot define types).
 
 use crate::Capability;
+use zaino_primitives::types::TransparentInput;
 
 /// Every read-boundary failure separates a *not-yet-serviceable* answer and a
 /// *domain* "not found" (which is `Ok(None)`, never an error) from real backend
@@ -109,4 +110,42 @@ pub enum BroadcastRejection {
     /// Decoded, but consensus/validation rejected it (with the engine's reason).
     #[error("transaction rejected: {0}")]
     Invalid(String),
+}
+
+/// Errors from [`crate::TransactionViewRead`].
+///
+/// A typed enum, not a `read_error!` String type: resolving a transparent input
+/// to the output it spends has failure modes the shared three-case shape cannot
+/// name. A miss on the *requested* transaction or block is a domain answer
+/// (`Ok(None)`, never a variant here); the variants are the inconsistencies and
+/// transport failures that can arise while resolving the inputs of a transaction
+/// the validator *did* serve. The transport variant keeps its cause with
+/// `#[source]`, so an operator walking the chain reaches the concrete failure.
+#[derive(Debug, thiserror::Error)]
+pub enum TransactionViewError {
+    /// The validator could not be reached or answered unusably.
+    #[error("validator unavailable")]
+    Unavailable {
+        /// The transport failure, kept as the source chain.
+        #[source]
+        cause: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// The validator served a spending transaction but not the transaction it
+    /// spends — a source inconsistency, named rather than rendered as a blank
+    /// input value.
+    #[error("prevout {outpoint:?} is unknown to the validator")]
+    MissingPrevout {
+        /// The input whose referenced output could not be found.
+        outpoint: TransparentInput,
+    },
+    /// The spent transaction exists but has no output at the referenced index.
+    #[error("prevout {outpoint:?} names output {index} of a transaction with {outputs} outputs")]
+    PrevoutIndexOutOfRange {
+        /// The input whose referenced output index is out of range.
+        outpoint: TransparentInput,
+        /// The referenced output index.
+        index: u32,
+        /// The number of outputs the spent transaction actually has.
+        outputs: usize,
+    },
 }

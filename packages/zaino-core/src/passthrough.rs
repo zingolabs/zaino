@@ -20,24 +20,24 @@
 
 use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockVerbose, BlockchainInfo, Height,
-    HeightRange, PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot, TransactionId,
-    TransparentAddress, Treestate, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockVerbose, BlockchainInfo,
+    DecodedBlock, Height, HeightRange, PreIndexCompactTx, RawTransaction, ShieldedPool,
+    SubtreeRoot, TransactionId, TransparentAddress, TransparentOutput, Treestate, Utxo,
 };
 use zaino_service::error::{
     AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError,
-    TreestateReadError, TxReadError,
+    TransactionViewError, TreestateReadError, TxReadError,
 };
 use zaino_source::{
     DecodedTransaction, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
     GetAddressDeltasError, GetAddressTxids, GetAddressTxidsError, GetAddressUtxos,
-    GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
-    GetBlockHeader, GetBlockHeaderError, GetBlockVerbose, GetBlockVerboseByHash,
-    GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError, GetMempoolCompactTransaction,
-    GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction,
-    GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError, GetTransaction,
-    GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError, GetTreestate,
-    GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
+    GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockDecoded,
+    GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockVerbose,
+    GetBlockVerboseByHash, GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError,
+    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
+    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
+    GetTransaction, GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError,
+    GetTreestate, GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
     TransactionResponse,
 };
 
@@ -586,6 +586,108 @@ where
             Err(SourceError::Unavailable(cause)) => Err(MempoolReadError::Transient(format!(
                 "validator unavailable: {cause}"
             ))),
+        }
+    }
+}
+
+/// Map a resilient source failure on a decoded read to the transaction-view
+/// surface. The domain arm is the caller's to map — a miss on the requested
+/// transaction or block is `Ok(None)` — while the two transport arms both
+/// collapse to [`TransactionViewError::Unavailable`], keeping the cause as the
+/// source chain. Factored out so those identical transport arms are written once
+/// rather than per decoded read.
+fn block_failure<E, T>(
+    err: SourceError<E>,
+    miss: impl FnOnce(E) -> Result<Option<T>, TransactionViewError>,
+) -> Result<Option<T>, TransactionViewError>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    match err {
+        SourceError::Domain(domain) => miss(domain),
+        SourceError::NonDomain(cause) => Err(TransactionViewError::Unavailable {
+            cause: Box::new(cause),
+        }),
+        SourceError::Unavailable(cause) => Err(TransactionViewError::Unavailable {
+            cause: Box::new(cause),
+        }),
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockDecoded,
+{
+    /// The whole block at `height` decoded into every transaction with its
+    /// detail, live from the validator. Passthrough: the per-transaction decoding
+    /// needs the validator's chain library, which this crate must not depend on. A
+    /// height with no block is a domain miss (`Ok(None)`); a transport failure is
+    /// [`TransactionViewError::Unavailable`].
+    pub(crate) async fn block_decoded(
+        &self,
+        height: Height,
+    ) -> Result<Option<DecodedBlock>, TransactionViewError> {
+        match self.source.get_block_decoded(height).await {
+            Ok(block) => Ok(Some(block)),
+            Err(err) => block_failure(err, |GetBlockError::HeightNotFound(_)| Ok(None)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockDecodedByHash,
+{
+    /// The block with `hash` decoded into every transaction with its detail, live
+    /// from the validator. Separate from [`block_decoded`](Self::block_decoded)
+    /// because a hash can name a side-chain block. A hash no retained chain holds
+    /// is a domain miss (`Ok(None)`); a transport failure is
+    /// [`TransactionViewError::Unavailable`].
+    pub(crate) async fn block_decoded_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<DecodedBlock>, TransactionViewError> {
+        match self.source.get_block_decoded_by_hash(hash).await {
+            Ok(block) => Ok(Some(block)),
+            Err(err) => block_failure(err, |GetBlockByHashError::NotFound(_)| Ok(None)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetTransactionVerbose,
+{
+    /// The transaction `id` decoded into its pool structure and detail, plus where
+    /// it lives, live from the validator — the *requested* transaction of a
+    /// transaction view. A missing txid is a domain miss (`Ok(None)`); a transport
+    /// failure is [`TransactionViewError::Unavailable`].
+    pub(crate) async fn transaction_decoded(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<DecodedTransaction>, TransactionViewError> {
+        match self.source.get_transaction_verbose(id).await {
+            Ok(decoded) => Ok(Some(decoded)),
+            Err(err) => block_failure(err, |GetTransactionVerboseError::NotFound(_)| Ok(None)),
+        }
+    }
+
+    /// The transparent outputs of the transaction `id`, live from the validator —
+    /// the spent transaction behind a prevout. `Ok(None)` when the validator does
+    /// not know that txid, so the caller can name the specific outpoint as missing;
+    /// a transport failure keeps its cause, for the caller to lift into
+    /// [`TransactionViewError::Unavailable`]. The raw cause rather than the view
+    /// error because a miss here is the caller's to interpret, which depends on the
+    /// input that referenced it.
+    pub(crate) async fn prevout_outputs(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<Vec<TransparentOutput>>, Box<dyn std::error::Error + Send + Sync>> {
+        match self.source.get_transaction_verbose(id).await {
+            Ok(decoded) => Ok(Some(decoded.transaction.transparent.outputs)),
+            Err(SourceError::Domain(GetTransactionVerboseError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(Box::new(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(Box::new(cause)),
         }
     }
 }
