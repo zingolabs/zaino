@@ -69,6 +69,29 @@ variant implying support that the classifier never produced.
 Zaino does not serve Sprout data anywhere else either. If that changes, add the
 variant here and in `wire/address.rs` together.
 
+## Decoding a script to an address
+
+`transparent_address_from_script(script, params)` decodes a transparent output's
+locking script to the address it pays, for the explorer's
+`scriptPubKey.addresses`:
+
+```rust
+use zaino_address::transparent_address_from_script;
+
+let address: Option<String> = transparent_address_from_script(&script_bytes, network);
+```
+
+Only the two standard templates decode: the 25-byte pay-to-public-key-hash
+(`t1…`) and the 23-byte pay-to-script-hash (`t3…`). Every other script —
+multisig, `OP_RETURN`, a malformed template — returns `None`, because it is not
+an address a user controls.
+
+This is **narrower** than `zaino-primitives`' `classify_script`, which keys
+*every* script (non-standard ones included) for indexing and reads a 21-byte
+`tag || hash` form. The two answer different questions: `classify_script`
+produces an index key for any output; this produces a verifiable address or
+nothing. Do not swap one for the other.
+
 ## `ismine` is never emitted
 
 the legacy full node's `ismine` field reports whether the *node's wallet* holds the key.
