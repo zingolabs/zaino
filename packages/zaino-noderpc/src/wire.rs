@@ -45,14 +45,15 @@ pub(crate) fn txid_from_hex(s: &str) -> Result<TransactionId, RpcError> {
     Ok(TransactionId::from(arr))
 }
 
-/// Lowercase hex (domain -> wire).
-pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
+/// Lowercase hex of an arbitrary-length byte payload (domain -> wire).
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Lowercase hex of an arbitrary byte slice (domain -> wire).
-pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// Lowercase hex of a 32-byte hash — a hash, block id, or txid (domain -> wire).
+/// The fixed-length signature documents the hash case at its call sites.
+pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
+    bytes_to_hex(&bytes)
 }
 
 /// Render an address delta for the wire (domain -> wire).
