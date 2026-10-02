@@ -6084,6 +6084,7 @@ dependencies = [
  "zaino-finality",
  "zaino-persistence-codec",
  "zaino-primitives",
+ "zaino-runtime",
  "zaino-source",
  "zaino-sync",
 ]
@@ -6239,6 +6240,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6249,6 +6251,7 @@ dependencies = [
  "zaino-component",
  "zaino-consensus",
  "zaino-core",
+ "zaino-finality",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-lightserve",

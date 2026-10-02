@@ -9,7 +9,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_indexer::FetchConcurrency;
 
 /// The finalised index store (LMDB).
@@ -61,9 +60,6 @@ pub struct IndexerConfig {
     pub batch_size: u32,
     /// Contexts buffered between the provisioner and the engine.
     pub channel_capacity: usize,
-    /// Depth below the tip treated as still volatile; only `tip − depth` and
-    /// below is indexed.
-    pub finalised_depth: u32,
     /// Fetches kept in flight by the provisioner. Concurrent fetch keeps the
     /// parallel engine fed rather than paced by a one-at-a-time loop. A
     /// `concurrency = 0` in the config is rejected at parse time (non-zero type).
@@ -76,7 +72,6 @@ impl Default for IndexerConfig {
             fetch: FetchStrategy::default(),
             batch_size: 1000,
             channel_capacity: 256,
-            finalised_depth: MAX_BLOCK_REORG_HEIGHT,
             concurrency: FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero")),
         }
     }

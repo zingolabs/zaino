@@ -29,6 +29,7 @@ zaino-service = { path = "../zaino-service" }
 zaino-source = { workspace = true }
 zaino-store = { path = "../zaino-store" }
 zaino-store-service = { version = "0.1.0", path = "../zaino-store-service" }
+zaino-finality.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -41,3 +42,4 @@ zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-logging = { path = "../zaino-logging" }
+tempfile = "3"

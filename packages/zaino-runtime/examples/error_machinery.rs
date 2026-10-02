@@ -52,7 +52,7 @@ use std::sync::Arc;
 use zaino_component::{
     CancellationToken, ComponentName, ComponentStatus, Lifecycle, ReachabilityProbe, RunReporter,
 };
-use zaino_indexer::{FetchConcurrency, IndexerError, SourceSyncDriver, SyncTuning};
+use zaino_indexer::{FetchConcurrency, IndexerError, SourceSyncDriver, SyncTarget, SyncTuning};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -185,13 +185,14 @@ where
         |block| context_from_block(&block),
         SyncTuning {
             batch_size: 8,
-            // Non-reorging test source: index right up to the tip.
-            finalised_depth: 0,
             channel_capacity: 16,
             // Serial + deterministic: one fetch in flight, so the first failure
             // is the first fetch.
             concurrency: FetchConcurrency::SERIAL,
         },
+        // Standalone over a non-reorging test source: index right up to the tip,
+        // with no volatile tier to coordinate a horizon with.
+        SyncTarget::Depth { depth: 0 },
     )
     .expect("driver builds");
 
