@@ -12,11 +12,12 @@ use crate::error::{FailureMode, NonDomainError};
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
     GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
-    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetSubtreeRootsError,
+    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetMiningInfoError,
+    GetNetworkSolPsError, GetNodeInfoError, GetPeerInfoError, GetSubtreeRootsError,
     GetTransactionError, GetTransactionVerboseError, GetTreestateError, QueryError,
     SendRawTransactionError, TransactionResponse,
 };
-use zaino_primitives::types::rpc::BlockHeaderVerbose;
+use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, BlockVerbose, BlockchainInfo, DecodedBlock, DetailedTransaction,
     ShieldedPool, SubtreeRoot, Transaction, TransactionDetail, TransactionLocation, Utxo,
@@ -87,6 +88,15 @@ pub struct MockChain {
     raw_block_by_hash_response: Option<Vec<u8>>,
     /// Canned subtree roots, returned for any index query.
     subtree_roots: Vec<SubtreeRoot>,
+    /// Canned `getinfo` response; `None` answers a domain not-ready.
+    node_info_response: Option<NodeInfo>,
+    /// Canned `getmininginfo` response; `None` answers a domain not-ready.
+    mining_info_response: Option<MiningInfo>,
+    /// Canned peer listing, returned for any query. Empty is a valid answer from
+    /// an isolated validator, so this never answers a domain error.
+    peer_info_response: Vec<PeerInfo>,
+    /// Canned network solution rate; `None` answers a domain not-ready.
+    network_sol_ps_response: Option<u64>,
 }
 
 impl MockChain {
@@ -112,6 +122,10 @@ impl MockChain {
             raw_block_response: None,
             raw_block_by_hash_response: None,
             subtree_roots: Vec::new(),
+            node_info_response: None,
+            mining_info_response: None,
+            peer_info_response: Vec::new(),
+            network_sol_ps_response: None,
         }
     }
 
@@ -216,6 +230,30 @@ impl MockChain {
         self
     }
 
+    /// Seed the response `get_node_info` returns.
+    pub fn with_node_info(mut self, info: NodeInfo) -> Self {
+        self.node_info_response = Some(info);
+        self
+    }
+
+    /// Seed the response `get_mining_info` returns.
+    pub fn with_mining_info(mut self, info: MiningInfo) -> Self {
+        self.mining_info_response = Some(info);
+        self
+    }
+
+    /// Seed one peer `get_peer_info` lists.
+    pub fn with_peer(mut self, peer: PeerInfo) -> Self {
+        self.peer_info_response.push(peer);
+        self
+    }
+
+    /// Seed the rate `get_network_sol_ps` returns.
+    pub fn with_network_sol_ps(mut self, sol_ps: u64) -> Self {
+        self.network_sol_ps_response = Some(sol_ps);
+        self
+    }
+
     /// Make `send_raw_transaction` reject with a domain error, for exercising a
     /// consumer's rejection path.
     pub fn reject_send(mut self, err: SendRawTransactionError) -> Self {
@@ -308,6 +346,10 @@ impl Clone for MockChain {
             raw_block_response: self.raw_block_response.clone(),
             raw_block_by_hash_response: self.raw_block_by_hash_response.clone(),
             subtree_roots: self.subtree_roots.clone(),
+            node_info_response: self.node_info_response.clone(),
+            mining_info_response: self.mining_info_response.clone(),
+            peer_info_response: self.peer_info_response.clone(),
+            network_sol_ps_response: self.network_sol_ps_response,
         }
     }
 }
@@ -690,6 +732,51 @@ impl crate::OneShotGetSubtreeRoots for MockChain {
             return Err(err);
         }
         Ok(self.subtree_roots.clone())
+    }
+}
+
+impl crate::OneShotGetNodeInfo for MockChain {
+    async fn get_node_info(&self) -> Result<NodeInfo, QueryError<GetNodeInfoError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.node_info_response
+            .clone()
+            .ok_or(QueryError::Domain(GetNodeInfoError::NotReady))
+    }
+}
+
+impl crate::OneShotGetMiningInfo for MockChain {
+    async fn get_mining_info(&self) -> Result<MiningInfo, QueryError<GetMiningInfoError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.mining_info_response
+            .clone()
+            .ok_or(QueryError::Domain(GetMiningInfoError::NotReady))
+    }
+}
+
+impl crate::OneShotGetPeerInfo for MockChain {
+    async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        Ok(self.peer_info_response.clone())
+    }
+}
+
+impl crate::OneShotGetNetworkSolPs for MockChain {
+    async fn get_network_sol_ps(
+        &self,
+        _blocks: Option<u32>,
+        _height: Option<Height>,
+    ) -> Result<u64, QueryError<GetNetworkSolPsError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.network_sol_ps_response
+            .ok_or(QueryError::Domain(GetNetworkSolPsError::NotReady))
     }
 }
 

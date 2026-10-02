@@ -52,6 +52,33 @@ fn engine_with(source: MockChain) -> LightEngine {
     )
 }
 
+/// Review Focus 1: an unreachable validator is an error, never a zero-valued
+/// success. The explorer's metric warmers keep their previous cache on an error
+/// and would otherwise cache a wrong value for 15 seconds.
+///
+/// `ValidatorClient` retries, so a single injected failure must be terminal — a
+/// one-attempt policy — otherwise attempt two succeeds and the test passes
+/// vacuously, defeating the guard it exists to be.
+#[tokio::test]
+async fn an_unreachable_validator_errors_rather_than_answering_zero() {
+    use zaino_service::NodeStatusRead;
+    use zaino_source::FailureMode;
+
+    let one_attempt = RetryPolicy {
+        max_attempts: 1,
+        ..RetryPolicy::default()
+    };
+    let engine: LightEngine = Engine::new(
+        StubNonFinalised::empty(),
+        StubNonFinalised::empty(),
+        ValidatorClient::new(
+            MockChain::new().fail_next(1, FailureMode::Connection),
+            one_attempt,
+        ),
+    );
+    assert!(engine.network_sol_ps(None, None).await.is_err());
+}
+
 #[tokio::test]
 async fn broadcast_relays_to_the_source_and_returns_its_txid() {
     let engine = engine_with(MockChain::new());

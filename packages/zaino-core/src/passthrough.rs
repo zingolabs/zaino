@@ -18,12 +18,13 @@
 //! to passthrough (the validator's state cannot be pinned to our view). That is
 //! sound for the immutable, historical data light clients query.
 
-use zaino_primitives::types::rpc::BlockHeaderVerbose;
+use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockVerbose, BlockchainInfo,
     DecodedBlock, Height, HeightRange, PreIndexCompactTx, RawTransaction, ShieldedPool,
     SubtreeRoot, TransactionId, TransparentAddress, TransparentOutput, Treestate, Utxo,
 };
+use zaino_service::NodeStatusError;
 use zaino_service::error::{
     AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError,
     TransactionViewError, TreestateReadError, TxReadError,
@@ -35,10 +36,12 @@ use zaino_source::{
     GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockVerbose,
     GetBlockVerboseByHash, GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError,
     GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
-    GetRawBlock, GetRawBlockByHash, GetRawMempoolTransaction, GetRawMempoolTransactionError,
-    GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
-    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError,
-    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
+    GetMiningInfo, GetMiningInfoError, GetNetworkSolPs, GetNetworkSolPsError, GetNodeInfo,
+    GetNodeInfoError, GetPeerInfo, GetPeerInfoError, GetRawBlock, GetRawBlockByHash,
+    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
+    GetTransaction, GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError,
+    GetTreestate, GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
+    TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -739,6 +742,87 @@ where
             Err(SourceError::Domain(GetTransactionVerboseError::NotFound(_))) => Ok(None),
             Err(SourceError::NonDomain(cause)) => Err(Box::new(cause)),
             Err(SourceError::Unavailable(cause)) => Err(Box::new(cause)),
+        }
+    }
+}
+
+// --- node-operator status: always passthrough, typed ---------------------
+//
+// Four facts about the validator, not the chain, so no index backs any of them.
+// Each maps the source's typed ports onto `NodeStatusError`: a not-ready
+// validator becomes ready, so it is its own arm; `NonDomain` and `Unavailable`
+// both carry a typed cause, so both go through `NodeStatusError::unreachable`,
+// which boxes it as a `#[source]` rather than formatting it into a message.
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetNodeInfo,
+{
+    /// The validator's self-description, live.
+    pub(crate) async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
+        match self.source.get_node_info().await {
+            Ok(info) => Ok(info),
+            Err(SourceError::Domain(GetNodeInfoError::NotReady)) => Err(NodeStatusError::NotReady),
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetMiningInfo,
+{
+    /// The validator's mining view, live.
+    pub(crate) async fn mining_info(&self) -> Result<MiningInfo, NodeStatusError> {
+        match self.source.get_mining_info().await {
+            Ok(info) => Ok(info),
+            Err(SourceError::Domain(GetMiningInfoError::NotReady)) => {
+                Err(NodeStatusError::NotReady)
+            }
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetPeerInfo,
+{
+    /// The validator's connected peers, live. An empty list is a valid answer
+    /// from an isolated validator, never an error.
+    pub(crate) async fn peer_info(&self) -> Result<Vec<PeerInfo>, NodeStatusError> {
+        match self.source.get_peer_info().await {
+            Ok(peers) => Ok(peers),
+            Err(SourceError::Domain(GetPeerInfoError::NotReady)) => Err(NodeStatusError::NotReady),
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetNetworkSolPs,
+{
+    /// The network solution rate, live, over `blocks` ending at `height` —
+    /// forwarded as given, so `None` for either is the validator's own default.
+    /// An unreachable validator errors rather than answering a zero value: a
+    /// consumer that caches successes and ignores errors would otherwise cache a
+    /// wrong number.
+    pub(crate) async fn network_sol_ps(
+        &self,
+        blocks: Option<u32>,
+        height: Option<Height>,
+    ) -> Result<u64, NodeStatusError> {
+        match self.source.get_network_sol_ps(blocks, height).await {
+            Ok(rate) => Ok(rate),
+            Err(SourceError::Domain(GetNetworkSolPsError::NotReady)) => {
+                Err(NodeStatusError::NotReady)
+            }
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
         }
     }
 }

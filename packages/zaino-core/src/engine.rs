@@ -159,8 +159,9 @@ use zaino_service::{
     Serviceable, TakeSnapshot, TipSubscribe,
 };
 use zaino_source::{
-    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetRawMempoolTransaction,
-    GetTreestate, SendRawTransaction,
+    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo,
+    GetNetworkSolPs, GetNodeInfo, GetPeerInfo, GetRawMempoolTransaction, GetTreestate,
+    SendRawTransaction,
 };
 
 use crate::passthrough::PassthroughProvider;
@@ -363,32 +364,31 @@ where
     }
 }
 
-/// Staged over the typed port: the bound change lands here, the passthrough
-/// wiring in the commit that follows. Until then every read answers
-/// [`NodeStatusError::NotReady`], the same "not wired yet" placeholder the opaque
-/// relay carried before it.
+/// Always passthrough: these are facts about the validator, not the chain, so
+/// no index backs any of them. Each forwards to the passthrough provider, which
+/// maps the source's typed ports onto [`NodeStatusError`].
 impl<Fs, Nfs, Src, R> NodeStatusRead for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
-    Src: Send + Sync + 'static,
+    Src: GetNodeInfo + GetMiningInfo + GetPeerInfo + GetNetworkSolPs,
     R: Routing,
 {
     async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
-        Err(NodeStatusError::NotReady)
+        self.passthrough.node_info().await
     }
     async fn mining_info(&self) -> Result<MiningInfo, NodeStatusError> {
-        Err(NodeStatusError::NotReady)
+        self.passthrough.mining_info().await
     }
     async fn peer_info(&self) -> Result<Vec<PeerInfo>, NodeStatusError> {
-        Err(NodeStatusError::NotReady)
+        self.passthrough.peer_info().await
     }
     async fn network_sol_ps(
         &self,
-        _blocks: Option<u32>,
-        _height: Option<Height>,
+        blocks: Option<u32>,
+        height: Option<Height>,
     ) -> Result<u64, NodeStatusError> {
-        Err(NodeStatusError::NotReady)
+        self.passthrough.network_sol_ps(blocks, height).await
     }
 }
 
