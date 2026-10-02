@@ -213,6 +213,27 @@ an empty success is worse than a failure.
 that needs both would let two separate fetches disagree, since the transaction
 could be mined between them.
 
+## A whole block, decoded in one fetch
+
+`GetBlockDecoded` (by height) and `GetBlockDecodedByHash` return
+`DecodedBlock { size, transactions }`, where each `DetailedTransaction` is a
+domain `Transaction` paired with its `TransactionDetail` — the same explorer
+surface as `GetTransactionVerbose`, but for every transaction in a block at once.
+
+It is one fetch, not one per transaction: the adapter issues a single
+`getblock(<height|hash>, 0)`, deserialises the raw block with the validator's
+chain library, and decodes every transaction from those bytes. So the block is a
+single consistent snapshot — the coinbase and the transactions that reference it
+cannot be read from different chain states — and the fan-out is one call rather
+than one-plus-N. `size` is the block's serialized byte length; each transaction's
+`detail.size` is its own serialized length.
+
+The domain misses reuse `GetBlockError` / `GetBlockByHashError`: a decoded block
+asks the same question as a raw block, and a missing height or hash is the same
+answer. As with `GetTransactionVerbose`, a block the adapter fetches but cannot
+deserialize, or a transaction the conversion rejects, is a **non-domain** fault,
+never a decoded-but-empty block.
+
 ## Consumer aliases go in the consumer
 
 A crate that needs many ports declares its own supertrait alias, **in its own
@@ -239,6 +260,8 @@ let mock = MockChain::new()
     .with_blockchain_info(info)             // scripts `get_blockchain_info`
     .with_block_header_verbose(header)      // scripts `get_block_header`
     .with_block_verbose(block_verbose)      // scripts `get_block_verbose[_by_hash]`
+    .with_block_decoded(decoded)            // scripts `get_block_decoded`
+    .with_block_decoded_by_hash(other)      // scripts `get_block_decoded_by_hash`
     .fail_next(2, FailureMode::Timeout);    // failure injection
 ```
 

@@ -5,7 +5,7 @@ use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, GetBlockError, GetChainTipError, GetTreestateError, NonDomainError, QueryError,
 };
-use zebra_chain::serialization::ZcashDeserializeInto;
+use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize};
 
 use crate::parse;
 
@@ -1123,6 +1123,81 @@ impl zaino_source::OneShotGetRawBlockByHash for ZebraRpcAdapter {
     }
 }
 
+/// Decode the raw bytes of a whole block into every transaction with its detail.
+///
+/// Mirrors [`decode_transaction_response`]: `zebra`'s own deserializer parses the
+/// block, then each transaction is run through `transaction_from_zebra` for the
+/// indexing shape and `transaction_detail_from_zebra` for the envelope. A
+/// transaction's size is its own serialized length (`zcash_serialized_size`), and
+/// the block's size is the length of the bytes it was decoded from. Any
+/// parse/convert failure is a [`FailureMode::Parse`] non-domain error with its
+/// cause kept, so a malformed block fails loud rather than yielding a
+/// decoded-but-empty block a consumer would cache as a success.
+fn decode_block_response(
+    bytes: Vec<u8>,
+) -> Result<zaino_primitives::types::DecodedBlock, NonDomainError> {
+    let size = u64::try_from(bytes.len())
+        .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
+    let zebra_block: zebra_chain::block::Block = bytes
+        .zcash_deserialize_into()
+        .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+    let transactions = zebra_block
+        .transactions
+        .iter()
+        .map(|tx| {
+            let transaction = zaino_convert_zebra::transaction_from_zebra(tx)
+                .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
+            let tx_size = u64::try_from(tx.zcash_serialized_size())
+                .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
+            let detail = zaino_convert_zebra::transaction_detail_from_zebra(tx, tx_size)
+                .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
+            Ok(zaino_primitives::types::DetailedTransaction {
+                transaction,
+                detail,
+            })
+        })
+        .collect::<Result<Vec<_>, NonDomainError>>()?;
+    Ok(zaino_primitives::types::DecodedBlock { size, transactions })
+}
+
+impl zaino_source::OneShotGetBlockDecoded for ZebraRpcAdapter {
+    async fn get_block_decoded(
+        &self,
+        height: Height,
+    ) -> Result<zaino_primitives::types::DecodedBlock, QueryError<zaino_source::GetBlockError>>
+    {
+        let params = vec![
+            serde_json::Value::String(u32::from(height).to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+        let bytes = self
+            .call_parsed_or_absent("getblock", params, parse::parse_raw_block, || {
+                zaino_source::GetBlockError::HeightNotFound(height)
+            })
+            .await?;
+        decode_block_response(bytes).map_err(QueryError::NonDomain)
+    }
+}
+
+impl zaino_source::OneShotGetBlockDecodedByHash for ZebraRpcAdapter {
+    async fn get_block_decoded_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<zaino_primitives::types::DecodedBlock, QueryError<zaino_source::GetBlockByHashError>>
+    {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
+            serde_json::Value::Number(0.into()),
+        ];
+        let bytes = self
+            .call_parsed_or_absent("getblock", params, parse::parse_raw_block, || {
+                zaino_source::GetBlockByHashError::NotFound(hash)
+            })
+            .await?;
+        decode_block_response(bytes).map_err(QueryError::NonDomain)
+    }
+}
+
 #[cfg(test)]
 mod classification_tests {
     use super::*;
@@ -1409,5 +1484,94 @@ mod transaction_verbose_tests {
             location: TransactionLocation::Mempool,
         };
         assert!(decode_transaction_response(garbage).is_err());
+    }
+}
+
+#[cfg(test)]
+mod block_decoded_tests {
+    use super::*;
+    use zaino_source::GetBlockError;
+
+    /// Mainnet block 1,000,000: a coinbase plus five further transactions, so
+    /// both the block size and the per-transaction details are meaningful. The
+    /// same fixture the offline block-parity test captures.
+    const BLOCK_1M_HEX: &str = include_str!("../tests/fixtures/block_1000000.hex");
+
+    fn block_1m_bytes() -> Vec<u8> {
+        let value = serde_json::Value::String(BLOCK_1M_HEX.trim().to_string());
+        parse::parse_raw_block(&value).expect("a well-formed raw-block fixture")
+    }
+
+    #[test]
+    fn a_real_block_decodes_to_every_transaction_with_its_detail() {
+        let bytes = block_1m_bytes();
+        let byte_len = u64::try_from(bytes.len()).expect("fits u64");
+
+        let decoded = decode_block_response(bytes.clone()).expect("the fixture decodes");
+
+        // The block's size is the length of the bytes it was decoded from.
+        assert_eq!(decoded.size, byte_len);
+        // Block 1,000,000 carries six transactions.
+        assert_eq!(decoded.transactions.len(), 6);
+        // Coinbase-ness is a fact about the first transaction's input, and only
+        // the first transaction is a coinbase.
+        assert!(decoded.transactions[0].detail.coinbase.is_some());
+        for detailed in &decoded.transactions[1..] {
+            assert!(detailed.detail.coinbase.is_none());
+        }
+
+        // Each decoded txid equals what `transaction_from_zebra` derives from the
+        // same zebra transaction, so the bytes were deserialized in block order
+        // and not mirrored or truncated.
+        let zebra_block: zebra_chain::block::Block = bytes
+            .zcash_deserialize_into()
+            .expect("the fixture deserializes");
+        assert_eq!(decoded.transactions.len(), zebra_block.transactions.len());
+        for (detailed, zebra_tx) in decoded
+            .transactions
+            .iter()
+            .zip(zebra_block.transactions.iter())
+        {
+            let expected = zaino_convert_zebra::transaction_from_zebra(zebra_tx)
+                .expect("the fixture transaction converts");
+            assert_eq!(detailed.transaction.txid, expected.txid);
+        }
+    }
+
+    #[test]
+    fn a_coinbase_detail_carries_its_own_serialized_size() {
+        // The per-transaction size is each transaction's own serialized length,
+        // not the whole block's, so the coinbase's detail size is smaller than
+        // the block size.
+        let decoded = decode_block_response(block_1m_bytes()).expect("the fixture decodes");
+        let coinbase = &decoded.transactions[0];
+        assert!(coinbase.detail.size > 0);
+        assert!(coinbase.detail.size < decoded.size);
+    }
+
+    #[test]
+    fn undecodable_bytes_surface_as_a_non_domain_error() {
+        // A body that is not a block must fail loud, never yield a
+        // decoded-but-empty block a consumer would cache as a success.
+        assert!(decode_block_response(vec![0xff, 0x00, 0x13, 0x37]).is_err());
+    }
+
+    #[test]
+    fn a_missing_height_maps_to_height_not_found() {
+        // The adapter classifies a `getblock` miss exactly as `get_raw_block`:
+        // zebrad answers `-8 Block not found` above the tip, which must read as a
+        // domain answer, not a transport failure that would exhaust the retries.
+        let height = Height::try_from(42u32).expect("a valid height");
+        let classified: QueryError<GetBlockError> = absent_or_fetch(
+            zaino_rpc::RpcError::Rpc {
+                code: -8,
+                message: "Block not found".to_string(),
+            },
+            || GetBlockError::HeightNotFound(height),
+        );
+        assert!(matches!(
+            classified,
+            QueryError::Domain(GetBlockError::HeightNotFound(_))
+        ));
     }
 }

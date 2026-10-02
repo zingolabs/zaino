@@ -18,8 +18,8 @@ use crate::{
 };
 use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, BlockVerbose, BlockchainInfo, ShieldedPool, SubtreeRoot,
-    Transaction, TransactionDetail, TransactionLocation, Utxo,
+    AddressBalance, AddressDelta, BlockVerbose, BlockchainInfo, DecodedBlock, DetailedTransaction,
+    ShieldedPool, SubtreeRoot, Transaction, TransactionDetail, TransactionLocation, Utxo,
 };
 
 /// The default detail a seeded verbose response carries: a v5, non-coinbase
@@ -67,6 +67,13 @@ pub struct MockChain {
     /// Canned verbose block response, returned for any height or hash; `None`
     /// answers a domain not-found.
     block_verbose_response: Option<BlockVerbose>,
+    /// Canned decoded block returned by `get_block_decoded` for any height;
+    /// `None` answers a domain not-found.
+    block_decoded_response: Option<DecodedBlock>,
+    /// Canned decoded block returned by `get_block_decoded_by_hash` for any hash,
+    /// settable apart from the by-height value so a test can prove the two arms
+    /// read distinct sources; `None` answers a domain not-found.
+    block_decoded_by_hash_response: Option<DecodedBlock>,
     /// Canned subtree roots, returned for any index query.
     subtree_roots: Vec<SubtreeRoot>,
 }
@@ -88,6 +95,8 @@ impl MockChain {
             blockchain_info_response: None,
             block_header_verbose_response: None,
             block_verbose_response: None,
+            block_decoded_response: None,
+            block_decoded_by_hash_response: None,
             subtree_roots: Vec::new(),
         }
     }
@@ -142,6 +151,21 @@ impl MockChain {
     /// returns for any height or hash.
     pub fn with_block_verbose(mut self, block: BlockVerbose) -> Self {
         self.block_verbose_response = Some(block);
+        self
+    }
+
+    /// Seed the response `get_block_decoded` returns for any height.
+    pub fn with_block_decoded(mut self, block: DecodedBlock) -> Self {
+        self.block_decoded_response = Some(block);
+        self
+    }
+
+    /// Seed the response `get_block_decoded_by_hash` returns for any hash.
+    ///
+    /// Settable apart from [`with_block_decoded`](Self::with_block_decoded) so a
+    /// test can give the two arms distinct blocks and catch a swapped selector.
+    pub fn with_block_decoded_by_hash(mut self, block: DecodedBlock) -> Self {
+        self.block_decoded_by_hash_response = Some(block);
         self
     }
 
@@ -237,6 +261,8 @@ impl Clone for MockChain {
             blockchain_info_response: self.blockchain_info_response.clone(),
             block_header_verbose_response: self.block_header_verbose_response.clone(),
             block_verbose_response: self.block_verbose_response.clone(),
+            block_decoded_response: self.block_decoded_response.clone(),
+            block_decoded_by_hash_response: self.block_decoded_by_hash_response.clone(),
             subtree_roots: self.subtree_roots.clone(),
         }
     }
@@ -556,6 +582,34 @@ impl crate::OneShotGetBlockVerboseByHash for MockChain {
     }
 }
 
+impl crate::OneShotGetBlockDecoded for MockChain {
+    async fn get_block_decoded(
+        &self,
+        height: Height,
+    ) -> Result<DecodedBlock, QueryError<GetBlockError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.block_decoded_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+    }
+}
+
+impl crate::OneShotGetBlockDecodedByHash for MockChain {
+    async fn get_block_decoded_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<DecodedBlock, QueryError<GetBlockByHashError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.block_decoded_by_hash_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
+    }
+}
+
 impl crate::OneShotGetSubtreeRoots for MockChain {
     async fn get_subtree_roots(
         &self,
@@ -666,6 +720,55 @@ pub fn sample_block_header_verbose() -> BlockHeaderVerbose {
         chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
         previous_block_hash: Some(BlockHash::from([0x77; 32])),
         next_block_hash: Some(BlockHash::from([0x88; 32])),
+    }
+}
+
+/// A [`DecodedBlock`] fixture of two transactions whose first is a coinbase and
+/// whose second is not, for seeding a [`MockChain`] from downstream crates.
+/// Behind the `testing` feature so it is reusable, not just an in-crate test
+/// helper. `tag` colours the txids and the coinbase script so two blocks seeded
+/// with different tags are distinguishable — the by-height and by-hash arms want
+/// distinct values to catch a swapped selector.
+#[cfg(any(test, feature = "testing"))]
+pub fn sample_decoded_block(tag: u8, size: u64) -> DecodedBlock {
+    use zaino_primitives::types::{CoinbaseInput, Script, TransactionId};
+
+    let coinbase_detail = TransactionDetail {
+        version: 4,
+        overwintered: true,
+        version_group_id: Some(0x892F_2085),
+        lock_time: 0,
+        expiry_height: Some(Height::GENESIS),
+        size,
+        coinbase: Some(CoinbaseInput {
+            script: Script::new(vec![tag, 0x02, 0x03]),
+            sequence: 0xffff_ffff,
+        }),
+        joinsplits: Vec::new(),
+    };
+    let coinbase = DetailedTransaction {
+        transaction: Transaction {
+            txid: TransactionId::from([tag; 32]),
+            transparent: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        },
+        detail: coinbase_detail,
+    };
+    let plain = DetailedTransaction {
+        transaction: Transaction {
+            txid: TransactionId::from([tag.wrapping_add(1); 32]),
+            transparent: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        },
+        detail: default_verbose_detail(),
+    };
+    DecodedBlock {
+        size,
+        transactions: vec![coinbase, plain],
     }
 }
 
@@ -938,6 +1041,55 @@ mod tests {
         assert!(matches!(
             err,
             QueryError::Domain(GetBlockVerboseError::BlockNotFound(got)) if got == hash(7)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_block_decoded_round_trips_the_scripted_block() {
+        let mock = MockChain::new().with_block_decoded(sample_decoded_block(0x11, 321));
+        let block = crate::OneShotGetBlockDecoded::get_block_decoded(&mock, height(5))
+            .await
+            .expect("scripted block");
+        assert_eq!(block.size, 321);
+        assert_eq!(block.transactions.len(), 2);
+        assert!(block.transactions[0].detail.coinbase.is_some());
+        assert!(block.transactions[1].detail.coinbase.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_block_decoded_not_found_without_a_script() {
+        let mock = MockChain::new();
+        let err = crate::OneShotGetBlockDecoded::get_block_decoded(&mock, height(5))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockError::HeightNotFound(got)) if got == height(5)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_block_decoded_by_hash_reads_its_own_canned_value() {
+        // The two arms are seeded with distinct sizes, so a by-hash call that
+        // read the by-height value (a swapped selector) would fail here.
+        let mock = MockChain::new()
+            .with_block_decoded(sample_decoded_block(0x11, 321))
+            .with_block_decoded_by_hash(sample_decoded_block(0x22, 654));
+        let block = crate::OneShotGetBlockDecodedByHash::get_block_decoded_by_hash(&mock, hash(5))
+            .await
+            .expect("scripted block");
+        assert_eq!(block.size, 654);
+    }
+
+    #[tokio::test]
+    async fn get_block_decoded_by_hash_not_found_without_a_script() {
+        let mock = MockChain::new();
+        let err = crate::OneShotGetBlockDecodedByHash::get_block_decoded_by_hash(&mock, hash(7))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockByHashError::NotFound(got)) if got == hash(7)
         ));
     }
 
