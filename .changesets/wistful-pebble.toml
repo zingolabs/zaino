@@ -1,0 +1,8 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0fd27-7b1d-7c42-a15f-60df09f8c4ef"
+
+[[changes]]
+crate = "zaino-finality"
+kind = "added"
+section = "Added"
+description = "New crate. `Seam` owns the reorg depth, the retention margin, and both legs of the finalised/non-finalised ratchet, splitting into a `ReorgHorizon` half for the volatile tier and a `DurableWatermark` half for the durable one. `Released` is unforgeable and gates `DurableWatermark::advance`."

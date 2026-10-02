@@ -16,6 +16,7 @@ members = [
     "packages/zaino-persistence-macros",
     "packages/zaino-persistence-codec",
     "packages/zaino-consensus",
+    "packages/zaino-finality",
     "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-persistence",
@@ -147,6 +148,7 @@ zaino-status = { path = "packages/zaino-status", version = "0.1.1" }
 # node implementation, so referencing a consensus fact costs neither a
 # general-purpose dependency nor a peer's reading of the specification.
 zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
+zaino-finality = { version = "0.1.0", path = "packages/zaino-finality" }
 # Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
 # traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
 # formats are written in. A leaf over `corez` alone, so a storage backend and a
