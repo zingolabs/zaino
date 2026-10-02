@@ -4,12 +4,12 @@
 //! The `block_from_zebra` entry point composes them.
 
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactCiphertext,
-    CompactCiphertextLength, CompactDifficulty, CompactDifficultyError, EphemeralKey,
-    EquihashSolution, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    PreIndexCompactBlock, PreIndexCompactTx, SaplingData, SaplingOutput, SaplingSpend, Script,
-    SignedZatoshis, Transaction, TransactionId, TransparentData, TransparentInput,
-    TransparentOutput, Zatoshis,
+    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CoinbaseInput,
+    CompactCiphertext, CompactCiphertextLength, CompactDifficulty, CompactDifficultyError,
+    EphemeralKey, EquihashSolution, Height, JoinSplitValues, MerkleRoot, NoteCommitment, Nullifier,
+    OrchardAction, OrchardData, PreIndexCompactBlock, PreIndexCompactTx, SaplingData,
+    SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionDetail,
+    TransactionId, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
 };
 
 /// Errors during conversion from zebra types.
@@ -146,6 +146,70 @@ pub fn transaction_from_zebra(
         sapling: sapling_from_zebra(tx)?,
         orchard: orchard_from_zebra(tx)?,
         ironwood: ironwood_from_zebra(tx)?,
+    })
+}
+
+/// Build the facts the indexing [`Transaction`] drops: the envelope, the
+/// coinbase input, and the Sprout pool values.
+///
+/// Pairs with [`transaction_from_zebra`]: that yields the indexing shape, this
+/// yields what the explorer surface additionally needs, from the same zebra
+/// transaction. `size` is the serialized byte length; the caller holds the
+/// bytes, so it passes the length rather than re-serializing here.
+pub fn transaction_detail_from_zebra(
+    tx: &zebra_chain::transaction::Transaction,
+    size: u64,
+) -> Result<TransactionDetail, ConvertError> {
+    let coinbase = match tx.inputs().first() {
+        Some(input @ zebra_chain::transparent::Input::Coinbase { sequence, .. }) => {
+            // `coinbase_script()` reconstructs the scriptSig (the BIP-34 height
+            // prefix plus miner data, or the fixed genesis data), and is `None`
+            // only for a genesis-height input whose data is not the genesis
+            // scriptSig — a malformed coinbase the source should never yield.
+            let script = input.coinbase_script().ok_or_else(|| {
+                ConvertError::Block("coinbase script could not be reconstructed".into())
+            })?;
+            Some(CoinbaseInput {
+                script: Script::new(script),
+                sequence: *sequence,
+            })
+        }
+        _ => None,
+    };
+
+    let joinsplits = tx
+        .sprout_joinsplits()
+        .map(|js| {
+            Ok(JoinSplitValues {
+                vpub_old: Zatoshis::new(u64::from(js.vpub_old))
+                    .map_err(|e| ConvertError::Value(e.to_string()))?,
+                vpub_new: Zatoshis::new(u64::from(js.vpub_new))
+                    .map_err(|e| ConvertError::Value(e.to_string()))?,
+            })
+        })
+        .collect::<Result<Vec<_>, ConvertError>>()?;
+
+    // The Overwinter flag — not `expiry_height()` — decides whether an expiry is
+    // present. zebra's `expiry_height()` collapses a zero expiry to `None` on
+    // v3+, but zcashd still emits `expiryheight: 0` for an overwintered
+    // transaction with no expiry, and that must stay distinct from a
+    // pre-Overwinter transaction, which has no expiry field at all.
+    let expiry_height = if tx.is_overwintered() {
+        let value = tx.expiry_height().map_or(0, |h| h.0);
+        Some(Height::try_from(value).map_err(|e| ConvertError::Height(e.to_string()))?)
+    } else {
+        None
+    };
+
+    Ok(TransactionDetail {
+        version: tx.version(),
+        overwintered: tx.is_overwintered(),
+        version_group_id: tx.version_group_id(),
+        lock_time: tx.raw_lock_time(),
+        expiry_height,
+        size,
+        coinbase,
+        joinsplits,
     })
 }
 
@@ -384,6 +448,239 @@ mod tests {
         let prefix = compact_prefix(&full).expect("a full ciphertext always has a head");
 
         assert_eq!(<[u8; 52]>::from(prefix), [0xcd; 52]);
+    }
+}
+
+#[cfg(test)]
+mod transaction_detail_tests {
+    use super::*;
+    use zaino_primitives::types::{CoinbaseInput, Height, JoinSplitValues};
+    use zebra_chain::amount::{Amount, NonNegative};
+    use zebra_chain::block::Height as ZebraHeight;
+    use zebra_chain::parameters::NetworkUpgrade;
+    use zebra_chain::primitives::{ed25519, x25519, Bctv14Proof};
+    use zebra_chain::sprout;
+    use zebra_chain::transaction::{JoinSplitData, LockTime, Transaction as ZebraTransaction};
+    use zebra_chain::transparent;
+
+    // Zcash's genesis coinbase scriptSig, the 77 bytes zcashd emits as the
+    // genesis `coinbase` hex (zebra's `GENESIS_COINBASE_SCRIPT_SIG`). Reproduced
+    // here because the constant is crate-private to zebra-chain.
+    const GENESIS_COINBASE_SCRIPT_SIG: [u8; 77] = [
+        4, 255, 255, 7, 31, 1, 4, 69, 90, 99, 97, 115, 104, 48, 98, 57, 99, 52, 101, 101, 102, 56,
+        98, 55, 99, 99, 52, 49, 55, 101, 101, 53, 48, 48, 49, 101, 51, 53, 48, 48, 57, 56, 52, 98,
+        54, 102, 101, 97, 51, 53, 54, 56, 51, 97, 55, 99, 97, 99, 49, 52, 49, 97, 48, 52, 51, 99,
+        52, 50, 48, 54, 52, 56, 51, 53, 100, 51, 52,
+    ];
+
+    const SAPLING_VERSION_GROUP_ID: u32 = 0x892F_2085;
+
+    fn amount(value: u64) -> Amount<NonNegative> {
+        Amount::try_from(i64::try_from(value).expect("fits i64")).expect("a valid amount")
+    }
+
+    fn sprout_joinsplit(vpub_old: u64, vpub_new: u64) -> sprout::JoinSplit<Bctv14Proof> {
+        sprout::JoinSplit {
+            vpub_old: amount(vpub_old),
+            vpub_new: amount(vpub_new),
+            anchor: sprout::tree::Root::from([0u8; 32]),
+            nullifiers: [
+                sprout::note::Nullifier::from([0u8; 32]),
+                sprout::note::Nullifier::from([1u8; 32]),
+            ],
+            commitments: [
+                sprout::NoteCommitment::from([0u8; 32]),
+                sprout::NoteCommitment::from([1u8; 32]),
+            ],
+            ephemeral_key: x25519::PublicKey::from([0u8; 32]),
+            random_seed: sprout::RandomSeed::from([0u8; 32]),
+            vmacs: [
+                sprout::note::Mac::from([0u8; 32]),
+                sprout::note::Mac::from([1u8; 32]),
+            ],
+            zkproof: Bctv14Proof([0u8; 296]),
+            enc_ciphertexts: [
+                sprout::note::EncryptedNote([0u8; 601]),
+                sprout::note::EncryptedNote([0u8; 601]),
+            ],
+        }
+    }
+
+    /// A v4 transparent transaction: the envelope passes through unchanged, with
+    /// no coinbase and no Sprout movement.
+    #[test]
+    fn v4_transparent_carries_its_envelope() {
+        let tx = ZebraTransaction::V4 {
+            inputs: vec![],
+            outputs: vec![],
+            lock_time: LockTime::Height(ZebraHeight(500)),
+            expiry_height: ZebraHeight(999),
+            joinsplit_data: None,
+            sapling_shielded_data: None,
+        };
+
+        let detail = transaction_detail_from_zebra(&tx, 321).expect("a valid v4 detail");
+
+        assert_eq!(detail.version, 4);
+        assert!(detail.overwintered);
+        assert_eq!(detail.version_group_id, Some(SAPLING_VERSION_GROUP_ID));
+        assert_eq!(detail.lock_time, 500);
+        assert_eq!(detail.lock_time, tx.raw_lock_time());
+        assert_eq!(
+            detail.expiry_height,
+            Some(Height::try_from(999u32).expect("a valid height"))
+        );
+        assert_eq!(detail.coinbase, None);
+        assert!(detail.joinsplits.is_empty());
+    }
+
+    /// An overwintered transaction with no expiry keeps `Some(Height(0))`, so
+    /// `expiryheight: 0` renders — zebra's `expiry_height()` collapses it to
+    /// `None`, which would erase zcashd's shape.
+    #[test]
+    fn overwintered_zero_expiry_is_some_zero() {
+        let tx = ZebraTransaction::V4 {
+            inputs: vec![],
+            outputs: vec![],
+            lock_time: LockTime::unlocked(),
+            expiry_height: ZebraHeight(0),
+            joinsplit_data: None,
+            sapling_shielded_data: None,
+        };
+
+        let detail = transaction_detail_from_zebra(&tx, 1).expect("a valid v4 detail");
+
+        assert_eq!(detail.expiry_height, Some(Height::GENESIS));
+    }
+
+    /// A non-genesis coinbase: the script is the reconstructed scriptSig and the
+    /// sequence is carried through, with no transparent prevout to resolve.
+    #[test]
+    fn coinbase_carries_script_and_sequence() {
+        let input = transparent::Input::Coinbase {
+            height: ZebraHeight(100),
+            data: vec![0x01, 0x02, 0x03],
+            sequence: 0xffff_fffe,
+        };
+        let expected_script = input
+            .coinbase_script()
+            .expect("a non-genesis coinbase script");
+        let tx = ZebraTransaction::V5 {
+            network_upgrade: NetworkUpgrade::Nu5,
+            lock_time: LockTime::unlocked(),
+            expiry_height: ZebraHeight(0),
+            inputs: vec![input],
+            outputs: vec![],
+            sapling_shielded_data: None,
+            orchard_shielded_data: None,
+        };
+
+        let detail = transaction_detail_from_zebra(&tx, 64).expect("a valid coinbase detail");
+
+        assert_eq!(
+            detail.coinbase,
+            Some(CoinbaseInput {
+                script: Script::new(expected_script),
+                sequence: 0xffff_fffe,
+            })
+        );
+    }
+
+    /// The genesis coinbase: its scriptSig is the fixed 77-byte genesis data,
+    /// exactly what zcashd emits, which zebra's `coinbase_script()` special-cases.
+    #[test]
+    fn genesis_coinbase_is_the_genesis_script_sig() {
+        let input = transparent::Input::Coinbase {
+            height: ZebraHeight(0),
+            data: GENESIS_COINBASE_SCRIPT_SIG.to_vec(),
+            sequence: 0xffff_ffff,
+        };
+        let tx = ZebraTransaction::V5 {
+            network_upgrade: NetworkUpgrade::Genesis,
+            lock_time: LockTime::unlocked(),
+            expiry_height: ZebraHeight(0),
+            inputs: vec![input],
+            outputs: vec![],
+            sapling_shielded_data: None,
+            orchard_shielded_data: None,
+        };
+
+        let detail = transaction_detail_from_zebra(&tx, 128).expect("a valid genesis detail");
+
+        let coinbase = detail.coinbase.expect("genesis is a coinbase");
+        assert_eq!(
+            coinbase.script,
+            Script::new(GENESIS_COINBASE_SCRIPT_SIG.to_vec())
+        );
+    }
+
+    /// A v2 Sprout transaction: each JoinSplit's `vpub_old`/`vpub_new`, in order.
+    #[test]
+    fn v2_sprout_joinsplits_in_order() {
+        let joinsplit_data = JoinSplitData {
+            first: sprout_joinsplit(10, 20),
+            rest: vec![sprout_joinsplit(30, 40)],
+            pub_key: ed25519::VerificationKeyBytes::from([0u8; 32]),
+            sig: ed25519::Signature::from([0u8; 64]),
+        };
+        let tx = ZebraTransaction::V2 {
+            inputs: vec![],
+            outputs: vec![],
+            lock_time: LockTime::unlocked(),
+            joinsplit_data: Some(joinsplit_data),
+        };
+
+        let detail = transaction_detail_from_zebra(&tx, 999).expect("a valid v2 detail");
+
+        assert!(!detail.overwintered);
+        assert_eq!(detail.version_group_id, None);
+        assert_eq!(detail.expiry_height, None);
+        assert_eq!(
+            detail.joinsplits,
+            vec![
+                JoinSplitValues {
+                    vpub_old: Zatoshis::new(10).expect("valid"),
+                    vpub_new: Zatoshis::new(20).expect("valid"),
+                },
+                JoinSplitValues {
+                    vpub_old: Zatoshis::new(30).expect("valid"),
+                    vpub_new: Zatoshis::new(40).expect("valid"),
+                },
+            ]
+        );
+    }
+
+    /// A v1 transaction: pre-Overwinter, so no version group id and no expiry.
+    #[test]
+    fn v1_has_no_overwinter_fields() {
+        let tx = ZebraTransaction::V1 {
+            inputs: vec![],
+            outputs: vec![],
+            lock_time: LockTime::unlocked(),
+        };
+
+        let detail = transaction_detail_from_zebra(&tx, 60).expect("a valid v1 detail");
+
+        assert_eq!(detail.version, 1);
+        assert!(!detail.overwintered);
+        assert_eq!(detail.version_group_id, None);
+        assert_eq!(detail.expiry_height, None);
+        assert_eq!(detail.coinbase, None);
+        assert!(detail.joinsplits.is_empty());
+    }
+
+    /// `size` is the caller's byte length, carried through verbatim.
+    #[test]
+    fn size_is_passed_through_verbatim() {
+        let tx = ZebraTransaction::V1 {
+            inputs: vec![],
+            outputs: vec![],
+            lock_time: LockTime::unlocked(),
+        };
+
+        let detail = transaction_detail_from_zebra(&tx, 4_242).expect("a valid detail");
+
+        assert_eq!(detail.size, 4_242);
     }
 }
 

@@ -19,8 +19,24 @@ use crate::{
 use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, BlockVerbose, BlockchainInfo, ShieldedPool, SubtreeRoot,
-    Transaction, TransactionLocation, Utxo,
+    Transaction, TransactionDetail, TransactionLocation, Utxo,
 };
+
+/// The default detail a seeded verbose response carries: a v5, non-coinbase
+/// transaction with no Sprout movement and no expiry.
+fn default_verbose_detail() -> TransactionDetail {
+    TransactionDetail {
+        version: 5,
+        overwintered: true,
+        // TX_V5_VERSION_GROUP_ID.
+        version_group_id: Some(0x26A7_270A),
+        lock_time: 0,
+        expiry_height: Some(Height::GENESIS),
+        size: 0,
+        coinbase: None,
+        joinsplits: Vec::new(),
+    }
+}
 
 /// A pre-populated in-memory chain for testing.
 pub struct MockChain {
@@ -83,6 +99,9 @@ impl MockChain {
     }
 
     /// Seed the response `get_transaction_verbose` returns for any txid.
+    ///
+    /// The [`detail`](DecodedTransaction::detail) defaults to a v5 non-coinbase
+    /// envelope; override it with [`with_detail`](Self::with_detail).
     pub fn respond_transaction_verbose(
         mut self,
         transaction: Transaction,
@@ -90,8 +109,20 @@ impl MockChain {
     ) -> Self {
         self.transaction_verbose_response = Some(DecodedTransaction {
             transaction,
+            detail: default_verbose_detail(),
             location,
         });
+        self
+    }
+
+    /// Override the detail of the seeded `get_transaction_verbose` response.
+    ///
+    /// Call after [`respond_transaction_verbose`](Self::respond_transaction_verbose);
+    /// with no seeded response it is a no-op.
+    pub fn with_detail(mut self, detail: TransactionDetail) -> Self {
+        if let Some(response) = self.transaction_verbose_response.as_mut() {
+            response.detail = detail;
+        }
         self
     }
 

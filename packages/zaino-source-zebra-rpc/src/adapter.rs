@@ -1053,8 +1053,13 @@ fn decode_transaction_response(
             .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
     let transaction = zaino_convert_zebra::transaction_from_zebra(&zebra_tx)
         .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
+    let size = u64::try_from(response.bytes.len())
+        .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
+    let detail = zaino_convert_zebra::transaction_detail_from_zebra(&zebra_tx, size)
+        .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
     Ok(zaino_source::DecodedTransaction {
         transaction,
+        detail,
         location: response.location,
     })
 }
@@ -1361,6 +1366,7 @@ mod transaction_verbose_tests {
         let zebra_tx = transparent_only_tx();
         let expected_txid = TransactionId::from(zebra_tx.hash().0);
         let bytes = zebra_tx.zcash_serialize_to_vec().expect("serializes");
+        let size = u64::try_from(bytes.len()).expect("fits u64");
         let location =
             TransactionLocation::BestChain(Height::try_from(42u32).expect("a valid height"));
 
@@ -1372,6 +1378,11 @@ mod transaction_verbose_tests {
 
         // Location is carried through untouched.
         assert_eq!(decoded.location, location);
+        // The detail is filled from the same bytes: a v5, non-coinbase envelope
+        // whose size is the serialized byte length, not re-derived.
+        assert_eq!(decoded.detail.version, 5);
+        assert_eq!(decoded.detail.size, size);
+        assert_eq!(decoded.detail.coinbase, None);
         // Identity: the decoded txid is the transaction's own hash, so the bytes
         // were deserialized and not mirrored or truncated.
         assert_eq!(decoded.transaction.txid, expected_txid);

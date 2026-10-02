@@ -188,9 +188,11 @@ and the split is deliberate.
 
 - **`GetTransaction`** returns `TransactionResponse { bytes, location }` — the
   raw consensus bytes. That is what a wallet wants: it parses them itself.
-- **`GetTransactionVerbose`** returns `DecodedTransaction { transaction,
+- **`GetTransactionVerbose`** returns `DecodedTransaction { transaction, detail,
   location }`, where `transaction` is the domain `Transaction` decomposed by pool
-  (transparent, sapling, orchard, ironwood). That is the explorer surface.
+  (transparent, sapling, orchard, ironwood) and `detail` is the `TransactionDetail`
+  carrying the envelope, coinbase input, and Sprout values the indexing shape
+  drops. That is the explorer surface.
 
 The decode is not something the core can do. It is
 `zaino_convert_zebra::transaction_from_zebra`, which lives in the validator

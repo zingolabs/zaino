@@ -32,6 +32,7 @@ mod script;
 mod shielded_pool;
 mod subtree_root;
 pub mod transaction;
+mod transaction_detail;
 mod transaction_hash;
 mod transaction_location;
 mod transparent_address;
@@ -82,6 +83,7 @@ pub use transaction::{
     OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, Transaction,
     TransparentData, TransparentInput, TransparentOutput,
 };
+pub use transaction_detail::{CoinbaseInput, JoinSplitValues, TransactionDetail};
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;
 pub use transparent_address::TransparentAddress;

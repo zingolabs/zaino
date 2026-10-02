@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{Transaction, TransactionId, TransactionLocation};
+use zaino_primitives::types::{Transaction, TransactionDetail, TransactionId, TransactionLocation};
 
 use super::{QueryError, ValidatorSource};
 
@@ -14,6 +14,9 @@ use super::{QueryError, ValidatorSource};
 pub struct DecodedTransaction {
     /// The transaction, decomposed by pool.
     pub transaction: Transaction,
+    /// The envelope, coinbase input, and Sprout values the indexing shape
+    /// ([`transaction`](Self::transaction)) drops.
+    pub detail: TransactionDetail,
     /// Where the transaction was found.
     pub location: TransactionLocation,
 }

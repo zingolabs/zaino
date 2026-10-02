@@ -5,11 +5,20 @@
 ## Use
 
 ```rust
-use zaino_convert_zebra::{block_from_zebra, header_from_zebra, transaction_from_zebra};
+use zaino_convert_zebra::{
+    block_from_zebra, header_from_zebra, transaction_detail_from_zebra, transaction_from_zebra,
+};
 
 let block = block_from_zebra(&zebra_block, chain_metadata)?;
 let tx = transaction_from_zebra(&zebra_tx)?;
+let detail = transaction_detail_from_zebra(&zebra_tx, size)?;
 ```
+
+`transaction_from_zebra` yields the indexing shape. `transaction_detail_from_zebra`
+yields the facts that shape drops — the envelope (version, lock time, expiry), the
+coinbase input, and the Sprout pool values — as a `TransactionDetail`, for the
+explorer surface. `size` is the transaction's serialized byte length; the caller
+holds the bytes, so it passes the length rather than re-serializing.
 
 All conversions return `Result<_, ConvertError>`. They are fallible because
 `zebra-chain` types can hold values the domain types reject — a height above the

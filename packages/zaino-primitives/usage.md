@@ -65,6 +65,13 @@ A transaction's position is the block's to know, not the transaction's:
 `Block::coinbase()` (position 0), never from a per-transaction field that could
 disagree with the container.
 
+`Transaction` is the indexing shape: it keeps only what an index keys on, and
+drops the transaction envelope, the coinbase input, and the Sprout pool values.
+`TransactionDetail` (with `CoinbaseInput` and `JoinSplitValues`) carries exactly
+those dropped facts, for the explorer surface that needs them. There,
+coinbase-ness *is* data — `TransactionDetail::coinbase` is `Some` for a coinbase
+fetched alone, with no block context to read position from.
+
 `CompactCiphertext` is the 52-byte compact head of a note ciphertext — the
 form a compact transaction serves to light clients, not the full 580-byte
 encryption output. Once constructed it converts infallibly to `[u8; 52]`, so
