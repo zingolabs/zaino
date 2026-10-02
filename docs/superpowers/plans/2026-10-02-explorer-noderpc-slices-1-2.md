@@ -440,6 +440,368 @@ an error."
 
 ---
 
+### Task 1b: Extract the shared query layer
+
+Task 1 and `zaino-lightserve` now answer the same question two different ways,
+and lightserve's answer is wrong twice. This extracts the shared domain-side
+computation before seven more tasks duplicate it.
+
+The duplication, concretely — `LightServe::get_taddress_balance`
+(`packages/zaino-lightserve/src/lib.rs:173-193`) vs `NodeRpc::get_address_balance`:
+
+- lightserve sums with `total.saturating_add(u64::from(balance.balance))`,
+  justified in a comment by "a sum of supply-bounded balances stays below the
+  money supply, so this never actually saturates". That is a magnitude argument,
+  which this codebase rejects — and `Zatoshis::sum_balances` already exists to
+  do it checked.
+- lightserve hand-builds `HeightRange { start: GENESIS, end: tip.height }` from
+  `pinned_tip()`, ignoring `coverage()`. On a partially-synced chain that claims
+  a range the snapshot may not be able to serve.
+
+**What is shared and what is not.** The *computation* (checked summing) and the
+*question* (what range is serviceable) are shared. The **policy on no coverage
+is not**, and must stay in each adapter: an explorer reporting zero for an
+unsynced chain is fine, but a wallet concluding "zero balance" from an unsynced
+indexer could make it believe funds are gone. So `serviceable_range` returns
+`Option` and each adapter decides — node-RPC answers zero, lightserve keeps
+returning `NoBlocks`.
+
+**Files:**
+- Create: `packages/zaino-service/src/queries.rs`
+- Modify: `packages/zaino-service/src/lib.rs`
+- Modify: `packages/zaino-service/usage.md`
+- Modify: `packages/zaino-noderpc/src/lib.rs`
+- Modify: `packages/zaino-lightserve/src/lib.rs`
+
+**Interfaces:**
+- Consumes: `ChainSegment::coverage`, `AddressRead::balance`,
+  `Zatoshis::sum_balances`, `ZatoshisFlowSum::checked_join`.
+- Produces:
+  - `zaino_service::queries::serviceable_range<S: ChainSegment>(&S) -> Option<HeightRange>`
+  - `zaino_service::queries::total_balance<S: AddressRead>(&S, &[TransparentAddress], HeightRange) -> Result<AddressBalance, AddressReadError>`
+  - `NodeRpc::get_address_balance` and `LightServe::get_taddress_balance` both
+    call them; `full_range` in `zaino-noderpc` is deleted.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create the test module at the bottom of the new
+`packages/zaino-service/src/queries.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::{serviceable_range, total_balance};
+    use crate::testing::{MockChain, MockIndexerService};
+    use crate::TakeSnapshot;
+    use zaino_primitives::types::{
+        AddressBalance, BlockHash, BlockRef, Height, TransparentAddress, Zatoshis,
+        ZatoshisFlowSum,
+    };
+
+    fn balance(zats: u64, received: u64) -> AddressBalance {
+        AddressBalance {
+            balance: Zatoshis::new(zats).expect("valid amount"),
+            received: ZatoshisFlowSum::from_summed(received),
+        }
+    }
+
+    async fn snapshot_with(chain: MockChain) -> impl crate::AddressRead + crate::ChainSegment {
+        MockIndexerService::new(chain)
+            .snapshot()
+            .await
+            .expect("snapshot")
+    }
+
+    #[tokio::test]
+    async fn no_coverage_has_no_serviceable_range() {
+        let snapshot = snapshot_with(MockChain::default()).await;
+        assert!(serviceable_range(&snapshot).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_serviceable_range_is_the_snapshots_coverage() {
+        let snapshot = snapshot_with(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(10).expect("valid height"),
+                hash: BlockHash::from([1u8; 32]),
+            }),
+            ..Default::default()
+        })
+        .await;
+        let range = serviceable_range(&snapshot).expect("coverage");
+        assert_eq!(range.start, Height::GENESIS);
+        assert_eq!(u32::from(range.end), 10);
+    }
+
+    #[tokio::test]
+    async fn total_balance_sums_every_requested_address() {
+        let snapshot = snapshot_with(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(10).expect("valid height"),
+                hash: BlockHash::from([1u8; 32]),
+            }),
+            balances: vec![
+                ("t1a".to_string(), balance(500, 900)),
+                ("t1b".to_string(), balance(250, 400)),
+            ],
+            ..Default::default()
+        })
+        .await;
+        let range = serviceable_range(&snapshot).expect("coverage");
+        let addrs = vec![
+            TransparentAddress::new("t1a".to_string()),
+            TransparentAddress::new("t1b".to_string()),
+        ];
+        let total = total_balance(&snapshot, &addrs, range)
+            .await
+            .expect("balance");
+        assert_eq!(total.balance.as_u64(), 750);
+        assert_eq!(u128::from(total.received), 1_300);
+    }
+
+    /// An empty address list is a well-formed query with a zero answer. Callers
+    /// that want to reject it do so at their own wire boundary, where "you sent
+    /// no addresses" is a parameter error.
+    #[tokio::test]
+    async fn no_addresses_totals_zero() {
+        let snapshot = snapshot_with(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(10).expect("valid height"),
+                hash: BlockHash::from([1u8; 32]),
+            }),
+            ..Default::default()
+        })
+        .await;
+        let range = serviceable_range(&snapshot).expect("coverage");
+        let total = total_balance(&snapshot, &[], range).await.expect("balance");
+        assert_eq!(total.balance.as_u64(), 0);
+        assert_eq!(u128::from(total.received), 0);
+    }
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cargo test -p zaino-service --features testing queries`
+Expected: FAIL — module `queries` does not exist.
+
+- [ ] **Step 3: Write the query layer**
+
+Write the module body above the tests in
+`packages/zaino-service/src/queries.rs`:
+
+```rust
+//! Domain-side query composition, shared by every serving adapter.
+//!
+//! These are the questions more than one adapter asks of the same capabilities
+//! — "what range can this snapshot answer", "what do these addresses hold in
+//! total" — answered once, here, so two adapters cannot drift into two
+//! different answers.
+//!
+//! Free functions over the read traits rather than provided trait methods: a
+//! port stays a narrow declaration of what a capability *is*, and composition
+//! over several reads is a separate concern that does not belong on it.
+//!
+//! **Policy stays with the caller.** These functions compute; they do not
+//! decide what an absent answer means. Whether "nothing is serviceable" should
+//! read as zero or as an error depends on who is asking — an explorer showing
+//! zero for an unsynced chain is accurate, while a wallet concluding zero
+//! balance from an unsynced indexer could report a user's funds as gone. So
+//! [`serviceable_range`] returns `Option` and each adapter answers for itself.
+
+use zaino_primitives::types::{
+    AddressBalance, HeightRange, TransparentAddress, Zatoshis, ZatoshisFlowSum,
+};
+
+use crate::error::AddressReadError;
+use crate::reads::AddressRead;
+use crate::ChainSegment;
+
+/// The full height range `snapshot` can answer, or `None` when it can answer
+/// nothing.
+///
+/// This is the range to use when a caller supplies none. It is read from
+/// [`ChainSegment::coverage`] rather than built from the pinned tip, because a
+/// partially-synced snapshot has a tip it cannot serve all the way down to.
+pub fn serviceable_range<S: ChainSegment>(snapshot: &S) -> Option<HeightRange> {
+    snapshot.coverage()
+}
+
+/// The combined transparent balance of `addrs` over `range`.
+///
+/// Sums with [`Zatoshis::sum_balances`] and [`ZatoshisFlowSum::checked_join`],
+/// so an overflow is reported rather than silently clamped. `balance` is
+/// supply-bounded and `received` is a lifetime flow total that is not, which is
+/// why the two accumulate through different types.
+///
+/// An empty `addrs` totals zero: a query about no addresses is well-formed and
+/// its answer is zero. A caller for whom an empty list is a protocol error
+/// rejects it at its own wire boundary.
+pub async fn total_balance<S: AddressRead>(
+    snapshot: &S,
+    addrs: &[TransparentAddress],
+    range: HeightRange,
+) -> Result<AddressBalance, AddressReadError> {
+    let mut balances = Vec::with_capacity(addrs.len());
+    let mut received = ZatoshisFlowSum::from_summed(0);
+    for addr in addrs {
+        let read = snapshot.balance(addr, range).await?;
+        balances.push(read.balance);
+        received = received.checked_join(read.received).ok_or_else(|| {
+            AddressReadError::Fatal("summed lifetime receipts overflow".to_string())
+        })?;
+    }
+    let balance = Zatoshis::sum_balances(balances.into_iter()).ok_or_else(|| {
+        AddressReadError::Fatal("summed balance exceeds the money supply".to_string())
+    })?;
+    Ok(AddressBalance { balance, received })
+}
+```
+
+- [ ] **Step 4: Export the module**
+
+In `packages/zaino-service/src/lib.rs`, add `pub mod queries;` beside the other
+module declarations. Export the module itself, not flattened re-exports — the
+`queries::` prefix is what tells a reader at the call site that this is shared
+composition rather than a port method.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `cargo test -p zaino-service --features testing queries`
+Expected: PASS, 4 tests.
+
+- [ ] **Step 6: Move the node-RPC handler onto it**
+
+In `packages/zaino-noderpc/src/lib.rs`, delete the `full_range` helper and
+rewrite the handler body to use the shared functions. Keep the empty-address
+parameter check and the no-coverage short-circuit — those are node-RPC's own
+wire policy:
+
+```rust
+    pub async fn get_address_balance(
+        &self,
+        params: AddressesParam,
+    ) -> Result<AddressBalanceResponse, RpcError> {
+        if params.addresses.is_empty() {
+            return Err(RpcError::InvalidParams(
+                "addresses must not be empty".into(),
+            ));
+        }
+        let snapshot = self.engine.snapshot().await?;
+        // Node-RPC policy: nothing serviceable means no indexed history, which
+        // an explorer reads correctly as zero.
+        let Some(range) = queries::serviceable_range(&snapshot) else {
+            return Ok(AddressBalanceResponse {
+                balance: 0,
+                received: 0,
+            });
+        };
+        let addrs: Vec<TransparentAddress> = params
+            .addresses
+            .into_iter()
+            .map(TransparentAddress::new)
+            .collect();
+        let total = queries::total_balance(&snapshot, &addrs, range).await?;
+        Ok(AddressBalanceResponse {
+            balance: total.balance.as_u64(),
+            received: u128::from(total.received),
+        })
+    }
+```
+
+Add `use zaino_service::queries;`. Run `cargo test -p zaino-noderpc` — all of
+Task 1's tests must still pass unchanged, including
+`address_balance_is_zero_when_nothing_is_serviceable`. If any test needs
+editing to pass, stop and report: the refactor changed behaviour it should
+have preserved.
+
+- [ ] **Step 7: Move the lightserve handler onto it**
+
+In `packages/zaino-lightserve/src/lib.rs`, rewrite
+`get_taddress_balance` (currently lines 173-193):
+
+```rust
+    pub async fn get_taddress_balance(
+        &self,
+        addrs: Vec<TransparentAddress>,
+    ) -> Result<proto::Balance, ServeError> {
+        let snapshot = self.engine.snapshot().await?;
+        // Wallet policy, deliberately unlike the explorer's: a wallet must not
+        // read "zero" off an indexer that cannot answer, or it reports the
+        // user's funds as gone. An unserviceable snapshot is an error here.
+        let range = queries::serviceable_range(&snapshot).ok_or(ServeError::NoBlocks)?;
+        let total = queries::total_balance(&snapshot, &addrs, range).await?;
+        Ok(proto::Balance {
+            value_zat: zat_to_i64(total.balance.as_u64()),
+        })
+    }
+```
+
+Add `use zaino_service::queries;`. The proto carries only `value_zat`, so
+`received` is dropped here — that is a wire difference, not a lost
+computation.
+
+- [ ] **Step 8: Add the lightserve regression test**
+
+The behaviour that changed is which range is queried: `coverage()` instead of
+`[GENESIS, pinned_tip]`. Add a test in `packages/zaino-lightserve/src/lib.rs`'s
+test module proving the sum is now checked rather than saturating, and that a
+snapshot with no coverage still errors:
+
+```rust
+    /// A wallet must not be told "zero" by an indexer that cannot answer.
+    #[tokio::test]
+    async fn taddress_balance_errors_when_nothing_is_serviceable() {
+        let serve = LightServe::new(MockIndexerService::new(MockChain::default()));
+        assert!(matches!(
+            serve.get_taddress_balance(Vec::new()).await,
+            Err(ServeError::NoBlocks)
+        ));
+    }
+```
+
+Match the test module's existing construction helpers rather than the names
+above if they differ — read the module first.
+
+- [ ] **Step 9: Update the usage guide**
+
+`packages/zaino-service/usage.md` gains a public module. Add a short section
+for `queries`, in the voice of the existing sections: what it is (shared
+domain-side composition over the ports), the two functions, and the rule that
+policy on an absent answer belongs to the caller. This repo's CLAUDE.md
+requires the guide to track new public capability.
+
+- [ ] **Step 10: Verify lint and tests**
+
+Run: `makers fmt && cargo clippy -p zaino-service -p zaino-noderpc -p zaino-lightserve --no-deps --all-targets -- -D warnings && cargo test -p zaino-service --features testing && cargo test -p zaino-noderpc && cargo test -p zaino-lightserve`
+Expected: all pass.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add packages/zaino-service packages/zaino-noderpc packages/zaino-lightserve
+git commit -m "refactor: share the domain-side balance query between both serving adapters
+
+The light-serve and node-rpc adapters answered the same question two different
+ways. lightserve summed with saturating_add, justified by a comment arguing that
+a sum of supply-bounded balances stays under the money supply -- a magnitude
+argument, where Zatoshis::sum_balances already does it checked. It also built
+its height range from the pinned tip while ignoring coverage(), so a
+partially-synced snapshot was asked for a range it may not serve.
+
+zaino-service::queries now owns the computation: the serviceable range, and a
+checked sum across addresses that accumulates balance and lifetime receipts
+through their respective types.
+
+Policy stays with each adapter, because it genuinely differs. An explorer
+reporting zero for an unsynced chain is accurate; a wallet concluding zero
+balance from an indexer that cannot answer would report a user's funds as gone.
+So serviceable_range returns Option, node-rpc answers zero, and light-serve
+keeps returning NoBlocks."
+```
+
+---
+
 ### Task 2: `getaddressdeltas`
 
 **Files:**
