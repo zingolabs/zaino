@@ -7,10 +7,12 @@
 pub mod params;
 pub mod response;
 
+use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::TransactionId;
 use zaino_service::SpendStatus;
 
 use crate::error::RpcError;
+use crate::wire::response::AddressDeltaEntry;
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
     match c {
@@ -46,6 +48,18 @@ pub(crate) fn txid_from_hex(s: &str) -> Result<TransactionId, RpcError> {
 /// Lowercase hex (domain -> wire).
 pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Render an address delta for the wire (domain -> wire).
+pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
+    AddressDeltaEntry {
+        satoshis: delta.satoshis.as_i64(),
+        txid: to_hex(delta.txid.into()),
+        index: delta.index,
+        block_index: delta.block_index,
+        height: delta.height.into(),
+        address: delta.address.as_str().to_owned(),
+    }
 }
 
 /// Render a spend status as a wire string (domain -> wire). Exhaustive by

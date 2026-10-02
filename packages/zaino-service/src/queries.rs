@@ -21,7 +21,8 @@
 //! its wire shape and maps its error codes; the answer itself is decided here.
 
 use zaino_primitives::types::{
-    AddressBalance, HeightRange, TransparentAddress, Zatoshis, ZatoshisFlowSum,
+    AddressBalance, AddressDelta, Height, HeightRange, TransparentAddress, Zatoshis,
+    ZatoshisFlowSum,
 };
 
 use crate::error::AddressReadError;
@@ -107,9 +108,74 @@ pub async fn total_balance<S: AddressRead>(
     Ok(AddressBalance { balance, received })
 }
 
+/// The answer to a transparent-address delta query.
+///
+/// `range` is the range actually queried, and is `None` exactly when no query
+/// ran — nothing was serviceable, or the requested bounds were backwards. A
+/// caller that echoes the range back to its client has the authoritative value
+/// here rather than re-deriving it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddressDeltasAnswer {
+    /// The deltas, ordered by `(height, block_index, index)`.
+    pub deltas: Vec<AddressDelta>,
+    /// The range queried, or `None` when no query ran.
+    pub range: Option<HeightRange>,
+}
+
+/// Every balance change touching `addrs`, over the requested bounds.
+///
+/// `start` and `end` are inclusive and optional; an absent bound defaults to the
+/// snapshot's serviceable edge. Explorer policy, matching
+/// [`address_balance`]: nothing serviceable means no indexed history, so the
+/// answer is empty rather than an error.
+///
+/// Backwards bounds answer empty too. Callers derive these from user-supplied
+/// dates, where a day with no blocks is an ordinary result and not a fault.
+///
+/// Ordering is `(height, block_index, index)`, which is what zcashd documents.
+/// It is a property of the answer, so it is applied once here rather than in
+/// each adapter.
+pub async fn address_deltas<S>(
+    snapshot: &S,
+    addrs: &[TransparentAddress],
+    start: Option<Height>,
+    end: Option<Height>,
+) -> Result<AddressDeltasAnswer, AddressReadError>
+where
+    S: AddressRead + ChainSegment,
+{
+    let Some(coverage) = serviceable_range(snapshot) else {
+        return Ok(AddressDeltasAnswer {
+            deltas: Vec::new(),
+            range: None,
+        });
+    };
+    let start = start.unwrap_or(coverage.start);
+    let end = end.unwrap_or(coverage.end);
+    if start > end {
+        return Ok(AddressDeltasAnswer {
+            deltas: Vec::new(),
+            range: None,
+        });
+    }
+    let range = HeightRange { start, end };
+
+    let mut deltas = Vec::new();
+    for addr in addrs {
+        deltas.extend(snapshot.deltas(addr, range).await?);
+    }
+    deltas.sort_by_key(|delta| (delta.height, delta.block_index, delta.index));
+    Ok(AddressDeltasAnswer {
+        deltas,
+        range: Some(range),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{address_balance, serviceable_range, total_balance, wallet_balance};
+    use super::{
+        address_balance, address_deltas, serviceable_range, total_balance, wallet_balance,
+    };
     use crate::testing::{MockChain, MockIndexerService};
     use crate::TakeSnapshot;
     use zaino_primitives::types::{
@@ -233,5 +299,126 @@ mod tests {
             .await
             .expect("no read failure");
         assert!(answer.is_none());
+    }
+
+    fn delta(height: u32, satoshis: i64, addr: &str) -> zaino_primitives::types::AddressDelta {
+        use zaino_primitives::types::SignedZatoshis;
+        zaino_primitives::types::AddressDelta {
+            satoshis: SignedZatoshis::try_new(satoshis).expect("valid delta"),
+            txid: zaino_primitives::types::TransactionId::from([7u8; 32]),
+            index: 0,
+            height: Height::try_from(height).expect("valid height"),
+            address: TransparentAddress::new(addr.to_string()),
+            block_index: Some(1),
+        }
+    }
+
+    fn tipped(deltas: Vec<zaino_primitives::types::AddressDelta>) -> MockChain {
+        MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(200).expect("valid height"),
+                hash: BlockHash::from([1u8; 32]),
+            }),
+            deltas,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn address_deltas_filter_by_address_and_height() {
+        let snapshot = snapshot_with(tipped(vec![
+            delta(100, 5, "t1a"),
+            delta(150, -3, "t1a"),
+            delta(150, 9, "t1other"),
+        ]))
+        .await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(
+            &snapshot,
+            &addrs,
+            Some(Height::try_from(120).expect("valid height")),
+            Some(Height::try_from(160).expect("valid height")),
+        )
+        .await
+        .expect("deltas");
+        assert_eq!(answer.deltas.len(), 1);
+        assert_eq!(answer.deltas[0].satoshis.as_i64(), -3);
+        assert!(answer.range.is_some(), "a real query reports its range");
+    }
+
+    /// `HeightRange` is inclusive, so start == end is a one-block query that
+    /// must return that block's delta. This is the boundary a half-open reading
+    /// gets wrong, and it gets it wrong silently.
+    #[tokio::test]
+    async fn a_single_height_delta_range_is_inclusive() {
+        let snapshot = snapshot_with(tipped(vec![delta(150, -3, "t1a")])).await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let at = Height::try_from(150).expect("valid height");
+        let answer = address_deltas(&snapshot, &addrs, Some(at), Some(at))
+            .await
+            .expect("deltas");
+        assert_eq!(
+            answer.deltas.len(),
+            1,
+            "[150, 150] is one block, not an empty range"
+        );
+    }
+
+    /// Callers derive these bounds from user-supplied dates, where an empty day
+    /// is ordinary. A backwards range is a valid query with an empty answer.
+    #[tokio::test]
+    async fn a_backwards_delta_range_is_empty_not_an_error() {
+        let snapshot = snapshot_with(tipped(vec![delta(100, 5, "t1a")])).await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(
+            &snapshot,
+            &addrs,
+            Some(Height::try_from(900).expect("valid height")),
+            Some(Height::try_from(100).expect("valid height")),
+        )
+        .await
+        .expect("a backwards range is a valid query");
+        assert!(answer.deltas.is_empty());
+        assert!(
+            answer.range.is_none(),
+            "no query ran, so no range to report"
+        );
+    }
+
+    /// Explorer policy, matching `address_balance`: nothing serviceable means no
+    /// indexed history. Scripted, so a regression that queried a synthesised
+    /// range would read the scripted delta and fail.
+    #[tokio::test]
+    async fn address_deltas_are_empty_when_nothing_is_serviceable() {
+        let snapshot = snapshot_with(MockChain {
+            tip: None,
+            deltas: vec![delta(0, 5, "t1a")],
+            ..Default::default()
+        })
+        .await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(&snapshot, &addrs, None, None)
+            .await
+            .expect("no coverage is a valid query");
+        assert!(answer.deltas.is_empty());
+        assert!(answer.range.is_none());
+    }
+
+    /// zcashd documents the order as (height, blockindex, index). Ordering is a
+    /// property of the answer, so it belongs here rather than in each adapter.
+    #[tokio::test]
+    async fn address_deltas_are_ordered_by_height_then_position() {
+        let snapshot = snapshot_with(tipped(vec![
+            delta(150, 1, "t1a"),
+            delta(100, 2, "t1a"),
+            delta(120, 3, "t1a"),
+        ]))
+        .await;
+        let addrs = vec![TransparentAddress::new("t1a".to_string())];
+        let answer = address_deltas(&snapshot, &addrs, None, None)
+            .await
+            .expect("deltas");
+        let heights: Vec<u32> = answer.deltas.iter().map(|d| u32::from(d.height)).collect();
+        assert_eq!(heights, vec![100, 120, 150]);
     }
 }

@@ -50,6 +50,8 @@ pub struct MockChain {
     /// Scripted transparent balances, keyed by address string. An address
     /// absent here has no history, which reads as a zero balance.
     pub balances: Vec<(String, AddressBalance)>,
+    /// Scripted address deltas, filtered by address and height on read.
+    pub deltas: Vec<AddressDelta>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -261,10 +263,17 @@ impl AddressRead for MockSnapshot {
     }
     async fn deltas(
         &self,
-        _addr: &TransparentAddress,
-        _range: HeightRange,
+        addr: &TransparentAddress,
+        range: HeightRange,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
-        Ok(Vec::new())
+        Ok(self
+            .chain
+            .deltas
+            .iter()
+            .filter(|delta| delta.address.as_str() == addr.as_str())
+            .filter(|delta| delta.height >= range.start && delta.height <= range.end)
+            .cloned()
+            .collect())
     }
     async fn tx_ids(
         &self,

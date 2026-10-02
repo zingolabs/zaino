@@ -11,8 +11,8 @@ use zaino_service::error::AddressReadError;
 use zaino_service::NodeRpcService;
 
 use crate::error::RpcError;
-use crate::wire::params::AddressesParam;
-use crate::wire::response::AddressBalanceResponse;
+use crate::wire::params::{AddressDeltasParam, AddressesParam};
+use crate::wire::response::{AddressBalanceResponse, AddressDeltasResponse};
 use crate::NodeRpc;
 
 /// The node JSON-RPC surface this adapter serves.
@@ -41,6 +41,12 @@ pub trait NodeRpcApi {
         &self,
         params: AddressesParam,
     ) -> Result<AddressBalanceResponse, ErrorObjectOwned>;
+
+    #[method(name = "getaddressdeltas")]
+    async fn address_deltas(
+        &self,
+        params: AddressDeltasParam,
+    ) -> Result<AddressDeltasResponse, ErrorObjectOwned>;
 }
 
 #[jsonrpsee::core::async_trait]
@@ -70,6 +76,14 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         params: AddressesParam,
     ) -> Result<AddressBalanceResponse, ErrorObjectOwned> {
         self.get_address_balance(params)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn address_deltas(
+        &self,
+        params: AddressDeltasParam,
+    ) -> Result<AddressDeltasResponse, ErrorObjectOwned> {
+        self.get_address_deltas(params)
             .await
             .map_err(to_error_object)
     }

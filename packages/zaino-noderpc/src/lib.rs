@@ -20,14 +20,14 @@ pub use error::RpcError;
 pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
-use zaino_primitives::types::{Outpoint, TransparentAddress};
+use zaino_primitives::types::{Height, Outpoint, TransparentAddress};
 use zaino_service::queries;
 use zaino_service::NodeQuery;
 use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
 
-use crate::wire::params::AddressesParam;
-use crate::wire::response::AddressBalanceResponse;
-use crate::wire::{bytes_from_hex, spend_status_to_wire, to_hex, txid_from_hex};
+use crate::wire::params::{AddressDeltasParam, AddressesParam};
+use crate::wire::response::{AddressBalanceResponse, AddressDeltasResponse, DeltaRange};
+use crate::wire::{bytes_from_hex, delta_to_wire, spend_status_to_wire, to_hex, txid_from_hex};
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
 #[derive(Clone)]
@@ -119,12 +119,59 @@ impl<S: NodeRpcService> NodeRpc<S> {
             received: u128::from(total.received),
         })
     }
+
+    /// `getaddressdeltas`: every balance change touching the requested
+    /// addresses.
+    ///
+    /// The domain answer — which range was queried, in what order, and what no
+    /// coverage means — comes from [`queries::address_deltas`]. This renders it,
+    /// and applies `chainInfo`, which is a wire choice about whether the range
+    /// is echoed back.
+    pub async fn get_address_deltas(
+        &self,
+        params: AddressDeltasParam,
+    ) -> Result<AddressDeltasResponse, RpcError> {
+        if params.addresses.is_empty() {
+            return Err(RpcError::InvalidParams(
+                "addresses must not be empty".into(),
+            ));
+        }
+        let start = params
+            .start
+            .map(Height::try_from)
+            .transpose()
+            .map_err(|_| RpcError::InvalidParams("start is not a valid height".into()))?;
+        let end = params
+            .end
+            .map(Height::try_from)
+            .transpose()
+            .map_err(|_| RpcError::InvalidParams("end is not a valid height".into()))?;
+        let addrs: Vec<TransparentAddress> = params
+            .addresses
+            .into_iter()
+            .map(TransparentAddress::new)
+            .collect();
+
+        let snapshot = self.engine.snapshot().await?;
+        let answer = queries::address_deltas(&snapshot, &addrs, start, end).await?;
+        Ok(AddressDeltasResponse {
+            deltas: answer.deltas.into_iter().map(delta_to_wire).collect(),
+            range: params
+                .chain_info
+                .then_some(answer.range)
+                .flatten()
+                .map(|range| DeltaRange {
+                    start: range.start.into(),
+                    end: range.end.into(),
+                }),
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{NodeRpc, RpcError};
-    use zaino_primitives::types::{BlockHash, BlockRef, Height};
+    use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId};
     use zaino_service::testing::{MockChain, MockIndexerService};
 
     fn engine_with_tip(tip: Option<BlockRef>) -> MockIndexerService {
@@ -280,6 +327,70 @@ mod tests {
         assert!(matches!(
             node.get_address_balance(crate::wire::params::AddressesParam {
                 addresses: Vec::new()
+            })
+            .await,
+            Err(RpcError::InvalidParams(_))
+        ));
+    }
+
+    /// `chainInfo` is a wire choice: it decides whether the queried range is
+    /// echoed, not what gets queried.
+    #[tokio::test]
+    async fn chain_info_decides_whether_the_range_is_echoed() {
+        use zaino_primitives::types::{SignedZatoshis, TransparentAddress};
+        let scripted = zaino_primitives::types::AddressDelta {
+            satoshis: SignedZatoshis::try_new(-3).expect("valid delta"),
+            txid: TransactionId::from([7u8; 32]),
+            index: 0,
+            height: Height::try_from(150).expect("valid height"),
+            address: TransparentAddress::new("t1a".to_string()),
+            block_index: Some(1),
+        };
+        let chain = MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(200).expect("valid height"),
+                hash: BlockHash::from([1u8; 32]),
+            }),
+            deltas: vec![scripted],
+            ..Default::default()
+        };
+        let node = NodeRpc::new(MockIndexerService::new(chain));
+
+        let with = node
+            .get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: vec!["t1a".to_string()],
+                start: None,
+                end: None,
+                chain_info: true,
+            })
+            .await
+            .expect("deltas");
+        assert_eq!(with.deltas.len(), 1);
+        assert_eq!(with.deltas[0].satoshis, -3);
+        assert!(with.range.is_some());
+
+        let without = node
+            .get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: vec!["t1a".to_string()],
+                start: None,
+                end: None,
+                chain_info: false,
+            })
+            .await
+            .expect("deltas");
+        assert_eq!(without.deltas.len(), 1, "the query is the same either way");
+        assert!(without.range.is_none());
+    }
+
+    #[tokio::test]
+    async fn address_deltas_rejects_an_empty_address_list() {
+        let node = NodeRpc::new(engine_with_tip(None));
+        assert!(matches!(
+            node.get_address_deltas(crate::wire::params::AddressDeltasParam {
+                addresses: Vec::new(),
+                start: None,
+                end: None,
+                chain_info: false,
             })
             .await,
             Err(RpcError::InvalidParams(_))

@@ -62,6 +62,18 @@ returns `None` so a wallet never reports a user's funds as gone off an indexer
 that cannot answer. An adapter calls only its own policy function, then renders
 the domain answer to its wire shape and maps its error codes.
 
+`address_deltas(snapshot, addrs, start, end)` answers the explorer's
+address-history question beside `address_balance` and takes the same policy:
+nothing serviceable means no indexed history, so an empty answer rather than an
+error. Its `start` and `end` bounds are inclusive and optional, each defaulting
+to the serviceable edge; backwards bounds answer empty for the same reason, since
+callers derive them from user-supplied dates where a day with no blocks is
+ordinary. The deltas are ordered `(height, block_index, index)` — the order
+zcashd documents — applied once here rather than in each adapter. The returned
+`AddressDeltasAnswer` carries that ordered list and the `range` actually queried,
+which is `None` exactly when no query ran, so an adapter echoing the range has
+the authoritative value rather than re-deriving it.
+
 ## Errors
 
 Every read error separates a *not-yet-serviceable* answer
