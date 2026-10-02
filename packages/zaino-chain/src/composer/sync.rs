@@ -230,7 +230,9 @@ where
             // reports a broken database; the loop keeps running because the
             // next batch may well land.
             warn!(%error, "freezing a batch failed");
-            status.send_replace(report(status.borrow().lifecycle, Health::Recoverable));
+            // Read first: a borrow held across the send deadlocks the channel.
+            let lifecycle = status.borrow().lifecycle;
+            status.send_replace(report(lifecycle, Health::Recoverable));
             return;
         };
 

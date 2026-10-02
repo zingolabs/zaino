@@ -1,66 +1,75 @@
-use super::{
-    load_test_vectors_and_sync_chain_index, load_test_vectors_and_sync_chain_index_with_timings,
-    MockchainMode,
-};
-use crate::chain_index::{combine_component_statuses, ChainIndex, SyncTimings};
+use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Instant;
+
 use tokio::time::{sleep, Duration};
-use zaino_chain_head::ChainHeadSnapshot as _;
+use zaino_chain_head::ChainHeadConfig;
 use zaino_status::{Status as _, StatusType};
 
-/// Regression test (fixes #593): a source failure should not kill the
-/// sync loop.
-///
-/// The sync loop (chain_index.rs) sleeps 500ms between iterations. On
-/// failure, it used to propagate via `?` and set CriticalError. The
-/// indexer serve loop (indexer.rs) checks status every 100ms — so within
-/// 100ms of the sync loop failing it called close(), dropping the
-/// TonicServer. Integration test clients then got ConnectionRefused
-/// because the gRPC port was never reachable.
-///
-/// The sync loop now retries with exponential backoff and remains live.
+use super::{
+    load_test_vectors_and_sync_chain_index,
+    load_test_vectors_and_sync_chain_index_with_chain_head_config, MockchainMode,
+};
+use crate::chain_index::chain_view::BestTip as _;
+use crate::chain_index::{chain_head, combine_component_statuses, ChainIndex};
+
+/// The operational chain head config with a failure ladder short enough to
+/// run to the end in a test.
+fn fast_chain_head_config() -> ChainHeadConfig {
+    let ms = |millis| NonZeroU64::new(millis).expect("test interval is not zero");
+    let mut config = chain_head::config();
+    config.set_poll_interval_ms(ms(50));
+    config.set_initial_backoff_ms(ms(25));
+    config.set_max_backoff_ms(ms(800));
+    config.set_max_consecutive_failures(NonZeroU32::new(10).expect("10 is not zero"));
+    config
+}
+
+/// The total backoff the chain head sleeps before giving up.
+fn max_backoff_window(config: &ChainHeadConfig) -> Duration {
+    let mut total = Duration::ZERO;
+    let mut current = config.initial_backoff();
+    for _ in 1..config.max_consecutive_failures() {
+        total += current;
+        current = (current * 2).min(config.max_backoff());
+    }
+    total
+}
+
+/// Regression test (fixes #593): a transient source failure must not escalate
+/// the index to `CriticalError`, which would stop the server.
 #[tokio::test(flavor = "multi_thread")]
 async fn survives_transient_source_failure() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
-    let start = Instant::now();
     mockchain.source().set_failing(true);
     sleep(Duration::from_secs(2)).await;
 
-    let status = index_reader.status();
-    let elapsed = start.elapsed();
-
     assert_ne!(
-        status,
+        index_reader.status(),
         StatusType::CriticalError,
-        "sync loop should survive transient source failure, not set CriticalError"
-    );
-    let max_time_to_critical = SyncTimings::default().max_backoff_window() + Duration::from_secs(5);
-    assert!(
-        elapsed < max_time_to_critical,
-        "test took {elapsed:?}, which exceeds the maximum possible backoff window"
+        "a transient source failure must not escalate to CriticalError"
     );
 }
 
-/// After `max_consecutive_failures` with exponential backoff, the sync loop
-/// should escalate to [`StatusType::CriticalError`].
-///
-/// Uses [`SyncTimings::fast`] (10× shrunk) so the full backoff schedule fits
-/// in a few seconds instead of ~40 s.
+/// After `max_consecutive_failures` with exponential backoff, the chain head
+/// gives up and the index reports [`StatusType::CriticalError`].
 #[tokio::test(flavor = "multi_thread")]
 async fn escalates_to_critical_after_persistent_failure() {
-    let timings = SyncTimings::fast();
+    let config = fast_chain_head_config();
     let (_blocks, _indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index_with_timings(MockchainMode::Active, timings).await;
+        load_test_vectors_and_sync_chain_index_with_chain_head_config(
+            MockchainMode::Active,
+            config.clone(),
+        )
+        .await;
 
     let start = Instant::now();
     mockchain.source().set_failing(true);
 
-    // 5× slack over the nominal backoff sum to absorb scheduling jitter and
-    // the per-iteration sync work the loop performs between sleeps.
-    let max_time_to_critical = timings.max_backoff_window() * 5;
-    let poll_interval = timings.initial_backoff;
+    // 5× slack over the nominal backoff sum to absorb scheduling jitter.
+    let max_time_to_critical = max_backoff_window(&config) * 5;
+    let poll_interval = config.initial_backoff();
 
     loop {
         sleep(poll_interval).await;

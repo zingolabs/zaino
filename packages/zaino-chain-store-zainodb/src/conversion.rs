@@ -49,10 +49,12 @@
 /// because ChainIndex reads compact blocks through
 /// [`zaino_chain_store::CompactBlockRead`], which yields domain blocks, and
 /// still answers its callers in the wire shape — so the conversion has to be
-/// reachable from outside. Both move to the serving side, together with this
-/// crate's `zaino-proto` dependency, when ChainIndex's wire surface goes.
+/// reachable from outside. `compact_tx_to_wire` is also how the indexer
+/// renders mempool transactions. All three move to the serving side, together
+/// with this crate's `zaino-proto` dependency, when ChainIndex's wire surface
+/// goes.
 pub use crate::store::finalised_source::v1::compact_block::{
-    compact_block_to_wire, pool_filter_from_wire,
+    compact_block_to_wire, compact_tx_to_wire, pool_filter_from_wire,
 };
 
 use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};

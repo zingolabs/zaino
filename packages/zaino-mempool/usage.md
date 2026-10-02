@@ -217,7 +217,7 @@ re-blessed, on the order of a poll — so `Frozen` alone is not an alert.
 `CoherentSubscriber::frozen_for()` returns how long the view has been *continuously*
 frozen (`None` when serving); escalate on a freeze that outlasts normal thaw, which
 means tip-coherent reads have gone dark and stayed dark (validator unreachable, NS
-stuck). `zaino-state`'s sync loop wires this to the
+stuck). `zaino-mempool-service`'s coherence loop exports it as the
 `zaino.mempool.coherence_frozen_seconds` gauge.
 
 ## Feature flag

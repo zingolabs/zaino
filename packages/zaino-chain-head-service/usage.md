@@ -146,3 +146,13 @@ Replacing it — persistent structures sharing unchanged subtrees between publis
 rather than maps cloned on each one — is a change to this crate alone, and that
 is the arrangement to protect. Do not let a consumer come to depend on the
 concrete type.
+
+## Metrics
+
+`metric_names` lists what the writer task emits, with `COUNTERS`, `GAUGES` and
+`HISTOGRAMS` tables for `zainod` to register:
+
+- `zaino.chain.tip_height`: the source's tip, set every poll.
+- `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`: the retry
+  ladder, both 0 when healthy.
+- `zaino.sync.reorg_total` and `zaino.sync.reorg_depth`: reorganisations.

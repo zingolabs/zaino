@@ -1,4 +1,5 @@
 use super::{load_test_vectors_and_sync_chain_index, MockchainMode, DEEP_FINALISED_SEED_TIP};
+use crate::chain_index::chain_view::BestTip as _;
 use crate::{
     chain_index::{
         tests::vectors::MockSource,
@@ -13,7 +14,6 @@ use crate::{
 };
 use tokio::time::Duration;
 use tokio_stream::StreamExt as _;
-use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
 use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
