@@ -55,6 +55,11 @@ pub struct MockChain {
     pub deltas: Vec<AddressDelta>,
     /// Scripted raw transactions, keyed by txid.
     pub raw_transactions: Vec<(TransactionId, RawTransaction)>,
+    /// Scripted chain-info aggregate. When `Some`, [`ChainInfoRead::chain_info`]
+    /// returns it verbatim; when `None`, the aggregate is synthesised from the
+    /// pinned tip with neutral values for everything else. A test that needs to
+    /// distinguish a rendered field from a defaulted one scripts this.
+    pub blockchain_info: Option<BlockchainInfo>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -318,10 +323,16 @@ impl CompactNullifierRead for MockSnapshot {
 
 impl ChainInfoRead for MockSnapshot {
     async fn chain_info(&self) -> Result<BlockchainInfo, ReadError> {
-        // The service-level mock has no validator behind it, so it synthesises
-        // the aggregate from its pinned tip: the height-bearing fields track the
-        // tip, the rest are neutral. A test that needs rich chain-info exercises
-        // the real passthrough through a source-level `MockChain`.
+        // A scripted aggregate is returned verbatim, so a test can pin every
+        // field through the serving adapter.
+        if let Some(info) = &self.chain.blockchain_info {
+            return Ok(info.clone());
+        }
+        // Otherwise the service-level mock has no validator behind it, so it
+        // synthesises the aggregate from its pinned tip: the height-bearing
+        // fields track the tip, the rest are neutral. A test that needs rich
+        // chain-info either scripts `blockchain_info` here or exercises the real
+        // passthrough through a source-level `MockChain`.
         let tip = self.chain.tip;
         let height = tip.map(|id| id.height).unwrap_or(Height::GENESIS);
         Ok(BlockchainInfo {
