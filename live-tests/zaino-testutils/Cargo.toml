@@ -37,3 +37,10 @@ tokio = { workspace = true }
 [dev-dependencies]
 # Drives `legacy_parser::transaction`'s own round-trip tests.
 wire_serialized_transaction_test_data = { workspace = true }
+# Parses the manifest / lockfile text that `zebra_spec` resolves the validator
+# from. Already in the live-tests graph via ztest, so this adds no package.
+toml = "0.9"
+
+[build-dependencies]
+thiserror = "2.0"
+toml = { version = "0.9", default-features = false, features = ["parse"] }

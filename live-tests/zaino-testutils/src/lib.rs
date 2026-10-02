@@ -15,6 +15,10 @@ pub use ztest::prelude::*;
 
 pub mod legacy_parser;
 
+// `zebra!()` is `#[macro_export]`ed from here, so it lands at the crate root
+// regardless of this module's visibility.
+mod zebra;
+
 pub mod finalised;
 pub mod hex;
 pub mod json;
