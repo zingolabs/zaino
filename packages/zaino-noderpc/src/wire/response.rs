@@ -451,6 +451,8 @@ pub enum GetRawTransactionResponse {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum GetBlockResponse {
+    /// Verbosity 0: the raw consensus bytes as lowercase hex.
+    Raw(String),
     /// Verbosity 1: `tx` is the list of transaction ids.
     Verbose1(BlockResponse<String>),
     /// Verbosity 2: `tx` is the list of decoded transactions.

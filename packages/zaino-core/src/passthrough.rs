@@ -35,10 +35,10 @@ use zaino_source::{
     GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockVerbose,
     GetBlockVerboseByHash, GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError,
     GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
-    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
-    GetTransaction, GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError,
-    GetTreestate, GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
-    TransactionResponse,
+    GetRawBlock, GetRawBlockByHash, GetRawMempoolTransaction, GetRawMempoolTransactionError,
+    GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
+    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError,
+    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -128,6 +128,57 @@ where
     ) -> Result<Option<Block>, BlockReadError> {
         match self.source.get_block_by_hash(hash).await {
             Ok(block) => Ok(Some(block)),
+            Err(SourceError::Domain(GetBlockByHashError::NotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetRawBlock,
+{
+    /// The raw consensus bytes of the block at `height`, live from the validator.
+    /// Passthrough: the finalised store holds compact projections, not full block
+    /// bytes, so the consensus-canonical form can only come from the validator. A
+    /// height with no block is a domain miss (`Ok(None)`); a transport failure is
+    /// transient.
+    pub(crate) async fn raw_block(
+        &self,
+        height: Height,
+    ) -> Result<Option<Vec<u8>>, BlockReadError> {
+        match self.source.get_raw_block(height).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(SourceError::Domain(GetBlockError::HeightNotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(BlockReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetRawBlockByHash,
+{
+    /// The raw consensus bytes of the block with `hash`, live from the validator.
+    /// See [`raw_block`](Self::raw_block) for why raw block bytes are always
+    /// passthrough; a hash can name a side-chain block. A hash no retained chain
+    /// holds is a domain miss (`Ok(None)`); a transport failure is transient.
+    pub(crate) async fn raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<Vec<u8>>, BlockReadError> {
+        match self.source.get_raw_block_by_hash(hash).await {
+            Ok(bytes) => Ok(Some(bytes)),
             Err(SourceError::Domain(GetBlockByHashError::NotFound(_))) => Ok(None),
             Err(SourceError::NonDomain(cause)) => Err(BlockReadError::Transient(format!(
                 "validator unavailable: {cause}"

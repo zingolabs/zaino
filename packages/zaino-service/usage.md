@@ -45,6 +45,10 @@ hashes) a block's own bytes cannot give, kept a separate trait from `BlockRead`
 for the same reason `RawTransactionRead` and `TransactionRead` are split — one
 returns the domain block every consumer uses, the other an explorer-only
 surface. The block page composes the two into one `getblock(_, 2)` response.
+`BlockVerboseRead` also carries `raw_block`, the consensus bytes of the block
+`at` — the always-passthrough `getblock(_, 0)` surface the explorer's search page
+calls to test whether a string is a block. A selector naming no block is
+`Ok(None)` at each of the three reads.
 
 `NodeRpcReads` also carries `TransactionViewRead`, the resolved-transaction
 surface behind `getrawtransaction <txid> 1` and `getblock <block> 2`:

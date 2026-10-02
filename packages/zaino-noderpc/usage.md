@@ -45,16 +45,19 @@ Key points of the shape:
 
 ## `getblock` verbosities
 
+- Verbosity 0 (the explorer's search page, testing whether a string is a block):
+  the raw consensus bytes as lowercase hex, from `BlockVerboseRead::raw_block`.
 - Verbosity 1 (zcashd's default, and the explorer's every-block-page call): the
   header and chain-position keys, `size`, `previousblockhash`/`nextblockhash`,
   and `tx` as a list of transaction-id strings.
 - Verbosity 2: the same, with `tx` as the decoded transaction DTOs.
-- Verbosity 0 (raw hex) is not served yet; it is refused with a message naming
-  the served verbosities.
+- A verbosity above 2 is refused with a message naming the served range. An
+  unknown block is a not-found error at every verbosity.
 
-`size` comes from the decoded-block read (`BlockTransactionViews.size`), which is
-why both verbosities compose three reads: the block header, its chain position,
-and its transactions-with-resolved-inputs.
+At verbosity 1 and 2, `size` comes from the decoded-block read
+(`BlockTransactionViews.size`), which is why both compose three reads: the block
+header, its chain position, and its transactions-with-resolved-inputs. Verbosity 0
+needs only the single raw-block read.
 
 ## Error mapping
 

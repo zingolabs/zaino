@@ -90,6 +90,9 @@ pub struct MockChain {
     /// [`TransactionViewRead::decoded_block`] returns it for any selector; when
     /// `None`, it answers `Ok(None)`.
     pub decoded_block: Option<DecodedBlock>,
+    /// Scripted raw block bytes. When `Some`, [`BlockVerboseRead::raw_block`]
+    /// returns them for any selector; when `None`, it answers `Ok(None)`.
+    pub raw_block: Option<Vec<u8>>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -410,6 +413,12 @@ impl BlockVerboseRead for MockSnapshot {
         _at: BlockSelector,
     ) -> Result<Option<BlockVerbose>, BlockReadError> {
         Ok(self.chain.block_verbose.clone())
+    }
+    async fn raw_block(&self, _at: BlockSelector) -> Result<Option<Vec<u8>>, BlockReadError> {
+        // Scripted raw bytes returned for any selector; absent them, a served
+        // `None`. The full block is otherwise a passthrough the service mock has no
+        // validator behind, so scripting is the only way to exercise it.
+        Ok(self.chain.raw_block.clone())
     }
 }
 

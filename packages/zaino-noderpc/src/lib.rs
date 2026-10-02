@@ -172,16 +172,20 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(blockchain_info_to_wire(info))
     }
 
-    /// `getblock`: the block object at verbosity 1 (transaction ids) or 2
-    /// (decoded transactions) — the block page's read.
+    /// `getblock`: the raw block hex at verbosity 0, or the block object at
+    /// verbosity 1 (transaction ids) or 2 (decoded transactions) — the block
+    /// page's and search page's read.
     ///
     /// The block id arrives as a string: all-digits is a height, otherwise a hex
     /// block hash (the explorer sends a height as a decimal string). zcashd
     /// defaults to verbosity 1, and the explorer calls verbosity 1 on every block
-    /// page, so an omitted verbosity is 1. Verbosity 0 (raw hex) is not served
-    /// yet; a verbosity outside the served range is a parameter error naming it.
+    /// page, so an omitted verbosity is 1. Verbosity 0 returns the consensus bytes
+    /// as lowercase hex — the explorer's search page calls it to test whether a
+    /// string is a block; a verbosity above 2 is a parameter error naming the
+    /// served range. An unknown block is a not-found error at every verbosity.
     ///
-    /// The response composes three reads for the same block: its header
+    /// At verbosity 1 and 2 the response composes three reads for the same block:
+    /// its header
     /// ([`BlockRead::block`]), its chain position
     /// ([`BlockVerboseRead::block_verbose`]), and its transactions. The third read
     /// differs by verbosity: verbosity 1 takes size and transaction ids from
@@ -197,21 +201,24 @@ impl<S: NodeRpcService> NodeRpc<S> {
         verbosity: Option<u32>,
     ) -> Result<GetBlockResponse, RpcError> {
         let requested = verbosity.unwrap_or(1);
-        match requested {
-            1 | 2 => {}
-            0 => {
-                return Err(RpcError::InvalidParams(
-                    "verbosity 0 (raw block hex) is not served yet; 1 (block with transaction ids) and 2 (block with decoded transactions) are available".into(),
-                ))
-            }
-            other => {
-                return Err(RpcError::InvalidParams(format!(
-                    "verbosity {other} is out of range; getblock serves 1 (transaction ids) and 2 (decoded transactions)"
-                )))
-            }
+        if requested > 2 {
+            return Err(RpcError::InvalidParams(format!(
+                "verbosity {requested} is out of range; getblock serves 0 (raw hex), 1 (transaction ids) and 2 (decoded transactions)"
+            )));
         }
         let selector = block_selector_from_str(blockid)?;
         let snapshot = self.engine.snapshot().await?;
+        if requested == 0 {
+            // Verbosity 0: the raw consensus bytes as lowercase hex. The explorer's
+            // search page calls this to test whether a string is a block; an unknown
+            // block is the same not-found as the verbose arms report.
+            let raw = snapshot
+                .raw_block(selector)
+                .await
+                .map_err(ReadError::from)?
+                .ok_or_else(|| RpcError::NotFound(format!("no block for {blockid}")))?;
+            return Ok(GetBlockResponse::Raw(bytes_to_hex(&raw)));
+        }
         let block = snapshot.block(selector).await.map_err(ReadError::from)?;
         let verbose = snapshot
             .block_verbose(selector)
@@ -804,16 +811,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_block_refuses_verbosity_zero_and_out_of_range() {
-        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
-        // 0 is deferred to a later task; anything above 2 is out of range. Both are
-        // parameter errors naming what is served.
-        for verbosity in [Some(0), Some(3)] {
-            assert!(matches!(
-                node.get_block(&"11".repeat(32), verbosity).await,
-                Err(RpcError::InvalidParams(_))
-            ));
+    async fn get_block_verbosity_zero_returns_the_raw_hex() {
+        // The explorer's search page calls `getblock(query, 0)` to test whether a
+        // string is a block; a hit is the consensus bytes as lowercase hex.
+        let engine = MockIndexerService::new(MockChain {
+            raw_block: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        match node.get_block("2468", Some(0)).await.expect("block served") {
+            GetBlockResponse::Raw(hex) => assert_eq!(hex, "deadbeef"),
+            other => panic!("verbosity 0 must render raw hex: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn get_block_verbosity_zero_reports_an_unknown_block_as_not_found() {
+        // Nothing scripted: the raw-block read misses, the same not-found the
+        // verbose arms report.
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_block("999999", Some(0)).await,
+            Err(RpcError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_block_refuses_verbosity_out_of_range() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        // Anything above 2 is out of range: a parameter error naming what is served.
+        assert!(matches!(
+            node.get_block(&"11".repeat(32), Some(3)).await,
+            Err(RpcError::InvalidParams(_))
+        ));
     }
 
     #[tokio::test]

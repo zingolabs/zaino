@@ -79,11 +79,14 @@ maps `BestChain(h)` to `Mined(h)`, `NonBestChain` to `Orphaned`, and both
 `Mempool` and an absent transaction to `Unknown` — a mempool transaction is
 neither mined nor reorged out.
 
-`BlockVerboseRead` (`block_header_verbose`, and `block_verbose` over a selector)
-is always passthrough: confirmations, difficulty, chainwork and the neighbouring
-hashes are cumulative chain state the validator derives, not facts in the stored
-block. A domain miss is `Ok(None)`; an unreachable validator is a transient read
-failure. With `BlockRead`, `BlockVerboseRead` and `TransactionRead` all present,
+`BlockVerboseRead` (`block_header_verbose`, `block_verbose` over a selector, and
+`raw_block` over a selector) is always passthrough: confirmations, difficulty,
+chainwork and the neighbouring hashes are cumulative chain state the validator
+derives, not facts in the stored block, and the raw consensus bytes `raw_block`
+returns — the `getblock(_, 0)` surface — come over `GetRawBlock`/`GetRawBlockByHash`
+because the finalised store holds compact projections, not full block bytes. A
+domain miss is `Ok(None)`; an unreachable validator is a transient read failure.
+With `BlockRead`, `BlockVerboseRead` and `TransactionRead` all present,
 `EngineSnapshot` satisfies `NodeRpcReads`, so a node-RPC-routed engine satisfies
 `NodeRpcService`.
 

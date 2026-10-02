@@ -78,6 +78,13 @@ pub struct MockChain {
     /// settable apart from the by-height value so a test can prove the two arms
     /// read distinct sources; `None` answers a domain not-found.
     block_decoded_by_hash_response: Option<DecodedBlock>,
+    /// Canned raw-block bytes returned by `get_raw_block` for any height; `None`
+    /// answers a domain not-found.
+    raw_block_response: Option<Vec<u8>>,
+    /// Canned raw-block bytes returned by `get_raw_block_by_hash` for any hash,
+    /// settable apart from the by-height value so a test can prove the two arms
+    /// read distinct sources; `None` answers a domain not-found.
+    raw_block_by_hash_response: Option<Vec<u8>>,
     /// Canned subtree roots, returned for any index query.
     subtree_roots: Vec<SubtreeRoot>,
 }
@@ -102,6 +109,8 @@ impl MockChain {
             block_verbose_by_hash_response: None,
             block_decoded_response: None,
             block_decoded_by_hash_response: None,
+            raw_block_response: None,
+            raw_block_by_hash_response: None,
             subtree_roots: Vec::new(),
         }
     }
@@ -182,6 +191,22 @@ impl MockChain {
     /// test can give the two arms distinct blocks and catch a swapped selector.
     pub fn with_block_decoded_by_hash(mut self, block: DecodedBlock) -> Self {
         self.block_decoded_by_hash_response = Some(block);
+        self
+    }
+
+    /// Seed the bytes `get_raw_block` returns for any height; `None` answers a
+    /// domain not-found.
+    pub fn with_raw_block(mut self, bytes: Vec<u8>) -> Self {
+        self.raw_block_response = Some(bytes);
+        self
+    }
+
+    /// Seed the bytes `get_raw_block_by_hash` returns for any hash.
+    ///
+    /// Settable apart from [`with_raw_block`](Self::with_raw_block) so a test can
+    /// give the two arms distinct bytes and catch a swapped selector.
+    pub fn with_raw_block_by_hash(mut self, bytes: Vec<u8>) -> Self {
+        self.raw_block_by_hash_response = Some(bytes);
         self
     }
 
@@ -280,6 +305,8 @@ impl Clone for MockChain {
             block_verbose_by_hash_response: self.block_verbose_by_hash_response.clone(),
             block_decoded_response: self.block_decoded_response.clone(),
             block_decoded_by_hash_response: self.block_decoded_by_hash_response.clone(),
+            raw_block_response: self.raw_block_response.clone(),
+            raw_block_by_hash_response: self.raw_block_by_hash_response.clone(),
             subtree_roots: self.subtree_roots.clone(),
         }
     }
@@ -622,6 +649,31 @@ impl crate::OneShotGetBlockDecodedByHash for MockChain {
             return Err(err);
         }
         self.block_decoded_by_hash_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
+    }
+}
+
+impl crate::OneShotGetRawBlock for MockChain {
+    async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.raw_block_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+    }
+}
+
+impl crate::OneShotGetRawBlockByHash for MockChain {
+    async fn get_raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Vec<u8>, QueryError<GetBlockByHashError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.raw_block_by_hash_response
             .clone()
             .ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
     }
@@ -1102,6 +1154,52 @@ mod tests {
     async fn get_block_decoded_by_hash_not_found_without_a_script() {
         let mock = MockChain::new();
         let err = crate::OneShotGetBlockDecodedByHash::get_block_decoded_by_hash(&mock, hash(7))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockByHashError::NotFound(got)) if got == hash(7)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_raw_block_round_trips_the_scripted_bytes() {
+        let mock = MockChain::new().with_raw_block(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        let bytes = crate::OneShotGetRawBlock::get_raw_block(&mock, height(5))
+            .await
+            .expect("scripted bytes");
+        assert_eq!(bytes, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[tokio::test]
+    async fn get_raw_block_not_found_without_a_script() {
+        let mock = MockChain::new();
+        let err = crate::OneShotGetRawBlock::get_raw_block(&mock, height(5))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockError::HeightNotFound(got)) if got == height(5)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_raw_block_by_hash_reads_its_own_canned_value() {
+        // The two arms are seeded with distinct bytes, so a by-hash call that read
+        // the by-height value (a swapped selector) would fail here.
+        let mock = MockChain::new()
+            .with_raw_block(vec![0x11])
+            .with_raw_block_by_hash(vec![0x22]);
+        let bytes = crate::OneShotGetRawBlockByHash::get_raw_block_by_hash(&mock, hash(5))
+            .await
+            .expect("scripted bytes");
+        assert_eq!(bytes, vec![0x22]);
+    }
+
+    #[tokio::test]
+    async fn get_raw_block_by_hash_not_found_without_a_script() {
+        let mock = MockChain::new();
+        let err = crate::OneShotGetRawBlockByHash::get_raw_block_by_hash(&mock, hash(7))
             .await
             .unwrap_err();
         assert!(matches!(

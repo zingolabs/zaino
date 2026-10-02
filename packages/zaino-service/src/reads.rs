@@ -73,6 +73,17 @@ pub trait BlockVerboseRead: Send + Sync {
         &self,
         at: BlockSelector,
     ) -> impl Future<Output = Result<Option<BlockVerbose>, BlockReadError>> + Send;
+    /// The raw consensus bytes of the block `at` — exactly the bytes the block
+    /// hash commits to. `Ok(None)` when the selector names no block.
+    ///
+    /// The node-only surface behind `getblock(_, 0)`, which the explorer's search
+    /// page calls to test whether a string is a block. Always passthrough, for the
+    /// same reason as the full [`BlockRead::block`] read: the finalised store holds
+    /// compact projections, not full block bytes.
+    fn raw_block(
+        &self,
+        at: BlockSelector,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, BlockReadError>> + Send;
 }
 
 /// A transparent input paired with the output it spends.

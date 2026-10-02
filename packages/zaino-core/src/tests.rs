@@ -919,6 +919,74 @@ mod block_verbose_reads {
             other => panic!("an unreachable validator must error, not answer None: {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn raw_block_by_height_passes_through() {
+        // The two arms carry distinct bytes, so a by-height call that read the
+        // by-hash value (a swapped selector) would fail here.
+        let engine = engine_with(
+            MockChain::new()
+                .with_raw_block(vec![0xAA, 0xBB])
+                .with_raw_block_by_hash(vec![0xCC, 0xDD]),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let bytes = BlockVerboseRead::raw_block(&snapshot, BlockSelector::Height(height(5)))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(bytes, vec![0xAA, 0xBB]);
+    }
+
+    #[tokio::test]
+    async fn raw_block_by_hash_passes_through() {
+        let engine = engine_with(
+            MockChain::new()
+                .with_raw_block(vec![0xAA, 0xBB])
+                .with_raw_block_by_hash(vec![0xCC, 0xDD]),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let bytes =
+            BlockVerboseRead::raw_block(&snapshot, BlockSelector::Hash(BlockHash::from([2u8; 32])))
+                .await
+                .expect("served")
+                .expect("present");
+        // The by-hash selector reads the by-hash port, not the by-height one.
+        assert_eq!(bytes, vec![0xCC, 0xDD]);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_raw_block_is_a_served_none() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        assert!(
+            BlockVerboseRead::raw_block(&snapshot, BlockSelector::Height(height(99)))
+                .await
+                .expect("a domain miss is a served None, not an error")
+                .is_none()
+        );
+        assert!(
+            BlockVerboseRead::raw_block(&snapshot, BlockSelector::Hash(BlockHash::from([9u8; 32])))
+                .await
+                .expect("a domain miss is a served None, not an error")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_validator_errors_on_raw_block() {
+        // A scripted block is present, but the single-attempt transport failure is
+        // terminal: the read must surface it, not report Ok(None).
+        let engine = engine_single_attempt(
+            MockChain::new()
+                .with_raw_block(vec![0xAA, 0xBB])
+                .fail_next(1, FailureMode::Connection),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match BlockVerboseRead::raw_block(&snapshot, BlockSelector::Height(height(5))).await {
+            Err(BlockReadError::Transient(_)) => {}
+            other => panic!("an unreachable validator must error, not answer None: {other:?}"),
+        }
+    }
 }
 
 mod chain_info_reads {
