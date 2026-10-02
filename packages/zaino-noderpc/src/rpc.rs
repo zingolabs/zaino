@@ -28,9 +28,6 @@ pub trait NodeRpcApi {
     #[method(name = "getbestblockhash")]
     async fn best_block_hash(&self) -> Result<String, ErrorObjectOwned>;
 
-    #[method(name = "gettxout")]
-    async fn tx_out(&self, txid: String, index: u32) -> Result<String, ErrorObjectOwned>;
-
     #[method(name = "getrawtransaction")]
     async fn raw_transaction(
         &self,
@@ -85,9 +82,6 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn best_block_hash(&self) -> Result<String, ErrorObjectOwned> {
         self.get_best_block_hash().await.map_err(to_error_object)
-    }
-    async fn tx_out(&self, txid: String, index: u32) -> Result<String, ErrorObjectOwned> {
-        self.get_tx_out(&txid, index).await.map_err(to_error_object)
     }
     async fn raw_transaction(
         &self,
@@ -228,6 +222,39 @@ mod tests {
             RpcError::TxRead(TxReadError::Fatal("broken".into())),
         ] {
             assert_eq!(to_error_object(err).code(), ErrorCode::InternalError.code());
+        }
+    }
+
+    /// `gettxout` is no longer served: the generated surface answers it with
+    /// JSON-RPC method-not-found rather than an invented spend-status string.
+    /// Fails if the method is ever re-registered on this adapter — a correct
+    /// object-shaped rendering is a later task, and a plausible-looking wrong
+    /// answer is worse than method-not-found.
+    #[tokio::test]
+    async fn gettxout_is_method_not_found() {
+        use super::NodeRpcApiServer;
+        use crate::NodeRpc;
+        use jsonrpsee::core::params::ArrayParams;
+        use jsonrpsee::core::server::MethodsError;
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let module = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        )
+        .into_rpc();
+
+        // Params are irrelevant: method lookup fails before they are read.
+        let err = module
+            .call::<_, serde_json::Value>("gettxout", ArrayParams::new())
+            .await
+            .expect_err("gettxout is no longer a served method");
+        match err {
+            MethodsError::JsonRpc(obj) => {
+                assert_eq!(obj.code(), ErrorCode::MethodNotFound.code());
+            }
+            other => panic!("expected a method-not-found JSON-RPC error, got {other:?}"),
         }
     }
 }

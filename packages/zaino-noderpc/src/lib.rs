@@ -20,11 +20,11 @@ pub use error::RpcError;
 pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
-use zaino_primitives::types::{Height, Outpoint, TransparentAddress};
+use zaino_primitives::types::{Height, TransparentAddress};
 use zaino_service::queries;
 use zaino_service::NodeQuery;
 use zaino_service::RawTransactionRead;
-use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
+use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService};
 use zcash_protocol::consensus::Network;
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
@@ -33,8 +33,8 @@ use crate::wire::response::{
     ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, bytes_from_hex, bytes_to_hex, delta_to_wire, spend_status_to_wire,
-    to_hex, txid_from_hex, unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
+    address_balance_to_wire, bytes_from_hex, bytes_to_hex, delta_to_wire, to_hex, txid_from_hex,
+    unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -67,18 +67,6 @@ impl<S: NodeRpcService> NodeRpc<S> {
         let snapshot = self.engine.snapshot().await?;
         let tip = snapshot.pinned_tip().ok_or(RpcError::NoBlocks)?;
         Ok(to_hex(tip.hash.into()))
-    }
-
-    /// `gettxout`: a node-RPC-specific read (`SpendRead`) the light path lacks.
-    /// Demonstrates fallible wire-input validation (the txid) into a domain read.
-    pub async fn get_tx_out(&self, txid_hex: &str, index: u32) -> Result<String, RpcError> {
-        let outpoint = Outpoint {
-            txid: txid_from_hex(txid_hex)?,
-            index,
-        };
-        let snapshot = self.engine.snapshot().await?;
-        let status = snapshot.spend_status(outpoint).await?;
-        Ok(spend_status_to_wire(status))
     }
 
     /// `sendrawtransaction`: decode hex, relay, return the txid. A rejection is
@@ -272,19 +260,6 @@ mod tests {
             node.get_best_block_hash().await.expect("hash"),
             "cd".repeat(32)
         );
-    }
-
-    #[tokio::test]
-    async fn get_tx_out_validates_the_txid_then_reads() {
-        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
-        // Well-formed txid -> the (mock) read runs and reports no such output.
-        let ok = node.get_tx_out(&"ab".repeat(32), 0).await.expect("read");
-        assert_eq!(ok, "none");
-        // Malformed txid -> validated at the boundary, never reaches the read.
-        assert!(matches!(
-            node.get_tx_out("xyz", 0).await,
-            Err(RpcError::InvalidParams(_))
-        ));
     }
 
     #[tokio::test]

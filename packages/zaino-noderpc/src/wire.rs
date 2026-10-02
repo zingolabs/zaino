@@ -1,7 +1,7 @@
 //! Wire <-> domain conversion, owned by the adapter.
 //!
 //! Both directions live here: `*_from_hex` is the fallible external-input
-//! validation (wire -> domain), and `to_hex` / `spend_status_to_wire` are the
+//! validation (wire -> domain), and `to_hex` / the `*_to_wire` functions are the
 //! domain -> wire renderings. No domain crate depends on any wire schema.
 
 pub mod params;
@@ -11,7 +11,6 @@ use zaino_address::{UnifiedReceivers, ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::TransactionId;
-use zaino_service::SpendStatus;
 
 use crate::error::RpcError;
 use crate::wire::response::{
@@ -91,17 +90,6 @@ pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
         block_index: delta.block_index,
         height: delta.height.into(),
         address: delta.address.as_str().to_owned(),
-    }
-}
-
-/// Render a spend status as a wire string (domain -> wire). Exhaustive by
-/// design — a new `SpendStatus` variant should force a decision here.
-pub(crate) fn spend_status_to_wire(status: SpendStatus) -> String {
-    match status {
-        SpendStatus::Unspent => "unspent".to_string(),
-        SpendStatus::Spent { by } => format!("spent:{}", to_hex(by.into())),
-        SpendStatus::SpentSpenderUnknown => "spent".to_string(),
-        SpendStatus::NoSuchOutput => "none".to_string(),
     }
 }
 
