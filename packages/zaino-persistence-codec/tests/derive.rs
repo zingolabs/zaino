@@ -28,6 +28,17 @@ struct AllAtoms {
 #[derive(PersistentRecord, Debug, PartialEq, Eq)]
 struct Single(u64);
 
+/// Fields named after the locals the derive binds. A derive's locals are not
+/// hygienic, so these names would shadow them and fail to compile if the
+/// generated bodies used the obvious names; that this record derives at all is
+/// the assertion.
+#[derive(PersistentRecord, Debug, PartialEq, Eq)]
+struct ShadowingFieldNames {
+    writer: u64,
+    cursor: u32,
+    bytes: [u8; 4],
+}
+
 #[test]
 fn every_atom_encodes_to_its_pinned_layout() {
     let record = AllAtoms {
@@ -66,6 +77,19 @@ fn a_tuple_struct_round_trips() {
         0x0a0b_0c0d_0e0f_1011u64.to_le_bytes().to_vec()
     );
     assert_eq!(Single::decode(&record.encode()).expect("decode"), record);
+}
+
+#[test]
+fn field_names_cannot_shadow_the_derives_locals() {
+    let record = ShadowingFieldNames {
+        writer: 0x0102_0304_0506_0708,
+        cursor: 0x0a0b_0c0d,
+        bytes: [0xEE; 4],
+    };
+    assert_eq!(
+        ShadowingFieldNames::decode(&record.encode()).expect("decode"),
+        record
+    );
 }
 
 #[test]
