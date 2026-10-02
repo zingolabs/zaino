@@ -9,9 +9,15 @@ a slice, not the production `zaino-serve`.
 ## What it serves
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
-`getblockheader`, `getrawtransaction`, `sendrawtransaction`, `getmininginfo`,
-`getaddressbalance`, `getaddressdeltas`, `validateaddress`, `z_validateaddress`,
+`getblockheader`, `getrawtransaction`, `sendrawtransaction`, `getinfo`,
+`getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getaddressbalance`,
+`getaddressdeltas`, `validateaddress`, `z_validateaddress`,
 `z_listunifiedreceivers`.
+
+The four node-status methods (`getinfo`, `getmininginfo`, `getpeerinfo`,
+`getnetworksolps`) read through `NodeStatusRead`, a typed passthrough of the
+validator's own status. `getinfo` always carries `build` as a string: clients
+pattern-match on it.
 
 ## The explorer transaction view
 
@@ -76,5 +82,5 @@ malformed txid or block id is the only input the caller is blamed for.
 ## Not modelled here
 
 This adapter stands up no jsonrpsee server for production use; it exercises the
-handler shape against the service mock. Mining/peers/txoutset passthrough beyond
-`getmininginfo` is out of scope.
+handler shape against the service mock. The txoutset methods (`gettxout`,
+`gettxoutsetinfo`) and spend status (`getspentinfo`) are not served.
