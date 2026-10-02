@@ -19,23 +19,23 @@
 //! sound for the immutable, historical data light clients query.
 
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockRef, Height, HeightRange,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockchainInfo, Height, HeightRange,
     PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot, TransactionId,
     TransparentAddress, Treestate, Utxo,
 };
 use zaino_service::error::{
-    AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, TreestateReadError,
-    TxReadError,
+    AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError,
+    TreestateReadError, TxReadError,
 };
 use zaino_source::{
     DecodedTransaction, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
     GetAddressDeltasError, GetAddressTxids, GetAddressTxidsError, GetAddressUtxos,
     GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
-    GetMempoolCompactTransaction, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
-    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError,
-    GetTransaction, GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError,
-    GetTreestate, GetTreestateError, SendRawTransaction, SendRawTransactionError, SourceError,
-    TransactionResponse,
+    GetBlockchainInfo, GetBlockchainInfoError, GetMempoolCompactTransaction, GetMempoolSourceTip,
+    GetMempoolTxids, GetMempoolTxidsError, GetRawMempoolTransaction, GetRawMempoolTransactionError,
+    GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
+    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError,
+    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -344,6 +344,33 @@ where
                 "validator unavailable: {cause}"
             ))),
             Err(SourceError::Unavailable(cause)) => Err(TxReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockchainInfo,
+{
+    /// The validator's whole [`BlockchainInfo`], live. Passthrough as one piece:
+    /// the aggregate describes a single chain position, so its fields come from
+    /// one source rather than a mix that could place two heights in one answer.
+    /// A validator still starting ([`GetBlockchainInfoError::NotReady`]) resolves
+    /// on its own, so it is transient, not fatal — never a defaulted success,
+    /// which would blank a consumer's view while the previous answer was still
+    /// valid. A transport failure is transient too.
+    pub(crate) async fn chain_info(&self) -> Result<BlockchainInfo, ReadError> {
+        match self.source.get_blockchain_info().await {
+            Ok(info) => Ok(info),
+            Err(SourceError::Domain(GetBlockchainInfoError::NotReady)) => Err(
+                ReadError::Transient("validator not ready to describe its chain".to_owned()),
+            ),
+            Err(SourceError::NonDomain(cause)) => Err(ReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(ReadError::Transient(format!(
                 "validator unavailable: {cause}"
             ))),
         }

@@ -5,11 +5,11 @@ use std::future::Future;
 
 use futures::stream::BoxStream;
 
-use crate::{ChainInfo, ForkPoint, Locator, SpendStatus, TxStatus};
+use crate::{ForkPoint, Locator, SpendStatus, TxStatus};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    CompactBlock, Height, HeightRange, Outpoint, RawTransaction, ShieldedPool, SubtreeRoot,
-    Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
+    BlockchainInfo, CompactBlock, Height, HeightRange, Outpoint, RawTransaction, ShieldedPool,
+    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -150,7 +150,10 @@ pub trait CompactNullifierRead: Send + Sync {
 /// Aggregate chain/node info — the domain behind `getblockchaininfo`. The
 /// node-rpc use case's delta over the shared reads.
 ///
-/// Backed by: the chain-head tip plus the validator's estimated height.
+/// Backed by: the validator's own [`BlockchainInfo`], passed through whole. The
+/// aggregate describes one chain position, so its fields are read together from
+/// one source rather than assembled from a mix of local and passthrough reads
+/// that could disagree about the height they describe.
 pub trait ChainInfoRead: Send + Sync {
-    fn chain_info(&self) -> impl Future<Output = Result<ChainInfo, ReadError>> + Send;
+    fn chain_info(&self) -> impl Future<Output = Result<BlockchainInfo, ReadError>> + Send;
 }

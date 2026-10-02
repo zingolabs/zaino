@@ -782,3 +782,68 @@ mod transaction_reads {
         >();
     }
 }
+
+mod chain_info_reads {
+    use super::*;
+    use zaino_service::ChainInfoRead;
+    use zaino_service::error::ReadError;
+    use zaino_source::FailureMode;
+    use zaino_source::mock::sample_blockchain_info;
+
+    /// A single-attempt policy: one injected failure is terminal, so an error
+    /// test cannot be masked by the default policy's retries.
+    fn single_attempt() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 1,
+            ..RetryPolicy::default()
+        }
+    }
+
+    /// An engine with an empty local view over `source`, single-attempt, so an
+    /// injected transport failure is terminal.
+    fn engine_single_attempt(source: MockChain) -> LightEngine {
+        Engine::new(
+            StubNonFinalised::empty(),
+            StubNonFinalised::empty(),
+            ValidatorClient::new(source, single_attempt()),
+        )
+    }
+
+    #[tokio::test]
+    async fn chain_info_passes_the_validators_whole_blockchain_info_through() {
+        let engine = engine_with(MockChain::new().with_blockchain_info(sample_blockchain_info()));
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let info = ChainInfoRead::chain_info(&snapshot)
+            .await
+            .expect("chain info served");
+        // Assert each field a consumer reads individually, against the fixture's
+        // distinguishable values, so dropping or defaulting any one of them fails
+        // this test rather than silently blanking an explorer view.
+        let expected = sample_blockchain_info();
+        assert_eq!(info.blocks, expected.blocks);
+        assert_eq!(info.difficulty.to_bits(), expected.difficulty.to_bits());
+        assert_eq!(info.chain, expected.chain);
+        assert_eq!(info.value_pools, expected.value_pools);
+        assert_eq!(info.size_on_disk, expected.size_on_disk);
+        assert_eq!(info.commitments, expected.commitments);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_validator_errors_rather_than_defaulting() {
+        // The explorer polls getblockchaininfo every 15s; a defaulted success
+        // would blank four of its views, while an error leaves the previous
+        // values in place. A scripted response is present, but the single-attempt
+        // transport failure is terminal: the read must surface it, not answer a
+        // zeroed BlockchainInfo.
+        let engine = engine_single_attempt(
+            MockChain::new()
+                .with_blockchain_info(sample_blockchain_info())
+                .fail_next(1, FailureMode::Connection),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match ChainInfoRead::chain_info(&snapshot).await {
+            Err(ReadError::Transient(_)) => {}
+            other => panic!("an unreachable validator must error, not default: {other:?}"),
+        }
+    }
+}

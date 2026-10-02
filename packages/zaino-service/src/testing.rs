@@ -19,13 +19,14 @@ use std::sync::{Arc, Mutex};
 use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::{
-    Answerable, Capability, ChainInfo, ForkPoint, Locator, MempoolTx, NodeQuery, NodeQueryAnswer,
+    Answerable, Capability, ForkPoint, Locator, MempoolTx, NodeQuery, NodeQueryAnswer,
     ReportedUpgrade, ServiceabilityManifest, ServiceableRange, SpendStatus, TxStatus,
 };
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    CompactBlock, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool,
-    SubtreeRoot, Transaction, TransactionId, TransparentAddress, Treestate, Utxo, Zatoshis,
+    BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds, Height, HeightRange,
+    Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot, Transaction,
+    TransactionId, TransparentAddress, Treestate, Utxo, ValuePoolBalance, Zatoshis,
     ZatoshisFlowSum,
 };
 
@@ -316,15 +317,37 @@ impl CompactNullifierRead for MockSnapshot {
 }
 
 impl ChainInfoRead for MockSnapshot {
-    async fn chain_info(&self) -> Result<ChainInfo, ReadError> {
-        let estimated_height = self
-            .chain
-            .tip
-            .map(|id| id.height)
-            .unwrap_or(Height::try_from(0).expect("0 is a valid height"));
-        Ok(ChainInfo {
-            tip: self.chain.tip,
-            estimated_height,
+    async fn chain_info(&self) -> Result<BlockchainInfo, ReadError> {
+        // The service-level mock has no validator behind it, so it synthesises
+        // the aggregate from its pinned tip: the height-bearing fields track the
+        // tip, the rest are neutral. A test that needs rich chain-info exercises
+        // the real passthrough through a source-level `MockChain`.
+        let tip = self.chain.tip;
+        let height = tip.map(|id| id.height).unwrap_or(Height::GENESIS);
+        Ok(BlockchainInfo {
+            chain: "main".to_string(),
+            blocks: height,
+            headers: height,
+            estimated_height: height,
+            best_block_hash: tip.map(|id| id.hash).unwrap_or(BlockHash::ZERO),
+            difficulty: 0.0,
+            verification_progress: 1.0,
+            chain_work: None,
+            pruned: false,
+            size_on_disk: 0,
+            commitments: 0,
+            chain_supply: ValuePoolBalance {
+                id: "transparent".to_string(),
+                chain_value: Zatoshis::ZERO,
+                monitored: true,
+                value_delta: None,
+            },
+            value_pools: Vec::new(),
+            upgrades: Vec::new(),
+            consensus: ConsensusBranchIds {
+                chain_tip: ConsensusBranchId::new(0),
+                next_block: ConsensusBranchId::new(0),
+            },
         })
     }
 }

@@ -53,8 +53,9 @@ that capability and on the provider ports that placement needs:
 
 | capability | placement | needs |
 |---|---|---|
-| compact blocks, nullifier projection, chain info | always local | the two tiers' compact reads |
+| compact blocks, nullifier projection | always local | the two tiers' compact reads |
 | full blocks (the tip excepted) | always passthrough | `GetBlock`, `GetBlockByHash` |
+| chain-info aggregate | always passthrough | `GetBlockchainInfo` |
 | pool-decomposed transaction and its status | always passthrough | `GetTransactionVerbose` |
 | raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
 | address history | `R::Address` | `Local`: both tiers `AddressRead`, head `SpendRead`; `Passthrough`: the four address source ports |
@@ -78,6 +79,14 @@ maps `BestChain(h)` to `Mined(h)`, `NonBestChain` to `Orphaned`, and both
 neither mined nor reorged out. With `BlockRead` and
 `TransactionRead` both present, `EngineSnapshot` satisfies `NodeRpcReads`, so a
 node-RPC-routed engine satisfies `NodeRpcService`.
+
+`ChainInfoRead` (the `getblockchaininfo` aggregate) is always passthrough, as one
+piece: the aggregate describes a single chain position, so mixing a locally-read
+height with a passed-through value pool would report two different heights in one
+answer. It moves local in one piece once a value-pool cumulative bridge exists.
+An unreachable or still-starting validator is a transient read failure, never a
+defaulted success — a blanked aggregate would wipe a polling consumer's views
+while the previous answer was still valid.
 
 A placement whose providers are missing is an impl that does not exist, so the
 use case's demand bound fails where the engine is wired. The crate docs on

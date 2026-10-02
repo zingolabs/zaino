@@ -17,15 +17,16 @@ use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::Routing;
 use zaino_primitives::types::{
-    BlockRef, BlockSelector, CompactBlock, Height, HeightRange, RawTransaction, TransactionId,
+    BlockRef, BlockSelector, BlockchainInfo, CompactBlock, HeightRange, RawTransaction,
+    TransactionId,
 };
+use zaino_service::ServiceableRange;
 use zaino_service::error::{BlockReadError, ReadError, TxReadError};
-use zaino_service::{ChainInfo, ServiceableRange};
 use zaino_service::{
     ChainInfoRead, ChainSegment, CompactBlockRead, CompactNullifierRead, RawTransactionRead,
     Snapshot,
 };
-use zaino_source::GetTransaction;
+use zaino_source::{GetBlockchainInfo, GetTransaction};
 
 use crate::passthrough::PassthroughProvider;
 
@@ -196,21 +197,20 @@ where
     }
 }
 
-/// Always local: the aggregate is read off the composed pinned tip.
+/// Always passthrough: the aggregate describes one chain position, so it is
+/// relayed whole from the validator rather than assembled from a mix of local
+/// and passthrough reads that could disagree about the height they describe. It
+/// moves local in one piece once the value-pool cumulative bridge exists, or not
+/// at all.
 impl<F, N, Src, R> ChainInfoRead for EngineSnapshot<F, N, Src, R>
 where
     F: ChainTier,
     N: ChainTier,
-    Src: Clone + Send + Sync + 'static,
+    Src: GetBlockchainInfo + Send + Sync + 'static,
     R: Routing,
 {
-    async fn chain_info(&self) -> Result<ChainInfo, ReadError> {
-        let tip = self.local.pinned_tip();
-        let estimated_height = tip.map(|id| id.height).unwrap_or(Height::GENESIS);
-        Ok(ChainInfo {
-            tip,
-            estimated_height,
-        })
+    async fn chain_info(&self) -> Result<BlockchainInfo, ReadError> {
+        self.passthrough.chain_info().await
     }
 }
 

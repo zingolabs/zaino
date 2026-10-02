@@ -103,8 +103,9 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(bytes_to_hex(&tx.data))
     }
 
-    /// `getblockchaininfo` (aggregate): reads the domain `ChainInfo` — the
-    /// node-rpc read delta the wallet-shaped ports lack.
+    /// `getblockchaininfo` (aggregate): reads the validator's `BlockchainInfo` —
+    /// the node-rpc read delta the wallet-shaped ports lack. Still renders the
+    /// stub; a real response is a follow-up.
     pub async fn get_blockchain_info(&self) -> Result<String, RpcError> {
         let snapshot = self.engine.snapshot().await?;
         let info = snapshot.chain_info().await?;

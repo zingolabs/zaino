@@ -35,7 +35,10 @@ A read-set is not a use case. `read_sets` names bundles of read capabilities
 (`LightWalletReads`, `NodeRpcReads`, `FullWalletReads`, over the shared
 `WalletReadCore`), the pinned half of a demand, reusable across use cases.
 Sibling read-sets share a core rather than inheriting from each other, so a
-wallet-only addition never leaks into the served light protocol.
+wallet-only addition never leaks into the served light protocol. `NodeRpcReads`
+adds `ChainInfoRead`, whose `chain_info` answers the `getblockchaininfo`
+aggregate as the validator's whole `BlockchainInfo` — one type describing one
+chain position, not a reassembled subset.
 
 `Serves<U>` carries a use case's demand as a bound a generic wiring names
 without naming the service trait; one blanket impl per use case forwards to

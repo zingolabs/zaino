@@ -20,7 +20,6 @@
 
 mod bundle;
 mod capability;
-mod chain_info;
 mod controls;
 pub mod error;
 mod events;
@@ -40,7 +39,6 @@ pub mod testing;
 
 pub use bundle::{ChainSegment, IndexerService, ServiceableRange, Snapshot};
 pub use capability::{Answerable, Capability, ServiceabilityManifest};
-pub use chain_info::ChainInfo;
 pub use controls::{
     Broadcast, MempoolContent, MempoolSubscribe, NodeQueryRelay, ReportedUpgrades, Serviceable,
     TakeSnapshot, TipSubscribe,
