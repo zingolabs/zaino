@@ -163,6 +163,10 @@ impl zaino_source::OneShotGetMempoolMetadata for MockSource {
                 txid: tx.txid,
                 entry_height: height(tx.entry_height),
                 entry_time: tx.entry_time,
+                // The mempool-service mock exercises admission ordering, not the
+                // size/fee listing, so both are zero here.
+                size: 0,
+                fee: zaino_primitives::types::Zatoshis::ZERO,
             })
             .collect())
     }

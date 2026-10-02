@@ -671,6 +671,10 @@ impl zaino_source::OneShotGetMempoolMetadata for MockchainSource {
                 // `Option` exists for exactly this, and a synthetic timestamp
                 // would give the admission tiebreak a fake ordering to sort on.
                 entry_time: None,
+                // The mockchain carries no serialized size or fee; zero is the
+                // honest value for both rather than a fabricated one.
+                size: 0,
+                fee: domain::Zatoshis::ZERO,
             })
             .collect())
     }

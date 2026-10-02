@@ -134,7 +134,12 @@ that already exist. They cannot, and each split is load-bearing:
 - **`GetMempoolMetadata` is separate from `GetMempoolTxids`** because the txid
   listing is cheap and the verbose listing is a whole-mempool walk. A consumer
   polls the first every tick and reaches for the second only when the diff shows
-  additions. Folding them would make every poll pay the walk.
+  additions. Folding them would make every poll pay the walk. Each entry
+  (`MempoolTxMeta`) carries the transaction's id, its entry height and optional
+  entry time, its serialized `size`, and its `fee` as a typed `Zatoshis`. The
+  validator reports the fee as a ZEC number; the adapter converts it to zatoshis
+  from the number's decimal text, so the amount reaches the domain exactly rather
+  than through an `f64` scale.
 - **`GetRawMempoolTransaction` is separate from `GetTransaction`** because
   `GetTransaction` may be routed to a state database that has no mempool. Bytes
   assembled from one source against a listing from another are not a mempool.

@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{Height, TransactionId};
+use zaino_primitives::types::{Height, TransactionId, Zatoshis};
 
 use super::{QueryError, ValidatorSource};
 
@@ -24,6 +24,12 @@ pub struct MempoolTxMeta {
     /// Unix time (seconds) the transaction entered the mempool, when the
     /// validator reports one.
     pub entry_time: Option<i64>,
+    /// Serialized byte length of the transaction, as the validator reports it.
+    pub size: u64,
+    /// The transaction's fee, in zatoshis. The validator reports it as a
+    /// ZEC-denominated amount; a consumer wanting the ZEC float renders it from
+    /// this exact integer rather than carrying the float across the boundary.
+    pub fee: Zatoshis,
 }
 
 /// Domain error for [`GetMempoolMetadata`].

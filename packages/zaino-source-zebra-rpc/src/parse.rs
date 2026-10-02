@@ -319,6 +319,11 @@ pub(crate) enum ParseError {
     #[error("invalid amount: {0}")]
     Amount(String),
 
+    /// A ZEC-denominated amount (e.g. a mempool entry's `fee`) could not be
+    /// converted to zatoshis.
+    #[error("zec amount")]
+    ZecAmount(#[from] ZecAmountError),
+
     /// Block deserialization failed.
     #[error("deserialize: {0}")]
     Deserialize(String),
@@ -340,6 +345,140 @@ impl ParseError {
         let got = format!("{value}").chars().take(64).collect();
         Self::UnexpectedType { expected, got }
     }
+}
+
+/// Why a ZEC-denominated decimal amount could not be read as zatoshis.
+///
+/// The validator reports amounts such as a mempool entry's `fee` as a ZEC JSON
+/// number. The conversion to zatoshis is done on that number's *decimal text*,
+/// never through an `f64` multiply, so a ZEC value with up to eight fractional
+/// digits maps to its exact zatoshi integer. These are its refusals; the
+/// malformed-text case keeps the underlying parse failure in its source chain.
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub(crate) enum ZecAmountError {
+    /// The text was not a decimal number (bad digit, empty, or an exponent that
+    /// did not parse).
+    #[error("malformed ZEC amount {text:?}")]
+    Malformed {
+        /// The offending text, as the validator sent it.
+        text: String,
+        /// The integer-parse failure underneath.
+        #[source]
+        source: std::num::ParseIntError,
+    },
+    /// A negative amount, where the field is defined as non-negative.
+    #[error("negative ZEC amount {text:?}")]
+    Negative {
+        /// The offending text.
+        text: String,
+    },
+    /// The amount carries detail below one zatoshi (more than eight fractional
+    /// digits, with a non-zero digit past the eighth).
+    #[error("ZEC amount {text:?} is finer than one zatoshi")]
+    TooPrecise {
+        /// The offending text.
+        text: String,
+    },
+    /// The amount does not fit the zatoshi range (above the money supply, or an
+    /// exponent so large the scaled value overflows).
+    #[error("ZEC amount {text:?} is out of range")]
+    OutOfRange {
+        /// The offending text.
+        text: String,
+    },
+}
+
+/// Convert a ZEC-denominated decimal amount, as text, to zatoshis — exactly.
+///
+/// The value may carry an exponent (`1e-8`) or a decimal point (`0.00001`), the
+/// two forms serde renders a JSON number in. It is scaled by `10^8` using
+/// integer arithmetic on the digits, so the result is the exact zatoshi count
+/// and no `f64` is multiplied. An amount finer than one zatoshi, negative, or
+/// beyond the supply is refused rather than rounded.
+fn zec_text_to_zatoshis(text: &str) -> Result<Zatoshis, ZecAmountError> {
+    let malformed = |source: std::num::ParseIntError| ZecAmountError::Malformed {
+        text: text.to_owned(),
+        source,
+    };
+
+    // Split off an exponent, if any.
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((mantissa, exp)) => (mantissa, exp.parse::<i32>().map_err(malformed)?),
+        None => (text, 0),
+    };
+
+    // A fee is non-negative; a leading sign that is not `+` is a negative value.
+    if mantissa.starts_with('-') {
+        return Err(ZecAmountError::Negative {
+            text: text.to_owned(),
+        });
+    }
+    let mantissa = mantissa.strip_prefix('+').unwrap_or(mantissa);
+
+    // Separate the integer and fractional digit runs around the point.
+    let (int_digits, frac_digits) = match mantissa.split_once('.') {
+        Some((int_digits, frac_digits)) => (int_digits, frac_digits),
+        None => (mantissa, ""),
+    };
+
+    // All significant digits as one integer; `u128::from_str` rejects any
+    // non-digit (including an internal sign or second point) and keeps its
+    // failure as the source.
+    let digits = format!("{int_digits}{frac_digits}");
+    let value: u128 = digits.parse::<u128>().map_err(malformed)?;
+
+    // Power of ten to reach zatoshis: eight for the ZEC→zatoshi scale, less the
+    // fractional digits already shifted in, plus the exponent.
+    let frac_len = i32::try_from(frac_digits.len()).map_err(|_| ZecAmountError::OutOfRange {
+        text: text.to_owned(),
+    })?;
+    let scale = 8 - frac_len + exponent;
+
+    let zatoshis: u128 = if scale >= 0 {
+        let factor = power_of_ten(scale, text)?;
+        value
+            .checked_mul(factor)
+            .ok_or_else(|| ZecAmountError::OutOfRange {
+                text: text.to_owned(),
+            })?
+    } else {
+        let divisor = power_of_ten(-scale, text)?;
+        if !value.is_multiple_of(divisor) {
+            return Err(ZecAmountError::TooPrecise {
+                text: text.to_owned(),
+            });
+        }
+        value / divisor
+    };
+
+    let zatoshis = u64::try_from(zatoshis).map_err(|_| ZecAmountError::OutOfRange {
+        text: text.to_owned(),
+    })?;
+    Zatoshis::new(zatoshis).map_err(|_| ZecAmountError::OutOfRange {
+        text: text.to_owned(),
+    })
+}
+
+/// `10^exp` as a `u128`, treating an overflow (an absurd exponent) as an
+/// out-of-range amount rather than a panic.
+fn power_of_ten(exp: i32, text: &str) -> Result<u128, ZecAmountError> {
+    let exp = u32::try_from(exp).map_err(|_| ZecAmountError::OutOfRange {
+        text: text.to_owned(),
+    })?;
+    10u128
+        .checked_pow(exp)
+        .ok_or_else(|| ZecAmountError::OutOfRange {
+            text: text.to_owned(),
+        })
+}
+
+/// Parse a ZEC-denominated JSON number field (e.g. a mempool entry's `fee`) into
+/// zatoshis, from the number's decimal text.
+fn parse_fee(value: &serde_json::Value) -> Result<Zatoshis, ParseError> {
+    let number = value
+        .as_number()
+        .ok_or_else(|| ParseError::unexpected("number", value))?;
+    Ok(zec_text_to_zatoshis(&number.to_string())?)
 }
 
 // ---------------------------------------------------------------------------
@@ -735,11 +874,13 @@ pub(crate) fn parse_mempool_txids(
     entries.iter().map(as_txid).collect()
 }
 
-/// Parse a `getrawmempool verbose` response: a map of txid to `{ height, time }`.
+/// Parse a `getrawmempool verbose` response: a map of txid to its entry object.
 ///
-/// Zebra reports far more per entry (fee, size, descendant stats); everything
-/// beyond the entry height and time is ignored, because nothing Zaino serves is
-/// derived from it and parsing a field commits us to its shape.
+/// Zebra reports more per entry than this takes (descendant stats, dependency
+/// lists); `size`, `fee`, `height` and `time` are read because the node-RPC
+/// mempool listing serves each of them, and the rest is ignored because parsing
+/// a field commits us to its shape. `fee` arrives as a ZEC number and is
+/// converted to zatoshis from its decimal text (see [`parse_fee`]).
 pub(crate) fn parse_mempool_metadata(
     value: &serde_json::Value,
 ) -> Result<Vec<MempoolTxMeta>, ParseError> {
@@ -758,6 +899,8 @@ pub(crate) fn parse_mempool_metadata(
                 // acts on, and a validator that omits the timestamp is still
                 // giving a usable answer.
                 entry_time: opt_field(meta, "time").map(as_i64).transpose()?,
+                size: as_u64(field(meta, "size")?)?,
+                fee: parse_fee(field(meta, "fee")?)?,
             })
         })
         .collect()
@@ -1501,15 +1644,16 @@ mod tests {
         assert!(info.value_pools.is_empty());
     }
 
-    /// The verbose listing carries far more per entry than Zaino reads. Only
-    /// `height` and `time` are taken, and an entry missing `time` is still a
-    /// usable answer — the entry height is the field Zaino acts on.
+    /// The verbose listing carries more per entry than Zaino reads, but the
+    /// node-RPC mempool view serves `size`, `fee`, `height` and `time`, so all
+    /// four are taken. The `fee` is a ZEC number and reaches the domain as its
+    /// exact zatoshi integer.
     #[test]
-    fn verbose_mempool_takes_only_the_entry_height_and_time() {
+    fn verbose_mempool_takes_size_fee_height_and_time() {
         let value = json!({
             ASYMMETRIC_HEX: {
                 "size": 1_234,
-                "fee": 1_000,
+                "fee": 0.00001,
                 "time": 1_700_000_000i64,
                 "height": 2_500_000,
                 "descendantcount": 1,
@@ -1522,6 +1666,12 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(u32::from(entries[0].entry_height), 2_500_000);
         assert_eq!(entries[0].entry_time, Some(1_700_000_000));
+        assert_eq!(entries[0].size, 1_234);
+        assert_eq!(
+            entries[0].fee,
+            Zatoshis::new(1_000).expect("valid"),
+            "0.00001 ZEC is 1000 zatoshis, from the decimal text"
+        );
         assert_eq!(
             <[u8; 32]>::from(entries[0].txid),
             reversed_bytes(),
@@ -1535,15 +1685,62 @@ mod tests {
     /// consensus branch id on a served transaction.
     #[test]
     fn a_verbose_entry_needs_its_height_but_not_its_time() {
-        let without_time = json!({ ASYMMETRIC_HEX: { "height": 2_500_000 } });
+        let without_time = json!({
+            ASYMMETRIC_HEX: { "height": 2_500_000, "size": 1_234, "fee": 0.00001 },
+        });
         let entries = parse_mempool_metadata(&without_time).expect("height alone parses");
         assert_eq!(entries[0].entry_time, None);
 
-        let without_height = json!({ ASYMMETRIC_HEX: { "time": 1_700_000_000i64 } });
+        let without_height =
+            json!({ ASYMMETRIC_HEX: { "time": 1_700_000_000i64, "size": 1_234, "fee": 0.00001 } });
         assert!(matches!(
             parse_mempool_metadata(&without_height),
             Err(ParseError::MissingField("height"))
         ));
+    }
+
+    /// The fee conversion is exact across the forms serde renders a JSON number
+    /// in — a plain decimal, an integer, the supply ceiling, and the scientific
+    /// notation serde uses for a lone zatoshi — with no `f64` multiply.
+    #[test]
+    fn a_fee_is_converted_exactly_from_its_decimal_text() {
+        let cases = [
+            (json!(0.00001), 1_000u64),
+            (json!(0.00000001), 1),
+            (json!(1), 100_000_000),
+            (json!(1.5), 150_000_000),
+            (json!(0), 0),
+            (json!(21_000_000), 2_100_000_000_000_000),
+        ];
+        for (fee, expected) in cases {
+            let value = json!({ ASYMMETRIC_HEX: { "height": 1, "size": 1, "fee": fee } });
+            let entries = parse_mempool_metadata(&value).expect("parses");
+            assert_eq!(
+                entries[0].fee,
+                Zatoshis::new(expected).expect("valid"),
+                "{fee} ZEC should be {expected} zatoshis"
+            );
+        }
+    }
+
+    /// A fee that is not a number, or carries detail below one zatoshi, is a
+    /// typed error — never a silently rounded or defaulted amount.
+    #[test]
+    fn a_malformed_fee_is_a_typed_error() {
+        let not_a_number = json!({ ASYMMETRIC_HEX: { "height": 1, "size": 1, "fee": "abc" } });
+        assert!(matches!(
+            parse_mempool_metadata(&not_a_number),
+            Err(ParseError::UnexpectedType { .. })
+        ));
+
+        let too_precise = json!({ ASYMMETRIC_HEX: { "height": 1, "size": 1, "fee": 0.000000001 } });
+        assert!(
+            matches!(
+                parse_mempool_metadata(&too_precise),
+                Err(ParseError::ZecAmount(ZecAmountError::TooPrecise { .. }))
+            ),
+            "a fee finer than one zatoshi is refused, not rounded"
+        );
     }
 
     /// The cap is checked on the declared entry count, before any entry is
