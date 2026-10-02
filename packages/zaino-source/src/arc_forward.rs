@@ -18,8 +18,14 @@
 //! [`OneShotGetTransaction`], [`OneShotGetTransactionVerbose`],
 //! [`OneShotGetBlockchainInfo`], [`OneShotGetSubtreeRoots`], the transparent-address
 //! reads, and the mempool reads ([`OneShotGetMempoolTxids`],
-//! [`OneShotGetRawMempoolTransaction`], [`OneShotGetMempoolCompactTransaction`],
-//! [`OneShotGetMempoolSourceTip`])). Each is a mechanical `Deref`-forward.
+//! [`OneShotGetMempoolMetadata`], [`OneShotGetRawMempoolTransaction`],
+//! [`OneShotGetMempoolCompactTransaction`], [`OneShotGetMempoolSourceTip`])). It
+//! also carries the node-RPC/explorer serving reads the composite answers over
+//! JSON-RPC: the raw and decoded block forms ([`OneShotGetRawBlock`],
+//! [`OneShotGetRawBlockByHash`], [`OneShotGetBlockDecoded`],
+//! [`OneShotGetBlockDecodedByHash`]) and the node-operator status reads
+//! ([`OneShotGetNodeInfo`], [`OneShotGetMiningInfo`], [`OneShotGetPeerInfo`],
+//! [`OneShotGetNetworkSolPs`]). Each is a mechanical `Deref`-forward.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -27,24 +33,28 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use zaino_primitives::types::rpc::BlockHeaderVerbose;
+use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, Height,
-    PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots,
-    Treestate, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, DecodedBlock,
+    Height, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId,
+    TreeRoots, Treestate, Utxo,
 };
 
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
     GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
     GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetCommitmentTreeRootsError,
-    GetMempoolTxidsError, GetRawMempoolTransactionError, GetSubtreeRootsError, GetTransactionError,
-    GetTransactionVerboseError, GetTreestateError, OneShotGetAddressBalance,
-    OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetBlock,
-    OneShotGetBlockByHash, OneShotGetBlockHeader, OneShotGetBlockVerbose,
+    GetMempoolMetadataError, GetMempoolTxidsError, GetMiningInfoError, GetNetworkSolPsError,
+    GetNodeInfoError, GetPeerInfoError, GetRawMempoolTransactionError, GetSubtreeRootsError,
+    GetTransactionError, GetTransactionVerboseError, GetTreestateError, MempoolTxMeta,
+    OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
+    OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetBlockDecoded,
+    OneShotGetBlockDecodedByHash, OneShotGetBlockHeader, OneShotGetBlockVerbose,
     OneShotGetBlockVerboseByHash, OneShotGetBlockchainInfo, OneShotGetChainTip,
-    OneShotGetCommitmentTreeRoots, OneShotGetMempoolCompactTransaction, OneShotGetMempoolSourceTip,
-    OneShotGetMempoolTxids, OneShotGetPreIndexCompactBlock, OneShotGetRawMempoolTransaction,
+    OneShotGetCommitmentTreeRoots, OneShotGetMempoolCompactTransaction, OneShotGetMempoolMetadata,
+    OneShotGetMempoolSourceTip, OneShotGetMempoolTxids, OneShotGetMiningInfo,
+    OneShotGetNetworkSolPs, OneShotGetNodeInfo, OneShotGetPeerInfo, OneShotGetPreIndexCompactBlock,
+    OneShotGetRawBlock, OneShotGetRawBlockByHash, OneShotGetRawMempoolTransaction,
     OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTransactionVerbose,
     OneShotGetTreestate, OneShotSendRawTransaction, QueryError, SendRawTransactionError,
     SubscribeBlocks, SubscribeChainTip, TipObservation, TransactionResponse, ValidatorSource,
@@ -221,6 +231,28 @@ impl<V: OneShotGetTransactionVerbose + ?Sized> OneShotGetTransactionVerbose for 
     }
 }
 
+// The explorer's decoded reads (`getrawtransaction`'s verbose form above, and
+// the whole-block decode here) reach the validator through the same `Arc<V>`.
+impl<V: OneShotGetBlockDecoded + ?Sized> OneShotGetBlockDecoded for Arc<V> {
+    fn get_block_decoded(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<DecodedBlock, QueryError<GetBlockError, Self::NonDomain>>> + Send
+    {
+        (**self).get_block_decoded(height)
+    }
+}
+
+impl<V: OneShotGetBlockDecodedByHash + ?Sized> OneShotGetBlockDecodedByHash for Arc<V> {
+    fn get_block_decoded_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<Output = Result<DecodedBlock, QueryError<GetBlockByHashError, Self::NonDomain>>>
+           + Send {
+        (**self).get_block_decoded_by_hash(hash)
+    }
+}
+
 // The serving path's verbose block reads (the explorer's `getblockheader` and
 // `getblock`) reach the validator through the same `Arc<V>`: header-plus-chain-
 // state, and verbose block metadata addressed by height or by hash.
@@ -252,6 +284,29 @@ impl<V: OneShotGetBlockVerboseByHash + ?Sized> OneShotGetBlockVerboseByHash for 
     ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError, Self::NonDomain>>>
            + Send {
         (**self).get_block_verbose_by_hash(hash)
+    }
+}
+
+// The serving path's raw consensus-byte block reads (the explorer's `getblock`
+// at verbosity 0) reach the validator through the same `Arc<V>`, by height or by
+// hash.
+impl<V: OneShotGetRawBlock + ?Sized> OneShotGetRawBlock for Arc<V> {
+    fn get_raw_block(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockError, Self::NonDomain>>> + Send
+    {
+        (**self).get_raw_block(height)
+    }
+}
+
+impl<V: OneShotGetRawBlockByHash + ?Sized> OneShotGetRawBlockByHash for Arc<V> {
+    fn get_raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockByHashError, Self::NonDomain>>> + Send
+    {
+        (**self).get_raw_block_by_hash(hash)
     }
 }
 
@@ -291,6 +346,18 @@ impl<V: OneShotGetMempoolTxids + ?Sized> OneShotGetMempoolTxids for Arc<V> {
     }
 }
 
+// The verbose mempool listing (`getrawmempool true` / `getmempoolinfo`) reaches
+// the validator through the same `Arc<V>`.
+impl<V: OneShotGetMempoolMetadata + ?Sized> OneShotGetMempoolMetadata for Arc<V> {
+    fn get_mempool_metadata(
+        &self,
+    ) -> impl Future<
+        Output = Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_mempool_metadata()
+    }
+}
+
 impl<V: OneShotGetRawMempoolTransaction + ?Sized> OneShotGetRawMempoolTransaction for Arc<V> {
     fn get_raw_mempool_transaction(
         &self,
@@ -324,5 +391,46 @@ impl<V: OneShotGetMempoolCompactTransaction + ?Sized> OneShotGetMempoolCompactTr
         >,
     > + Send {
         (**self).get_mempool_compact_transaction(txid)
+    }
+}
+
+// The node-operator status reads (the explorer's `getinfo` / `getmininginfo` /
+// `getpeerinfo` / `getnetworksolps`) reach the validator through the same
+// `Arc<V>`: facts about the validator, not the chain, so always passthrough.
+impl<V: OneShotGetNodeInfo + ?Sized> OneShotGetNodeInfo for Arc<V> {
+    fn get_node_info(
+        &self,
+    ) -> impl Future<Output = Result<NodeInfo, QueryError<GetNodeInfoError, Self::NonDomain>>> + Send
+    {
+        (**self).get_node_info()
+    }
+}
+
+impl<V: OneShotGetMiningInfo + ?Sized> OneShotGetMiningInfo for Arc<V> {
+    fn get_mining_info(
+        &self,
+    ) -> impl Future<Output = Result<MiningInfo, QueryError<GetMiningInfoError, Self::NonDomain>>> + Send
+    {
+        (**self).get_mining_info()
+    }
+}
+
+impl<V: OneShotGetPeerInfo + ?Sized> OneShotGetPeerInfo for Arc<V> {
+    fn get_peer_info(
+        &self,
+    ) -> impl Future<Output = Result<Vec<PeerInfo>, QueryError<GetPeerInfoError, Self::NonDomain>>> + Send
+    {
+        (**self).get_peer_info()
+    }
+}
+
+impl<V: OneShotGetNetworkSolPs + ?Sized> OneShotGetNetworkSolPs for Arc<V> {
+    fn get_network_sol_ps(
+        &self,
+        blocks: Option<u32>,
+        height: Option<Height>,
+    ) -> impl Future<Output = Result<u64, QueryError<GetNetworkSolPsError, Self::NonDomain>>> + Send
+    {
+        (**self).get_network_sol_ps(blocks, height)
     }
 }

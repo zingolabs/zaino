@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 use zaino_primitives::types::{
-    rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, Difficulty,
-    Height, OutputIndex, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot,
-    TransactionId, TreeRoots, Treestate, Utxo,
+    rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo,
+    DecodedBlock, Difficulty, Height, OutputIndex, PreIndexCompactBlock, PreIndexCompactTx,
+    ShieldedPool, SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
 };
 use zaino_source::*;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
@@ -457,6 +457,43 @@ impl OneShotGetBlockVerboseByHash for ZebraValidator {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Decoded blocks and transactions
+//
+// Pool-decomposed forms for the explorer surface. JSON-RPC only, and not by
+// routing preference: the per-transaction decomposition needs the validator's
+// chain library, which the read-state path has no form for, and an unmined
+// transaction is found over JSON-RPC alone. So these delegate straight to the
+// RPC adapter like the other RPC-only ports, never `state_then_fetch!`.
+// ---------------------------------------------------------------------------
+
+impl OneShotGetTransactionVerbose for ZebraValidator {
+    async fn get_transaction_verbose(
+        &self,
+        txid: TransactionId,
+    ) -> Result<DecodedTransaction, QueryError<GetTransactionVerboseError>> {
+        self.rpc.get_transaction_verbose(txid).await
+    }
+}
+
+impl OneShotGetBlockDecoded for ZebraValidator {
+    async fn get_block_decoded(
+        &self,
+        height: Height,
+    ) -> Result<DecodedBlock, QueryError<GetBlockError>> {
+        self.rpc.get_block_decoded(height).await
+    }
+}
+
+impl OneShotGetBlockDecodedByHash for ZebraValidator {
+    async fn get_block_decoded_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<DecodedBlock, QueryError<GetBlockByHashError>> {
+        self.rpc.get_block_decoded_by_hash(hash).await
+    }
+}
+
 impl OneShotGetBlockHeader for ZebraValidator {
     async fn get_block_header(
         &self,
@@ -614,5 +651,78 @@ impl SourceLifecycle for ZebraValidator {
         if let Some(readstate) = &self.readstate {
             readstate.shutdown();
         }
+    }
+}
+
+/// Compile-time coverage: the production validator client answers every source
+/// port the node-RPC engine's reads and controls bind.
+///
+/// The client `zainod` shares over one validator is
+/// `ValidatorClient<Arc<ZebraValidator>>` (see `zainod`'s `client_over`): the
+/// resilient decorator over the `Arc`-shared composite. Its resilient ports hold
+/// exactly when the wrapped `Arc<ZebraValidator>` provides the matching
+/// `OneShot*` ports, so this bound reaches through the `Arc` forwards to the
+/// composite's own impls — a port the engine needs but the composite stops
+/// answering fails here, at the source, with the port named, rather than only at
+/// the deployment wiring.
+///
+/// This asserts the port *set* the node-RPC reads reduce to, derived from the
+/// `Src` bounds of the engine impls (block, verbose block, transaction,
+/// transaction-view, raw transaction, passthrough address, passthrough
+/// treestate, chain-info, node-status, mempool listing/subscribe, broadcast).
+/// The full `IndexedEngine<NodeRpcPassthrough, _>: Serves<NodeRpc>` assertion —
+/// over the real store and head tiers composed with this source — lands with the
+/// node-RPC deployment types (W4).
+#[cfg(test)]
+mod node_rpc_port_coverage {
+    use std::sync::Arc;
+
+    use zaino_source::{
+        GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos, GetBlock,
+        GetBlockByHash, GetBlockDecoded, GetBlockDecodedByHash, GetBlockHeader, GetBlockVerbose,
+        GetBlockVerboseByHash, GetBlockchainInfo, GetMempoolMetadata, GetMempoolSourceTip,
+        GetMempoolTxids, GetMiningInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo, GetRawBlock,
+        GetRawBlockByHash, GetSubtreeRoots, GetTransaction, GetTransactionVerbose, GetTreestate,
+        SendRawTransaction, ValidatorClient,
+    };
+
+    use super::ZebraValidator;
+
+    /// Every resilient port the node-RPC engine binds across its reads and
+    /// controls, as one bound.
+    fn answers_node_rpc_ports<C>()
+    where
+        C: GetBlock
+            + GetBlockByHash
+            + GetBlockHeader
+            + GetBlockVerbose
+            + GetBlockVerboseByHash
+            + GetRawBlock
+            + GetRawBlockByHash
+            + GetTransactionVerbose
+            + GetBlockDecoded
+            + GetBlockDecodedByHash
+            + GetTransaction
+            + GetAddressBalance
+            + GetAddressUtxos
+            + GetAddressTxids
+            + GetAddressDeltas
+            + GetTreestate
+            + GetSubtreeRoots
+            + GetBlockchainInfo
+            + GetNodeInfo
+            + GetMiningInfo
+            + GetPeerInfo
+            + GetNetworkSolPs
+            + GetMempoolTxids
+            + GetMempoolMetadata
+            + GetMempoolSourceTip
+            + SendRawTransaction,
+    {
+    }
+
+    #[test]
+    fn production_client_answers_every_node_rpc_port() {
+        answers_node_rpc_ports::<ValidatorClient<Arc<ZebraValidator>>>();
     }
 }
