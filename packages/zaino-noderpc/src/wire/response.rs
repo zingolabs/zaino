@@ -88,3 +88,21 @@ pub struct ZValidateAddressResponse {
     )]
     pub diversified_transmission_key: Option<String>,
 }
+
+/// The `z_listunifiedreceivers` response: one field per receiver kind the
+/// unified address bundles, absent when it carries none of that kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnifiedReceiversResponse {
+    /// Orchard receiver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchard: Option<String>,
+    /// Sapling receiver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sapling: Option<String>,
+    /// Transparent pay-to-public-key-hash receiver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p2pkh: Option<String>,
+    /// Transparent pay-to-script-hash receiver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p2sh: Option<String>,
+}

@@ -1,7 +1,7 @@
 # `zaino-address` — usage
 
-Zcash address classification. A leaf crate serving `validateaddress` and
-`z_validateaddress`.
+Zcash address classification and unified-address decomposition. A leaf crate
+serving `validateaddress`, `z_validateaddress` and `z_listunifiedreceivers`.
 
 ## Why it is its own crate
 
@@ -23,15 +23,37 @@ home for validating address *parameters* on `getaddressbalance`,
 ## Use
 
 ```rust
-use zaino_address::{validate_address, z_validate_address};
+use zaino_address::{list_unified_receivers, validate_address, z_validate_address};
 
 let result = validate_address(address_string, network);
 let result = z_validate_address(address_string, network);
+let receivers = list_unified_receivers(address_string, network);
 ```
 
-Both return domain types (`ValidatedAddress`, `ZValidatedAddress`) with **no
-serde**. The legacy-shaped JSON — including the exact field sets, which differ
-per address kind — is `zaino-serve`'s `wire/address.rs`, per ADR-0009.
+The classification entry points return domain types (`ValidatedAddress`,
+`ZValidatedAddress`) with **no serde**. The legacy-shaped JSON — including the
+exact field sets, which differ per address kind — is `zaino-serve`'s
+`wire/address.rs`, per ADR-0009.
+
+`list_unified_receivers` backs `z_listunifiedreceivers`: it decomposes a unified
+address into the receivers it bundles, each re-encoded as a standalone address a
+caller can pay to (the transparent and Sapling receivers directly, the Orchard
+receiver as a unified address carrying only it). It returns `Some(UnifiedReceivers)`
+for a unified address on the queried network and `None` for anything else — a
+definitive answer, since the caller named a specific string. Like the two
+classification functions it reads no chain state and is generic over the network
+`Parameters`. `UnifiedReceivers` is a plain domain struct with no serde; the wire
+shape lives in the serving adapter.
+
+### `orchard` feature is load-bearing
+
+`Cargo.toml` enables both `orchard` and `sapling` on `zcash_keys`. The `orchard`
+feature is not optional for correctness: `UnifiedAddress::orchard()` and
+`from_receivers`' Orchard parameter are `#[cfg(feature = "orchard")]`, so without
+it the Orchard receiver is unreachable. Most modern unified addresses are
+Orchard-primary, so dropping the feature would make `list_unified_receivers`
+under-report the common case. The `an_orchard_receiver_is_reported_not_silently_dropped`
+test guards this.
 
 ## What is deliberately not classified
 

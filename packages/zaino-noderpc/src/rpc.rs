@@ -14,8 +14,8 @@ use zaino_service::NodeRpcService;
 use crate::error::RpcError;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -70,6 +70,12 @@ pub trait NodeRpcApi {
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, ErrorObjectOwned>;
+
+    #[method(name = "z_listunifiedreceivers")]
+    async fn z_list_receivers(
+        &self,
+        address: String,
+    ) -> Result<UnifiedReceiversResponse, ErrorObjectOwned>;
 }
 
 #[jsonrpsee::core::async_trait]
@@ -132,6 +138,14 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         address: String,
     ) -> Result<ZValidateAddressResponse, ErrorObjectOwned> {
         self.z_validate_address(&address)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn z_list_receivers(
+        &self,
+        address: String,
+    ) -> Result<UnifiedReceiversResponse, ErrorObjectOwned> {
+        self.z_list_unified_receivers(&address)
             .await
             .map_err(to_error_object)
     }

@@ -29,8 +29,8 @@ use zcash_protocol::consensus::Network;
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, DeltaRange, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, DeltaRange, UnifiedReceiversResponse,
+    ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
     bytes_from_hex, bytes_to_hex, delta_to_wire, spend_status_to_wire, to_hex, txid_from_hex,
@@ -229,6 +229,28 @@ impl<S: NodeRpcService> NodeRpc<S> {
             address.to_owned(),
             &self.network,
         )))
+    }
+
+    /// `z_listunifiedreceivers`: the receivers a unified address bundles, each
+    /// re-encoded standalone. A pure function of the address and the network.
+    ///
+    /// An address that is not unified is a parameter error, not an empty
+    /// result: the caller asked about a specific string, and reporting "no
+    /// receivers" would imply a valid unified address that bundles nothing.
+    pub async fn z_list_unified_receivers(
+        &self,
+        address: &str,
+    ) -> Result<UnifiedReceiversResponse, RpcError> {
+        let receivers = zaino_address::list_unified_receivers(address.to_owned(), &self.network)
+            .ok_or_else(|| {
+                RpcError::InvalidParams(format!("{address} is not a unified address"))
+            })?;
+        Ok(UnifiedReceiversResponse {
+            orchard: receivers.orchard,
+            sapling: receivers.sapling,
+            p2pkh: receivers.p2pkh,
+            p2sh: receivers.p2sh,
+        })
     }
 }
 
@@ -539,5 +561,17 @@ mod tests {
             .await
             .expect("validation answers, it does not fail");
         assert!(!got.isvalid);
+    }
+
+    /// A non-unified address is a parameter error, not an empty result: the
+    /// caller asked about a specific string, and answering "no receivers" would
+    /// imply a valid unified address that bundles nothing.
+    #[tokio::test]
+    async fn listing_receivers_of_a_non_unified_address_is_a_params_error() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.z_list_unified_receivers("t1notunified").await,
+            Err(RpcError::InvalidParams(_))
+        ));
     }
 }

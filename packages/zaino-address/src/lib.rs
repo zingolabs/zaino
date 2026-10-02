@@ -32,9 +32,11 @@
 //! dependency on Zebra.
 
 mod classify;
+mod receivers;
 mod sapling;
 mod validated;
 
 pub use classify::{validate_address, z_validate_address};
+pub use receivers::{list_unified_receivers, UnifiedReceivers};
 pub use sapling::sapling_key_bytes;
 pub use validated::{ValidatedAddress, ZValidatedAddress, DEPRECATION_NOTICE};
