@@ -11,7 +11,8 @@ runtime.
 ## The port
 
 - [`Backend`] — opens reader and writer handles and forces durability.
-- [`BackendReader`] — `get` one key, or `scan` a whole namespace.
+- [`BackendReader`] — `get` one key, `scan` a whole namespace, or `scan_range`
+  a key range in lazily read chunks.
 - [`BackendWriter`] — `commit` a batch of [`WriteOp`]s atomically.
 
 A [`Namespace`] names an independent keyspace within the backend (a named
@@ -32,6 +33,39 @@ writer.commit(vec![WriteOp::Put {
 }])?;
 ```
 
+## Range scans
+
+`BackendReader::scan_range` walks the keys of a namespace within a
+[`ScanRange`] — lower and upper `Bound`s, a [`ScanDirection`], and a
+`chunk_bytes` budget — and returns a lazy iterator of chunks. Each `next()`
+reads one chunk, so memory is bounded by the budget (or one oversized entry),
+not the range, and a consumer that stops pulling stops the reads.
+
+The filter is called once per entry on the borrowed key and value bytes and
+returns `Option<T>`: `None` skips the entry, `Some` keeps it. Decode in the
+filter to avoid an intermediate copy; pass [`raw_entry`] to keep owned bytes.
+
+```rust,ignore
+use std::num::NonZeroUsize;
+use std::ops::Bound;
+use zaino_persistence::{raw_entry, BackendReader, ScanDirection, ScanRange};
+
+let range = ScanRange {
+    lower: Bound::Included(start_key),
+    upper: Bound::Included(end_key),
+    direction: ScanDirection::Reverse,
+    chunk_bytes: NonZeroUsize::new(4 << 20).expect("non-zero"),
+};
+for chunk in reader.scan_range(ns, range, raw_entry) {
+    serve(chunk?);
+}
+```
+
+Chunks are never empty, and the iterator ends after the range is exhausted or
+after an `Err`. Each chunk reads one consistent state; successive chunks may
+observe later commits, but no key is returned twice. The iterator is
+`Send + 'static`, so an async caller can move it into a blocking task per chunk.
+
 ## Errors
 
 One error type per operation — [`OpenError`], [`CommitError`], [`ReadError`],
@@ -41,7 +75,13 @@ naming no concrete backend type. [`CommitError`] additionally distinguishes
 
 ## Backends
 
+Every backend rejects a namespace it was not constructed with: reads fail with
+`ReadError::NamespaceNotFound`, and a commit naming one fails with
+`CommitError::NamespaceNotFound` and applies nothing. A declared namespace with
+no entries reads as empty.
+
 The `in_memory` backend (behind the `testing` feature) is a correct,
-IO-free implementation for tests, benchmarks, and ephemeral runs; it also ships a
+IO-free implementation for tests, benchmarks, and ephemeral runs, constructed
+with its namespaces (`InMemoryBackend::new(&[ns])`); it also ships a
 latency-injecting wrapper for measuring commit cost. On-disk backends (LMDB) live
 in their own adapter crates.
