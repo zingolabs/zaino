@@ -41,6 +41,7 @@ mod get_raw_mempool_transaction;
 mod get_spent_info;
 mod get_subtree_roots;
 mod get_transaction;
+mod get_transaction_verbose;
 mod get_treestate;
 mod get_treestate_by_hash;
 mod get_tx_out;
@@ -88,6 +89,9 @@ pub use get_raw_mempool_transaction::{
 pub use get_spent_info::{GetSpentInfoError, OneShotGetSpentInfo};
 pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
 pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
+pub use get_transaction_verbose::{
+    DecodedTransaction, GetTransactionVerboseError, OneShotGetTransactionVerbose,
+};
 pub use get_treestate::{GetTreestate, GetTreestateError, OneShotGetTreestate};
 pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHash};
 pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
@@ -132,6 +136,7 @@ pub use get_raw_mempool_transaction::GetRawMempoolTransaction;
 pub use get_spent_info::GetSpentInfo;
 pub use get_subtree_roots::GetSubtreeRoots;
 pub use get_transaction::GetTransaction;
+pub use get_transaction_verbose::GetTransactionVerbose;
 pub use get_treestate_by_hash::GetTreestateByHash;
 pub use get_tx_out::GetTxOut;
 

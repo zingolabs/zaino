@@ -10,13 +10,13 @@ use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate
 
 use crate::error::{FailureMode, NonDomainError};
 use crate::{
-    GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockByHashError, GetBlockError, GetChainTipError, GetSubtreeRootsError,
-    GetTransactionError, GetTreestateError, QueryError, SendRawTransactionError,
-    TransactionResponse,
+    DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
+    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetChainTipError,
+    GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError, GetTreestateError,
+    QueryError, SendRawTransactionError, TransactionResponse,
 };
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, ShieldedPool, SubtreeRoot, TransactionLocation, Utxo,
+    AddressBalance, AddressDelta, ShieldedPool, SubtreeRoot, Transaction, TransactionLocation, Utxo,
 };
 
 /// A pre-populated in-memory chain for testing.
@@ -36,6 +36,9 @@ pub struct MockChain {
     /// Canned raw-transaction response, returned for any txid; `None` answers a
     /// domain not-found.
     transaction_response: Option<TransactionResponse>,
+    /// Canned decoded-transaction response, returned for any txid; `None` answers
+    /// a domain not-found.
+    transaction_verbose_response: Option<DecodedTransaction>,
     /// Canned subtree roots, returned for any index query.
     subtree_roots: Vec<SubtreeRoot>,
 }
@@ -53,6 +56,7 @@ impl MockChain {
             send_rejection: None,
             address_rejection: None,
             transaction_response: None,
+            transaction_verbose_response: None,
             subtree_roots: Vec::new(),
         }
     }
@@ -60,6 +64,19 @@ impl MockChain {
     /// Seed the response `get_transaction` returns for any txid.
     pub fn respond_transaction(mut self, bytes: Vec<u8>, location: TransactionLocation) -> Self {
         self.transaction_response = Some(TransactionResponse { bytes, location });
+        self
+    }
+
+    /// Seed the response `get_transaction_verbose` returns for any txid.
+    pub fn respond_transaction_verbose(
+        mut self,
+        transaction: Transaction,
+        location: TransactionLocation,
+    ) -> Self {
+        self.transaction_verbose_response = Some(DecodedTransaction {
+            transaction,
+            location,
+        });
         self
     }
 
@@ -151,6 +168,7 @@ impl Clone for MockChain {
             send_rejection: self.send_rejection.clone(),
             address_rejection: self.address_rejection.clone(),
             transaction_response: self.transaction_response.clone(),
+            transaction_verbose_response: self.transaction_verbose_response.clone(),
             subtree_roots: self.subtree_roots.clone(),
         }
     }
@@ -395,6 +413,22 @@ impl crate::OneShotGetTransaction for MockChain {
     }
 }
 
+impl crate::OneShotGetTransactionVerbose for MockChain {
+    async fn get_transaction_verbose(
+        &self,
+        txid: TransactionId,
+    ) -> Result<DecodedTransaction, QueryError<GetTransactionVerboseError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.transaction_verbose_response
+            .clone()
+            .ok_or(QueryError::Domain(GetTransactionVerboseError::NotFound(
+                txid,
+            )))
+    }
+}
+
 impl crate::OneShotGetSubtreeRoots for MockChain {
     async fn get_subtree_roots(
         &self,
@@ -544,6 +578,45 @@ mod tests {
             Some(vec![1, 2, 3])
         );
         assert!(result.orchard.is_none());
+    }
+
+    fn empty_transaction(txid_byte: u8) -> Transaction {
+        Transaction {
+            txid: TransactionId::from([txid_byte; 32]),
+            transparent: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_transaction_verbose_returns_the_scripted_transaction() {
+        let mock = MockChain::new().respond_transaction_verbose(
+            empty_transaction(7),
+            TransactionLocation::BestChain(height(5)),
+        );
+        let decoded = crate::OneShotGetTransactionVerbose::get_transaction_verbose(
+            &mock,
+            TransactionId::from([9u8; 32]),
+        )
+        .await
+        .expect("scripted transaction");
+        assert_eq!(decoded.transaction.txid, TransactionId::from([7u8; 32]));
+        assert_eq!(decoded.location, TransactionLocation::BestChain(height(5)));
+    }
+
+    #[tokio::test]
+    async fn get_transaction_verbose_not_found() {
+        let mock = MockChain::new();
+        let txid = TransactionId::from([3u8; 32]);
+        let err = crate::OneShotGetTransactionVerbose::get_transaction_verbose(&mock, txid)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetTransactionVerboseError::NotFound(got)) if got == txid
+        ));
     }
 
     #[tokio::test]

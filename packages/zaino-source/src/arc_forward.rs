@@ -15,7 +15,8 @@
 //! reads ([`OneShotGetBlock`], [`OneShotGetBlockByHash`],
 //! [`OneShotGetCommitmentTreeRoots`]), and the serving path's
 //! passthrough ports ([`OneShotGetTreestate`], [`OneShotSendRawTransaction`],
-//! [`OneShotGetTransaction`], [`OneShotGetSubtreeRoots`], the transparent-address
+//! [`OneShotGetTransaction`], [`OneShotGetTransactionVerbose`],
+//! [`OneShotGetSubtreeRoots`], the transparent-address
 //! reads, and the mempool reads ([`OneShotGetMempoolTxids`],
 //! [`OneShotGetRawMempoolTransaction`], [`OneShotGetMempoolCompactTransaction`],
 //! [`OneShotGetMempoolSourceTip`])). Each is a mechanical `Deref`-forward.
@@ -32,16 +33,17 @@ use zaino_primitives::types::{
 };
 
 use crate::{
-    GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
-    GetBlockByHashError, GetBlockError, GetChainTipError, GetCommitmentTreeRootsError,
-    GetMempoolTxidsError, GetRawMempoolTransactionError, GetSubtreeRootsError, GetTransactionError,
-    GetTreestateError, OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
+    DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
+    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetChainTipError,
+    GetCommitmentTreeRootsError, GetMempoolTxidsError, GetRawMempoolTransactionError,
+    GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError, GetTreestateError,
+    OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
     OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetChainTip,
     OneShotGetCommitmentTreeRoots, OneShotGetMempoolCompactTransaction, OneShotGetMempoolSourceTip,
     OneShotGetMempoolTxids, OneShotGetPreIndexCompactBlock, OneShotGetRawMempoolTransaction,
-    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate, OneShotSendRawTransaction,
-    QueryError, SendRawTransactionError, SubscribeBlocks, SubscribeChainTip, TipObservation,
-    TransactionResponse, ValidatorSource,
+    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTransactionVerbose,
+    OneShotGetTreestate, OneShotSendRawTransaction, QueryError, SendRawTransactionError,
+    SubscribeBlocks, SubscribeChainTip, TipObservation, TransactionResponse, ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -198,6 +200,20 @@ impl<V: OneShotGetTransaction + ?Sized> OneShotGetTransaction for Arc<V> {
         Output = Result<TransactionResponse, QueryError<GetTransactionError, Self::NonDomain>>,
     > + Send {
         (**self).get_transaction(txid)
+    }
+}
+
+impl<V: OneShotGetTransactionVerbose + ?Sized> OneShotGetTransactionVerbose for Arc<V> {
+    fn get_transaction_verbose(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<
+        Output = Result<
+            DecodedTransaction,
+            QueryError<GetTransactionVerboseError, Self::NonDomain>,
+        >,
+    > + Send {
+        (**self).get_transaction_verbose(txid)
     }
 }
 

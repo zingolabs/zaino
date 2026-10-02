@@ -1033,6 +1033,59 @@ impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
     }
 }
 
+/// Decode a fetched transaction's raw bytes into the domain's pool structure,
+/// pairing it with where it was found.
+///
+/// Reuses zebra's own deserializer (`zcash_deserialize_into`), the same one the
+/// block reads use, then the shared `transaction_from_zebra` conversion — never
+/// a second parse path — so every transaction version decodes identically to
+/// the block path, the v5 ZIP-244 id and the Ironwood pool included. Bytes that
+/// are not a transaction, or that zebra accepts but the conversion rejects, are
+/// a non-domain fault: the source did not yield a usable answer, and must never
+/// collapse into a decoded-but-empty transaction a consumer would cache.
+fn decode_transaction_response(
+    response: zaino_source::TransactionResponse,
+) -> Result<zaino_source::DecodedTransaction, NonDomainError> {
+    let zebra_tx: zebra_chain::transaction::Transaction =
+        response
+            .bytes
+            .zcash_deserialize_into()
+            .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+    let transaction = zaino_convert_zebra::transaction_from_zebra(&zebra_tx)
+        .map_err(|e| from_parse(parse::ParseError::Deserialize(e.to_string())))?;
+    Ok(zaino_source::DecodedTransaction {
+        transaction,
+        location: response.location,
+    })
+}
+
+impl zaino_source::OneShotGetTransactionVerbose for ZebraRpcAdapter {
+    async fn get_transaction_verbose(
+        &self,
+        txid: TransactionId,
+    ) -> Result<
+        zaino_source::DecodedTransaction,
+        QueryError<zaino_source::GetTransactionVerboseError>,
+    > {
+        // Verbosity 1: the raw hex plus the height that places the transaction,
+        // exactly as `get_transaction`. The decomposition by pool happens
+        // locally, from the same bytes a wallet would parse itself.
+        let params = vec![
+            serde_json::Value::String(txid_to_display_hex(txid)),
+            serde_json::Value::Number(1.into()),
+        ];
+        let response = self
+            .call_parsed_or_absent(
+                "getrawtransaction",
+                params,
+                parse::parse_transaction,
+                || zaino_source::GetTransactionVerboseError::NotFound(txid),
+            )
+            .await?;
+        decode_transaction_response(response).map_err(QueryError::NonDomain)
+    }
+}
+
 impl zaino_source::OneShotGetRawBlock for ZebraRpcAdapter {
     async fn get_raw_block(
         &self,
@@ -1266,5 +1319,84 @@ mod classification_tests {
                 "code {code} does not say this validator lacks a mempool"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod transaction_verbose_tests {
+    use super::*;
+    use zaino_primitives::types::{Script, TransactionLocation, Zatoshis};
+    use zaino_source::TransactionResponse;
+    use zebra_chain::amount::Amount;
+    use zebra_chain::parameters::NetworkUpgrade;
+    use zebra_chain::serialization::ZcashSerialize;
+    use zebra_chain::transaction::{LockTime, Transaction as ZebraTransaction};
+    use zebra_chain::transparent;
+
+    const SCRIPT_BYTES: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+    const OUTPUT_VALUE: u64 = 123_456;
+
+    /// A minimal V5 transaction: one transparent output, no inputs, no shielded
+    /// data. Serialized, it is a known raw transaction whose decode is fully
+    /// predictable.
+    fn transparent_only_tx() -> ZebraTransaction {
+        let output = transparent::Output {
+            value: Amount::try_from(i64::try_from(OUTPUT_VALUE).expect("fits i64"))
+                .expect("a valid non-negative amount"),
+            lock_script: transparent::Script::new(&SCRIPT_BYTES),
+        };
+        ZebraTransaction::V5 {
+            network_upgrade: NetworkUpgrade::Nu5,
+            lock_time: LockTime::unlocked(),
+            expiry_height: zebra_chain::block::Height(0),
+            inputs: vec![],
+            outputs: vec![output],
+            sapling_shielded_data: None,
+            orchard_shielded_data: None,
+        }
+    }
+
+    #[test]
+    fn known_raw_transaction_decodes_to_its_pool_structure() {
+        let zebra_tx = transparent_only_tx();
+        let expected_txid = TransactionId::from(zebra_tx.hash().0);
+        let bytes = zebra_tx.zcash_serialize_to_vec().expect("serializes");
+        let location =
+            TransactionLocation::BestChain(Height::try_from(42u32).expect("a valid height"));
+
+        let decoded = decode_transaction_response(TransactionResponse {
+            bytes,
+            location: location.clone(),
+        })
+        .expect("known bytes decode");
+
+        // Location is carried through untouched.
+        assert_eq!(decoded.location, location);
+        // Identity: the decoded txid is the transaction's own hash, so the bytes
+        // were deserialized and not mirrored or truncated.
+        assert_eq!(decoded.transaction.txid, expected_txid);
+        // The one transparent output is decomposed with its value and script.
+        assert_eq!(decoded.transaction.transparent.outputs.len(), 1);
+        let out = &decoded.transaction.transparent.outputs[0];
+        assert_eq!(out.value, Zatoshis::new(OUTPUT_VALUE).expect("valid"));
+        assert_eq!(out.script, Script::new(SCRIPT_BYTES.to_vec()));
+        assert!(decoded.transaction.transparent.inputs.is_empty());
+        // No shielded data was present, so every shielded pool is empty.
+        assert!(decoded.transaction.sapling.spends.is_empty());
+        assert!(decoded.transaction.sapling.outputs.is_empty());
+        assert!(decoded.transaction.orchard.actions.is_empty());
+        assert!(decoded.transaction.ironwood.actions.is_empty());
+    }
+
+    #[test]
+    fn undecodable_bytes_surface_as_a_non_domain_error() {
+        // Review Focus 2: a body that is not a transaction must fail, never
+        // yield a decoded-but-empty transaction that a consumer would cache as a
+        // success and stop asking about.
+        let garbage = TransactionResponse {
+            bytes: vec![0xff, 0x00, 0x13, 0x37],
+            location: TransactionLocation::Mempool,
+        };
+        assert!(decode_transaction_response(garbage).is_err());
     }
 }

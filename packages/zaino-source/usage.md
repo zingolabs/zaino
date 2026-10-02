@@ -181,6 +181,36 @@ transport can produce is worse than absent: it tells a consumer to handle a case
 that cannot arise, and reads as though the condition were being reported when it
 is not. When a method has no such case, type it `Infallible` and say why.
 
+## Raw and decoded transactions are two ports
+
+`GetTransaction` and `GetTransactionVerbose` both fetch one transaction by txid,
+and the split is deliberate.
+
+- **`GetTransaction`** returns `TransactionResponse { bytes, location }` — the
+  raw consensus bytes. That is what a wallet wants: it parses them itself.
+- **`GetTransactionVerbose`** returns `DecodedTransaction { transaction,
+  location }`, where `transaction` is the domain `Transaction` decomposed by pool
+  (transparent, sapling, orchard, ironwood). That is the explorer surface.
+
+The decode is not something the core can do. It is
+`zaino_convert_zebra::transaction_from_zebra`, which lives in the validator
+adapter, because `zaino-core` must stay validator-agnostic and so must never
+depend on a validator's chain library. The only way the decoded form reaches a
+consumer is therefore a port whose adapter owns the conversion. Do not route
+`GetTransactionVerbose` to a consumer that then re-parses the bytes; that puts
+the chain library back where the seam exists to keep it out.
+
+Both carry the same single domain variant — `NotFound(txid)` — because absence
+is the only domain answer either can give. Bytes an adapter fetches but cannot
+deserialize, or a transaction the conversion rejects, are a **non-domain** fault:
+the source did not yield a usable answer. They are never collapsed into a
+decoded-but-empty transaction — a consumer caches successes and stops asking, so
+an empty success is worse than a failure.
+
+`location` is paired with the transaction in one response on purpose: a caller
+that needs both would let two separate fetches disagree, since the transaction
+could be mined between them.
+
 ## Consumer aliases go in the consumer
 
 A crate that needs many ports declares its own supertrait alias, **in its own
