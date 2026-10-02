@@ -9,9 +9,9 @@ use crate::{ForkPoint, Locator, SpendStatus, TxStatus};
 use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockVerbose, BlockchainInfo, CompactBlock, Height, HeightRange, Outpoint, RawTransaction,
-    ShieldedPool, SubtreeRoot, Transaction, TransactionDetail, TransactionId, TransactionLocation,
-    TransparentAddress, TransparentInput, TransparentOutput, Treestate, Utxo,
+    BlockVerbose, BlockchainInfo, CompactBlock, DecodedBlock, Height, HeightRange, Outpoint,
+    RawTransaction, ShieldedPool, SubtreeRoot, Transaction, TransactionDetail, TransactionId,
+    TransactionLocation, TransparentAddress, TransparentInput, TransparentOutput, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -150,10 +150,26 @@ pub trait TransactionViewRead: Send + Sync {
     ) -> impl Future<Output = Result<Option<LocatedTransactionView>, TransactionViewError>> + Send;
     /// The resolved views of every transaction in the block `at`. `Ok(None)`
     /// when the selector names no block.
+    ///
+    /// This resolves every transparent prevout, so a caller that needs only the
+    /// block's size and transaction ids — `getblock` verbosity 1, the explorer's
+    /// hot per-page call — uses [`decoded_block`](Self::decoded_block) instead,
+    /// which does no resolution.
     fn block_transaction_views(
         &self,
         at: BlockSelector,
     ) -> impl Future<Output = Result<Option<BlockTransactionViews>, TransactionViewError>> + Send;
+    /// The block `at` decoded into every transaction with its detail — the
+    /// block's size and transaction ids, with **no** prevout resolution.
+    /// `Ok(None)` when the selector names no block.
+    ///
+    /// This is the cheap read behind `getblock` verbosity 1: it neither fetches
+    /// nor resolves the outputs the block's inputs spend, so a prevout the
+    /// validator cannot serve never fails a page that shows no input values.
+    fn decoded_block(
+        &self,
+        at: BlockSelector,
+    ) -> impl Future<Output = Result<Option<DecodedBlock>, TransactionViewError>> + Send;
 }
 
 /// The pool-decomposed transaction read: the transaction parsed into its

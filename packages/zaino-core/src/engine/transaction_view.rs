@@ -93,4 +93,17 @@ where
             transactions: views,
         }))
     }
+
+    async fn decoded_block(
+        &self,
+        at: BlockSelector,
+    ) -> Result<Option<DecodedBlock>, TransactionViewError> {
+        // The decoded block as the validator served it — no prevout fetch, no
+        // resolution. `getblock` verbosity 1 takes size and txids from this, so a
+        // prevout the validator cannot serve never fails the hot per-page call.
+        match at {
+            BlockSelector::Height(height) => self.passthrough().block_decoded(height).await,
+            BlockSelector::Hash(hash) => self.passthrough().block_decoded_by_hash(hash).await,
+        }
+    }
 }

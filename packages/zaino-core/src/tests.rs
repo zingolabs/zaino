@@ -1180,4 +1180,63 @@ mod transaction_view_reads {
             .is_none()
         );
     }
+
+    #[tokio::test]
+    async fn decoded_block_by_height_reads_the_by_height_port() {
+        // Distinct blocks per port, so a swapped selector returns the wrong one.
+        let engine = engine_with(
+            MockChain::new()
+                .with_block_decoded(sample_decoded_block(0x10, 500))
+                .with_block_decoded_by_hash(sample_decoded_block(0x20, 900)),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let decoded =
+            TransactionViewRead::decoded_block(&snapshot, BlockSelector::Height(height(5)))
+                .await
+                .expect("served")
+                .expect("present");
+        assert_eq!(decoded.size, 500);
+        assert_eq!(decoded.transactions[0].transaction.txid, id(0x10));
+        assert!(decoded.transactions[0].detail.coinbase.is_some());
+    }
+
+    #[tokio::test]
+    async fn decoded_block_by_hash_reads_the_by_hash_port() {
+        let engine = engine_with(
+            MockChain::new()
+                .with_block_decoded(sample_decoded_block(0x10, 500))
+                .with_block_decoded_by_hash(sample_decoded_block(0x20, 900)),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let decoded = TransactionViewRead::decoded_block(
+            &snapshot,
+            BlockSelector::Hash(BlockHash::from([2u8; 32])),
+        )
+        .await
+        .expect("served")
+        .expect("present");
+        assert_eq!(decoded.size, 900);
+        assert_eq!(decoded.transactions[0].transaction.txid, id(0x20));
+    }
+
+    #[tokio::test]
+    async fn decoded_block_of_an_unknown_block_is_a_served_none() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        assert!(
+            TransactionViewRead::decoded_block(&snapshot, BlockSelector::Height(height(99)))
+                .await
+                .expect("a domain miss is a served None, not an error")
+                .is_none()
+        );
+        assert!(
+            TransactionViewRead::decoded_block(
+                &snapshot,
+                BlockSelector::Hash(BlockHash::from([9u8; 32]))
+            )
+            .await
+            .expect("a domain miss is a served None, not an error")
+            .is_none()
+        );
+    }
 }

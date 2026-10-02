@@ -25,10 +25,10 @@ use crate::{
 use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds, Height,
-    HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool, SubtreeRoot,
-    Transaction, TransactionId, TransparentAddress, Treestate, Utxo, ValuePoolBalance, Zatoshis,
-    ZatoshisFlowSum,
+    BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds,
+    DecodedBlock, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool,
+    SubtreeRoot, Transaction, TransactionId, TransparentAddress, TransparentInput, Treestate, Utxo,
+    ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 
 use crate::error::{
@@ -78,8 +78,18 @@ pub struct MockChain {
     pub transaction_view: Option<LocatedTransactionView>,
     /// Scripted resolved block. When `Some`,
     /// [`TransactionViewRead::block_transaction_views`] returns it for any
-    /// selector; when `None`, it answers `Ok(None)`.
+    /// selector; when `None`, it answers `Ok(None)` (unless
+    /// [`block_transaction_views_missing_prevout`](Self::block_transaction_views_missing_prevout)
+    /// is set).
     pub block_transaction_views: Option<BlockTransactionViews>,
+    /// When `Some`, [`TransactionViewRead::block_transaction_views`] errors with
+    /// [`TransactionViewError::MissingPrevout`] naming this outpoint — the
+    /// prevout-resolution failure `decoded_block` must not be subject to.
+    pub block_transaction_views_missing_prevout: Option<TransparentInput>,
+    /// Scripted decoded block. When `Some`,
+    /// [`TransactionViewRead::decoded_block`] returns it for any selector; when
+    /// `None`, it answers `Ok(None)`.
+    pub decoded_block: Option<DecodedBlock>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -416,7 +426,18 @@ impl TransactionViewRead for MockSnapshot {
         &self,
         _at: BlockSelector,
     ) -> Result<Option<BlockTransactionViews>, TransactionViewError> {
+        if let Some(outpoint) = self.chain.block_transaction_views_missing_prevout.clone() {
+            return Err(TransactionViewError::MissingPrevout { outpoint });
+        }
         Ok(self.chain.block_transaction_views.clone())
+    }
+    async fn decoded_block(
+        &self,
+        _at: BlockSelector,
+    ) -> Result<Option<DecodedBlock>, TransactionViewError> {
+        // The decoded block as scripted, with no prevout resolution — so a test
+        // can let `block_transaction_views` fail while this succeeds.
+        Ok(self.chain.decoded_block.clone())
     }
 }
 
