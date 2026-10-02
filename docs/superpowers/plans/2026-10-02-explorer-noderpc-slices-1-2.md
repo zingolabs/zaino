@@ -2628,25 +2628,7 @@ Append to `lib.rs`'s `mod tests`:
         ));
     }
 
-    /// Review Focus 1 at the wire boundary: a node-status failure must render
-    /// as an internal error, never as a success with default values. The
-    /// explorer's warmers cache successes and ignore errors, so a defaulted
-    /// `Ok` would poison their cache for 15 seconds.
-    #[test]
-    fn node_status_failures_render_as_internal_errors() {
-        use jsonrpsee::types::ErrorCode;
-        for err in [
-            RpcError::NodeStatus(zaino_service::NodeStatusError::NotReady),
-            RpcError::NodeStatus(zaino_service::NodeStatusError::unreachable(
-                std::io::Error::other("unreachable"),
-            )),
-        ] {
-            assert_eq!(
-                crate::rpc::to_error_object(err).code(),
-                ErrorCode::InternalError.code()
-            );
-        }
-    }
+
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -2778,6 +2760,35 @@ that caches successes and ignores errors would otherwise cache a default value.
 wire boundary where the protocol has no Rust types. The `#[source]` cause stays
 attached to the error value for anything that inspects the chain; do not
 flatten it into the message.
+
+Add the covering test to **`rpc.rs`'s own test module**, beside Task 1's
+`fatal_address_read_is_an_internal_error`, so `to_error_object` stays private
+rather than being widened for a test:
+
+```rust
+    /// A node-status failure must render as an internal error, never as a
+    /// success with default values: the explorer's warmers cache successes and
+    /// ignore errors, so a defaulted `Ok` would poison their cache for 15
+    /// seconds while an error leaves the previous value intact.
+    #[test]
+    fn node_status_failures_render_as_internal_errors() {
+        for err in [
+            RpcError::NodeStatus(NodeStatusError::NotReady),
+            RpcError::NodeStatus(NodeStatusError::unreachable(std::io::Error::other(
+                "unreachable",
+            ))),
+        ] {
+            assert_eq!(
+                to_error_object(err).code(),
+                ErrorCode::InternalError.code()
+            );
+        }
+    }
+```
+
+Check `std::io::Error::other`'s availability against the toolchain; if it is not
+available, use any other type implementing `std::error::Error + Send + Sync +
+'static` as the cause.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
