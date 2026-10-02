@@ -27,10 +27,7 @@ const P2SH_SUFFIX: [u8; 1] = [0x87];
 /// 21-byte script as a bare `tag || hash`. An address is a user-facing claim
 /// about who controls an output, so the two lenient cases that index fine are
 /// `None` here rather than an address nobody can verify.
-pub fn transparent_address_from_script<P: Parameters>(
-    script: &[u8],
-    params: &P,
-) -> Option<String> {
+pub fn transparent_address_from_script<P: Parameters>(script: &[u8], params: &P) -> Option<String> {
     Some(transparent_address(script)?.encode(params))
 }
 
@@ -114,7 +111,10 @@ mod tests {
         // Mainnet re-encodes the identical hash under the mainnet P2PKH prefix.
         let mainnet = transparent_address_from_script(&script, &MAINNET)
             .expect("the same hash is a valid mainnet address");
-        assert!(mainnet.starts_with("t1"), "mainnet P2PKH is a t1 address: {mainnet}");
+        assert!(
+            mainnet.starts_with("t1"),
+            "mainnet P2PKH is a t1 address: {mainnet}"
+        );
         assert_eq!(hash_of(&mainnet, &MAINNET), hash);
         assert_ne!(mainnet.as_str(), TESTNET_P2PKH);
     }
@@ -131,7 +131,10 @@ mod tests {
         );
         let mainnet = transparent_address_from_script(&script, &MAINNET)
             .expect("the same hash is a valid mainnet address");
-        assert!(mainnet.starts_with("t3"), "mainnet P2SH is a t3 address: {mainnet}");
+        assert!(
+            mainnet.starts_with("t3"),
+            "mainnet P2SH is a t3 address: {mainnet}"
+        );
         assert_eq!(hash_of(&mainnet, &MAINNET), hash);
     }
 
