@@ -22,8 +22,9 @@ use crate::reads::{
 /// through each other.
 ///
 /// A wallet takes a transaction as raw bytes ([`RawTransactionRead`]) and parses
-/// it locally; the pool-decomposed [`TransactionRead`] is the node/explorer
-/// surface ([`NodeRpcReads`]), not a wallet read.
+/// it locally, so it needs no pool-decomposed form. The node/explorer surface
+/// ([`NodeRpcReads`]) needs *both*: `getrawtransaction` is one RPC with a
+/// verbosity parameter, raw bytes at 0 and the decoded transaction at 1.
 pub trait WalletReadCore:
     CompactBlockRead + TreestateRead + AddressRead + RawTransactionRead
 {
@@ -48,11 +49,27 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// The node-RPC / explorer read demand: raw blocks and spend lookups the
 /// wallet-shaped consumers never need, plus the chain-info aggregate. A
 /// distinct shape, not a wallet delta.
+///
+/// Carries both transaction reads. They are not alternatives: one RPC serves
+/// raw bytes at verbosity 0 and the decoded transaction at verbosity 1, so a
+/// surface that speaks zcashd's contract needs both forms.
 pub trait NodeRpcReads:
-    BlockRead + TransactionRead + SpendRead + AddressRead + TreestateRead + ChainInfoRead
+    BlockRead
+    + TransactionRead
+    + RawTransactionRead
+    + SpendRead
+    + AddressRead
+    + TreestateRead
+    + ChainInfoRead
 {
 }
 impl<T> NodeRpcReads for T where
-    T: BlockRead + TransactionRead + SpendRead + AddressRead + TreestateRead + ChainInfoRead
+    T: BlockRead
+        + TransactionRead
+        + RawTransactionRead
+        + SpendRead
+        + AddressRead
+        + TreestateRead
+        + ChainInfoRead
 {
 }
