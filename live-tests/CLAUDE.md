@@ -40,10 +40,20 @@ informative
 
 ```rust
 let mut env = TestEnv::builder().ready_timeout(READY);
-let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+let validator = env.add_validator(zebra!().regtest());
 let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
 env.build().await?;
 ```
+
+## Name the validator with `zebra!()`, never a version literal
+
+`zebra!()` is the suite's only zebrad. It is generated from
+`[workspace.metadata.zaino.zebra]` in `live-tests/Cargo.toml`, so bumping the
+release — or pointing the suite at a zebra fork — is one edit rather than one
+per test. `docs/testing.md` covers the fork workflow.
+
+Writing `Validator::zebrad("x.y.z")` in a test re-pins that test on its own and
+is the thing this macro exists to prevent.
 
 ## Parameterize the axes, don't copy the test
 
@@ -51,8 +61,8 @@ Two tests differing only by backend, validator, or pool are one `#[rstest]`.
 
 ```rust
 #[rstest]
-#[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-#[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+#[case::fetch(zebra!(), Backend::Fetch)]
+#[case::state(zebra!(), Backend::State)]
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn block_count<B: ValidatorConfig>(

@@ -38,6 +38,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use zaino_testutils::zebra;
 use ztest::prelude::*;
 
 use e2e::{assert_pool_absent, assert_pool_present, Pool};
@@ -80,11 +81,7 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env.add_validator(zebra!().regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -144,11 +141,7 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env.add_validator(zebra!().regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -301,11 +294,7 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env.add_validator(zebra!().regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -421,11 +410,7 @@ mod zebrad {
                     .set_nu6_3(Some(NU6_3_TRANSITION_BOUNDARY))
                     .build(),
             );
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
-                    .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
-            );
+            let validator = env.add_validator(zebra!().regtest().mine_to(Pool::Orchard.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -492,7 +477,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                zebra!()
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -554,7 +539,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                zebra!()
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -703,7 +688,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                zebra!()
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -819,7 +804,7 @@ mod zebrad {
             );
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.3")
+                zebra!()
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
