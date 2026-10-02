@@ -29,12 +29,12 @@ use zcash_protocol::consensus::Network;
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, DeltaRange, UnifiedReceiversResponse,
-    ValidateAddressResponse, ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, BlockchainInfoResponse, DeltaRange,
+    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, bytes_from_hex, bytes_to_hex, delta_to_wire, to_hex, txid_from_hex,
-    unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
+    address_balance_to_wire, blockchain_info_to_wire, bytes_from_hex, bytes_to_hex, delta_to_wire,
+    to_hex, txid_from_hex, unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -104,15 +104,13 @@ impl<S: NodeRpcService> NodeRpc<S> {
     }
 
     /// `getblockchaininfo` (aggregate): reads the validator's `BlockchainInfo` —
-    /// the node-rpc read delta the wallet-shaped ports lack. Still renders the
-    /// stub; a real response is a follow-up.
-    pub async fn get_blockchain_info(&self) -> Result<String, RpcError> {
+    /// the node-rpc read delta the wallet-shaped ports lack — and renders it as
+    /// zcashd's response. An unreachable validator surfaces as an RPC error
+    /// (via `?`), never a response with defaulted fields.
+    pub async fn get_blockchain_info(&self) -> Result<BlockchainInfoResponse, RpcError> {
         let snapshot = self.engine.snapshot().await?;
         let info = snapshot.chain_info().await?;
-        Ok(format!(
-            "estimated_height={}",
-            u32::from(info.estimated_height)
-        ))
+        Ok(blockchain_info_to_wire(info))
     }
 
     /// `getmininginfo`: not indexed — relayed to the validator through the
@@ -279,16 +277,62 @@ mod tests {
 
     #[tokio::test]
     async fn chain_info_reads_and_mining_info_passes_through() {
-        let tip = BlockRef {
-            height: Height::try_from(77).expect("valid height"),
-            hash: BlockHash::from([0u8; 32]),
+        use zaino_primitives::types::{
+            BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, ValuePoolBalance, Zatoshis,
         };
-        let node = NodeRpc::new(engine_with_tip(Some(tip)), Network::MainNetwork);
-        // Chain-info aggregate: a node-rpc-specific indexed read.
-        assert_eq!(
-            node.get_blockchain_info().await.expect("chain info"),
-            "estimated_height=77"
-        );
+        // Chain-info aggregate: a node-rpc-specific indexed read, scripted so the
+        // real response's fields are distinguishable from defaults.
+        let scripted = BlockchainInfo {
+            chain: "main".to_string(),
+            blocks: Height::try_from(77).expect("valid height"),
+            headers: Height::try_from(78).expect("valid height"),
+            estimated_height: Height::try_from(79).expect("valid height"),
+            best_block_hash: BlockHash::from([0x22u8; 32]),
+            difficulty: 42.5,
+            verification_progress: 0.5,
+            chain_work: None,
+            pruned: false,
+            size_on_disk: 9_000,
+            commitments: 3,
+            chain_supply: ValuePoolBalance {
+                id: String::new(),
+                chain_value: Zatoshis::new(1_000).expect("valid amount"),
+                monitored: true,
+                value_delta: None,
+            },
+            value_pools: vec![ValuePoolBalance {
+                id: "orchard".to_string(),
+                chain_value: Zatoshis::new(500).expect("valid amount"),
+                monitored: true,
+                value_delta: None,
+            }],
+            upgrades: Vec::new(),
+            consensus: ConsensusBranchIds {
+                chain_tip: ConsensusBranchId::new(0),
+                next_block: ConsensusBranchId::new(0),
+            },
+        };
+        let engine = MockIndexerService::new(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(77).expect("valid height"),
+                hash: BlockHash::from([0x22u8; 32]),
+            }),
+            blockchain_info: Some(scripted),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let info = node.get_blockchain_info().await.expect("chain info");
+        assert_eq!(info.chain, "main");
+        assert_eq!(info.blocks, 77);
+        assert_eq!(info.headers, 78);
+        assert_eq!(info.estimated_height, 79);
+        assert_eq!(info.best_block_hash, "22".repeat(32));
+        assert_eq!(info.difficulty, 42.5);
+        assert_eq!(info.size_on_disk, 9_000);
+        assert_eq!(info.commitments, 3);
+        assert_eq!(info.value_pools.len(), 1);
+        assert_eq!(info.value_pools[0].id, "orchard");
+        assert_eq!(info.value_pools[0].chain_value_zat, 500);
         // Mining info: not indexed — relayed opaque through the passthrough seam.
         assert!(node
             .get_mining_info()

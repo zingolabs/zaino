@@ -14,8 +14,8 @@ use zaino_service::NodeRpcService;
 use crate::error::RpcError;
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, UnifiedReceiversResponse,
-    ValidateAddressResponse, ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, BlockchainInfoResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -39,7 +39,7 @@ pub trait NodeRpcApi {
     async fn send_raw(&self, hex: String) -> Result<String, ErrorObjectOwned>;
 
     #[method(name = "getblockchaininfo")]
-    async fn blockchain_info(&self) -> Result<String, ErrorObjectOwned>;
+    async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned>;
 
     #[method(name = "getmininginfo")]
     async fn mining_info(&self) -> Result<String, ErrorObjectOwned>;
@@ -97,7 +97,7 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
             .await
             .map_err(to_error_object)
     }
-    async fn blockchain_info(&self) -> Result<String, ErrorObjectOwned> {
+    async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned> {
         self.get_blockchain_info().await.map_err(to_error_object)
     }
     async fn mining_info(&self) -> Result<String, ErrorObjectOwned> {
@@ -209,6 +209,20 @@ mod tests {
     fn not_serviceable_address_read_is_an_internal_error() {
         let obj = to_error_object(RpcError::AddressRead(AddressReadError::NotServiceable(
             Capability::AddressHistory,
+        )));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// Review Focus 2: an unreachable validator behind `getblockchaininfo`
+    /// surfaces as an internal error, never a response with defaulted fields.
+    /// The chain-info read fails with a `ReadError`, which lifts into
+    /// `RpcError::Read` and must map to the internal-error code. Fails if the arm
+    /// is remapped or dropped.
+    #[test]
+    fn chain_info_read_failure_is_an_internal_error() {
+        use zaino_service::error::ReadError;
+        let obj = to_error_object(RpcError::Read(ReadError::Fatal(
+            "validator unreachable".to_string(),
         )));
         assert_eq!(obj.code(), ErrorCode::InternalError.code());
     }
