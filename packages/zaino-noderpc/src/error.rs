@@ -39,9 +39,4 @@ pub enum RpcError {
     /// A transaction read failed.
     #[error(transparent)]
     TxRead(#[from] TxReadError),
-    /// Rendering a chain amount as its ZEC float failed. Cannot occur for a
-    /// domain-produced amount; typed so the parse cause survives rather than
-    /// being asserted away.
-    #[error(transparent)]
-    Render(#[from] crate::wire::ZecFloatError),
 }

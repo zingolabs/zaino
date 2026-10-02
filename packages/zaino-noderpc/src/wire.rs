@@ -110,43 +110,47 @@ pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
     }
 }
 
-/// The number of zatoshis in one ZEC.
-const ZATOSHIS_PER_ZEC: u64 = 100_000_000;
+/// The number of zatoshis in one ZEC, as the exact ZEC-float divisor.
+const ZATOSHIS_PER_ZEC: f64 = 100_000_000.0;
 
-/// Formatting an exact zatoshi amount as its ZEC-denominated `f64` produced a
-/// decimal that did not parse.
-///
-/// Carries its [`std::num::ParseFloatError`] cause rather than being asserted
-/// away. The decimal is built from an integer whole part, an 8-digit fraction,
-/// and at most one leading `-`, so no amount the domain can hold reaches this —
-/// but the parse is typed as fallible, so the failure is surfaced with its cause
-/// instead of panicking.
-/// Public because it is carried by the public [`crate::RpcError`]; its
-/// constructor and the functions that return it stay `pub(crate)`.
-#[derive(Debug, thiserror::Error)]
-#[error("zatoshi amount did not format to a parseable ZEC decimal")]
-pub struct ZecFloatError(#[source] std::num::ParseFloatError);
+/// `2^32`: the weight of the high half when recombining a `u64` from its two
+/// 32-bit halves.
+const TWO_POW_32: f64 = 4_294_967_296.0;
 
 /// Render an exact zatoshi magnitude (with its sign) as a ZEC-denominated `f64`
 /// (domain -> wire).
 ///
-/// zcashd reports amounts as a ZEC float beside the exact integer. The float is
-/// derived by formatting the exact decimal `{whole}.{frac:08}` and parsing it —
-/// correctly rounded, and with no `as` cast (there is no `From<u64>` for `f64`).
-/// The split into magnitude and sign keeps a single leading `-`.
-fn zatoshi_magnitude_to_zec(negative: bool, magnitude: u64) -> Result<f64, ZecFloatError> {
-    let whole = magnitude / ZATOSHIS_PER_ZEC;
-    let frac = magnitude % ZATOSHIS_PER_ZEC;
-    let sign = if negative { "-" } else { "" };
-    format!("{sign}{whole}.{frac:08}")
-        .parse::<f64>()
-        .map_err(ZecFloatError)
+/// Exact and `as`-free by construction. [`Zatoshis`] and [`SignedZatoshis`] bound
+/// every amount, and so every magnitude, to at most MAX_MONEY
+/// (21_000_000 × 100_000_000 = 2_100_000_000_000_000), which is below `2^51`.
+/// That bound lives in the input type, so no runtime check is needed:
+///
+/// - The magnitude is split into its low and high 32-bit halves. Each half is
+///   below `2^32`, so [`f64::from`] widens it losslessly (there is no
+///   `From<u64>` for `f64`, which is why the split is necessary).
+/// - Recombining as `high × 2^32 + low` is exact, because the magnitude is below
+///   `2^53`, the largest integer every `f64` represents exactly.
+/// - The single IEEE division by [`ZATOSHIS_PER_ZEC`] is correctly rounded.
+///
+/// The result is therefore bit-identical to parsing the exact decimal
+/// `{whole}.{frac:08}`. The sign is applied last; a zero magnitude is never
+/// negative, so it renders as `0.0`, not `-0.0`.
+fn zatoshi_magnitude_to_zec(negative: bool, magnitude: u64) -> f64 {
+    let bytes = magnitude.to_le_bytes();
+    let low = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let high = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let zec = (f64::from(high) * TWO_POW_32 + f64::from(low)) / ZATOSHIS_PER_ZEC;
+    if negative {
+        -zec
+    } else {
+        zec
+    }
 }
 
 /// Render an unsigned zatoshi amount as a ZEC-denominated `f64` (domain -> wire).
 ///
 /// The shared renderer for zcashd's `chainValue` / transaction `value` family.
-pub(crate) fn zatoshis_to_zec(amount: Zatoshis) -> Result<f64, ZecFloatError> {
+pub(crate) fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
     zatoshi_magnitude_to_zec(false, amount.as_u64())
 }
 
@@ -156,7 +160,7 @@ pub(crate) fn zatoshis_to_zec(amount: Zatoshis) -> Result<f64, ZecFloatError> {
 /// The shared renderer for zcashd's `valueDelta` / `valueBalance` family.
 /// [`i64::unsigned_abs`] takes the magnitude without an `as` cast and without
 /// overflowing at [`i64::MIN`].
-pub(crate) fn signed_zatoshis_to_zec(amount: SignedZatoshis) -> Result<f64, ZecFloatError> {
+pub(crate) fn signed_zatoshis_to_zec(amount: SignedZatoshis) -> f64 {
     let raw = amount.as_i64();
     zatoshi_magnitude_to_zec(raw.is_negative(), raw.unsigned_abs())
 }
@@ -165,15 +169,15 @@ pub(crate) fn signed_zatoshis_to_zec(amount: SignedZatoshis) -> Result<f64, ZecF
 /// twice: as zcashd's ZEC float (the key clients read) and as the exact zatoshi
 /// integer beside it. An empty id (the unnamed chain-supply total) is omitted by
 /// the response type.
-fn value_pool_to_wire(pool: &ValuePoolBalance) -> Result<ValuePoolResponse, ZecFloatError> {
-    Ok(ValuePoolResponse {
+fn value_pool_to_wire(pool: &ValuePoolBalance) -> ValuePoolResponse {
+    ValuePoolResponse {
         id: pool.id.clone(),
         monitored: pool.monitored,
-        chain_value: zatoshis_to_zec(pool.chain_value)?,
+        chain_value: zatoshis_to_zec(pool.chain_value),
         chain_value_zat: pool.chain_value.as_u64(),
-        value_delta: pool.value_delta.map(signed_zatoshis_to_zec).transpose()?,
+        value_delta: pool.value_delta.map(signed_zatoshis_to_zec),
         value_delta_zat: pool.value_delta.map(|delta| delta.as_i64()),
-    })
+    }
 }
 
 /// Render a network upgrade's status (domain -> wire) in zcashd's lowercase
@@ -207,10 +211,8 @@ fn upgrade_to_wire(upgrade: &NetworkUpgradeInfo) -> (String, NetworkUpgradeRespo
 /// tracks it, and is omitted otherwise — zero is not a possible amount of work,
 /// so absence is the honest wire form rather than a zero a consumer could
 /// compare.
-pub(crate) fn blockchain_info_to_wire(
-    info: BlockchainInfo,
-) -> Result<BlockchainInfoResponse, ZecFloatError> {
-    Ok(BlockchainInfoResponse {
+pub(crate) fn blockchain_info_to_wire(info: BlockchainInfo) -> BlockchainInfoResponse {
+    BlockchainInfoResponse {
         chain: info.chain,
         blocks: info.blocks.into(),
         headers: info.headers.into(),
@@ -224,18 +226,14 @@ pub(crate) fn blockchain_info_to_wire(
         size_on_disk: info.size_on_disk,
         commitments: info.commitments,
         estimated_height: info.estimated_height.into(),
-        chain_supply: value_pool_to_wire(&info.chain_supply)?,
-        value_pools: info
-            .value_pools
-            .iter()
-            .map(value_pool_to_wire)
-            .collect::<Result<_, _>>()?,
+        chain_supply: value_pool_to_wire(&info.chain_supply),
+        value_pools: info.value_pools.iter().map(value_pool_to_wire).collect(),
         upgrades: info.upgrades.iter().map(upgrade_to_wire).collect(),
         consensus: TipConsensusResponse {
             chaintip: info.consensus.chain_tip.to_string(),
             nextblock: info.consensus.next_block.to_string(),
         },
-    })
+    }
 }
 
 /// Render a verbose block header as the `getblockheader` response
@@ -487,10 +485,8 @@ mod tests {
     /// non-zero.
     #[test]
     fn blockchain_info_response_golden_shape() {
-        let json = serde_json::to_value(
-            blockchain_info_to_wire(scripted_info()).expect("scripted info renders"),
-        )
-        .expect("serialize");
+        let json =
+            serde_json::to_value(blockchain_info_to_wire(scripted_info())).expect("serialize");
         assert_eq!(
             sorted_keys(&json),
             [
@@ -632,8 +628,7 @@ mod tests {
     fn blockchain_info_omits_chainwork_when_untracked() {
         let mut info = scripted_info();
         info.chain_work = None;
-        let json = serde_json::to_value(blockchain_info_to_wire(info).expect("renders"))
-            .expect("serialize");
+        let json = serde_json::to_value(blockchain_info_to_wire(info)).expect("serialize");
         assert!(
             !json
                 .as_object()
@@ -1177,40 +1172,101 @@ mod tests {
         assert!(!unified.contains_key("diversifiedtransmissionkey"));
     }
 
-    /// The ZEC-float renderer is correctly rounded and signed, across the amounts
-    /// the follow-up tasks reuse it for. The parse of a self-formatted decimal is
-    /// infallible in practice; the test uses the fallible API honestly.
+    /// The ZEC-float renderer is correctly rounded and signed across the amounts
+    /// the follow-up tasks reuse it for.
     #[test]
     fn zatoshis_render_as_correctly_rounded_zec() {
         // Zero, the smallest unit, one ZEC, and the supply ceiling.
-        assert_eq!(zatoshis_to_zec(Zatoshis::ZERO).expect("renders"), 0.0);
+        assert_eq!(zatoshis_to_zec(Zatoshis::ZERO), 0.0);
         assert_eq!(
-            zatoshis_to_zec(Zatoshis::new(1).expect("valid")).expect("renders"),
+            zatoshis_to_zec(Zatoshis::new(1).expect("valid")),
             0.00000001
         );
         assert_eq!(
-            zatoshis_to_zec(Zatoshis::new(100_000_000).expect("valid")).expect("renders"),
+            zatoshis_to_zec(Zatoshis::new(100_000_000).expect("valid")),
             1.0
         );
         // MAX_MONEY (Zatoshis::MAX) is 21_000_000 ZEC exactly.
-        assert_eq!(
-            zatoshis_to_zec(Zatoshis::MAX).expect("renders"),
-            21_000_000.0
-        );
+        assert_eq!(zatoshis_to_zec(Zatoshis::MAX), 21_000_000.0);
 
         // A negative delta keeps a single leading sign. -150_000_000 zat = -1.5 ZEC.
         assert_eq!(
-            signed_zatoshis_to_zec(SignedZatoshis::try_new(-150_000_000).expect("valid"))
-                .expect("renders"),
+            signed_zatoshis_to_zec(SignedZatoshis::try_new(-150_000_000).expect("valid")),
             -1.5
         );
 
         // Rounding is visible: 0.3 ZEC has no exact f64, so this pins that the
-        // decimal is correctly rounded to the nearest f64 (the `0.3_f64` literal,
+        // division is correctly rounded to the nearest f64 (the `0.3_f64` literal,
         // which prints as 0.3 but is actually 0.299999999999999988…).
         assert_eq!(
-            zatoshis_to_zec(Zatoshis::new(30_000_000).expect("valid")).expect("renders"),
+            zatoshis_to_zec(Zatoshis::new(30_000_000).expect("valid")),
             0.3_f64
         );
+    }
+
+    /// The exact ZEC float of a zatoshi magnitude, by parsing the exact decimal.
+    /// This is the reference the infallible split-and-divide must match; parsing
+    /// is allowed in test code. `magnitude` is bounded by the caller.
+    fn zec_via_decimal(magnitude: u64) -> f64 {
+        let whole = magnitude / 100_000_000;
+        let frac = magnitude % 100_000_000;
+        format!("{whole}.{frac:08}")
+            .parse::<f64>()
+            .expect("a self-formatted decimal parses")
+    }
+
+    /// A bounded magnitude as `i64`. MAX_MONEY is below `i64::MAX`, so this is
+    /// exact; the bound is the type invariant, not a runtime guess.
+    fn as_bounded_i64(magnitude: u64) -> i64 {
+        i64::try_from(magnitude).expect("MAX_MONEY is below i64::MAX")
+    }
+
+    /// The split-and-divide helper is bit-identical to parsing the exact decimal,
+    /// across the fixed cases and a few hundred pseudo-random bounded amounts. The
+    /// generator is a fixed-seed LCG, so the vectors are deterministic and need no
+    /// new dependency. The signed renderer agrees on the same magnitude, both
+    /// signs.
+    #[test]
+    fn zec_rendering_matches_the_exact_decimal_parse() {
+        let max = Zatoshis::MAX.as_u64();
+        let fixed = [0u64, 1, 2_000, 30_000_000, 100_000_000, 21_000_000, max];
+        for magnitude in fixed {
+            assert_eq!(
+                zatoshis_to_zec(Zatoshis::new(magnitude).expect("within supply")),
+                zec_via_decimal(magnitude),
+                "unsigned magnitude {magnitude}"
+            );
+        }
+
+        // Numerical Recipes LCG, modulus 2^64 via wrapping arithmetic.
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        for _ in 0..500 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let magnitude = state % (max + 1);
+
+            let unsigned = Zatoshis::new(magnitude).expect("within supply");
+            assert_eq!(
+                zatoshis_to_zec(unsigned),
+                zec_via_decimal(magnitude),
+                "unsigned magnitude {magnitude}"
+            );
+
+            let positive =
+                SignedZatoshis::try_new(as_bounded_i64(magnitude)).expect("within range");
+            assert_eq!(
+                signed_zatoshis_to_zec(positive),
+                zec_via_decimal(magnitude),
+                "positive magnitude {magnitude}"
+            );
+            let negative =
+                SignedZatoshis::try_new(-as_bounded_i64(magnitude)).expect("within range");
+            assert_eq!(
+                signed_zatoshis_to_zec(negative),
+                -zec_via_decimal(magnitude),
+                "negative magnitude {magnitude}"
+            );
+        }
     }
 }

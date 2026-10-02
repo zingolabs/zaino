@@ -116,7 +116,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     pub async fn get_blockchain_info(&self) -> Result<BlockchainInfoResponse, RpcError> {
         let snapshot = self.engine.snapshot().await?;
         let info = snapshot.chain_info().await?;
-        Ok(blockchain_info_to_wire(info)?)
+        Ok(blockchain_info_to_wire(info))
     }
 
     /// `getblock`: the full block object at verbosity 2 — the block page's read.
