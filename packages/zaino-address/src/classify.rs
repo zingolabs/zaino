@@ -16,9 +16,9 @@ use crate::{
 /// Parses `raw_address` for `params`' network, returning `None` if it does not
 /// parse or belongs to another network.
 ///
-/// Shared by both entry points so the two RPCs cannot disagree about which
-/// addresses exist.
-fn parse_for_network<P: Parameters>(raw_address: &str, params: &P) -> Option<Address> {
+/// Shared by both entry points and by receiver decomposition so they cannot
+/// disagree about which addresses exist.
+pub(crate) fn parse_for_network<P: Parameters>(raw_address: &str, params: &P) -> Option<Address> {
     let parsed = raw_address.parse::<zcash_address::ZcashAddress>().ok()?;
 
     match parsed.convert_if_network::<Address>(params.network_type()) {

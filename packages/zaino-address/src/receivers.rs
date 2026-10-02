@@ -15,6 +15,8 @@ use zcash_keys::encoding::AddressCodec as _;
 use zcash_protocol::consensus::Parameters;
 use zcash_transparent::address::TransparentAddress;
 
+use crate::classify::parse_for_network;
+
 /// The receivers a unified address bundles, each re-encoded standalone.
 ///
 /// A field is `None` when the unified address carries no receiver of that kind.
@@ -40,14 +42,12 @@ pub fn list_unified_receivers<P: Parameters>(
     raw_address: String,
     params: &P,
 ) -> Option<UnifiedReceivers> {
-    let parsed = raw_address.parse::<zcash_address::ZcashAddress>().ok()?;
-    let unified = match parsed.convert_if_network::<Address>(params.network_type()) {
-        Ok(Address::Unified(unified)) => unified,
-        Ok(_) => return None,
-        Err(err) => {
-            tracing::debug!(?err, "conversion error");
-            return None;
-        }
+    // `parse_for_network` performs the parse, network conversion, and error
+    // tracing shared with the classification entry points; this needs the
+    // `Unified` variant specifically, so anything else is "not a unified
+    // address" and answers `None`.
+    let Some(Address::Unified(unified)) = parse_for_network(&raw_address, params) else {
+        return None;
     };
 
     let orchard = unified.orchard().copied().and_then(|receiver| {
@@ -59,12 +59,8 @@ pub fn list_unified_receivers<P: Parameters>(
     });
     let sapling = unified.sapling().map(|receiver| receiver.encode(params));
     let (p2pkh, p2sh) = match unified.transparent() {
-        Some(TransparentAddress::PublicKeyHash(_)) => {
-            (unified.transparent().map(|t| t.encode(params)), None)
-        }
-        Some(TransparentAddress::ScriptHash(_)) => {
-            (None, unified.transparent().map(|t| t.encode(params)))
-        }
+        Some(t @ TransparentAddress::PublicKeyHash(_)) => (Some(t.encode(params)), None),
+        Some(t @ TransparentAddress::ScriptHash(_)) => (None, Some(t.encode(params))),
         None => (None, None),
     };
 
@@ -109,10 +105,11 @@ mod tests {
         );
     }
 
-    /// The Orchard receiver must actually be reported. Without the `orchard`
-    /// feature on `zcash_keys`, `has_orchard()` returns `false` rather than
-    /// failing to compile, so a misconfigured build answers "no Orchard
-    /// receiver" for an address that has one. This test is what catches that.
+    /// The Orchard receiver must actually be reported. `UnifiedAddress::orchard()`
+    /// is `#[cfg(feature = "orchard")]`, so a build without the feature does not
+    /// compile rather than quietly losing the receiver. This test pins the other
+    /// half: that an Orchard receiver which *is* reachable actually reaches the
+    /// answer, so the feature stays load-bearing and is never dropped as unused.
     #[test]
     fn an_orchard_receiver_is_reported_not_silently_dropped() {
         let ua = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6\
