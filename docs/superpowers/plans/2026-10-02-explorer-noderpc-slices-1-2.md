@@ -2005,10 +2005,17 @@ depend on a fixture this repo would have to maintain:
 
 ```rust
     /// A unified address reports each receiver it bundles.
+    ///
+    /// The vector is the mainnet unified address this repo already exercises in
+    /// `packages/zaino-state/src/config.rs`, so the test depends on no fixture
+    /// this crate has to maintain.
     #[test]
     fn a_unified_address_lists_its_receivers() {
-        // Replace with a unified address from zcash_address's test vectors.
-        let ua = "<mainnet unified address>".to_string();
+        let ua = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6\
+                  drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666k\
+                  gwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw\
+                  6uh7hyvzjse8ksx"
+            .to_string();
         let got = list_unified_receivers(ua, &Network::MainNetwork)
             .expect("a unified address decomposes");
         assert!(
@@ -2991,7 +2998,10 @@ engineer to mirror a field set from a named file rather than reproducing a
 24-field struct whose exact contents were not read — each names the file and the
 rule.
 
-**Type consistency.** `full_range` is defined once (Task 1) and used by Task 2.
+**Type consistency.** `full_range` was introduced by Task 1 and deleted by
+Task 1b, which replaced it with `queries::serviceable_range`; Task 2 onward use
+the query layer. Tasks 1 and 1b's own step text still names it, correctly — it
+describes work already done.
 `AddressesParam` (Task 1) and `AddressDeltasParam` (Task 2) are separate types
 because `getaddressdeltas` carries range and `chainInfo` fields.
 `NodeRpc::new` gains its second argument in Task 4, and Task 4 Step 10 fixes the
