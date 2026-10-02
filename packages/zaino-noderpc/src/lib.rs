@@ -23,11 +23,14 @@ pub use transport::{JsonRpcServeError, JsonRpcServer};
 use zaino_primitives::types::{Height, Outpoint, TransparentAddress};
 use zaino_service::queries;
 use zaino_service::NodeQuery;
+use zaino_service::RawTransactionRead;
 use zaino_service::{ChainInfoRead, ChainSegment, NodeRpcService, SpendRead};
 
 use crate::wire::params::{AddressDeltasParam, AddressesParam};
 use crate::wire::response::{AddressBalanceResponse, AddressDeltasResponse, DeltaRange};
-use crate::wire::{bytes_from_hex, delta_to_wire, spend_status_to_wire, to_hex, txid_from_hex};
+use crate::wire::{
+    bytes_from_hex, bytes_to_hex, delta_to_wire, spend_status_to_wire, to_hex, txid_from_hex,
+};
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
 #[derive(Clone)]
@@ -72,6 +75,32 @@ impl<S: NodeRpcService> NodeRpc<S> {
         let raw = bytes_from_hex(tx_hex)?;
         let txid = self.engine.broadcast(raw).await?;
         Ok(to_hex(txid.into()))
+    }
+
+    /// `getrawtransaction`: the transaction's consensus bytes as hex.
+    ///
+    /// Only verbosity 0 is served here. The decoded form is a different
+    /// capability — `TransactionRead`, which needs a verbose source port — so a
+    /// verbose request is refused rather than answered with the raw shape.
+    pub async fn get_raw_transaction(
+        &self,
+        txid_hex: &str,
+        verbosity: Option<u32>,
+    ) -> Result<String, RpcError> {
+        match verbosity.unwrap_or(0) {
+            0 => {}
+            other => {
+                return Err(RpcError::InvalidParams(format!(
+                    "verbosity {other} is not served yet; only 0 (raw hex) is available"
+                )))
+            }
+        }
+        let txid = txid_from_hex(txid_hex)?;
+        let snapshot = self.engine.snapshot().await?;
+        let found = snapshot.raw_transaction(txid).await?;
+        let tx = found
+            .ok_or_else(|| RpcError::NotFound(format!("no transaction with id {txid_hex}")))?;
+        Ok(bytes_to_hex(&tx.data))
     }
 
     /// `getblockchaininfo` (aggregate): reads the domain `ChainInfo` — the
@@ -395,5 +424,61 @@ mod tests {
             .await,
             Err(RpcError::InvalidParams(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn raw_transaction_returns_the_scripted_hex() {
+        use zaino_primitives::types::{RawTransaction, TransactionLocation};
+        let txid = TransactionId::from([0xABu8; 32]);
+        let engine = MockIndexerService::new(MockChain {
+            raw_transactions: vec![(
+                txid,
+                RawTransaction {
+                    data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                    location: TransactionLocation::BestChain(
+                        Height::try_from(42).expect("valid height"),
+                    ),
+                },
+            )],
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine);
+        let got = node
+            .get_raw_transaction(&"ab".repeat(32), Some(0))
+            .await
+            .expect("raw tx");
+        assert_eq!(got, "deadbeef");
+    }
+
+    #[tokio::test]
+    async fn raw_transaction_reports_an_unknown_txid_as_not_found() {
+        let node = NodeRpc::new(engine_with_tip(None));
+        assert!(matches!(
+            node.get_raw_transaction(&"cd".repeat(32), Some(0)).await,
+            Err(RpcError::NotFound(_))
+        ));
+    }
+
+    /// Verbosity 1 needs a capability this slice does not have. Refusing is
+    /// honest; answering raw hex to a caller expecting the decoded object is not.
+    #[tokio::test]
+    async fn raw_transaction_refuses_verbose_until_the_capability_exists() {
+        let node = NodeRpc::new(engine_with_tip(None));
+        assert!(matches!(
+            node.get_raw_transaction(&"ab".repeat(32), Some(1)).await,
+            Err(RpcError::InvalidParams(_))
+        ));
+    }
+
+    /// Review Focus 4: well-formed hex of the wrong length never reaches a read.
+    #[tokio::test]
+    async fn a_wrong_length_txid_is_rejected_at_the_boundary() {
+        let node = NodeRpc::new(engine_with_tip(None));
+        for bad in [&"ab".repeat(31), &"ab".repeat(33)] {
+            assert!(matches!(
+                node.get_raw_transaction(bad, Some(0)).await,
+                Err(RpcError::InvalidParams(_))
+            ));
+        }
     }
 }

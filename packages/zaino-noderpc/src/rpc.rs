@@ -8,6 +8,7 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 
 use zaino_service::error::AddressReadError;
+use zaino_service::error::TxReadError;
 use zaino_service::NodeRpcService;
 
 use crate::error::RpcError;
@@ -26,6 +27,13 @@ pub trait NodeRpcApi {
 
     #[method(name = "gettxout")]
     async fn tx_out(&self, txid: String, index: u32) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "getrawtransaction")]
+    async fn raw_transaction(
+        &self,
+        txid: String,
+        verbosity: Option<u32>,
+    ) -> Result<String, ErrorObjectOwned>;
 
     #[method(name = "sendrawtransaction")]
     async fn send_raw(&self, hex: String) -> Result<String, ErrorObjectOwned>;
@@ -59,6 +67,15 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn tx_out(&self, txid: String, index: u32) -> Result<String, ErrorObjectOwned> {
         self.get_tx_out(&txid, index).await.map_err(to_error_object)
+    }
+    async fn raw_transaction(
+        &self,
+        txid: String,
+        verbosity: Option<u32>,
+    ) -> Result<String, ErrorObjectOwned> {
+        self.get_raw_transaction(&txid, verbosity)
+            .await
+            .map_err(to_error_object)
     }
     async fn send_raw(&self, hex: String) -> Result<String, ErrorObjectOwned> {
         self.send_raw_transaction(&hex)
@@ -109,6 +126,12 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::AddressRead(e @ AddressReadError::NotServiceable(_)) => {
             (ErrorCode::InternalError, e.to_string())
         }
+        RpcError::NotFound(message) => (ErrorCode::InvalidParams, message),
+        RpcError::TxRead(TxReadError::Transient(cause)) => (ErrorCode::InternalError, cause),
+        RpcError::TxRead(TxReadError::Fatal(cause)) => (ErrorCode::InternalError, cause),
+        RpcError::TxRead(e @ TxReadError::NotServiceable(_)) => {
+            (ErrorCode::InternalError, e.to_string())
+        }
     };
     ErrorObjectOwned::owned(code.code(), message, None::<()>)
 }
@@ -119,6 +142,7 @@ mod tests {
     use crate::error::RpcError;
     use jsonrpsee::types::ErrorCode;
     use zaino_service::error::AddressReadError;
+    use zaino_service::error::TxReadError;
     use zaino_service::Capability;
 
     /// A fatal address read is an unrecoverable backend failure — a server
@@ -148,5 +172,17 @@ mod tests {
             Capability::AddressHistory,
         )));
         assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// A read failure is the server's fault, never the caller's. Only a
+    /// malformed txid is a params error.
+    #[test]
+    fn tx_read_failures_render_as_internal_errors() {
+        for err in [
+            RpcError::TxRead(TxReadError::Transient("gone".into())),
+            RpcError::TxRead(TxReadError::Fatal("broken".into())),
+        ] {
+            assert_eq!(to_error_object(err).code(), ErrorCode::InternalError.code());
+        }
     }
 }

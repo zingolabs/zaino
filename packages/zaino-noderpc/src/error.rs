@@ -6,7 +6,7 @@
 //! decided by the adapter, not the port.
 
 use zaino_service::error::{
-    AddressReadError, BroadcastRejection, ReadError, SpendReadError, Transient,
+    AddressReadError, BroadcastRejection, ReadError, SpendReadError, Transient, TxReadError,
 };
 
 /// A node-RPC handler failure.
@@ -33,4 +33,10 @@ pub enum RpcError {
     /// A transparent-address read failed.
     #[error(transparent)]
     AddressRead(#[from] AddressReadError),
+    /// The requested object is not known to this indexer.
+    #[error("{0}")]
+    NotFound(String),
+    /// A transaction read failed.
+    #[error(transparent)]
+    TxRead(#[from] TxReadError),
 }

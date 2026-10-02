@@ -52,6 +52,8 @@ pub struct MockChain {
     pub balances: Vec<(String, AddressBalance)>,
     /// Scripted address deltas, filtered by address and height on read.
     pub deltas: Vec<AddressDelta>,
+    /// Scripted raw transactions, keyed by txid.
+    pub raw_transactions: Vec<(TransactionId, RawTransaction)>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -218,9 +220,14 @@ impl TransactionRead for MockSnapshot {
 impl RawTransactionRead for MockSnapshot {
     async fn raw_transaction(
         &self,
-        _id: TransactionId,
+        id: TransactionId,
     ) -> Result<Option<RawTransaction>, TxReadError> {
-        Ok(None)
+        Ok(self
+            .chain
+            .raw_transactions
+            .iter()
+            .find(|(scripted, _)| *scripted == id)
+            .map(|(_, tx)| tx.clone()))
     }
 }
 

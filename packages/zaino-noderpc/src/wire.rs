@@ -50,6 +50,11 @@ pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Lowercase hex of an arbitrary byte slice (domain -> wire).
+pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Render an address delta for the wire (domain -> wire).
 pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
     AddressDeltaEntry {
