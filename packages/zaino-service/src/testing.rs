@@ -33,13 +33,14 @@ use zaino_primitives::types::{
 
 use crate::error::{
     AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError,
-    SpendReadError, Transient, TreestateReadError, TxReadError,
+    SpendReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, BlockRead, BlockVerboseRead, Broadcast, ChainInfoRead, ChainSegment,
-    CompactBlockRead, CompactNullifierRead, ForkReconcile, IndexerService, MempoolContent,
-    MempoolSubscribe, NodeQueryRelay, RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot,
-    SpendRead, TakeSnapshot, TipSubscribe, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead,
+    ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile, IndexerService,
+    LocatedTransactionView, MempoolContent, MempoolSubscribe, NodeQueryRelay, RawTransactionRead,
+    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
+    TransactionRead, TransactionViewRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -71,6 +72,14 @@ pub struct MockChain {
     /// Scripted full block. When `Some`, [`BlockRead::block`] returns it for any
     /// selector; when `None`, it answers `Ok(None)`.
     pub block: Option<Block>,
+    /// Scripted resolved transaction. When `Some`,
+    /// [`TransactionViewRead::transaction_view`] returns it for any id; when
+    /// `None`, it answers `Ok(None)`.
+    pub transaction_view: Option<LocatedTransactionView>,
+    /// Scripted resolved block. When `Some`,
+    /// [`TransactionViewRead::block_transaction_views`] returns it for any
+    /// selector; when `None`, it answers `Ok(None)`.
+    pub block_transaction_views: Option<BlockTransactionViews>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -391,6 +400,23 @@ impl BlockVerboseRead for MockSnapshot {
         _at: BlockSelector,
     ) -> Result<Option<BlockVerbose>, BlockReadError> {
         Ok(self.chain.block_verbose.clone())
+    }
+}
+
+impl TransactionViewRead for MockSnapshot {
+    async fn transaction_view(
+        &self,
+        _id: TransactionId,
+    ) -> Result<Option<LocatedTransactionView>, TransactionViewError> {
+        // A scripted view is returned verbatim for any id, so a test can pin every
+        // field through the serving adapter; absent it, a served `None`.
+        Ok(self.chain.transaction_view.clone())
+    }
+    async fn block_transaction_views(
+        &self,
+        _at: BlockSelector,
+    ) -> Result<Option<BlockTransactionViews>, TransactionViewError> {
+        Ok(self.chain.block_transaction_views.clone())
     }
 }
 

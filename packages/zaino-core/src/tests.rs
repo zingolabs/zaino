@@ -828,20 +828,39 @@ mod block_verbose_reads {
         assert_eq!(header, sample_block_header_verbose());
     }
 
+    /// A verbose block distinct from [`sample_block_verbose`] in an asserted
+    /// field, so the by-height and by-hash arms carry different canned values and
+    /// a swapped selector is caught rather than passing on a shared value.
+    fn distinct_verbose() -> zaino_primitives::types::BlockVerbose {
+        let mut block = sample_block_verbose();
+        block.confirmations = 99;
+        block
+    }
+
     #[tokio::test]
     async fn block_verbose_by_height_passes_through() {
-        let engine = engine_with(MockChain::new().with_block_verbose(sample_block_verbose()));
+        let engine = engine_with(
+            MockChain::new()
+                .with_block_verbose(sample_block_verbose())
+                .with_block_verbose_by_hash(distinct_verbose()),
+        );
         let snapshot = engine.snapshot().await.expect("snapshot acquired");
         let block = BlockVerboseRead::block_verbose(&snapshot, BlockSelector::Height(height(5)))
             .await
             .expect("served")
             .expect("present");
+        // The by-height selector reads the by-height port, not the by-hash one.
         assert_eq!(block, sample_block_verbose());
+        assert_ne!(block, distinct_verbose());
     }
 
     #[tokio::test]
     async fn block_verbose_by_hash_passes_through() {
-        let engine = engine_with(MockChain::new().with_block_verbose(sample_block_verbose()));
+        let engine = engine_with(
+            MockChain::new()
+                .with_block_verbose(sample_block_verbose())
+                .with_block_verbose_by_hash(distinct_verbose()),
+        );
         let snapshot = engine.snapshot().await.expect("snapshot acquired");
         let block = BlockVerboseRead::block_verbose(
             &snapshot,
@@ -850,7 +869,9 @@ mod block_verbose_reads {
         .await
         .expect("served")
         .expect("present");
-        assert_eq!(block, sample_block_verbose());
+        // The by-hash selector reads the by-hash port, not the by-height one.
+        assert_eq!(block, distinct_verbose());
+        assert_ne!(block, sample_block_verbose());
     }
 
     #[tokio::test]
@@ -962,5 +983,201 @@ mod chain_info_reads {
             Err(ReadError::Transient(_)) => {}
             other => panic!("an unreachable validator must error, not default: {other:?}"),
         }
+    }
+}
+
+// --- resolved-transaction reads: always passthrough -------------------------
+//
+// `TransactionViewRead` relays the validator's decoded transaction / decoded
+// block and resolves every transparent input to the output it spends. A miss on
+// the requested transaction or block is `Ok(None)`.
+mod transaction_view_reads {
+    use super::*;
+    use zaino_primitives::types::{
+        BlockHash, BlockSelector, CoinbaseInput, Script, Transaction, TransactionDetail,
+        TransactionLocation, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
+    };
+    use zaino_service::TransactionViewRead;
+    use zaino_source::mock::sample_decoded_block;
+
+    fn id(byte: u8) -> TransactionId {
+        TransactionId::from([byte; 32])
+    }
+
+    /// A v5 non-coinbase envelope — the mock's default for a decoded transaction.
+    fn plain_detail() -> TransactionDetail {
+        TransactionDetail {
+            version: 5,
+            overwintered: true,
+            version_group_id: Some(0x26A7_270A),
+            lock_time: 0,
+            expiry_height: Some(height(0)),
+            size: 180,
+            coinbase: None,
+            joinsplits: Vec::new(),
+        }
+    }
+
+    /// A coinbase envelope: the input lives here, not in the indexing shape.
+    fn coinbase_detail() -> TransactionDetail {
+        TransactionDetail {
+            coinbase: Some(CoinbaseInput {
+                script: Script::new(vec![0x03, 0x01, 0x02]),
+                sequence: 0xffff_ffff,
+            }),
+            ..plain_detail()
+        }
+    }
+
+    /// A transaction whose one transparent input spends an *external* txid and
+    /// which carries one output, so the mock (which answers any txid with this
+    /// same transaction) resolves the prevout to this output.
+    fn spending_tx() -> Transaction {
+        Transaction {
+            txid: id(7),
+            transparent: TransparentData {
+                inputs: vec![TransparentInput {
+                    prev_txid: id(9),
+                    prev_index: 0,
+                }],
+                outputs: vec![TransparentOutput {
+                    value: Zatoshis::new(4200).expect("amount in range"),
+                    script: Script::new(vec![0x51]),
+                }],
+            },
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        }
+    }
+
+    fn coinbase_tx() -> Transaction {
+        Transaction {
+            txid: id(1),
+            transparent: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn transaction_view_of_a_coinbase_has_no_inputs_to_resolve() {
+        let engine = engine_with(
+            MockChain::new()
+                .respond_transaction_verbose(
+                    coinbase_tx(),
+                    TransactionLocation::BestChain(height(9)),
+                )
+                .with_detail(coinbase_detail()),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let located = TransactionViewRead::transaction_view(&snapshot, id(1))
+            .await
+            .expect("served")
+            .expect("present");
+        // Coinbase-ness is data in the detail; the indexing shape has no inputs, so
+        // nothing is resolved and no prevout is fetched.
+        assert!(located.view.inputs.is_empty());
+        assert!(located.view.detail.coinbase.is_some());
+        assert_eq!(located.location, TransactionLocation::BestChain(height(9)));
+    }
+
+    #[tokio::test]
+    async fn transaction_view_resolves_a_prevout_the_validator_knows() {
+        let spender = spending_tx();
+        let engine = engine_with(
+            MockChain::new()
+                .respond_transaction_verbose(spender.clone(), TransactionLocation::Mempool),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let located = TransactionViewRead::transaction_view(&snapshot, id(7))
+            .await
+            .expect("served")
+            .expect("present");
+        assert_eq!(located.view.inputs.len(), 1);
+        // The input names the external outpoint it spends, resolved to the spent
+        // output — here the validator's canned transaction's own output.
+        assert_eq!(
+            located.view.inputs[0].outpoint,
+            spender.transparent.inputs[0]
+        );
+        assert_eq!(located.view.inputs[0].spent, spender.transparent.outputs[0]);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_txid_is_a_served_none() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let answer = TransactionViewRead::transaction_view(&snapshot, id(3))
+            .await
+            .expect("a domain miss is a served None, not an error");
+        assert!(answer.is_none());
+    }
+
+    #[tokio::test]
+    async fn block_transaction_views_by_height_reads_the_by_height_port() {
+        // The two ports hold blocks with distinct tags, so a swapped selector
+        // returns the wrong block and this test fails.
+        let engine = engine_with(
+            MockChain::new()
+                .with_block_decoded(sample_decoded_block(0x10, 500))
+                .with_block_decoded_by_hash(sample_decoded_block(0x20, 900)),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let views = TransactionViewRead::block_transaction_views(
+            &snapshot,
+            BlockSelector::Height(height(5)),
+        )
+        .await
+        .expect("served")
+        .expect("present");
+        assert_eq!(views.size, 500);
+        // The coinbase is first; its txid carries the by-height tag, not by-hash's.
+        assert_eq!(views.transactions[0].transaction.txid, id(0x10));
+        assert!(views.transactions[0].detail.coinbase.is_some());
+    }
+
+    #[tokio::test]
+    async fn block_transaction_views_by_hash_reads_the_by_hash_port() {
+        let engine = engine_with(
+            MockChain::new()
+                .with_block_decoded(sample_decoded_block(0x10, 500))
+                .with_block_decoded_by_hash(sample_decoded_block(0x20, 900)),
+        );
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let views = TransactionViewRead::block_transaction_views(
+            &snapshot,
+            BlockSelector::Hash(BlockHash::from([2u8; 32])),
+        )
+        .await
+        .expect("served")
+        .expect("present");
+        assert_eq!(views.size, 900);
+        assert_eq!(views.transactions[0].transaction.txid, id(0x20));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_block_is_a_served_none() {
+        let engine = engine_with(MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        assert!(
+            TransactionViewRead::block_transaction_views(
+                &snapshot,
+                BlockSelector::Height(height(99))
+            )
+            .await
+            .expect("a domain miss is a served None, not an error")
+            .is_none()
+        );
+        assert!(
+            TransactionViewRead::block_transaction_views(
+                &snapshot,
+                BlockSelector::Hash(BlockHash::from([9u8; 32]))
+            )
+            .await
+            .expect("a domain miss is a served None, not an error")
+            .is_none()
+        );
     }
 }

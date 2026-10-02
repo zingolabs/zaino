@@ -64,9 +64,13 @@ pub struct MockChain {
     /// Canned verbose block-header response, returned for any hash; `None`
     /// answers a domain not-found.
     block_header_verbose_response: Option<BlockHeaderVerbose>,
-    /// Canned verbose block response, returned for any height or hash; `None`
-    /// answers a domain not-found.
+    /// Canned verbose block returned by `get_block_verbose` for any height;
+    /// `None` answers a domain not-found.
     block_verbose_response: Option<BlockVerbose>,
+    /// Canned verbose block returned by `get_block_verbose_by_hash` for any hash,
+    /// settable apart from the by-height value so a test can prove the two arms
+    /// read distinct sources; `None` answers a domain not-found.
+    block_verbose_by_hash_response: Option<BlockVerbose>,
     /// Canned decoded block returned by `get_block_decoded` for any height;
     /// `None` answers a domain not-found.
     block_decoded_response: Option<DecodedBlock>,
@@ -95,6 +99,7 @@ impl MockChain {
             blockchain_info_response: None,
             block_header_verbose_response: None,
             block_verbose_response: None,
+            block_verbose_by_hash_response: None,
             block_decoded_response: None,
             block_decoded_by_hash_response: None,
             subtree_roots: Vec::new(),
@@ -147,10 +152,21 @@ impl MockChain {
         self
     }
 
-    /// Seed the response `get_block_verbose` / `get_block_verbose_by_hash`
-    /// returns for any height or hash.
+    /// Seed the response both `get_block_verbose` and `get_block_verbose_by_hash`
+    /// return. Override the by-hash arm alone with
+    /// [`with_block_verbose_by_hash`](Self::with_block_verbose_by_hash) so a test
+    /// can give the two arms distinct values and catch a swapped selector.
     pub fn with_block_verbose(mut self, block: BlockVerbose) -> Self {
-        self.block_verbose_response = Some(block);
+        self.block_verbose_response = Some(block.clone());
+        self.block_verbose_by_hash_response = Some(block);
+        self
+    }
+
+    /// Seed the response `get_block_verbose_by_hash` returns, apart from the
+    /// by-height value; call after [`with_block_verbose`](Self::with_block_verbose)
+    /// to make the two arms distinct.
+    pub fn with_block_verbose_by_hash(mut self, block: BlockVerbose) -> Self {
+        self.block_verbose_by_hash_response = Some(block);
         self
     }
 
@@ -261,6 +277,7 @@ impl Clone for MockChain {
             blockchain_info_response: self.blockchain_info_response.clone(),
             block_header_verbose_response: self.block_header_verbose_response.clone(),
             block_verbose_response: self.block_verbose_response.clone(),
+            block_verbose_by_hash_response: self.block_verbose_by_hash_response.clone(),
             block_decoded_response: self.block_decoded_response.clone(),
             block_decoded_by_hash_response: self.block_decoded_by_hash_response.clone(),
             subtree_roots: self.subtree_roots.clone(),
@@ -574,7 +591,7 @@ impl crate::OneShotGetBlockVerboseByHash for MockChain {
         if let Some(err) = self.maybe_fail() {
             return Err(err);
         }
-        self.block_verbose_response
+        self.block_verbose_by_hash_response
             .clone()
             .ok_or(QueryError::Domain(GetBlockVerboseError::BlockNotFound(
                 hash,

@@ -260,6 +260,7 @@ let mock = MockChain::new()
     .with_blockchain_info(info)             // scripts `get_blockchain_info`
     .with_block_header_verbose(header)      // scripts `get_block_header`
     .with_block_verbose(block_verbose)      // scripts `get_block_verbose[_by_hash]`
+    .with_block_verbose_by_hash(other)      // overrides the by-hash arm alone
     .with_block_decoded(decoded)            // scripts `get_block_decoded`
     .with_block_decoded_by_hash(other)      // scripts `get_block_decoded_by_hash`
     .fail_next(2, FailureMode::Timeout);    // failure injection
@@ -269,7 +270,8 @@ let mock = MockChain::new()
 their honest empty/not-found/not-ready domain answer (`get_blockchain_info`
 answers `NotReady` until `with_blockchain_info` seeds one; the verbose block
 ports answer `BlockNotFound`/`HeightNotFound` until seeded, and one
-`with_block_verbose` answers both the by-height and by-hash ports). Ready-made
+`with_block_verbose` seeds both the by-height and by-hash ports unless
+`with_block_verbose_by_hash` overrides the by-hash arm). Ready-made
 fixtures with a distinct value in every field — `sample_blockchain_info()`,
 `sample_block_header_verbose()`, `sample_block_verbose()` — seed the mock or
 assert a passthrough carried each field intact.

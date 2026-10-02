@@ -12,7 +12,8 @@
 
 use crate::reads::{
     AddressRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead,
-    CompactNullifierRead, RawTransactionRead, SpendRead, TransactionRead, TreestateRead,
+    CompactNullifierRead, RawTransactionRead, SpendRead, TransactionRead, TransactionViewRead,
+    TreestateRead,
 };
 
 /// Reads shared by every wallet-shaped consumer — scan compact blocks, build
@@ -55,10 +56,14 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// surface that speaks zcashd's contract needs both forms. It also carries
 /// [`BlockVerboseRead`] alongside [`BlockRead`]: the block page composes the two
 /// (the block's contents plus its chain position) into one `getblock` response.
+/// [`TransactionViewRead`] is the resolved-transaction surface over these:
+/// `getrawtransaction <txid> 1` and `getblock <block> 2` render each transparent
+/// input with the output it spends, which only this read resolves.
 pub trait NodeRpcReads:
     BlockRead
     + BlockVerboseRead
     + TransactionRead
+    + TransactionViewRead
     + RawTransactionRead
     + SpendRead
     + AddressRead
@@ -70,6 +75,7 @@ impl<T> NodeRpcReads for T where
     T: BlockRead
         + BlockVerboseRead
         + TransactionRead
+        + TransactionViewRead
         + RawTransactionRead
         + SpendRead
         + AddressRead
