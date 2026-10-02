@@ -235,14 +235,19 @@ use zaino_source::mock::MockChain;
 let mock = MockChain::new()
     .with_block(block)
     .with_blockchain_info(info)             // scripts `get_blockchain_info`
+    .with_block_header_verbose(header)      // scripts `get_block_header`
+    .with_block_verbose(block_verbose)      // scripts `get_block_verbose[_by_hash]`
     .fail_next(2, FailureMode::Timeout);    // failure injection
 ```
 
 `MockChain` answers every `OneShot*` port. Reads with no scripted response give
 their honest empty/not-found/not-ready domain answer (`get_blockchain_info`
-answers `NotReady` until `with_blockchain_info` seeds one). `sample_blockchain_info()`
-is a ready-made fixture with a distinct value in every field, for seeding the
-mock or asserting a passthrough carried each field intact.
+answers `NotReady` until `with_blockchain_info` seeds one; the verbose block
+ports answer `BlockNotFound`/`HeightNotFound` until seeded, and one
+`with_block_verbose` answers both the by-height and by-hash ports). Ready-made
+fixtures with a distinct value in every field — `sample_blockchain_info()`,
+`sample_block_header_verbose()`, `sample_block_verbose()` — seed the mock or
+assert a passthrough carried each field intact.
 
 If you add a mock module elsewhere, gate it `#[cfg(any(test, feature = "..."))]`
 — a bare `#[cfg(feature = ...)]` that nothing in the workspace enables means the

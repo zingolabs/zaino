@@ -27,19 +27,22 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockchainInfo, Height, PreIndexCompactBlock,
-    PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, Height,
+    PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots,
+    Treestate, Utxo,
 };
 
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
-    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockchainInfoError,
-    GetChainTipError, GetCommitmentTreeRootsError, GetMempoolTxidsError,
-    GetRawMempoolTransactionError, GetSubtreeRootsError, GetTransactionError,
+    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
+    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetCommitmentTreeRootsError,
+    GetMempoolTxidsError, GetRawMempoolTransactionError, GetSubtreeRootsError, GetTransactionError,
     GetTransactionVerboseError, GetTreestateError, OneShotGetAddressBalance,
     OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetBlock,
-    OneShotGetBlockByHash, OneShotGetBlockchainInfo, OneShotGetChainTip,
+    OneShotGetBlockByHash, OneShotGetBlockHeader, OneShotGetBlockVerbose,
+    OneShotGetBlockVerboseByHash, OneShotGetBlockchainInfo, OneShotGetChainTip,
     OneShotGetCommitmentTreeRoots, OneShotGetMempoolCompactTransaction, OneShotGetMempoolSourceTip,
     OneShotGetMempoolTxids, OneShotGetPreIndexCompactBlock, OneShotGetRawMempoolTransaction,
     OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTransactionVerbose,
@@ -215,6 +218,40 @@ impl<V: OneShotGetTransactionVerbose + ?Sized> OneShotGetTransactionVerbose for 
         >,
     > + Send {
         (**self).get_transaction_verbose(txid)
+    }
+}
+
+// The serving path's verbose block reads (the explorer's `getblockheader` and
+// `getblock`) reach the validator through the same `Arc<V>`: header-plus-chain-
+// state, and verbose block metadata addressed by height or by hash.
+impl<V: OneShotGetBlockHeader + ?Sized> OneShotGetBlockHeader for Arc<V> {
+    fn get_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<
+        Output = Result<BlockHeaderVerbose, QueryError<GetBlockHeaderError, Self::NonDomain>>,
+    > + Send {
+        (**self).get_block_header(hash)
+    }
+}
+
+impl<V: OneShotGetBlockVerbose + ?Sized> OneShotGetBlockVerbose for Arc<V> {
+    fn get_block_verbose(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError, Self::NonDomain>>>
+           + Send {
+        (**self).get_block_verbose(height)
+    }
+}
+
+impl<V: OneShotGetBlockVerboseByHash + ?Sized> OneShotGetBlockVerboseByHash for Arc<V> {
+    fn get_block_verbose_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError, Self::NonDomain>>>
+           + Send {
+        (**self).get_block_verbose_by_hash(hash)
     }
 }
 

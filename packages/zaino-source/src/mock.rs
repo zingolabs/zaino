@@ -11,13 +11,15 @@ use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate
 use crate::error::{FailureMode, NonDomainError};
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
-    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockchainInfoError,
-    GetChainTipError, GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError,
-    GetTreestateError, QueryError, SendRawTransactionError, TransactionResponse,
+    GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
+    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetSubtreeRootsError,
+    GetTransactionError, GetTransactionVerboseError, GetTreestateError, QueryError,
+    SendRawTransactionError, TransactionResponse,
 };
+use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, BlockchainInfo, ShieldedPool, SubtreeRoot, Transaction,
-    TransactionLocation, Utxo,
+    AddressBalance, AddressDelta, BlockVerbose, BlockchainInfo, ShieldedPool, SubtreeRoot,
+    Transaction, TransactionLocation, Utxo,
 };
 
 /// A pre-populated in-memory chain for testing.
@@ -43,6 +45,12 @@ pub struct MockChain {
     /// Canned blockchain-info response, returned for any query; `None` answers a
     /// domain not-ready.
     blockchain_info_response: Option<BlockchainInfo>,
+    /// Canned verbose block-header response, returned for any hash; `None`
+    /// answers a domain not-found.
+    block_header_verbose_response: Option<BlockHeaderVerbose>,
+    /// Canned verbose block response, returned for any height or hash; `None`
+    /// answers a domain not-found.
+    block_verbose_response: Option<BlockVerbose>,
     /// Canned subtree roots, returned for any index query.
     subtree_roots: Vec<SubtreeRoot>,
 }
@@ -62,6 +70,8 @@ impl MockChain {
             transaction_response: None,
             transaction_verbose_response: None,
             blockchain_info_response: None,
+            block_header_verbose_response: None,
+            block_verbose_response: None,
             subtree_roots: Vec::new(),
         }
     }
@@ -88,6 +98,19 @@ impl MockChain {
     /// Seed the response `get_blockchain_info` returns.
     pub fn with_blockchain_info(mut self, info: BlockchainInfo) -> Self {
         self.blockchain_info_response = Some(info);
+        self
+    }
+
+    /// Seed the response `get_block_header` returns for any hash.
+    pub fn with_block_header_verbose(mut self, header: BlockHeaderVerbose) -> Self {
+        self.block_header_verbose_response = Some(header);
+        self
+    }
+
+    /// Seed the response `get_block_verbose` / `get_block_verbose_by_hash`
+    /// returns for any height or hash.
+    pub fn with_block_verbose(mut self, block: BlockVerbose) -> Self {
+        self.block_verbose_response = Some(block);
         self
     }
 
@@ -181,6 +204,8 @@ impl Clone for MockChain {
             transaction_response: self.transaction_response.clone(),
             transaction_verbose_response: self.transaction_verbose_response.clone(),
             blockchain_info_response: self.blockchain_info_response.clone(),
+            block_header_verbose_response: self.block_header_verbose_response.clone(),
+            block_verbose_response: self.block_verbose_response.clone(),
             subtree_roots: self.subtree_roots.clone(),
         }
     }
@@ -454,6 +479,50 @@ impl crate::OneShotGetBlockchainInfo for MockChain {
     }
 }
 
+impl crate::OneShotGetBlockHeader for MockChain {
+    async fn get_block_header(
+        &self,
+        hash: BlockHash,
+    ) -> Result<BlockHeaderVerbose, QueryError<GetBlockHeaderError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.block_header_verbose_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockHeaderError::BlockNotFound(hash)))
+    }
+}
+
+impl crate::OneShotGetBlockVerbose for MockChain {
+    async fn get_block_verbose(
+        &self,
+        height: Height,
+    ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.block_verbose_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockVerboseError::HeightNotFound(
+                height,
+            )))
+    }
+}
+
+impl crate::OneShotGetBlockVerboseByHash for MockChain {
+    async fn get_block_verbose_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.block_verbose_response
+            .clone()
+            .ok_or(QueryError::Domain(GetBlockVerboseError::BlockNotFound(hash)))
+    }
+}
+
 impl crate::OneShotGetSubtreeRoots for MockChain {
     async fn get_subtree_roots(
         &self,
@@ -534,6 +603,74 @@ pub fn sample_blockchain_info() -> BlockchainInfo {
             chain_tip: ConsensusBranchId::new(0x1234),
             next_block: ConsensusBranchId::new(0x5678),
         },
+    }
+}
+
+/// A [`BlockHeaderVerbose`] fixture with a distinct, non-default value in every
+/// field, for seeding a [`MockChain`] (or asserting a passthrough carried each
+/// field intact) from downstream crates. Behind the `testing` feature so it is
+/// reusable, not just an in-crate test helper. The values are arbitrary but
+/// mutually distinguishable, so a consumer that drops or defaults any one field
+/// fails an equality check against this fixture.
+#[cfg(any(test, feature = "testing"))]
+pub fn sample_block_header_verbose() -> BlockHeaderVerbose {
+    use zaino_primitives::types::{AbsoluteChainWork, BlockHash, CompactDifficulty, Height};
+    let mut work_bytes = [0u8; 32];
+    work_bytes[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    BlockHeaderVerbose {
+        hash: BlockHash::from([0x11; 32]),
+        confirmations: 12,
+        height: Height::try_from(654_321).expect("valid height"),
+        version: 4,
+        merkle_root: [0x22; 32].into(),
+        time: 1_600_000_000,
+        nonce: [0x33; 32],
+        solution: vec![0x44, 0x45, 0x46],
+        bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+        difficulty: 1.5,
+        block_commitments: Some([0x55; 32].into()),
+        final_sapling_root: Some([0x66; 32].into()),
+        chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+        previous_block_hash: Some(BlockHash::from([0x77; 32])),
+        next_block_hash: Some(BlockHash::from([0x88; 32])),
+    }
+}
+
+/// A [`BlockVerbose`] fixture with a distinct, non-default value in every field,
+/// for seeding a [`MockChain`] (or asserting a passthrough carried each field
+/// intact) from downstream crates. Behind the `testing` feature so it is
+/// reusable, not just an in-crate test helper. The values are arbitrary but
+/// mutually distinguishable, so a consumer that drops or defaults any one field
+/// fails an equality check against this fixture.
+#[cfg(any(test, feature = "testing"))]
+pub fn sample_block_verbose() -> BlockVerbose {
+    use zaino_primitives::types::{
+        AbsoluteChainWork, BlockHash, BlockTreeSizes, TreeSize, ValuePoolBalance, Zatoshis,
+    };
+    let mut work_bytes = [0u8; 32];
+    work_bytes[28..].copy_from_slice(&[0x0b, 0xad, 0xf0, 0x0d]);
+    BlockVerbose {
+        confirmations: 9,
+        difficulty: 2.5,
+        chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+        chain_supply: Some(ValuePoolBalance {
+            id: String::new(),
+            chain_value: Zatoshis::new(21_000_000).expect("valid amount"),
+            monitored: true,
+            value_delta: None,
+        }),
+        value_pools: vec![ValuePoolBalance {
+            id: "orchard".to_string(),
+            chain_value: Zatoshis::new(3_000).expect("valid amount"),
+            monitored: true,
+            value_delta: None,
+        }],
+        tree_sizes: BlockTreeSizes {
+            sapling: TreeSize::from(10u32),
+            orchard: TreeSize::from(20u32),
+            ironwood: TreeSize::from(30u32),
+        },
+        next_block_hash: Some(BlockHash::from([0x99; 32])),
     }
 }
 
@@ -705,6 +842,70 @@ mod tests {
         assert!(matches!(
             err,
             QueryError::Domain(GetBlockchainInfoError::NotReady)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_block_header_returns_the_scripted_header() {
+        let mock = MockChain::new().with_block_header_verbose(sample_block_header_verbose());
+        let header = crate::OneShotGetBlockHeader::get_block_header(&mock, hash(9))
+            .await
+            .expect("scripted header");
+        assert_eq!(header, sample_block_header_verbose());
+    }
+
+    #[tokio::test]
+    async fn get_block_header_not_found_without_a_script() {
+        let mock = MockChain::new();
+        let err = crate::OneShotGetBlockHeader::get_block_header(&mock, hash(3))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockHeaderError::BlockNotFound(got)) if got == hash(3)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_block_verbose_returns_the_scripted_block() {
+        let mock = MockChain::new().with_block_verbose(sample_block_verbose());
+        let block = crate::OneShotGetBlockVerbose::get_block_verbose(&mock, height(5))
+            .await
+            .expect("scripted block");
+        assert_eq!(block, sample_block_verbose());
+    }
+
+    #[tokio::test]
+    async fn get_block_verbose_not_found_without_a_script() {
+        let mock = MockChain::new();
+        let err = crate::OneShotGetBlockVerbose::get_block_verbose(&mock, height(5))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockVerboseError::HeightNotFound(got)) if got == height(5)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_block_verbose_by_hash_returns_the_scripted_block() {
+        let mock = MockChain::new().with_block_verbose(sample_block_verbose());
+        let block = crate::OneShotGetBlockVerboseByHash::get_block_verbose_by_hash(&mock, hash(5))
+            .await
+            .expect("scripted block");
+        assert_eq!(block, sample_block_verbose());
+    }
+
+    #[tokio::test]
+    async fn get_block_verbose_by_hash_not_found_without_a_script() {
+        let mock = MockChain::new();
+        let err =
+            crate::OneShotGetBlockVerboseByHash::get_block_verbose_by_hash(&mock, hash(7))
+                .await
+                .unwrap_err();
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetBlockVerboseError::BlockNotFound(got)) if got == hash(7)
         ));
     }
 
