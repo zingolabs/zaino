@@ -180,7 +180,6 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
             "no blocks available yet".to_string(),
         ),
         RpcError::Unavailable(t) => (ErrorCode::InternalError, t.to_string()),
-        RpcError::SpendRead(e) => (ErrorCode::InternalError, e.to_string()),
         RpcError::Read(e) => (ErrorCode::InternalError, e.to_string()),
         RpcError::AddressRead(AddressReadError::Transient(cause)) => {
             (ErrorCode::InternalError, cause)

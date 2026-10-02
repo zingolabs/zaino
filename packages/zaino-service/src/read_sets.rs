@@ -12,8 +12,7 @@
 
 use crate::reads::{
     AddressRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead,
-    CompactNullifierRead, RawTransactionRead, SpendRead, TransactionRead, TransactionViewRead,
-    TreestateRead,
+    CompactNullifierRead, RawTransactionRead, TransactionRead, TransactionViewRead, TreestateRead,
 };
 
 /// Reads shared by every wallet-shaped consumer — scan compact blocks, build
@@ -47,9 +46,9 @@ impl<T> FullWalletReads for T where T: WalletReadCore {}
 pub trait LightWalletReads: WalletReadCore + CompactNullifierRead {}
 impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 
-/// The node-RPC / explorer read demand: raw blocks and spend lookups the
-/// wallet-shaped consumers never need, plus the chain-info aggregate. A
-/// distinct shape, not a wallet delta.
+/// The node-RPC / explorer read demand: raw blocks the wallet-shaped consumers
+/// never need, plus the chain-info aggregate. A distinct shape, not a wallet
+/// delta.
 ///
 /// Carries both transaction reads. They are not alternatives: one RPC serves
 /// raw bytes at verbosity 0 and the decoded transaction at verbosity 1, so a
@@ -59,13 +58,20 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// [`TransactionViewRead`] is the resolved-transaction surface over these:
 /// `getrawtransaction <txid> 1` and `getblock <block> 2` render each transparent
 /// input with the output it spends, which only this read resolves.
+///
+/// Spend status (`SpendRead`) is deliberately absent. None of the methods this
+/// set serves needs an outpoint's spend state: the explorer is served
+/// passthrough, and spend status has only a local implementation, so requiring
+/// it would pin the set to a capability no served method consumes and no
+/// passthrough tier provides. It returns when the served `gettxout` /
+/// `getspentinfo` surface lands together with the tier spend-status index, at
+/// which point this set gains `SpendRead` as its own addition.
 pub trait NodeRpcReads:
     BlockRead
     + BlockVerboseRead
     + TransactionRead
     + TransactionViewRead
     + RawTransactionRead
-    + SpendRead
     + AddressRead
     + TreestateRead
     + ChainInfoRead
@@ -77,7 +83,6 @@ impl<T> NodeRpcReads for T where
         + TransactionRead
         + TransactionViewRead
         + RawTransactionRead
-        + SpendRead
         + AddressRead
         + TreestateRead
         + ChainInfoRead
