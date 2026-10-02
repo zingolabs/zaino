@@ -31,8 +31,22 @@ MockIndexerService`.
 - No `mod.rs`. A module with children is `foo.rs` + `foo/`.
 - Wire conversion lives in the adapter (`zaino-noderpc/src/wire*`), never on a
   domain type.
-- No wildcard match arms. `clippy::wildcard_enum_match_arm` is denied; opt out
-  per-site with `#[expect(..., reason = "...")]`.
+- **Prefer exhaustive match arms over a catch-all, and know where that is
+  actually enforced.** `clippy::wildcard_enum_match_arm` is denied in exactly
+  four crates — `zaino-core`, `zaino-component`, `zaino-async`,
+  `zaino-logging`. It is **not** denied in `zaino-address`, `zaino-noderpc` or
+  `zaino-service`, and `zaino-address/src/classify.rs` uses bare `_ =>` arms
+  today and passes clippy.
+
+  In the crates this plan mostly edits, exhaustiveness is therefore a
+  *preference carrying its own reason*, not a tooling constraint: a catch-all
+  silently absorbs a variant added later, which is how an error mapping or a
+  wire rendering goes quietly wrong. Write one arm per variant for that reason.
+  But do not distort a design to dodge a lint that is not active — where a
+  catch-all is the honest semantic (every remaining variant genuinely behaves
+  identically), use it and say so. In `zaino-core` the lint *is* denied, so
+  slice 4's engine work must satisfy it for real; a per-site opt-out there needs
+  `#[expect(..., reason = "...")]`.
 - **Errors: typed causes via `#[source]`, decided context by context.** Never
   `format!` a cause that has a type into a message string, never `expect`, never
   swallow. `#[from]` only where the conversion needs no added context.
