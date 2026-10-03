@@ -393,6 +393,14 @@ impl ReadBudget {
     }
 }
 
+/// A transaction that touched an address, with where it did so when known: the
+/// height, and the transaction's position within its block (`txindex`).
+///
+/// Both are `Option` because a passthrough source reports neither; a local read
+/// supplies both. The pair is the ordering key a multi-address merge needs — a
+/// bare txid cannot be re-sorted — matching zcashd's `(height, txindex, txid)`.
+pub type LocatedTxid = (Option<Height>, Option<u32>, TransactionId);
+
 /// Backed by: transparent/address index. Consumers use the subset they need
 /// (zallet: `unspent_outpoints` + `tx_ids`; an explorer: `balance` + `deltas`).
 ///
@@ -418,24 +426,28 @@ pub trait AddressRead: Send + Sync {
         range: HeightRange,
         budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<Vec<AddressDelta>, AddressReadError>> + Send;
-    /// Every transaction touching `addr` in `range`, each paired with the height
-    /// at which it touched the address when that is known.
+    /// Every transaction touching `addr` in `range`, each paired with where it
+    /// touched the address when that is known: the height, and the transaction's
+    /// position within its block.
     ///
-    /// The height is carried out of the read because a caller merging several
-    /// addresses must order the union by height (zcashd's `getaddresstxids`
-    /// sort), and the bare txid cannot be re-sorted. It is `Option` because a
-    /// **passthrough** source may not report it: zcashd/zebra's `getaddresstxids`
-    /// returns bare txids with no heights, so that path yields `None` rather than
-    /// a fabricated value. A **local** read always supplies `Some` — the index
-    /// knows the height. A single address's result is ordered `(height, txid)` and
-    /// de-duplicated; a transaction that both pays and spends for the address
-    /// appears once.
+    /// Both are carried out of the read because a caller merging several addresses
+    /// must order the union the way zcashd's `getaddresstxids` does — by
+    /// `(height, in-block position, txid)` — and the bare txid cannot be re-sorted.
+    /// Each is `Option` because a **passthrough** source reports neither:
+    /// zcashd/zebra's `getaddresstxids` returns bare txids, so that path yields
+    /// `(None, None, txid)` rather than a fabricated location. A **local** read
+    /// supplies the height (the index knows it) and the position (from the
+    /// txid-location index); the position is `Option` only because a located txid
+    /// whose location is somehow absent degrades to an unknown position rather than
+    /// failing the whole read. A single address's result is ordered
+    /// `(height, position, txid)` and de-duplicated; a transaction that both pays
+    /// and spends for the address appears once.
     fn tx_ids(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
         budget: &mut ReadBudget,
-    ) -> impl Future<Output = Result<Vec<(Option<Height>, TransactionId)>, AddressReadError>> + Send;
+    ) -> impl Future<Output = Result<Vec<LocatedTxid>, AddressReadError>> + Send;
 }
 
 /// Backed by: transparent/address index. The receive side of address history,

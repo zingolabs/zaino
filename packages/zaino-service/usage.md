@@ -189,19 +189,23 @@ the authoritative value rather than re-deriving it.
 compose the remaining insight-explorer address reads the same way, each ordered as
 zcashd orders its equivalent. zcashd builds **one set across all the requested
 addresses**, not one list per address: `getaddresstxids` sorts the union by
-`(height, txid)` and de-duplicates (a transaction touching two of the addresses
-appears once), and `getaddressutxos` sorts the merged unspent set by height. So
-`AddressRead::tx_ids` carries each txid's height out of the read — a bare txid
-cannot be re-sorted — and the query merges the per-address lists, sorts, and
-returns the de-duplicated txids in that order; `address_utxos` merges and stably
-sorts by height (`Utxo` already carries it). The carried height is
-`Option<Height>`: a **local** read always knows it (`Some`), but a **passthrough**
-source does not — zebra's `getaddresstxids` returns bare txids — so that path
-reports `None` rather than a fabricated value. `address_txids` sorts the known
-heights and keeps any unknown-height (`None`) entries in the validator's own
-order, ahead of the known ones, inventing no height; the node-RPC deployment is
-`Address = Local`, so in practice every entry carries `Some` and this is the plain
-`(height, txid)` sort.
+`(height, txindex, txid)` and de-duplicates (a transaction touching two of the
+addresses appears once), and `getaddressutxos` sorts the merged unspent set by
+height. The `txindex` is the transaction's **position in its block**: two
+transactions at one height order by block position, and the txid (its display-hex
+string) is only the final tie-break. So `AddressRead::tx_ids` returns a
+`LocatedTxid` — `(Option<Height>, Option<u32>, TransactionId)`, the height and the
+in-block position — because a bare txid cannot be re-sorted; the query merges the
+per-address lists, sorts by that key, and returns the de-duplicated txids in that
+order; `address_utxos` merges and stably sorts by height (`Utxo` already carries
+it). Both carried fields are `Option`: a **local** read supplies them (the index
+knows the height, the txid-location index the position), but a **passthrough**
+source supplies neither — zebra's `getaddresstxids` returns bare txids — so that
+path reports `(None, None, txid)` rather than a fabricated location. `address_txids`
+sorts the known entries by `(height, position, display-hex txid)` and keeps any
+unknown-height (`None`) entries in the validator's own order, ahead of the known
+ones, inventing nothing; the node-RPC deployment is `Address = Local`, so in
+practice every entry carries a height and a position.
 `address_txids` takes the inclusive optional bounds of `address_deltas`;
 `address_utxos` is range-less — an unspent output is a fact about the current
 chain, not a window of it — and both take the explorer policy: an unserviceable

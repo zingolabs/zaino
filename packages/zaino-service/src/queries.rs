@@ -188,20 +188,23 @@ where
 /// same explorer policy: nothing serviceable (or a backwards range) is an empty
 /// answer, not an error.
 ///
-/// zcashd builds one ordered set across *all* the requested addresses, sorted by
-/// `(height, txid)` and de-duplicated — so a transaction touching two of the
-/// addresses appears once, and the union is globally height-ordered rather than
-/// grouped by address. This mirrors that: the per-address `(height, txid)` lists
-/// are merged, sorted, and de-duplicated by txid; only the bare txids are
-/// returned, in that order.
+/// zcashd builds one ordered set across *all* the requested addresses, keyed on
+/// `(height, in-block position, display-hex txid)` and de-duplicated — so a
+/// transaction touching two of the addresses appears once, and the union is
+/// globally ordered rather than grouped by address. zcashd (like zcashd's own
+/// index) orders transactions sharing a height by their **position in the block**,
+/// not by txid; the txid is only the final tie-break. This mirrors that key: the
+/// per-address `(height, position, txid)` lists are merged, sorted, and
+/// de-duplicated by txid; only the bare txids are returned, in that order.
 ///
-/// A pair whose height is unknown (`None`) can only come from a **passthrough**
-/// source, which returns bare txids. Such entries keep the validator's own order
-/// and are **not** sorted after the known-height ones — they sort *before* every
-/// `Some`, among themselves in arrival order, with no fabricated height imposed.
-/// The node-RPC deployment is `Address = Local`, so in practice every pair here
-/// carries `Some` and this is the plain `(height, txid)` sort; the `None` rule
-/// only governs a hypothetical passthrough caller.
+/// An entry whose height is unknown (`None`) can only come from a **passthrough**
+/// source, which returns bare txids with neither height nor position. Such entries
+/// keep the validator's own order and are **not** sorted after the known ones —
+/// they sort *before* every `Some`, among themselves in arrival order, with
+/// nothing fabricated. Within the known entries, an unknown position (`None`)
+/// likewise sorts before a known one at the same height. The node-RPC deployment
+/// is `Address = Local`, so in practice every entry carries a height and a
+/// position and this is the plain `(height, position, display-hex)` sort.
 pub async fn address_txids<S>(
     snapshot: &S,
     addrs: &[TransparentAddress],
@@ -229,26 +232,29 @@ where
         located.extend(snapshot.tx_ids(addr, range, &mut budget).await?);
     }
     // A stable sort by a key that is `None` for unknown-height entries and
-    // `Some((height, txid))` for known ones. `Option` orders `None` before `Some`,
-    // so unknown-height entries stay ahead of the known ones in their original
-    // (validator) order — the stability preserves it, and no height is invented —
-    // while the known ones sort by zcashd's `(height, txid)` key.
+    // `Some((height, position, display))` for known ones. `Option` orders `None`
+    // before `Some`, so unknown-height (passthrough) entries stay ahead of the
+    // known ones in their original (validator) order — the stability preserves it,
+    // and nothing is invented — while the known ones sort by zcashd's
+    // `(height, in-block position, txid)` key. The position (`Option<u32>`) is the
+    // primary same-height tie-break, matching zcashd/zcashd's block-position order;
+    // `None` positions sort first among a height's entries.
     //
-    // zcashd keys its set on the *display-hex* txid string, not the internal
-    // bytes, and lowercase-hex lexical order is the byte order of the reversed
-    // (display-order) array. So the tie-break reverses the txid bytes rather than
-    // using them as stored, or two same-height txids come back in the wrong order.
-    located.sort_by_key(|(height, txid)| {
+    // zcashd keys the final tie-break on the *display-hex* txid string, not the
+    // internal bytes, and lowercase-hex lexical order is the byte order of the
+    // reversed (display-order) array. So the key reverses the txid bytes rather
+    // than using them as stored.
+    located.sort_by_key(|(height, position, txid)| {
         height.map(|h| {
             let mut display = <[u8; 32]>::from(*txid);
             display.reverse();
-            (u32::from(h), display)
+            (u32::from(h), *position, display)
         })
     });
     let mut seen = HashSet::new();
     Ok(located
         .into_iter()
-        .filter_map(|(_, txid)| seen.insert(txid).then_some(txid))
+        .filter_map(|(_, _, txid)| seen.insert(txid).then_some(txid))
         .collect())
 }
 

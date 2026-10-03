@@ -41,7 +41,7 @@ use zaino_primitives::types::{
     TransactionId, TransparentAddress, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::error::AddressReadError;
-use zaino_service::{AddressRead, ReadBudget};
+use zaino_service::{AddressRead, LocatedTxid, ReadBudget};
 use zaino_sync::primitives::BlockHeight;
 
 use crate::spend_resolve::{resolve_spend, ResolveError};
@@ -195,28 +195,38 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
         budget: &mut ReadBudget,
-    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
+    ) -> Result<Vec<LocatedTxid>, AddressReadError> {
         // Every transaction that moved value for this address: the ones that
         // paid it and the ones that spent what it held. One transaction can do
         // both, and two receives can share one, so the result is deduplicated.
-        // The local index knows each transaction's height, so every pair carries
-        // `Some(height)`, letting a multi-address caller merge the unions by it.
-        // Same bound as `deltas`: a spend in range can belong to a receive from
-        // any earlier height, so the scan is only upper-bounded by `range.end`.
-        let mut txids = Vec::new();
+        // The local index knows each transaction's height and its position in the
+        // block, so every entry carries `Some` for both, letting a multi-address
+        // caller order the union by zcashd's `(height, position, txid)` key. Same
+        // bound as `deltas`: a spend in range can belong to a receive from any
+        // earlier height, so the scan is only upper-bounded by `range.end`.
+        let mut txids: Vec<(Height, Option<u32>, TransactionId)> = Vec::new();
         for entry in self.entries(addr, whole_history_start(), receive_end(range), budget)? {
             if covers(range, entry.height) {
-                txids.push((entry.height, entry.txid));
+                // The paying transaction's block position, from the location index.
+                txids.push((entry.height, self.block_index(entry.txid)?, entry.txid));
             }
             if let Some(site) = entry.spent.filter(|site| covers(range, site.height)) {
-                txids.push((site.height, site.by));
+                // The spending transaction's position is already resolved.
+                txids.push((site.height, Some(site.block_index), site.by));
             }
         }
-        txids.sort_by_key(|(height, txid)| (u32::from(*height), <[u8; 32]>::from(*txid)));
+        // Order the single-address result by zcashd's key so it is already in the
+        // shape the multi-address merge concatenates. The txid tie-break is on the
+        // display-hex order (reversed bytes), the final key below the position.
+        txids.sort_by_key(|(height, position, txid)| {
+            let mut display = <[u8; 32]>::from(*txid);
+            display.reverse();
+            (u32::from(*height), *position, display)
+        });
         txids.dedup();
         Ok(txids
             .into_iter()
-            .map(|(height, txid)| (Some(height), txid))
+            .map(|(height, position, txid)| (Some(height), position, txid))
             .collect())
     }
 }

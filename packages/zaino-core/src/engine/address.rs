@@ -29,7 +29,7 @@ use zaino_primitives::types::{
     TransparentAddress, TransparentReceive, TransparentSpend, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::error::AddressReadError;
-use zaino_service::{AddressRead, AddressReceiveRead, ReadBudget};
+use zaino_service::{AddressRead, AddressReceiveRead, LocatedTxid, ReadBudget};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 
 use super::EngineSnapshot;
@@ -71,7 +71,7 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
         addr: &TransparentAddress,
         range: HeightRange,
         budget: &mut ReadBudget,
-    ) -> impl Future<Output = Result<Vec<(Option<Height>, TransactionId)>, AddressReadError>> + Send;
+    ) -> impl Future<Output = Result<Vec<LocatedTxid>, AddressReadError>> + Send;
 }
 
 /// The one impl a handler sees: dispatch on the routing's placement.
@@ -114,7 +114,7 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
         budget: &mut ReadBudget,
-    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
+    ) -> Result<Vec<LocatedTxid>, AddressReadError> {
         R::Address::tx_ids(self.local(), self.passthrough(), addr, range, budget).await
     }
 }
@@ -172,18 +172,18 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
         _budget: &mut ReadBudget,
-    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
-        // The validator's `getaddresstxids` returns bare txids with no per-txid
-        // height, so each pair's height is `None` — the honest "location unknown",
-        // never a fabricated value. The only consumer of this placement is the
-        // single-address light-wallet `GetTaddressTxids`, which drops the height;
-        // the multi-address merge that needs real heights
+    ) -> Result<Vec<LocatedTxid>, AddressReadError> {
+        // The validator's `getaddresstxids` returns bare txids with neither height
+        // nor in-block position, so each entry carries `None` for both — the honest
+        // "location unknown", never a fabricated value. The only consumer of this
+        // placement is the single-address light-wallet `GetTaddressTxids`, which
+        // drops both; the multi-address merge that needs the real ordering
         // (`queries::address_txids`) runs only under the `Local` placement.
         Ok(passthrough
             .tx_ids(addr, range)
             .await?
             .into_iter()
-            .map(|txid| (None, txid))
+            .map(|txid| (None, None, txid))
             .collect())
     }
 }
@@ -497,12 +497,12 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
         budget: &mut ReadBudget,
-    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
+    ) -> Result<Vec<LocatedTxid>, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
         let store = local.finalised();
 
-        // The store's half is already `(Some(height), txid)`-sorted and
-        // deduplicated — the local index knows every height.
+        // The store's half is already `(Some(height), Some(position), txid)`-sorted
+        // and deduplicated — the local index knows every height and block position.
         let mut txids = match fs {
             Some(range) => store.tx_ids(addr, range, budget).await?,
             None => Vec::new(),
@@ -519,9 +519,10 @@ where
         // Every transaction that moved value for the address in the window: the
         // ones that paid it (at the receive's height), and the ones that spent
         // what it held (at the spend's height) — both heights known, so `Some`.
-        // One can do both, so the window's contribution is sorted and
-        // deduplicated before it is appended; the halves cover disjoint heights
-        // (store <= watermark < window), so the concatenation stays height-ordered
+        // The window reports no in-block position (as for deltas), so the position
+        // is `None`. One transaction can do both, so the window's contribution is
+        // sorted and deduplicated before it is appended; the halves cover disjoint
+        // heights (store <= watermark < window), so the concatenation stays ordered
         // and no transaction spans both.
         let mut from_window: Vec<(Height, TransactionId)> = part
             .receives
@@ -534,7 +535,7 @@ where
         txids.extend(
             from_window
                 .into_iter()
-                .map(|(height, txid)| (Some(height), txid)),
+                .map(|(height, txid)| (Some(height), None, txid)),
         );
         Ok(txids)
     }

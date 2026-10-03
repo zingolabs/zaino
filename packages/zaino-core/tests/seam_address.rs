@@ -259,9 +259,9 @@ async fn transaction_ids_span_both_halves() {
         .tx_ids(&addr_a(), range(0, 4), &mut ReadBudget::for_request())
         .await
         .expect("the read succeeds");
-    // The read pairs each txid with the height it touched the address; here only
-    // the set of transactions is under test.
-    let mut sorted: Vec<TransactionId> = located.into_iter().map(|(_, txid)| txid).collect();
+    // The read pairs each txid with where it touched the address; here only the
+    // set of transactions is under test.
+    let mut sorted: Vec<TransactionId> = located.into_iter().map(|(_, _, txid)| txid).collect();
     sorted.sort_by_key(|txid| <[u8; 32]>::from(*txid));
     sorted.dedup();
     assert_eq!(
@@ -420,32 +420,34 @@ async fn address_utxos_merge_addresses_globally_by_height() {
     );
 }
 
-// --- same-height tie-break, display-hex order --------------------------------
+// --- same-height tie-break, in-block position order --------------------------
 //
-// zcashd keys `getaddresstxids` on the *display-hex* txid, so two txids at the
-// same height order by that hex string, not by the internal (little-endian)
-// bytes. These two txids are chosen so the two orderings disagree, pinning the
-// tie-break against a regression to raw-byte order.
+// zcashd keys `getaddresstxids` on `(height, txindex, txid)` (rpc/misc.cpp): for
+// transactions sharing a height, `txindex` — the position in the block — orders
+// them, and the txid's *display-hex* string is only the final tie-break. These
+// two txids are mined in an order that disagrees with display-hex order, so the
+// result pins the position key and would fail a regression that ordered
+// same-height txids by the txid.
 
-/// Smallest by internal bytes (leading `0x00`), largest by display hex
-/// (`ff00…00`): the high byte sits last in storage and first on the wire.
-fn tx_internal_first() -> TransactionId {
+/// Earlier in the block (position 0 below), but *larger* by display hex
+/// (`ff00…00`): its high byte sits last in storage and first on the wire.
+fn tx_block_first() -> TransactionId {
     let mut bytes = [0u8; 32];
     bytes[31] = 0xFF;
     TransactionId::from(bytes)
 }
-/// Largest by internal bytes (leading `0xFF`), smallest by display hex
-/// (`00…00ff`): the mirror of [`tx_internal_first`]. zcashd returns this one
-/// first at a shared height; the old raw-byte tie-break returned it second.
-fn tx_display_first() -> TransactionId {
+/// Later in the block (position 1 below), but *smaller* by display hex
+/// (`00…00ff`): the mirror of [`tx_block_first`]. A result that ordered by the
+/// txid would return this one first; ordering by block position returns it second.
+fn tx_block_second() -> TransactionId {
     let mut bytes = [0u8; 32];
     bytes[0] = 0xFF;
     TransactionId::from(bytes)
 }
 
 /// A finalised store over `[0, 2]` whose height-1 block mines both
-/// [`tx_internal_first`] and [`tx_display_first`] paying A, so a `tx_ids` read
-/// returns two txids at one shared height for the tie-break to order.
+/// [`tx_block_first`] and [`tx_block_second`] paying A, so a `tx_ids` read returns
+/// two txids at one shared height for the tie-break to order.
 async fn same_height_store() -> StoreReader<InMemoryBackend, TransparentHistory> {
     let backend = InMemoryBackend::new();
     let mut chain = MockChain::new();
@@ -463,10 +465,10 @@ async fn same_height_store() -> StoreReader<InMemoryBackend, TransparentHistory>
                 orchard: Default::default(),
                 ironwood: Default::default(),
             };
-            // Block order deliberately matches the raw-byte order, so a stable
-            // sort that forgot to reverse the bytes would leave them as-is and
-            // the assertion below would fail.
-            block.transactions = vec![pay(tx_internal_first(), 100), pay(tx_display_first(), 200)];
+            // Block order (position 0 then 1) is the reverse of display-hex order,
+            // so a result in block order proves position — not the txid — is the
+            // same-height key.
+            block.transactions = vec![pay(tx_block_first(), 100), pay(tx_block_second(), 200)];
         }
         chain = chain.with_block(block);
     }
@@ -512,19 +514,20 @@ async fn same_height_engine() -> impl AddressRead + ChainSegment {
     engine.snapshot().await.expect("the pin is taken")
 }
 
-/// Two txids at one height come back in display-hex order, not internal-byte
-/// order. The fixture picks txids whose orderings disagree, so this both pins
-/// the zcashd order and fails against the pre-fix raw-byte tie-break.
+/// Two txids at one height come back in **block position** order, not txid order.
+/// The fixture mines them in an order that disagrees with display-hex order, so
+/// this pins zcashd's `(height, position, txid)` key and fails a regression that
+/// ordered same-height txids by the txid alone.
 #[tokio::test]
-async fn address_txids_break_same_height_ties_by_display_hex() {
+async fn address_txids_break_same_height_ties_by_block_position() {
     let snapshot = same_height_engine().await;
     let txids = queries::address_txids(&snapshot, &[addr_a()], None, None)
         .await
         .expect("the read succeeds");
     assert_eq!(
         txids,
-        vec![tx_display_first(), tx_internal_first()],
-        "same-height txids order by display-hex, the reverse of their internal bytes"
+        vec![tx_block_first(), tx_block_second()],
+        "same-height txids order by their position in the block, not by the txid"
     );
 }
 
