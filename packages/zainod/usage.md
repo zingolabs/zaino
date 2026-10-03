@@ -10,33 +10,41 @@ A daemon runs one **deployment**, selected by config:
 
 ```toml
 deployment = "light-wallet-passthrough"   # the default
-# deployment = "node-rpc-passthrough"     # the node / block-explorer JSON-RPC
+# deployment = "light-wallet-local"       # light wallet, address history indexed locally
+# deployment = "node-rpc-local"           # the node / block-explorer JSON-RPC
 ```
 
-| Deployment | Serves | Listens on |
-|---|---|---|
-| `light-wallet-passthrough` | `CompactTxStreamer` gRPC | `serve.grpc_listen_address` (default `127.0.0.1:8137`) |
-| `node-rpc-passthrough` | Zcash node JSON-RPC (zcashd-compatible) | `serve.jsonrpc_listen_address` (default `127.0.0.1:8232`) |
+| Deployment | Builds | Serves | Listens on |
+|---|---|---|---|
+| `light-wallet-passthrough` | compact blocks | `CompactTxStreamer` gRPC, transparent address history **relayed** to the validator | `serve.grpc_listen_address` (default `127.0.0.1:8137`) |
+| `light-wallet-local` | `TransparentHistory` | `CompactTxStreamer` gRPC, transparent address history served **locally** | `serve.grpc_listen_address` (default `127.0.0.1:8137`) |
+| `node-rpc-local` | `TransparentHistory` | Zcash node JSON-RPC (zcashd-compatible), with `getaddressdeltas` and `getspentinfo` served **locally** | `serve.jsonrpc_listen_address` (default `127.0.0.1:8232`) |
 
-Both are layered from `ZAINO_`-prefixed env with `__` for nesting, e.g.
-`ZAINO_DEPLOYMENT=node-rpc-passthrough` and
-`ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS=0.0.0.0:8232`. A non-loopback bind is
-taken as given: neither server applies TLS or an authentication layer, so a
-public bind belongs behind a boundary the deployment controls.
+All are layered from `ZAINO_`-prefixed env with `__` for nesting, e.g.
+`ZAINO_DEPLOYMENT=node-rpc-local` and
+`ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS=0.0.0.0:8232`. `node-rpc-local` also accepts
+the legacy value `node-rpc-passthrough`, so a deploy still setting it keeps
+working. A non-loopback bind is taken as given: neither server applies TLS or an
+authentication layer, so a public bind belongs behind a boundary the deployment
+controls.
 
 A deployment is a type in `zaino_runtime::deployment` binding the use case it
 serves, the routing the engine is composed under and the index set the store
-builds; see the runtime's guide. Both deployments build the `TransparentHistory`
-index set and serve transparent address history locally — `light-wallet-passthrough`
-keeps the wallet's queried addresses off the validator, `node-rpc-passthrough`
-answers `getaddressdeltas`, which a plain-RPC validator cannot. A data directory
-synced under an earlier (compact-block-only) build is refused at boot by the
-index-coverage guard; point the deployment at a fresh, empty data directory and
-resync from genesis. `indexer::select_deployment` is the one
-`match` over `DeploymentKind`: each arm names a deployment and the serving
-adapter that speaks its use case's protocol, hands both to the runtime's
-`boot_indexed`, and nothing else. Adding a deployment is adding an arm; the
-compiler checks the arm's shape at the runtime's `compose`.
+builds; see the runtime's guide. `light-wallet-passthrough` builds only the
+compact-block set and relays transparent address queries to the validator —
+cheaper on disk, but it discloses the wallet's queried addresses. `light-wallet-local`
+and `node-rpc-local` build the `TransparentHistory` set and serve address history
+from it: the light wallet keeps its queried addresses off the validator, and the
+node deployment answers `getaddressdeltas` and `getspentinfo`, which a plain-RPC
+validator cannot. Serving locally has an operational cost: the `TransparentHistory`
+deployments must sync that index from genesis, so a data directory synced under a
+smaller (for example compact-block-only) build is refused at boot by the
+index-coverage guard — point the deployment at a fresh, empty data directory and
+resync from genesis. `indexer::select_deployment` is the one `match` over
+`DeploymentKind`: each arm names a deployment and the serving adapter that speaks
+its use case's protocol, hands both to the runtime's `boot_indexed`, and nothing
+else. Adding a deployment is adding an arm; the compiler checks the arm's shape at
+the runtime's `compose`.
 
 Config **selects** a deployment. It does not shape one: what is built on disk
 and which provider answers a query are properties of the type, not knobs. See

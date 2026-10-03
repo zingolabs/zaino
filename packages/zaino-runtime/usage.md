@@ -26,36 +26,33 @@ ok(D)    ⟺ wired(D): Serves<D::UseCase>
 ```
 
 One use case, several deployments: routing and index set are the deployment's
-choices, not the use case's, so a second implementation of the same demand is
-free to make them differently. The light-wallet demand has one deployment so far,
-`LightWalletPassthrough`: the `TransparentHistory` index set (compact blocks plus
-the address-history, transparent-spends and txid-location indexes), address
-history placed `Local` and everything else relayed to the validator or withheld
-(`LightWalletRouting`), and the `LightWalletSource` bundle. It serves the wallet's
-transparent address reads from its own indexes — so it discloses no queried
-addresses and demands no address source port — while relaying treestate and raw
-transactions. (Its name predates the local address flip and is now a misnomer — a
-rename is deferred because it is the kebab-case deployment value in the live
-`zainod` config. Growing the index set also means a data directory synced under
-the old compact-block set is refused at boot; see the boot-refusal note below.)
+choices, not the use case's. The light-wallet demand has two deployments:
 
-The node-RPC / block-explorer demand has one deployment so far,
-`NodeRpcPassthrough`: the `TransparentHistory` index set (compact blocks plus the
-address-history, transparent-spends and txid-location indexes), address history
-and spend lookup both placed `Local` and every other placement relayed to the
-validator or withheld (`NodeRpcRouting`), and the `NodeRpcSource` bundle. It
-serves `getaddressdeltas` and `getspentinfo` from its own indexes, which a
-plain-RPC validator cannot answer, so `NodeRpcSource` names no address or spend
-source port. (Its name predates the local address flip and is now a misnomer — a
-rename is deferred because it is the kebab-case deployment value in the live
-`zainod` config.)
+- `LightWalletPassthrough` — the compact-block index set and
+  `LightWalletPassthroughRouting` (address history relayed to the validator), with
+  the `LightWalletPassthroughSource` bundle. It discloses the wallet's queried
+  addresses to the validator but builds no transparent index.
+- `LightWalletLocal` — the `TransparentHistory` index set (compact blocks plus the
+  address-history, transparent-spends and txid-location indexes) and
+  `LightWalletLocalRouting` (address history served locally), with the shared
+  `LightWalletSource` bundle. It serves the wallet's transparent address reads from
+  its own indexes, so it discloses no queried addresses and demands no address
+  source port.
 
-Each deployment is one file under `deployment/` holding its marker, its
-`Deployment` impl, its `RuntimePlan` impl and the validator bundle it
-requires (`LightWalletSource`: the indexed assembly's floor,
-`IndexedSource`, plus every port its passthrough placements relay through).
-A deployment that outgrows a file moves to a crate of its own without
-changing anything above it; the seam is these traits, not a crate boundary.
+The node-RPC / block-explorer demand has one deployment, `NodeRpcLocal`: the
+`TransparentHistory` index set, address history and spend lookup both served
+locally and every other placement relayed to the validator or withheld
+(`NodeRpcLocalRouting`), with the `NodeRpcSource` bundle. It serves
+`getaddressdeltas` and `getspentinfo` from its own indexes, which a plain-RPC
+validator cannot answer, so `NodeRpcSource` names no address or spend source port.
+
+The module tree groups deployments by use case: `deployment/light_wallet.rs` and
+`deployment/node_rpc.rs` each hold what their deployments share — the common
+validator floor — over one file per deployment. `LightWalletSource` is that shared
+floor (the indexed assembly's `IndexedSource` plus the always-relayed wallet
+reads); `LightWalletPassthroughSource` extends it with the four address ports its
+routing relays. A deployment that outgrows a file moves to a crate of its own
+without changing anything above it; the seam is these traits, not a crate boundary.
 
 ## Runtime plans
 

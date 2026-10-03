@@ -22,46 +22,61 @@ always local and raw transactions, broadcast, mempool and the upgrade schedule
 are always the validator's, so they are not on it. `placement()` is exhaustive
 over `Capability`: a new variant must be classified.
 
+The light-wallet use case has two routings that differ only in where transparent
+address history is answered:
+
 ```rust,ignore
-pub struct LightWalletRouting;
-impl Routing for LightWalletRouting {
+pub struct LightWalletLocalRouting;
+impl Routing for LightWalletLocalRouting {
     type Address = Local;             // served from Zaino's own transparent indexes
     type Treestate = Passthrough;     // relayed to the validator
     type Spend = Withheld;            // a node read; not offered
     type TransactionLocation = Withheld;
 }
+
+pub struct LightWalletPassthroughRouting;
+impl Routing for LightWalletPassthroughRouting {
+    type Address = Passthrough;       // relayed to the validator
+    type Treestate = Passthrough;
+    type Spend = Withheld;
+    type TransactionLocation = Withheld;
+}
 ```
 
-Address history is `Local`: the wallet's `GetTaddressBalance` / `GetAddressUtxos`
-/ `GetTaddressTxids` are answered from the finalised store's transparent index and
-the non-finalised window, threaded across the watermark, so the wallet's queried
-addresses are never disclosed to the validator. The deployment therefore builds
-the `TransparentHistory` set. `Spend` stays `Withheld`: the light read-set never
-reads an outpoint's spend state through the engine `Spend` placement (the window's
-spend data reaches the address read through `AddressReceiveRead`).
+Under `LightWalletLocalRouting` address history is `Local`: the wallet's
+`GetTaddressBalance` / `GetAddressUtxos` / `GetTaddressTxids` are answered from the
+finalised store's transparent index and the non-finalised window, threaded across
+the watermark, so the wallet's queried addresses are never disclosed to the
+validator — the deployment builds the `TransparentHistory` set for it. Under
+`LightWalletPassthroughRouting` they are relayed to the validator instead,
+disclosing the queried addresses but sparing the transparent index. `Spend` stays
+`Withheld` under both: the light read-set never reads an outpoint's spend state
+through the engine `Spend` placement (the window's spend data reaches the address
+read through `AddressReceiveRead`).
 
-`NodeRpcRouting` is the node-RPC / explorer deployment's routing. The node reads
-the explorer adds (full and verbose blocks, decoded transactions, the chain-info
-aggregate, the node-status reads) are always passthrough and so are not on the
-table at all; what the table decides is that address history is served locally:
+`NodeRpcLocalRouting` is the node-RPC / explorer deployment's routing. The node
+reads the explorer adds (full and verbose blocks, decoded transactions, the
+chain-info aggregate, the node-status reads) are always passthrough and so are not
+on the table at all; what the table decides is that address history and spend
+status are both served locally:
 
 ```rust,ignore
-pub struct NodeRpcRouting;
-impl Routing for NodeRpcRouting {
+pub struct NodeRpcLocalRouting;
+impl Routing for NodeRpcLocalRouting {
     type Address = Local;             // served from Zaino's own transparent indexes
     type Treestate = Passthrough;
-    type Spend = Withheld;            // re-added with a local spend index later
+    type Spend = Local;               // getspentinfo, from the local spends index
     type TransactionLocation = Withheld;
 }
 ```
 
 Address history is `Local` because the explorer's address page needs
 `getaddressdeltas` — full transparent history, receives and spends — which no
-validator answers in plain RPC mode: Zebra has no such method. The deployment
-therefore indexes transparent history itself (the `TransparentHistory` set) and
-discloses no queried addresses to the validator. `Spend` stays `Withheld`: the
-window's spend data is consumed internally through `AddressReceiveRead`, not the
-engine `Spend` placement, so no served method needs a `Local` spend read.
+validator answers in plain RPC mode: Zebra has no such method. Spend status is
+`Local` for the same reason: `getspentinfo` is another indexer-only method Zebra
+answers with `-32601`, read from the spends index `TransparentHistory` builds
+across the seam. The deployment therefore indexes transparent history itself (the
+`TransparentHistory` set) and discloses no queried addresses to the validator.
 
 Routing is a property of the deployment, not of the use case it serves: the
 demand traits in `zaino-service` say nothing about placement, so a second
