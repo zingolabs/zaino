@@ -47,14 +47,20 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
             crate::config::MAINNET_STATE_FIXTURE_ENV,
             config_path.display(),
         );
-        crate::config::mainnet_direct_state_fixture()
+        crate::config::DaemonConfig {
+            deployment: crate::config::fixture_deployment()?,
+            ..crate::config::mainnet_direct_state_fixture()
+        }
     } else if std::env::var_os(crate::config::MAINNET_RPC_FIXTURE_ENV).is_some() {
         warn!(
             "MAINNET RPC FIXTURE CONFIG active ({}) — NOT FOR PRODUCTION; ignoring --config {}",
             crate::config::MAINNET_RPC_FIXTURE_ENV,
             config_path.display(),
         );
-        crate::config::mainnet_rpc_fixture()
+        crate::config::DaemonConfig {
+            deployment: crate::config::fixture_deployment()?,
+            ..crate::config::mainnet_rpc_fixture()
+        }
     } else {
         load_config(&config_path)?
     };

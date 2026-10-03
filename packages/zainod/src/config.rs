@@ -395,7 +395,8 @@ pub const MAINNET_STATE_FIXTURE_ENV: &str = "ZAINO_MAINNET_DIRECT_STATE_FIXTURE"
 /// - [`TEST_FIXTURE_MAP_SIZE_ENV`]: the LMDB map size in GiB (store ceiling).
 ///
 /// The serving policy (mainnet, reorg-margin finalised depth, gRPC on
-/// `0.0.0.0:8137`) is baked. NEVER for production: gated behind BOTH the
+/// `0.0.0.0:8137`, JSON-RPC on `0.0.0.0:8232`) is baked; the deployment is
+/// selected at boot by [`fixture_deployment`]. NEVER for production: gated behind BOTH the
 /// `ztest-fixture` build feature and the runtime env var, with a loud warning on
 /// activation.
 #[cfg(feature = "ztest-fixture")]
@@ -429,7 +430,7 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
         },
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
-            ..ServeConfig::default()
+            jsonrpc_listen_address: SocketAddr::from(([0, 0, 0, 0], 8232)),
         },
         indexer: IndexerConfig::default(),
     }
@@ -461,7 +462,8 @@ pub const MAINNET_RPC_FIXTURE_ENV: &str = "ZAINO_MAINNET_RPC_FIXTURE";
 ///   per height. `full` lets the fixture index from a stock validator.
 ///
 /// The serving policy (mainnet, reorg-margin finalised depth, gRPC on
-/// `0.0.0.0:8137`) is baked. NEVER for production: gated behind BOTH the
+/// `0.0.0.0:8137`, JSON-RPC on `0.0.0.0:8232`) is baked; the deployment is
+/// selected at boot by [`fixture_deployment`]. NEVER for production: gated behind BOTH the
 /// `ztest-fixture` build feature and the runtime env var, with a loud warning on
 /// activation.
 #[cfg(feature = "ztest-fixture")]
@@ -491,13 +493,53 @@ pub fn mainnet_rpc_fixture() -> DaemonConfig {
         },
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
-            ..ServeConfig::default()
+            jsonrpc_listen_address: SocketAddr::from(([0, 0, 0, 0], 8232)),
         },
         indexer: IndexerConfig {
             fetch: fixture_fetch_strategy(),
             ..IndexerConfig::default()
         },
     }
+}
+
+/// The env var a fixture reads to select its deployment.
+///
+/// The same key the layered loader maps onto [`DaemonConfig::deployment`], so a
+/// deploy selects the deployment once whichever config path boots. Absent means
+/// the default deployment.
+#[cfg(feature = "ztest-fixture")]
+pub const FIXTURE_DEPLOYMENT_ENV: &str = "ZAINO_DEPLOYMENT";
+
+/// The deployment a fixture runs: [`FIXTURE_DEPLOYMENT_ENV`] read with the
+/// loader's own kebab-case names, or the default when the variable is unset.
+///
+/// A fixture builds its whole config from env and bypasses the layered loader,
+/// so without this the deployment would be fixed to the default no matter what
+/// the deploy asked for.
+#[cfg(feature = "ztest-fixture")]
+pub fn fixture_deployment() -> Result<DeploymentKind, IndexerError> {
+    deployment_from_env_value(std::env::var(FIXTURE_DEPLOYMENT_ENV))
+}
+
+/// [`fixture_deployment`]'s parse, separated from the process environment so it
+/// is testable without mutating shared env state.
+#[cfg(feature = "ztest-fixture")]
+fn deployment_from_env_value(
+    read: Result<String, std::env::VarError>,
+) -> Result<DeploymentKind, IndexerError> {
+    use serde::de::IntoDeserializer as _;
+
+    let value = match read {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return Ok(DeploymentKind::default()),
+        Err(source @ std::env::VarError::NotUnicode(_)) => {
+            return Err(IndexerError::FixtureDeploymentEnv(source))
+        }
+    };
+    let deserializer: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+        value.as_str().into_deserializer();
+    DeploymentKind::deserialize(deserializer)
+        .map_err(|source| IndexerError::FixtureDeployment { value, source })
 }
 
 /// Serialize the built-in defaults into a commented example config file.
@@ -748,6 +790,59 @@ path = "/tmp/zaino-store"
         assert_eq!(
             config.store.path,
             super::mainnet_direct_state_fixture().store.path
+        );
+    }
+
+    /// A fixture selects its deployment from the same kebab-case names the
+    /// layered loader accepts; unset means the default, and an unknown name or a
+    /// non-Unicode value is a typed error rather than a silent default.
+    #[cfg(feature = "ztest-fixture")]
+    #[test]
+    fn fixture_deployment_reads_the_loaders_names() {
+        use crate::error::IndexerError;
+
+        assert_eq!(
+            super::deployment_from_env_value(Err(std::env::VarError::NotPresent))
+                .expect("unset selects the default"),
+            DeploymentKind::default(),
+        );
+        assert_eq!(
+            super::deployment_from_env_value(Ok("node-rpc-passthrough".to_owned()))
+                .expect("a known deployment name"),
+            DeploymentKind::NodeRpcPassthrough,
+        );
+        assert_eq!(
+            super::deployment_from_env_value(Ok("light-wallet-passthrough".to_owned()))
+                .expect("a known deployment name"),
+            DeploymentKind::LightWalletPassthrough,
+        );
+        assert!(matches!(
+            super::deployment_from_env_value(Ok("node-rpc".to_owned())),
+            Err(IndexerError::FixtureDeployment { value, .. }) if value == "node-rpc"
+        ));
+        assert!(matches!(
+            super::deployment_from_env_value(Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from("x")
+            ))),
+            Err(IndexerError::FixtureDeploymentEnv(_))
+        ));
+    }
+
+    /// Both mainnet fixtures bake the JSON-RPC bind beside the gRPC one, so a
+    /// fixture boot of the node-RPC deployment is reachable in-cluster.
+    #[cfg(feature = "ztest-fixture")]
+    #[test]
+    fn mainnet_fixtures_bind_jsonrpc_on_all_interfaces() {
+        let expected = SocketAddr::from(([0, 0, 0, 0], 8232));
+        assert_eq!(
+            super::mainnet_direct_state_fixture()
+                .serve
+                .jsonrpc_listen_address,
+            expected
+        );
+        assert_eq!(
+            super::mainnet_rpc_fixture().serve.jsonrpc_listen_address,
+            expected
         );
     }
 

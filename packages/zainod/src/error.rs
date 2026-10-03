@@ -30,6 +30,20 @@ pub enum IndexerError {
     #[cfg(feature = "prometheus")]
     #[error("metrics error: {0}")]
     MetricsError(String),
+    /// A fixture's deployment env var names no deployment.
+    #[cfg(feature = "ztest-fixture")]
+    #[error("`ZAINO_DEPLOYMENT={value}` names no deployment")]
+    FixtureDeployment {
+        /// The value the variable held.
+        value: String,
+        /// Why it did not parse as a deployment.
+        #[source]
+        source: serde::de::value::Error,
+    },
+    /// A fixture's deployment env var is not valid Unicode.
+    #[cfg(feature = "ztest-fixture")]
+    #[error("`ZAINO_DEPLOYMENT` is not valid Unicode")]
+    FixtureDeploymentEnv(#[source] std::env::VarError),
     /// A fatal runtime escalation — the caller's run loop restarts the daemon.
     #[error("restart zaino")]
     Restart,
