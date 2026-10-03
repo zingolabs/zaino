@@ -87,16 +87,18 @@ a header missing from the chain view at or below the pinned tip is the typed
 surface (`block_deltas(BlockSelector) -> Result<Option<BlockDeltas>, BlockDeltasError>`).
 `getblockdeltas` is indexer-only — Zebra answers `-32601` — but it needs **no**
 new source port: it is composed from reads this set already holds (`BlockRead`,
-`BlockVerboseRead`, `TransactionViewRead`, and the local `HeaderRead` its median
-time is taken over). `BlockDeltas` carries the block's header/position fields and
-a `deltas` list of per-transaction `InputDelta` (a `SignedZatoshis` spend — always
-negative — with the spent output's `Script` and the prevout) and `OutputDelta` (a
-`Zatoshis` receive with its `Script`); the serving adapter decodes each script to a
-P2PKH/P2SH address with the network it carries, so the domain stays
+`BlockVerboseRead`, `TransactionViewRead`, and the `HeaderRead` its median time is
+taken over — local below the pinned tip, passthrough header reads above it for a
+block still being caught up to). `BlockDeltas` carries the block's header/position
+fields and a `deltas` list of per-transaction `InputDelta` (a `SignedZatoshis`
+spend — always negative — with the spent output's `Script` and the prevout) and
+`OutputDelta` (a `Zatoshis` receive with its `Script`); the serving adapter decodes
+each script to a P2PKH/P2SH address with the network it carries, so the domain stays
 transport-free. A miss on the block is `Ok(None)` (the unknown-block answer); the
 `BlockDeltasError` variants are the resolution, chain-view-hole (`MissingHeader`,
-over the median-time window) and corrupt-amount inconsistencies, each keeping its
-cause under `#[source]`.
+for a local hole at or below the tip in the median-time window), orphan (`Orphan`, a
+block off the main chain — the adapter maps it to zcashd's `-5`) and corrupt-amount
+inconsistencies, each keeping its cause under `#[source]`.
 
 `NodeRpcReads` also carries `SpendRead`, which has two reads. `spend_status`
 answers the three-way spent / unspent / never-created question. `spend_info` is

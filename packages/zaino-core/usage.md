@@ -79,7 +79,7 @@ that capability and on the provider ports that placement needs:
 | compact blocks, nullifier projection | always local | the two tiers' compact reads |
 | header projection (hash + time by height) | always local | the two tiers' `HeaderRead` |
 | timestamp-range block hashes (`getblockhashes`) | always local | the two tiers' `HeaderRead` |
-| block deltas (`getblockdeltas`) | always composed | the block, verbose, transaction-view and local header reads above |
+| block deltas (`getblockdeltas`) | always composed | the block, verbose and transaction-view reads above, plus header times (local below the tip, passthrough above) |
 | full blocks (the tip excepted) | always passthrough | `GetBlock`, `GetBlockByHash` |
 | verbose header / block (chain position) | always passthrough | `GetBlockHeader`, `GetBlockVerbose`, `GetBlockVerboseByHash` |
 | chain-info aggregate | always passthrough | `GetBlockchainInfo` |
@@ -133,13 +133,20 @@ header missing from the view at or below the tip is a typed
 always **composed**, not a new port: it assembles the block header
 (`BlockRead::block`), its chain position (`BlockVerboseRead::block_verbose`), its
 resolved transactions (`TransactionViewRead::block_transaction_views`) and the
-local header times its median time is taken over (`HeaderRead`). A by-height
-request resolves the height to a hash once (R50) so the composing reads cannot
-straddle a reorg. The median time mirrors zcashd's `GetMedianTimePast` — the median
-of the block's own time and its ten predecessors (heights `h-10 ..= h`), over the
-same local header reads `BlockHashRead` uses — and a predecessor header missing at
-or below the tip is a typed `BlockDeltasError::MissingHeader`, failed loud rather
-than inventing a median. A transparent input is the negation of the output it
+header times its median time is taken over. A by-height request resolves the height
+to a hash once (R50) so the composing reads cannot straddle a reorg. The median time
+mirrors zcashd's `GetMedianTimePast` — the median of the block's own time and its
+ten predecessors (heights `h-10 ..= h`) — over the block's own ancestry walked by
+hash: the ancestors at or below the pinned tip are read from the coherent local
+chain (`HeaderRead`, after checking the local hash matches the walked ancestry),
+while ancestors above the tip — the block is served from passthrough while the local
+indexer catches up — fall back to the passthrough header read
+(`BlockVerboseRead::block_header_verbose`, following `previousblockhash`), the same
+source as the block, so nothing straddles the seam. A header missing from the local
+chain at or below the pinned tip is a typed `BlockDeltasError::MissingHeader`, failed
+loud rather than inventing a median; a block the passthrough reports off the main
+chain (negative confirmations) is a typed `BlockDeltasError::Orphan`, mirroring
+zcashd's `blockToDeltasJSON`. A transparent input is the negation of the output it
 spends (a negative `SignedZatoshis`); a coinbase contributes no inputs. The read
 carries each movement's `Script`, not an encoded address, because the network an
 address needs is the serving adapter's, not the engine's. A miss on the block is

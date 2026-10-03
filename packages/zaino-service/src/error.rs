@@ -6,7 +6,7 @@
 //! share a shape; a macro keeps them DRY (a `fn` cannot define types).
 
 use crate::Capability;
-use zaino_primitives::types::{Height, TransparentInput};
+use zaino_primitives::types::{BlockHash, Height, TransparentInput};
 
 /// Every read-boundary failure separates a *not-yet-serviceable* answer and a
 /// *domain* "not found" (which is `Ok(None)`, never an error) from real backend
@@ -270,6 +270,17 @@ pub enum BlockDeltasError {
     InputValueOutOfRange {
         /// The input value that could not be negated within the supply bound.
         value: u64,
+    },
+    /// The requested block is not on the main chain. zcashd's `blockToDeltasJSON`
+    /// reports confirmations only for a main-chain block and throws otherwise; the
+    /// composed read detects the same condition from the passthrough verbose
+    /// block's negative confirmations (`-1` off-chain) and declines rather than
+    /// emitting a delta view for an orphan. The adapter maps it to zcashd's exact
+    /// `-5` error.
+    #[error("block {hash} is an orphan (not on the main chain)")]
+    Orphan {
+        /// The hash of the off-chain block.
+        hash: BlockHash,
     },
 }
 

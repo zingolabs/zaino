@@ -1400,24 +1400,6 @@ mod block_deltas_reads {
             chain_metadata: ChainMetadata::ZERO,
         };
 
-        let mut work_bytes = [0u8; 32];
-        work_bytes[28..].copy_from_slice(&[0x00, 0x00, 0x04, 0x00]);
-        let verbose = BlockVerbose {
-            confirmations: 1,
-            difficulty: 42.5,
-            chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
-            chain_supply: None,
-            value_pools: Vec::new(),
-            final_sapling_root: None,
-            final_orchard_root: None,
-            tree_sizes: BlockTreeSizes {
-                sapling: TreeSize::from(0u32),
-                orchard: TreeSize::from(0u32),
-                ironwood: TreeSize::from(0u32),
-            },
-            next_block_hash: None,
-        };
-
         let coinbase = DetailedTransaction {
             transaction: Transaction {
                 txid: txid(0xC0),
@@ -1494,8 +1476,59 @@ mod block_deltas_reads {
 
         MockChain::new()
             .with_block(full_block)
-            .with_block_verbose(verbose)
+            .with_block_verbose(verbose(1))
             .with_block_decoded_by_hash(decoded)
+    }
+
+    /// The block-12 verbose overlay with a given confirmation count:
+    /// `1` for a block on the main chain, a negative count for one off the best
+    /// chain (an orphan, which the composed read declines).
+    fn verbose(confirmations: i64) -> BlockVerbose {
+        let mut work_bytes = [0u8; 32];
+        work_bytes[28..].copy_from_slice(&[0x00, 0x00, 0x04, 0x00]);
+        BlockVerbose {
+            confirmations,
+            difficulty: 42.5,
+            chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+            chain_supply: None,
+            value_pools: Vec::new(),
+            final_sapling_root: None,
+            final_orchard_root: None,
+            tree_sizes: BlockTreeSizes {
+                sapling: TreeSize::from(0u32),
+                orchard: TreeSize::from(0u32),
+                ironwood: TreeSize::from(0u32),
+            },
+            next_block_hash: None,
+        }
+    }
+
+    /// Finalised-tier compact blocks over `[0, top]`, each at time `BASE + h*600`
+    /// — the same strictly-increasing timestamps as [`finalised_times`], but with
+    /// local coverage ending at `top` rather than the full chain, so a block above
+    /// `top` has part of its median-time window above the local tip.
+    fn finalised_through(top: u32) -> Vec<CompactBlock> {
+        (0..=top)
+            .map(|h| {
+                let mut block = stub_compact_block(h, u8::try_from(h).expect("tag fits u8"));
+                block.time = BASE + h * 600;
+                block
+            })
+            .collect()
+    }
+
+    /// A validator verbose header for ancestor height `h`: hash `[h; 32]`, time
+    /// `BASE + h*600`, and `previousblockhash` `[h-1; 32]`. A by-hash header walk
+    /// following `previousblockhash` reads a distinct time at each height and steps
+    /// down to the next ancestor.
+    fn ancestor_header(h: u32) -> zaino_primitives::types::rpc::BlockHeaderVerbose {
+        let tag = u8::try_from(h).expect("tag fits u8");
+        let mut header = zaino_source::mock::sample_block_header_verbose();
+        header.hash = BlockHash::from([tag; 32]);
+        header.height = height(h);
+        header.time = BASE + h * 600;
+        header.previous_block_hash = Some(BlockHash::from([tag - 1; 32]));
+        header
     }
 
     #[tokio::test]
@@ -1584,6 +1617,50 @@ mod block_deltas_reads {
                 assert_eq!(u32::from(height), 5);
             }
             other => panic!("a chain-view hole must be a typed MissingHeader, got {other:?}"),
+        }
+    }
+
+    /// R61b: a block whose median-time window straddles the local tip. The local
+    /// finalised tier stops at height 8, but the validator serves block 12, so the
+    /// window (heights 2..=12) has four ancestors above the local tip. Those fall
+    /// back to the passthrough header walk (by `previousblockhash` from the block's
+    /// hash), while heights 2..=8 are read from the coherent local chain. The old
+    /// read-the-whole-window-by-height-locally behaviour would fail with
+    /// `MissingHeader` on height 9; the median is reachable only when the above-tip
+    /// ancestors come from passthrough and the covered ones from the local chain.
+    #[tokio::test]
+    async fn a_window_above_the_tip_falls_back_to_passthrough_headers() {
+        // Local coverage ends at 8; the validator serves block 12 and its verbose
+        // headers for ancestors 11, 10, 9 — chained by previousblockhash down to 8,
+        // the local boundary — so the walk crosses into local coverage at 8.
+        let source = validator()
+            .with_block_header_verbose_at(BlockHash::from([0x0B; 32]), ancestor_header(11))
+            .with_block_header_verbose_at(BlockHash::from([0x0A; 32]), ancestor_header(10))
+            .with_block_header_verbose_at(BlockHash::from([0x09; 32]), ancestor_header(9));
+        let engine = engine_over(finalised_through(8), source);
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let deltas = BlockDeltasRead::block_deltas(&snapshot, BlockSelector::Height(height(TIP)))
+            .await
+            .expect("served")
+            .expect("present");
+        // The full eleven-block window (heights 2..=12), strictly increasing, so the
+        // median is height 7's time.
+        assert_eq!(deltas.median_time, BASE + 7 * 600);
+    }
+
+    /// R61a: a block the validator reports off the main chain (negative
+    /// confirmations) is declined as a typed `Orphan`, mirroring zcashd's
+    /// `blockToDeltasJSON`, which reports confirmations only for a main-chain block
+    /// and throws otherwise — never a composed delta view with a bogus count.
+    #[tokio::test]
+    async fn an_off_chain_block_is_a_typed_orphan() {
+        // Same validator, but the verbose overlay reports -1 confirmations.
+        let source = validator().with_block_verbose(verbose(-1));
+        let engine = engine_over(finalised_times(None), source);
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match BlockDeltasRead::block_deltas(&snapshot, BlockSelector::Height(height(TIP))).await {
+            Err(BlockDeltasError::Orphan { hash }) => assert_eq!(hash, block_hash()),
+            other => panic!("an off-chain block must be a typed Orphan, got {other:?}"),
         }
     }
 }

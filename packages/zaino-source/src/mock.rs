@@ -71,9 +71,15 @@ pub struct MockChain {
     /// Canned blockchain-info response, returned for any query; `None` answers a
     /// domain not-ready.
     blockchain_info_response: Option<BlockchainInfo>,
-    /// Canned verbose block-header response, returned for any hash; `None`
-    /// answers a domain not-found.
+    /// Canned verbose block-header response, returned for any hash not in
+    /// [`block_header_verbose_by_hash`](Self::block_header_verbose_by_hash);
+    /// `None` answers a domain not-found.
     block_header_verbose_response: Option<BlockHeaderVerbose>,
+    /// Per-hash verbose block-header responses, consulted before the any-hash
+    /// `block_header_verbose_response`. Lets a test serve a distinct header per
+    /// hash — the ancestry a by-hash header walk follows via
+    /// `previousblockhash`.
+    block_header_verbose_by_hash: HashMap<BlockHash, BlockHeaderVerbose>,
     /// Canned verbose block returned by `get_block_verbose` for any height;
     /// `None` answers a domain not-found.
     block_verbose_response: Option<BlockVerbose>,
@@ -135,6 +141,7 @@ impl MockChain {
             transaction_verbose_only_for: None,
             blockchain_info_response: None,
             block_header_verbose_response: None,
+            block_header_verbose_by_hash: HashMap::new(),
             block_verbose_response: None,
             block_verbose_by_hash_response: None,
             block_decoded_response: None,
@@ -212,9 +219,23 @@ impl MockChain {
         self
     }
 
-    /// Seed the response `get_block_header` returns for any hash.
+    /// Seed the response `get_block_header` returns for any hash not seeded by
+    /// [`with_block_header_verbose_at`](Self::with_block_header_verbose_at).
     pub fn with_block_header_verbose(mut self, header: BlockHeaderVerbose) -> Self {
         self.block_header_verbose_response = Some(header);
+        self
+    }
+
+    /// Seed the response `get_block_header` returns for one specific `hash`,
+    /// consulted before the any-hash response. A test seeds a header per ancestor
+    /// so a by-hash header walk following `previousblockhash` reads a distinct
+    /// time at each height.
+    pub fn with_block_header_verbose_at(
+        mut self,
+        hash: BlockHash,
+        header: BlockHeaderVerbose,
+    ) -> Self {
+        self.block_header_verbose_by_hash.insert(hash, header);
         self
     }
 
@@ -383,6 +404,7 @@ impl Clone for MockChain {
             transaction_verbose_only_for: self.transaction_verbose_only_for.clone(),
             blockchain_info_response: self.blockchain_info_response.clone(),
             block_header_verbose_response: self.block_header_verbose_response.clone(),
+            block_header_verbose_by_hash: self.block_header_verbose_by_hash.clone(),
             block_verbose_response: self.block_verbose_response.clone(),
             block_verbose_by_hash_response: self.block_verbose_by_hash_response.clone(),
             block_decoded_response: self.block_decoded_response.clone(),
@@ -701,8 +723,10 @@ impl crate::OneShotGetBlockHeader for MockChain {
         if let Some(err) = self.maybe_fail() {
             return Err(err);
         }
-        self.block_header_verbose_response
-            .clone()
+        self.block_header_verbose_by_hash
+            .get(&hash)
+            .or(self.block_header_verbose_response.as_ref())
+            .cloned()
             .ok_or(QueryError::Domain(GetBlockHeaderError::BlockNotFound(hash)))
     }
 }

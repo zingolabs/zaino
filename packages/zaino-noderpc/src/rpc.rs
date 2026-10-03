@@ -520,6 +520,13 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::BlockDeltas(e @ BlockDeltasError::InputValueOutOfRange { .. }) => {
             (ErrorCode::InternalError.code(), e.to_string())
         }
+        // A block off the main chain is zcashd's `blockToDeltasJSON` orphan error:
+        // code `-5` (`RPC_INVALID_ADDRESS_OR_KEY`) with zcashd's exact message,
+        // never the composed read's internal-error class and never the typed
+        // variant's own `Display` (which names the hash for operators).
+        RpcError::BlockDeltas(BlockDeltasError::Orphan { .. }) => {
+            (NOT_FOUND_CODE, "Block is an orphan".to_string())
+        }
         // Locating a spend for `getspentinfo` is a local tier read: none of its
         // three cases is bad client input (an unspent or unknown outpoint is the
         // `NotFound` above, carrying zcashd's own message). `NotServiceable` is
@@ -570,6 +577,22 @@ mod tests {
         let obj = to_error_object(RpcError::NotFound("no block for 999999".to_string()));
         assert_eq!(obj.code(), -5);
         assert_eq!(obj.message(), "no block for 999999");
+    }
+
+    /// R61a: a block off the main chain is zcashd's `blockToDeltasJSON` orphan
+    /// error — code `-5` (`RPC_INVALID_ADDRESS_OR_KEY`) with the exact message
+    /// "Block is an orphan", not the composed read's internal-error class and not
+    /// the typed variant's hash-naming `Display`. This is the mapping the wire path
+    /// applies through `map_err(to_error_object)`.
+    #[test]
+    fn orphan_block_deltas_maps_to_minus_five_with_zcashds_message() {
+        use zaino_primitives::types::BlockHash;
+        use zaino_service::error::BlockDeltasError;
+        let obj = to_error_object(RpcError::BlockDeltas(BlockDeltasError::Orphan {
+            hash: BlockHash::from([0x0c; 32]),
+        }));
+        assert_eq!(obj.code(), -5, "zcashd's RPC_INVALID_ADDRESS_OR_KEY");
+        assert_eq!(obj.message(), "Block is an orphan");
     }
 
     /// An out-of-range block height carries zcashd's `-8` code (distinct from the

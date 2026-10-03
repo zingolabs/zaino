@@ -191,10 +191,13 @@ Zebra answers `-32601`, so the shape authority is zcashd's `blockToDeltasJSON`
 is *composed* in the engine (`BlockDeltasRead`, over `zaino-core`) from the reads
 the node-RPC set already serves: the block header (`BlockRead`), its chain position
 (`BlockVerboseRead`), its resolved transactions (`TransactionViewRead`), and the
-local header times its median is taken over (`HeaderRead`). It therefore adds no
-source port and no validator round trip beyond what `getblock(_, 2)` already does.
-The block id is resolved to the block's own hash once (ruling R50) before the
-composing reads, so the header and the transactions cannot straddle a reorg.
+header times its median is taken over — read from the local chain (`HeaderRead`)
+where it covers them, and from the passthrough header read (`BlockVerboseRead::block_header_verbose`)
+for ancestors above the local tip. It therefore adds no source port, and no
+validator round trip beyond what `getblock(_, 2)` does unless the local indexer is
+still catching up to the block. The block id is resolved to the block's own hash
+once (ruling R50) before the composing reads, so the header and the transactions
+cannot straddle a reorg.
 
 The response mirrors zcashd's key set and order: `hash`, `confirmations`, `size`,
 `height`, `version`, `merkleroot`, `deltas`, `time`, `mediantime`, `nonce`, `bits`,
@@ -210,13 +213,19 @@ any other script — matching zcashd's `IsValidDestination` gate. A coinbase has
 
 `satoshis` are integer zatoshis throughout (no ZEC float). `mediantime` is zcashd's
 `GetMedianTimePast`: the median of the block's own time and its ten predecessors'
-times (heights `h-10 ..= h`), read locally. `chainwork` is absent (not `null`) when
-the validator does not track it, as in `getblock`; `previousblockhash` is absent
-for genesis and `nextblockhash` at the tip. An unknown block is zcashd's not-found
-(`-5`, `Block not found`). The composition's failure modes are all server-side
-(`BlockDeltasError`: a resolution failure, a chain-view hole in the median-time
-window, or a corrupt amount) and map to the internal-error code, never
-invalid-params.
+times (heights `h-10 ..= h`), over the block's ancestry walked by hash — from the
+local chain where it covers the height, and from the passthrough header read
+(following `previousblockhash`) for ancestors above the local tip, so a block served
+during catch-up still reports a median. `chainwork` is absent (not `null`) when the
+validator does not track it, as in `getblock`; `previousblockhash` is absent for
+genesis and `nextblockhash` at the tip. An unknown block is zcashd's not-found
+(`-5`, `Block not found`). A block off the main chain is zcashd's orphan error —
+`-5` with the exact message `Block is an orphan` — which the composed read raises
+when the passthrough verbose block reports negative confirmations, mirroring
+`blockToDeltasJSON`. The other composition failure modes are all server-side
+(`BlockDeltasError`: a resolution failure, a chain-view hole at or below the local
+tip in the median-time window, or a corrupt amount) and map to the internal-error
+code, never invalid-params.
 
 ## Wire dialects
 
@@ -280,11 +289,14 @@ a `NotServiceable` stub is a server-side concern, never bad client input. The
 transient case must surface as an error rather than a zero-valued success, so the
 explorer's metric warmer does not cache an empty mempool over a transport blip.
 
-Composing `getblockdeltas` (`BlockDeltasError`) is internal in every variant: a
-transaction-view resolution failure, a block/verbose/header read failure, a
-chain-view hole in the median-time window (`MissingHeader`), and a corrupt amount
-(`InputValueOutOfRange`) are all server-side. An unknown block is the `-5`
-not-found above (the composed read answers `Ok(None)`), not a `BlockDeltasError`.
+Composing `getblockdeltas` (`BlockDeltasError`) is internal in every variant except
+the orphan: a transaction-view resolution failure, a block/verbose/header read
+failure, a chain-view hole at or below the local tip in the median-time window
+(`MissingHeader`), and a corrupt amount (`InputValueOutOfRange`) are all
+server-side. The exception is `Orphan`, which maps to zcashd's `-5` with the exact
+message `Block is an orphan` (a block off the main chain is a client-visible
+condition, not a server fault). An unknown block is the `-5` not-found above (the
+composed read answers `Ok(None)`), not a `BlockDeltasError`.
 
 Locating a spend for `getspentinfo` (`SpendReadError`) is internal in every
 variant too — the spends index not yet built (`NotServiceable`), a mid-swap read
