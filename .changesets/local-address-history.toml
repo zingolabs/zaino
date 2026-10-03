@@ -1,0 +1,36 @@
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`TransparentReceive` and `TransparentSpend` describe an output paid to an \
+address and an outpoint consumed, each at the location that caused it. A \
+receive is distinct from a `Utxo`, which asserts the output is still unspent; a \
+receive carries no such claim, which is what lets a tier holding no history \
+report one. `Script::as_bytes` lends the bytes a script classification reads, \
+so scanning outputs for an address does not clone each one.
+"""
+
+[[changes]]
+crate = "zaino-address"
+kind = "feature"
+description = """
+`script_pays` answers whether an output script locks its value to an address, \
+and `script_paying` produces the script that pays one. Every standard script \
+shape is determined by its `(type, hash160)` pair and is recognised only in its \
+canonical encoding, so an output paying a transparent address has that script \
+and no other — which lets a reader holding only an address reconstruct a script \
+rather than fetch the output that carried it.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The non-finalised window reports what it saw of a transparent address: the \
+outputs it holds that paid the address, and — given the candidate outpoints — \
+which of them it saw spent, with the location a balance change is reported at. \
+It does not implement the full address read and cannot: a transparent input \
+names the outpoint it consumes, not the address that outpoint paid, so for an \
+output created below the window's floor there is nothing to attribute the spend \
+to. The composer supplies that history.
+"""

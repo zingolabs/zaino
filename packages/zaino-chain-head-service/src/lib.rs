@@ -37,11 +37,13 @@
 #[cfg(feature = "prometheus")]
 pub mod metric_names;
 
+mod address;
 mod error;
 mod graph;
 mod serve;
 mod service;
 mod snapshot;
+mod spend;
 mod subscriber;
 
 #[cfg(test)]

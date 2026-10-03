@@ -18,18 +18,18 @@
 //! halves are joined. Requires both tiers to have an address read, and the
 //! head to have a spend read (a store UTXO may have been spent in the window).
 
+use std::collections::HashMap;
 use std::future::Future;
 
 use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::{Local, Passthrough, Routing};
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, HeightRange, Outpoint, TransactionId, TransparentAddress, Utxo,
-    Zatoshis, ZatoshisFlowSum,
+    AddressBalance, AddressDelta, Height, HeightRange, Outpoint, SignedZatoshis, TransactionId,
+    TransparentAddress, TransparentReceive, TransparentSpend, Utxo, Zatoshis, ZatoshisFlowSum,
 };
-use zaino_service::SpendStatus;
-use zaino_service::error::{AddressReadError, SpendReadError};
-use zaino_service::{AddressRead, SpendRead};
+use zaino_service::error::AddressReadError;
+use zaino_service::{AddressRead, AddressReceiveRead};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 
 use super::EngineSnapshot;
@@ -165,20 +165,6 @@ where
 
 // --- Local --------------------------------------------------------------------
 
-/// Join two balances over disjoint runs of blocks. Overflow is reported, not
-/// saturated: a wrong total must never be served as a right one.
-fn join_balances(a: AddressBalance, b: AddressBalance) -> Result<AddressBalance, AddressReadError> {
-    let balance = a
-        .balance
-        .checked_add(b.balance)
-        .ok_or_else(|| AddressReadError::Fatal("balance exceeds the supply bound".to_owned()))?;
-    let received = a
-        .received
-        .checked_join(b.received)
-        .ok_or_else(|| AddressReadError::Fatal("received total overflowed".to_owned()))?;
-    Ok(AddressBalance { balance, received })
-}
-
 /// The balance of nothing: what an empty half of a split range contributes.
 fn empty_balance() -> Result<AddressBalance, AddressReadError> {
     let balance = Zatoshis::sum_balances(core::iter::empty())
@@ -188,20 +174,140 @@ fn empty_balance() -> Result<AddressBalance, AddressReadError> {
     Ok(AddressBalance { balance, received })
 }
 
-/// A spend-status failure met while filtering UTXOs is an address-read failure
-/// of the same kind.
-fn spend_to_address_error(error: SpendReadError) -> AddressReadError {
-    match error {
-        SpendReadError::NotServiceable(capability) => AddressReadError::NotServiceable(capability),
-        SpendReadError::Transient(message) => AddressReadError::Transient(message),
-        SpendReadError::Fatal(message) => AddressReadError::Fatal(message),
+fn fatal(message: impl Into<String>) -> AddressReadError {
+    AddressReadError::Fatal(message.into())
+}
+
+/// Whether `half` includes `height` — `false` when the half is absent.
+fn in_range(half: Option<HeightRange>, height: Height) -> bool {
+    half.is_some_and(|range| range.start <= height && height <= range.end)
+}
+
+/// Which way a balance change goes.
+enum Sign {
+    Received,
+    Spent,
+}
+
+/// `value` as a balance change in the given direction.
+fn signed(value: Zatoshis, sign: Sign) -> Result<SignedZatoshis, AddressReadError> {
+    let magnitude =
+        i64::try_from(value.as_u64()).map_err(|_| fatal("an amount exceeds a balance change"))?;
+    let signed = match sign {
+        Sign::Received => Some(magnitude),
+        Sign::Spent => magnitude.checked_neg(),
     }
+    .ok_or_else(|| fatal("an amount is not a representable balance change"))?;
+    SignedZatoshis::try_new(signed).map_err(|_| fatal("a balance change is out of range"))
+}
+
+/// What the window contributed to an address over one range: the outputs it saw
+/// paid, and the spends it saw of outpoints the address owned.
+///
+/// The composer builds this once per read and projects every answer from it,
+/// because both halves come from the same two questions.
+struct WindowPart {
+    receives: Vec<TransparentReceive>,
+    spends: Vec<TransparentSpend>,
+}
+
+impl WindowPart {
+    /// Whether the window spent `outpoint`.
+    fn spent(&self, outpoint: Outpoint) -> bool {
+        self.spends.iter().any(|spend| spend.outpoint == outpoint)
+    }
+}
+
+/// Ask the window what it saw of `addr` over `range`.
+///
+/// Two questions, and the second is phrased in terms the window can answer. It
+/// cannot say which outpoints belong to the address — that needs the outputs
+/// that created them, which it does not hold — so the composer supplies the
+/// candidates: every outpoint the store still held entering the window, plus
+/// every one the window itself paid the address.
+///
+/// The candidate set is complete. An outpoint the address owned and that was
+/// spent at or below the watermark is absent from the store's unspent set, and
+/// cannot be spent again; one spent inside the window is still in that set,
+/// because the store has not seen the spend. So every outpoint of this address
+/// that the window could spend is a candidate.
+/// The two ranges are separate because the questions are.
+///
+/// Which receives count is bounded by what the caller asked about: a receive is
+/// an event at its own height. Which spends count is not always: a *balance* is
+/// what is held now, so a receive inside the asked range is spent if anything in
+/// the window spent it, whether or not the asked range reaches that far. A
+/// *delta* is an event too, so there the spend range is the asked one as well.
+/// Passing both explicitly keeps each caller's choice visible.
+async fn window_part<F, N>(
+    local: &ChainViewSnapshot<F, N>,
+    addr: &TransparentAddress,
+    receives_in: Option<HeightRange>,
+    spends_in: Option<HeightRange>,
+    held: &[Utxo],
+) -> Result<WindowPart, AddressReadError>
+where
+    F: ChainTier + AddressRead,
+    N: ChainTier + AddressReceiveRead,
+{
+    let window = local.non_finalised();
+    let receives = match receives_in {
+        Some(range) => window.receives(addr, range).await?,
+        None => Vec::new(),
+    };
+
+    let Some(spends_in) = spends_in else {
+        return Ok(WindowPart {
+            receives,
+            spends: Vec::new(),
+        });
+    };
+    let candidates: Vec<Outpoint> = held
+        .iter()
+        .map(|utxo| Outpoint {
+            txid: utxo.txid,
+            index: utxo.output_index,
+        })
+        .chain(receives.iter().map(|receive| Outpoint {
+            txid: receive.txid,
+            index: receive.output_index,
+        }))
+        .collect();
+    let spends = window.spends(&candidates, spends_in).await?;
+    Ok(WindowPart { receives, spends })
+}
+
+/// The value each candidate outpoint carried, for turning a spend into a delta.
+///
+/// A spend's magnitude is the value of the output it consumed, which the spender
+/// does not carry: it comes from whichever side created the outpoint.
+fn values(held: &[Utxo], receives: &[TransparentReceive]) -> HashMap<Outpoint, Zatoshis> {
+    held.iter()
+        .map(|utxo| {
+            (
+                Outpoint {
+                    txid: utxo.txid,
+                    index: utxo.output_index,
+                },
+                utxo.satoshis,
+            )
+        })
+        .chain(receives.iter().map(|receive| {
+            (
+                Outpoint {
+                    txid: receive.txid,
+                    index: receive.output_index,
+                },
+                receive.value,
+            )
+        }))
+        .collect()
 }
 
 impl<F, N, Src> AddressPlacement<F, N, Src> for Local
 where
     F: ChainTier + AddressRead,
-    N: ChainTier + AddressRead + SpendRead,
+    N: ChainTier + AddressReceiveRead,
     Src: Send + Sync + 'static,
 {
     async fn balance(
@@ -211,15 +317,57 @@ where
         range: HeightRange,
     ) -> Result<AddressBalance, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
-        let fs = match fs {
-            Some(range) => local.finalised().balance(addr, range).await?,
+        let store = local.finalised();
+
+        let fs_balance = match fs {
+            Some(range) => store.balance(addr, range).await?,
             None => empty_balance()?,
         };
-        let nfs = match nfs {
-            Some(range) => local.non_finalised().balance(addr, range).await?,
-            None => empty_balance()?,
-        };
-        join_balances(fs, nfs)
+        // A balance is what is held *now*, so a receive inside the asked range
+        // counts as spent if anything in the window spent it — even when the
+        // asked range stops at or below the watermark. That matches the store's
+        // own half, which nets every spend it saw rather than only those inside
+        // the asked range.
+        let held = store.unspent_outpoints(addr).await?;
+        let part = window_part(local, addr, nfs, local.non_finalised().coverage(), &held).await?;
+
+        // Gross receipts are additive: the halves cover disjoint heights, and a
+        // receive is counted where it arrived.
+        let received = fs_balance
+            .received
+            .checked_join(
+                ZatoshisFlowSum::try_accumulate(part.receives.iter().map(|r| r.value))
+                    .ok_or_else(|| fatal("the window's gross receipts overflowed"))?,
+            )
+            .ok_or_else(|| fatal("gross receipts overflowed"))?;
+
+        // What is still held is summed, never subtracted: every output received
+        // in range that neither tier has spent. The store's own netting covers
+        // spends at or below the watermark; the window's covers the rest.
+        let from_store = held
+            .iter()
+            .filter(|utxo| in_range(fs, utxo.height))
+            .filter(|utxo| {
+                !part.spent(Outpoint {
+                    txid: utxo.txid,
+                    index: utxo.output_index,
+                })
+            })
+            .map(|utxo| utxo.satoshis);
+        let from_window = part
+            .receives
+            .iter()
+            .filter(|receive| {
+                !part.spent(Outpoint {
+                    txid: receive.txid,
+                    index: receive.output_index,
+                })
+            })
+            .map(|receive| receive.value);
+        let balance = Zatoshis::sum_balances(from_store.chain(from_window))
+            .ok_or_else(|| fatal("balance exceeds the supply bound"))?;
+
+        Ok(AddressBalance { balance, received })
     }
 
     async fn unspent_outpoints(
@@ -227,23 +375,37 @@ where
         _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        // A store UTXO is unspent as of the watermark; the window above it may
-        // have spent it since. Keep it only if the head does not know a spend.
-        // Outputs the head created are unspent by the head's own account.
-        let head = local.non_finalised();
-        let mut unspent = Vec::new();
-        for utxo in local.finalised().unspent_outpoints(addr).await? {
-            let outpoint = Outpoint {
-                txid: utxo.txid,
-                index: utxo.output_index,
-            };
-            match head.spend_status(outpoint).await {
-                Ok(SpendStatus::Spent { .. } | SpendStatus::SpentSpenderUnknown) => {}
-                Ok(SpendStatus::Unspent | SpendStatus::NoSuchOutput) => unspent.push(utxo),
-                Err(error) => return Err(spend_to_address_error(error)),
-            }
-        }
-        unspent.extend(head.unspent_outpoints(addr).await?);
+        // Range-less by contract, so the window's whole coverage is in scope.
+        // A store output is unspent as of the watermark; the window above it may
+        // have spent it since, and an output the window paid is unspent unless
+        // the window itself spent it.
+        let held = local.finalised().unspent_outpoints(addr).await?;
+        let Some(window_range) = local.non_finalised().coverage() else {
+            return Ok(held);
+        };
+        let part = window_part(local, addr, Some(window_range), Some(window_range), &held).await?;
+
+        let mut unspent: Vec<Utxo> = held
+            .into_iter()
+            .filter(|utxo| {
+                !part.spent(Outpoint {
+                    txid: utxo.txid,
+                    index: utxo.output_index,
+                })
+            })
+            .collect();
+        unspent.extend(
+            part.receives
+                .iter()
+                .filter(|receive| {
+                    !part.spent(Outpoint {
+                        txid: receive.txid,
+                        index: receive.output_index,
+                    })
+                })
+                .cloned()
+                .map(|receive| receive.into_utxo(addr.clone())),
+        );
         Ok(unspent)
     }
 
@@ -254,12 +416,49 @@ where
         range: HeightRange,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
-        let mut deltas = Vec::new();
-        if let Some(range) = fs {
-            deltas.extend(local.finalised().deltas(addr, range).await?);
+        let store = local.finalised();
+
+        // The store reports its own half whole, spends included: it has the
+        // history to attribute them.
+        let mut deltas = match fs {
+            Some(range) => store.deltas(addr, range).await?,
+            None => Vec::new(),
+        };
+
+        let Some(nfs) = nfs else {
+            return Ok(deltas);
+        };
+        // Both ranges are the asked one: a delta is an event, so a spend
+        // outside the asked range is not one of its deltas.
+        let held = store.unspent_outpoints(addr).await?;
+        let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
+        let values = values(&held, &part.receives);
+
+        for receive in &part.receives {
+            deltas.push(AddressDelta {
+                satoshis: signed(receive.value, Sign::Received)?,
+                txid: receive.txid,
+                index: receive.output_index,
+                height: receive.height,
+                address: addr.clone(),
+                // The window reports no transaction position; `None` says so
+                // rather than substituting iteration order.
+                block_index: None,
+            });
         }
-        if let Some(range) = nfs {
-            deltas.extend(local.non_finalised().deltas(addr, range).await?);
+        for spend in &part.spends {
+            let value = values
+                .get(&spend.outpoint)
+                .copied()
+                .ok_or_else(|| fatal("a spend was reported for an outpoint not asked about"))?;
+            deltas.push(AddressDelta {
+                satoshis: signed(value, Sign::Spent)?,
+                txid: spend.by,
+                index: spend.input_index,
+                height: spend.height,
+                address: addr.clone(),
+                block_index: None,
+            });
         }
         Ok(deltas)
     }
@@ -270,16 +469,35 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<TransactionId>, AddressReadError> {
-        // The halves cover disjoint heights and a transaction is mined once, so
-        // concatenation is the union.
         let (fs, nfs) = split_at_seam(local, range);
-        let mut txids = Vec::new();
-        if let Some(range) = fs {
-            txids.extend(local.finalised().tx_ids(addr, range).await?);
-        }
-        if let Some(range) = nfs {
-            txids.extend(local.non_finalised().tx_ids(addr, range).await?);
-        }
+        let store = local.finalised();
+
+        let mut txids = match fs {
+            Some(range) => store.tx_ids(addr, range).await?,
+            None => Vec::new(),
+        };
+
+        let Some(nfs) = nfs else {
+            return Ok(txids);
+        };
+        // As for deltas: a transaction appears because of what it did inside the
+        // asked range.
+        let held = store.unspent_outpoints(addr).await?;
+        let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
+
+        // Every transaction that moved value for the address in the window: the
+        // ones that paid it, and the ones that spent what it held. One can do
+        // both, so the window's contribution is deduplicated before it is
+        // appended; the halves cover disjoint heights, so no transaction can
+        // appear in both.
+        let mut from_window: Vec<TransactionId> = part
+            .receives
+            .iter()
+            .map(|receive| receive.txid)
+            .chain(part.spends.iter().map(|spend| spend.by))
+            .collect();
+        from_window.dedup();
+        txids.extend(from_window);
         Ok(txids)
     }
 }

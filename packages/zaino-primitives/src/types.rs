@@ -37,6 +37,8 @@ mod transaction_detail;
 mod transaction_hash;
 mod transaction_location;
 mod transparent_address;
+mod transparent_receive;
+mod transparent_spend;
 mod tree_root;
 mod tree_roots;
 mod tree_size;
@@ -91,6 +93,8 @@ pub use transaction_detail::{
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;
 pub use transparent_address::TransparentAddress;
+pub use transparent_receive::TransparentReceive;
+pub use transparent_spend::TransparentSpend;
 pub use tree_root::TreeRoot;
 pub use tree_roots::{TreeRootInfo, TreeRoots};
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};

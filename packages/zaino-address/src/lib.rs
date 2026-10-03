@@ -35,6 +35,7 @@ mod classify;
 mod receivers;
 mod sapling;
 mod script;
+mod transparent;
 mod validated;
 
 pub use classify::{validate_address, z_validate_address};
@@ -43,4 +44,5 @@ pub use sapling::sapling_key_bytes;
 pub use script::{
     script_to_asm, transparent_address_from_script, ScriptAddress, TransparentScriptKind,
 };
+pub use transparent::{script_paying, script_pays, transparent_address_key};
 pub use validated::{ValidatedAddress, ZValidatedAddress, DEPRECATION_NOTICE};

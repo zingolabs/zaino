@@ -27,8 +27,9 @@ use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds,
     DecodedBlock, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool,
-    SubtreeRoot, Transaction, TransactionId, TransparentAddress, TransparentInput, Treestate, Utxo,
-    ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    SubtreeRoot, Transaction, TransactionId, TransparentAddress, TransparentInput,
+    TransparentReceive, TransparentSpend, Treestate, Utxo, ValuePoolBalance, Zatoshis,
+    ZatoshisFlowSum,
 };
 
 use crate::error::{
@@ -36,12 +37,13 @@ use crate::error::{
     ReadError, SpendReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, BlockHashAt, BlockHashRead, BlockRead, BlockTransactionViews, BlockVerboseRead,
-    Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile,
-    HeaderRead, HeaderSummary, IndexerService, LocatedTransactionView, MempoolContent,
-    MempoolEntry, MempoolListing, MempoolSubscribe, MempoolSummary, NodeStatusError,
-    NodeStatusRead, RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead,
-    TakeSnapshot, TipSubscribe, TransactionRead, TransactionViewRead, TreestateRead,
+    AddressRead, AddressReceiveRead, BlockHashAt, BlockHashRead, BlockRead, BlockTransactionViews,
+    BlockVerboseRead, Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead,
+    CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary, IndexerService,
+    LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing, MempoolSubscribe,
+    MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead, ReportedUpgrades,
+    Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead,
+    TransactionViewRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -434,6 +436,23 @@ impl AddressRead for MockSnapshot {
 impl SpendRead for MockSnapshot {
     async fn spend_status(&self, _outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
         Ok(SpendStatus::NoSuchOutput)
+    }
+}
+
+impl AddressReceiveRead for MockSnapshot {
+    async fn receives(
+        &self,
+        _addr: &TransparentAddress,
+        _range: HeightRange,
+    ) -> Result<Vec<TransparentReceive>, AddressReadError> {
+        Ok(Vec::new())
+    }
+    async fn spends(
+        &self,
+        _outpoints: &[Outpoint],
+        _range: HeightRange,
+    ) -> Result<Vec<TransparentSpend>, AddressReadError> {
+        Ok(Vec::new())
     }
 }
 

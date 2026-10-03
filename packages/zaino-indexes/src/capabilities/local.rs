@@ -98,10 +98,33 @@ local_capability! {
 
 local_capability! {
     /// Transparent address history.
-    AddressHistory = AddressHistory backed by [AddressHistoryIndex]
+    ///
+    /// Four indexes, because the address index is the receive side alone and a
+    /// spend is three lookups from a receive. Netting a balance needs the
+    /// spends index; reporting a spend as a *delta* needs the location a
+    /// balance change is attributed to, which is the spending transaction's
+    /// height and position (txid location) and which of its inputs consumed the
+    /// outpoint (that block's transparent data).
+    AddressHistory = AddressHistory backed by [
+        AddressHistoryIndex,
+        TransparentSpendsIndex,
+        TxidLocationIndex,
+        TransparentDataIndex,
+    ]
 }
 
 local_capability! {
     /// Whether, and where, an outpoint was spent.
-    SpendStatus = SpendStatus backed by [TransparentSpendsIndex]
+    ///
+    /// Three indexes, because the answer distinguishes three states. The
+    /// spends index carries the spend itself. Reporting `Unspent` rather than
+    /// `NoSuchOutput` for the rest needs the output to exist, which is the
+    /// txid's location and that block's transparent data — an outpoint the
+    /// indexed range never created is absent from the spends index exactly as
+    /// an unspent one is.
+    SpendStatus = SpendStatus backed by [
+        TransparentSpendsIndex,
+        TxidLocationIndex,
+        TransparentDataIndex,
+    ]
 }

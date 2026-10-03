@@ -372,10 +372,11 @@ async fn pinned_with_finalised_tip(
 #[tokio::test]
 async fn a_range_splits_at_the_watermark() {
     let local = pinned_with_finalised_tip(10).await;
-    // Straddling: `[5, 11)` is the store's, `[11, 20)` the head's.
+    // Straddling: `[5, 10]` is the store's, `[11, 20]` the head's. Both halves
+    // are inclusive, like the range they split.
     assert_eq!(
         split_at_seam(&local, range(5, 20)),
-        (Some(range(5, 11)), Some(range(11, 20)))
+        (Some(range(5, 10)), Some(range(11, 20)))
     );
     // Entirely below the seam.
     assert_eq!(
@@ -387,13 +388,24 @@ async fn a_range_splits_at_the_watermark() {
         split_at_seam(&local, range(11, 20)),
         (None, Some(range(11, 20)))
     );
-    // Ending exactly at the seam: the watermark height itself is the store's.
+    // The watermark height itself is the store's; the one above it is the
+    // head's, so this straddles by a single height on each side.
     assert_eq!(
         split_at_seam(&local, range(8, 11)),
-        (Some(range(8, 11)), None)
+        (Some(range(8, 10)), Some(range(11, 11)))
     );
-    // Empty.
-    assert_eq!(split_at_seam(&local, range(7, 7)), (None, None));
+    // One height, at the watermark: the store's, and not dropped.
+    assert_eq!(
+        split_at_seam(&local, range(10, 10)),
+        (Some(range(10, 10)), None)
+    );
+    // One height, just above it: the head's.
+    assert_eq!(
+        split_at_seam(&local, range(11, 11)),
+        (None, Some(range(11, 11)))
+    );
+    // A range naming no height: start above end.
+    assert_eq!(split_at_seam(&local, range(8, 7)), (None, None));
 }
 
 #[tokio::test]

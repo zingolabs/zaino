@@ -109,6 +109,15 @@ impl Script {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
+
+    /// The raw bytes, borrowed.
+    ///
+    /// What [`classify_script`] and the address comparison built on it take, so
+    /// a reader scanning outputs for an address does not clone each script to
+    /// look at it.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 impl From<Script> for Vec<u8> {

@@ -14,12 +14,22 @@ use std::future::Future;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
+use zaino_address::script_pays;
 use zaino_primitives::types::CompactDifficulty;
 use zaino_primitives::types::{
     BlockHash, BlockRef, BlockSelector, ChainMetadata, CompactBlock, Height, HeightRange,
 };
-use zaino_service::error::{BlockReadError, ReadError, Transient};
-use zaino_service::{ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, TakeSnapshot};
+use zaino_primitives::types::{
+    Outpoint, OutputIndex, PreIndexCompactTx, TransparentAddress, TransparentReceive,
+    TransparentSpend,
+};
+use zaino_service::error::{
+    AddressReadError, BlockReadError, ReadError, SpendReadError, Transient,
+};
+use zaino_service::{
+    AddressReceiveRead, ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, SpendRead,
+    SpendStatus, TakeSnapshot,
+};
 
 /// A fixed non-finalised window backed by an in-memory map.
 ///
@@ -130,6 +140,117 @@ impl TakeSnapshot for StubNonFinalised {
 ///
 /// Only the height and hash carry meaning for routing tests; the remaining
 /// fields are inert placeholders.
+/// The window answers spend status from its compact transactions, the same way
+/// the real head does and over the same fields: a compact transaction carries
+/// the outpoints its inputs spend and the outputs it creates, which is
+/// everything this read needs.
+///
+/// Mirrors `zaino_chain_head_service`'s implementation, including its reading
+/// of `NoSuchOutput` as "not in this window" rather than "nowhere" — the
+/// composer falls through to the finalised store on anything but a spend.
+impl SpendRead for StubNonFinalised {
+    async fn spend_status(&self, outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
+        let mut created = false;
+        for block in self.blocks.values() {
+            for transaction in &block.transactions {
+                if spends(transaction, outpoint) {
+                    return Ok(SpendStatus::Spent {
+                        by: transaction.txid,
+                    });
+                }
+                created |= creates(transaction, outpoint);
+            }
+        }
+        Ok(match created {
+            true => SpendStatus::Unspent,
+            false => SpendStatus::NoSuchOutput,
+        })
+    }
+}
+
+/// The window reports the receives it holds, deriving each output's recipient
+/// from its script, exactly as the real head does.
+///
+/// Mirrors `zaino_chain_head_service`'s implementation, including why this is
+/// the narrower read: a compact input carries only the outpoint it spends, so a
+/// spend cannot be attributed to an address here.
+impl AddressReceiveRead for StubNonFinalised {
+    async fn receives(
+        &self,
+        addr: &TransparentAddress,
+        range: HeightRange,
+    ) -> Result<Vec<TransparentReceive>, AddressReadError> {
+        let mut receives = Vec::new();
+        // The map is height-keyed and ordered, so the range selects a run and
+        // walking it yields height order.
+        for (height, block) in self.blocks.range(range.start..=range.end) {
+            for transaction in &block.transactions {
+                for (index, output) in transaction.transparent_outputs.iter().enumerate() {
+                    if !script_pays(output.script.as_bytes(), addr) {
+                        continue;
+                    }
+                    let Ok(output_index) = OutputIndex::try_from(index) else {
+                        continue;
+                    };
+                    receives.push(TransparentReceive {
+                        txid: transaction.txid,
+                        output_index,
+                        script: output.script.clone(),
+                        value: output.value,
+                        height: *height,
+                    });
+                }
+            }
+        }
+        Ok(receives)
+    }
+
+    async fn spends(
+        &self,
+        outpoints: &[Outpoint],
+        range: HeightRange,
+    ) -> Result<Vec<TransparentSpend>, AddressReadError> {
+        let mut spends = Vec::new();
+        for (height, block) in self.blocks.range(range.start..=range.end) {
+            for transaction in &block.transactions {
+                for (index, input) in transaction.transparent_inputs.iter().enumerate() {
+                    let Some(outpoint) = outpoints.iter().find(|outpoint| {
+                        input.prev_txid == outpoint.txid && input.prev_index == outpoint.index
+                    }) else {
+                        continue;
+                    };
+                    let Ok(input_index) = OutputIndex::try_from(index) else {
+                        continue;
+                    };
+                    spends.push(TransparentSpend {
+                        outpoint: *outpoint,
+                        by: transaction.txid,
+                        input_index,
+                        height: *height,
+                    });
+                }
+            }
+        }
+        Ok(spends)
+    }
+}
+
+/// Whether `transaction` spends `outpoint`.
+fn spends(transaction: &PreIndexCompactTx, outpoint: Outpoint) -> bool {
+    transaction
+        .transparent_inputs
+        .iter()
+        .any(|input| input.prev_txid == outpoint.txid && input.prev_index == outpoint.index)
+}
+
+/// Whether `transaction` created `outpoint`.
+fn creates(transaction: &PreIndexCompactTx, outpoint: Outpoint) -> bool {
+    if transaction.txid != outpoint.txid {
+        return false;
+    }
+    usize::try_from(outpoint.index).is_ok_and(|index| index < transaction.transparent_outputs.len())
+}
+
 pub fn stub_compact_block(height: u32, hash_byte: u8) -> CompactBlock {
     CompactBlock {
         hash: BlockHash::from([hash_byte; 32]),

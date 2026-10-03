@@ -4,8 +4,11 @@
 //! transaction spent that outpoint.
 
 use zaino_persistence_codec::keys::HashKey;
-use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    decode_value, encode_key, DecodeError, EntryCodec, PersistentRecord,
+};
 use zaino_primitives::types::{OutputIndex, TransactionId};
+use zaino_sync::backend::{BackendReader, ReadError};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::IndexId;
 use zaino_sync::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
@@ -137,5 +140,35 @@ impl PersistentRecord for PersistentOutpointKey {
             prev_txid: TransactionId::from(self.prev_txid),
             prev_index: self.prev_index,
         })
+    }
+}
+
+/// A read of the transparent-spends index failed.
+#[derive(Debug, thiserror::Error)]
+pub enum SpenderReadError {
+    /// The backend read failed.
+    #[error(transparent)]
+    Backend(#[from] ReadError),
+    /// A persisted entry could not be decoded.
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+}
+
+/// The transaction that spent `outpoint`, or `None` if this index holds no
+/// spend of it — the read side of this index.
+///
+/// A point get on the outpoint key, not a scan: the index is keyed by exactly
+/// the question asked. `None` means "no spend recorded here", which is not the
+/// same as "unspent" — an outpoint the indexed range never created is also
+/// absent. Distinguishing the two needs the output's existence, which this
+/// index does not carry.
+pub fn read_spender(
+    reader: &dyn BackendReader,
+    outpoint: &OutpointKey,
+) -> Result<Option<TransactionId>, SpenderReadError> {
+    let key = encode_key::<TransparentSpendsIndex>(outpoint);
+    match reader.get(ID.into(), &key)? {
+        Some(bytes) => Ok(Some(decode_value::<TransparentSpendsIndex>(&bytes)?)),
+        None => Ok(None),
     }
 }

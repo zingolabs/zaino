@@ -35,6 +35,8 @@
 //! the executor.
 #![forbid(unsafe_code)]
 
+mod address;
+mod spend;
 mod watermark_repair;
 
 pub use watermark_repair::{WatermarkRepair, WatermarkRepairError};
@@ -306,13 +308,31 @@ where
     C: EntryCodec<Key = BlockHeight>,
     B: Backend,
 {
+    read_keyed::<C, B>(reader, namespace, &BlockHeight::new(u64::from(height)))
+}
+
+/// Read one index's value at `key`, composing on read.
+///
+/// The general form of [`read_index_value`], for the indexes keyed by
+/// something other than a height — an outpoint, a transaction id. Applies the
+/// same codec version guard, so a format skew reads as absent rather than
+/// decoding stale bytes.
+fn read_keyed<C, B>(
+    reader: &B::Reader,
+    namespace: Namespace,
+    key: &C::Key,
+) -> Result<Option<C::Value>, Transient>
+where
+    C: EntryCodec,
+    B: Backend,
+{
     if freshness::<C>(reader, namespace)
         .map_err(|e| Transient(format!("freshness {}: {e}", namespace.as_str())))?
         == Freshness::Stale
     {
         return Ok(None);
     }
-    let key = encode_key::<C>(&BlockHeight::new(u64::from(height)));
+    let key = encode_key::<C>(key);
     match reader
         .get(namespace, &key)
         .map_err(|e| Transient(format!("read {}: {e}", namespace.as_str())))?
