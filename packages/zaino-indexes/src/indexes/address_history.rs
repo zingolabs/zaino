@@ -276,31 +276,95 @@ pub enum ReceivesReadError {
     Decode(#[from] DecodeError),
 }
 
-/// Read all receives for `addr`, height-ordered — the read side of this index.
+/// The on-disk key prefix shared by every entry of one address: the leading 21
+/// bytes `script_type(1) ++ hash(20)` of the 65-byte key layout. A range scan
+/// over this prefix is contiguous because the address id leads the key.
+fn addr_prefix(addr: AddrId) -> [u8; 21] {
+    let mut prefix = [0u8; 21];
+    prefix[0] = script_type_byte(addr.script_type);
+    prefix[1..].copy_from_slice(&addr.hash);
+    prefix
+}
+
+/// The inclusive lower seek bound for `addr`'s entries at or above `start`:
+/// `addr_prefix ++ start(8 BE)`. Every key for `addr` at a height `>= start`
+/// sorts at or after this, and `start`'s own entries (which append a txid and
+/// index) sort after the 29-byte bound, so the scan begins exactly at `start`.
+fn lower_bound(addr: AddrId, start: BlockHeight) -> Vec<u8> {
+    let mut bound = addr_prefix(addr).to_vec();
+    bound.extend_from_slice(&start.value().to_be_bytes());
+    bound
+}
+
+/// The exclusive upper seek bound for `addr`'s entries at or below `end`:
+/// `addr_prefix ++ (end + 1)(8 BE)`. Every key for `addr` at a height `<= end`
+/// sorts before this (its height field is `<= end < end + 1`), and the next
+/// address's keys sort before it too, so the scan stops exactly after `end`.
 ///
-/// Decodes back exactly what the engine wrote via this index's [`Schema`]. It
-/// scans the namespace and filters by the address prefix; a prefix range scan is
-/// a future backend optimisation (the key is address-prefixed precisely to
-/// enable it, so this fn's contract does not change when it lands).
+/// `end` is a block height, always far below `u64::MAX` (the protocol caps it
+/// well within `u32`), so `end + 1` never overflows in practice; `saturating_add`
+/// keeps the function total without an unreachable panic.
+fn upper_bound(addr: AddrId, end: BlockHeight) -> Vec<u8> {
+    let mut bound = addr_prefix(addr).to_vec();
+    bound.extend_from_slice(&end.value().saturating_add(1).to_be_bytes());
+    bound
+}
+
+/// Read the receives for `addr` with height in `[start, end]` (inclusive),
+/// height-ordered — the read side of this index.
+///
+/// Seeks the address-prefixed key range rather than scanning the namespace: the
+/// key is `addr_id ++ height(BE) ++ …`, so one address's entries over a height
+/// band are a contiguous slice, and the read's cost is that slice, independent of
+/// how much other addresses' history the index holds. A whole-address read passes
+/// `start = 0` and `end` the protocol height ceiling.
+///
+/// Decodes back exactly what the engine wrote via this index's [`Schema`]. The
+/// backend yields the range in key order; the explicit sort pins the
+/// `(height, output_index)` order the contract promises regardless of the txid
+/// bytes that sit between them in the key.
 pub fn read_receives(
     reader: &dyn BackendReader,
     addr: AddrId,
+    start: BlockHeight,
+    end: BlockHeight,
 ) -> Result<Vec<AddressReceive>, ReceivesReadError> {
+    let lower = lower_bound(addr, start);
+    let upper = upper_bound(addr, end);
     let mut out = Vec::new();
-    for (raw_key, raw_value) in reader.scan(ID.into())? {
-        let key = decode_key::<AddressHistoryIndex>(&raw_key)?;
-        if key.addr == addr {
-            out.push(AddressReceive {
-                addr: key.addr,
-                height: key.height,
-                txid: key.txid,
-                output_index: key.output_index,
-                value: decode_value::<AddressHistoryIndex>(&raw_value)?,
-            });
-        }
+    let mut decode_err: Option<ReceivesReadError> = None;
+    reader.scan_range(
+        ID.into(),
+        &lower,
+        &upper,
+        &mut |raw_key, raw_value| match decode_receive(raw_key, raw_value) {
+            Ok(receive) => {
+                out.push(receive);
+                core::ops::ControlFlow::Continue(())
+            }
+            Err(error) => {
+                decode_err = Some(error);
+                core::ops::ControlFlow::Break(())
+            }
+        },
+    )?;
+    if let Some(error) = decode_err {
+        return Err(error);
     }
     out.sort_by_key(|r| (r.height.value(), r.output_index));
     Ok(out)
+}
+
+/// Decode one raw entry the range scan yielded back into an [`AddressReceive`].
+fn decode_receive(raw_key: &[u8], raw_value: &[u8]) -> Result<AddressReceive, ReceivesReadError> {
+    let key = decode_key::<AddressHistoryIndex>(raw_key)?;
+    Ok(AddressReceive {
+        addr: key.addr,
+        height: key.height,
+        txid: key.txid,
+        output_index: key.output_index,
+        value: decode_value::<AddressHistoryIndex>(raw_value)?,
+    })
 }
 
 #[cfg(test)]
@@ -464,7 +528,7 @@ mod tests {
         let reader = backend.reader().expect("reader");
 
         // addr_a: two receives, height-ordered (10 then 12).
-        let a = read_receives(&reader, addr_a).expect("read a");
+        let a = whole(&reader, addr_a).expect("read a");
         assert_eq!(a.len(), 2);
         assert_eq!(a[0].height, BlockHeight::new(10));
         assert_eq!(a[0].value, z(500));
@@ -472,11 +536,168 @@ mod tests {
         assert_eq!(a[1].output_index, 1);
 
         // addr_b: one receive; a different address: none.
-        assert_eq!(read_receives(&reader, addr_b).expect("read b").len(), 1);
+        assert_eq!(whole(&reader, addr_b).expect("read b").len(), 1);
         let addr_c = AddrId {
             script_type: ScriptType::P2SH,
             hash: [1; 20],
         };
-        assert!(read_receives(&reader, addr_c).expect("read c").is_empty());
+        assert!(whole(&reader, addr_c).expect("read c").is_empty());
+    }
+
+    /// The whole-address height band: genesis to the protocol height ceiling,
+    /// above which no block exists — the range the range-less store reads pass.
+    fn whole(
+        reader: &dyn BackendReader,
+        addr: AddrId,
+    ) -> Result<Vec<AddressReceive>, ReceivesReadError> {
+        read_receives(
+            reader,
+            addr,
+            BlockHeight::new(0),
+            BlockHeight::new(u64::from(u32::MAX)),
+        )
+    }
+
+    /// The seek bounds must line up with the codec, or the scan reads the wrong
+    /// slice. The lower bound is the first 29 bytes of a real key at `start` (with
+    /// a zero txid and index), and the upper bound is that same prefix at
+    /// `end + 1` — pinned here so a codec layout change cannot silently desync the
+    /// seek from the stored keys.
+    #[test]
+    fn seek_bounds_match_the_codec_key_layout() {
+        let addr = AddrId {
+            script_type: ScriptType::P2SH,
+            hash: [0xAB; 20],
+        };
+        let key_at = |height: u64| {
+            encode_key::<AddressHistoryIndex>(&AddrKey {
+                addr,
+                height: BlockHeight::new(height),
+                txid: txid(0),
+                output_index: 0,
+            })
+        };
+        // Lower bound at height 5 == the first 29 bytes of the smallest key at 5.
+        assert_eq!(lower_bound(addr, BlockHeight::new(5)), key_at(5)[..29]);
+        // Upper bound at height 5 == the smallest key at height 6's first 29
+        // bytes: everything at height <= 5 sorts before it.
+        assert_eq!(upper_bound(addr, BlockHeight::new(5)), key_at(6)[..29]);
+    }
+
+    /// A [`BackendReader`] that counts how many entries the backend surfaces,
+    /// through either `scan` or `scan_range`. The regression guard: a read that
+    /// seeks one address's slice surfaces only that address's entries, while the
+    /// old full-namespace `scan` would surface every address's.
+    struct CountingReader<R> {
+        inner: R,
+        surfaced: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl<R: BackendReader> BackendReader for CountingReader<R> {
+        fn get(
+            &self,
+            namespace: zaino_sync::backend::Namespace,
+            key: &[u8],
+        ) -> Result<Option<Vec<u8>>, ReadError> {
+            self.inner.get(namespace, key)
+        }
+
+        fn scan(
+            &self,
+            namespace: zaino_sync::backend::Namespace,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ReadError> {
+            let entries = self.inner.scan(namespace)?;
+            self.surfaced
+                .fetch_add(entries.len(), std::sync::atomic::Ordering::Relaxed);
+            Ok(entries)
+        }
+
+        fn scan_range(
+            &self,
+            namespace: zaino_sync::backend::Namespace,
+            start: &[u8],
+            end_exclusive: &[u8],
+            visit: &mut zaino_sync::backend::RangeVisitor<'_>,
+        ) -> Result<(), ReadError> {
+            let surfaced = std::sync::Arc::clone(&self.surfaced);
+            self.inner
+                .scan_range(namespace, start, end_exclusive, &mut |k, v| {
+                    surfaced.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    visit(k, v)
+                })
+        }
+
+        fn first_key(
+            &self,
+            namespace: zaino_sync::backend::Namespace,
+        ) -> Result<Option<Vec<u8>>, ReadError> {
+            self.inner.first_key(namespace)
+        }
+    }
+
+    /// The read cost scales with the queried address, not with how much other
+    /// addresses' history the index holds. Address B gets many entries, A gets a
+    /// few; reading A must surface only A's entries from the backend — the
+    /// property the OOM fix rests on.
+    #[test]
+    fn a_read_surfaces_only_the_queried_addresses_entries() {
+        use zaino_persistence::in_memory::InMemoryBackend;
+        use zaino_persistence::{Backend, BackendWriter, WriteOp};
+
+        let addr_a = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [0xAA; 20],
+        };
+        let addr_b = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [0xBB; 20],
+        };
+        let z = |n| Zatoshis::new(n).expect("valid");
+
+        let mut receives = Vec::new();
+        // A few entries for A.
+        for height in 0..3u64 {
+            receives.push(AddressReceive {
+                addr: addr_a,
+                height: BlockHeight::new(height),
+                txid: txid(u8::try_from(height).expect("small")),
+                output_index: 0,
+                value: z(100),
+            });
+        }
+        // Many for B.
+        for height in 0..500u64 {
+            receives.push(AddressReceive {
+                addr: addr_b,
+                height: BlockHeight::new(height),
+                txid: txid(u8::try_from(height % 251).expect("small")),
+                output_index: u32::try_from(height).expect("small"),
+                value: z(200),
+            });
+        }
+
+        let ops: Vec<WriteOp> = AddressHistoryIndex::into_entries(vec![receives])
+            .into_iter()
+            .map(|(k, v)| WriteOp::Put {
+                namespace: ID.into(),
+                key: encode_key::<AddressHistoryIndex>(&k),
+                value: encode_value::<AddressHistoryIndex>(&v),
+            })
+            .collect();
+        let backend = InMemoryBackend::new();
+        let mut writer = backend.writer().expect("writer");
+        writer.commit(ops).expect("commit");
+
+        let reader = CountingReader {
+            inner: backend.reader().expect("reader"),
+            surfaced: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let a = whole(&reader, addr_a).expect("read a");
+        assert_eq!(a.len(), 3, "A's three receives");
+        assert_eq!(
+            reader.surfaced.load(std::sync::atomic::Ordering::Relaxed),
+            3,
+            "the backend surfaced only A's entries, not B's 500"
+        );
     }
 }

@@ -42,6 +42,7 @@ use zaino_primitives::types::{
 };
 use zaino_service::error::AddressReadError;
 use zaino_service::AddressRead;
+use zaino_sync::primitives::BlockHeight;
 
 use crate::spend_resolve::{resolve_spend, ResolveError};
 use crate::{read_keyed, StoreSnapshot};
@@ -84,8 +85,11 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<AddressBalance, AddressReadError> {
+        // A balance counts only receives inside the range, and whether each is
+        // spent (at any height) — never a spend's height — so the receive scan is
+        // bounded to exactly `[range.start, range.end]`.
         let arrived: Vec<Entry> = self
-            .entries(addr)?
+            .entries(addr, receive_start(range), receive_end(range))?
             .into_iter()
             .filter(|entry| covers(range, entry.height))
             .collect();
@@ -111,9 +115,10 @@ where
         &self,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        // Range-less by contract: every unspent output, whenever it arrived.
+        // Range-less by contract: every unspent output, whenever it arrived, so
+        // the whole address prefix is read.
         let unspent: Vec<Entry> = self
-            .entries(addr)?
+            .entries(addr, whole_history_start(), whole_history_end())?
             .into_iter()
             .filter(|entry| entry.spent.is_none())
             .collect();
@@ -144,8 +149,14 @@ where
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
+        // A spend is a delta at its own height, and the receive it spends can lie
+        // anywhere at or below that height — so the scan cannot be lower-bounded
+        // by `range.start` without dropping an in-range spend of an earlier
+        // receive. It is upper-bounded by `range.end`: a receive above the range
+        // can contribute neither a receive delta (its height is out of range) nor
+        // a spend delta (a spend is never below its receive).
         let mut deltas = Vec::new();
-        for entry in self.entries(addr)? {
+        for entry in self.entries(addr, whole_history_start(), receive_end(range))? {
             if covers(range, entry.height) {
                 deltas.push(AddressDelta {
                     satoshis: positive(entry.value)?,
@@ -186,8 +197,10 @@ where
         // both, and two receives can share one, so the result is deduplicated.
         // The local index knows each transaction's height, so every pair carries
         // `Some(height)`, letting a multi-address caller merge the unions by it.
+        // Same bound as `deltas`: a spend in range can belong to a receive from
+        // any earlier height, so the scan is only upper-bounded by `range.end`.
         let mut txids = Vec::new();
-        for entry in self.entries(addr)? {
+        for entry in self.entries(addr, whole_history_start(), receive_end(range))? {
             if covers(range, entry.height) {
                 txids.push((entry.height, entry.txid));
             }
@@ -209,19 +222,26 @@ where
     B: Backend + 'static,
     M: Backs<local::AddressHistory>,
 {
-    /// Every receive of `addr` at or below the watermark, each joined with where
-    /// it was spent if this tier spent it.
+    /// Every receive of `addr` with height in `[start, end]` (at or below the
+    /// watermark), each joined with where it was spent if this tier spent it.
     ///
-    /// The one scan the whole read is built on. The index returns receives in
+    /// The one scan the whole read is built on. The caller bounds the receive
+    /// heights to exactly what its answer needs so the scan reads a contiguous
+    /// address-prefixed slice, not the namespace. The index returns receives in
     /// height order and the join preserves it.
-    fn entries(&self, addr: &TransparentAddress) -> Result<Vec<Entry>, AddressReadError> {
+    fn entries(
+        &self,
+        addr: &TransparentAddress,
+        start: BlockHeight,
+        end: BlockHeight,
+    ) -> Result<Vec<Entry>, AddressReadError> {
         let Some((script_type, hash)) = transparent_address_key(addr) else {
             // Not a transparent address, so nothing was ever keyed under it.
             // A well-formed question with an empty answer, not a failure.
             return Ok(Vec::new());
         };
         let reader = self.reader()?;
-        let receives = read_receives(&reader, AddrId { script_type, hash })
+        let receives = read_receives(&reader, AddrId { script_type, hash }, start, end)
             .map_err(|e| transient(format!("read address_history: {e}")))?;
 
         receives
@@ -303,6 +323,34 @@ where
 /// Whether `range` includes `height`.
 fn covers(range: HeightRange, height: Height) -> bool {
     range.start <= height && height <= range.end
+}
+
+/// A protocol [`Height`] as the index's [`BlockHeight`], for a receive-scan bound.
+fn block_height(height: Height) -> BlockHeight {
+    BlockHeight::new(u64::from(height))
+}
+
+/// The receive-scan lower bound when receives below the range cannot matter —
+/// the range's own start.
+fn receive_start(range: HeightRange) -> BlockHeight {
+    block_height(range.start)
+}
+
+/// The receive-scan upper bound: the range's end. Every read stops here, because
+/// no receive above the asked range contributes to any of them.
+fn receive_end(range: HeightRange) -> BlockHeight {
+    block_height(range.end)
+}
+
+/// The lower bound of a whole-address scan: genesis.
+fn whole_history_start() -> BlockHeight {
+    BlockHeight::new(0)
+}
+
+/// The upper bound of a whole-address scan: the protocol height ceiling, above
+/// which no block exists, so the scan covers every entry of the address.
+fn whole_history_end() -> BlockHeight {
+    BlockHeight::new(u64::from(u32::MAX))
 }
 
 /// The engine's height as the domain's, which is narrower.

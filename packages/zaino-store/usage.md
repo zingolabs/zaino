@@ -67,6 +67,13 @@ An unspent output's script is not fetched. A standard script is determined by
 the address it pays, and only a standard script could have matched the queried
 address in the index, so the script is reconstructed from the address.
 
+Each read bounds its receive scan to the heights it needs, so the cost is that
+slice of one address's history, never the whole index. `balance` scans exactly
+`[start, end]` (a receive outside the range changes no balance). `deltas` and
+`tx_ids` scan `[genesis, end]` — only upper-bounded, because a spend inside the
+range can belong to a receive from any earlier height. `unspent` and the
+range-less reads scan the whole address prefix.
+
 The finalised tier is the only one that implements this read. The volatile
 window cannot: a transparent input names the outpoint it consumes, not the
 address that outpoint paid, so for an output created below its floor the window
