@@ -81,6 +81,12 @@ request that one read declines rather than letting a pool-scale history exhaust
 memory for the whole process. The adapter maps it to a JSON-RPC internal error;
 retrying is futile until a balance/UTXO-by-address aggregate lifts the ceiling.
 
+Other scan failures are classified by what a retry would do. A backend read
+failure may clear on a retry, so it is `Transient`. A decode failure is index
+corruption — the scan read an entry whose persisted bytes do not parse, and a
+retry re-reads the identical bytes — so it is `Fatal`, and the caller stops
+rather than looping on a read that cannot succeed.
+
 The finalised tier is the only one that implements this read. The volatile
 window cannot: a transparent input names the outpoint it consumes, not the
 address that outpoint paid, so for an output created below its floor the window

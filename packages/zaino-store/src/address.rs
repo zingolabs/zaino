@@ -373,19 +373,31 @@ fn whole_history_end() -> BlockHeight {
     BlockHeight::new(u64::from(u32::MAX))
 }
 
-/// Fold a receive-scan failure into this read's error.
+/// Fold a receive-scan failure into this read's error, classified per variant.
 ///
 /// A ceiling breach is a typed [`AddressReadError::TooLarge`] carrying the queried
 /// address and the limit, so the adapter refuses that one request with a clear
-/// message rather than stringifying it into an opaque transient. A backend or
-/// decode failure stays transient, as it did before the range read.
+/// message. The other two cases are classified by what a retry would do, rather
+/// than collapsed into one transient catch-all:
+///
+/// - A backend read failure (lock contention, a mid-swap race) may clear on a
+///   retry, so it is [`transient`].
+/// - A decode failure is index corruption: the scan read a persisted entry whose
+///   bytes do not parse, and a retry re-reads the identical bytes and fails
+///   identically. It is [`fatal`], so the caller stops rather than retrying a
+///   read that cannot succeed.
 fn receives_read_error(addr: &TransparentAddress, error: ReceivesReadError) -> AddressReadError {
     match error {
         ReceivesReadError::TooLarge { limit } => AddressReadError::TooLarge {
             address: addr.clone(),
             limit,
         },
-        other => transient(format!("read address_history: {other}")),
+        ReceivesReadError::Backend(backend) => {
+            transient(format!("read address_history: {backend}"))
+        }
+        ReceivesReadError::Decode(decode) => {
+            fatal(format!("decode address_history entry: {decode}"))
+        }
     }
 }
 
@@ -456,15 +468,29 @@ mod tests {
         }
     }
 
-    /// Every other receive-scan failure stays a transient read failure, as it did
-    /// before the range read.
+    /// A decode failure is index corruption, not a race: a retry re-reads the
+    /// same unparseable bytes, so it maps to a fatal read failure rather than a
+    /// transient one.
     #[test]
-    fn a_decode_failure_stays_transient() {
+    fn a_decode_failure_is_fatal() {
         let addr = TransparentAddress::new("t1exampleaddress".to_owned());
         let mapped = receives_read_error(
             &addr,
             ReceivesReadError::Decode(zaino_persistence_codec::DecodeError::Invalid(
                 "bad bytes".to_owned(),
+            )),
+        );
+        assert!(matches!(mapped, AddressReadError::Fatal(_)));
+    }
+
+    /// A backend read failure may clear on a retry, so it stays transient.
+    #[test]
+    fn a_backend_failure_stays_transient() {
+        let addr = TransparentAddress::new("t1exampleaddress".to_owned());
+        let mapped = receives_read_error(
+            &addr,
+            ReceivesReadError::Backend(zaino_sync::backend::ReadError::NamespaceNotFound(
+                "address_history".to_owned(),
             )),
         );
         assert!(matches!(mapped, AddressReadError::Transient(_)));
