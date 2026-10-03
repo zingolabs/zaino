@@ -36,9 +36,11 @@
 #![forbid(unsafe_code)]
 
 mod address;
+mod index_coverage;
 mod spend;
 mod watermark_repair;
 
+pub use index_coverage::{IndexCoverageError, UnstampedIndexes};
 pub use watermark_repair::{WatermarkRepair, WatermarkRepairError};
 
 use std::future::Future;

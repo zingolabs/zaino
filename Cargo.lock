@@ -6454,9 +6454,11 @@ name = "zaino-store"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "zaino-address",
+ "zaino-backend-lmdb",
  "zaino-component",
  "zaino-indexer",
  "zaino-indexes",

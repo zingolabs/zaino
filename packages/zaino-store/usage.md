@@ -73,6 +73,36 @@ header held, scans a window below it for holes, and re-stamps at the top of
 the unbroken run in one atomic write. A stamp above the data would otherwise
 route a gap of heights to the store and resume the indexer past them.
 
+## Index-coverage boot guard
+
+Serviceability is derived from index *presence* — a format stamp beside the
+data — on the assumption that every index reaches the store's one shared
+watermark. That holds for a store built from genesis in one pass. It breaks
+when a deployment gains an index and opens a store that already holds data:
+the new index is stamped on its first forward write, then reports serviceable
+while holding only `[resume, tip]`, never `[genesis, resume)` — so a read it
+backs (address history, say) is silently incomplete.
+
+`StoreReader::check_index_coverage` is the fail-loud guard against that state,
+which the runtime calls on boot after the watermark repair. It **refuses to
+open** (`IndexCoverageError::Incomplete`) when the store has already committed
+a watermark and any index the index set `M` declares has no format stamp. The
+error names the unstamped index(es) and the watermark, and states the remedy:
+resync from genesis into a fresh, empty data directory.
+
+What it does **not** refuse:
+
+| state | result | why |
+| --- | --- | --- |
+| no watermark (never synced) | opens | every declared index builds from genesis with the rest |
+| every declared index stamped | opens | the store covers the whole range for this set |
+| reopened with a **subset** | opens | the guard checks only what `M` declares; a stamped namespace this set does not read is left untouched |
+| an index stamped at an **older** codec version | opens here | the stamp is present; the per-read freshness check rejects a format skew |
+
+It is deliberately narrow: it asserts the one invariant that keeps the
+shared-watermark assumption true — an index can only be added to a store that
+has synced nothing — and does not track per-index coverage.
+
 ## Runtime component
 
 The supervised-component wrapper that presents this reader to the Orchestra

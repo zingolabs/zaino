@@ -32,3 +32,5 @@ zaino-indexes = { path = "../zaino-indexes" }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-store-service = { path = "../zaino-store-service" }
+zaino-backend-lmdb = { path = "../zaino-backend-lmdb" }
+tempfile.workspace = true
