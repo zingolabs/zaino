@@ -224,7 +224,10 @@ impl<S: LightWalletService> LightServe<S> {
         let snapshot = self.engine.snapshot().await?;
         let ids = snapshot.tx_ids(&addr, range).await?;
         let mut txs = Vec::with_capacity(ids.len());
-        for id in ids {
+        // The read pairs each txid with the height it touched the address; the
+        // light-wallet wire carries only the transaction bytes, so the height is
+        // dropped here.
+        for (_height, id) in ids {
             if let Some(raw) = snapshot.raw_transaction(id).await? {
                 txs.push(raw.to_wire());
             }

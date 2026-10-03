@@ -173,16 +173,20 @@ where
     })
 }
 
-/// Every transaction id touching `addrs`, over the requested bounds.
+/// Every transaction id touching `addrs`, over the requested bounds, ordered the
+/// way zcashd's `getaddresstxids` orders them.
 ///
 /// `start` and `end` are inclusive and optional, defaulting to the snapshot's
 /// serviceable edge — the same range handling as [`address_deltas`], and the
 /// same explorer policy: nothing serviceable (or a backwards range) is an empty
 /// answer, not an error.
 ///
-/// A txid is returned once even when several of `addrs` touch it: the ids are
-/// de-duplicated in first-seen order, so a multi-address query does not repeat a
-/// transaction that paid two of them.
+/// zcashd builds one ordered set across *all* the requested addresses, sorted by
+/// `(height, txid)` and de-duplicated — so a transaction touching two of the
+/// addresses appears once, and the union is globally height-ordered rather than
+/// grouped by address. This mirrors that: the per-address `(height, txid)` lists
+/// are merged, sorted by `(height, txid)`, and de-duplicated by txid; only the
+/// bare txids are returned, in that order.
 pub async fn address_txids<S>(
     snapshot: &S,
     addrs: &[TransparentAddress],
@@ -202,24 +206,32 @@ where
     }
     let range = HeightRange { start, end };
 
-    let mut seen = HashSet::new();
-    let mut txids = Vec::new();
+    let mut located = Vec::new();
     for addr in addrs {
-        for txid in snapshot.tx_ids(addr, range).await? {
-            if seen.insert(txid) {
-                txids.push(txid);
-            }
-        }
+        located.extend(snapshot.tx_ids(addr, range).await?);
     }
-    Ok(txids)
+    // Sort the union by (height, txid), zcashd's `getaddresstxids` key, then drop
+    // the height and de-duplicate by txid (a txid is unique, so equal txids share
+    // a height and sort adjacent).
+    located.sort_by_key(|(height, txid)| (u32::from(*height), <[u8; 32]>::from(*txid)));
+    let mut seen = HashSet::new();
+    Ok(located
+        .into_iter()
+        .filter_map(|(_, txid)| seen.insert(txid).then_some(txid))
+        .collect())
 }
 
-/// Every unspent transparent output held by `addrs`.
+/// Every unspent transparent output held by `addrs`, ordered the way zcashd's
+/// `getaddressutxos` orders them.
 ///
 /// Range-less, because an unspent output is a fact about the current chain, not
 /// a window of it — the read itself ([`AddressRead::unspent_outpoints`]) takes no
 /// range. Explorer policy, matching [`address_balance`]: an unserviceable
 /// snapshot has no indexed history, so the answer is empty rather than an error.
+///
+/// zcashd merges every requested address's unspent set and sorts it by block
+/// height. This mirrors that with a stable sort by height, so a multi-address
+/// query returns one height-ordered list rather than one list per address.
 pub async fn address_utxos<S>(
     snapshot: &S,
     addrs: &[TransparentAddress],
@@ -234,6 +246,7 @@ where
     for addr in addrs {
         utxos.extend(snapshot.unspent_outpoints(addr).await?);
     }
+    utxos.sort_by_key(|utxo| u32::from(utxo.height));
     Ok(utxos)
 }
 

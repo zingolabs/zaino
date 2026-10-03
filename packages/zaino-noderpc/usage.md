@@ -59,7 +59,9 @@ The transparent-address methods (`getaddressbalance`, `getaddressdeltas`,
 `AddressRead`, composed through the `queries::address_*` helpers so the range
 handling and the empty-when-unserviceable policy live in one place.
 `getaddresstxids` takes a `{addresses, start, end}` object (the inclusive height
-window optional) and returns the touching txids in display order, de-duplicated.
+window optional) and returns the touching txids in display order — the union
+across all queried addresses, globally sorted by `(height, txid)` and
+de-duplicated, as zcashd orders it (not grouped per address).
 `getaddressutxos` takes `{addresses}` and returns each unspent output in zcashd's
 insight-explorer shape (`address`, `txid` display order, `outputIndex`, `script`
 hex, `satoshis`, `height`); `chainInfo` wrapping is not modelled — the response is

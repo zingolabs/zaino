@@ -339,11 +339,19 @@ pub trait AddressRead: Send + Sync {
         addr: &TransparentAddress,
         range: HeightRange,
     ) -> impl Future<Output = Result<Vec<AddressDelta>, AddressReadError>> + Send;
+    /// Every transaction touching `addr` in `range`, each paired with the height
+    /// at which it touched the address.
+    ///
+    /// The height is carried out of the read because a caller merging several
+    /// addresses must order the union by height (zcashd's `getaddresstxids`
+    /// sort), and the bare txid cannot be re-sorted. A single address's result is
+    /// ordered `(height, txid)` and de-duplicated; a transaction that both pays
+    /// and spends for the address appears once.
     fn tx_ids(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> impl Future<Output = Result<Vec<TransactionId>, AddressReadError>> + Send;
+    ) -> impl Future<Output = Result<Vec<(Height, TransactionId)>, AddressReadError>> + Send;
 }
 
 /// Backed by: transparent/address index. The receive side of address history,

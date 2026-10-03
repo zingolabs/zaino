@@ -1855,6 +1855,54 @@ mod tests {
         }
     }
 
+    /// The RPC-backed path discards `finalRoot` on parse (zebra's own reply
+    /// documents the field as unused), so a treestate as the RPC passthrough
+    /// actually yields it — every pool present but with `final_root: None` — must
+    /// render `finalState` without a `finalRoot` key. This pins the documented
+    /// divergence rather than leaving it only asserted by the Some-scripted
+    /// golden above.
+    #[tokio::test]
+    async fn z_gettreestate_omits_finalroot_from_the_rpc_backend() {
+        use zaino_primitives::types::{PoolTreestate, Treestate};
+        // The shape the RPC source produces: active pools with a serialized tree
+        // but no root (see zaino-source-zebra-rpc `parse_pool_final_state`).
+        let no_root = |state: &str| PoolTreestate {
+            final_root: None,
+            final_state: crate::wire::bytes_from_hex(state).expect("valid state hex"),
+        };
+        let treestate = Treestate {
+            block_hash: BlockHash::from(internal_32(ORACLE_TS_HASH)),
+            height: Height::try_from(3_504_000).expect("valid height"),
+            time: 1_790_963_775,
+            sapling: Some(no_root("00")),
+            orchard: Some(no_root("00")),
+            ironwood: Some(no_root("00")),
+        };
+        let engine = MockIndexerService::new(MockChain {
+            treestate: Some(treestate),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let json = serde_json::to_value(node.get_treestate("3504000").await.expect("treestate"))
+            .expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        for pool in ["sapling", "orchard", "ironwood"] {
+            let commitments = obj
+                .get(pool)
+                .and_then(|p| p.get("commitments"))
+                .and_then(serde_json::Value::as_object)
+                .unwrap_or_else(|| panic!("{pool} commitments present"));
+            assert!(
+                commitments.contains_key("finalState"),
+                "{pool} still carries finalState"
+            );
+            assert!(
+                !commitments.contains_key("finalRoot"),
+                "{pool} omits finalRoot against the RPC backend, not null: {commitments:?}"
+            );
+        }
+    }
+
     /// A pre-activation pool omits its key, rather than rendering an empty tree.
     #[tokio::test]
     async fn z_gettreestate_omits_an_inactive_pool() {

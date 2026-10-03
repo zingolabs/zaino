@@ -67,7 +67,7 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> impl Future<Output = Result<Vec<TransactionId>, AddressReadError>> + Send;
+    ) -> impl Future<Output = Result<Vec<(Height, TransactionId)>, AddressReadError>> + Send;
 }
 
 /// The one impl a handler sees: dispatch on the routing's placement.
@@ -106,7 +106,7 @@ where
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> Result<Vec<TransactionId>, AddressReadError> {
+    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
         R::Address::tx_ids(self.local(), self.passthrough(), addr, range).await
     }
 }
@@ -158,8 +158,19 @@ where
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> Result<Vec<TransactionId>, AddressReadError> {
-        passthrough.tx_ids(addr, range).await
+    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
+        // The validator's `getaddresstxids` returns bare txids with no per-txid
+        // height, so each is paired with `Height::GENESIS` as a placeholder. This
+        // is sound because the passthrough placement is reached only by the
+        // single-address light-wallet `GetTaddressTxids`, which discards the
+        // height and order; the multi-address merge that needs real heights
+        // (`queries::address_txids`) runs only under the `Local` placement.
+        Ok(passthrough
+            .tx_ids(addr, range)
+            .await?
+            .into_iter()
+            .map(|txid| (Height::GENESIS, txid))
+            .collect())
     }
 }
 
@@ -468,10 +479,11 @@ where
         _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> Result<Vec<TransactionId>, AddressReadError> {
+    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
         let store = local.finalised();
 
+        // The store's half is already `(height, txid)`-sorted and deduplicated.
         let mut txids = match fs {
             Some(range) => store.tx_ids(addr, range).await?,
             None => Vec::new(),
@@ -486,16 +498,18 @@ where
         let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
 
         // Every transaction that moved value for the address in the window: the
-        // ones that paid it, and the ones that spent what it held. One can do
-        // both, so the window's contribution is deduplicated before it is
-        // appended; the halves cover disjoint heights, so no transaction can
-        // appear in both.
-        let mut from_window: Vec<TransactionId> = part
+        // ones that paid it (at the receive's height), and the ones that spent
+        // what it held (at the spend's height). One can do both, so the window's
+        // contribution is sorted and deduplicated before it is appended; the
+        // halves cover disjoint heights (store <= watermark < window), so the
+        // concatenation stays height-ordered and no transaction spans both.
+        let mut from_window: Vec<(Height, TransactionId)> = part
             .receives
             .iter()
-            .map(|receive| receive.txid)
-            .chain(part.spends.iter().map(|spend| spend.by))
+            .map(|receive| (receive.height, receive.txid))
+            .chain(part.spends.iter().map(|spend| (spend.height, spend.by)))
             .collect();
+        from_window.sort_by_key(|(height, txid)| (u32::from(*height), <[u8; 32]>::from(*txid)));
         from_window.dedup();
         txids.extend(from_window);
         Ok(txids)

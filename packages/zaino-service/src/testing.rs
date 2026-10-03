@@ -496,8 +496,26 @@ impl AddressRead for MockSnapshot {
         &self,
         _addr: &TransparentAddress,
         _range: HeightRange,
-    ) -> Result<Vec<TransactionId>, AddressReadError> {
-        Ok(self.chain.txids.clone())
+    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
+        // The mock carries no per-txid height, so each scripted txid is given an
+        // ascending height matching its scripted position — distinct and
+        // increasing, so a caller that sorts by height preserves the scripted
+        // order. Enough to exercise the wire; the real cross-address merge is
+        // tested against the local engine.
+        self.chain
+            .txids
+            .iter()
+            .enumerate()
+            .map(|(index, txid)| {
+                let height = u32::try_from(index)
+                    .ok()
+                    .and_then(|h| Height::try_from(h).ok())
+                    .ok_or_else(|| {
+                        AddressReadError::Fatal("scripted txid index exceeds a height".to_owned())
+                    })?;
+                Ok((height, *txid))
+            })
+            .collect()
     }
 }
 

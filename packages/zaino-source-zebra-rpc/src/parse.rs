@@ -1623,6 +1623,31 @@ mod tests {
         );
     }
 
+    /// `parse_treestate` discards zebra's `finalRoot` even when the reply carries
+    /// one: the RPC path does not trust the field (zebra documents it as unused),
+    /// so the domain carries `None`, and the node-RPC wire then omits `finalRoot`
+    /// — a recorded divergence. The serialized tree (`finalState`) is kept.
+    #[test]
+    fn parse_treestate_discards_the_final_root() {
+        let value = json!({
+            "hash": "ab".repeat(32),
+            "height": 100,
+            "time": 1_600_000_000,
+            "sapling": { "commitments": { "finalRoot": "cd".repeat(32), "finalState": "dead" } },
+        });
+        let treestate = parse_treestate(&value).expect("parses");
+        let sapling = treestate.sapling.expect("the pool is present");
+        assert!(
+            sapling.final_root.is_none(),
+            "finalRoot is discarded on parse, not carried through"
+        );
+        assert_eq!(
+            sapling.final_state,
+            hex::decode("dead").expect("valid hex"),
+            "finalState is kept"
+        );
+    }
+
     /// Every pool the validator reports must reach the domain, keyed by its own
     /// `id`. The list is positional on the wire, so a dropped or misordered
     /// entry silently attributes value to the wrong pool.

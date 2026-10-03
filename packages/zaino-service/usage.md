@@ -150,13 +150,19 @@ which is `None` exactly when no query ran, so an adapter echoing the range has
 the authoritative value rather than re-deriving it.
 
 `address_txids(snapshot, addrs, start, end)` and `address_utxos(snapshot, addrs)`
-compose the remaining insight-explorer address reads the same way.
-`address_txids` takes the inclusive optional bounds of `address_deltas` and
-de-duplicates ids in first-seen order, so a multi-address query reports a
-transaction that paid two of them once. `address_utxos` is range-less — an
-unspent output is a fact about the current chain, not a window of it — and both
-take the explorer policy: an unserviceable snapshot answers empty, never an
-error.
+compose the remaining insight-explorer address reads the same way, each ordered as
+zcashd orders its equivalent. zcashd builds **one set across all the requested
+addresses**, not one list per address: `getaddresstxids` sorts the union by
+`(height, txid)` and de-duplicates (a transaction touching two of the addresses
+appears once), and `getaddressutxos` sorts the merged unspent set by height. So
+`AddressRead::tx_ids` carries each txid's height out of the read — a bare txid
+cannot be re-sorted — and the query merges the per-address `(height, txid)` lists,
+sorts by `(height, txid)`, and returns the de-duplicated txids in that order;
+`address_utxos` merges and stably sorts by height (`Utxo` already carries it).
+`address_txids` takes the inclusive optional bounds of `address_deltas`;
+`address_utxos` is range-less — an unspent output is a fact about the current
+chain, not a window of it — and both take the explorer policy: an unserviceable
+snapshot answers empty, never an error.
 
 ## Errors
 

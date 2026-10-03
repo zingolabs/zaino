@@ -39,7 +39,7 @@ use zaino_primitives::types::{
     Zatoshis,
 };
 use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
-use zaino_service::{AddressRead, TakeSnapshot};
+use zaino_service::{AddressRead, ChainSegment, TakeSnapshot, queries};
 use zaino_source::mock::{MockChain, test_block};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::StoreReader;
@@ -253,12 +253,14 @@ async fn the_unspent_set_drops_what_the_window_spent_and_adds_what_it_paid() {
 /// Every transaction that moved value for the address, across both halves.
 #[tokio::test]
 async fn transaction_ids_span_both_halves() {
-    let txids = engine()
+    let located = engine()
         .await
         .tx_ids(&addr_a(), range(0, 4))
         .await
         .expect("the read succeeds");
-    let mut sorted = txids.clone();
+    // The read pairs each txid with the height it touched the address; here only
+    // the set of transactions is under test.
+    let mut sorted: Vec<TransactionId> = located.into_iter().map(|(_, txid)| txid).collect();
     sorted.sort_by_key(|txid| <[u8; 32]>::from(*txid));
     sorted.dedup();
     assert_eq!(
@@ -287,6 +289,133 @@ async fn deltas_report_the_spend_at_its_own_height_and_value() {
         reported,
         vec![(1, 100), (1, 200), (3, -100), (3, 500)],
         "two receives at height 1; at height 3 the window's spend of 100 and its payment of 500"
+    );
+}
+
+// --- multi-address merge, queries layer, real local engine -------------------
+//
+// zcashd's `getaddresstxids`/`getaddressutxos` build one set across all requested
+// addresses, globally ordered by height — not one list per address concatenated.
+// The local store read is height-sorted only *within* one address, so the merge
+// must interleave. This fixture puts A, then B, then A at ascending heights so a
+// grouped-by-address answer (A's txs, then B's) is distinguishable from the
+// correct height-ordered one.
+
+/// A paid at height 1.
+fn merge_a1() -> TransactionId {
+    TransactionId::from([0xC1; 32])
+}
+/// B paid at height 2 — between A's two transactions.
+fn merge_b2() -> TransactionId {
+    TransactionId::from([0xC2; 32])
+}
+/// A paid again at height 3.
+fn merge_a3() -> TransactionId {
+    TransactionId::from([0xC3; 32])
+}
+
+/// A finalised store over `[0, 4]`: height 1 pays A, height 2 pays B, height 3
+/// pays A again, each in its own transaction. Finalised depth is zero, so the
+/// whole span is below the watermark and the window is empty.
+async fn interleaved_store() -> StoreReader<InMemoryBackend, TransparentHistory> {
+    let backend = InMemoryBackend::new();
+    let mut chain = MockChain::new();
+    for height in 0..=4u32 {
+        let hash_byte = u8::try_from(20 + height).expect("a small height");
+        let mut block: Block = test_block(height, hash_byte);
+        let paid = match height {
+            1 => Some((merge_a1(), &addr_a(), 100u64)),
+            2 => Some((merge_b2(), &addr_b(), 200)),
+            3 => Some((merge_a3(), &addr_a(), 300)),
+            _ => None,
+        };
+        if let Some((txid, addr, zats)) = paid {
+            block.transactions = vec![Transaction {
+                txid,
+                transparent: TransparentData {
+                    inputs: Vec::new(),
+                    outputs: vec![pays(addr, zats)],
+                },
+                sapling: Default::default(),
+                orchard: Default::default(),
+                ironwood: Default::default(),
+            }];
+        }
+        chain = chain.with_block(block);
+    }
+    let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
+    let driver = SourceSyncDriver::resuming(
+        &backend,
+        TransparentHistory::pipelines(),
+        source,
+        |block| context_from_block(&block),
+        SyncTuning {
+            batch_size: 8,
+            finalised_depth: 0,
+            channel_capacity: 16,
+            concurrency: FetchConcurrency::SERIAL,
+        },
+    )
+    .expect("the driver builds");
+    let reader = StoreReader::new(Arc::new(backend.clone()));
+    let orchestra = OrchestraBuilder::new()
+        .boot_observed(
+            ValidatorComponent::connect(&Probe)
+                .await
+                .expect("the validator is reachable"),
+        )
+        .await
+        .boot(RunComponent::new(ComponentName("indexer"), driver))
+        .await
+        .expect("the indexer boots")
+        .boot(StoreComponent::new(ComponentName("store"), reader.clone()))
+        .await
+        .expect("the store boots")
+        .build();
+    for status in orchestra.statuses() {
+        assert_eq!(status.lifecycle, Lifecycle::Ready, "{}", status.name);
+    }
+    reader
+}
+
+/// The composed engine over the interleaved store and an empty window.
+async fn interleaved_engine() -> impl AddressRead + ChainSegment {
+    let engine: Engine<_, _, (), AddressLocally> =
+        Engine::new(interleaved_store().await, StubNonFinalised::empty(), ());
+    engine.snapshot().await.expect("the pin is taken")
+}
+
+/// `getaddresstxids` over `[A, B]` returns one globally height-ordered list:
+/// A@1, B@2, A@3. A grouped-by-address answer would be A@1, A@3, B@2 and fails.
+#[tokio::test]
+async fn address_txids_merge_addresses_globally_by_height() {
+    let snapshot = interleaved_engine().await;
+    let txids = queries::address_txids(&snapshot, &[addr_a(), addr_b()], None, None)
+        .await
+        .expect("the read succeeds");
+    assert_eq!(
+        txids,
+        vec![merge_a1(), merge_b2(), merge_a3()],
+        "the union is ordered by height across addresses, not grouped by address"
+    );
+}
+
+/// `getaddressutxos` over `[A, B]` is likewise height-ordered across addresses:
+/// the three unspent outputs come back at heights 1, 2, 3 in that order.
+#[tokio::test]
+async fn address_utxos_merge_addresses_globally_by_height() {
+    let snapshot = interleaved_engine().await;
+    let utxos = queries::address_utxos(&snapshot, &[addr_a(), addr_b()])
+        .await
+        .expect("the read succeeds");
+    let located: Vec<(u32, TransactionId)> = utxos
+        .iter()
+        .map(|utxo| (u32::from(utxo.height), utxo.txid))
+        .collect();
+    assert_eq!(
+        located,
+        vec![(1, merge_a1()), (2, merge_b2()), (3, merge_a3()),],
+        "the unspent set is ordered by height across addresses"
     );
 }
 
