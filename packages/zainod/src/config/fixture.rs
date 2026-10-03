@@ -81,7 +81,7 @@ fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
     }
 }
 
-/// TEST-ONLY: the [`direct_regtest`] profile bound to ztest's container topology.
+/// TEST-ONLY: the `direct_regtest` profile bound to ztest's container topology.
 ///
 /// ztest 0.1.21 mounts a *legacy*-schema `zainod.toml` this greenfield config
 /// cannot parse (and injects no `ZAINO_` env). Rather than couple the config to

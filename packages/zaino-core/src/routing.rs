@@ -36,8 +36,9 @@
 //! do. The manifest and the reads consult one declaration, so they cannot
 //! disagree.
 //!
-//! The placement markers live in [`placement`]; the concrete routings in
-//! [`light_wallet`] (one per address placement) and [`node_rpc`].
+//! The placement markers ([`Local`], [`Passthrough`], [`Withheld`]) live in the
+//! `placement` submodule; the concrete routings in the `light_wallet` submodule
+//! (one per address placement) and the `node_rpc` one.
 
 mod light_wallet;
 mod node_rpc;

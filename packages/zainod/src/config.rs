@@ -238,7 +238,9 @@ mod fixture;
 #[cfg(feature = "ztest-fixture")]
 pub use fixture::{
     fixture_deployment, mainnet_direct_state_fixture, mainnet_rpc_fixture, regtest_direct_fixture,
-    MAINNET_RPC_FIXTURE_ENV, MAINNET_STATE_FIXTURE_ENV, TEST_FIXTURE_ENV,
+    FIXTURE_DEPLOYMENT_ENV, MAINNET_RPC_FIXTURE_ENV, MAINNET_STATE_FIXTURE_ENV, TEST_FIXTURE_ENV,
+    TEST_FIXTURE_FETCH_ENV, TEST_FIXTURE_JSONRPC_ENV, TEST_FIXTURE_MAP_SIZE_ENV,
+    TEST_FIXTURE_STORE_ENV, TEST_FIXTURE_ZEBRA_ENV,
 };
 
 /// Serialize the built-in defaults into a commented example config file.
