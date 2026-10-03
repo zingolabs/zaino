@@ -518,6 +518,80 @@ mod tests {
         }
     }
 
+    /// `getaddressdeltas` returns both receives and spends through the wire.
+    ///
+    /// This is the method the explorer's address page needs and that no
+    /// validator answers in plain RPC mode; served locally, the engine's
+    /// `AddressRead::deltas` carries positive receives and negative spends, and
+    /// the wire handler renders each with its signed magnitude. The mock scripts
+    /// two receives and a spend for one address; the call must surface all three
+    /// with the signs preserved — a receive rendered as a spend, or a dropped
+    /// spend, would fail here.
+    #[tokio::test]
+    async fn getaddressdeltas_returns_receives_and_spends_through_the_wire() {
+        use super::NodeRpcApiServer;
+        use crate::NodeRpc;
+        use jsonrpsee::core::params::ArrayParams;
+        use zaino_primitives::types::{
+            AddressDelta, BlockHash, BlockRef, Height, SignedZatoshis, TransactionId,
+            TransparentAddress,
+        };
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let addr = "t1LocalAddressHistoryProbe0000000000";
+        let delta = |height: u32, satoshis: i64, index: u32| AddressDelta {
+            satoshis: SignedZatoshis::try_new(satoshis).expect("a valid delta"),
+            txid: TransactionId::from([u8::try_from(height).expect("a small height"); 32]),
+            index,
+            height: Height::try_from(height).expect("a valid height"),
+            address: TransparentAddress::new(addr.to_string()),
+            block_index: Some(0),
+        };
+
+        let module = NodeRpc::new(
+            MockIndexerService::new(MockChain {
+                tip: Some(BlockRef {
+                    height: Height::try_from(10).expect("a valid height"),
+                    hash: BlockHash::from([1u8; 32]),
+                }),
+                deltas: vec![delta(1, 100, 0), delta(1, 200, 1), delta(3, -100, 0)],
+                ..MockChain::default()
+            }),
+            Network::MainNetwork,
+        )
+        .into_rpc();
+
+        let mut params = ArrayParams::new();
+        params
+            .insert(serde_json::json!({ "addresses": [addr], "start": 0, "end": 4 }))
+            .expect("the getaddressdeltas object param");
+        let response = module
+            .call::<_, serde_json::Value>("getaddressdeltas", params)
+            .await
+            .expect("getaddressdeltas is served locally");
+
+        let deltas = response
+            .get("deltas")
+            .and_then(serde_json::Value::as_array)
+            .expect("the response carries a deltas array");
+        let satoshis: Vec<i64> = deltas
+            .iter()
+            .filter_map(|entry| entry.get("satoshis").and_then(serde_json::Value::as_i64))
+            .collect();
+        assert_eq!(
+            satoshis,
+            vec![100, 200, -100],
+            "two receives at height 1 then the spend at height 3, signs preserved"
+        );
+        assert!(
+            deltas.iter().all(
+                |entry| entry.get("address").and_then(serde_json::Value::as_str) == Some(addr)
+            ),
+            "every delta names the queried address"
+        );
+    }
+
     /// An out-of-range prevout index is likewise a source inconsistency, internal.
     #[test]
     fn prevout_index_out_of_range_is_an_internal_error() {
