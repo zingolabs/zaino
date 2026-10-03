@@ -26,7 +26,7 @@ use crate::NodeRpc;
 
 /// The node JSON-RPC surface this adapter serves.
 #[rpc(server)]
-pub trait NodeRpcApi {
+pub(crate) trait NodeRpcApi {
     #[method(name = "getblockcount")]
     async fn block_count(&self) -> Result<u32, ErrorObjectOwned>;
 

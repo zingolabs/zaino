@@ -1,7 +1,7 @@
 //! JSON-RPC transport: a real jsonrpsee server exposed as a [`RunLoop`].
 //!
 //! Holds a [`NodeRpc`] handler and binds a jsonrpsee server over its
-//! [`NodeRpcApiServer`](crate::NodeRpcApiServer) surface. Implements
+//! [`NodeRpcApiServer`](crate::rpc::NodeRpcApiServer) surface. Implements
 //! [`RunLoop`] so the runtime supervises it as a component: `build` binds the
 //! socket (a bind failure is the `RunLoop::Error`, not swallowed), then it serves
 //! until the cancellation token fires.

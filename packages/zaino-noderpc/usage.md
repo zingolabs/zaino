@@ -1,10 +1,12 @@
 # `zaino-noderpc` — usage
 
-A POC Zcash **node** JSON-RPC serve adapter over the `NodeRpcService` inner port.
-It is the node-RPC sibling of the light-serve adapter: it reads domain types
-through a pinned snapshot and converts **domain ↔ wire in the adapter** (both
-directions, because node RPC is input-heavy — hex params in, hex/JSON out). It is
-a slice, not the production `zaino-serve`.
+The Zcash **node** JSON-RPC serve adapter over the `NodeRpcService` inner port —
+the node-RPC / explorer deployment's serving surface. It is the node-RPC sibling
+of the light-serve adapter: it reads domain types through a pinned snapshot and
+converts **domain ↔ wire in the adapter** (both directions, because node RPC is
+input-heavy — hex params in, hex/JSON out). `JsonRpcServer` stands up a real
+jsonrpsee server over the handler and the runtime supervises it as a `RunLoop`
+component (`zainod`'s `node-rpc-passthrough` deployment).
 
 ## What it serves
 

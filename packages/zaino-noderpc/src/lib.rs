@@ -1,23 +1,23 @@
-//! `zaino-noderpc` — POC Zcash node JSON-RPC serve adapter.
+//! `zaino-noderpc` — the Zcash node JSON-RPC serve adapter.
 //!
-//! The node-RPC sibling of the light-serve adapter, bound to [`NodeRpcService`]
-//! alone. It reads domain types through a pinned snapshot and converts
-//! **domain <-> wire in the adapter** (see [`wire`]) — both directions, because
-//! node RPC is input-heavy (hex params in, hex/JSON out).
+//! The node-RPC / explorer sibling of the light-serve adapter, bound to
+//! [`NodeRpcService`] alone. It reads domain types through a pinned snapshot and
+//! converts **domain <-> wire in the adapter** (see the `wire` module) — both
+//! directions, because node RPC is input-heavy (hex params in, hex/JSON out).
 //!
-//! A slice (four methods), not the production JSON-RPC server, and it stands up
-//! no jsonrpsee server — it exercises the handler shape against the mock.
-//! Chain/node-info aggregates and the validator passthrough (mining/peers/
-//! txoutset) are not modelled here.
+//! [`JsonRpcServer`] stands up a real jsonrpsee server over the handler's
+//! zcashd-shaped method surface, and the runtime supervises it as a `RunLoop`
+//! component. [`NodeRpc`] is the handler: blocks and transactions at every
+//! verbosity, the chain-info aggregate, transparent address history, the
+//! node-status reads, the mempool listing, broadcast and address validation.
 #![forbid(unsafe_code)]
 
 mod error;
 mod rpc;
 mod transport;
-pub mod wire;
+pub(crate) mod wire;
 
 pub use error::RpcError;
-pub use rpc::NodeRpcApiServer;
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
 use zaino_primitives::types::{Height, TransactionLocation, TransparentAddress};
@@ -81,7 +81,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
 
     /// `sendrawtransaction`: decode hex, relay, return the txid. A rejection is
     /// an RPC error here (contrast the light-serve `SendResponse`).
-    pub async fn send_raw_transaction(&self, tx_hex: &str) -> Result<String, RpcError> {
+    pub(crate) async fn send_raw_transaction(&self, tx_hex: &str) -> Result<String, RpcError> {
         let raw = bytes_from_hex(tx_hex)?;
         let txid = self.engine.broadcast(raw).await?;
         Ok(to_hex(txid.into()))
@@ -95,7 +95,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// `confirmations`, `blockhash`, `time`, `blocktime`) — all absent for a
     /// mempool transaction, which has no containing block. A verbosity outside
     /// `0..=1` is a parameter error naming the served range.
-    pub async fn get_raw_transaction(
+    pub(crate) async fn get_raw_transaction(
         &self,
         txid_hex: &str,
         verbosity: Option<u32>,
@@ -168,7 +168,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// the node-rpc read delta the wallet-shaped ports lack — and renders it as
     /// zcashd's response. An unreachable validator surfaces as an RPC error
     /// (via `?`), never a response with defaulted fields.
-    pub async fn get_blockchain_info(&self) -> Result<BlockchainInfoResponse, RpcError> {
+    pub(crate) async fn get_blockchain_info(&self) -> Result<BlockchainInfoResponse, RpcError> {
         let snapshot = self.engine.snapshot().await?;
         let info = snapshot.chain_info().await?;
         Ok(blockchain_info_to_wire(info))
@@ -199,7 +199,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// every input resolved from [`TransactionViewRead::block_transaction_views`].
     /// All three missing is a not-found error; a subset present is a reorg race
     /// (transient), never a partially rendered block.
-    pub async fn get_block(
+    pub(crate) async fn get_block(
         &self,
         blockid: &str,
         verbosity: Option<u32>,
@@ -273,7 +273,10 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// `verbose = true` shape. `[hash]` only; the explorer's blocks-by-date list
     /// fans this out per hash. A hash no retained chain holds is a not-found RPC
     /// error, never a defaulted header.
-    pub async fn get_block_header(&self, hash_hex: &str) -> Result<BlockHeaderResponse, RpcError> {
+    pub(crate) async fn get_block_header(
+        &self,
+        hash_hex: &str,
+    ) -> Result<BlockHeaderResponse, RpcError> {
         let hash = blockhash_from_hex(hash_hex)?;
         let snapshot = self.engine.snapshot().await?;
         let header = snapshot
@@ -287,18 +290,18 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// `getinfo`: the validator's self-description, relayed. Not indexed. An
     /// unreachable or not-ready validator is an RPC error (via `?`), never a
     /// response with defaulted fields.
-    pub async fn get_info(&self) -> Result<NodeInfoResponse, RpcError> {
+    pub(crate) async fn get_info(&self) -> Result<NodeInfoResponse, RpcError> {
         Ok(node_info_to_wire(self.engine.node_info().await?))
     }
 
     /// `getmininginfo`: the validator's mining view, relayed. Not indexed.
-    pub async fn get_mining_info(&self) -> Result<MiningInfoResponse, RpcError> {
+    pub(crate) async fn get_mining_info(&self) -> Result<MiningInfoResponse, RpcError> {
         Ok(mining_info_to_wire(self.engine.mining_info().await?))
     }
 
     /// `getpeerinfo`: the validator's connected peers, relayed. Not indexed. An
     /// empty list is a valid answer from an isolated validator.
-    pub async fn get_peer_info(&self) -> Result<Vec<PeerInfoEntry>, RpcError> {
+    pub(crate) async fn get_peer_info(&self) -> Result<Vec<PeerInfoEntry>, RpcError> {
         Ok(self
             .engine
             .peer_info()
@@ -311,7 +314,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// `getnetworksolps`: the network solution rate, relayed. `blocks` and
     /// `height` are forwarded as given, so `None` means the validator's own
     /// defaults rather than a value this adapter invents.
-    pub async fn get_network_sol_ps(
+    pub(crate) async fn get_network_sol_ps(
         &self,
         blocks: Option<u32>,
         height: Option<u32>,
@@ -327,7 +330,10 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// array of txid hex; verbose is an object keyed by txid, each value the
     /// transaction's size, fee (ZEC float with the exact `feeZat` beside it),
     /// entry time and height.
-    pub async fn get_raw_mempool(&self, verbose: bool) -> Result<RawMempoolResponse, RpcError> {
+    pub(crate) async fn get_raw_mempool(
+        &self,
+        verbose: bool,
+    ) -> Result<RawMempoolResponse, RpcError> {
         if verbose {
             let entries = self
                 .engine
@@ -350,7 +356,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     }
 
     /// `getmempoolinfo`: the count and total serialized size of the mempool.
-    pub async fn get_mempool_info(&self) -> Result<MempoolInfoResponse, RpcError> {
+    pub(crate) async fn get_mempool_info(&self) -> Result<MempoolInfoResponse, RpcError> {
         let summary = self.engine.mempool_summary().await?;
         Ok(MempoolInfoResponse {
             size: summary.size,
@@ -361,7 +367,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// `getaddressbalance`: the transparent balance of the requested addresses,
     /// summed. zcashd accepts a list and returns one total, so a multi-address
     /// request sums rather than returning a per-address breakdown.
-    pub async fn get_address_balance(
+    pub(crate) async fn get_address_balance(
         &self,
         params: AddressesParam,
     ) -> Result<AddressBalanceResponse, RpcError> {
@@ -390,7 +396,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// coverage means — comes from [`queries::address_deltas`]. This renders it,
     /// and applies `chainInfo`, which is a wire choice about whether the range
     /// is echoed back.
-    pub async fn get_address_deltas(
+    pub(crate) async fn get_address_deltas(
         &self,
         params: AddressDeltasParam,
     ) -> Result<AddressDeltasResponse, RpcError> {
@@ -432,7 +438,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
 
     /// `validateaddress`: classify a transparent address against the serving
     /// network. No chain read — a pure function of the string and the network.
-    pub async fn validate_address(
+    pub(crate) async fn validate_address(
         &self,
         address: &str,
     ) -> Result<ValidateAddressResponse, RpcError> {
@@ -443,7 +449,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     }
 
     /// `z_validateaddress`: the deprecated shielded-aware classification.
-    pub async fn z_validate_address(
+    pub(crate) async fn z_validate_address(
         &self,
         address: &str,
     ) -> Result<ZValidateAddressResponse, RpcError> {
@@ -459,7 +465,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     /// An address that is not unified is a parameter error, not an empty
     /// result: the caller asked about a specific string, and reporting "no
     /// receivers" would imply a valid unified address that bundles nothing.
-    pub async fn z_list_unified_receivers(
+    pub(crate) async fn z_list_unified_receivers(
         &self,
         address: &str,
     ) -> Result<UnifiedReceiversResponse, RpcError> {
