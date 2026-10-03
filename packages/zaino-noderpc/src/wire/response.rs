@@ -9,6 +9,13 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 /// The `getmempoolinfo` response.
+///
+/// zebra and zcashd also report `usage` — the mempool's in-memory cost, distinct
+/// from the serialized `bytes`. Zaino builds this summary from the per-transaction
+/// metadata of `getrawmempool verbose`, which carries each transaction's
+/// serialized size but no memory-cost figure, so `usage` is not computable here
+/// and is deliberately absent rather than approximated by `bytes` (which would be
+/// a different quantity wearing the same name).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MempoolInfoResponse {
     /// Number of transactions in the mempool.
@@ -119,6 +126,11 @@ pub struct ValidateAddressResponse {
 pub struct ZValidateAddressResponse {
     /// Whether the address is one Zaino classifies on the queried network.
     pub isvalid: bool,
+    /// Whether the address belongs to the node's wallet. Zaino serves no wallet,
+    /// so it is always `false` when present; emitted on a valid address, as
+    /// zcashd and zebra do, and omitted on an invalid one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ismine: Option<bool>,
     /// The address, re-encoded for the queried network, when valid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,

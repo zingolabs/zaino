@@ -31,7 +31,7 @@ use zaino_service::error::{
 };
 use zaino_service::{MempoolEntry, MempoolSummary};
 use zaino_source::{
-    DecodedTransaction, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
+    DecodedTransaction, FailureMode, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
     GetAddressDeltasError, GetAddressTxids, GetAddressTxidsError, GetAddressUtxos,
     GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockDecoded,
     GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockVerbose,
@@ -286,13 +286,32 @@ fn address_failure<E: std::fmt::Debug + std::fmt::Display>(
 ) -> AddressReadError {
     match err {
         SourceError::Domain(e) => domain(e),
+        // A validator that does not implement the method answers with JSON-RPC
+        // method-not-found. That is a gap in the validator, not a transient
+        // transport failure, so it is its own typed case — the node-RPC adapter
+        // reports it as method-not-found rather than an internal error. The
+        // classification is on the typed failure mode, never the message.
         SourceError::NonDomain(cause) => {
-            AddressReadError::Transient(format!("validator unavailable: {cause}"))
+            if is_method_not_found(&cause.mode) {
+                AddressReadError::Unsupported(
+                    "the validator does not implement this address method".to_owned(),
+                )
+            } else {
+                AddressReadError::Transient(format!("validator unavailable: {cause}"))
+            }
         }
         SourceError::Unavailable(cause) => {
             AddressReadError::Transient(format!("validator unavailable: {cause}"))
         }
     }
+}
+
+/// The JSON-RPC standard code for a method the server does not implement.
+const METHOD_NOT_FOUND: i64 = -32601;
+
+/// Whether a source failure mode is the validator reporting method-not-found.
+fn is_method_not_found(mode: &FailureMode) -> bool {
+    matches!(mode, FailureMode::RpcError(code) if *code == METHOD_NOT_FOUND)
 }
 
 /// Convert the read surface's half-open `[start, end)` [`HeightRange`] to the

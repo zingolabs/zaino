@@ -106,11 +106,14 @@ This is **narrower** than `zaino-primitives`' `classify_script`, which keys
 produces an index key for any output; this produces a verifiable address or
 nothing. Do not swap one for the other.
 
-## `ismine` is never emitted
+## `ismine`
 
-the legacy full node's `ismine` field reports whether the *node's wallet* holds the key.
-Zaino has no wallet, so it has no answer, and inventing `false` would be a claim
-rather than an omission. `wire/address.rs` pins this with a test.
+the legacy full node's `ismine` field reports whether the *node's wallet* holds
+the key. Zaino has no wallet, so the answer is always `false`. `validateaddress`
+omits it (it is not a wallet concern there); `z_validateaddress` emits
+`ismine: false` on a valid address, because zcashd and zebra both do and the
+NightHawk explorer's `z_validateaddress` wire-parity requires the key. The byte
+shape is the serving layer's: see `zaino-noderpc`'s `z_validated_to_wire`.
 
 ## Deprecation
 

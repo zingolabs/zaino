@@ -160,6 +160,13 @@ per-request prevout ceiling) all map to the internal-error code, not
 invalid-params — the caller asked for a well-formed, valid object in each case. A
 malformed txid or block id is the only input the caller is blamed for.
 
+Two codes match zcashd/zebra rather than the generic classes: an unknown block or
+transaction (`NotFound`) is code `-5` (`RPC_INVALID_ADDRESS_OR_KEY`), with Zaino's
+own accurate message; and a validator that does not implement a passthrough
+address method (`AddressReadError::Unsupported`, e.g. `getaddressdeltas` on a
+zebra backend) is method-not-found (`-32601`), the truthful code for the
+validator's gap, keyed off the typed failure mode rather than the message.
+
 A mempool read (`MempoolReadError`) is likewise internal in all three cases: it
 is a validator passthrough, so a `Transient` transport failure, a `Fatal` one, or
 a `NotServiceable` stub is a server-side concern, never bad client input. The

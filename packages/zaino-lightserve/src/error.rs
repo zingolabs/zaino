@@ -69,7 +69,12 @@ impl From<AddressReadError> for ServeError {
         match err {
             AddressReadError::NotServiceable(cap) => ServeError::NotServiceable(cap),
             AddressReadError::Transient(msg) => ServeError::Unavailable(Transient(msg)),
-            AddressReadError::Fatal(msg) => ServeError::Internal(msg),
+            // A validator-unsupported address method is an internal serve failure
+            // on the light-wallet surface, which does not serve the insight
+            // address family and so never reaches this in practice.
+            AddressReadError::Unsupported(msg) | AddressReadError::Fatal(msg) => {
+                ServeError::Internal(msg)
+            }
         }
     }
 }

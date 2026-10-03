@@ -220,30 +220,47 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
 }
 
+/// The code zcashd and zebra report for an unknown block or transaction
+/// (`RPC_INVALID_ADDRESS_OR_KEY`). zebra's message is "block height not in best
+/// chain"; Zaino keeps its own accurate message and matches only the code.
+const NOT_FOUND_CODE: i32 = -5;
+
 /// Map a domain-side RPC error onto a JSON-RPC error object: invalid input is a
-/// params error, everything else an internal error carrying the reason.
+/// params error, an unknown object is `-5` (zcashd/zebra's not-found code), and
+/// everything else an internal error carrying the reason.
 fn to_error_object(err: RpcError) -> ErrorObjectOwned {
-    let (code, message) = match err {
-        RpcError::InvalidParams(m) => (ErrorCode::InvalidParams, m),
-        RpcError::Rejected(r) => (ErrorCode::InvalidParams, r.to_string()),
+    let (code, message): (i32, String) = match err {
+        RpcError::InvalidParams(m) => (ErrorCode::InvalidParams.code(), m),
+        RpcError::Rejected(r) => (ErrorCode::InvalidParams.code(), r.to_string()),
         RpcError::NoBlocks => (
-            ErrorCode::InternalError,
+            ErrorCode::InternalError.code(),
             "no blocks available yet".to_string(),
         ),
-        RpcError::Unavailable(t) => (ErrorCode::InternalError, t.to_string()),
-        RpcError::Read(e) => (ErrorCode::InternalError, e.to_string()),
+        RpcError::Unavailable(t) => (ErrorCode::InternalError.code(), t.to_string()),
+        RpcError::Read(e) => (ErrorCode::InternalError.code(), e.to_string()),
         RpcError::AddressRead(AddressReadError::Transient(cause)) => {
-            (ErrorCode::InternalError, cause)
+            (ErrorCode::InternalError.code(), cause)
         }
-        RpcError::AddressRead(AddressReadError::Fatal(cause)) => (ErrorCode::InternalError, cause),
+        RpcError::AddressRead(AddressReadError::Fatal(cause)) => {
+            (ErrorCode::InternalError.code(), cause)
+        }
+        // The validator does not implement this address method (e.g.
+        // getaddressdeltas against a zebra backend). zcashd and zebra report an
+        // absent method as method-not-found (-32601), so Zaino does too — the
+        // truthful code for the validator's gap, not an internal error that blames
+        // the server. The message is the typed variant's own, not a stringified
+        // cause.
+        RpcError::AddressRead(e @ AddressReadError::Unsupported(_)) => {
+            (ErrorCode::MethodNotFound.code(), e.to_string())
+        }
         RpcError::AddressRead(e @ AddressReadError::NotServiceable(_)) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
-        RpcError::NotFound(message) => (ErrorCode::InvalidParams, message),
-        RpcError::TxRead(TxReadError::Transient(cause)) => (ErrorCode::InternalError, cause),
-        RpcError::TxRead(TxReadError::Fatal(cause)) => (ErrorCode::InternalError, cause),
+        RpcError::NotFound(message) => (NOT_FOUND_CODE, message),
+        RpcError::TxRead(TxReadError::Transient(cause)) => (ErrorCode::InternalError.code(), cause),
+        RpcError::TxRead(TxReadError::Fatal(cause)) => (ErrorCode::InternalError.code(), cause),
         RpcError::TxRead(e @ TxReadError::NotServiceable(_)) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         // Resolving a transaction's inputs is a server-side concern throughout:
         // `Unavailable` is a transport failure, `MissingPrevout` /
@@ -256,16 +273,16 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         // used (which does not stringify the `#[source]` cause), per variant,
         // rather than a blanket `to_string()` of the cause.
         RpcError::TransactionView(e @ TransactionViewError::Unavailable { .. }) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::TransactionView(e @ TransactionViewError::PrevoutFanoutTooLarge { .. }) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::TransactionView(e @ TransactionViewError::MissingPrevout { .. }) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::TransactionView(e @ TransactionViewError::PrevoutIndexOutOfRange { .. }) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         // Both are internal, and that is Review Focus 1: `NotReady` means the
         // validator will answer shortly, and `Unreachable` means it cannot be
@@ -273,10 +290,10 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         // success a warmer would cache. Each variant's own `Display` is used,
         // which does not stringify the `#[source]` cause.
         RpcError::NodeStatus(e @ NodeStatusError::NotReady) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::NodeStatus(e @ NodeStatusError::Unreachable { .. }) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         // A mempool read is passthrough to the validator: none of its three
         // cases is bad client input, so each is an internal error. `Transient`
@@ -284,16 +301,16 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         // cache as a success. Each variant's own `Display` is used, which does
         // not stringify a `#[source]` cause.
         RpcError::MempoolRead(e @ MempoolReadError::Transient(_)) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::MempoolRead(e @ MempoolReadError::Fatal(_)) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::MempoolRead(e @ MempoolReadError::NotServiceable(_)) => {
-            (ErrorCode::InternalError, e.to_string())
+            (ErrorCode::InternalError.code(), e.to_string())
         }
     };
-    ErrorObjectOwned::owned(code.code(), message, None::<()>)
+    ErrorObjectOwned::owned(code, message, None::<()>)
 }
 
 #[cfg(test)]
@@ -317,6 +334,26 @@ mod tests {
             "validator unavailable".to_string(),
         )));
         assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// An unknown block or transaction is reported with code -5, matching
+    /// zcashd and zebra (`RPC_INVALID_ADDRESS_OR_KEY`), not the params code.
+    #[test]
+    fn not_found_maps_to_minus_five() {
+        let obj = to_error_object(RpcError::NotFound("no block for 999999".to_string()));
+        assert_eq!(obj.code(), -5);
+        assert_eq!(obj.message(), "no block for 999999");
+    }
+
+    /// A validator that does not implement an address method (getaddressdeltas on
+    /// a zebra backend) is reported as method-not-found (-32601) — the truthful
+    /// code for the validator's gap — not an internal error.
+    #[test]
+    fn unsupported_address_read_maps_to_method_not_found() {
+        let obj = to_error_object(RpcError::AddressRead(AddressReadError::Unsupported(
+            "the validator does not implement this address method".to_string(),
+        )));
+        assert_eq!(obj.code(), ErrorCode::MethodNotFound.code());
     }
 
     /// A fatal address read is an unrecoverable backend failure — a server

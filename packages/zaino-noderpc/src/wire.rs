@@ -656,6 +656,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
     match validated {
         ZValidatedAddress::Invalid => ZValidateAddressResponse {
             isvalid: false,
+            ismine: None,
             address: None,
             address_type: None,
             kind: None,
@@ -664,6 +665,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
         },
         ZValidatedAddress::P2pkh { address } => ZValidateAddressResponse {
             isvalid: true,
+            ismine: Some(false),
             address: Some(address),
             address_type: Some("p2pkh".to_string()),
             kind: Some("p2pkh".to_string()),
@@ -672,6 +674,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
         },
         ZValidatedAddress::P2sh { address } => ZValidateAddressResponse {
             isvalid: true,
+            ismine: Some(false),
             address: Some(address),
             address_type: Some("p2sh".to_string()),
             kind: Some("p2sh".to_string()),
@@ -684,6 +687,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
             diversified_transmission_key,
         } => ZValidateAddressResponse {
             isvalid: true,
+            ismine: Some(false),
             address: Some(address),
             address_type: Some("sapling".to_string()),
             kind: Some("sapling".to_string()),
@@ -692,6 +696,7 @@ pub(crate) fn z_validated_to_wire(validated: ZValidatedAddress) -> ZValidateAddr
         },
         ZValidatedAddress::Unified { address } => ZValidateAddressResponse {
             isvalid: true,
+            ismine: Some(false),
             address: Some(address),
             address_type: Some("unified".to_string()),
             kind: Some("unified".to_string()),
@@ -2127,12 +2132,16 @@ mod tests {
                 "address_type",
                 "diversifiedtransmissionkey",
                 "diversifier",
+                "ismine",
                 "isvalid",
                 "type",
             ]
         );
         let obj = json.as_object().expect("a JSON object");
         assert_eq!(obj.get("isvalid").and_then(|v| v.as_bool()), Some(true));
+        // Zaino serves no wallet, so a valid z_validateaddress always reports
+        // ismine: false, matching zcashd and zebra.
+        assert_eq!(obj.get("ismine").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
             obj.get("address_type").and_then(|v| v.as_str()),
             Some("sapling")
@@ -2153,7 +2162,7 @@ mod tests {
         .expect("serialize");
         assert_eq!(
             sorted_keys(&unified),
-            ["address", "address_type", "isvalid", "type"]
+            ["address", "address_type", "ismine", "isvalid", "type"]
         );
         let unified = unified.as_object().expect("a JSON object");
         assert_eq!(
