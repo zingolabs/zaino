@@ -65,7 +65,7 @@ pub struct HeaderSummary {
 ///
 /// A tier read, answered locally from the headers index (FS) or the in-window
 /// headers (NFS), so it joins the always-local blocks bundle alongside
-/// [`CompactBlockRead`] in [`ChainTier`](crate::reads) — the chain view routes a
+/// [`CompactBlockRead`] in the chain view's `ChainTier` — the chain view routes a
 /// `header(h)` with the same seam rule it routes a `compact_block(h)`.
 ///
 /// `Ok(None)` is the domain answer that **this tier does not cover `h`** (above
@@ -359,8 +359,7 @@ pub struct ReadBudget {
 }
 
 impl ReadBudget {
-    /// A budget for one request, with the default production ceiling
-    /// ([`MAX_ADDRESS_ENTRIES`]).
+    /// A budget for one request, with the default production ceiling.
     pub fn for_request() -> Self {
         Self::with_limit(MAX_ADDRESS_ENTRIES)
     }

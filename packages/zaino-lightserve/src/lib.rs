@@ -3,7 +3,7 @@
 //! Proof that the new trait algebra rebinds the serving layer cleanly. A handler
 //! bound to [`LightWalletService`] alone (not the god-traits) pins a snapshot,
 //! reads domain types, converts **domain -> wire in the adapter** (see
-//! [`wire`]), and maps errors by kind — a transient snapshot failure, a
+//! the `wire` module), and maps errors by kind — a transient snapshot failure, a
 //! not-yet-serviceable chain, and a domain broadcast rejection are three
 //! different wire outcomes, not one fused transport error.
 //!
