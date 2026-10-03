@@ -138,9 +138,9 @@ impl Routing for LightWalletRouting {
     type TransactionLocation = Withheld;
 }
 
-/// The node-RPC / explorer routing: compact blocks and transparent address
-/// history served **locally** from Zaino's own indexes, treestate relayed live
-/// to the validator, spend status and transaction location withheld.
+/// The node-RPC / explorer routing: compact blocks, transparent address history
+/// and spend lookups served **locally** from Zaino's own indexes, treestate
+/// relayed live to the validator, transaction location withheld.
 ///
 /// Address history is [`Local`] because the explorer's address page needs
 /// `getaddressdeltas` — full transparent history, receives and spends — which no
@@ -150,26 +150,28 @@ impl Routing for LightWalletRouting {
 /// outpoints it saw spent, and the composer threads the two across the watermark
 /// so a spend of an output received below it is attributed correctly.
 ///
-/// Spend status and transaction location are withheld: no method this deployment
-/// serves reads an outpoint's spend state (see [`NodeRpcReads`]'s doc for why
-/// `SpendRead` is absent — the window's spend data is consumed internally through
-/// [`AddressReceiveRead`], not through the engine `Spend` placement), and no
-/// engine read dispatches on the transaction location placement. Withholding them
-/// keeps the manifest honest — a capability no served method consumes and no tier
-/// provides is `Absent`, not a false `Live`.
+/// Spend status is [`Local`] for the same reason: `getspentinfo` locates where an
+/// outpoint was spent, which no validator answers in plain RPC mode (Zebra
+/// returns `-32601`). Both tiers build the spends index, so the composer asks the
+/// head first — a spend there is the newer fact — and falls through to the
+/// finalised store, reporting a spend at or below the watermark of an output the
+/// window never saw created.
+///
+/// Transaction location is withheld: no engine read dispatches on that placement,
+/// so withholding it keeps the manifest honest — a capability no served method
+/// consumes is `Absent`, not a false `Live`.
 ///
 /// Treestate stays [`Passthrough`]: the explorer surface reads it, but no local
 /// treestate index is built on any tier, so it is relayed to the validator.
 ///
 /// [`NodeRpcReads`]: zaino_service::read_sets::NodeRpcReads
-/// [`AddressReceiveRead`]: zaino_service::AddressReceiveRead
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NodeRpcRouting;
 
 impl Routing for NodeRpcRouting {
     type Address = Local;
     type Treestate = Passthrough;
-    type Spend = Withheld;
+    type Spend = Local;
     type TransactionLocation = Withheld;
 }
 
@@ -182,15 +184,15 @@ mod tests {
         use strum::IntoEnumIterator;
         for capability in Capability::iter() {
             // Exhaustiveness is rustc's; this pins the node-RPC table's shape —
-            // in particular that address history is served locally, and that
-            // spend status and transaction location are withheld, not silently
+            // in particular that address history and spend status are served
+            // locally, and that transaction location is withheld, not silently
             // passed through.
             let placement = NodeRpcRouting::placement(capability);
             match capability {
-                Capability::Blocks | Capability::AddressHistory => {
+                Capability::Blocks | Capability::AddressHistory | Capability::SpendStatus => {
                     assert_eq!(placement, PlacementKind::Local)
                 }
-                Capability::SpendStatus | Capability::TransactionLocation => {
+                Capability::TransactionLocation => {
                     assert_eq!(placement, PlacementKind::Withheld)
                 }
                 Capability::Treestate

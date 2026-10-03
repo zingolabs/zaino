@@ -98,6 +98,15 @@ transport-free. A miss on the block is `Ok(None)` (the unknown-block answer); th
 over the median-time window) and corrupt-amount inconsistencies, each keeping its
 cause under `#[source]`.
 
+`NodeRpcReads` also carries `SpendRead`, which has two reads. `spend_status`
+answers the three-way spent / unspent / never-created question. `spend_info` is
+the locating sibling behind `getspentinfo`, another indexer-only method (Zebra
+answers `-32601`): `spend_info(Outpoint) -> Result<Option<TransparentSpend>, SpendReadError>`,
+where `Some` carries the spending transaction, the input index that consumed the
+outpoint and the height, and `None` collapses unspent and never-created into the
+one answer `getspentinfo` renders as zcashd's not-found error. It is served
+`Local` over the tiers' spends index, composed across the seam — no source port.
+
 `NodeRpcService` also demands `NodeStatusRead`, the node-operator status control
 behind `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`,
 `getdifficulty`, `getnetworkinfo` and `ping`. These are facts about the validator,

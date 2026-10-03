@@ -35,12 +35,13 @@ free to make them differently.
 The node-RPC / block-explorer demand has one deployment so far,
 `NodeRpcPassthrough`: the `TransparentHistory` index set (compact blocks plus the
 address-history, transparent-spends and txid-location indexes), address history
-placed `Local` and every other placement relayed to the validator or withheld
-(`NodeRpcRouting`), and the `NodeRpcSource` bundle. It serves `getaddressdeltas`
-from its own indexes, which a plain-RPC validator cannot answer, so
-`NodeRpcSource` names no address source port. (Its name predates the local
-address flip and is now a misnomer — a rename is deferred because it is the
-kebab-case deployment value in the live `zainod` config.)
+and spend lookup both placed `Local` and every other placement relayed to the
+validator or withheld (`NodeRpcRouting`), and the `NodeRpcSource` bundle. It
+serves `getaddressdeltas` and `getspentinfo` from its own indexes, which a
+plain-RPC validator cannot answer, so `NodeRpcSource` names no address or spend
+source port. (Its name predates the local address flip and is now a misnomer — a
+rename is deferred because it is the kebab-case deployment value in the live
+`zainod` config.)
 
 Each deployment is one file under `deployment/` holding its marker, its
 `Deployment` impl, its `RuntimePlan` impl and the validator bundle it

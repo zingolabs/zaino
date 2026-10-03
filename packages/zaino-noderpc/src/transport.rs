@@ -439,6 +439,58 @@ mod tests {
         let _ = handle.stop();
     }
 
+    /// The zcashex-shaped 1.0 `getspentinfo` request — a single `{txid, index}`
+    /// object param — gives 200 and the legacy envelope, with `result` the located
+    /// spend: the spending txid in display order, the input index and the height.
+    /// A real round trip, end to end through the dialect layer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getspentinfo_succeeds() {
+        use zaino_primitives::types::{Outpoint, TransactionId, TransparentSpend};
+        let mut spender = [0u8; 32];
+        spender[0] = 0x11;
+        spender[31] = 0xaa;
+        let expected_txid = format!("aa{}11", "00".repeat(30));
+        let (addr, handle) = spawn_server(MockChain {
+            spend_info: Some(TransparentSpend {
+                outpoint: Outpoint {
+                    txid: TransactionId::from([0x7c; 32]),
+                    index: 2,
+                },
+                by: TransactionId::from(spender),
+                input_index: 3,
+                height: Height::try_from(150).expect("valid height"),
+            }),
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            &format!(
+                r#"{{"jsonrpc":"1.0","id":"zcashex","method":"getspentinfo","params":[{{"txid":"{}","index":2}}]}}"#,
+                "7c".repeat(32)
+            ),
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let result = obj
+            .get("result")
+            .and_then(Value::as_object)
+            .expect("result object");
+        assert_eq!(
+            result.get("txid").and_then(Value::as_str),
+            Some(expected_txid.as_str())
+        );
+        assert_eq!(result.get("index").and_then(Value::as_u64), Some(3));
+        assert_eq!(result.get("height").and_then(Value::as_u64), Some(150));
+        let _ = handle.stop();
+    }
+
     /// The zcashex-shaped 1.0 `getaddresstxids` request — a single object param
     /// carrying the addresses and height window — gives 200 and the legacy
     /// envelope, with `result` the scripted txid in display order.

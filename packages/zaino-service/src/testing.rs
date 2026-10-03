@@ -157,6 +157,13 @@ pub struct MockChain {
     /// engine's; the service mock carries the already-composed answer so the serve
     /// adapter's rendering is testable without a validator behind it.
     pub block_deltas: Option<BlockDeltas>,
+    /// Scripted `getspentinfo` answer. When `Some`, [`SpendRead::spend_info`]
+    /// returns it for any outpoint; when `None`, it answers `Ok(None)` (an
+    /// unspent or unknown outpoint), which the serve adapter renders as zcashd's
+    /// not-found error. The composition across the seam is the engine's; the
+    /// service mock carries the already-located spend so the adapter's rendering
+    /// and error mapping are testable without the tiers behind it.
+    pub spend_info: Option<TransparentSpend>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -529,6 +536,13 @@ impl AddressRead for MockSnapshot {
 impl SpendRead for MockSnapshot {
     async fn spend_status(&self, _outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
         Ok(SpendStatus::NoSuchOutput)
+    }
+
+    async fn spend_info(
+        &self,
+        _outpoint: Outpoint,
+    ) -> Result<Option<TransparentSpend>, SpendReadError> {
+        Ok(self.chain.spend_info.clone())
     }
 }
 

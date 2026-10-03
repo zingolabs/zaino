@@ -24,13 +24,21 @@ composer routes them to the provider that has them.
 ## Spend status
 
 `SpendRead` exists on a store whose set builds `local::SpendStatus`'s three
-indexes, and reports one of three answers for an outpoint:
+indexes. `spend_status` reports one of three answers for an outpoint:
 
 | answer | means |
 | --- | --- |
 | `Spent { by }` | the spends index holds a spend of it |
 | `Unspent` | no spend recorded, and the output exists at or below the watermark |
 | `NoSuchOutput` | no spend recorded, and nothing in the finalised range created it |
+
+`spend_info` is the locating sibling behind `getspentinfo`: `Some(TransparentSpend)`
+with the spending transaction, the input of it that consumed the outpoint, and the
+height, or `None` when the finalised range holds no spend of it (unspent or
+never-created collapse to the one answer). The input index is not stored — the
+spends index records only the spender — so it is recovered by locating the spender
+(txid-location index) and scanning that transaction's inputs (transparent-data
+index) for the one naming the outpoint.
 
 The third index set is why the capability names three indexes. Absence from
 the spends index is ambiguous on its own — an outpoint the finalised range

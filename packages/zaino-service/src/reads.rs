@@ -407,6 +407,20 @@ pub trait SpendRead: Send + Sync {
         &self,
         outpoint: Outpoint,
     ) -> impl Future<Output = Result<SpendStatus, SpendReadError>> + Send;
+
+    /// Where `outpoint` was spent, or `None` if this view holds no spend of it.
+    ///
+    /// The locating sibling of [`spend_status`](Self::spend_status): that read
+    /// answers the three-way "spent / unspent / never-created" question, while
+    /// this one carries the spend's coordinates — the consuming transaction, the
+    /// input of it that consumed the outpoint, and the height it was mined at —
+    /// as a [`TransparentSpend`]. `None` collapses both "unspent" and
+    /// "never-created" into one answer, because a caller that needs only the
+    /// location (zcashd's `getspentinfo`) treats the two identically.
+    fn spend_info(
+        &self,
+        outpoint: Outpoint,
+    ) -> impl Future<Output = Result<Option<TransparentSpend>, SpendReadError>> + Send;
 }
 
 /// Backed by: headers (over the non-finalised branch set).

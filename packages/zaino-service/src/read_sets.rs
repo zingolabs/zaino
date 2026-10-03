@@ -13,7 +13,8 @@
 use crate::block_deltas::BlockDeltasRead;
 use crate::reads::{
     AddressRead, BlockHashRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead,
-    CompactNullifierRead, RawTransactionRead, TransactionRead, TransactionViewRead, TreestateRead,
+    CompactNullifierRead, RawTransactionRead, SpendRead, TransactionRead, TransactionViewRead,
+    TreestateRead,
 };
 
 /// Reads shared by every wallet-shaped consumer — scan compact blocks, build
@@ -66,13 +67,13 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// verbose, resolved-transaction and header reads already in this set — it adds no
 /// source port.
 ///
-/// Spend status (`SpendRead`) is deliberately absent. None of the methods this
-/// set serves needs an outpoint's spend state: the explorer is served
-/// passthrough, and spend status has only a local implementation, so requiring
-/// it would pin the set to a capability no served method consumes and no
-/// passthrough tier provides. It returns when the served `gettxout` /
-/// `getspentinfo` surface lands together with the tier spend-status index, at
-/// which point this set gains `SpendRead` as its own addition.
+/// [`SpendRead`] is the `getspentinfo` surface: another indexer-only method
+/// (Zebra answers `-32601`) that locates where a transparent outpoint was spent.
+/// It is served **locally** from the tier spends index, which both the finalised
+/// store and the non-finalised head build and read; the composer threads the two
+/// across the watermark so a spend above it of an output created below it reports
+/// the spending height. It adds no source port — a validator with no "who spent
+/// this outpoint" method is exactly why the read is local.
 pub trait NodeRpcReads:
     BlockRead
     + BlockVerboseRead
@@ -82,6 +83,7 @@ pub trait NodeRpcReads:
     + TransactionViewRead
     + RawTransactionRead
     + AddressRead
+    + SpendRead
     + TreestateRead
     + ChainInfoRead
 {
@@ -95,6 +97,7 @@ impl<T> NodeRpcReads for T where
         + TransactionViewRead
         + RawTransactionRead
         + AddressRead
+        + SpendRead
         + TreestateRead
         + ChainInfoRead
 {

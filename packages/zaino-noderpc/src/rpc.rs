@@ -12,6 +12,7 @@ use zaino_service::error::BlockDeltasError;
 use zaino_service::error::BlockHashReadError;
 use zaino_service::error::MempoolReadError;
 use zaino_service::error::ReadError;
+use zaino_service::error::SpendReadError;
 use zaino_service::error::TransactionViewError;
 use zaino_service::error::TreestateReadError;
 use zaino_service::error::TxReadError;
@@ -20,14 +21,15 @@ use zaino_service::NodeStatusError;
 
 use crate::error::RpcError;
 use crate::wire::params::{
-    AddressDeltasParam, AddressTxidsParam, AddressesParam, GetBlockHashesOptions,
+    AddressDeltasParam, AddressTxidsParam, AddressesParam, GetBlockHashesOptions, GetSpentInfoParam,
 };
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
     BlockchainInfoResponse, GetBlockDeltasResponse, GetBlockHashesResponse, GetBlockResponse,
     GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse,
-    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, SubtreeRootsResponse, TreestateResponse,
-    TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, SpentInfoResponse, SubtreeRootsResponse,
+    TreestateResponse, TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -76,6 +78,12 @@ pub(crate) trait NodeRpcApi {
         &self,
         blockhash: String,
     ) -> Result<GetBlockDeltasResponse, ErrorObjectOwned>;
+
+    #[method(name = "getspentinfo")]
+    async fn spent_info(
+        &self,
+        params: GetSpentInfoParam,
+    ) -> Result<SpentInfoResponse, ErrorObjectOwned>;
 
     #[method(name = "gettxout")]
     async fn tx_out(
@@ -234,6 +242,14 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         blockhash: String,
     ) -> Result<GetBlockDeltasResponse, ErrorObjectOwned> {
         self.get_block_deltas(&blockhash)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn spent_info(
+        &self,
+        params: GetSpentInfoParam,
+    ) -> Result<SpentInfoResponse, ErrorObjectOwned> {
+        self.get_spent_info(&params.txid, params.index)
             .await
             .map_err(to_error_object)
     }
@@ -502,6 +518,22 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
             (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::BlockDeltas(e @ BlockDeltasError::InputValueOutOfRange { .. }) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        // Locating a spend for `getspentinfo` is a local tier read: none of its
+        // three cases is bad client input (an unspent or unknown outpoint is the
+        // `NotFound` above, carrying zcashd's own message). `NotServiceable` is
+        // the spends index not yet built to the queried height, `Transient` a
+        // mid-swap read race, and `Fatal` a backend failure — all server-side, so
+        // each is an internal error rendered by the variant's own `Display`,
+        // which does not stringify a `#[source]` cause.
+        RpcError::Spend(e @ SpendReadError::NotServiceable(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::Spend(e @ SpendReadError::Transient(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::Spend(e @ SpendReadError::Fatal(_)) => {
             (ErrorCode::InternalError.code(), e.to_string())
         }
     };
@@ -862,6 +894,121 @@ mod tests {
             result.is_null(),
             "a spent or unknown outpoint is null: {result:?}"
         );
+    }
+
+    /// A tier-read failure behind `getspentinfo` is a server-side fault — the
+    /// spends index not yet built, a mid-swap race, or a backend failure — never
+    /// bad client input, so every `SpendReadError` variant maps to the
+    /// internal-error code, not invalid-params. An unspent or unknown outpoint is
+    /// the separate `NotFound` path, not this.
+    #[test]
+    fn spend_read_failures_render_as_internal_errors() {
+        use zaino_service::error::SpendReadError;
+        for err in [
+            RpcError::Spend(SpendReadError::NotServiceable(Capability::SpendStatus)),
+            RpcError::Spend(SpendReadError::Transient("mid-swap race".to_string())),
+            RpcError::Spend(SpendReadError::Fatal("backend failure".to_string())),
+        ] {
+            assert_eq!(to_error_object(err).code(), ErrorCode::InternalError.code());
+        }
+    }
+
+    /// `getspentinfo` renders zcashd's exact `{txid, index, height}` — those three
+    /// keys and no more — with the spending txid in display (byte-reversed) order.
+    /// The mock scripts a located spend with an asymmetric spending txid so a
+    /// forgotten reversal would fail the display assertion.
+    #[tokio::test]
+    async fn getspentinfo_renders_the_zcashd_shape() {
+        use super::NodeRpcApiServer;
+        use crate::NodeRpc;
+        use jsonrpsee::core::params::ArrayParams;
+        use serde_json::Value;
+        use zaino_primitives::types::{Height, Outpoint, TransactionId, TransparentSpend};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let mut spender = [0u8; 32];
+        spender[0] = 0x11;
+        spender[31] = 0xaa;
+        let expected_txid = format!("aa{}11", "00".repeat(30));
+        let module = NodeRpc::new(
+            MockIndexerService::new(MockChain {
+                spend_info: Some(TransparentSpend {
+                    outpoint: Outpoint {
+                        txid: TransactionId::from([0x7c; 32]),
+                        index: 2,
+                    },
+                    by: TransactionId::from(spender),
+                    input_index: 3,
+                    height: Height::try_from(150).expect("a valid height"),
+                }),
+                ..MockChain::default()
+            }),
+            Network::MainNetwork,
+        )
+        .into_rpc();
+
+        let mut params = ArrayParams::new();
+        params
+            .insert(serde_json::json!({ "txid": "7c".repeat(32), "index": 2 }))
+            .expect("the getspentinfo object param");
+        let response = module
+            .call::<_, Value>("getspentinfo", params)
+            .await
+            .expect("getspentinfo is served locally");
+
+        let obj = response.as_object().expect("a result object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["height", "index", "txid"],
+            "exactly zcashd's three keys: {obj:?}"
+        );
+        assert_eq!(
+            obj.get("txid").and_then(Value::as_str),
+            Some(expected_txid.as_str()),
+            "the spending txid is in display order"
+        );
+        assert_eq!(obj.get("index").and_then(Value::as_u64), Some(3));
+        assert_eq!(obj.get("height").and_then(Value::as_u64), Some(150));
+    }
+
+    /// An unspent or unknown outpoint is zcashd's error, not a null and not a
+    /// method-not-found: code `-5` (`RPC_INVALID_ADDRESS_OR_KEY`) with the exact
+    /// message "Unable to get spent info", which zcashd's `GetSpentIndex` raises
+    /// identically for both. The default mock scripts no spend.
+    #[tokio::test]
+    async fn getspentinfo_unspent_or_unknown_is_the_zcashd_error() {
+        use super::NodeRpcApiServer;
+        use crate::NodeRpc;
+        use jsonrpsee::core::params::ArrayParams;
+        use jsonrpsee::core::server::MethodsError;
+        use serde_json::Value;
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let module = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        )
+        .into_rpc();
+
+        let mut params = ArrayParams::new();
+        params
+            .insert(serde_json::json!({ "txid": "ab".repeat(32), "index": 0 }))
+            .expect("the getspentinfo object param");
+        let err = module
+            .call::<_, Value>("getspentinfo", params)
+            .await
+            .expect_err("an unspent or unknown outpoint is an error, not null");
+        match err {
+            MethodsError::JsonRpc(obj) => {
+                assert_eq!(obj.code(), -5, "zcashd's RPC_INVALID_ADDRESS_OR_KEY");
+                assert_eq!(obj.message(), "Unable to get spent info");
+            }
+            other => panic!("expected a JSON-RPC error, got {other:?}"),
+        }
     }
 
     /// A `MissingHeader` — a hole in the chain view the timestamp search needed —

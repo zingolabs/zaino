@@ -17,12 +17,12 @@ use crate::deployment::{Deployment, IndexedSource};
 use crate::plan::RuntimePlan;
 use crate::signals::ReadinessCriteria;
 
-/// The node-RPC / explorer use case served with compact blocks and transparent
-/// address history composed locally from Zaino's own indexes, and every other
-/// read the explorer parses itself — full and verbose blocks, decoded
-/// transactions, the chain-info aggregate, treestate, raw transactions, the
-/// node-status reads and the mempool listing — relayed to the validator; spend
-/// status and transaction location withheld.
+/// The node-RPC / explorer use case served with compact blocks, transparent
+/// address history and spend lookups composed locally from Zaino's own indexes,
+/// and every other read the explorer parses itself — full and verbose blocks,
+/// decoded transactions, the chain-info aggregate, treestate, raw transactions,
+/// the node-status reads and the mempool listing — relayed to the validator;
+/// transaction location withheld.
 ///
 /// Address history is local because the explorer's address page needs
 /// `getaddressdeltas` — full transparent history with receives and spends —
@@ -33,6 +33,12 @@ use crate::signals::ReadinessCriteria;
 /// deployment no longer relays address queries to the validator, so it discloses
 /// no queried addresses and demands no address source port (see
 /// [`NodeRpcSource`]).
+///
+/// Spend lookup (`getspentinfo`) is local for the same reason: it is another
+/// indexer-only method Zebra answers with `-32601`. It reads the spends index
+/// [`TransparentHistory`] already builds — across the seam, so a spend in the
+/// volatile window of an output created below the watermark is located — and so
+/// demands no spend source port either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeRpcPassthrough;
 

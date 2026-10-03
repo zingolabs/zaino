@@ -45,6 +45,22 @@ pub struct MempoolEntryObject {
     pub height: u32,
 }
 
+/// The `getspentinfo` response: where an outpoint was spent.
+///
+/// zcashd's `getspentinfo` returns exactly these three keys from its
+/// `CSpentIndexValue`: the spending transaction's id, the input (vin) index of
+/// it that consumed the outpoint, and the height it was mined at. `txid` renders
+/// in display (byte-reversed) order, as every 32-byte value on this wire does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SpentInfoResponse {
+    /// The spending transaction's id, in display order.
+    pub txid: String,
+    /// The spending (vin, input) index within that transaction.
+    pub index: u32,
+    /// The height that mined the spending transaction.
+    pub height: u32,
+}
+
 /// The `getrawmempool` response: an array of txid hex (non-verbose) or an object
 /// keyed by txid (verbose).
 ///

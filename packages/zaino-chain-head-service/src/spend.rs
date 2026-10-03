@@ -24,7 +24,7 @@
 //! finalised store on anything but a spend.
 
 use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
-use zaino_primitives::types::{Outpoint, Transaction};
+use zaino_primitives::types::{Outpoint, OutputIndex, Transaction, TransparentSpend};
 use zaino_service::error::SpendReadError;
 use zaino_service::{SpendRead, SpendStatus};
 
@@ -52,6 +52,47 @@ impl SpendRead for HeadSnapshot {
             false => SpendStatus::NoSuchOutput,
         })
     }
+
+    async fn spend_info(
+        &self,
+        outpoint: Outpoint,
+    ) -> Result<Option<TransparentSpend>, SpendReadError> {
+        for block in self.window().best_chain() {
+            let height = block.height();
+            for transaction in transactions(block) {
+                if let Some(spend) = spend_of(transaction, outpoint, height) {
+                    // A consensus-valid chain spends an outpoint once, so the
+                    // first match in best-chain order is the spend.
+                    return Ok(Some(spend));
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// The spend of `outpoint` in `transaction` at `height`, if one of its inputs
+/// consumes it. An input's position is its index, so enumeration is the
+/// numbering; an index past the wire limit cannot occur in a block that parsed.
+fn spend_of(
+    transaction: &Transaction,
+    outpoint: Outpoint,
+    height: zaino_primitives::types::Height,
+) -> Option<TransparentSpend> {
+    transaction
+        .transparent
+        .inputs
+        .iter()
+        .enumerate()
+        .find(|(_, input)| input.prev_txid == outpoint.txid && input.prev_index == outpoint.index)
+        .and_then(|(index, _)| {
+            Some(TransparentSpend {
+                outpoint,
+                by: transaction.txid,
+                input_index: OutputIndex::try_from(index).ok()?,
+                height,
+            })
+        })
 }
 
 /// The transactions of a retained block, in block order.

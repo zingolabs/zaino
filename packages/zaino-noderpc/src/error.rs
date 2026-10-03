@@ -7,7 +7,7 @@
 
 use zaino_service::error::{
     AddressReadError, BlockDeltasError, BlockHashReadError, BroadcastRejection, MempoolReadError,
-    ReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
+    ReadError, SpendReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
 };
 use zaino_service::NodeStatusError;
 
@@ -64,4 +64,9 @@ pub enum RpcError {
     /// in the median-time window, or a corrupt amount, never bad client input.
     #[error(transparent)]
     BlockDeltas(#[from] BlockDeltasError),
+    /// Locating an outpoint's spend for `getspentinfo` failed — a tier read
+    /// failure, never bad client input (an unspent or unknown outpoint is the
+    /// not-found error above, not this).
+    #[error(transparent)]
+    Spend(#[from] SpendReadError),
 }

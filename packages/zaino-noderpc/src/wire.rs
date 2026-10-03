@@ -38,10 +38,10 @@ use crate::wire::response::{
     LocalAddressResponse, MempoolEntryObject, MiningInfoResponse, NetworkEntryResponse,
     NetworkInfoResponse, NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject,
     OrchardObject, OutputDeltaEntry, PeerInfoEntry, PoolTreestateResponse, ScriptPubKey, ScriptSig,
-    ShieldedOutput, ShieldedSpend, SubtreeRootEntry, SubtreeRootsResponse, TipConsensusResponse,
-    TransactionDeltaEntry, TransactionInput, TransactionObject, TransactionOutput, TreePoolSize,
-    TreesResponse, TreestateResponse, TxOutResponse, UnifiedReceiversResponse,
-    ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
+    ShieldedOutput, ShieldedSpend, SpentInfoResponse, SubtreeRootEntry, SubtreeRootsResponse,
+    TipConsensusResponse, TransactionDeltaEntry, TransactionInput, TransactionObject,
+    TransactionOutput, TreePoolSize, TreesResponse, TreestateResponse, TxOutResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -1002,6 +1002,19 @@ pub(crate) fn tx_out_to_wire(tx_out: zaino_primitives::types::rpc::TxOut) -> TxO
             script_type: script.script_type.clone(),
         },
         coinbase: tx_out.coinbase,
+    }
+}
+
+/// Render a located spend as the `getspentinfo` response (domain -> wire). The
+/// spending transaction's id goes out in display order, with the input index and
+/// height as integers — exactly zcashd's `{txid, index, height}`.
+pub(crate) fn spent_info_to_wire(
+    spend: zaino_primitives::types::TransparentSpend,
+) -> SpentInfoResponse {
+    SpentInfoResponse {
+        txid: txid_to_display(spend.by),
+        index: spend.input_index,
+        height: spend.height.into(),
     }
 }
 

@@ -46,6 +46,18 @@ pub struct AddressTxidsParam {
     pub end: Option<u32>,
 }
 
+/// The `getspentinfo` object parameter: the outpoint whose spend to locate, as
+/// `zcashex` and zcashd send it — `{"txid": ..., "index": n}`, one positional
+/// object. `index` is the output (vout) index of the outpoint, matching zcashd's
+/// `CSpentIndexKey`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetSpentInfoParam {
+    /// The hex txid of the transaction that created the outpoint, display order.
+    pub txid: String,
+    /// The output index within that transaction.
+    pub index: u32,
+}
+
 /// The optional third parameter of `getblockhashes`, the
 /// `{"noOrphans": ..., "logicalTimes": ...}` object `zcashex` sends. The whole
 /// object is optional (`[high, low]` is a valid call), and each key within it is

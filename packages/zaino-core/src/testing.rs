@@ -166,6 +166,35 @@ impl SpendRead for StubNonFinalised {
             false => SpendStatus::NoSuchOutput,
         })
     }
+
+    async fn spend_info(
+        &self,
+        outpoint: Outpoint,
+    ) -> Result<Option<TransparentSpend>, SpendReadError> {
+        for (height, block) in &self.blocks {
+            for transaction in &block.transactions {
+                let found = transaction
+                    .transparent_inputs
+                    .iter()
+                    .enumerate()
+                    .find(|(_, input)| {
+                        input.prev_txid == outpoint.txid && input.prev_index == outpoint.index
+                    });
+                if let Some((index, _)) = found {
+                    let Ok(input_index) = OutputIndex::try_from(index) else {
+                        continue;
+                    };
+                    return Ok(Some(TransparentSpend {
+                        outpoint,
+                        by: transaction.txid,
+                        input_index,
+                        height: *height,
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// The window reports the receives it holds, deriving each output's recipient

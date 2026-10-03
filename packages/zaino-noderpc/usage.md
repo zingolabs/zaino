@@ -24,8 +24,8 @@ in internal order per the lightwalletd protocol.)
 ## What it serves
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
-`getblockheader`, `getblockhashes`, `getblockhash`, `getblockdeltas`, `gettxout`,
-`getrawtransaction`, `sendrawtransaction`,
+`getblockheader`, `getblockhashes`, `getblockhash`, `getblockdeltas`,
+`getspentinfo`, `gettxout`, `getrawtransaction`, `sendrawtransaction`,
 `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
 `getmempoolinfo`, `getdifficulty`, `getnetworkinfo`, `ping`, `getaddressbalance`,
 `getaddressdeltas`, `getaddresstxids`, `getaddressutxos`, `z_gettreestate`,
@@ -286,9 +286,29 @@ chain-view hole in the median-time window (`MissingHeader`), and a corrupt amoun
 (`InputValueOutOfRange`) are all server-side. An unknown block is the `-5`
 not-found above (the composed read answers `Ok(None)`), not a `BlockDeltasError`.
 
+Locating a spend for `getspentinfo` (`SpendReadError`) is internal in every
+variant too — the spends index not yet built (`NotServiceable`), a mid-swap read
+race (`Transient`), or a backend failure (`Fatal`). An unspent or unknown outpoint
+is **not** one of these: it is the `-5` not-found path carrying zcashd's own
+message (see `getspentinfo` below).
+
+## `getspentinfo`
+
+`getspentinfo {"txid": ..., "index": n}` returns where the transparent outpoint
+`(txid, index)` was spent, as zcashd's `{txid, index, height}`: the spending
+transaction's id (display order), the input (vin) index of it that consumed the
+outpoint, and the height it was mined at. It is **indexer-only** — Zebra answers
+`-32601`, so the shape authority is zcashd's `getspentinfo` (`rpc/misc.cpp`).
+
+Served **locally** over the engine's `SpendRead::spend_info` (`zaino-core`), which
+reads the tiers' spends index and composes across the seam, so an output created
+in the finalised tier and spent in the volatile window reports the window's
+spending height. No source port and no validator round trip. An unspent or unknown
+outpoint is zcashd's error, not a `null` and not a method-not-found: code `-5`
+(`RPC_INVALID_ADDRESS_OR_KEY`) with the message "Unable to get spent info", which
+zcashd's `GetSpentIndex` raises identically for both. This contrasts with
+`gettxout` above, the live unspent-output lookup, which answers `null`.
+
 ## Not modelled here
 
-`gettxoutsetinfo` (the whole-UTXO-set aggregate) and spend status
-(`getspentinfo`) are not served here. `getspentinfo` is a later slice; it is a
-local spend-index read, distinct from `gettxout` above, which is the live
-unspent-output lookup.
+`gettxoutsetinfo`, the whole-UTXO-set aggregate, is not served here.

@@ -27,12 +27,13 @@ use zaino_service::BlockDeltasRead;
 use zaino_service::BlockHashRead;
 use zaino_service::BlockVerboseRead;
 use zaino_service::RawTransactionRead;
+use zaino_service::SpendRead;
 use zaino_service::TransactionViewRead;
 use zaino_service::TreestateRead;
 use zaino_service::{BlockRead, ChainInfoRead, ChainSegment, NodeRpcService};
 use zcash_protocol::consensus::Network;
 
-use zaino_primitives::types::BlockSelector;
+use zaino_primitives::types::{BlockSelector, Outpoint};
 
 use crate::wire::params::{
     AddressDeltasParam, AddressTxidsParam, AddressesParam, GetBlockHashesOptions,
@@ -42,17 +43,17 @@ use crate::wire::response::{
     BlockchainInfoResponse, DeltaRange, GetBlockDeltasResponse, GetBlockHashesResponse,
     GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse,
     NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
-    RawTransactionResponse, SubtreeRootsResponse, TreestateResponse, TxOutResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    RawTransactionResponse, SpentInfoResponse, SubtreeRootsResponse, TreestateResponse,
+    TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_deltas_to_wire, block_hash_to_display, block_hashes_to_wire,
     block_header_to_wire, block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire,
     blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire,
     mining_info_to_wire, network_info_to_wire, node_info_to_wire, peer_info_to_wire,
-    subtree_roots_to_wire, transaction_view_to_wire, treestate_to_wire, tx_out_to_wire,
-    txid_from_hex, txid_to_display, unified_receivers_to_wire, utxo_to_wire, validated_to_wire,
-    z_validated_to_wire,
+    spent_info_to_wire, subtree_roots_to_wire, transaction_view_to_wire, treestate_to_wire,
+    tx_out_to_wire, txid_from_hex, txid_to_display, unified_receivers_to_wire, utxo_to_wire,
+    validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -390,6 +391,32 @@ impl<S: NodeRpcService> NodeRpc<S> {
             .await?
             .ok_or_else(|| RpcError::NotFound(format!("no block for {blockhash_hex}")))?;
         Ok(block_deltas_to_wire(deltas, &self.network))
+    }
+
+    /// `getspentinfo`: where the transparent outpoint `(txid, index)` was spent —
+    /// the spending transaction, the input of it that consumed the outpoint, and
+    /// the height it was mined at.
+    ///
+    /// Indexer-only: Zebra answers `-32601`, so the shape authority is zcashd's
+    /// `getspentinfo`, which returns `{txid, index, height}`. Served **locally**
+    /// from the tier spends index (no validator round trip), composed across the
+    /// seam so an output created in the finalised tier and spent in the volatile
+    /// window reports the window's spending height. An unspent or unknown outpoint
+    /// is zcashd's `-5` not-found error with its message "Unable to get spent
+    /// info" — zcashd's `GetSpentIndex` fails identically for both, so Zaino does
+    /// too, rather than inventing a null or a distinct message.
+    pub(crate) async fn get_spent_info(
+        &self,
+        txid_hex: &str,
+        index: u32,
+    ) -> Result<SpentInfoResponse, RpcError> {
+        let txid = txid_from_hex(txid_hex)?;
+        let snapshot = self.engine.snapshot().await?;
+        let spend = snapshot
+            .spend_info(Outpoint { txid, index })
+            .await?
+            .ok_or_else(|| RpcError::NotFound("Unable to get spent info".to_string()))?;
+        Ok(spent_info_to_wire(spend))
     }
 
     /// `gettxout`: the unspent output at `(txid, n)`, relayed live from the

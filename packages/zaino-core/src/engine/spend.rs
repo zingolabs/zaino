@@ -11,7 +11,7 @@ use std::future::Future;
 use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::{Local, Routing};
-use zaino_primitives::types::Outpoint;
+use zaino_primitives::types::{Outpoint, TransparentSpend};
 use zaino_service::SpendRead;
 use zaino_service::SpendStatus;
 use zaino_service::error::SpendReadError;
@@ -26,6 +26,12 @@ pub trait SpendPlacement<F, N, Src>: Send + Sync + 'static {
         passthrough: &PassthroughProvider<Src>,
         outpoint: Outpoint,
     ) -> impl Future<Output = Result<SpendStatus, SpendReadError>> + Send;
+
+    fn spend_info(
+        local: &ChainViewSnapshot<F, N>,
+        passthrough: &PassthroughProvider<Src>,
+        outpoint: Outpoint,
+    ) -> impl Future<Output = Result<Option<TransparentSpend>, SpendReadError>> + Send;
 }
 
 impl<F, N, Src, R> SpendRead for EngineSnapshot<F, N, Src, R>
@@ -38,6 +44,13 @@ where
 {
     async fn spend_status(&self, outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
         R::Spend::spend_status(self.local(), self.passthrough(), outpoint).await
+    }
+
+    async fn spend_info(
+        &self,
+        outpoint: Outpoint,
+    ) -> Result<Option<TransparentSpend>, SpendReadError> {
+        R::Spend::spend_info(self.local(), self.passthrough(), outpoint).await
     }
 }
 
@@ -62,6 +75,24 @@ where
             SpendStatus::Unspent | SpendStatus::NoSuchOutput => {
                 local.finalised().spend_status(outpoint).await
             }
+        }
+    }
+
+    async fn spend_info(
+        local: &ChainViewSnapshot<F, N>,
+        _passthrough: &PassthroughProvider<Src>,
+        outpoint: Outpoint,
+    ) -> Result<Option<TransparentSpend>, SpendReadError> {
+        // The head holds the newer fact: a spend in the volatile window of an
+        // output created anywhere below it. It answers `None` for an outpoint it
+        // saw no spend of — including one created in its window but still
+        // unspent — so the finalised store is asked then, which reports a spend
+        // at or below the watermark. The seam case (created below, spent above)
+        // is covered because the head recognises a spend from the outpoint
+        // alone, without the output that created it.
+        match local.non_finalised().spend_info(outpoint).await? {
+            Some(spend) => Ok(Some(spend)),
+            None => local.finalised().spend_info(outpoint).await,
         }
     }
 }
