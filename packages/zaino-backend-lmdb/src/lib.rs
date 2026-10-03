@@ -18,9 +18,10 @@ use std::sync::Arc;
 use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags,
 };
+use lmdb_sys::{MDB_FIRST, MDB_NEXT, MDB_SET_RANGE};
 use zaino_persistence::{
-    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, OpenError, RawKey,
-    RawValue, ReadError, WriteOp,
+    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, OpenError,
+    RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
 };
 
 /// Configuration for [`LmdbBackend`].
@@ -219,6 +220,68 @@ impl BackendReader for LmdbReader {
 
         Ok(entries)
     }
+
+    fn scan_range(
+        &self,
+        namespace: Namespace,
+        start: &[u8],
+        end_exclusive: &[u8],
+        visit: &mut RangeVisitor<'_>,
+    ) -> Result<(), ReadError> {
+        let db = self.resolve_db(namespace)?;
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| read_error("begin read transaction", e))?;
+        let cursor = txn
+            .open_ro_cursor(db)
+            .map_err(|e| read_error("open cursor", e))?;
+
+        // Seek the first key >= `start` with `MDB_SET_RANGE`, then step forward
+        // with `MDB_NEXT`. The raw cursor ops are used rather than the crate's
+        // `iter_from`, which unwraps the seek and so panics when `start` is past
+        // every key — a legitimate empty-range outcome, not a fault. A seek or
+        // step that finds nothing returns `MDB_NOTFOUND`, surfaced as `None`.
+        let mut entry = match cursor.get(Some(start), None, MDB_SET_RANGE) {
+            Ok((Some(key), value)) => Some((key, value)),
+            Ok((None, _)) => None,
+            Err(lmdb::Error::NotFound) => None,
+            Err(e) => return Err(read_error("seek range", e)),
+        };
+        while let Some((key, value)) = entry {
+            if key >= end_exclusive {
+                break;
+            }
+            if visit(key, value).is_break() {
+                break;
+            }
+            entry = match cursor.get(None, None, MDB_NEXT) {
+                Ok((Some(key), value)) => Some((key, value)),
+                Ok((None, _)) => None,
+                Err(lmdb::Error::NotFound) => None,
+                Err(e) => return Err(read_error("step range", e)),
+            };
+        }
+        Ok(())
+    }
+
+    fn first_key(&self, namespace: Namespace) -> Result<Option<RawKey>, ReadError> {
+        let db = self.resolve_db(namespace)?;
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| read_error("begin read transaction", e))?;
+        let cursor = txn
+            .open_ro_cursor(db)
+            .map_err(|e| read_error("open cursor", e))?;
+
+        match cursor.get(None, None, MDB_FIRST) {
+            Ok((Some(key), _)) => Ok(Some(key.to_vec())),
+            Ok((None, _)) => Ok(None),
+            Err(lmdb::Error::NotFound) => Ok(None),
+            Err(e) => Err(read_error("first key", e)),
+        }
+    }
 }
 
 /// LMDB write handle.
@@ -275,6 +338,7 @@ impl BackendWriter for LmdbWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::ops::ControlFlow;
 
     fn test_config(dir: &std::path::Path, namespaces: Vec<Namespace>) -> LmdbConfig {
         LmdbConfig {
@@ -339,6 +403,120 @@ mod tests {
         // LMDB returns in key order
         assert_eq!(entries[0], (b"a".to_vec(), b"1".to_vec()));
         assert_eq!(entries[2], (b"c".to_vec(), b"3".to_vec()));
+    }
+
+    /// Collect the entries `scan_range` visits over `[start, end_exclusive)`.
+    fn collect_range(
+        reader: &LmdbReader,
+        ns: Namespace,
+        start: &[u8],
+        end_exclusive: &[u8],
+    ) -> Vec<(RawKey, RawValue)> {
+        let mut out = Vec::new();
+        reader
+            .scan_range(ns, start, end_exclusive, &mut |k, v| {
+                out.push((k.to_vec(), v.to_vec()));
+                ControlFlow::Continue(())
+            })
+            .expect("scan_range");
+        out
+    }
+
+    fn seeded_range_backend() -> (tempfile::TempDir, LmdbBackend, Namespace) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ns = Namespace::new("range_ns");
+        let backend = LmdbBackend::open(test_config(tmp.path(), vec![ns])).expect("open");
+        let mut writer = backend.writer().expect("writer");
+        let put = |key: &[u8]| WriteOp::Put {
+            namespace: ns,
+            key: key.to_vec(),
+            value: key.to_vec(),
+        };
+        writer
+            .commit(vec![
+                put(b"a1"),
+                put(b"a2"),
+                put(b"a3"),
+                put(b"b1"),
+                put(b"b2"),
+            ])
+            .expect("commit");
+        (tmp, backend, ns)
+    }
+
+    #[test]
+    fn scan_range_end_is_exclusive() {
+        let (_tmp, backend, ns) = seeded_range_backend();
+        let reader = backend.reader().expect("reader");
+        // [a1, a3) excludes a3.
+        let got = collect_range(&reader, ns, b"a1", b"a3");
+        let keys: Vec<RawKey> = got.into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, vec![b"a1".to_vec(), b"a2".to_vec()]);
+    }
+
+    #[test]
+    fn scan_range_empty_when_start_equals_end() {
+        let (_tmp, backend, ns) = seeded_range_backend();
+        let reader = backend.reader().expect("reader");
+        assert!(collect_range(&reader, ns, b"a2", b"a2").is_empty());
+    }
+
+    #[test]
+    fn scan_range_matching_no_prefix_is_empty_not_an_error() {
+        let (_tmp, backend, ns) = seeded_range_backend();
+        let reader = backend.reader().expect("reader");
+        // A prefix between the stored keys, and one past every key: both empty,
+        // the latter exercising the `MDB_SET_RANGE` seek-past-the-end path that
+        // must not panic.
+        assert!(collect_range(&reader, ns, b"a9", b"b0").is_empty());
+        assert!(collect_range(&reader, ns, b"zzz", b"zzz\xff").is_empty());
+    }
+
+    #[test]
+    fn scan_range_does_not_leak_neighbouring_prefixes() {
+        let (_tmp, backend, ns) = seeded_range_backend();
+        let reader = backend.reader().expect("reader");
+        // The `a` prefix is [a, b); not one `b` key leaks in.
+        let keys: Vec<RawKey> = collect_range(&reader, ns, b"a", b"b")
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(
+            keys,
+            vec![b"a1".to_vec(), b"a2".to_vec(), b"a3".to_vec()],
+            "only the a-prefixed keys, never b1/b2"
+        );
+    }
+
+    #[test]
+    fn scan_range_stops_on_break() {
+        let (_tmp, backend, ns) = seeded_range_backend();
+        let reader = backend.reader().expect("reader");
+        let mut seen = Vec::new();
+        reader
+            .scan_range(ns, b"a", b"b", &mut |k, _| {
+                seen.push(k.to_vec());
+                // Stop after the first entry.
+                ControlFlow::Break(())
+            })
+            .expect("scan_range");
+        assert_eq!(seen, vec![b"a1".to_vec()], "early stop reads no further");
+    }
+
+    #[test]
+    fn first_key_is_the_smallest_or_none_when_empty() {
+        let (_tmp, backend, ns) = seeded_range_backend();
+        let reader = backend.reader().expect("reader");
+        assert_eq!(
+            reader.first_key(ns).expect("first_key"),
+            Some(b"a1".to_vec())
+        );
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let empty_ns = Namespace::new("empty_first");
+        let empty = LmdbBackend::open(test_config(tmp.path(), vec![empty_ns])).expect("open");
+        let reader = empty.reader().expect("reader");
+        assert_eq!(reader.first_key(empty_ns).expect("first_key"), None);
     }
 
     #[test]

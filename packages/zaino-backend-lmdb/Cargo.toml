@@ -11,6 +11,7 @@ description = "LMDB backend adapter implementing zaino-persistence traits."
 [dependencies]
 zaino-persistence = { path = "../zaino-persistence" }
 lmdb.workspace = true
+lmdb-sys.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -14,6 +14,8 @@
 //! set of named databases at environment-open time. Every read and write targets
 //! a declared namespace.
 
+use core::ops::ControlFlow;
+
 use crate::error::{CommitError, FlushError, OpenError, ReadError};
 
 /// A namespace identifier — names an independent keyspace within the backend.
@@ -59,6 +61,15 @@ pub type RawKey = Vec<u8>;
 /// Opaque to the backend — it stores and retrieves these without
 /// interpretation.
 pub type RawValue = Vec<u8>;
+
+/// A per-entry callback for [`BackendReader::scan_range`].
+///
+/// Called with borrowed key and value bytes for each entry in the range;
+/// returns [`ControlFlow::Break`] to stop the scan early or
+/// [`ControlFlow::Continue`] to go on. A trait-object alias (not a generic
+/// parameter) keeps [`BackendReader`] object-safe, so it can be used as
+/// `&dyn BackendReader`.
+pub type RangeVisitor<'a> = dyn FnMut(&[u8], &[u8]) -> ControlFlow<()> + 'a;
 
 /// A write operation: put or delete a key-value pair in a namespace.
 #[derive(Debug)]
@@ -114,5 +125,41 @@ pub trait BackendReader: Send {
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
 
     /// Return all entries for a namespace as raw key-value byte pairs.
+    ///
+    /// Materialises the whole namespace onto the heap. Use only for a bounded,
+    /// one-shot full load (state rebuild); a per-key or per-range query must use
+    /// [`get`](Self::get) or [`scan_range`](Self::scan_range), which do not copy
+    /// the entire keyspace.
     fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError>;
+
+    /// Visit the entries of `namespace` whose key is in `[start, end_exclusive)`,
+    /// in ascending key order, without materialising the range.
+    ///
+    /// Keys order lexicographically on their raw bytes (the same order
+    /// [`scan`](Self::scan) returns), so a caller whose key layout is prefixed by
+    /// the dimension it queries — an address id, say — seeks a contiguous slice
+    /// rather than scanning the namespace and filtering in memory.
+    ///
+    /// `visit` is called once per entry with borrowed key and value bytes; it
+    /// returns [`ControlFlow::Break`] to stop early (the backend reads no
+    /// further) or [`ControlFlow::Continue`] to go on. The borrow lasts only for
+    /// the call, so a caller that keeps an entry copies it out. An empty range,
+    /// a `start` past every key, and a range matching nothing all visit nothing
+    /// and are not errors.
+    fn scan_range(
+        &self,
+        namespace: Namespace,
+        start: &[u8],
+        end_exclusive: &[u8],
+        visit: &mut RangeVisitor<'_>,
+    ) -> Result<(), ReadError>;
+
+    /// The lexicographically smallest key in `namespace`, or `None` when it holds
+    /// nothing.
+    ///
+    /// An emptiness probe that reads one key rather than the whole namespace:
+    /// `first_key(ns)?.is_some()` answers "is there any data here" in O(1) seeks,
+    /// where [`scan`](Self::scan) would copy every entry out only to test the
+    /// length.
+    fn first_key(&self, namespace: Namespace) -> Result<Option<RawKey>, ReadError>;
 }

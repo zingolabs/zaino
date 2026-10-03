@@ -5896,6 +5896,7 @@ name = "zaino-backend-lmdb"
 version = "0.1.0"
 dependencies = [
  "lmdb",
+ "lmdb-sys",
  "tempfile",
  "zaino-persistence",
 ]
