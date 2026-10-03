@@ -274,6 +274,15 @@ pub enum ReceivesReadError {
     /// A persisted entry could not be decoded.
     #[error(transparent)]
     Decode(#[from] DecodeError),
+    /// The address has more receives in the scanned range than the per-request
+    /// ceiling allows. The scan stops at the ceiling rather than materialising an
+    /// unbounded history, so a pathological (pool-scale) address fails this one
+    /// request instead of exhausting memory for the whole process.
+    #[error("address has more than {limit} receives in the requested range")]
+    TooLarge {
+        /// The ceiling that was exceeded.
+        limit: usize,
+    },
 }
 
 /// The on-disk key prefix shared by every entry of one address: the leading 21
@@ -323,21 +332,30 @@ fn upper_bound(addr: AddrId, end: BlockHeight) -> Vec<u8> {
 /// backend yields the range in key order; the explicit sort pins the
 /// `(height, output_index)` order the contract promises regardless of the txid
 /// bytes that sit between them in the key.
+///
+/// `limit` caps how many receives the scan collects. The count is checked during
+/// the cursor walk, before the over-limit entry is decoded or kept, so an address
+/// with more receives in the range than `limit` is refused with
+/// [`ReceivesReadError::TooLarge`] rather than ever building the full heap `Vec` —
+/// the safety net for a pool-scale address.
 pub fn read_receives(
     reader: &dyn BackendReader,
     addr: AddrId,
     start: BlockHeight,
     end: BlockHeight,
+    limit: usize,
 ) -> Result<Vec<AddressReceive>, ReceivesReadError> {
     let lower = lower_bound(addr, start);
     let upper = upper_bound(addr, end);
     let mut out = Vec::new();
     let mut decode_err: Option<ReceivesReadError> = None;
-    reader.scan_range(
-        ID.into(),
-        &lower,
-        &upper,
-        &mut |raw_key, raw_value| match decode_receive(raw_key, raw_value) {
+    let mut over_limit = false;
+    reader.scan_range(ID.into(), &lower, &upper, &mut |raw_key, raw_value| {
+        if out.len() >= limit {
+            over_limit = true;
+            return core::ops::ControlFlow::Break(());
+        }
+        match decode_receive(raw_key, raw_value) {
             Ok(receive) => {
                 out.push(receive);
                 core::ops::ControlFlow::Continue(())
@@ -346,10 +364,13 @@ pub fn read_receives(
                 decode_err = Some(error);
                 core::ops::ControlFlow::Break(())
             }
-        },
-    )?;
+        }
+    })?;
     if let Some(error) = decode_err {
         return Err(error);
+    }
+    if over_limit {
+        return Err(ReceivesReadError::TooLarge { limit });
     }
     out.sort_by_key(|r| (r.height.value(), r.output_index));
     Ok(out)
@@ -555,6 +576,7 @@ mod tests {
             addr,
             BlockHeight::new(0),
             BlockHeight::new(u64::from(u32::MAX)),
+            usize::MAX,
         )
     }
 
@@ -698,6 +720,59 @@ mod tests {
             reader.surfaced.load(std::sync::atomic::Ordering::Relaxed),
             3,
             "the backend surfaced only A's entries, not B's 500"
+        );
+    }
+
+    /// An address with more receives in the range than the ceiling is refused
+    /// with `TooLarge` rather than materialised — the per-request safety net.
+    /// Exercised with a tiny ceiling and a handful of entries, never a real
+    /// pool-scale history, since the point is the bound, not the volume.
+    #[test]
+    fn a_read_over_the_ceiling_is_refused_not_materialised() {
+        use zaino_persistence::in_memory::InMemoryBackend;
+        use zaino_persistence::{Backend, BackendWriter, WriteOp};
+
+        let addr = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [0xCC; 20],
+        };
+        let z = |n| Zatoshis::new(n).expect("valid");
+        let receives: Vec<AddressReceive> = (0..5u64)
+            .map(|height| AddressReceive {
+                addr,
+                height: BlockHeight::new(height),
+                txid: txid(u8::try_from(height).expect("small")),
+                output_index: 0,
+                value: z(100),
+            })
+            .collect();
+        let ops: Vec<WriteOp> = AddressHistoryIndex::into_entries(vec![receives])
+            .into_iter()
+            .map(|(k, v)| WriteOp::Put {
+                namespace: ID.into(),
+                key: encode_key::<AddressHistoryIndex>(&k),
+                value: encode_value::<AddressHistoryIndex>(&v),
+            })
+            .collect();
+        let backend = InMemoryBackend::new();
+        let mut writer = backend.writer().expect("writer");
+        writer.commit(ops).expect("commit");
+        let reader = backend.reader().expect("reader");
+
+        let whole_range = (BlockHeight::new(0), BlockHeight::new(u64::from(u32::MAX)));
+        // Under the ceiling: all five come back.
+        assert_eq!(
+            read_receives(&reader, addr, whole_range.0, whole_range.1, 5)
+                .expect("at the ceiling is fine")
+                .len(),
+            5
+        );
+        // Over the ceiling: refused, naming the limit.
+        let error = read_receives(&reader, addr, whole_range.0, whole_range.1, 2)
+            .expect_err("over the ceiling is refused");
+        assert!(
+            matches!(error, ReceivesReadError::TooLarge { limit: 2 }),
+            "got {error:?}"
         );
     }
 }

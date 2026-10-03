@@ -415,6 +415,16 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::AddressRead(e @ AddressReadError::Unsupported(_)) => {
             (ErrorCode::MethodNotFound.code(), e.to_string())
         }
+        // The address has more history than a single request may fan out over —
+        // a server policy refusal, not bad client input (the address and range
+        // are well-formed) and not the validator's gap (`Unsupported`). zcashd's
+        // `getaddress*` have no dedicated too-large code, so this follows the same
+        // crate's existing resource-ceiling precedent — `PrevoutFanoutTooLarge`,
+        // also internal-error — rather than inventing one. The message is the
+        // typed variant's own, naming the address and the limit.
+        RpcError::AddressRead(e @ AddressReadError::TooLarge { .. }) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
         RpcError::AddressRead(e @ AddressReadError::NotServiceable(_)) => {
             (ErrorCode::InternalError.code(), e.to_string())
         }
@@ -568,6 +578,29 @@ mod tests {
             "validator unavailable".to_string(),
         )));
         assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// An address whose history exceeds the per-request ceiling is a server-side
+    /// policy refusal, not bad client input (the address and range are well-formed)
+    /// and not the validator's gap (that is `Unsupported` → -32601). zcashd's
+    /// `getaddress*` have no dedicated too-large code, so this follows the same
+    /// crate's existing resource-ceiling precedent, `PrevoutFanoutTooLarge`, which
+    /// is also the internal-error code — rather than inventing one. The message is
+    /// the typed variant's own, naming the address and the limit so an operator can
+    /// read it.
+    #[test]
+    fn an_over_ceiling_address_read_is_an_internal_error_naming_the_limit() {
+        use zaino_primitives::types::TransparentAddress;
+        let obj = to_error_object(RpcError::AddressRead(AddressReadError::TooLarge {
+            address: TransparentAddress::new("t1poolpayout".to_string()),
+            limit: 5_000_000,
+        }));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+        assert!(
+            obj.message().contains("5000000") && obj.message().contains("t1poolpayout"),
+            "message names the limit and address: {}",
+            obj.message()
+        );
     }
 
     /// An unknown block or transaction is reported with code -5, matching

@@ -32,7 +32,7 @@
 
 use zaino_address::{script_paying, transparent_address_key};
 use zaino_indexes::capabilities::local::{self, Backs};
-use zaino_indexes::indexes::address_history::{read_receives, AddrId};
+use zaino_indexes::indexes::address_history::{read_receives, AddrId, ReceivesReadError};
 use zaino_indexes::indexes::transparent_spends::OutpointKey;
 use zaino_indexes::indexes::txid_location::{self, TxLocation, TxidLocationIndex};
 use zaino_persistence::Backend;
@@ -46,6 +46,20 @@ use zaino_sync::primitives::BlockHeight;
 
 use crate::spend_resolve::{resolve_spend, ResolveError};
 use crate::{read_keyed, StoreSnapshot};
+
+/// The per-request ceiling on how many receives of one address a read collects.
+///
+/// Sized for the passthrough phase, before a balance/UTXO-by-address aggregate
+/// makes these reads cheap at any history size. The cap bounds a single request's
+/// working set: at roughly a couple hundred bytes resident per receive across the
+/// receive scan and the joined [`Entry`] vector, five million entries is on the
+/// order of a gigabyte — comfortably under the process memory limit, yet well
+/// above any legitimate single transparent address observed on mainnet (the
+/// largest pool-payout addresses hold on the order of a million outputs). An
+/// address past this bound fails its one request with
+/// [`AddressReadError::TooLarge`] instead of letting the scan grow unbounded and
+/// take the whole process down with it.
+const MAX_ADDRESS_RECEIVES: usize = 5_000_000;
 
 /// One receive of the queried address, joined with where it was spent if the
 /// finalised range spent it.
@@ -241,8 +255,14 @@ where
             return Ok(Vec::new());
         };
         let reader = self.reader()?;
-        let receives = read_receives(&reader, AddrId { script_type, hash }, start, end)
-            .map_err(|e| transient(format!("read address_history: {e}")))?;
+        let receives = read_receives(
+            &reader,
+            AddrId { script_type, hash },
+            start,
+            end,
+            MAX_ADDRESS_RECEIVES,
+        )
+        .map_err(|e| receives_read_error(addr, e))?;
 
         receives
             .into_iter()
@@ -353,6 +373,22 @@ fn whole_history_end() -> BlockHeight {
     BlockHeight::new(u64::from(u32::MAX))
 }
 
+/// Fold a receive-scan failure into this read's error.
+///
+/// A ceiling breach is a typed [`AddressReadError::TooLarge`] carrying the queried
+/// address and the limit, so the adapter refuses that one request with a clear
+/// message rather than stringifying it into an opaque transient. A backend or
+/// decode failure stays transient, as it did before the range read.
+fn receives_read_error(addr: &TransparentAddress, error: ReceivesReadError) -> AddressReadError {
+    match error {
+        ReceivesReadError::TooLarge { limit } => AddressReadError::TooLarge {
+            address: addr.clone(),
+            limit,
+        },
+        other => transient(format!("read address_history: {other}")),
+    }
+}
+
 /// The engine's height as the domain's, which is narrower.
 fn domain_height(height: zaino_sync::primitives::BlockHeight) -> Result<Height, AddressReadError> {
     u32::try_from(height.value())
@@ -395,4 +431,42 @@ fn fatal(message: impl Into<String>) -> AddressReadError {
 
 fn transient(message: impl Into<String>) -> AddressReadError {
     AddressReadError::Transient(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::receives_read_error;
+    use zaino_indexes::indexes::address_history::ReceivesReadError;
+    use zaino_primitives::types::TransparentAddress;
+    use zaino_service::error::AddressReadError;
+
+    /// A ceiling breach maps to the typed `TooLarge` refusal carrying the queried
+    /// address and the limit — the one request fails, with a message an operator
+    /// can read, rather than becoming an opaque transient.
+    #[test]
+    fn a_ceiling_breach_maps_to_a_typed_too_large_refusal() {
+        let addr = TransparentAddress::new("t1exampleaddress".to_owned());
+        let mapped = receives_read_error(&addr, ReceivesReadError::TooLarge { limit: 7 });
+        match mapped {
+            AddressReadError::TooLarge { address, limit } => {
+                assert_eq!(address, addr);
+                assert_eq!(limit, 7);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+
+    /// Every other receive-scan failure stays a transient read failure, as it did
+    /// before the range read.
+    #[test]
+    fn a_decode_failure_stays_transient() {
+        let addr = TransparentAddress::new("t1exampleaddress".to_owned());
+        let mapped = receives_read_error(
+            &addr,
+            ReceivesReadError::Decode(zaino_persistence_codec::DecodeError::Invalid(
+                "bad bytes".to_owned(),
+            )),
+        );
+        assert!(matches!(mapped, AddressReadError::Transient(_)));
+    }
 }

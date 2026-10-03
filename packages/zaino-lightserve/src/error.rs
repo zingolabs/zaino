@@ -69,6 +69,12 @@ impl From<AddressReadError> for ServeError {
         match err {
             AddressReadError::NotServiceable(cap) => ServeError::NotServiceable(cap),
             AddressReadError::Transient(msg) => ServeError::Unavailable(Transient(msg)),
+            // A per-request ceiling breach is a server-side refusal; on the
+            // light-wallet surface it is an internal serve failure like the two
+            // below, naming the address and limit.
+            too_large @ AddressReadError::TooLarge { .. } => {
+                ServeError::Internal(too_large.to_string())
+            }
             // A validator-unsupported address method is an internal serve failure
             // on the light-wallet surface, which does not serve the insight
             // address family and so never reaches this in practice.

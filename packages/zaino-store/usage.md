@@ -74,6 +74,13 @@ slice of one address's history, never the whole index. `balance` scans exactly
 range can belong to a receive from any earlier height. `unspent` and the
 range-less reads scan the whole address prefix.
 
+A per-request ceiling caps how many receives one read collects, counted during
+the scan before the over-limit entry is kept. An address past the ceiling is
+refused with `AddressReadError::TooLarge { address, limit }` — a well-formed
+request that one read declines rather than letting a pool-scale history exhaust
+memory for the whole process. The adapter maps it to a JSON-RPC internal error;
+retrying is futile until a balance/UTXO-by-address aggregate lifts the ceiling.
+
 The finalised tier is the only one that implements this read. The volatile
 window cannot: a transparent input names the outpoint it consumes, not the
 address that outpoint paid, so for an output created below its floor the window

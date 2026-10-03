@@ -6,7 +6,7 @@
 //! share a shape; a macro keeps them DRY (a `fn` cannot define types).
 
 use crate::Capability;
-use zaino_primitives::types::{BlockHash, Height, TransparentInput};
+use zaino_primitives::types::{BlockHash, Height, TransparentAddress, TransparentInput};
 
 /// Every read-boundary failure separates a *not-yet-serviceable* answer and a
 /// *domain* "not found" (which is `Ok(None)`, never an error) from real backend
@@ -64,6 +64,22 @@ pub enum AddressReadError {
     /// The backing validator does not implement this address method.
     #[error("address method unsupported by the validator: {0}")]
     Unsupported(String),
+    /// The address has more history than the per-request ceiling allows, so
+    /// serving it would fan a single read out past its bound — a policy refusal,
+    /// not a backend failure: the request is well-formed and the index healthy.
+    /// Distinct from [`Fatal`](Self::Fatal) (a real read failure) and
+    /// [`Transient`](Self::Transient) (a retryable race); retrying is futile until
+    /// a balance/UTXO-by-address aggregate lifts the ceiling. It bounds a single
+    /// request so a pathological (pool-scale) address fails alone rather than
+    /// exhausting memory for the whole process. Mirrors
+    /// [`TransactionViewError::PrevoutFanoutTooLarge`].
+    #[error("address {address} has more than {limit} entries in the requested range")]
+    TooLarge {
+        /// The address whose history exceeded the ceiling.
+        address: TransparentAddress,
+        /// The per-request ceiling that was exceeded.
+        limit: usize,
+    },
     /// Likely to resolve on retry (e.g. a mid-swap reorg race).
     #[error("transient read failure: {0}")]
     Transient(String),
