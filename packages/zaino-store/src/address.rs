@@ -33,8 +33,7 @@
 use zaino_address::{script_paying, transparent_address_key};
 use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::indexes::address_history::{read_receives, AddrId};
-use zaino_indexes::indexes::transparent_data::{self, TransparentDataIndex};
-use zaino_indexes::indexes::transparent_spends::{read_spender, OutpointKey};
+use zaino_indexes::indexes::transparent_spends::OutpointKey;
 use zaino_indexes::indexes::txid_location::{self, TxLocation, TxidLocationIndex};
 use zaino_persistence::Backend;
 use zaino_primitives::types::{
@@ -44,7 +43,8 @@ use zaino_primitives::types::{
 use zaino_service::error::AddressReadError;
 use zaino_service::AddressRead;
 
-use crate::{read_index_value, read_keyed, StoreSnapshot};
+use crate::spend_resolve::{resolve_spend, ResolveError};
+use crate::{read_keyed, StoreSnapshot};
 
 /// One receive of the queried address, joined with where it was spent if the
 /// finalised range spent it.
@@ -244,62 +244,25 @@ where
 
     /// Where the finalised range spent `outpoint`, if it did.
     ///
-    /// Three lookups: the spending transaction, its location, then which of its
-    /// inputs consumed the outpoint. A recorded spend whose transaction cannot
-    /// be located, or whose block carries no transparent entry, is index
-    /// corruption rather than absence — the engine commits all four indexes in
-    /// one batch — so it is reported rather than read as unspent.
+    /// The shared [`resolve_spend`] walk — the spending transaction, its
+    /// location, then which of its inputs consumed the outpoint — projected onto
+    /// the [`SpendSite`] this read reports a delta at. A recorded spend whose
+    /// transaction cannot be located, or whose block carries no transparent entry,
+    /// is index corruption rather than absence — the engine commits all four
+    /// indexes in one batch — so it is reported rather than read as unspent.
     fn spend_site(
         &self,
         reader: &B::Reader,
         outpoint: OutpointKey,
     ) -> Result<Option<SpendSite>, AddressReadError> {
-        let Some(by) = read_spender(reader, &outpoint)
-            .map_err(|e| transient(format!("read transparent_spends: {e}")))?
-        else {
-            return Ok(None);
-        };
-        let location = self
-            .location(reader, by)?
-            .ok_or_else(|| fatal("a recorded spend's transaction has no location"))?;
-        let height = domain_height(location.height)?;
-        Ok(Some(SpendSite {
-            by,
-            height,
-            block_index: location.tx_index,
-            input_index: self.input_index(reader, &location, height, outpoint)?,
-        }))
-    }
-
-    /// Which input of the transaction at `location` consumed `outpoint`.
-    fn input_index(
-        &self,
-        reader: &B::Reader,
-        location: &TxLocation,
-        height: Height,
-        outpoint: OutpointKey,
-    ) -> Result<OutputIndex, AddressReadError> {
-        let block = read_index_value::<TransparentDataIndex, B>(
-            reader,
-            transparent_data::ID.into(),
-            height,
-        )
-        .map_err(|t| transient(t.0))?
-        .ok_or_else(|| fatal("a spending transaction's block has no transparent data"))?;
-        let index =
-            usize::try_from(location.tx_index).map_err(|_| fatal("a tx index exceeds usize"))?;
-        let tx = block
-            .0
-            .get(index)
-            .ok_or_else(|| fatal("a spending transaction is past the end of its block"))?;
-        let position = tx
-            .inputs
-            .iter()
-            .position(|(prev_txid, prev_index)| {
-                *prev_txid == outpoint.prev_txid && *prev_index == outpoint.prev_index
-            })
-            .ok_or_else(|| fatal("a recorded spender does not consume the outpoint"))?;
-        OutputIndex::try_from(position).map_err(|_| fatal("an input index exceeds the wire limit"))
+        Ok(resolve_spend::<B>(reader, outpoint)
+            .map_err(address_read_error)?
+            .map(|resolved| SpendSite {
+                by: resolved.by,
+                height: resolved.height,
+                block_index: resolved.block_index,
+                input_index: resolved.input_index,
+            }))
     }
 
     /// The canonical script paying `addr`.
@@ -367,6 +330,15 @@ fn delta(value: Zatoshis, sign: i64) -> Result<SignedZatoshis, AddressReadError>
         .and_then(|magnitude| magnitude.checked_mul(sign))
         .and_then(|signed| SignedZatoshis::try_new(signed).ok())
         .ok_or_else(|| fatal("an amount is not a representable balance change"))
+}
+
+/// Fold a shared spend-resolution failure into this read's error, preserving its
+/// transient/fatal classification.
+fn address_read_error(error: ResolveError) -> AddressReadError {
+    match error {
+        ResolveError::Transient(message) => transient(message),
+        ResolveError::Fatal(message) => fatal(message),
+    }
 }
 
 fn fatal(message: impl Into<String>) -> AddressReadError {

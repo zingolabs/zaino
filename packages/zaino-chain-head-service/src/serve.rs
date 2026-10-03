@@ -45,6 +45,12 @@ impl HeadSnapshot {
     pub(crate) fn window(&self) -> &MapBackedSnapshot {
         &self.0
     }
+
+    /// Wrap a window directly, for the sibling reads' own tests.
+    #[cfg(test)]
+    pub(crate) fn over(window: Arc<MapBackedSnapshot>) -> Self {
+        Self(window)
+    }
 }
 
 /// Project a retained chain-head block onto its compact serving form.
