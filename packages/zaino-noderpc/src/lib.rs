@@ -40,11 +40,11 @@ use crate::wire::response::{
     ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, block_header_to_wire, block_to_wire_v1, block_to_wire_v2,
-    blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire,
-    mempool_entry_to_wire, mining_info_to_wire, node_info_to_wire, peer_info_to_wire, to_hex,
-    transaction_view_to_wire, txid_from_hex, unified_receivers_to_wire, validated_to_wire,
-    z_validated_to_wire,
+    address_balance_to_wire, block_hash_to_display, block_header_to_wire, block_to_wire_v1,
+    block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex,
+    delta_to_wire, mempool_entry_to_wire, mining_info_to_wire, node_info_to_wire,
+    peer_info_to_wire, transaction_view_to_wire, txid_from_hex, txid_to_display,
+    unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -76,7 +76,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     pub async fn get_best_block_hash(&self) -> Result<String, RpcError> {
         let snapshot = self.engine.snapshot().await?;
         let tip = snapshot.pinned_tip().ok_or(RpcError::NoBlocks)?;
-        Ok(to_hex(tip.hash.into()))
+        Ok(block_hash_to_display(tip.hash))
     }
 
     /// `sendrawtransaction`: decode hex, relay, return the txid. A rejection is
@@ -84,7 +84,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
     pub(crate) async fn send_raw_transaction(&self, tx_hex: &str) -> Result<String, RpcError> {
         let raw = bytes_from_hex(tx_hex)?;
         let txid = self.engine.broadcast(raw).await?;
-        Ok(to_hex(txid.into()))
+        Ok(txid_to_display(txid))
     }
 
     /// `getrawtransaction`: the transaction's consensus bytes as hex (verbosity
@@ -136,7 +136,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
                             Some(block) => (
                                 Some(height),
                                 confirmations,
-                                Some(to_hex(block.header.hash.into())),
+                                Some(block_hash_to_display(block.header.hash)),
                                 Some(block.header.time),
                                 Some(block.header.time),
                             ),
@@ -349,7 +349,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
                 .mempool_txids()
                 .await?
                 .into_iter()
-                .map(|txid| to_hex(txid.into()))
+                .map(txid_to_display)
                 .collect();
             Ok(RawMempoolResponse::Txids(txids))
         }

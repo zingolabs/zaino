@@ -15,6 +15,7 @@ use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, Pee
 use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::BlockHash;
+use zaino_primitives::types::MerkleRoot;
 use zaino_primitives::types::TransactionId;
 use zaino_primitives::types::{Block, BlockVerbose, DecodedBlock, Script, Transaction};
 use zaino_primitives::types::{
@@ -57,20 +58,30 @@ pub(crate) fn bytes_from_hex(s: &str) -> Result<Vec<u8>, RpcError> {
         .collect()
 }
 
-/// Decode a 32-byte transaction id (wire -> domain input validation).
-pub(crate) fn txid_from_hex(s: &str) -> Result<TransactionId, RpcError> {
-    let arr: [u8; 32] = bytes_from_hex(s)?
+/// Decode a 32-byte value written in RPC display order (reversed) into the
+/// internal consensus order the domain holds (wire -> domain input validation).
+///
+/// zcashd/zebra render a block hash, txid or merkle root byte-reversed from the
+/// internal order, so every such param arrives reversed and must be flipped back
+/// to reach the domain's internal representation. This mirrors
+/// [`to_display_hex`], the render direction, and the zebra-rpc adapter's own
+/// `hash_to_display_hex`/`txid_to_display_hex` convention.
+fn bytes32_from_display_hex(s: &str, what: &'static str) -> Result<[u8; 32], RpcError> {
+    let mut arr: [u8; 32] = bytes_from_hex(s)?
         .try_into()
-        .map_err(|_| RpcError::InvalidParams("txid must be 32 bytes".into()))?;
-    Ok(TransactionId::from(arr))
+        .map_err(|_| RpcError::InvalidParams(format!("{what} must be 32 bytes")))?;
+    arr.reverse();
+    Ok(arr)
 }
 
-/// Decode a 32-byte block hash (wire -> domain input validation).
+/// Decode a 32-byte transaction id from display order (wire -> domain).
+pub(crate) fn txid_from_hex(s: &str) -> Result<TransactionId, RpcError> {
+    Ok(TransactionId::from(bytes32_from_display_hex(s, "txid")?))
+}
+
+/// Decode a 32-byte block hash from display order (wire -> domain).
 pub(crate) fn blockhash_from_hex(s: &str) -> Result<BlockHash, RpcError> {
-    let arr: [u8; 32] = bytes_from_hex(s)?
-        .try_into()
-        .map_err(|_| RpcError::InvalidParams("block hash must be 32 bytes".into()))?;
-    Ok(BlockHash::from(arr))
+    Ok(BlockHash::from(bytes32_from_display_hex(s, "block hash")?))
 }
 
 /// Lowercase hex of an arbitrary-length byte payload (domain -> wire).
@@ -78,10 +89,35 @@ pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Lowercase hex of a 32-byte hash — a hash, block id, or txid (domain -> wire).
-/// The fixed-length signature documents the hash case at its call sites.
+/// Lowercase hex of a 32-byte value in its natural order (domain -> wire) — for
+/// the nonce, block commitments and tree roots, which zcashd/zebra display
+/// without reversal.
 pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
     bytes_to_hex(&bytes)
+}
+
+/// Lowercase hex of a 32-byte value in RPC display order (domain -> wire): the
+/// internal consensus bytes reversed, as zcashd/zebra render a block hash, txid
+/// or merkle root. One function per hash kind wraps this below, so each call
+/// site names the kind it renders.
+fn to_display_hex(mut bytes: [u8; 32]) -> String {
+    bytes.reverse();
+    bytes_to_hex(&bytes)
+}
+
+/// Render a block hash in RPC display order (domain -> wire).
+pub(crate) fn block_hash_to_display(hash: BlockHash) -> String {
+    to_display_hex(hash.into())
+}
+
+/// Render a transaction id in RPC display order (domain -> wire).
+pub(crate) fn txid_to_display(txid: TransactionId) -> String {
+    to_display_hex(txid.into())
+}
+
+/// Render a transaction merkle root in RPC display order (domain -> wire).
+pub(crate) fn merkle_root_to_display(root: MerkleRoot) -> String {
+    to_display_hex(root.into())
 }
 
 /// Render a summed transparent balance for the wire (domain -> wire). The held
@@ -109,7 +145,7 @@ pub(crate) fn unified_receivers_to_wire(receivers: UnifiedReceivers) -> UnifiedR
 pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
     AddressDeltaEntry {
         satoshis: delta.satoshis.as_i64(),
-        txid: to_hex(delta.txid.into()),
+        txid: txid_to_display(delta.txid),
         index: delta.index,
         block_index: delta.block_index,
         height: delta.height.into(),
@@ -167,7 +203,7 @@ fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
 /// reported one.
 pub(crate) fn mempool_entry_to_wire(entry: MempoolEntry) -> (String, MempoolEntryObject) {
     (
-        to_hex(entry.txid.into()),
+        txid_to_display(entry.txid),
         MempoolEntryObject {
             size: entry.size,
             fee: zatoshis_to_zec(entry.fee),
@@ -240,7 +276,7 @@ pub(crate) fn blockchain_info_to_wire(info: BlockchainInfo) -> BlockchainInfoRes
         chain: info.chain,
         blocks: info.blocks.into(),
         headers: info.headers.into(),
-        best_block_hash: to_hex(info.best_block_hash.into()),
+        best_block_hash: block_hash_to_display(info.best_block_hash),
         difficulty: info.difficulty,
         verification_progress: info.verification_progress,
         chain_work: info
@@ -269,11 +305,11 @@ pub(crate) fn blockchain_info_to_wire(info: BlockchainInfo) -> BlockchainInfoRes
 /// sole consumer of this method, does not render it.
 pub(crate) fn block_header_to_wire(header: BlockHeaderVerbose) -> BlockHeaderResponse {
     BlockHeaderResponse {
-        hash: to_hex(header.hash.into()),
+        hash: block_hash_to_display(header.hash),
         confirmations: header.confirmations,
         height: header.height.into(),
         version: header.version,
-        merkle_root: to_hex(header.merkle_root.into()),
+        merkle_root: merkle_root_to_display(header.merkle_root),
         final_sapling_root: header.final_sapling_root.map(|root| to_hex(root.into())),
         time: header.time,
         nonce: to_hex(header.nonce),
@@ -283,8 +319,8 @@ pub(crate) fn block_header_to_wire(header: BlockHeaderVerbose) -> BlockHeaderRes
         chainwork: header
             .chainwork
             .map(|work| bytes_to_hex(&work.to_be_bytes())),
-        previous_block_hash: header.previous_block_hash.map(|hash| to_hex(hash.into())),
-        next_block_hash: header.next_block_hash.map(|hash| to_hex(hash.into())),
+        previous_block_hash: header.previous_block_hash.map(block_hash_to_display),
+        next_block_hash: header.next_block_hash.map(block_hash_to_display),
     }
 }
 
@@ -334,7 +370,7 @@ fn inputs_to_wire(view: &TransactionView, network: &Network) -> Vec<TransactionI
     view.inputs
         .iter()
         .map(|input| TransactionInput::Spend {
-            txid: to_hex(input.outpoint.prev_txid.into()),
+            txid: txid_to_display(input.outpoint.prev_txid),
             vout: input.outpoint.prev_index,
             value: zatoshis_to_zec(input.spent.value),
             value_sat: input.spent.value.as_u64(),
@@ -431,7 +467,7 @@ pub(crate) fn transaction_view_to_wire(
     });
 
     TransactionObject {
-        txid: to_hex(transaction.txid.into()),
+        txid: txid_to_display(transaction.txid),
         version: detail.version,
         overwintered: detail.overwintered,
         version_group_id: detail.version_group_id.map(|id| format!("{id:08x}")),
@@ -462,11 +498,11 @@ fn block_response<T>(
     let header = &block.header;
     let height: u32 = header.height.into();
     BlockResponse {
-        hash: to_hex(header.hash.into()),
+        hash: block_hash_to_display(header.hash),
         confirmations: verbose.confirmations,
         height,
         version: header.version,
-        merkle_root: to_hex(header.merkle_root.into()),
+        merkle_root: merkle_root_to_display(header.merkle_root),
         time: header.time,
         nonce: to_hex(header.nonce),
         bits: format!("{:08x}", header.bits.as_bits()),
@@ -475,8 +511,8 @@ fn block_response<T>(
             .chainwork
             .map(|work| bytes_to_hex(&work.to_be_bytes())),
         size,
-        previous_block_hash: (height != 0).then(|| to_hex(header.prev_hash.into())),
-        next_block_hash: verbose.next_block_hash.map(|hash| to_hex(hash.into())),
+        previous_block_hash: (height != 0).then(|| block_hash_to_display(header.prev_hash)),
+        next_block_hash: verbose.next_block_hash.map(block_hash_to_display),
         tx,
     }
 }
@@ -495,7 +531,7 @@ pub(crate) fn block_to_wire_v1(
     let tx = decoded
         .transactions
         .iter()
-        .map(|detailed| to_hex(detailed.transaction.txid.into()))
+        .map(|detailed| txid_to_display(detailed.transaction.txid))
         .collect();
     block_response(block, verbose, decoded.size, tx)
 }
@@ -646,13 +682,15 @@ pub(crate) fn network_solps_height(height: Option<i64>) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_header_to_wire, block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire,
-        mempool_entry_to_wire, signed_zatoshis_to_zec, transaction_view_to_wire, validated_to_wire,
-        z_validated_to_wire, zatoshis_to_zec,
+        block_hash_to_display, block_header_to_wire, block_to_wire_v1, block_to_wire_v2,
+        blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, mempool_entry_to_wire,
+        merkle_root_to_display, signed_zatoshis_to_zec, transaction_view_to_wire, txid_from_hex,
+        txid_to_display, validated_to_wire, z_validated_to_wire, zatoshis_to_zec,
     };
     use serde_json::Value;
     use zaino_address::{ValidatedAddress, ZValidatedAddress};
     use zaino_primitives::types::rpc::BlockHeaderVerbose;
+    use zaino_primitives::types::MerkleRoot;
     use zaino_primitives::types::{
         AbsoluteChainWork, Block, BlockHash, BlockHeader, BlockTreeSizes, BlockVerbose,
         BlockchainInfo, ChainMetadata, CoinbaseInput, CompactCiphertext, CompactDifficulty,
@@ -697,6 +735,93 @@ mod tests {
     /// defaulted, or mis-mapped. Chainwork is `…deadbeef`, each height differs,
     /// `pruned` is the non-default `true`, and the two value pools exercise the
     /// named / unnamed and present / absent-delta cases.
+    // Real mainnet block 3,504,000, captured from the zebra 6.4.2 oracle
+    // (`.superpowers/sdd/2026-10-02-explorer-noderpc-slice-4/zebra-oracle/`).
+    // These are the display-order strings the explorer must see; the domain holds
+    // their byte-reverse (internal consensus order).
+    const ORACLE_BLOCK_HASH: &str =
+        "00000000004be36a49376f336e91a21e1c2411f7807fa972c6caa0a3e6dc2cf2";
+    const ORACLE_PREV_HASH: &str =
+        "000000000046f060fa5b3c12f58bcc91a5c21cec4b57b466b91626d94272cb60";
+    const ORACLE_MERKLE_ROOT: &str =
+        "8667dbc4929e28a93e4a39e3433f04ef50bdecec446276f0374b8e8f6abeeeba";
+    const ORACLE_COINBASE_TXID: &str =
+        "948ac6e7f1a8c4b51cadd6c2c1871453969f60b83ee9d4daa7aa7e7385ae2eed";
+
+    /// Internal consensus bytes for a display-order hex string: what the domain
+    /// holds for a value the wire renders byte-reversed. Built by decoding the
+    /// display hex and reversing, so the fixtures are genuine on-chain values.
+    fn internal_bytes(display_hex: &str) -> [u8; 32] {
+        let mut bytes: [u8; 32] = bytes_from_hex(display_hex)
+            .expect("valid hex")
+            .try_into()
+            .expect("32 bytes");
+        bytes.reverse();
+        bytes
+    }
+
+    /// The three display-order renderers reverse the domain's internal bytes to
+    /// the exact strings the zebra oracle emits for block 3,504,000 — not a
+    /// self-consistent round-trip, but the real on-chain display values.
+    #[test]
+    fn hash_txid_merkle_render_in_oracle_display_order() {
+        assert_eq!(
+            block_hash_to_display(BlockHash::from(internal_bytes(ORACLE_BLOCK_HASH))),
+            ORACLE_BLOCK_HASH
+        );
+        assert_eq!(
+            txid_to_display(TransactionId::from(internal_bytes(ORACLE_COINBASE_TXID))),
+            ORACLE_COINBASE_TXID
+        );
+        assert_eq!(
+            merkle_root_to_display(MerkleRoot::from(internal_bytes(ORACLE_MERKLE_ROOT))),
+            ORACLE_MERKLE_ROOT
+        );
+    }
+
+    /// A display-order hash/txid param decodes to internal order and renders back
+    /// to the same display string — the param decoder is the inverse of the
+    /// renderer, so a client's hash round-trips through a lookup unchanged.
+    #[test]
+    fn display_params_decode_to_internal_and_round_trip() {
+        let hash = blockhash_from_hex(ORACLE_BLOCK_HASH).expect("valid hash");
+        assert_eq!(<[u8; 32]>::from(hash), internal_bytes(ORACLE_BLOCK_HASH));
+        assert_eq!(block_hash_to_display(hash), ORACLE_BLOCK_HASH);
+
+        let txid = txid_from_hex(ORACLE_COINBASE_TXID).expect("valid txid");
+        assert_eq!(<[u8; 32]>::from(txid), internal_bytes(ORACLE_COINBASE_TXID));
+        assert_eq!(txid_to_display(txid), ORACLE_COINBASE_TXID);
+    }
+
+    /// A verbose block header built from the oracle block's internal-order bytes
+    /// renders `hash`, `merkleroot`, `previousblockhash` and `nextblockhash` in
+    /// the oracle's display order, while `finalsaplingroot`, `nonce` and
+    /// `blockcommitments` stay in their natural (un-reversed) order.
+    #[test]
+    fn block_header_renders_oracle_hashes_in_display_order() {
+        let header = BlockHeaderVerbose {
+            hash: BlockHash::from(internal_bytes(ORACLE_BLOCK_HASH)),
+            merkle_root: MerkleRoot::from(internal_bytes(ORACLE_MERKLE_ROOT)),
+            previous_block_hash: Some(BlockHash::from(internal_bytes(ORACLE_PREV_HASH))),
+            next_block_hash: Some(BlockHash::from(internal_bytes(ORACLE_BLOCK_HASH))),
+            ..scripted_header()
+        };
+        let json = serde_json::to_value(block_header_to_wire(header)).expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        assert_eq!(
+            obj.get("hash").and_then(Value::as_str),
+            Some(ORACLE_BLOCK_HASH)
+        );
+        assert_eq!(
+            obj.get("merkleroot").and_then(Value::as_str),
+            Some(ORACLE_MERKLE_ROOT)
+        );
+        assert_eq!(
+            obj.get("previousblockhash").and_then(Value::as_str),
+            Some(ORACLE_PREV_HASH)
+        );
+    }
+
     fn scripted_info() -> BlockchainInfo {
         let mut work_bytes = [0u8; 32];
         work_bytes[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);

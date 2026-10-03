@@ -8,6 +8,19 @@ input-heavy — hex params in, hex/JSON out). `JsonRpcServer` stands up a real
 jsonrpsee server over the handler and the runtime supervises it as a `RunLoop`
 component (`zainod`'s `node-rpc-passthrough` deployment).
 
+## Hash byte order
+
+Every 32-byte hash the domain holds — block hash, previous/next hash, merkle
+root and every txid — is in **internal consensus order**, which zcashd and zebra
+display **byte-reversed**. The adapter renders them with one named function per
+kind (`block_hash_to_display`, `txid_to_display`, `merkle_root_to_display`) and
+decodes the matching params back from display order (`blockhash_from_hex`,
+`txid_from_hex`), so a client's hash round-trips through a lookup unchanged. The
+nonce, block commitments and the Sapling/Orchard tree roots are **not** reversed:
+zcashd/zebra display those in natural order, so they render straight through
+`to_hex`. (The light-wallet gRPC path is separate and keeps compact-block hashes
+in internal order per the lightwalletd protocol.)
+
 ## What it serves
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
