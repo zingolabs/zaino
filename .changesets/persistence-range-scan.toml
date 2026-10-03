@@ -1,0 +1,30 @@
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`BackendReader::scan_range` reads a key range of a namespace, forward or \
+reverse, as a lazy iterator of byte-budgeted chunks, so memory is bounded by \
+the chunk budget rather than the range. A filter runs on the borrowed bytes \
+of each entry and maps it to the caller's type or skips it; `raw_entry` keeps \
+owned bytes. New `ScanRange` and `ScanDirection` describe the walk. \
+Implementors must add the method.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "fix"
+description = """
+The in-memory backend keeps each namespace in key order, so `scan` returns \
+entries sorted by key.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+A namespace the backend was not constructed with is an error rather than an \
+empty namespace. Reads fail with `ReadError::NamespaceNotFound`, and a commit \
+naming one fails with `CommitError::NamespaceNotFound` and applies nothing, \
+where it previously created the namespace or ignored a delete. \
+`InMemoryBackend::new` takes the namespaces to declare, and `Default` is removed.
+"""
