@@ -223,7 +223,18 @@ where
     // so unknown-height entries stay ahead of the known ones in their original
     // (validator) order — the stability preserves it, and no height is invented —
     // while the known ones sort by zcashd's `(height, txid)` key.
-    located.sort_by_key(|(height, txid)| height.map(|h| (u32::from(h), <[u8; 32]>::from(*txid))));
+    //
+    // zcashd keys its set on the *display-hex* txid string, not the internal
+    // bytes, and lowercase-hex lexical order is the byte order of the reversed
+    // (display-order) array. So the tie-break reverses the txid bytes rather than
+    // using them as stored, or two same-height txids come back in the wrong order.
+    located.sort_by_key(|(height, txid)| {
+        height.map(|h| {
+            let mut display = <[u8; 32]>::from(*txid);
+            display.reverse();
+            (u32::from(h), display)
+        })
+    });
     let mut seen = HashSet::new();
     Ok(located
         .into_iter()

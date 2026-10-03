@@ -321,6 +321,16 @@ outpoint is zcashd's error, not a `null` and not a method-not-found: code `-5`
 zcashd's `GetSpentIndex` raises identically for both. This contrasts with
 `gettxout` above, the live unspent-output lookup, which answers `null`.
 
+The two methods read from different places and can briefly disagree about a
+recently spent output. `gettxout` is a live passthrough to the validator and
+reflects a spend immediately, returning `null` the moment the spending
+transaction is mined. `getspentinfo` is served from the local spends index, so
+until indexing reaches the spending block it still reports that outpoint as
+unspent or unknown (`-5`). An output spent very recently can therefore read as
+spent in `gettxout` yet unspent/unknown in `getspentinfo` for the duration of
+that lag. In steady state the non-finalised head tracks the chain tip, so the
+window is small; it widens only during initial sync or catch-up after downtime.
+
 ## Not modelled here
 
 `gettxoutsetinfo`, the whole-UTXO-set aggregate, is not served here.
