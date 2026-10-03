@@ -26,6 +26,20 @@ impl Height {
     /// The genesis block.
     pub const GENESIS: Self = Self(0);
 
+    /// Construct from a compile-time constant.
+    ///
+    /// Intended for named protocol constants assigned to a `const`, where the
+    /// value is known at compile time: the bounds check is then evaluated during
+    /// const evaluation, so an out-of-range constant is a compile error rather
+    /// than a runtime fallback. Use [`Height::try_from`] for runtime values.
+    pub const fn from_const(value: u32) -> Self {
+        assert!(
+            value <= MAX_HEIGHT,
+            "height constant exceeds protocol maximum"
+        );
+        Self(value)
+    }
+
     /// Add a delta, returning `None` on overflow or protocol-limit violation.
     pub fn checked_add(self, delta: u32) -> Option<Self> {
         let sum = self.0.checked_add(delta)?;
@@ -154,5 +168,11 @@ mod tests {
     fn into_u64() {
         let h = Height::try_from(42).expect("valid");
         assert_eq!(u64::from(h), 42u64);
+    }
+
+    #[test]
+    fn from_const_builds_in_range_value() {
+        const H: Height = Height::from_const(653_606);
+        assert_eq!(u32::from(H), 653_606);
     }
 }

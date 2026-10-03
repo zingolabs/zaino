@@ -71,7 +71,7 @@ const MEDIAN_BLOCK_SPAN: usize = 11;
 ///
 /// * **Mainnet** ([`MaxBlockTimeDrift::MAINNET`]): enforced at every height, so
 ///   the activation boundary is [`Height::GENESIS`].
-/// * **Testnet** ([`MaxBlockTimeDrift::testnet`]): enforced only from
+/// * **Testnet** ([`MaxBlockTimeDrift::TESTNET`]): enforced only from
 ///   `TESTNET_MAX_TIME_START_HEIGHT = 653_606`. Below that height a block's
 ///   timestamp is unbounded above relative to its MTP, so the candidate bracket
 ///   cannot be tightened there and must widen to a full scan of the
@@ -108,40 +108,27 @@ impl MaxBlockTimeDrift {
     /// The testnet activation height of the drift rule,
     /// `TESTNET_MAX_TIME_START_HEIGHT = 653_606`
     /// (`zebra-chain/src/parameters/network_upgrade.rs:278`).
-    pub const TESTNET_ACTIVATION: u32 = 653_606;
+    const TESTNET_ACTIVATION: u32 = 653_606;
 
     /// The mainnet drift rule: enforced at every height.
     pub const MAINNET: Self = Self {
         enforced_from: Height::GENESIS,
     };
 
-    /// The drift bound in seconds.
-    pub fn drift_seconds(&self) -> u32 {
-        Self::DRIFT_SECONDS
-    }
+    /// The testnet drift rule: enforced only from height 653_606
+    /// (`TESTNET_MAX_TIME_START_HEIGHT`).
+    ///
+    /// The activation height is const-checked against the protocol maximum at
+    /// compile time, so there is no runtime fallback.
+    pub const TESTNET: Self = Self {
+        enforced_from: Height::from_const(Self::TESTNET_ACTIVATION),
+    };
 
     /// The first height at which the drift bound is enforced on this network.
     ///
     /// Below it, a block's timestamp is unbounded above relative to its MTP.
     pub fn enforced_from(&self) -> Height {
         self.enforced_from
-    }
-
-    /// The testnet drift rule: enforced only from
-    /// [`Self::TESTNET_ACTIVATION`].
-    ///
-    /// Infallible because the activation height is a fixed in-range constant;
-    /// falls back to [`Self::MAINNET`] semantics only if that invariant were
-    /// ever broken, which the type's own range check forbids.
-    pub fn testnet() -> Self {
-        Self {
-            enforced_from: Height::try_from(Self::TESTNET_ACTIVATION).unwrap_or(Height::GENESIS),
-        }
-    }
-
-    /// Whether the drift bound is enforced at `height` on this network.
-    pub fn is_enforced_at(&self, height: Height) -> bool {
-        height >= self.enforced_from
     }
 
     /// Construct a drift rule with an explicit activation height.
@@ -240,16 +227,34 @@ pub struct CandidateSearch {
     phase: Phase,
 }
 
+/// A header the search needed is missing at or below the pinned tip.
+///
+/// The search only ever requests heights at or below the tip, where a block is
+/// guaranteed to exist. A `None` answer for such a height therefore means the
+/// caller's view of the chain has a hole, not that the block is absent. Because a
+/// missing predecessor would lower the computed median-time-past and could narrow
+/// the lower bracket — silently dropping an in-range block — the search refuses to
+/// continue and surfaces this error instead of guessing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("missing header at height {height}, at or below the pinned tip")]
+pub struct MissingHeader {
+    /// The height whose header the caller reported as absent.
+    pub height: Height,
+}
+
 /// What a [`CandidateSearch`] needs next, or its result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchStep {
     /// The search needs the block timestamp at this height. Supply it with
-    /// [`CandidateSearch::supply`] (pass `None` if there is no block there) and
-    /// poll again.
+    /// [`CandidateSearch::supply`]; a height at or below the tip must have a
+    /// block, so pass its time, not `None`.
     Need(Height),
     /// The search is complete: the candidate bracket, or `None` if no block can
     /// match the range.
     Done(Option<HeightRange>),
+    /// The search cannot complete because a requested header at or below the tip
+    /// was missing. See [`MissingHeader`].
+    Failed(MissingHeader),
 }
 
 /// The internal binary-search state over a contiguous interval of heights.
@@ -333,14 +338,20 @@ enum Phase {
     },
     /// Finished.
     Done(Option<HeightRange>),
+    /// Terminated by a missing header at or below the tip.
+    Failed(MissingHeader),
 }
 
 /// The outcome of attempting to evaluate `MTP(target)` from the cache.
 enum MtpAttempt {
-    /// A predecessor timestamp is missing; the caller must supply this height.
-    Missing(Height),
-    /// `MTP(target)`, or `None` if no predecessor timestamp was available.
-    Ready(Option<BlockTime>),
+    /// A predecessor timestamp has not been supplied yet; the caller must supply
+    /// this height.
+    NotYetSupplied(Height),
+    /// A predecessor at or below the tip was supplied as absent: the chain view
+    /// has a hole and the search must fail loud.
+    Hole(Height),
+    /// `MTP(target)`.
+    Ready(BlockTime),
 }
 
 impl CandidateSearch {
@@ -388,19 +399,31 @@ impl CandidateSearch {
         let first_pred = target.saturating_sub(u32::try_from(MEDIAN_BLOCK_SPAN).unwrap_or(0));
         let last_pred = target.saturating_sub(1);
         let mut times: Vec<BlockTime> = Vec::new();
+        let mut last_valid: Option<Height> = None;
         for pred in first_pred..=last_pred {
             let Ok(height) = Height::try_from(pred) else {
-                // `pred <= tip` is always a valid height; an unreachable
+                // `pred < target <= tip` is always a valid height; an unreachable
                 // conversion failure simply contributes no sample.
                 continue;
             };
+            last_valid = Some(height);
             match self.cached(height) {
-                None => return MtpAttempt::Missing(height),
-                Some(None) => {}
+                None => return MtpAttempt::NotYetSupplied(height),
+                // A predecessor is at or below the tip, so its block must exist; a
+                // `None` answer is a hole in the caller's chain view, never a
+                // sample to skip. Dropping it would lower the MTP and could narrow
+                // the lower bracket.
+                Some(None) => return MtpAttempt::Hole(height),
                 Some(Some(time)) => times.push(time),
             }
         }
-        MtpAttempt::Ready(median_time_past(&times))
+        match median_time_past(&times) {
+            Some(mtp) => MtpAttempt::Ready(mtp),
+            // `target >= 1` always has a predecessor, so `times` is non-empty and
+            // the median exists; treat the unreachable empty case as a hole rather
+            // than inventing a value.
+            None => MtpAttempt::Hole(last_valid.unwrap_or(Height::GENESIS)),
+        }
     }
 
     /// Advance the search as far as the cache allows, returning the next needed
@@ -409,10 +432,18 @@ impl CandidateSearch {
         loop {
             match self.phase {
                 Phase::Done(bracket) => return SearchStep::Done(bracket),
+                Phase::Failed(missing) => return SearchStep::Failed(missing),
                 Phase::GenesisOnly => match self.cached(Height::GENESIS) {
                     None => return SearchStep::Need(Height::GENESIS),
-                    Some(time) => {
-                        let in_range = time.is_some_and(|t| self.low <= t && t < self.high);
+                    // The only height is the tip; its block must exist, so a `None`
+                    // answer is a hole, not an out-of-range height.
+                    Some(None) => {
+                        self.phase = Phase::Failed(MissingHeader {
+                            height: Height::GENESIS,
+                        });
+                    }
+                    Some(Some(time)) => {
+                        let in_range = self.low <= time && time < self.high;
                         let bracket = in_range.then_some(HeightRange {
                             start: Height::GENESIS,
                             end: Height::GENESIS,
@@ -425,11 +456,12 @@ impl CandidateSearch {
                         self.start_low_phase(search.best);
                     } else {
                         match self.mtp_of(search.mid) {
-                            MtpAttempt::Missing(height) => return SearchStep::Need(height),
+                            MtpAttempt::NotYetSupplied(height) => return SearchStep::Need(height),
+                            MtpAttempt::Hole(height) => {
+                                self.phase = Phase::Failed(MissingHeader { height });
+                            }
                             MtpAttempt::Ready(mtp) => {
-                                // Conservative on an absent MTP: treat the height
-                                // as in-range so it is never wrongly excluded.
-                                let holds = mtp.is_none_or(|m| m < self.high);
+                                let holds = mtp < self.high;
                                 search.record_take_highest(holds);
                                 self.phase = Phase::FindHigh(search);
                             }
@@ -444,10 +476,14 @@ impl CandidateSearch {
                         self.finish_low_phase(search.best, high_bound);
                     } else {
                         match self.mtp_of(search.mid) {
-                            MtpAttempt::Missing(height) => return SearchStep::Need(height),
+                            MtpAttempt::NotYetSupplied(height) => return SearchStep::Need(height),
+                            MtpAttempt::Hole(height) => {
+                                self.phase = Phase::Failed(MissingHeader { height });
+                            }
                             MtpAttempt::Ready(mtp) => {
-                                let threshold = self.low.saturating_sub(self.drift.drift_seconds());
-                                let holds = mtp.is_none_or(|m| m >= threshold);
+                                let threshold =
+                                    self.low.saturating_sub(MaxBlockTimeDrift::DRIFT_SECONDS);
+                                let holds = mtp >= threshold;
                                 search.record_take_lowest(holds);
                                 self.phase = Phase::FindLow { search, high_bound };
                             }
@@ -540,6 +576,29 @@ mod tests {
                     search.supply(h, times.get(idx).copied());
                 }
                 SearchStep::Done(bracket) => return bracket,
+                SearchStep::Failed(missing) => {
+                    panic!("unexpected hole for a complete chain: {missing:?}")
+                }
+            }
+        }
+    }
+
+    /// Drive a search, answering `None` for exactly one height (a hole) and the
+    /// real time for every other, and return the terminal step.
+    fn run_with_hole(mut search: CandidateSearch, times: &[u32], hole: u32) -> SearchStep {
+        loop {
+            match search.poll() {
+                SearchStep::Need(h) => {
+                    let requested = u32::from(h);
+                    let time = if requested == hole {
+                        None
+                    } else {
+                        let idx = usize::try_from(requested).expect("height fits usize");
+                        times.get(idx).copied()
+                    };
+                    search.supply(h, time);
+                }
+                terminal => return terminal,
             }
         }
     }
@@ -802,6 +861,67 @@ mod tests {
             "pre-activation block at height 2 must be in the bracket, got {filtered:?}"
         );
         assert_eq!(filtered, brute_force(far_future, far_future + 1, &times));
+    }
+
+    // ----- missing-header (hole) failure tests -----
+
+    #[test]
+    fn upper_bound_phase_fails_loud_on_a_hole() {
+        // The first upper-bound probe over `[1, 40]` is at height 20, whose MTP
+        // window is heights 9..=19. A hole at height 19 is consulted during that
+        // probe, so the search must fail rather than compute a narrower MTP.
+        let times = chain_from_deltas(&[60; 40]);
+        let search = CandidateSearch::new(
+            height(40),
+            GENESIS_TIME,
+            times[40] + 1,
+            MaxBlockTimeDrift::MAINNET,
+        );
+        assert_eq!(
+            run_with_hole(search, &times, 19),
+            SearchStep::Failed(MissingHeader { height: height(19) })
+        );
+    }
+
+    #[test]
+    fn lower_bound_phase_fails_loud_on_a_hole() {
+        // Drive the lower-bound phase in isolation (a hole there is the dangerous
+        // one: a dropped predecessor lowers the MTP and would narrow the low end).
+        // Its first probe over `[1, 40]` is height 20, window 9..=19; a hole at 19
+        // must fail loud, not silently drop an in-range block.
+        let times = chain_from_deltas(&[60; 40]);
+        let mut search = CandidateSearch::new(
+            height(40),
+            GENESIS_TIME,
+            times[40] + 1,
+            MaxBlockTimeDrift::MAINNET,
+        );
+        search.phase = Phase::FindLow {
+            search: BinarySearch::new(1, 40),
+            high_bound: height(40),
+        };
+        assert_eq!(
+            run_with_hole(search, &times, 19),
+            SearchStep::Failed(MissingHeader { height: height(19) })
+        );
+    }
+
+    #[test]
+    fn genesis_only_fails_loud_on_a_hole() {
+        // `tip == genesis` with no block supplied for height 0 is a hole, not an
+        // out-of-range answer.
+        let search = CandidateSearch::new(
+            Height::GENESIS,
+            GENESIS_TIME,
+            GENESIS_TIME + 1,
+            MaxBlockTimeDrift::MAINNET,
+        );
+        assert_eq!(
+            run_with_hole(search, &[GENESIS_TIME], 0),
+            SearchStep::Failed(MissingHeader {
+                height: Height::GENESIS
+            })
+        );
     }
 
     // ----- property tests over random and adversarial chains -----
