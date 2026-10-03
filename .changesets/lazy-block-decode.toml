@@ -1,0 +1,20 @@
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "fix"
+description = """
+Raw block and transaction bytes (`getblock <h> 0`, `getrawtransaction`) are \
+projected to the domain block by walking their encoding instead of being \
+deserialised in full. The fields the block keeps are read as bytes and \
+proofs, signatures and value commitments are stepped over, so no curve point \
+is decompressed for a field the indexes discard. On shielded-heavy blocks \
+that was most of the read cost of the `full` fetch strategy.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`Block`, `Transaction`, `TransparentData`, `SaplingData` and `OrchardData` \
+derive `PartialEq` and `Eq`, so two decodings of the same bytes can be \
+compared whole.
+"""

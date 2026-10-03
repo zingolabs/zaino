@@ -22,6 +22,15 @@ optional accelerator, not an alternative.
 - `adapter.rs` — the port impls, and the error classification below, which is
   the part most likely to be got wrong.
 
+Raw block and transaction bytes (`getblock <h> 0`, `getrawtransaction`) do
+not go through a full deserialiser. `zaino-block-decode` walks the encoding
+and projects it to the domain block directly: the fields the block keeps are
+read as bytes, proofs and signatures and value commitments are stepped over,
+and no curve point is decompressed. On shielded-heavy blocks that is most of
+the read cost, so this is what makes the `full` fetch strategy — whole blocks
+from any validator — viable. Bytes that are not a block are a parse failure,
+never retried.
+
 ## Error classification: the part that matters
 
 Every method must decide whether a validator's error reply is an *answer*

@@ -40,15 +40,17 @@ impl StoreConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum FetchStrategy {
-    /// The pre-index compact block: proofs, signatures and input scripts are
-    /// skipped on the validator's side, so the indexer never deserialises them.
-    /// Needs a validator that serves the compact read (zaino's zebra fork).
+    /// The whole block over the standard block read, projected locally by
+    /// walking the encoding: the fields the index keeps are read as bytes and
+    /// proofs, signatures and scripts are stepped over, so nothing the indexes
+    /// discard is ever deserialised. Any validator answers this read, which is
+    /// why it is the default.
     #[default]
-    Compact,
-    /// The whole block over the standard block read, deserialised and projected
-    /// locally. Any validator answers it; the indexer pays to deserialise what
-    /// it then discards.
     Full,
+    /// The pre-index compact block: the same fields, skipped on the validator's
+    /// side instead of ours. Needs a validator that serves the compact read
+    /// (zaino's zebra fork), so it is opt-in.
+    Compact,
 }
 
 /// Index-build tuning.

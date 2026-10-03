@@ -215,6 +215,7 @@ mistakes its design is trying to prevent.
 - [`zaino-store`](./packages/zaino-store/usage.md): the finalised tier as a provider — reads composed on read from the index set, present only where the set builds them, and the watermark repair.
 - [`zaino-store-service`](./packages/zaino-store-service/usage.md): the runtime half of the store tandem — presents the store reader to the Orchestra as a supervised component.
 - [`zaino-core`](./packages/zaino-core/usage.md): the engine every use case is served by — the finalised store, the chain head and the validator composed under a routing, checked where the engine is wired; [`chain_view`](./packages/zaino-core/chain_view.md) covers the FS⊕NFS seam and why the initial-build gap is an explicit policy knob.
+- [`zaino-block-decode`](./packages/zaino-block-decode/usage.md): consensus block bytes projected straight to the domain block — transaction ids for every version, shielded fields kept as bytes, no curve point decompressed; zebra-chain is its test oracle.
 - [`zainod`](./packages/zainod/usage.md): the composition root — use cases as types, config selects one, and how to add another.
 
 

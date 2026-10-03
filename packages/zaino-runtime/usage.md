@@ -59,12 +59,12 @@ readiness on the indexer's sync; one that serves only by passthrough would
 take no store and not gate on a sync it never runs.
 
 `IndexerConfig::fetch` picks what the indexer asks the validator for at each
-height: `compact` (default) is the pre-index compact block, which only zaino's
-zebra fork serves and which skips proofs, signatures and scripts on the
-validator's side; `full` is the whole block over the standard read, which any
-validator answers and the indexer deserialises and projects locally. Both
-project to the same provisioning context, so the index built is identical;
-`full` is the setting for indexing from a stock validator over RPC.
+height. `full` is the default: the whole block over the standard read, which
+any validator answers, projected by walking the encoding so nothing the
+indexes discard is deserialised. `compact` is the pre-index compact block,
+the same fields skipped on the validator's side instead of ours, which only
+zaino's zebra fork serves. Both project to the same provisioning context, so
+the index built is identical either way.
 
 `boot_indexed::<D, _, _>(client, &config, serve)` is the indexed assembly:
 it opens the LMDB store with exactly the namespaces `D::Indexes` writes,

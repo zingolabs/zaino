@@ -50,7 +50,7 @@ pub struct BlockHeader {
 /// struct literal: it rejects an empty transaction list, the one whole-block
 /// invariant that outlives the removal of the per-transaction index (a block
 /// always contains at least its coinbase).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     /// Block header.
     pub header: BlockHeader,
