@@ -32,24 +32,28 @@ impl Routing for LightWalletRouting {
 }
 ```
 
-`NodeRpcRouting` is the node-RPC / explorer deployment's routing — the same
-placements as `LightWalletRouting`, because the node reads the explorer adds
-(full and verbose blocks, decoded transactions, the chain-info aggregate, the
-node-status reads) are always passthrough and so are not on the table at all:
+`NodeRpcRouting` is the node-RPC / explorer deployment's routing. The node reads
+the explorer adds (full and verbose blocks, decoded transactions, the chain-info
+aggregate, the node-status reads) are always passthrough and so are not on the
+table at all; what the table decides is that address history is served locally:
 
 ```rust,ignore
 pub struct NodeRpcRouting;
 impl Routing for NodeRpcRouting {
-    type Address = Passthrough;       // relayed to the validator; state mode only
+    type Address = Local;             // served from Zaino's own transparent indexes
     type Treestate = Passthrough;
     type Spend = Withheld;            // re-added with a local spend index later
     type TransactionLocation = Withheld;
 }
 ```
 
-This is the passthrough node-RPC deployment's routing; a local one that indexes
-transparent history — with spends, and without disclosing queried addresses —
-is a sibling to come, flipping `Address` (and `Spend`) to `Local`.
+Address history is `Local` because the explorer's address page needs
+`getaddressdeltas` — full transparent history, receives and spends — which no
+validator answers in plain RPC mode: Zebra has no such method. The deployment
+therefore indexes transparent history itself (the `TransparentHistory` set) and
+discloses no queried addresses to the validator. `Spend` stays `Withheld`: the
+window's spend data is consumed internally through `AddressReceiveRead`, not the
+engine `Spend` placement, so no served method needs a `Local` spend read.
 
 Routing is a property of the deployment, not of the use case it serves: the
 demand traits in `zaino-service` say nothing about placement, so a second
@@ -80,7 +84,7 @@ that capability and on the provider ports that placement needs:
 | chain-info aggregate | always passthrough | `GetBlockchainInfo` |
 | pool-decomposed transaction and its status | always passthrough | `GetTransactionVerbose` |
 | raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
-| address history | `R::Address` | `Local`: both tiers `AddressRead`, head `SpendRead`; `Passthrough`: the four address source ports |
+| address history | `R::Address` | `Local`: finalised store `AddressRead`, head `AddressReceiveRead` (receives + the spends it saw), threaded across the seam; `Passthrough`: the four address source ports |
 | treestate, subtree roots | `R::Treestate` | `Passthrough` only today; a local tree index adds a `Local` impl beside it |
 | spend status | `R::Spend` | `Local` only: both tiers `SpendRead` |
 

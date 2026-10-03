@@ -138,31 +138,36 @@ impl Routing for LightWalletRouting {
     type TransactionLocation = Withheld;
 }
 
-/// The node-RPC / explorer routing of the **passthrough** deployment: compact
-/// blocks local, and every read the explorer surface serves relayed live to the
-/// validator — transparent address history and treestate passed through.
+/// The node-RPC / explorer routing: compact blocks and transparent address
+/// history served **locally** from Zaino's own indexes, treestate relayed live
+/// to the validator, spend status and transaction location withheld.
+///
+/// Address history is [`Local`] because the explorer's address page needs
+/// `getaddressdeltas` — full transparent history, receives and spends — which no
+/// validator answers in plain RPC mode: Zebra has no such method. The finalised
+/// store answers the whole address read over its transparent index set, the
+/// non-finalised window reports the receives it holds and which supplied
+/// outpoints it saw spent, and the composer threads the two across the watermark
+/// so a spend of an output received below it is attributed correctly.
 ///
 /// Spend status and transaction location are withheld: no method this deployment
 /// serves reads an outpoint's spend state (see [`NodeRpcReads`]'s doc for why
-/// `SpendRead` is absent), and no engine read dispatches on the transaction
-/// location placement. Withholding them keeps the manifest honest — a capability
-/// no served method consumes and no passthrough tier provides is `Absent`, not a
-/// false `Live`.
+/// `SpendRead` is absent — the window's spend data is consumed internally through
+/// [`AddressReceiveRead`], not through the engine `Spend` placement), and no
+/// engine read dispatches on the transaction location placement. Withholding them
+/// keeps the manifest honest — a capability no served method consumes and no tier
+/// provides is `Absent`, not a false `Live`.
 ///
-/// Passthrough-first: every placement here is passthrough or withheld, so this
-/// deployment depends on no local tier read this branch lacks. The local sibling —
-/// address history and spend status composed from a transparent index — is a
-/// separate routing beside this one, not a change to it, exactly as the local
-/// light-wallet routing is a sibling of [`LightWalletRouting`]. Flipping a read
-/// to [`Local`] is a one-line change here plus an index set that backs it; the
-/// compiler names anything missing.
+/// Treestate stays [`Passthrough`]: the explorer surface reads it, but no local
+/// treestate index is built on any tier, so it is relayed to the validator.
 ///
 /// [`NodeRpcReads`]: zaino_service::read_sets::NodeRpcReads
+/// [`AddressReceiveRead`]: zaino_service::AddressReceiveRead
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NodeRpcRouting;
 
 impl Routing for NodeRpcRouting {
-    type Address = Passthrough;
+    type Address = Local;
     type Treestate = Passthrough;
     type Spend = Withheld;
     type TransactionLocation = Withheld;
@@ -176,17 +181,19 @@ mod tests {
     fn node_rpc_routing_places_every_capability() {
         use strum::IntoEnumIterator;
         for capability in Capability::iter() {
-            // Exhaustiveness is rustc's; this pins the passthrough node-RPC
-            // table's shape — in particular that spend status and transaction
-            // location are withheld, not silently passed through.
+            // Exhaustiveness is rustc's; this pins the node-RPC table's shape —
+            // in particular that address history is served locally, and that
+            // spend status and transaction location are withheld, not silently
+            // passed through.
             let placement = NodeRpcRouting::placement(capability);
             match capability {
-                Capability::Blocks => assert_eq!(placement, PlacementKind::Local),
+                Capability::Blocks | Capability::AddressHistory => {
+                    assert_eq!(placement, PlacementKind::Local)
+                }
                 Capability::SpendStatus | Capability::TransactionLocation => {
                     assert_eq!(placement, PlacementKind::Withheld)
                 }
-                Capability::AddressHistory
-                | Capability::Treestate
+                Capability::Treestate
                 | Capability::SubtreeRoots
                 | Capability::RawTransaction
                 | Capability::Mempool
