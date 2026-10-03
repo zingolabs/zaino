@@ -251,7 +251,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
             let decoded = snapshot.decoded_block(contents).await?;
             match (block, verbose, decoded) {
                 (Some(block), Some(verbose), Some(decoded)) => Ok(GetBlockResponse::Verbose1(
-                    block_to_wire_v1(&block, &verbose, &decoded),
+                    block_to_wire_v1(&block, &verbose, &decoded)?,
                 )),
                 (None, None, None) => Err(not_found()),
                 _ => Err(disagree()),
@@ -261,7 +261,7 @@ impl<S: NodeRpcService> NodeRpc<S> {
             let views = snapshot.block_transaction_views(contents).await?;
             match (block, verbose, views) {
                 (Some(block), Some(verbose), Some(views)) => Ok(GetBlockResponse::Verbose2(
-                    block_to_wire_v2(&block, &verbose, &views, &self.network),
+                    block_to_wire_v2(&block, &verbose, &views, &self.network)?,
                 )),
                 (None, None, None) => Err(not_found()),
                 _ => Err(disagree()),
@@ -778,6 +778,8 @@ mod tests {
             chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
             chain_supply: None,
             value_pools: Vec::new(),
+            final_sapling_root: None,
+            final_orchard_root: None,
             tree_sizes: BlockTreeSizes {
                 sapling: TreeSize::from(1u32),
                 orchard: TreeSize::from(2u32),

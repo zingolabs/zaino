@@ -31,8 +31,8 @@ use crate::wire::response::{
     BlockchainInfoResponse, JoinSplitObject, MempoolEntryObject, MiningInfoResponse,
     NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry,
     ScriptPubKey, ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput,
-    TransactionObject, TransactionOutput, UnifiedReceiversResponse, ValidateAddressResponse,
-    ValuePoolResponse, ZValidateAddressResponse,
+    TransactionObject, TransactionOutput, TreePoolSize, TreesResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -494,27 +494,47 @@ fn block_response<T>(
     verbose: &BlockVerbose,
     size: u64,
     tx: Vec<T>,
-) -> BlockResponse<T> {
+) -> Result<BlockResponse<T>, RpcError> {
     let header = &block.header;
     let height: u32 = header.height.into();
-    BlockResponse {
+    let n_tx = u32::try_from(tx.len())
+        .map_err(|_| RpcError::InvalidParams("block transaction count overflows u32".into()))?;
+    Ok(BlockResponse {
         hash: block_hash_to_display(header.hash),
         confirmations: verbose.confirmations,
         height,
         version: header.version,
         merkle_root: merkle_root_to_display(header.merkle_root),
+        block_commitments: to_hex(header.block_commitments.into()),
+        final_sapling_root: verbose.final_sapling_root.map(|root| to_hex(root.into())),
+        final_orchard_root: verbose.final_orchard_root.map(|root| to_hex(root.into())),
+        n_tx,
         time: header.time,
         nonce: to_hex(header.nonce),
+        solution: bytes_to_hex(header.solution.as_bytes()),
         bits: format!("{:08x}", header.bits.as_bits()),
         difficulty: verbose.difficulty,
         chainwork: verbose
             .chainwork
             .map(|work| bytes_to_hex(&work.to_be_bytes())),
+        chain_supply: verbose.chain_supply.as_ref().map(value_pool_to_wire),
+        value_pools: verbose.value_pools.iter().map(value_pool_to_wire).collect(),
+        trees: TreesResponse {
+            sapling: TreePoolSize {
+                size: verbose.tree_sizes.sapling.into(),
+            },
+            orchard: TreePoolSize {
+                size: verbose.tree_sizes.orchard.into(),
+            },
+            ironwood: TreePoolSize {
+                size: verbose.tree_sizes.ironwood.into(),
+            },
+        },
         size,
         previous_block_hash: (height != 0).then(|| block_hash_to_display(header.prev_hash)),
         next_block_hash: verbose.next_block_hash.map(block_hash_to_display),
         tx,
-    }
+    })
 }
 
 /// Render a block as the `getblock` verbosity-1 response (domain -> wire): the
@@ -527,7 +547,7 @@ pub(crate) fn block_to_wire_v1(
     block: &Block,
     verbose: &BlockVerbose,
     decoded: &DecodedBlock,
-) -> BlockResponse<String> {
+) -> Result<BlockResponse<String>, RpcError> {
     let tx = decoded
         .transactions
         .iter()
@@ -544,7 +564,7 @@ pub(crate) fn block_to_wire_v2(
     verbose: &BlockVerbose,
     views: &BlockTransactionViews,
     network: &Network,
-) -> BlockResponse<TransactionObject> {
+) -> Result<BlockResponse<TransactionObject>, RpcError> {
     let tx = views
         .transactions
         .iter()
@@ -1643,8 +1663,20 @@ mod tests {
             confirmations: 9,
             difficulty: 123.5,
             chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
-            chain_supply: None,
-            value_pools: Vec::new(),
+            chain_supply: Some(ValuePoolBalance {
+                id: String::new(),
+                chain_value: Zatoshis::new(21_000_000).expect("valid amount"),
+                monitored: true,
+                value_delta: None,
+            }),
+            value_pools: vec![ValuePoolBalance {
+                id: "orchard".to_string(),
+                chain_value: Zatoshis::new(2_000).expect("valid amount"),
+                monitored: true,
+                value_delta: Some(SignedZatoshis::try_new(-5).expect("valid delta")),
+            }],
+            final_sapling_root: Some([0x88; 32].into()),
+            final_orchard_root: Some([0x99; 32].into()),
             tree_sizes: BlockTreeSizes {
                 sapling: TreeSize::from(1u32),
                 orchard: TreeSize::from(2u32),
@@ -1729,20 +1761,28 @@ mod tests {
 
     /// The common block key set shared by both verbosities, including `size`,
     /// `previousblockhash` and `nextblockhash`.
-    const BLOCK_KEYS: [&str; 14] = [
+    const BLOCK_KEYS: [&str; 22] = [
         "bits",
+        "blockcommitments",
+        "chainSupply",
         "chainwork",
         "confirmations",
         "difficulty",
+        "finalorchardroot",
+        "finalsaplingroot",
         "hash",
         "height",
         "merkleroot",
+        "nTx",
         "nextblockhash",
         "nonce",
         "previousblockhash",
         "size",
+        "solution",
         "time",
+        "trees",
         "tx",
+        "valuePools",
         "version",
     ];
 
@@ -1750,12 +1790,9 @@ mod tests {
     #[test]
     fn block_v1_golden_shape() {
         let decoded = scripted_decoded_block();
-        let json = serde_json::to_value(block_to_wire_v1(
-            &scripted_block(),
-            &scripted_block_verbose(),
-            &decoded,
-        ))
-        .expect("serialize");
+        let response = block_to_wire_v1(&scripted_block(), &scripted_block_verbose(), &decoded)
+            .expect("render");
+        let json = serde_json::to_value(response).expect("serialize");
         assert_eq!(sorted_keys(&json), BLOCK_KEYS);
         let obj = json.as_object().expect("a JSON object");
         assert_eq!(obj.get("size").and_then(Value::as_u64), Some(1_234));
@@ -1767,6 +1804,39 @@ mod tests {
             obj.get("nextblockhash").and_then(Value::as_str),
             Some("66".repeat(32).as_str())
         );
+        // nTx is the transaction count; the chain-state keys zebra carries are
+        // rendered: block commitments and the solution in natural order, the two
+        // final roots, the tree sizes, and the value pools.
+        assert_eq!(obj.get("nTx").and_then(Value::as_u64), Some(2));
+        assert_eq!(
+            obj.get("blockcommitments").and_then(Value::as_str),
+            Some("44".repeat(32).as_str())
+        );
+        assert_eq!(
+            obj.get("finalsaplingroot").and_then(Value::as_str),
+            Some("88".repeat(32).as_str())
+        );
+        assert_eq!(
+            obj.get("finalorchardroot").and_then(Value::as_str),
+            Some("99".repeat(32).as_str())
+        );
+        // The Regtest solution fixture is 36 zero bytes.
+        assert_eq!(
+            obj.get("solution").and_then(Value::as_str),
+            Some("00".repeat(36).as_str())
+        );
+        let trees = obj.get("trees").and_then(Value::as_object).expect("trees");
+        assert_eq!(trees["sapling"]["size"].as_u64(), Some(1));
+        assert_eq!(trees["orchard"]["size"].as_u64(), Some(2));
+        assert_eq!(trees["ironwood"]["size"].as_u64(), Some(3));
+        let supply = obj.get("chainSupply").expect("chainSupply present");
+        assert_eq!(supply["chainValueZat"].as_u64(), Some(21_000_000));
+        let pools = obj
+            .get("valuePools")
+            .and_then(Value::as_array)
+            .expect("valuePools");
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0]["id"].as_str(), Some("orchard"));
         let tx = obj.get("tx").and_then(Value::as_array).expect("tx array");
         assert_eq!(tx.len(), 2);
         // Verbosity 1 lists transaction ids as bare strings.
@@ -1779,13 +1849,9 @@ mod tests {
     #[test]
     fn block_v2_golden_shape() {
         let views = scripted_views();
-        let json = serde_json::to_value(block_to_wire_v2(
-            &scripted_block(),
-            &scripted_block_verbose(),
-            &views,
-            &NET,
-        ))
-        .expect("serialize");
+        let response = block_to_wire_v2(&scripted_block(), &scripted_block_verbose(), &views, &NET)
+            .expect("render");
+        let json = serde_json::to_value(response).expect("serialize");
         assert_eq!(sorted_keys(&json), BLOCK_KEYS);
         let obj = json.as_object().expect("a JSON object");
         assert_eq!(obj.get("size").and_then(Value::as_u64), Some(1_234));
@@ -1812,13 +1878,9 @@ mod tests {
     fn block_response_omits_chainwork_when_untracked() {
         let mut verbose = scripted_block_verbose();
         verbose.chainwork = None;
-        let json = serde_json::to_value(block_to_wire_v2(
-            &scripted_block(),
-            &verbose,
-            &scripted_views(),
-            &NET,
-        ))
-        .expect("serialize");
+        let response =
+            block_to_wire_v2(&scripted_block(), &verbose, &scripted_views(), &NET).expect("render");
+        let json = serde_json::to_value(response).expect("serialize");
         assert!(
             !json
                 .as_object()
@@ -1833,12 +1895,10 @@ mod tests {
     fn genesis_block_omits_previous_block_hash() {
         let mut block = scripted_block();
         block.header.height = Height::try_from(0).expect("genesis height");
-        let json = serde_json::to_value(block_to_wire_v1(
-            &block,
-            &scripted_block_verbose(),
-            &scripted_decoded_block(),
-        ))
-        .expect("serialize");
+        let response =
+            block_to_wire_v1(&block, &scripted_block_verbose(), &scripted_decoded_block())
+                .expect("render");
+        let json = serde_json::to_value(response).expect("serialize");
         assert!(
             !json
                 .as_object()

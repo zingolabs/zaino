@@ -835,6 +835,8 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
             chainwork: None,
             chain_supply: None,
             value_pools: Vec::new(),
+            final_sapling_root: None,
+            final_orchard_root: None,
             tree_sizes: domain::BlockTreeSizes {
                 sapling: sapling_size,
                 orchard: orchard_size,

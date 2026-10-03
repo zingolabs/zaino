@@ -433,6 +433,26 @@ pub struct RawTransactionResponse {
     pub blocktime: Option<u32>,
 }
 
+/// One pool's cumulative note-commitment tree size, as the `trees` object nests
+/// it: a single-key `{size}` object per pool, matching zcashd/zebra.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TreePoolSize {
+    /// Cumulative note count in this pool's commitment tree after the block.
+    pub size: u64,
+}
+
+/// The `trees` object of a verbose `getblock`: the cumulative note-commitment
+/// tree size of each shielded pool after this block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TreesResponse {
+    /// Sapling pool tree size.
+    pub sapling: TreePoolSize,
+    /// Orchard pool tree size.
+    pub orchard: TreePoolSize,
+    /// Ironwood pool tree size (NU6.3).
+    pub ironwood: TreePoolSize,
+}
+
 /// The `getblock` response at verbosity 1 or 2. The two verbosities share every
 /// field but `tx`: verbosity 1 lists the transaction ids as strings, verbosity 2
 /// the decoded [`TransactionObject`]s — so `T` is `String` or
@@ -453,10 +473,26 @@ pub struct BlockResponse<T> {
     /// Merkle root of the transaction tree, as hex.
     #[serde(rename = "merkleroot")]
     pub merkle_root: String,
+    /// Block commitments digest, as hex (natural order).
+    #[serde(rename = "blockcommitments")]
+    pub block_commitments: String,
+    /// Sapling commitment tree root after this block, as hex. Absent before
+    /// Sapling activation and from validators that omit it.
+    #[serde(rename = "finalsaplingroot", skip_serializing_if = "Option::is_none")]
+    pub final_sapling_root: Option<String>,
+    /// Orchard commitment tree root after this block, as hex. Absent before
+    /// Orchard activation and from validators that omit it.
+    #[serde(rename = "finalorchardroot", skip_serializing_if = "Option::is_none")]
+    pub final_orchard_root: Option<String>,
+    /// Number of transactions in the block.
+    #[serde(rename = "nTx")]
+    pub n_tx: u32,
     /// Block time, in seconds since the Unix epoch.
     pub time: u32,
     /// Header nonce, as hex.
     pub nonce: String,
+    /// Equihash solution, as hex.
+    pub solution: String,
     /// Difficulty threshold in compact (nBits) form, as 8-digit hex.
     pub bits: String,
     /// Difficulty as a multiple of the network minimum.
@@ -465,6 +501,17 @@ pub struct BlockResponse<T> {
     /// validator does not track it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chainwork: Option<String>,
+    /// Total chain value as of this block, unnamed. Absent when the validator
+    /// does not report per-block supply.
+    #[serde(rename = "chainSupply", skip_serializing_if = "Option::is_none")]
+    pub chain_supply: Option<ValuePoolResponse>,
+    /// Per-pool value balances as of this block. Empty when the validator reports
+    /// none.
+    #[serde(rename = "valuePools")]
+    pub value_pools: Vec<ValuePoolResponse>,
+    /// Cumulative note-commitment tree sizes of each shielded pool after this
+    /// block.
+    pub trees: TreesResponse,
     /// Serialized byte length of the whole block.
     pub size: u64,
     /// Hash of the previous block, as hex. Absent for genesis.

@@ -82,6 +82,14 @@ Key points of the shape:
   header and chain-position keys, `size`, `previousblockhash`/`nextblockhash`,
   and `tx` as a list of transaction-id strings.
 - Verbosity 2: the same, with `tx` as the decoded transaction DTOs.
+
+Both verbose forms carry the chain-state keys zebra emits: `blockcommitments` and
+`solution` (natural order) from the block header, `finalsaplingroot` /
+`finalorchardroot` and the `trees` sizes / `chainSupply` / `valuePools` from the
+verbose read (`BlockVerbose`, which gained the two final roots for this), and
+`nTx` derived from the transaction count. The value pools render through the same
+`value_pool_to_wire` helper as `getblockchaininfo` (ZEC float beside exact
+`*Zat`).
 - A verbosity above 2 is refused with a message naming the served range. An
   unknown block is a not-found error at every verbosity.
 

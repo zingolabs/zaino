@@ -979,7 +979,8 @@ pub fn sample_decoded_block(tag: u8, size: u64) -> DecodedBlock {
 #[cfg(any(test, feature = "testing"))]
 pub fn sample_block_verbose() -> BlockVerbose {
     use zaino_primitives::types::{
-        AbsoluteChainWork, BlockHash, BlockTreeSizes, TreeSize, ValuePoolBalance, Zatoshis,
+        AbsoluteChainWork, BlockHash, BlockTreeSizes, TreeRoot, TreeSize, ValuePoolBalance,
+        Zatoshis,
     };
     let mut work_bytes = [0u8; 32];
     work_bytes[28..].copy_from_slice(&[0x0b, 0xad, 0xf0, 0x0d]);
@@ -999,6 +1000,8 @@ pub fn sample_block_verbose() -> BlockVerbose {
             monitored: true,
             value_delta: None,
         }],
+        final_sapling_root: Some(TreeRoot::new([0x5a; 32])),
+        final_orchard_root: Some(TreeRoot::new([0x04; 32])),
         tree_sizes: BlockTreeSizes {
             sapling: TreeSize::from(10u32),
             orchard: TreeSize::from(20u32),

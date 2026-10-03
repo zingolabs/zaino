@@ -1,6 +1,8 @@
 //! Chain-state facts about a block that are not in the block itself.
 
-use super::{AbsoluteChainWork, BlockHash, Confirmations, Difficulty, TreeSize, ValuePoolBalance};
+use super::{
+    AbsoluteChainWork, BlockHash, Confirmations, Difficulty, TreeRoot, TreeSize, ValuePoolBalance,
+};
 
 /// What a verbose block query adds to the block's own bytes.
 ///
@@ -42,6 +44,19 @@ pub struct BlockVerbose {
     /// Empty when the validator reports none. Cumulative, so likewise not
     /// derivable from this block alone.
     pub value_pools: Vec<ValuePoolBalance>,
+
+    /// Sapling note commitment tree root after this block.
+    ///
+    /// `None` before Sapling activation and from validators that omit it. In its
+    /// natural (un-reversed) byte order, as the validator reports it — a verbose
+    /// `getblock` carries it directly; it cannot be derived from the block alone.
+    pub final_sapling_root: Option<TreeRoot>,
+
+    /// Orchard note commitment tree root after this block.
+    ///
+    /// `None` before Orchard activation and from validators that omit it. Same
+    /// provenance and byte order as [`final_sapling_root`](Self::final_sapling_root).
+    pub final_orchard_root: Option<TreeRoot>,
 
     /// Cumulative note commitment tree sizes after this block.
     pub tree_sizes: BlockTreeSizes,

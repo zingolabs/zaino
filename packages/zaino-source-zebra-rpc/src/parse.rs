@@ -1178,6 +1178,12 @@ pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerb
             .map(parse_value_pool)
             .transpose()?,
         value_pools: parse_optional_list(value, "valuePools", parse_value_pool)?,
+        final_sapling_root: opt_field(value, "finalsaplingroot")
+            .map(as_tree_root)
+            .transpose()?,
+        final_orchard_root: opt_field(value, "finalorchardroot")
+            .map(as_tree_root)
+            .transpose()?,
         tree_sizes: BlockTreeSizes {
             sapling: pool_tree_size(trees, "sapling")?,
             orchard: pool_tree_size(trees, "orchard")?,
