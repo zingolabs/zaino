@@ -6,7 +6,7 @@
 //! share a shape; a macro keeps them DRY (a `fn` cannot define types).
 
 use crate::Capability;
-use zaino_primitives::types::TransparentInput;
+use zaino_primitives::types::{Height, TransparentInput};
 
 /// Every read-boundary failure separates a *not-yet-serviceable* answer and a
 /// *domain* "not found" (which is `Ok(None)`, never an error) from real backend
@@ -122,6 +122,44 @@ mod tests {
             ReadError::from(BlockReadError::Fatal("corrupt".to_owned())),
             ReadError::Fatal(message) if message == "corrupt"
         ));
+    }
+}
+
+/// Errors from [`crate::BlockHashRead`].
+///
+/// A typed enum, not a `read_error!` String type: the timestamp-range search has
+/// a failure mode the shared three-case shape cannot name — a hole in the chain
+/// view, where a header the search needed at or below the pinned tip is missing.
+/// A range beyond the tip or before genesis is a domain answer (an empty list,
+/// never a variant here). The tier-read variant keeps its cause with
+/// `#[source]`, so an operator reaches the concrete backend failure.
+#[derive(Debug, thiserror::Error)]
+pub enum BlockHashReadError {
+    /// A header the search needed, at a height at or below the pinned tip, was
+    /// missing — a hole in the chain view. The search requests only heights
+    /// where a block must exist, so a missing one is a view inconsistency,
+    /// surfaced loud rather than silently dropping a block that might be in
+    /// range. Mirrors the consensus search's own missing-header failure.
+    #[error("missing header at height {height} during the block-hash timestamp search")]
+    MissingHeader {
+        /// The height whose header the chain view reported as absent.
+        height: Height,
+    },
+    /// A tier read failed while reading a header during the search.
+    #[error("tier read failed during the block-hash timestamp search")]
+    TierRead {
+        /// The tier read failure, kept as the source chain.
+        #[source]
+        source: BlockReadError,
+    },
+}
+
+/// A tier read failure during the search folds into the tier-read variant,
+/// keeping its cause — the `?` in the engine's drive loop (`view.header(h)?`)
+/// lifts a [`BlockReadError`] straight into [`BlockHashReadError`].
+impl From<BlockReadError> for BlockHashReadError {
+    fn from(source: BlockReadError) -> Self {
+        Self::TierRead { source }
     }
 }
 

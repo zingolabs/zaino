@@ -129,6 +129,7 @@
 
 mod address;
 mod block;
+mod block_hash;
 mod block_verbose;
 mod snapshot;
 mod spend;

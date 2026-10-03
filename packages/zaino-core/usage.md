@@ -74,6 +74,7 @@ that capability and on the provider ports that placement needs:
 |---|---|---|
 | compact blocks, nullifier projection | always local | the two tiers' compact reads |
 | header projection (hash + time by height) | always local | the two tiers' `HeaderRead` |
+| timestamp-range block hashes (`getblockhashes`) | always local | the two tiers' `HeaderRead` |
 | full blocks (the tip excepted) | always passthrough | `GetBlock`, `GetBlockByHash` |
 | verbose header / block (chain position) | always passthrough | `GetBlockHeader`, `GetBlockVerbose`, `GetBlockVerboseByHash` |
 | chain-info aggregate | always passthrough | `GetBlockchainInfo` |
@@ -106,9 +107,24 @@ derives, not facts in the stored block, and the raw consensus bytes `raw_block`
 returns — the `getblock(_, 0)` surface — come over `GetRawBlock`/`GetRawBlockByHash`
 because the finalised store holds compact projections, not full block bytes. A
 domain miss is `Ok(None)`; an unreachable validator is a transient read failure.
-With `BlockRead`, `BlockVerboseRead` and `TransactionRead` all present,
-`EngineSnapshot` satisfies `NodeRpcReads`, so a node-RPC-routed engine satisfies
-`NodeRpcService`.
+
+`BlockHashRead` (`block_hashes(low, high)`, the `getblockhashes` timestamp-range
+selection) is always local, driven over the two tiers' `HeaderRead` and clamped
+to the pinned tip. Zcash block timestamps are not monotonic, so this is not a
+slice of the height axis: the engine drives the pure `CandidateSearch` from
+`zaino-consensus` — which derives, from the median-time-past consensus rule, the
+smallest height bracket guaranteed to contain every block with
+`low <= nTime < high` — then scans that bracket and keeps the blocks whose own
+timestamp is in range, ascending by time then by hash. The drift rule is the
+mainnet one (`MaxBlockTimeDrift::MAINNET`), the network the explorer deployment
+serves; the engine carries no network, so a testnet deployment would need the
+testnet drift here. A range beyond the tip is an empty list, never an error; a
+header missing from the view at or below the tip is a typed
+`BlockHashReadError::MissingHeader`.
+
+With `BlockRead`, `BlockVerboseRead`, `BlockHashRead` and `TransactionRead` all
+present, `EngineSnapshot` satisfies `NodeRpcReads`, so a node-RPC-routed engine
+satisfies `NodeRpcService`.
 
 `ChainInfoRead` (the `getblockchaininfo` aggregate) is always passthrough, as one
 piece: the aggregate describes a single chain position, so mixing a locally-read

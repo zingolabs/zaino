@@ -16,8 +16,8 @@ use zaino_primitives::types::{
 };
 
 use crate::error::{
-    AddressReadError, BlockReadError, ReadError, SpendReadError, TransactionViewError,
-    TreestateReadError, TxReadError,
+    AddressReadError, BlockHashReadError, BlockReadError, ReadError, SpendReadError,
+    TransactionViewError, TreestateReadError, TxReadError,
 };
 
 /// Backed by: headers + block-bytes indexes.
@@ -83,6 +83,51 @@ pub trait HeaderRead: Send + Sync {
         &self,
         h: Height,
     ) -> impl Future<Output = Result<Option<HeaderSummary>, BlockReadError>> + Send;
+}
+
+/// A block identified by its height, hash and timestamp — one entry of the
+/// `getblockhashes` answer.
+///
+/// The three facts the timestamp-range selection carries out: `height` locates
+/// the block on the chain, `hash` is what the explorer renders, and `time` is
+/// the timestamp the range matched (also the `logicalts` the verbose wire shape
+/// reports). The adapter renders the bare hash or the `{blockhash, logicalts}`
+/// object from this one shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockHashAt {
+    /// The block's height.
+    pub height: Height,
+    /// The block's hash.
+    pub hash: BlockHash,
+    /// The block's timestamp (`nTime`), the value the range matched.
+    pub time: BlockTime,
+}
+
+/// The timestamp-range block selection behind `getblockhashes`: every block
+/// whose `nTime` lies in the half-open range `[low, high)`, ordered ascending by
+/// time, then by hash.
+///
+/// A **local** read, driven over the composed chain view's [`HeaderRead`] one
+/// height at a time — no new source port. Zcash block timestamps are not
+/// monotonic (a block's `nTime` is bounded only relative to the median-time-past
+/// of its predecessors), so this is not a slice of the height axis: the engine
+/// derives a candidate height bracket guaranteed to contain every in-range block
+/// from the median-time-past consensus rule, then filters that bracket by each
+/// block's actual timestamp.
+///
+/// Backed by: the headers index (FS) or the retained window's headers (NFS) —
+/// the same [`HeaderRead`] backing, so its serviceability follows the built
+/// headers-index check. A range beyond the tip or before genesis is an empty
+/// list, never an error; a hole in the chain view at or below the pinned tip is
+/// a typed failure ([`BlockHashReadError::MissingHeader`]), never a silently
+/// dropped block.
+pub trait BlockHashRead: Send + Sync {
+    /// Every block with `low <= nTime < high`, ascending by time then by hash.
+    fn block_hashes(
+        &self,
+        low: BlockTime,
+        high: BlockTime,
+    ) -> impl Future<Output = Result<Vec<BlockHashAt>, BlockHashReadError>> + Send;
 }
 
 /// The chain-position overlay on a block — confirmations, difficulty,

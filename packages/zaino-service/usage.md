@@ -69,6 +69,18 @@ exceed the per-request ceiling is refused — naming the needed count and the
 ceiling — before any fetch is issued, so one request cannot be amplified into an
 unbounded number of validator round trips.
 
+`NodeRpcReads` also carries `BlockHashRead`, the timestamp-range block selection
+behind `getblockhashes` (`block_hashes(low, high)` returns every block with
+`low <= nTime < high` as `BlockHashAt { height, hash, time }`, ascending by time
+then by hash). It is a **local** read over the composed headers — same backing as
+`HeaderRead`, no source port — and is not a slice of the height axis: Zcash block
+timestamps are not monotonic, so the engine derives a candidate height bracket
+from the median-time-past consensus rule and filters it by each block's actual
+time. A range beyond the tip or before genesis is an empty list, never an error;
+a header missing from the chain view at or below the pinned tip is the typed
+`BlockHashReadError::MissingHeader`, which keeps a tier-read cause under its
+`TierRead` variant with `#[source]` rather than a flattened string.
+
 `NodeRpcService` also demands `NodeStatusRead`, the node-operator status control
 behind `getinfo`, `getmininginfo`, `getpeerinfo` and `getnetworksolps`. These are
 facts about the validator, not the chain, so Zaino indexes none of them and all

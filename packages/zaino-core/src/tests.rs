@@ -1044,6 +1044,246 @@ mod block_verbose_reads {
     }
 }
 
+// --- block-hash reads: the getblockhashes timestamp-range selection ----------
+//
+// `BlockHashRead::block_hashes` drives the pure candidate-bracket search over the
+// composed chain view's header reads, then filters the bracket by each block's
+// actual time. Local over both tiers; a range beyond the tip is an empty list; a
+// hole in the view is a typed `MissingHeader`.
+mod block_hash_reads {
+    use super::*;
+    use zaino_primitives::types::CompactBlock;
+    use zaino_service::BlockHashRead;
+    use zaino_service::error::BlockHashReadError;
+
+    /// The base timestamp the test chains build from.
+    const BASE: u32 = 1_000_000;
+
+    /// A compact block at `height` whose hash byte is `hash_byte` and whose time
+    /// is `time`, so a returned [`BlockHashAt`](zaino_service::BlockHashAt)
+    /// identifies both the block and the tier it was routed to.
+    fn block_at(height: u32, hash_byte: u8, time: u32) -> CompactBlock {
+        let mut block = stub_compact_block(height, hash_byte);
+        block.time = time;
+        block
+    }
+
+    /// An engine composing `fs` as the finalised tier and `nfs` as the
+    /// non-finalised tier over an empty validator (the read is local, so the
+    /// validator is never consulted).
+    fn engine_over_tiers(fs: Vec<CompactBlock>, nfs: Vec<CompactBlock>) -> LightEngine {
+        Engine::new(
+            StubNonFinalised::from_blocks(fs),
+            StubNonFinalised::from_blocks(nfs),
+            ValidatorClient::new(MockChain::new(), RetryPolicy::default()),
+        )
+    }
+
+    /// Strictly-increasing block times `BASE + h*600` for heights `0..n` — a
+    /// consensus-valid chain (`nTime > MTP` holds, and the drift stays well under
+    /// the 90-minute bound), with a monotonic median-time-past the search relies
+    /// on.
+    fn linear_times(n: u32) -> Vec<u32> {
+        (0..n).map(|h| BASE + h * 600).collect()
+    }
+
+    /// The heights of a block-hash result, in result order.
+    fn heights_of(result: &[zaino_service::BlockHashAt]) -> Vec<u32> {
+        result.iter().map(|entry| u32::from(entry.height)).collect()
+    }
+
+    /// The leading hash byte of each result entry — its tier tag, in this suite.
+    fn tags_of(result: &[zaino_service::BlockHashAt]) -> Vec<u8> {
+        result
+            .iter()
+            .map(|entry| <[u8; 32]>::from(entry.hash)[0])
+            .collect()
+    }
+
+    /// A chain split at watermark 8 with tip 12: the finalised tier holds
+    /// `[0, 8]` (hash tags `0x10 + h`) and the non-finalised tier holds `[7, 12]`
+    /// (tags `0x80 + h`). The overlap `[7, 8]` is on both tiers with different
+    /// tags, so a height that mis-routes across the seam returns the wrong tag and
+    /// fails the assertion.
+    fn split_chain() -> LightEngine {
+        let times = linear_times(13);
+        let fs = (0..=8)
+            .map(|h| {
+                block_at(
+                    h,
+                    u8::try_from(0x10 + h).expect("tag fits u8"),
+                    times[usize::try_from(h).expect("height fits usize")],
+                )
+            })
+            .collect();
+        let nfs = (7..=12)
+            .map(|h| {
+                block_at(
+                    h,
+                    u8::try_from(0x80 + h).expect("tag fits u8"),
+                    times[usize::try_from(h).expect("height fits usize")],
+                )
+            })
+            .collect();
+        engine_over_tiers(fs, nfs)
+    }
+
+    #[tokio::test]
+    async fn a_range_inside_the_finalised_tier() {
+        let engine = split_chain();
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let times = linear_times(13);
+        // `[times[2], times[5] + 1)` matches heights 2..=5, all below the watermark.
+        let result = BlockHashRead::block_hashes(&snapshot, times[2], times[5] + 1)
+            .await
+            .expect("served");
+        assert_eq!(heights_of(&result), vec![2, 3, 4, 5]);
+        // Every hit carries a finalised-tier tag (`0x10 + h`), proving the read
+        // routed below the seam.
+        assert_eq!(tags_of(&result), vec![0x12, 0x13, 0x14, 0x15]);
+    }
+
+    #[tokio::test]
+    async fn a_range_inside_the_non_finalised_tier() {
+        let engine = split_chain();
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let times = linear_times(13);
+        // `[times[10], times[12] + 1)` matches heights 10..=12, all above the seam.
+        let result = BlockHashRead::block_hashes(&snapshot, times[10], times[12] + 1)
+            .await
+            .expect("served");
+        assert_eq!(heights_of(&result), vec![10, 11, 12]);
+        // Non-finalised-tier tags (`0x80 + h`), proving the read routed above the
+        // seam.
+        assert_eq!(tags_of(&result), vec![0x8A, 0x8B, 0x8C]);
+    }
+
+    #[tokio::test]
+    async fn a_range_across_the_seam_returns_both_tiers_with_no_gap() {
+        let engine = split_chain();
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let times = linear_times(13);
+        // `[times[7], times[10] + 1)` spans the watermark (8): heights 7, 8 are the
+        // finalised tier's and 9, 10 the non-finalised tier's.
+        let result = BlockHashRead::block_hashes(&snapshot, times[7], times[10] + 1)
+            .await
+            .expect("served");
+        assert_eq!(heights_of(&result), vec![7, 8, 9, 10]);
+        // 7 and 8 carry finalised tags even though the NFS window overlaps them;
+        // 9 and 10 carry non-finalised tags. No gap at the seam, no duplicate.
+        assert_eq!(tags_of(&result), vec![0x17, 0x18, 0x89, 0x8A]);
+    }
+
+    #[tokio::test]
+    async fn a_range_beyond_the_tip_is_empty() {
+        let engine = split_chain();
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let times = linear_times(13);
+        let after_tip = times[12] + 10_000;
+        let result = BlockHashRead::block_hashes(&snapshot, after_tip, after_tip + 10_000)
+            .await
+            .expect("a range beyond the tip is a served empty list, not an error");
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_out_of_order_block_is_returned_exactly_when_in_range() {
+        // A consensus-valid chain whose height 13 carries a timestamp *below* its
+        // predecessor's (height 12 spikes to the drift ceiling, 13 dips back). A
+        // timestamp slice of the height axis would miss it; the candidate search
+        // must return it when its own time is in range.
+        let mut times = linear_times(12); // heights 0..=11 at BASE + h*600
+        times.push(BASE + 9_000); // height 12: a spike (MTP(12)=BASE+3600, +5400 ceiling)
+        times.push(BASE + 4_300); // height 13: a dip, below height 12's time
+        assert!(
+            times[13] < times[12],
+            "the chain must actually be out of order"
+        );
+
+        let fs = (0..=13)
+            .map(|h| {
+                block_at(
+                    h,
+                    u8::try_from(0x10 + h).expect("tag fits u8"),
+                    times[usize::try_from(h).expect("height fits usize")],
+                )
+            })
+            .collect();
+        let engine = engine_over_tiers(fs, Vec::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+
+        // A one-wide range on the dipped block's own time selects exactly it, and
+        // not the higher-timestamped spike at height 12.
+        let result = BlockHashRead::block_hashes(&snapshot, times[13], times[13] + 1)
+            .await
+            .expect("served");
+        assert_eq!(heights_of(&result), vec![13]);
+
+        // The spike is independently addressable on its own (higher) time.
+        let spike = BlockHashRead::block_hashes(&snapshot, times[12], times[12] + 1)
+            .await
+            .expect("served");
+        assert_eq!(heights_of(&spike), vec![12]);
+    }
+
+    #[tokio::test]
+    async fn results_are_ascending_by_time_then_by_hash() {
+        // Heights 2 and 3 share a timestamp; their hash tags are out of height
+        // order (3 < 2), so a correct sort returns height 3 before height 2.
+        let times = [BASE, BASE + 600, BASE + 1_200, BASE + 1_200, BASE + 1_800];
+        let tags = [0x40u8, 0x41, 0x30, 0x20, 0x44];
+        let fs = (0u32..5)
+            .map(|h| {
+                let idx = usize::try_from(h).expect("height fits usize");
+                block_at(h, tags[idx], times[idx])
+            })
+            .collect();
+        let engine = engine_over_tiers(fs, Vec::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+
+        let result = BlockHashRead::block_hashes(&snapshot, BASE, BASE + 1_800 + 1)
+            .await
+            .expect("served");
+        // Ascending by time, then by hash: the B+1200 tie orders height 3 (tag
+        // 0x20) before height 2 (tag 0x30).
+        assert_eq!(heights_of(&result), vec![0, 1, 3, 2, 4]);
+        // The (time, hash) pairs are non-decreasing across the whole result.
+        for pair in result.windows(2) {
+            assert!(
+                (pair[0].time, pair[0].hash) <= (pair[1].time, pair[1].hash),
+                "result is not sorted ascending by (time, hash)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hole_in_the_view_is_a_typed_missing_header() {
+        // A finalised tier missing height 5 (a chain-view hole) at or below the
+        // tip. A range whose bracket covers height 5 must fail loud rather than
+        // silently drop a block that might be in range.
+        let times = linear_times(13);
+        let fs = (0..=12)
+            .filter(|h| *h != 5)
+            .map(|h| {
+                block_at(
+                    h,
+                    u8::try_from(0x10 + h).expect("tag fits u8"),
+                    times[usize::try_from(h).expect("height fits usize")],
+                )
+            })
+            .collect();
+        let engine = engine_over_tiers(fs, Vec::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+
+        match BlockHashRead::block_hashes(&snapshot, times[3], times[8] + 1).await {
+            Err(BlockHashReadError::MissingHeader { height }) => {
+                assert_eq!(u32::from(height), 5);
+            }
+            other => panic!("a chain-view hole must be a typed MissingHeader, got {other:?}"),
+        }
+    }
+}
+
 mod chain_info_reads {
     use super::*;
     use zaino_service::ChainInfoRead;

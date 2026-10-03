@@ -16,6 +16,7 @@ zaino-service = { path = "../zaino-service" }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-source = { version = "0.2.0", path = "../zaino-source" }
 futures = { workspace = true }
+zaino-consensus = { version = "0.1.0", path = "../zaino-consensus" }
 
 [dev-dependencies]
 zaino-core = { path = ".", features = ["testing"] }

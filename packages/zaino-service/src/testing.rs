@@ -25,23 +25,23 @@ use crate::{
 use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds,
+    BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds,
     DecodedBlock, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool,
     SubtreeRoot, Transaction, TransactionId, TransparentAddress, TransparentInput, Treestate, Utxo,
     ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 
 use crate::error::{
-    AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError,
-    SpendReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
+    AddressReadError, BlockHashReadError, BlockReadError, BroadcastRejection, MempoolReadError,
+    ReadError, SpendReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead,
-    ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary,
-    IndexerService, LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing,
-    MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead,
-    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
-    TransactionRead, TransactionViewRead, TreestateRead,
+    AddressRead, BlockHashAt, BlockHashRead, BlockRead, BlockTransactionViews, BlockVerboseRead,
+    Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile,
+    HeaderRead, HeaderSummary, IndexerService, LocatedTransactionView, MempoolContent,
+    MempoolEntry, MempoolListing, MempoolSubscribe, MempoolSummary, NodeStatusError,
+    NodeStatusRead, RawTransactionRead, ReportedUpgrades, Serviceable, Snapshot, SpendRead,
+    TakeSnapshot, TipSubscribe, TransactionRead, TransactionViewRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -110,6 +110,12 @@ pub struct MockChain {
     /// Scripted raw block bytes. When `Some`, [`BlockVerboseRead::raw_block`]
     /// returns them for any selector; when `None`, it answers `Ok(None)`.
     pub raw_block: Option<Vec<u8>>,
+    /// Scripted blocks for the timestamp-range selection behind `getblockhashes`.
+    /// [`BlockHashRead::block_hashes`] returns those with `low <= time < high`,
+    /// ordered ascending by time then by hash — the honest contract, so a test
+    /// over the service mock exercises the range and ordering the engine
+    /// produces.
+    pub block_hashes: Vec<BlockHashAt>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -318,6 +324,27 @@ impl HeaderRead for MockSnapshot {
         // domain miss. The impl exists so `MockSnapshot` satisfies the tier bundle
         // the composer bounds on.
         Ok(None)
+    }
+}
+
+impl BlockHashRead for MockSnapshot {
+    async fn block_hashes(
+        &self,
+        low: BlockTime,
+        high: BlockTime,
+    ) -> Result<Vec<BlockHashAt>, BlockHashReadError> {
+        // The honest timestamp-range contract: keep the scripted blocks in
+        // `[low, high)`, ordered ascending by time then by hash. A mock with no
+        // scripted blocks returns an empty list, never a stub failure.
+        let mut hits: Vec<BlockHashAt> = self
+            .chain
+            .block_hashes
+            .iter()
+            .copied()
+            .filter(|entry| low <= entry.time && entry.time < high)
+            .collect();
+        hits.sort_by(|a, b| a.time.cmp(&b.time).then_with(|| a.hash.cmp(&b.hash)));
+        Ok(hits)
     }
 }
 

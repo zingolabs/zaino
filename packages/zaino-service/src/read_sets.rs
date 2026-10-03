@@ -11,7 +11,7 @@
 //! constituent reads.
 
 use crate::reads::{
-    AddressRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead,
+    AddressRead, BlockHashRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead,
     CompactNullifierRead, RawTransactionRead, TransactionRead, TransactionViewRead, TreestateRead,
 };
 
@@ -58,6 +58,9 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// [`TransactionViewRead`] is the resolved-transaction surface over these:
 /// `getrawtransaction <txid> 1` and `getblock <block> 2` render each transparent
 /// input with the output it spends, which only this read resolves.
+/// [`BlockHashRead`] is the timestamp-range block selection behind
+/// `getblockhashes` — the explorer's block-list keystone, served locally over the
+/// composed headers.
 ///
 /// Spend status (`SpendRead`) is deliberately absent. None of the methods this
 /// set serves needs an outpoint's spend state: the explorer is served
@@ -69,6 +72,7 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 pub trait NodeRpcReads:
     BlockRead
     + BlockVerboseRead
+    + BlockHashRead
     + TransactionRead
     + TransactionViewRead
     + RawTransactionRead
@@ -80,6 +84,7 @@ pub trait NodeRpcReads:
 impl<T> NodeRpcReads for T where
     T: BlockRead
         + BlockVerboseRead
+        + BlockHashRead
         + TransactionRead
         + TransactionViewRead
         + RawTransactionRead
