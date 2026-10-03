@@ -49,6 +49,26 @@ property of the connection rather than of the question. Everything else is left
 to `zaino_source::ValidatorClient`, which has the policy and the backoff. Do not add
 retry rules here — the layer above cannot see or override them.
 
+## Choosing the HTTP version
+
+`RpcClientConfig::http_version` selects the protocol, and it defaults to
+`HttpVersion::Http1`. Under HTTP/1.1 every request in flight holds its own
+connection, so a caller that fetches many blocks at once opens many connections
+to the validator.
+
+```rust
+let client = RpcClient::new(RpcClientConfig {
+    url: "http://127.0.0.1:8232".to_string(),
+    http_version: HttpVersion::Http2PriorKnowledge,
+    ..Default::default()
+})?;
+```
+
+`HttpVersion::Http2PriorKnowledge` carries every request in flight on one
+connection. The client does not negotiate: it opens with the HTTP/2 connection
+preface, so every call fails against an endpoint that speaks only HTTP/1.1, such
+as some reverse proxies. Select it only for an endpoint known to accept it.
+
 ## Probing a validator at startup
 
 ```rust
