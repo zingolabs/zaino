@@ -353,6 +353,88 @@ mod tests {
         let _ = handle.stop();
     }
 
+    /// The zcashex-shaped 1.0 `getaddresstxids` request — a single object param
+    /// carrying the addresses and height window — gives 200 and the legacy
+    /// envelope, with `result` the scripted txid in display order.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getaddresstxids_succeeds() {
+        use zaino_primitives::types::TransactionId;
+        let (addr, handle) = spawn_server(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(100).expect("valid height"),
+                hash: BlockHash::from([0x11u8; 32]),
+            }),
+            txids: vec![TransactionId::from([0xABu8; 32])],
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getaddresstxids","params":[{"addresses":["t1abc"],"start":1,"end":100}]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        assert_eq!(
+            obj.get("result"),
+            Some(&Value::from(vec!["ab".repeat(32)])),
+            "the result is the txid in display order: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// The zcashex-shaped 1.0 `getaddressutxos` request — a single `{addresses}`
+    /// object param — gives 200 and a `result` array of the scripted output in
+    /// zcashd's insight-explorer shape.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getaddressutxos_succeeds() {
+        use zaino_primitives::types::{Script, TransactionId, TransparentAddress, Utxo, Zatoshis};
+        let (addr, handle) = spawn_server(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(100).expect("valid height"),
+                hash: BlockHash::from([0x11u8; 32]),
+            }),
+            utxos: vec![Utxo {
+                address: TransparentAddress::new("t1abc".to_string()),
+                txid: TransactionId::from([0xABu8; 32]),
+                output_index: 0,
+                script: Script::new(vec![0x51]),
+                satoshis: Zatoshis::new(777).expect("valid amount"),
+                height: Height::try_from(90).expect("valid height"),
+            }],
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getaddressutxos","params":[{"addresses":["t1abc"]}]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let entry = obj
+            .get("result")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .expect("one utxo entry");
+        assert_eq!(
+            entry.get("txid").and_then(Value::as_str),
+            Some("ab".repeat(32).as_str())
+        );
+        assert_eq!(entry.get("satoshis").and_then(Value::as_u64), Some(777));
+        let _ = handle.stop();
+    }
+
     /// A 2.0 error stays 200, unchanged from today.
     #[tokio::test(flavor = "multi_thread")]
     async fn two_point_zero_error_stays_200() {

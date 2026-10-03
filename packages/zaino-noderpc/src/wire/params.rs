@@ -31,6 +31,21 @@ pub struct AddressDeltasParam {
     pub chain_info: bool,
 }
 
+/// The `getaddresstxids` object parameter, as `zcashex` sends it: one positional
+/// object carrying the addresses and an optional inclusive height window.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AddressTxidsParam {
+    /// The transparent addresses to query.
+    pub addresses: Vec<String>,
+    /// First height to include, inclusive. Absent defaults to the serviceable
+    /// floor.
+    #[serde(default)]
+    pub start: Option<u32>,
+    /// Last height to include, inclusive. Absent defaults to the serviceable tip.
+    #[serde(default)]
+    pub end: Option<u32>,
+}
+
 /// The optional third parameter of `getblockhashes`, the
 /// `{"noOrphans": ..., "logicalTimes": ...}` object `zcashex` sends. The whole
 /// object is optional (`[high, low]` is a valid call), and each key within it is

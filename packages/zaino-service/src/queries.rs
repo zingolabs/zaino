@@ -20,9 +20,11 @@
 //! report a user's funds as gone. An adapter only renders the domain answer to
 //! its wire shape and maps its error codes; the answer itself is decided here.
 
+use std::collections::HashSet;
+
 use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Height, HeightRange, TransparentAddress, Zatoshis,
-    ZatoshisFlowSum,
+    AddressBalance, AddressDelta, Height, HeightRange, TransactionId, TransparentAddress, Utxo,
+    Zatoshis, ZatoshisFlowSum,
 };
 
 use crate::error::AddressReadError;
@@ -169,6 +171,70 @@ where
         deltas,
         range: Some(range),
     })
+}
+
+/// Every transaction id touching `addrs`, over the requested bounds.
+///
+/// `start` and `end` are inclusive and optional, defaulting to the snapshot's
+/// serviceable edge — the same range handling as [`address_deltas`], and the
+/// same explorer policy: nothing serviceable (or a backwards range) is an empty
+/// answer, not an error.
+///
+/// A txid is returned once even when several of `addrs` touch it: the ids are
+/// de-duplicated in first-seen order, so a multi-address query does not repeat a
+/// transaction that paid two of them.
+pub async fn address_txids<S>(
+    snapshot: &S,
+    addrs: &[TransparentAddress],
+    start: Option<Height>,
+    end: Option<Height>,
+) -> Result<Vec<TransactionId>, AddressReadError>
+where
+    S: AddressRead + ChainSegment,
+{
+    let Some(coverage) = serviceable_range(snapshot) else {
+        return Ok(Vec::new());
+    };
+    let start = start.unwrap_or(coverage.start);
+    let end = end.unwrap_or(coverage.end);
+    if start > end {
+        return Ok(Vec::new());
+    }
+    let range = HeightRange { start, end };
+
+    let mut seen = HashSet::new();
+    let mut txids = Vec::new();
+    for addr in addrs {
+        for txid in snapshot.tx_ids(addr, range).await? {
+            if seen.insert(txid) {
+                txids.push(txid);
+            }
+        }
+    }
+    Ok(txids)
+}
+
+/// Every unspent transparent output held by `addrs`.
+///
+/// Range-less, because an unspent output is a fact about the current chain, not
+/// a window of it — the read itself ([`AddressRead::unspent_outpoints`]) takes no
+/// range. Explorer policy, matching [`address_balance`]: an unserviceable
+/// snapshot has no indexed history, so the answer is empty rather than an error.
+pub async fn address_utxos<S>(
+    snapshot: &S,
+    addrs: &[TransparentAddress],
+) -> Result<Vec<Utxo>, AddressReadError>
+where
+    S: AddressRead + ChainSegment,
+{
+    if serviceable_range(snapshot).is_none() {
+        return Ok(Vec::new());
+    }
+    let mut utxos = Vec::new();
+    for addr in addrs {
+        utxos.extend(snapshot.unspent_outpoints(addr).await?);
+    }
+    Ok(utxos)
 }
 
 #[cfg(all(test, feature = "testing"))]

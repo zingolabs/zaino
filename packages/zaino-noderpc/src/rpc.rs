@@ -17,11 +17,13 @@ use zaino_service::NodeRpcService;
 use zaino_service::NodeStatusError;
 
 use crate::error::RpcError;
-use crate::wire::params::{AddressDeltasParam, AddressesParam, GetBlockHashesOptions};
+use crate::wire::params::{
+    AddressDeltasParam, AddressTxidsParam, AddressesParam, GetBlockHashesOptions,
+};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse,
-    MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
+    AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
+    BlockchainInfoResponse, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
+    MempoolInfoResponse, MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
     UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
@@ -102,6 +104,18 @@ pub(crate) trait NodeRpcApi {
         &self,
         params: AddressDeltasParam,
     ) -> Result<AddressDeltasResponse, ErrorObjectOwned>;
+
+    #[method(name = "getaddresstxids")]
+    async fn address_txids(
+        &self,
+        params: AddressTxidsParam,
+    ) -> Result<Vec<String>, ErrorObjectOwned>;
+
+    #[method(name = "getaddressutxos")]
+    async fn address_utxos(
+        &self,
+        params: AddressesParam,
+    ) -> Result<Vec<AddressUtxoEntry>, ErrorObjectOwned>;
 
     #[method(name = "validateaddress")]
     async fn validate_addr(
@@ -211,6 +225,22 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         params: AddressDeltasParam,
     ) -> Result<AddressDeltasResponse, ErrorObjectOwned> {
         self.get_address_deltas(params)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn address_txids(
+        &self,
+        params: AddressTxidsParam,
+    ) -> Result<Vec<String>, ErrorObjectOwned> {
+        self.get_address_txids(params)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn address_utxos(
+        &self,
+        params: AddressesParam,
+    ) -> Result<Vec<AddressUtxoEntry>, ErrorObjectOwned> {
+        self.get_address_utxos(params)
             .await
             .map_err(to_error_object)
     }

@@ -107,6 +107,28 @@ pub struct AddressDeltasResponse {
     pub range: Option<DeltaRange>,
 }
 
+/// One entry of the `getaddressutxos` list, in zcashd's insight-explorer shape.
+///
+/// `txid` is display order; `script` is the locking script as hex; `satoshis`
+/// is the exact integer value. zcashd's key is `outputIndex` (camel-cased),
+/// distinct from the `vout`/`index` of other methods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AddressUtxoEntry {
+    /// The transparent address holding the output.
+    pub address: String,
+    /// The transaction containing the output, as hex (display order).
+    pub txid: String,
+    /// The output's index within that transaction.
+    #[serde(rename = "outputIndex")]
+    pub output_index: u32,
+    /// The output's locking script, as hex.
+    pub script: String,
+    /// The output's value, in zatoshis.
+    pub satoshis: u64,
+    /// Block height at which the output was created.
+    pub height: u32,
+}
+
 /// The `validateaddress` response. zcashd reports an unusable address as
 /// `isvalid: false` with no other fields, rather than as an error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

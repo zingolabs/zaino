@@ -58,6 +58,14 @@ pub struct MockChain {
     pub balances: Vec<(String, AddressBalance)>,
     /// Scripted address deltas, filtered by address and height on read.
     pub deltas: Vec<AddressDelta>,
+    /// Scripted transaction ids for [`AddressRead::tx_ids`], returned for any
+    /// queried address on a serviceable chain. The mock carries no per-txid
+    /// height, so the range is not applied here — the query layer's range
+    /// handling is exercised separately.
+    pub txids: Vec<TransactionId>,
+    /// Scripted unspent outputs for [`AddressRead::unspent_outpoints`], returned
+    /// for any queried address on a serviceable chain.
+    pub utxos: Vec<Utxo>,
     /// Scripted raw transactions, keyed by txid.
     pub raw_transactions: Vec<(TransactionId, RawTransaction)>,
     /// Scripted chain-info aggregate. When `Some`, [`ChainInfoRead::chain_info`]
@@ -408,7 +416,7 @@ impl AddressRead for MockSnapshot {
         &self,
         _addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        Ok(Vec::new())
+        Ok(self.chain.utxos.clone())
     }
     async fn deltas(
         &self,
@@ -429,7 +437,7 @@ impl AddressRead for MockSnapshot {
         _addr: &TransparentAddress,
         _range: HeightRange,
     ) -> Result<Vec<TransactionId>, AddressReadError> {
-        Ok(Vec::new())
+        Ok(self.chain.txids.clone())
     }
 }
 

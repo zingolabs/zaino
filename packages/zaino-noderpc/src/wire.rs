@@ -27,13 +27,13 @@ use zcash_protocol::consensus::Network;
 
 use crate::error::RpcError;
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltaEntry, BlockHashLogical, BlockHeaderResponse,
-    BlockResponse, BlockchainInfoResponse, GetBlockHashesResponse, JoinSplitObject,
-    MempoolEntryObject, MiningInfoResponse, NetworkUpgradeResponse, NodeInfoResponse,
-    OrchardActionObject, OrchardObject, PeerInfoEntry, ScriptPubKey, ScriptSig, ShieldedOutput,
-    ShieldedSpend, TipConsensusResponse, TransactionInput, TransactionObject, TransactionOutput,
-    TreePoolSize, TreesResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ValuePoolResponse, ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltaEntry, AddressUtxoEntry, BlockHashLogical,
+    BlockHeaderResponse, BlockResponse, BlockchainInfoResponse, GetBlockHashesResponse,
+    JoinSplitObject, MempoolEntryObject, MiningInfoResponse, NetworkUpgradeResponse,
+    NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry, ScriptPubKey, ScriptSig,
+    ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput, TransactionObject,
+    TransactionOutput, TreePoolSize, TreesResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -151,6 +151,21 @@ pub(crate) fn delta_to_wire(delta: AddressDelta) -> AddressDeltaEntry {
         block_index: delta.block_index,
         height: delta.height.into(),
         address: delta.address.as_str().to_owned(),
+    }
+}
+
+/// Render one unspent transparent output as a `getaddressutxos` entry
+/// (domain -> wire). The txid renders in display order; the script as hex; the
+/// value as its exact zatoshi integer.
+pub(crate) fn utxo_to_wire(utxo: zaino_primitives::types::Utxo) -> AddressUtxoEntry {
+    let script: Vec<u8> = utxo.script.into();
+    AddressUtxoEntry {
+        address: utxo.address.as_str().to_owned(),
+        txid: txid_to_display(utxo.txid),
+        output_index: utxo.output_index,
+        script: bytes_to_hex(&script),
+        satoshis: utxo.satoshis.as_u64(),
+        height: utxo.height.into(),
     }
 }
 

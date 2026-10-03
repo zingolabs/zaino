@@ -26,8 +26,20 @@ in internal order per the lightwalletd protocol.)
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
 `getblockheader`, `getblockhashes`, `getrawtransaction`, `sendrawtransaction`,
 `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
-`getmempoolinfo`, `getaddressbalance`, `getaddressdeltas`, `validateaddress`,
-`z_validateaddress`, `z_listunifiedreceivers`.
+`getmempoolinfo`, `getaddressbalance`, `getaddressdeltas`, `getaddresstxids`,
+`getaddressutxos`, `validateaddress`, `z_validateaddress`,
+`z_listunifiedreceivers`.
+
+The transparent-address methods (`getaddressbalance`, `getaddressdeltas`,
+`getaddresstxids`, `getaddressutxos`) are served **locally** over the engine's
+`AddressRead`, composed through the `queries::address_*` helpers so the range
+handling and the empty-when-unserviceable policy live in one place.
+`getaddresstxids` takes a `{addresses, start, end}` object (the inclusive height
+window optional) and returns the touching txids in display order, de-duplicated.
+`getaddressutxos` takes `{addresses}` and returns each unspent output in zcashd's
+insight-explorer shape (`address`, `txid` display order, `outputIndex`, `script`
+hex, `satoshis`, `height`); `chainInfo` wrapping is not modelled — the response is
+the bare array, matching the oracle.
 
 The four node-status methods (`getinfo`, `getmininginfo`, `getpeerinfo`,
 `getnetworksolps`) read through `NodeStatusRead`, a typed passthrough of the

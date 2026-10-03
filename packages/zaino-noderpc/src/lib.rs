@@ -32,20 +32,22 @@ use zcash_protocol::consensus::Network;
 
 use zaino_primitives::types::BlockSelector;
 
-use crate::wire::params::{AddressDeltasParam, AddressesParam, GetBlockHashesOptions};
+use crate::wire::params::{
+    AddressDeltasParam, AddressTxidsParam, AddressesParam, GetBlockHashesOptions,
+};
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    DeltaRange, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
-    MempoolInfoResponse, MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
-    RawTransactionResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
+    BlockchainInfoResponse, DeltaRange, GetBlockHashesResponse, GetBlockResponse,
+    GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NodeInfoResponse,
+    PeerInfoEntry, RawMempoolResponse, RawTransactionResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_hash_to_display, block_hashes_to_wire, block_header_to_wire,
     block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex,
     bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire, mining_info_to_wire,
     node_info_to_wire, peer_info_to_wire, transaction_view_to_wire, txid_from_hex, txid_to_display,
-    unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
+    unified_receivers_to_wire, utxo_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -465,6 +467,66 @@ impl<S: NodeRpcService> NodeRpc<S> {
                     end: range.end.into(),
                 }),
         })
+    }
+
+    /// `getaddresstxids`: every transaction id touching the requested addresses
+    /// over an optional inclusive height window.
+    ///
+    /// Served locally over [`queries::address_txids`], which owns the range
+    /// defaulting and the explorer policy (nothing serviceable, or a backwards
+    /// range, is an empty answer). This renders each id in display order.
+    pub(crate) async fn get_address_txids(
+        &self,
+        params: AddressTxidsParam,
+    ) -> Result<Vec<String>, RpcError> {
+        if params.addresses.is_empty() {
+            return Err(RpcError::InvalidParams(
+                "addresses must not be empty".into(),
+            ));
+        }
+        let start = params
+            .start
+            .map(Height::try_from)
+            .transpose()
+            .map_err(|_| RpcError::InvalidParams("start is not a valid height".into()))?;
+        let end = params
+            .end
+            .map(Height::try_from)
+            .transpose()
+            .map_err(|_| RpcError::InvalidParams("end is not a valid height".into()))?;
+        let addrs: Vec<TransparentAddress> = params
+            .addresses
+            .into_iter()
+            .map(TransparentAddress::new)
+            .collect();
+        let snapshot = self.engine.snapshot().await?;
+        let txids = queries::address_txids(&snapshot, &addrs, start, end).await?;
+        Ok(txids.into_iter().map(txid_to_display).collect())
+    }
+
+    /// `getaddressutxos`: every unspent transparent output held by the requested
+    /// addresses.
+    ///
+    /// Served locally over [`queries::address_utxos`]. Range-less — an unspent
+    /// output is a fact about the current chain, not a window of it. Each entry
+    /// renders in zcashd's insight-explorer shape.
+    pub(crate) async fn get_address_utxos(
+        &self,
+        params: AddressesParam,
+    ) -> Result<Vec<AddressUtxoEntry>, RpcError> {
+        if params.addresses.is_empty() {
+            return Err(RpcError::InvalidParams(
+                "addresses must not be empty".into(),
+            ));
+        }
+        let addrs: Vec<TransparentAddress> = params
+            .addresses
+            .into_iter()
+            .map(TransparentAddress::new)
+            .collect();
+        let snapshot = self.engine.snapshot().await?;
+        let utxos = queries::address_utxos(&snapshot, &addrs).await?;
+        Ok(utxos.into_iter().map(utxo_to_wire).collect())
     }
 
     /// `validateaddress`: classify a transparent address against the serving
@@ -1412,6 +1474,163 @@ mod tests {
             .await,
             Err(RpcError::InvalidParams(_))
         ));
+    }
+
+    /// The seven txids the zebra 6.4.2 oracle returned for the grant-slice
+    /// address, in display order. The domain holds each byte-reversed; the handler
+    /// must render them back to exactly these strings.
+    const ORACLE_ADDRESS_TXIDS: [&str; 7] = [
+        "6c94e4296a8b85038049e4296841f8d616239f71826880d59c5c7f04c4204237",
+        "6c8f3258d8d1ed6557e98f76f28acec83f4e80e8273dae1d0739762f80ba69e6",
+        "5ec92569c7b37cd0024dc73e7a5cd7aa304cc89b112712d4f3676819ef9275ca",
+        "4b0135d06252f61e71e407fd545219a43754d5382bac6995ee700d96dba4b1b5",
+        "59c18898226d2f43d9d32f423c1eaa54ea8b0930e833c1c91e62fe594bd1c1a8",
+        "faaac7e25bdd6aae28492b13e37b42fdc3059ef50556dbe18aa11c293af7633e",
+        "1c08fb59f336eba0705118847fccd0cfba37a7747b1437b66266d8c47f22975e",
+    ];
+
+    /// `getaddresstxids` returns the oracle's txids in display order, served
+    /// locally over `AddressRead::tx_ids`. The mock is seeded with each id
+    /// decoded from the oracle's display string (so the domain holds the internal
+    /// bytes), and the handler must render them back byte-for-byte.
+    #[tokio::test]
+    async fn getaddresstxids_renders_the_oracle_ids_in_display_order() {
+        let scripted: Vec<TransactionId> = ORACLE_ADDRESS_TXIDS
+            .iter()
+            .map(|display| crate::wire::txid_from_hex(display).expect("valid oracle txid"))
+            .collect();
+        let engine = MockIndexerService::new(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(3_504_000).expect("valid height"),
+                hash: BlockHash::from([0x11u8; 32]),
+            }),
+            txids: scripted,
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let got = node
+            .get_address_txids(crate::wire::params::AddressTxidsParam {
+                addresses: vec!["t1grantslice".to_string()],
+                start: None,
+                end: None,
+            })
+            .await
+            .expect("txids");
+        assert_eq!(got, ORACLE_ADDRESS_TXIDS);
+    }
+
+    /// An empty address list is a parameter error, as the other address methods
+    /// enforce at their wire boundary.
+    #[tokio::test]
+    async fn getaddresstxids_rejects_an_empty_address_list() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_address_txids(crate::wire::params::AddressTxidsParam {
+                addresses: Vec::new(),
+                start: None,
+                end: None,
+            })
+            .await,
+            Err(RpcError::InvalidParams(_))
+        ));
+    }
+
+    /// `getaddressutxos` renders each unspent output in zcashd's insight-explorer
+    /// shape: the exact key set, the txid in display order, and the value as its
+    /// integer zatoshis under `satoshis`.
+    #[tokio::test]
+    async fn getaddressutxos_renders_the_zcashd_entry_shape() {
+        use zaino_primitives::types::{Script, TransparentAddress, Utxo, Zatoshis};
+        let utxo = Utxo {
+            address: TransparentAddress::new("t1grantslice".to_string()),
+            txid: TransactionId::from([0xABu8; 32]),
+            output_index: 2,
+            script: Script::new(vec![0x76, 0xa9]),
+            satoshis: Zatoshis::new(123_456).expect("valid amount"),
+            height: Height::try_from(3_504_000).expect("valid height"),
+        };
+        let engine = MockIndexerService::new(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(3_504_000).expect("valid height"),
+                hash: BlockHash::from([0x11u8; 32]),
+            }),
+            utxos: vec![utxo],
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let got = node
+            .get_address_utxos(crate::wire::params::AddressesParam {
+                addresses: vec!["t1grantslice".to_string()],
+            })
+            .await
+            .expect("utxos");
+        let json = serde_json::to_value(&got).expect("serialize");
+        let entry = json.as_array().and_then(|a| a.first()).expect("one entry");
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "address",
+                "height",
+                "outputIndex",
+                "satoshis",
+                "script",
+                "txid"
+            ]
+        );
+        assert_eq!(
+            entry.get("txid").and_then(serde_json::Value::as_str),
+            Some("ab".repeat(32).as_str())
+        );
+        assert_eq!(
+            entry.get("outputIndex").and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            entry.get("script").and_then(serde_json::Value::as_str),
+            Some("76a9")
+        );
+        assert_eq!(
+            entry.get("satoshis").and_then(serde_json::Value::as_u64),
+            Some(123_456)
+        );
+        assert_eq!(
+            entry.get("height").and_then(serde_json::Value::as_u64),
+            Some(3_504_000)
+        );
+    }
+
+    /// An unserviceable chain (no tip, hence no coverage) is an empty list, never
+    /// an error — the explorer policy the query layer owns, surfaced here.
+    #[tokio::test]
+    async fn getaddressutxos_is_empty_when_nothing_is_serviceable() {
+        use zaino_primitives::types::{Script, TransparentAddress, Utxo, Zatoshis};
+        let engine = MockIndexerService::new(MockChain {
+            tip: None,
+            utxos: vec![Utxo {
+                address: TransparentAddress::new("t1grantslice".to_string()),
+                txid: TransactionId::from([0xABu8; 32]),
+                output_index: 0,
+                script: Script::new(vec![]),
+                satoshis: Zatoshis::new(1).expect("valid amount"),
+                height: Height::GENESIS,
+            }],
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let got = node
+            .get_address_utxos(crate::wire::params::AddressesParam {
+                addresses: vec!["t1grantslice".to_string()],
+            })
+            .await
+            .expect("an unserviceable chain is a valid query with an empty answer");
+        assert!(got.is_empty());
     }
 
     #[tokio::test]

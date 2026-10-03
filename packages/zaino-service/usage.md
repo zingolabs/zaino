@@ -140,6 +140,15 @@ zcashd documents — applied once here rather than in each adapter. The returned
 which is `None` exactly when no query ran, so an adapter echoing the range has
 the authoritative value rather than re-deriving it.
 
+`address_txids(snapshot, addrs, start, end)` and `address_utxos(snapshot, addrs)`
+compose the remaining insight-explorer address reads the same way.
+`address_txids` takes the inclusive optional bounds of `address_deltas` and
+de-duplicates ids in first-seen order, so a multi-address query reports a
+transaction that paid two of them once. `address_utxos` is range-less — an
+unspent output is a fact about the current chain, not a window of it — and both
+take the explorer policy: an unserviceable snapshot answers empty, never an
+error.
+
 ## Errors
 
 Every read error separates a *not-yet-serviceable* answer
