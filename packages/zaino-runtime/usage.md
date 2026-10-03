@@ -26,11 +26,15 @@ ok(D)    ⟺ wired(D): Serves<D::UseCase>
 ```
 
 One use case, several deployments: the light-wallet demand served with
-address history relayed to the validator (`LightWalletPassthrough`, the only
-deployment today) and with a local transparent index later are two
+address history relayed to the validator (`LightWalletPassthrough`) and with a
+local transparent index later are two
 deployments of one use case. Routing and index set are the deployment's
 choices, not the use case's, so a second implementation of the same demand is
 free to make them differently.
+
+The node-RPC / block-explorer demand has one deployment so far,
+`NodeRpcPassthrough`: the same compact-block index set, every placement relayed
+to the validator or withheld (`NodeRpcRouting`), and the `NodeRpcSource` bundle.
 
 Each deployment is one file under `deployment/` holding its marker, its
 `Deployment` impl, its `RuntimePlan` impl and the validator bundle it

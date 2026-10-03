@@ -305,9 +305,11 @@ fn to_zebra_network(network: Network) -> zebra_chain::parameters::Network {
 /// `z_validateaddress`, `z_listunifiedreceivers`).
 ///
 /// `zcash_protocol::consensus::Network` has only `MainNetwork` and
-/// `TestNetwork`; it cannot express regtest, which shares the testnet address
-/// encoding, so `Regtest` maps to `TestNetwork`. The explorer deploy runs on
-/// mainnet, where the mapping is exact.
+/// `TestNetwork`; it cannot express regtest, so `Regtest` maps to
+/// `TestNetwork`. That is exact for transparent addresses, which regtest
+/// encodes as testnet does, but not for shielded ones: regtest Sapling and
+/// unified addresses carry their own human-readable parts, which a
+/// `TestNetwork` validation rejects. On mainnet the mapping is exact.
 fn to_zcash_network(network: Network) -> ZcashNetwork {
     match network {
         Network::Mainnet => ZcashNetwork::MainNetwork,

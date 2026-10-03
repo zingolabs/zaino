@@ -9,8 +9,20 @@ serving adapters, and the only place a runtime value becomes a type.
 A daemon runs one **deployment**, selected by config:
 
 ```toml
-deployment = "light-wallet-passthrough"   # the default; the only variant today
+deployment = "light-wallet-passthrough"   # the default
+# deployment = "node-rpc-passthrough"     # the node / block-explorer JSON-RPC
 ```
+
+| Deployment | Serves | Listens on |
+|---|---|---|
+| `light-wallet-passthrough` | `CompactTxStreamer` gRPC | `serve.grpc_listen_address` (default `127.0.0.1:8137`) |
+| `node-rpc-passthrough` | Zcash node JSON-RPC (zcashd-compatible) | `serve.jsonrpc_listen_address` (default `127.0.0.1:8232`) |
+
+Both are layered from `ZAINO_`-prefixed env with `__` for nesting, e.g.
+`ZAINO_DEPLOYMENT=node-rpc-passthrough` and
+`ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS=0.0.0.0:8232`. A non-loopback bind is
+taken as given: neither server applies TLS or an authentication layer, so a
+public bind belongs behind a boundary the deployment controls.
 
 A deployment is a type in `zaino_runtime::deployment` binding the use case it
 serves, the routing the engine is composed under and the index set the store
