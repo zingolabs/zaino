@@ -18,7 +18,10 @@ use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_noderpc::{JsonRpcServer, NodeRpc};
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_runtime::config::IndexedDeploymentConfig;
-use zaino_runtime::deployment::{LightWalletLocal, LightWalletSource, NodeRpcLocal, NodeRpcSource};
+use zaino_runtime::deployment::{
+    LightWalletLocal, LightWalletPassthrough, LightWalletPassthroughSource, NodeRpcLocal,
+    NodeRpcSource,
+};
 use zaino_runtime::{boot_indexed, Orchestra};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
@@ -210,8 +213,11 @@ async fn select_deployment<C>(
 where
     // Each arm names what its deployment requires of the validator, as one
     // bundle; the demand its adapter carries then follows from the impls. The
-    // bound is the union over the arms — the shared client answers both.
-    C: LightWalletSource + NodeRpcSource,
+    // bound is the union over the arms — the shared client answers all three.
+    // `LightWalletPassthroughSource` is the widest light-wallet bundle (it
+    // extends the shared floor the local arm needs with the address ports the
+    // passthrough arm relays), so it subsumes the local arm's requirement.
+    C: LightWalletPassthroughSource + NodeRpcSource,
 {
     let runtime = IndexedDeploymentConfig {
         store: config.store.clone(),
@@ -221,6 +227,15 @@ where
     let jsonrpc = config.serve.jsonrpc_listen_address;
     let orchestra = match config.deployment {
         DeploymentKind::LightWalletPassthrough => {
+            let orchestra =
+                boot_indexed::<LightWalletPassthrough, _, C>(client, &runtime, |engine| {
+                    GrpcServer::new(LightServe::new(engine), grpc)
+                })
+                .await?;
+            info!(grpc = %grpc, "Zaino runtime booted");
+            orchestra
+        }
+        DeploymentKind::LightWalletLocal => {
             let orchestra = boot_indexed::<LightWalletLocal, _, C>(client, &runtime, |engine| {
                 GrpcServer::new(LightServe::new(engine), grpc)
             })
@@ -228,7 +243,7 @@ where
             info!(grpc = %grpc, "Zaino runtime booted");
             orchestra
         }
-        DeploymentKind::NodeRpcPassthrough => {
+        DeploymentKind::NodeRpcLocal => {
             // `validateaddress` / `z_validateaddress` are pure functions of an
             // address and a network, so the serving adapter carries the network.
             let network = to_zcash_network(config.network);

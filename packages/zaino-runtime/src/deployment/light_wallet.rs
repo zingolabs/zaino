@@ -15,8 +15,10 @@ use zaino_source::{
 use crate::deployment::IndexedSource;
 
 mod local;
+mod passthrough;
 
 pub use local::LightWalletLocal;
+pub use passthrough::{LightWalletPassthrough, LightWalletPassthroughSource};
 
 /// The floor every light-wallet deployment requires of the validator: the
 /// indexed assembly's own floor ([`IndexedSource`]) plus the ports the wallet's

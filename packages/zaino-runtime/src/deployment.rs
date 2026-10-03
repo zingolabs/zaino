@@ -32,7 +32,9 @@
 mod light_wallet;
 mod node_rpc;
 
-pub use light_wallet::{LightWalletLocal, LightWalletSource};
+pub use light_wallet::{
+    LightWalletLocal, LightWalletPassthrough, LightWalletPassthroughSource, LightWalletSource,
+};
 pub use node_rpc::{NodeRpcLocal, NodeRpcSource};
 
 use zaino_chain_head::ChainHeadBlockSource;

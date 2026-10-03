@@ -142,17 +142,27 @@ impl Default for ServeConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum DeploymentKind {
     /// The light-wallet use case over the compact-block index set, with
-    /// everything the wallet parses itself relayed to the validator. Serves the
-    /// `CompactTxStreamer` gRPC on `serve.grpc_listen_address`.
+    /// everything the wallet parses itself — transparent address history
+    /// included — relayed to the validator. Serves the `CompactTxStreamer` gRPC
+    /// on `serve.grpc_listen_address`.
     #[default]
     LightWalletPassthrough,
-    /// The node-RPC / explorer use case over the same compact-block index set,
-    /// with full and verbose blocks, decoded transactions, the chain-info
-    /// aggregate, transparent address history, the node-status reads and the
-    /// mempool listing relayed to the validator; spend status and transaction
-    /// location withheld. Serves the Zcash JSON-RPC on
-    /// `serve.jsonrpc_listen_address`.
-    NodeRpcPassthrough,
+    /// The light-wallet use case over the transparent-history index set, serving
+    /// address history locally so the wallet's queried addresses are never
+    /// disclosed to the validator. Serves the `CompactTxStreamer` gRPC on
+    /// `serve.grpc_listen_address`.
+    LightWalletLocal,
+    /// The node-RPC / explorer use case over the transparent-history index set,
+    /// serving transparent address history and spend lookups locally (which a
+    /// plain-RPC validator cannot answer) and relaying full and verbose blocks,
+    /// decoded transactions, the chain-info aggregate, the node-status reads and
+    /// the mempool listing to the validator; transaction location withheld.
+    /// Serves the Zcash JSON-RPC on `serve.jsonrpc_listen_address`.
+    ///
+    /// Also accepts the legacy value `node-rpc-passthrough`, which the live
+    /// cluster deploy still sets, as an alias.
+    #[serde(alias = "node-rpc-passthrough")]
+    NodeRpcLocal,
 }
 
 /// The zainod daemon configuration.
@@ -750,14 +760,16 @@ path = "/tmp/zaino-store"
 "#;
         let path = write(&dir, "env-node-rpc.toml", toml);
         // nextest runs each test in its own process, so these do not leak across
-        // tests; removed promptly regardless.
+        // tests; removed promptly regardless. The deploy still sets the legacy
+        // `node-rpc-passthrough` value, which the loader accepts as an alias for
+        // `NodeRpcLocal` — so this also pins the alias through the full loader.
         std::env::set_var("ZAINO_DEPLOYMENT", "node-rpc-passthrough");
         std::env::set_var("ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS", "0.0.0.0:8232");
         let config = load_config(&path);
         std::env::remove_var("ZAINO_DEPLOYMENT");
         std::env::remove_var("ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS");
         let config = config.expect("load");
-        assert_eq!(config.deployment, DeploymentKind::NodeRpcPassthrough);
+        assert_eq!(config.deployment, DeploymentKind::NodeRpcLocal);
         assert_eq!(
             config.serve.jsonrpc_listen_address,
             "0.0.0.0:8232".parse().expect("valid addr"),
@@ -832,9 +844,14 @@ path = "/tmp/zaino-store"
             DeploymentKind::default(),
         );
         assert_eq!(
-            super::deployment_from_env_value(Ok("node-rpc-passthrough".to_owned()))
+            super::deployment_from_env_value(Ok("node-rpc-local".to_owned()))
                 .expect("a known deployment name"),
-            DeploymentKind::NodeRpcPassthrough,
+            DeploymentKind::NodeRpcLocal,
+        );
+        assert_eq!(
+            super::deployment_from_env_value(Ok("light-wallet-local".to_owned()))
+                .expect("a known deployment name"),
+            DeploymentKind::LightWalletLocal,
         );
         assert_eq!(
             super::deployment_from_env_value(Ok("light-wallet-passthrough".to_owned()))
@@ -851,6 +868,20 @@ path = "/tmp/zaino-store"
             ))),
             Err(IndexerError::FixtureDeploymentEnv(_))
         ));
+    }
+
+    /// The live cluster deploy sets `ZAINO_DEPLOYMENT=node-rpc-passthrough`; the
+    /// renamed `NodeRpcLocal` keeps that value working through the `serde` alias,
+    /// so the rename does not require a coordinated deploy change. Pinned on the
+    /// fixture parse, which shares the loader's names.
+    #[cfg(feature = "ztest-fixture")]
+    #[test]
+    fn node_rpc_passthrough_alias_parses_to_node_rpc_local() {
+        assert_eq!(
+            super::deployment_from_env_value(Ok("node-rpc-passthrough".to_owned()))
+                .expect("the legacy alias is accepted"),
+            DeploymentKind::NodeRpcLocal,
+        );
     }
 
     /// Both mainnet fixtures bake the JSON-RPC bind beside the gRPC one, so a

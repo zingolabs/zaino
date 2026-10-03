@@ -1,6 +1,34 @@
 //! The light-wallet routings.
+//!
+//! Two, differing only in where transparent address history is answered:
+//! [`LightWalletPassthroughRouting`] relays it to the validator,
+//! [`LightWalletLocalRouting`] composes it from Zaino's own indexes. Everything
+//! else is identical.
 
 use super::{Local, Passthrough, Routing, Withheld};
+
+/// The lightwalletd-shaped routing with transparent address history **relayed**
+/// to the validator, treestate relayed too, and the node/explorer-only reads
+/// withheld.
+///
+/// Address history is [`Passthrough`]: the wallet's `GetTaddressBalance`,
+/// `GetAddressUtxos` and `GetTaddressTxids` are relayed to the validator, which
+/// discloses the queried addresses to it — the privacy cost a local transparent
+/// index exists to remove. The deployment under this routing builds only the
+/// compact-block index set and requires the address source ports;
+/// [`LightWalletLocalRouting`] is the sibling that indexes the history instead.
+///
+/// Spend status and transaction location stay [`Withheld`] and treestate stays
+/// [`Passthrough`], exactly as under the local routing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightWalletPassthroughRouting;
+
+impl Routing for LightWalletPassthroughRouting {
+    type Address = Passthrough;
+    type Treestate = Passthrough;
+    type Spend = Withheld;
+    type TransactionLocation = Withheld;
+}
 
 /// The lightwalletd-shaped routing with transparent address history served
 /// **locally** from Zaino's own indexes, treestate relayed live to the
@@ -57,6 +85,33 @@ mod tests {
                     assert_eq!(placement, PlacementKind::Withheld)
                 }
                 Capability::Treestate
+                | Capability::SubtreeRoots
+                | Capability::RawTransaction
+                | Capability::Mempool
+                | Capability::Broadcast
+                | Capability::NodeStatus
+                | Capability::ReportedUpgrades => {
+                    assert_eq!(placement, PlacementKind::Passthrough)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn light_passthrough_routing_places_every_capability() {
+        use strum::IntoEnumIterator;
+        for capability in Capability::iter() {
+            // The passthrough table differs from the local one in exactly one
+            // place: address history is relayed to the validator, not composed
+            // locally. Spend status and transaction location stay withheld.
+            let placement = LightWalletPassthroughRouting::placement(capability);
+            match capability {
+                Capability::Blocks => assert_eq!(placement, PlacementKind::Local),
+                Capability::SpendStatus | Capability::TransactionLocation => {
+                    assert_eq!(placement, PlacementKind::Withheld)
+                }
+                Capability::AddressHistory
+                | Capability::Treestate
                 | Capability::SubtreeRoots
                 | Capability::RawTransaction
                 | Capability::Mempool

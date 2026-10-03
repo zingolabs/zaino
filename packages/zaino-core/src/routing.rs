@@ -43,7 +43,7 @@ mod light_wallet;
 mod node_rpc;
 mod placement;
 
-pub use light_wallet::LightWalletLocalRouting;
+pub use light_wallet::{LightWalletLocalRouting, LightWalletPassthroughRouting};
 pub use node_rpc::NodeRpcLocalRouting;
 pub use placement::{Local, Passthrough, Placement, Withheld};
 
