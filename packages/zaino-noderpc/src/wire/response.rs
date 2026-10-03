@@ -975,6 +975,109 @@ pub struct PeerInfoEntry {
     pub inbound: bool,
 }
 
+/// The `getblockdeltas` response — a block's transparent value movements and the
+/// chain-position header fields zcashd reports alongside them.
+///
+/// The key set and order mirror zcashd's `blockToDeltasJSON`
+/// (`rpc/blockchain.cpp`): the block's own fields (`hash`, `size`, `height`,
+/// `version`, `merkleroot`, `time`, `nonce`, `bits`), its chain-position facts
+/// (`confirmations`, `mediantime`, `difficulty`, `chainwork`,
+/// `previousblockhash`, `nextblockhash`), and the per-transaction `deltas`.
+///
+/// `chainwork` is absent (not `null`) when the validator does not track it — the
+/// same `getblock` policy; `previousblockhash` is absent for genesis and
+/// `nextblockhash` at the tip. Every 32-byte value is display order; `nonce` is
+/// hex; `bits` is the 8-digit hex nBits; `chainwork` is 64-character big-endian
+/// hex.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GetBlockDeltasResponse {
+    /// Hash of this block, as hex.
+    pub hash: String,
+    /// Depth of this block in the best chain.
+    pub confirmations: i64,
+    /// Serialized block size, in bytes.
+    pub size: u64,
+    /// Height of this block.
+    pub height: u32,
+    /// Block version.
+    pub version: u32,
+    /// Merkle root of the transaction tree, as hex.
+    #[serde(rename = "merkleroot")]
+    pub merkle_root: String,
+    /// The per-transaction transparent deltas, in block order.
+    pub deltas: Vec<TransactionDeltaEntry>,
+    /// Block time, in seconds since the Unix epoch.
+    pub time: u32,
+    /// Median of the block's own time and its ten predecessors
+    /// (`GetMedianTimePast`).
+    pub mediantime: u32,
+    /// Header nonce, as hex.
+    pub nonce: String,
+    /// Difficulty threshold in compact (nBits) form, as 8-digit hex.
+    pub bits: String,
+    /// Difficulty as a multiple of the network minimum.
+    pub difficulty: f64,
+    /// Cumulative chainwork, as 64-character big-endian hex. Absent when the
+    /// validator does not track it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chainwork: Option<String>,
+    /// Hash of the previous block, as hex. Absent for genesis.
+    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none")]
+    pub previous_block_hash: Option<String>,
+    /// Hash of the next block on the best chain, as hex. Absent at the tip.
+    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none")]
+    pub next_block_hash: Option<String>,
+}
+
+/// One transaction's transparent value movements, in the `deltas` array.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TransactionDeltaEntry {
+    /// Transaction id, as hex.
+    pub txid: String,
+    /// The transaction's offset within the block.
+    pub index: u32,
+    /// The transparent inputs, in `vin` order. Empty for a coinbase.
+    pub inputs: Vec<InputDeltaEntry>,
+    /// The transparent outputs, in `vout` order.
+    pub outputs: Vec<OutputDeltaEntry>,
+}
+
+/// One transparent input of a transaction, as a **negative** value movement.
+///
+/// `address` is present only when the spent output's script is a standard
+/// P2PKH/P2SH template, absent otherwise — the same rule zcashd applies, which
+/// emits the entry without an address for any other script.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InputDeltaEntry {
+    /// The transparent address the value left, when the spent output's script is
+    /// a standard template; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// The negation of the spent output's value, in zatoshis: a spend is negative.
+    pub satoshis: i64,
+    /// This input's index within the spending transaction (`vin` index).
+    pub index: u32,
+    /// The spent transaction's id, as hex.
+    pub prevtxid: String,
+    /// The index of the spent output within its transaction.
+    pub prevout: u32,
+}
+
+/// One transparent output of a transaction, as a positive value movement.
+///
+/// `address` follows the same P2PKH/P2SH rule as [`InputDeltaEntry`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutputDeltaEntry {
+    /// The transparent address the value arrived at, when the script is a standard
+    /// template; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// The output's value, in zatoshis.
+    pub satoshis: u64,
+    /// This output's index within the transaction (`vout` index).
+    pub index: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

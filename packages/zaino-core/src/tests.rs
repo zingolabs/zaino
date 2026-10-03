@@ -1321,6 +1321,273 @@ mod block_hash_reads {
     }
 }
 
+// --- composed block deltas: getblockdeltas -----------------------------------
+//
+// `BlockDeltasRead` composes `getblockdeltas` from the block, verbose,
+// resolved-transaction and (local) header reads — no new source port. A
+// transparent spend is a negative delta at its input index; outputs are positive
+// at their indices; a coinbase has no inputs; the median time is the median of the
+// block's own time and its ten predecessors, over local headers. A predecessor
+// header missing below the tip is a typed `MissingHeader`.
+mod block_deltas_reads {
+    use super::*;
+    use zaino_primitives::types::{
+        AbsoluteChainWork, BlockHash, BlockHeader, BlockSelector, BlockTreeSizes, BlockVerbose,
+        ChainMetadata, CoinbaseInput, CompactBlock, CompactDifficulty, DecodedBlock,
+        DetailedTransaction, EquihashSolution, OrchardData, SaplingData, Script, Transaction,
+        TransactionDetail, TransparentData, TransparentInput, TransparentInputDetail,
+        TransparentOutput, TreeSize, Zatoshis,
+    };
+    use zaino_service::BlockDeltasRead;
+    use zaino_service::error::BlockDeltasError;
+
+    const BASE: u32 = 1_000_000;
+    const TIP: u32 = 12;
+    /// The block-12 hash the validator serves; the mediantime reads headers off
+    /// the local tiers, so this hash need not match the tier's compact-block hash.
+    fn block_hash() -> BlockHash {
+        BlockHash::from([0x0C; 32])
+    }
+    fn txid(byte: u8) -> TransactionId {
+        TransactionId::from([byte; 32])
+    }
+
+    /// An engine composing a finalised tier of `fs` compact blocks (empty
+    /// non-finalised side) over a validator `source` serving the full block, its
+    /// verbose overlay and its decoded transactions.
+    fn engine_over(fs: Vec<CompactBlock>, source: MockChain) -> LightEngine {
+        Engine::new(
+            StubNonFinalised::from_blocks(fs),
+            StubNonFinalised::empty(),
+            ValidatorClient::new(source, RetryPolicy::default()),
+        )
+    }
+
+    /// Finalised-tier compact blocks over `[0, TIP]`, each at time `BASE + h*600`
+    /// — strictly increasing, so the median time of any eleven-block window is its
+    /// middle height's time. `skip` drops one height, punching a chain-view hole.
+    fn finalised_times(skip: Option<u32>) -> Vec<CompactBlock> {
+        (0..=TIP)
+            .filter(|h| Some(*h) != skip)
+            .map(|h| {
+                let mut block = stub_compact_block(h, u8::try_from(h).expect("tag fits u8"));
+                block.time = BASE + h * 600;
+                block
+            })
+            .collect()
+    }
+
+    /// A validator serving block `TIP`: the full block (for the header), its
+    /// verbose overlay (confirmations/difficulty/chainwork/next), and its decoded
+    /// transactions — a coinbase paying 1000 and a spend of that output into two
+    /// outputs (600 + 400).
+    fn validator() -> MockChain {
+        let header = BlockHeader {
+            hash: block_hash(),
+            version: 4,
+            prev_hash: BlockHash::from([0x0B; 32]),
+            height: height(TIP),
+            time: BASE + TIP * 600,
+            merkle_root: [0x22; 32].into(),
+            block_commitments: [0x00; 32].into(),
+            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+            nonce: [0x33; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        };
+        let full_block = zaino_primitives::types::Block {
+            header,
+            transactions: Vec::new(),
+            chain_metadata: ChainMetadata::ZERO,
+        };
+
+        let mut work_bytes = [0u8; 32];
+        work_bytes[28..].copy_from_slice(&[0x00, 0x00, 0x04, 0x00]);
+        let verbose = BlockVerbose {
+            confirmations: 1,
+            difficulty: 42.5,
+            chainwork: AbsoluteChainWork::try_from_reported(work_bytes).expect("in-range work"),
+            chain_supply: None,
+            value_pools: Vec::new(),
+            final_sapling_root: None,
+            final_orchard_root: None,
+            tree_sizes: BlockTreeSizes {
+                sapling: TreeSize::from(0u32),
+                orchard: TreeSize::from(0u32),
+                ironwood: TreeSize::from(0u32),
+            },
+            next_block_hash: None,
+        };
+
+        let coinbase = DetailedTransaction {
+            transaction: Transaction {
+                txid: txid(0xC0),
+                transparent: TransparentData {
+                    inputs: Vec::new(),
+                    outputs: vec![TransparentOutput {
+                        value: Zatoshis::new(1000).expect("valid amount"),
+                        script: Script::new(vec![0xA0, 0xA1]),
+                    }],
+                },
+                sapling: SaplingData::default(),
+                orchard: OrchardData::default(),
+                ironwood: OrchardData::default(),
+            },
+            detail: TransactionDetail {
+                version: 4,
+                overwintered: true,
+                version_group_id: Some(0x892f_2085),
+                lock_time: 0,
+                expiry_height: Some(Height::GENESIS),
+                size: 100,
+                coinbase: Some(CoinbaseInput {
+                    script: Script::new(vec![0x03, 0x01, 0x02, 0x03]),
+                    sequence: 0xffff_ffff,
+                }),
+                transparent_inputs: Vec::new(),
+                joinsplits: Vec::new(),
+            },
+            raw: vec![0xC0],
+        };
+        let spend = DetailedTransaction {
+            transaction: Transaction {
+                txid: txid(0x7A),
+                transparent: TransparentData {
+                    inputs: vec![TransparentInput {
+                        prev_txid: txid(0xC0),
+                        prev_index: 0,
+                    }],
+                    outputs: vec![
+                        TransparentOutput {
+                            value: Zatoshis::new(600).expect("valid amount"),
+                            script: Script::new(vec![0xB0, 0xB1]),
+                        },
+                        TransparentOutput {
+                            value: Zatoshis::new(400).expect("valid amount"),
+                            script: Script::new(vec![0xB2, 0xB3]),
+                        },
+                    ],
+                },
+                sapling: SaplingData::default(),
+                orchard: OrchardData::default(),
+                ironwood: OrchardData::default(),
+            },
+            detail: TransactionDetail {
+                version: 4,
+                overwintered: true,
+                version_group_id: Some(0x892f_2085),
+                lock_time: 0,
+                expiry_height: Some(Height::GENESIS),
+                size: 180,
+                coinbase: None,
+                transparent_inputs: vec![TransparentInputDetail {
+                    script_sig: Script::new(vec![0x51]),
+                    sequence: 0xffff_ffff,
+                }],
+                joinsplits: Vec::new(),
+            },
+            raw: vec![0x7A],
+        };
+        let decoded = DecodedBlock {
+            size: 777,
+            transactions: vec![coinbase, spend],
+        };
+
+        MockChain::new()
+            .with_block(full_block)
+            .with_block_verbose(verbose)
+            .with_block_decoded_by_hash(decoded)
+    }
+
+    #[tokio::test]
+    async fn composes_header_spend_signs_indices_and_median_time() {
+        let engine = engine_over(finalised_times(None), validator());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        let deltas = BlockDeltasRead::block_deltas(&snapshot, BlockSelector::Height(height(TIP)))
+            .await
+            .expect("served")
+            .expect("present");
+
+        // Header fields, composed from the block and its verbose overlay.
+        assert_eq!(deltas.hash, block_hash());
+        assert_eq!(u32::from(deltas.height), TIP);
+        assert_eq!(deltas.confirmations, 1);
+        assert_eq!(deltas.size, 777); // from the decoded block, not the header
+        assert_eq!(deltas.difficulty, 42.5);
+        assert_eq!(deltas.time, BASE + TIP * 600);
+        assert_eq!(deltas.prev_hash, Some(BlockHash::from([0x0B; 32])));
+        assert_eq!(deltas.next_hash, None);
+        assert!(deltas.chainwork.is_some());
+
+        // Median of the block's own time and its ten predecessors (heights
+        // 2..=12), strictly increasing, so the median is height 7's time.
+        assert_eq!(deltas.median_time, BASE + 7 * 600);
+
+        assert_eq!(deltas.deltas.len(), 2);
+
+        // The coinbase is first, at index 0, with no inputs and one positive
+        // output.
+        let coinbase = &deltas.deltas[0];
+        assert_eq!(coinbase.index, 0);
+        assert_eq!(coinbase.txid, txid(0xC0));
+        assert!(coinbase.inputs.is_empty(), "a coinbase has no input deltas");
+        assert_eq!(coinbase.outputs.len(), 1);
+        assert_eq!(coinbase.outputs[0].satoshis.as_u64(), 1000);
+        assert_eq!(coinbase.outputs[0].index, 0);
+
+        // The spend is second, at index 1. Its one input is a NEGATIVE delta at
+        // input index 0, carrying the spent output's script and the prevout.
+        let spend = &deltas.deltas[1];
+        assert_eq!(spend.index, 1);
+        assert_eq!(spend.txid, txid(0x7A));
+        assert_eq!(spend.inputs.len(), 1);
+        let input = &spend.inputs[0];
+        assert_eq!(input.satoshis.as_i64(), -1000);
+        assert!(input.satoshis.is_spend(), "a spend is a negative delta");
+        assert_eq!(input.index, 0);
+        assert_eq!(input.prev_txid, txid(0xC0));
+        assert_eq!(input.prevout, 0);
+        // The address carried is the spent (coinbase) output's script.
+        assert_eq!(input.script, Script::new(vec![0xA0, 0xA1]));
+
+        // Outputs are positive, at their vout indices.
+        assert_eq!(spend.outputs.len(), 2);
+        assert_eq!(spend.outputs[0].satoshis.as_u64(), 600);
+        assert_eq!(spend.outputs[0].index, 0);
+        assert_eq!(spend.outputs[1].satoshis.as_u64(), 400);
+        assert_eq!(spend.outputs[1].index, 1);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_block_is_a_served_none() {
+        // The validator serves nothing; the composition's first read misses, so the
+        // answer is the domain not-found, never an error.
+        let engine = engine_over(finalised_times(None), MockChain::new());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        assert!(
+            BlockDeltasRead::block_deltas(&snapshot, BlockSelector::Height(height(TIP)))
+                .await
+                .expect("a domain miss is a served None, not an error")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hole_below_the_tip_is_a_typed_missing_header() {
+        // A finalised tier missing height 5 — inside the median-time window of
+        // block 12 (heights 2..=12). The block, verbose and views all serve, so the
+        // composition reaches the median step and fails loud rather than inventing a
+        // median over a short window.
+        let engine = engine_over(finalised_times(Some(5)), validator());
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        match BlockDeltasRead::block_deltas(&snapshot, BlockSelector::Height(height(TIP))).await {
+            Err(BlockDeltasError::MissingHeader { height }) => {
+                assert_eq!(u32::from(height), 5);
+            }
+            other => panic!("a chain-view hole must be a typed MissingHeader, got {other:?}"),
+        }
+    }
+}
+
 mod chain_info_reads {
     use super::*;
     use zaino_service::ChainInfoRead;

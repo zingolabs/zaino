@@ -233,3 +233,60 @@ pub enum TransactionViewError {
         outputs: usize,
     },
 }
+
+/// Errors from [`crate::BlockDeltasRead`].
+///
+/// A typed enum, not a `read_error!` String type: composing a block's deltas has
+/// failure modes the shared three-case shape cannot name. An unknown block is a
+/// domain answer (`Ok(None)`, never a variant here); the variants are the
+/// inconsistencies that arise while composing a block the reads *did* serve.
+/// Each keeps its cause with `#[source]`, so an operator reaches the concrete
+/// failure. `getblockdeltas` is composed over reads the node-RPC set already
+/// holds, so these are the only ways composition fails.
+#[derive(Debug, thiserror::Error)]
+pub enum BlockDeltasError {
+    /// Resolving the block's transactions to the outputs their inputs spend
+    /// failed — a transport failure, a prevout the validator could not serve, or
+    /// a fan-out past the passthrough ceiling (see [`TransactionViewError`]).
+    #[error("resolving the block's transparent inputs failed")]
+    TransactionView(#[source] TransactionViewError),
+    /// Reading the block, its chain position, or a predecessor header failed.
+    #[error("reading the block or its chain position failed")]
+    Block(#[source] BlockReadError),
+    /// A predecessor header the median-time-past needed, at or below the pinned
+    /// tip, was missing — a hole in the chain view. The median time is taken over
+    /// heights that must exist, so a missing one is a view inconsistency,
+    /// surfaced loud rather than inventing a median. Mirrors
+    /// [`BlockHashReadError::MissingHeader`].
+    #[error("missing header at height {height} while composing the block's median time")]
+    MissingHeader {
+        /// The height whose header the chain view reported as absent.
+        height: Height,
+    },
+    /// A resolved input value could not be represented as a negative value
+    /// movement — a magnitude past the money supply. Fails loud rather than
+    /// truncating a corrupt amount.
+    #[error("input value {value} is not a representable negative delta")]
+    InputValueOutOfRange {
+        /// The input value that could not be negated within the supply bound.
+        value: u64,
+    },
+}
+
+/// A transaction-view resolution failure folds into the composed-read variant,
+/// keeping its cause — the `?` on `block_transaction_views` lifts a
+/// [`TransactionViewError`] straight into [`BlockDeltasError`].
+impl From<TransactionViewError> for BlockDeltasError {
+    fn from(source: TransactionViewError) -> Self {
+        Self::TransactionView(source)
+    }
+}
+
+/// A block / verbose / header read failure folds into the composed-read variant,
+/// keeping its cause — the `?` on the block, chain-position and header reads lifts
+/// a [`BlockReadError`] straight into [`BlockDeltasError`].
+impl From<BlockReadError> for BlockDeltasError {
+    fn from(source: BlockReadError) -> Self {
+        Self::Block(source)
+    }
+}

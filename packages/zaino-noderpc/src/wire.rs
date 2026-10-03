@@ -24,18 +24,22 @@ use zaino_primitives::types::{
     BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, ValuePoolBalance,
     Zatoshis,
 };
-use zaino_service::{BlockHashAt, BlockTransactionViews, MempoolEntry, TransactionView};
+use zaino_service::{
+    BlockDeltas, BlockHashAt, BlockTransactionViews, InputDelta, MempoolEntry, OutputDelta,
+    TransactionDeltas, TransactionView,
+};
 use zcash_protocol::consensus::Network;
 
 use crate::error::RpcError;
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltaEntry, AddressUtxoEntry, BlockHashLogical,
     BlockHeaderResponse, BlockResponse, BlockchainInfoResponse, CommitmentsResponse,
-    GetBlockHashesResponse, JoinSplitObject, LocalAddressResponse, MempoolEntryObject,
-    MiningInfoResponse, NetworkEntryResponse, NetworkInfoResponse, NetworkUpgradeResponse,
-    NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry, PoolTreestateResponse,
-    ScriptPubKey, ScriptSig, ShieldedOutput, ShieldedSpend, SubtreeRootEntry, SubtreeRootsResponse,
-    TipConsensusResponse, TransactionInput, TransactionObject, TransactionOutput, TreePoolSize,
+    GetBlockDeltasResponse, GetBlockHashesResponse, InputDeltaEntry, JoinSplitObject,
+    LocalAddressResponse, MempoolEntryObject, MiningInfoResponse, NetworkEntryResponse,
+    NetworkInfoResponse, NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject,
+    OrchardObject, OutputDeltaEntry, PeerInfoEntry, PoolTreestateResponse, ScriptPubKey, ScriptSig,
+    ShieldedOutput, ShieldedSpend, SubtreeRootEntry, SubtreeRootsResponse, TipConsensusResponse,
+    TransactionDeltaEntry, TransactionInput, TransactionObject, TransactionOutput, TreePoolSize,
     TreesResponse, TreestateResponse, TxOutResponse, UnifiedReceiversResponse,
     ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
 };
@@ -736,6 +740,94 @@ pub(crate) fn block_to_wire_v2(
         })
         .collect();
     block_response(block, verbose, views.size, tx)
+}
+
+/// The transparent address a locking script pays, when it is a standard
+/// P2PKH/P2SH template (domain -> wire). `None` for any other script, so a
+/// delta's `address` key is present exactly when zcashd's `IsValidDestination`
+/// would be true — zcashd emits the delta without an address otherwise.
+fn script_address(script: &Script, network: &Network) -> Option<String> {
+    let bytes: Vec<u8> = script.clone().into();
+    transparent_address_from_script(&bytes, network).map(|decoded| decoded.address)
+}
+
+/// Render the composed `getblockdeltas` result for the wire (domain -> wire).
+///
+/// The header fields and chain position render exactly as `getblock` does; the
+/// per-transaction `deltas` carry each transparent movement's integer zatoshis
+/// (inputs negative, outputs positive), its indices, and — only for a standard
+/// P2PKH/P2SH script — the address. Every 32-byte value renders in display order
+/// through the named render functions; no reversal is hand-rolled here.
+pub(crate) fn block_deltas_to_wire(
+    deltas: BlockDeltas,
+    network: &Network,
+) -> GetBlockDeltasResponse {
+    let height: u32 = deltas.height.into();
+    GetBlockDeltasResponse {
+        hash: block_hash_to_display(deltas.hash),
+        confirmations: deltas.confirmations,
+        size: deltas.size,
+        height,
+        version: deltas.version,
+        merkle_root: merkle_root_to_display(deltas.merkle_root),
+        deltas: deltas
+            .deltas
+            .into_iter()
+            .map(|entry| transaction_delta_to_wire(entry, network))
+            .collect(),
+        time: deltas.time,
+        mediantime: deltas.median_time,
+        nonce: to_hex(deltas.nonce),
+        bits: format!("{:08x}", deltas.bits.as_bits()),
+        difficulty: deltas.difficulty,
+        chainwork: deltas
+            .chainwork
+            .map(|work| bytes_to_hex(&work.to_be_bytes())),
+        previous_block_hash: deltas.prev_hash.map(block_hash_to_display),
+        next_block_hash: deltas.next_hash.map(block_hash_to_display),
+    }
+}
+
+/// Render one transaction's deltas (domain -> wire): its id and index, with its
+/// inputs and outputs in their original order.
+fn transaction_delta_to_wire(entry: TransactionDeltas, network: &Network) -> TransactionDeltaEntry {
+    TransactionDeltaEntry {
+        txid: txid_to_display(entry.txid),
+        index: entry.index,
+        inputs: entry
+            .inputs
+            .into_iter()
+            .map(|input| input_delta_to_wire(input, network))
+            .collect(),
+        outputs: entry
+            .outputs
+            .into_iter()
+            .map(|output| output_delta_to_wire(output, network))
+            .collect(),
+    }
+}
+
+/// Render one input delta (domain -> wire): a NEGATIVE value movement at its
+/// `vin` index, carrying the prevout in display order and — for a standard script
+/// — the address the value left.
+fn input_delta_to_wire(input: InputDelta, network: &Network) -> InputDeltaEntry {
+    InputDeltaEntry {
+        address: script_address(&input.script, network),
+        satoshis: input.satoshis.as_i64(),
+        index: input.index,
+        prevtxid: txid_to_display(input.prev_txid),
+        prevout: input.prevout,
+    }
+}
+
+/// Render one output delta (domain -> wire): a positive value movement at its
+/// `vout` index, carrying — for a standard script — the address the value paid.
+fn output_delta_to_wire(output: OutputDelta, network: &Network) -> OutputDeltaEntry {
+    OutputDeltaEntry {
+        address: script_address(&output.script, network),
+        satoshis: output.satoshis.as_u64(),
+        index: output.index,
+    }
 }
 
 /// Render a transparent-address validation for the wire (domain -> wire).

@@ -18,6 +18,7 @@
 //! the single aggregate handles.
 #![forbid(unsafe_code)]
 
+mod block_deltas;
 mod bundle;
 mod capability;
 mod controls;
@@ -39,6 +40,7 @@ pub mod conformance;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+pub use block_deltas::{BlockDeltas, BlockDeltasRead, InputDelta, OutputDelta, TransactionDeltas};
 pub use bundle::{ChainSegment, IndexerService, ServiceableRange, Snapshot};
 pub use capability::{Answerable, Capability, ServiceabilityManifest};
 pub use controls::{

@@ -23,6 +23,7 @@ pub use transport::{JsonRpcServeError, JsonRpcServer};
 use zaino_primitives::types::{Height, ShieldedPool, TransactionLocation, TransparentAddress};
 use zaino_service::error::ReadError;
 use zaino_service::queries;
+use zaino_service::BlockDeltasRead;
 use zaino_service::BlockHashRead;
 use zaino_service::BlockVerboseRead;
 use zaino_service::RawTransactionRead;
@@ -38,19 +39,20 @@ use crate::wire::params::{
 };
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
-    BlockchainInfoResponse, DeltaRange, GetBlockHashesResponse, GetBlockResponse,
-    GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse,
-    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, RawTransactionResponse,
-    SubtreeRootsResponse, TreestateResponse, TxOutResponse, UnifiedReceiversResponse,
-    ValidateAddressResponse, ZValidateAddressResponse,
+    BlockchainInfoResponse, DeltaRange, GetBlockDeltasResponse, GetBlockHashesResponse,
+    GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse,
+    NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
+    RawTransactionResponse, SubtreeRootsResponse, TreestateResponse, TxOutResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, block_hash_to_display, block_hashes_to_wire, block_header_to_wire,
-    block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex,
-    bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire, mining_info_to_wire,
-    network_info_to_wire, node_info_to_wire, peer_info_to_wire, subtree_roots_to_wire,
-    transaction_view_to_wire, treestate_to_wire, tx_out_to_wire, txid_from_hex, txid_to_display,
-    unified_receivers_to_wire, utxo_to_wire, validated_to_wire, z_validated_to_wire,
+    address_balance_to_wire, block_deltas_to_wire, block_hash_to_display, block_hashes_to_wire,
+    block_header_to_wire, block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire,
+    blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire,
+    mining_info_to_wire, network_info_to_wire, node_info_to_wire, peer_info_to_wire,
+    subtree_roots_to_wire, transaction_view_to_wire, treestate_to_wire, tx_out_to_wire,
+    txid_from_hex, txid_to_display, unified_receivers_to_wire, utxo_to_wire, validated_to_wire,
+    z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -361,6 +363,33 @@ impl<S: NodeRpcService> NodeRpc<S> {
         header
             .map(|header| block_hash_to_display(header.hash))
             .ok_or_else(|| RpcError::OutOfRange("Block height out of range".to_string()))
+    }
+
+    /// `getblockdeltas`: the transparent value movements of a block and the
+    /// chain-position header fields zcashd reports alongside them — the explorer's
+    /// per-block delta view.
+    ///
+    /// Indexer-only: Zebra answers `-32601`, so the shape authority is zcashd's
+    /// `blockToDeltasJSON`. The result is **composed** in the engine from the reads
+    /// the node-RPC set already serves — the block header, its chain position, its
+    /// resolved transactions, and the local header times its median time is taken
+    /// over — so it adds no validator round trip beyond what `getblock(_, 2)` does.
+    /// The block id is a hash, matching zcashd's single `"blockhash"` argument; the
+    /// engine resolves it to the block's own hash once (R50) before the composing
+    /// reads, so the header and the transactions cannot straddle a reorg. An
+    /// unknown block is a not-found error (`-5`), matching zcashd's `Block not
+    /// found`; the adapter only renders.
+    pub(crate) async fn get_block_deltas(
+        &self,
+        blockhash_hex: &str,
+    ) -> Result<GetBlockDeltasResponse, RpcError> {
+        let hash = blockhash_from_hex(blockhash_hex)?;
+        let snapshot = self.engine.snapshot().await?;
+        let deltas = snapshot
+            .block_deltas(BlockSelector::Hash(hash))
+            .await?
+            .ok_or_else(|| RpcError::NotFound(format!("no block for {blockhash_hex}")))?;
+        Ok(block_deltas_to_wire(deltas, &self.network))
     }
 
     /// `gettxout`: the unspent output at `(txid, n)`, relayed live from the
@@ -2515,6 +2544,255 @@ mod tests {
         assert!(matches!(
             node.z_list_unified_receivers("t1notunified").await,
             Err(RpcError::InvalidParams(_))
+        ));
+    }
+
+    /// A standard P2PKH locking script, so a delta carries an address.
+    fn p2pkh_script(hash_byte: u8) -> zaino_primitives::types::Script {
+        let mut bytes = vec![0x76, 0xa9, 0x14];
+        bytes.extend_from_slice(&[hash_byte; 20]);
+        bytes.extend_from_slice(&[0x88, 0xac]);
+        zaino_primitives::types::Script::new(bytes)
+    }
+
+    /// A composed `getblockdeltas` answer: a coinbase paying a P2PKH output and a
+    /// spend of a P2PKH output into one P2PKH output and one non-standard
+    /// (address-less) output. The block hash and the prevout txid are asymmetric,
+    /// so the display-order render is provably a reversal.
+    fn scripted_block_deltas() -> zaino_service::BlockDeltas {
+        use zaino_primitives::types::{
+            AbsoluteChainWork, BlockHash, CompactDifficulty, Script, SignedZatoshis, Zatoshis,
+        };
+        use zaino_service::{BlockDeltas, InputDelta, OutputDelta, TransactionDeltas};
+
+        let mut block_hash = [0x11u8; 32];
+        block_hash[31] = 0xaa;
+        let mut prevtxid = [0u8; 32];
+        prevtxid[0] = 0xab;
+        let mut work = [0u8; 32];
+        work[28..].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+
+        let coinbase = TransactionDeltas {
+            txid: TransactionId::from([0xC0; 32]),
+            index: 0,
+            inputs: Vec::new(),
+            outputs: vec![OutputDelta {
+                script: p2pkh_script(0x01),
+                satoshis: Zatoshis::new(625_000_000).expect("valid amount"),
+                index: 0,
+            }],
+        };
+        let spend = TransactionDeltas {
+            txid: TransactionId::from([0x7A; 32]),
+            index: 1,
+            inputs: vec![InputDelta {
+                script: p2pkh_script(0x02),
+                satoshis: SignedZatoshis::try_new(-1000).expect("valid amount"),
+                index: 0,
+                prev_txid: TransactionId::from(prevtxid),
+                prevout: 2,
+            }],
+            outputs: vec![
+                OutputDelta {
+                    script: p2pkh_script(0x03),
+                    satoshis: Zatoshis::new(600).expect("valid amount"),
+                    index: 0,
+                },
+                OutputDelta {
+                    // A non-standard script — no address, mirroring zcashd.
+                    script: Script::new(vec![0x6a, 0x04, 0xde, 0xad, 0xbe, 0xef]),
+                    satoshis: Zatoshis::new(400).expect("valid amount"),
+                    index: 1,
+                },
+            ],
+        };
+
+        BlockDeltas {
+            hash: BlockHash::from(block_hash),
+            confirmations: 5,
+            size: 777,
+            height: Height::try_from(100).expect("valid height"),
+            version: 4,
+            merkle_root: [0x22; 32].into(),
+            deltas: vec![coinbase, spend],
+            time: 1_600_000_000,
+            median_time: 1_599_999_000,
+            nonce: [0x33; 32],
+            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+            difficulty: 42.5,
+            chainwork: AbsoluteChainWork::try_from_reported(work).expect("in-range work"),
+            prev_hash: Some(BlockHash::from([0x0b; 32])),
+            next_hash: None,
+        }
+    }
+
+    /// The `getblockdeltas` wire golden: the exact zcashd key set and order, the
+    /// display-order 32-byte values, a NEGATIVE input `satoshis` at its index with
+    /// the prevout, positive outputs, an address on standard scripts and none on a
+    /// non-standard one, and a coinbase with no inputs.
+    #[tokio::test]
+    async fn get_block_deltas_renders_the_zcashd_shape() {
+        use serde_json::Value;
+        let engine = MockIndexerService::new(MockChain {
+            block_deltas: Some(scripted_block_deltas()),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let got = node
+            .get_block_deltas(&"00".repeat(32))
+            .await
+            .expect("deltas served");
+        // The serialized string pins the field *order* (serde preserves struct
+        // declaration order on the wire; `to_value` would re-sort). zcashd's
+        // `blockToDeltasJSON` emits exactly this order.
+        let wire = serde_json::to_string(&got).expect("serialize");
+        let expected_order = [
+            "hash",
+            "confirmations",
+            "size",
+            "height",
+            "version",
+            "merkleroot",
+            "deltas",
+            "time",
+            "mediantime",
+            "nonce",
+            "bits",
+            "difficulty",
+            "chainwork",
+            "previousblockhash",
+        ];
+        let mut last = 0usize;
+        for key in expected_order {
+            let marker = format!("\"{key}\":");
+            let at = wire
+                .find(&marker)
+                .unwrap_or_else(|| panic!("missing top-level key {key} in {wire}"));
+            assert!(at >= last, "key {key} is out of zcashd order in {wire}");
+            last = at;
+        }
+
+        let json = serde_json::to_value(&got).expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        // The full top-level key set (membership). `nextblockhash` is absent (the
+        // tip has no next); `chainwork` and `previousblockhash` are present.
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut expected_keys = expected_order;
+        expected_keys.sort_unstable();
+        assert_eq!(keys, expected_keys, "the key set must mirror zcashd");
+        assert!(
+            !obj.contains_key("nextblockhash"),
+            "the tip has no nextblockhash: {obj:?}"
+        );
+
+        // The block hash renders in display order (a reversal of the internal
+        // bytes): asymmetric input proves it.
+        assert_eq!(
+            obj.get("hash").and_then(Value::as_str),
+            Some(format!("aa{}", "11".repeat(31)).as_str())
+        );
+        assert_eq!(obj.get("confirmations").and_then(Value::as_i64), Some(5));
+        assert_eq!(obj.get("size").and_then(Value::as_u64), Some(777));
+        assert_eq!(obj.get("height").and_then(Value::as_u64), Some(100));
+        assert_eq!(obj.get("bits").and_then(Value::as_str), Some("1f07ffff"));
+        assert_eq!(obj.get("time").and_then(Value::as_u64), Some(1_600_000_000));
+        assert_eq!(
+            obj.get("mediantime").and_then(Value::as_u64),
+            Some(1_599_999_000)
+        );
+        assert!(obj.get("chainwork").and_then(Value::as_str).is_some());
+
+        let deltas = obj.get("deltas").and_then(Value::as_array).expect("deltas");
+        assert_eq!(deltas.len(), 2);
+
+        // The coinbase: index 0, no inputs, one positive P2PKH output.
+        let coinbase = deltas[0].as_object().expect("coinbase object");
+        assert_eq!(coinbase.get("index").and_then(Value::as_u64), Some(0));
+        assert!(
+            coinbase
+                .get("inputs")
+                .and_then(Value::as_array)
+                .expect("inputs")
+                .is_empty(),
+            "a coinbase has no input deltas"
+        );
+        let coinbase_out = coinbase
+            .get("outputs")
+            .and_then(Value::as_array)
+            .expect("outputs");
+        assert_eq!(coinbase_out.len(), 1);
+        assert_eq!(
+            coinbase_out[0].get("satoshis").and_then(Value::as_u64),
+            Some(625_000_000)
+        );
+        assert!(
+            coinbase_out[0]
+                .get("address")
+                .and_then(Value::as_str)
+                .is_some_and(|a| a.starts_with("t1")),
+            "a P2PKH output carries a t1 address: {coinbase_out:?}"
+        );
+
+        // The spend: one NEGATIVE input at its index, with the prevout in display
+        // order and a standard address; one P2PKH output and one address-less
+        // non-standard output.
+        let spend = deltas[1].as_object().expect("spend object");
+        assert_eq!(spend.get("index").and_then(Value::as_u64), Some(1));
+        let inputs = spend
+            .get("inputs")
+            .and_then(Value::as_array)
+            .expect("inputs");
+        assert_eq!(inputs.len(), 1);
+        let input = inputs[0].as_object().expect("input object");
+        assert_eq!(input.keys().count(), 5, "input keys: {input:?}");
+        assert_eq!(input.get("satoshis").and_then(Value::as_i64), Some(-1000));
+        assert_eq!(input.get("index").and_then(Value::as_u64), Some(0));
+        assert_eq!(input.get("prevout").and_then(Value::as_u64), Some(2));
+        assert_eq!(
+            input.get("prevtxid").and_then(Value::as_str),
+            Some(format!("{}ab", "00".repeat(31)).as_str())
+        );
+        assert!(
+            input
+                .get("address")
+                .and_then(Value::as_str)
+                .is_some_and(|a| a.starts_with("t1")),
+            "a P2PKH input carries a t1 address: {input:?}"
+        );
+
+        let outputs = spend
+            .get("outputs")
+            .and_then(Value::as_array)
+            .expect("outputs");
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(
+            outputs[0].get("satoshis").and_then(Value::as_u64),
+            Some(600)
+        );
+        assert!(outputs[0].get("address").and_then(Value::as_str).is_some());
+        // The non-standard output: value and index, but no address key at all.
+        let nonstandard = outputs[1].as_object().expect("non-standard output");
+        assert_eq!(
+            nonstandard.get("satoshis").and_then(Value::as_u64),
+            Some(400)
+        );
+        assert_eq!(nonstandard.get("index").and_then(Value::as_u64), Some(1));
+        assert!(
+            !nonstandard.contains_key("address"),
+            "a non-standard script emits no address key: {nonstandard:?}"
+        );
+    }
+
+    /// An unknown block is zcashd's not-found (`-5`), not a defaulted response: the
+    /// composed read answers `Ok(None)`, which the handler maps to `NotFound`.
+    #[tokio::test]
+    async fn get_block_deltas_reports_an_unknown_block_as_not_found() {
+        let engine = MockIndexerService::new(MockChain::default());
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        assert!(matches!(
+            node.get_block_deltas(&"00".repeat(32)).await,
+            Err(RpcError::NotFound(_))
         ));
     }
 }

@@ -8,6 +8,7 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 
 use zaino_service::error::AddressReadError;
+use zaino_service::error::BlockDeltasError;
 use zaino_service::error::BlockHashReadError;
 use zaino_service::error::MempoolReadError;
 use zaino_service::error::ReadError;
@@ -23,10 +24,10 @@ use crate::wire::params::{
 };
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
-    BlockchainInfoResponse, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
-    MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry,
-    RawMempoolResponse, SubtreeRootsResponse, TreestateResponse, TxOutResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    BlockchainInfoResponse, GetBlockDeltasResponse, GetBlockHashesResponse, GetBlockResponse,
+    GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse,
+    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, SubtreeRootsResponse, TreestateResponse,
+    TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -69,6 +70,12 @@ pub(crate) trait NodeRpcApi {
 
     #[method(name = "getblockhash")]
     async fn block_hash(&self, height: u32) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "getblockdeltas")]
+    async fn block_deltas(
+        &self,
+        blockhash: String,
+    ) -> Result<GetBlockDeltasResponse, ErrorObjectOwned>;
 
     #[method(name = "gettxout")]
     async fn tx_out(
@@ -221,6 +228,14 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn block_hash(&self, height: u32) -> Result<String, ErrorObjectOwned> {
         self.get_block_hash(height).await.map_err(to_error_object)
+    }
+    async fn block_deltas(
+        &self,
+        blockhash: String,
+    ) -> Result<GetBlockDeltasResponse, ErrorObjectOwned> {
+        self.get_block_deltas(&blockhash)
+            .await
+            .map_err(to_error_object)
     }
     async fn tx_out(
         &self,
@@ -469,6 +484,24 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
             (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::Treestate(e @ TreestateReadError::Fatal(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        // Composing `getblockdeltas` fails only server-side, never on client input
+        // (an unknown block is the `NotFound` above): `TransactionView` is a
+        // resolution failure, `Block` a read failure, `MissingHeader` a chain-view
+        // hole in the median-time window, and `InputValueOutOfRange` a corrupt
+        // amount. All map to the internal-error code. Each variant renders its own
+        // `Display`, which does not stringify a `#[source]` cause.
+        RpcError::BlockDeltas(e @ BlockDeltasError::TransactionView(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::BlockDeltas(e @ BlockDeltasError::Block(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::BlockDeltas(e @ BlockDeltasError::MissingHeader { .. }) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::BlockDeltas(e @ BlockDeltasError::InputValueOutOfRange { .. }) => {
             (ErrorCode::InternalError.code(), e.to_string())
         }
     };

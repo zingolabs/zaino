@@ -35,17 +35,18 @@ use zaino_primitives::types::{
 };
 
 use crate::error::{
-    AddressReadError, BlockHashReadError, BlockReadError, BroadcastRejection, MempoolReadError,
-    ReadError, SpendReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
+    AddressReadError, BlockDeltasError, BlockHashReadError, BlockReadError, BroadcastRejection,
+    MempoolReadError, ReadError, SpendReadError, TransactionViewError, Transient,
+    TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, AddressReceiveRead, BlockHashAt, BlockHashRead, BlockRead, BlockTransactionViews,
-    BlockVerboseRead, Broadcast, ChainInfoRead, ChainSegment, CompactBlockRead,
-    CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary, IndexerService,
-    LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing, MempoolSubscribe,
-    MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead, ReportedUpgrades,
-    Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead,
-    TransactionViewRead, TreestateRead, TxOutRead,
+    AddressRead, AddressReceiveRead, BlockDeltas, BlockDeltasRead, BlockHashAt, BlockHashRead,
+    BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead, ChainSegment,
+    CompactBlockRead, CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary,
+    IndexerService, LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing,
+    MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead,
+    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
+    TransactionRead, TransactionViewRead, TreestateRead, TxOutRead,
 };
 use zaino_primitives::types::{rpc::TxOut, OutputIndex};
 
@@ -150,6 +151,12 @@ pub struct MockChain {
     /// over the service mock exercises the range and ordering the engine
     /// produces.
     pub block_hashes: Vec<BlockHashAt>,
+    /// Scripted composed `getblockdeltas` answer. When `Some`,
+    /// [`BlockDeltasRead::block_deltas`] returns it for any selector; when `None`,
+    /// it answers `Ok(None)` (an unknown block). The composition itself is the
+    /// engine's; the service mock carries the already-composed answer so the serve
+    /// adapter's rendering is testable without a validator behind it.
+    pub block_deltas: Option<BlockDeltas>,
 }
 
 /// A concrete [`IndexerService`] over swappable in-memory state.
@@ -663,6 +670,18 @@ impl TransactionViewRead for MockSnapshot {
             }
             _ => Ok(self.chain.decoded_block.clone()),
         }
+    }
+}
+
+impl BlockDeltasRead for MockSnapshot {
+    async fn block_deltas(
+        &self,
+        _at: BlockSelector,
+    ) -> Result<Option<BlockDeltas>, BlockDeltasError> {
+        // The already-composed deltas are returned verbatim for any selector, so a
+        // test can pin the serve adapter's rendering; absent them, a served `None`
+        // (an unknown block). The composition itself lives in the engine.
+        Ok(self.chain.block_deltas.clone())
     }
 }
 

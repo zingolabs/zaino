@@ -24,7 +24,7 @@ in internal order per the lightwalletd protocol.)
 ## What it serves
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
-`getblockheader`, `getblockhashes`, `getblockhash`, `gettxout`,
+`getblockheader`, `getblockhashes`, `getblockhash`, `getblockdeltas`, `gettxout`,
 `getrawtransaction`, `sendrawtransaction`,
 `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
 `getmempoolinfo`, `getdifficulty`, `getnetworkinfo`, `ping`, `getaddressbalance`,
@@ -182,6 +182,42 @@ likewise empty. The failure modes are server-side only: a chain-view hole
 (`BlockHashReadError::MissingHeader`) and a tier-read failure (`TierRead`) both
 map to the internal-error code, never invalid-params.
 
+## `getblockdeltas`
+
+`getblockdeltas "blockhash"` returns a block's transparent value movements and the
+chain-position header fields zcashd reports alongside them. It is **indexer-only**:
+Zebra answers `-32601`, so the shape authority is zcashd's `blockToDeltasJSON`
+(`rpc/blockchain.cpp`). Zaino does **not** hold a dedicated delta index — the read
+is *composed* in the engine (`BlockDeltasRead`, over `zaino-core`) from the reads
+the node-RPC set already serves: the block header (`BlockRead`), its chain position
+(`BlockVerboseRead`), its resolved transactions (`TransactionViewRead`), and the
+local header times its median is taken over (`HeaderRead`). It therefore adds no
+source port and no validator round trip beyond what `getblock(_, 2)` already does.
+The block id is resolved to the block's own hash once (ruling R50) before the
+composing reads, so the header and the transactions cannot straddle a reorg.
+
+The response mirrors zcashd's key set and order: `hash`, `confirmations`, `size`,
+`height`, `version`, `merkleroot`, `deltas`, `time`, `mediantime`, `nonce`, `bits`,
+`difficulty`, `chainwork`, `previousblockhash`, `nextblockhash`. Each `deltas`
+entry is `{txid, index, inputs, outputs}`. An `inputs` entry is a **negative**
+`satoshis` (the negation of the spent output's value) at its `vin` `index`,
+carrying `prevtxid` (display order) and `prevout`; an `outputs` entry is a positive
+`satoshis` at its `vout` `index`. Both carry `address` **only** when the
+output/spent-output script is a standard P2PKH/P2SH template
+(`zaino_address::transparent_address_from_script`), and omit the key entirely for
+any other script — matching zcashd's `IsValidDestination` gate. A coinbase has no
+`inputs`, mirroring zcashd's `IsCoinBase()` skip.
+
+`satoshis` are integer zatoshis throughout (no ZEC float). `mediantime` is zcashd's
+`GetMedianTimePast`: the median of the block's own time and its ten predecessors'
+times (heights `h-10 ..= h`), read locally. `chainwork` is absent (not `null`) when
+the validator does not track it, as in `getblock`; `previousblockhash` is absent
+for genesis and `nextblockhash` at the tip. An unknown block is zcashd's not-found
+(`-5`, `Block not found`). The composition's failure modes are all server-side
+(`BlockDeltasError`: a resolution failure, a chain-view hole in the median-time
+window, or a corrupt amount) and map to the internal-error code, never
+invalid-params.
+
 ## Wire dialects
 
 jsonrpsee speaks strict JSON-RPC 2.0, but the explorer's `zcashex` client speaks
@@ -243,6 +279,12 @@ is a validator passthrough, so a `Transient` transport failure, a `Fatal` one, o
 a `NotServiceable` stub is a server-side concern, never bad client input. The
 transient case must surface as an error rather than a zero-valued success, so the
 explorer's metric warmer does not cache an empty mempool over a transport blip.
+
+Composing `getblockdeltas` (`BlockDeltasError`) is internal in every variant: a
+transaction-view resolution failure, a block/verbose/header read failure, a
+chain-view hole in the median-time window (`MissingHeader`), and a corrupt amount
+(`InputValueOutOfRange`) are all server-side. An unknown block is the `-5`
+not-found above (the composed read answers `Ok(None)`), not a `BlockDeltasError`.
 
 ## Not modelled here
 

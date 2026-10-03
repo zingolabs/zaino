@@ -10,6 +10,7 @@
 //! Each is blanket-implemented: a type *is* a read-set exactly when it has the
 //! constituent reads.
 
+use crate::block_deltas::BlockDeltasRead;
 use crate::reads::{
     AddressRead, BlockHashRead, BlockRead, BlockVerboseRead, ChainInfoRead, CompactBlockRead,
     CompactNullifierRead, RawTransactionRead, TransactionRead, TransactionViewRead, TreestateRead,
@@ -60,7 +61,10 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// input with the output it spends, which only this read resolves.
 /// [`BlockHashRead`] is the timestamp-range block selection behind
 /// `getblockhashes` — the explorer's block-list keystone, served locally over the
-/// composed headers.
+/// composed headers. [`BlockDeltasRead`] is the composed `getblockdeltas` surface:
+/// an indexer-only method (Zebra answers `-32601`) assembled from the block,
+/// verbose, resolved-transaction and header reads already in this set — it adds no
+/// source port.
 ///
 /// Spend status (`SpendRead`) is deliberately absent. None of the methods this
 /// set serves needs an outpoint's spend state: the explorer is served
@@ -73,6 +77,7 @@ pub trait NodeRpcReads:
     BlockRead
     + BlockVerboseRead
     + BlockHashRead
+    + BlockDeltasRead
     + TransactionRead
     + TransactionViewRead
     + RawTransactionRead
@@ -85,6 +90,7 @@ impl<T> NodeRpcReads for T where
     T: BlockRead
         + BlockVerboseRead
         + BlockHashRead
+        + BlockDeltasRead
         + TransactionRead
         + TransactionViewRead
         + RawTransactionRead

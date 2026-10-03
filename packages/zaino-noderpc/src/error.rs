@@ -6,8 +6,8 @@
 //! decided by the adapter, not the port.
 
 use zaino_service::error::{
-    AddressReadError, BlockHashReadError, BroadcastRejection, MempoolReadError, ReadError,
-    TransactionViewError, Transient, TreestateReadError, TxReadError,
+    AddressReadError, BlockDeltasError, BlockHashReadError, BroadcastRejection, MempoolReadError,
+    ReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
 };
 use zaino_service::NodeStatusError;
 
@@ -60,4 +60,8 @@ pub enum RpcError {
     /// chain view or a tier read failure, never bad client input.
     #[error(transparent)]
     BlockHashRead(#[from] BlockHashReadError),
+    /// Composing `getblockdeltas` failed — a resolution failure, a chain-view hole
+    /// in the median-time window, or a corrupt amount, never bad client input.
+    #[error(transparent)]
+    BlockDeltas(#[from] BlockDeltasError),
 }

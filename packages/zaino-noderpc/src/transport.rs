@@ -353,6 +353,92 @@ mod tests {
         let _ = handle.stop();
     }
 
+    /// The zcashex-shaped 1.0 `getblockdeltas` request — a single blockhash string
+    /// param — gives 200 and the legacy envelope, with `result` carrying the
+    /// composed deltas: the header fields plus a transaction with a NEGATIVE input
+    /// `satoshis`. A real round trip, end to end through the dialect layer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getblockdeltas_succeeds() {
+        use zaino_primitives::types::{
+            AbsoluteChainWork, CompactDifficulty, Script, SignedZatoshis, TransactionId, Zatoshis,
+        };
+        use zaino_service::{BlockDeltas, InputDelta, OutputDelta, TransactionDeltas};
+
+        let mut work = [0u8; 32];
+        work[28..].copy_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+        let deltas = BlockDeltas {
+            hash: BlockHash::from([0x0c; 32]),
+            confirmations: 3,
+            size: 512,
+            height: Height::try_from(200).expect("valid height"),
+            version: 4,
+            merkle_root: [0x22; 32].into(),
+            deltas: vec![TransactionDeltas {
+                txid: TransactionId::from([0x7a; 32]),
+                index: 0,
+                inputs: vec![InputDelta {
+                    script: Script::new(vec![0x6a]),
+                    satoshis: SignedZatoshis::try_new(-777).expect("valid amount"),
+                    index: 0,
+                    prev_txid: TransactionId::from([0xab; 32]),
+                    prevout: 1,
+                }],
+                outputs: vec![OutputDelta {
+                    script: Script::new(vec![0x6a]),
+                    satoshis: Zatoshis::new(777).expect("valid amount"),
+                    index: 0,
+                }],
+            }],
+            time: 1_600_000_000,
+            median_time: 1_599_999_000,
+            nonce: [0x33; 32],
+            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+            difficulty: 42.5,
+            chainwork: AbsoluteChainWork::try_from_reported(work).expect("in-range work"),
+            prev_hash: Some(BlockHash::from([0x0b; 32])),
+            next_hash: None,
+        };
+        let (addr, handle) = spawn_server(MockChain {
+            block_deltas: Some(deltas),
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getblockdeltas","params":["0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert_eq!(obj.get("id").and_then(Value::as_str), Some("zcashex"));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let result = obj
+            .get("result")
+            .and_then(Value::as_object)
+            .expect("result object");
+        assert_eq!(result.get("height").and_then(Value::as_u64), Some(200));
+        let block_deltas = result
+            .get("deltas")
+            .and_then(Value::as_array)
+            .expect("deltas");
+        let input = block_deltas[0]
+            .get("inputs")
+            .and_then(Value::as_array)
+            .and_then(|inputs| inputs.first())
+            .and_then(Value::as_object)
+            .expect("one input delta");
+        assert_eq!(
+            input.get("satoshis").and_then(Value::as_i64),
+            Some(-777),
+            "the input delta is negative: {input:?}"
+        );
+        let _ = handle.stop();
+    }
+
     /// The zcashex-shaped 1.0 `getaddresstxids` request — a single object param
     /// carrying the addresses and height window — gives 200 and the legacy
     /// envelope, with `result` the scripted txid in display order.

@@ -83,6 +83,21 @@ a header missing from the chain view at or below the pinned tip is the typed
 `BlockHashReadError::MissingHeader`, which keeps a tier-read cause under its
 `TierRead` variant with `#[source]` rather than a flattened string.
 
+`NodeRpcReads` also carries `BlockDeltasRead`, the composed `getblockdeltas`
+surface (`block_deltas(BlockSelector) -> Result<Option<BlockDeltas>, BlockDeltasError>`).
+`getblockdeltas` is indexer-only — Zebra answers `-32601` — but it needs **no**
+new source port: it is composed from reads this set already holds (`BlockRead`,
+`BlockVerboseRead`, `TransactionViewRead`, and the local `HeaderRead` its median
+time is taken over). `BlockDeltas` carries the block's header/position fields and
+a `deltas` list of per-transaction `InputDelta` (a `SignedZatoshis` spend — always
+negative — with the spent output's `Script` and the prevout) and `OutputDelta` (a
+`Zatoshis` receive with its `Script`); the serving adapter decodes each script to a
+P2PKH/P2SH address with the network it carries, so the domain stays
+transport-free. A miss on the block is `Ok(None)` (the unknown-block answer); the
+`BlockDeltasError` variants are the resolution, chain-view-hole (`MissingHeader`,
+over the median-time window) and corrupt-amount inconsistencies, each keeping its
+cause under `#[source]`.
+
 `NodeRpcService` also demands `NodeStatusRead`, the node-operator status control
 behind `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`,
 `getdifficulty`, `getnetworkinfo` and `ping`. These are facts about the validator,
