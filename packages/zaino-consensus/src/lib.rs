@@ -3,12 +3,17 @@
 //! Nothing else in the workspace should restate these values — reference this
 //! crate instead.
 //!
-//! # Why this is its own crate, and why it has no dependencies
+//! # Why this is its own crate, and why it depends on almost nothing
 //!
 //! These are protocol facts. Anything reasoning about the chain needs them,
 //! including subsystems built to depend on as little as possible, so holding
 //! them in a general-purpose crate meant referencing a reorg bound cost a
 //! dependency on the config, logging and TLS stacks too.
+//!
+//! The one chain-aware dependency is `zaino-primitives`, our own
+//! zero-dependency domain-vocabulary crate (`Height`, `BlockTime`,
+//! `HeightRange`). It is not a node implementation and carries no transport,
+//! so depending on it keeps the principle below intact.
 //!
 //! They are also *not* any implementation's values. A node implementation
 //! encodes the consensus rules, exactly as this crate does; it does not define
@@ -21,6 +26,8 @@
 //! carries tests asserting our reading and zebra's still agree. Divergence
 //! becomes a test failure rather than a silent behaviour change, without
 //! anything having to depend on zebra to obtain a number.
+
+pub mod block_time;
 
 /// Number of confirmations before a coinbase output becomes spendable.
 ///

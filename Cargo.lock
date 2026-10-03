@@ -6013,7 +6013,9 @@ name = "zaino-consensus"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "proptest",
  "thiserror 2.0.18",
+ "zaino-primitives",
 ]
 
 [[package]]
