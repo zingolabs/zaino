@@ -31,7 +31,7 @@ use crate::signals::ReadinessCriteria;
 /// finalised store answers the whole address read over the [`TransparentHistory`]
 /// index set, the non-finalised window reports its own receives and spends, and
 /// the composer threads them across the seam. Serving it locally also means the
-/// deployment no longer relays address queries to the validator, so it discloses
+/// deployment relays no address queries to the validator, so it discloses
 /// no queried addresses and demands no address source port (see
 /// [`NodeRpcSource`]).
 ///
