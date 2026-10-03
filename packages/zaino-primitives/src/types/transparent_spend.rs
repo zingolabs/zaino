@@ -21,4 +21,11 @@ pub struct TransparentSpend {
     pub input_index: OutputIndex,
     /// Block height that mined the consuming transaction.
     pub height: Height,
+    /// Position of the consuming transaction within its block.
+    ///
+    /// The spend is local data — the tier that reports it holds (or has located)
+    /// the spending transaction — so this is the real block position, never a
+    /// placeholder. It is the same `txindex` zcashd keys its ordering on, so a
+    /// caller can break same-height ties by block position.
+    pub block_index: u32,
 }

@@ -678,3 +678,94 @@ async fn a_multi_address_request_is_bounded_as_a_whole() {
         "got {refused:?}"
     );
 }
+
+// --- same-height tie-break across the seam, window positions -----------------
+//
+// The live regression: for an address whose transactions straddle one height in
+// the non-finalised window, the window path reported no in-block position, so
+// same-height entries fell through to the display-hex tie-break instead of
+// ordering by block position as zcashd does. The case that caught it had the
+// address's *spend* at a later block position than a *receive* at the same
+// height, with the spend's display-hex smaller — so the hex tie-break put the
+// spend first, the reverse of zcashd's block-position order.
+//
+// This fixture reproduces it in the window: at height 3, a receive sits at block
+// position 1 and a spend of a finalised output at position 3, and the spend's
+// txid is smaller in display hex. The correct answer orders them by position
+// (receive then spend); the pre-fix window ordering returned the reverse.
+
+/// A filler transaction at a given block position, touching neither address.
+fn window_filler(seed: u8) -> PreIndexCompactTx {
+    PreIndexCompactTx {
+        txid: TransactionId::from([seed; 32]),
+        transparent_inputs: Vec::new(),
+        transparent_outputs: Vec::new(),
+        sapling_nullifiers: Vec::new(),
+        sapling_outputs: Vec::new(),
+        orchard_actions: Vec::new(),
+        ironwood_actions: Vec::new(),
+    }
+}
+
+/// The window for the position test: height 3 holds four transactions, with a
+/// receive to A at position 1 ([`tx_block_first`], larger in display hex) and a
+/// spend of A's finalised output at position 3 ([`tx_block_second`], smaller in
+/// display hex), fillers at positions 0 and 2. Block-position order is therefore
+/// the reverse of display-hex order.
+fn window_positions() -> StubNonFinalised {
+    let receive = PreIndexCompactTx {
+        txid: tx_block_first(),
+        transparent_inputs: Vec::new(),
+        transparent_outputs: vec![pays(&addr_a(), 500)],
+        sapling_nullifiers: Vec::new(),
+        sapling_outputs: Vec::new(),
+        orchard_actions: Vec::new(),
+        ironwood_actions: Vec::new(),
+    };
+    let spend = PreIndexCompactTx {
+        txid: tx_block_second(),
+        transparent_inputs: vec![TransparentInput {
+            prev_txid: payer(),
+            prev_index: 0,
+        }],
+        transparent_outputs: Vec::new(),
+        sapling_nullifiers: Vec::new(),
+        sapling_outputs: Vec::new(),
+        orchard_actions: Vec::new(),
+        ironwood_actions: Vec::new(),
+    };
+    let mut blocks: Vec<CompactBlock> = (3..=4u32)
+        .map(|height| {
+            stub_compact_block(height, u8::try_from(10 + height).expect("a small height"))
+        })
+        .collect();
+    // Positions 0..=3: filler, receive, filler, spend.
+    blocks[0].transactions = vec![window_filler(0x01), receive, window_filler(0x02), spend];
+    StubNonFinalised::from_blocks(blocks)
+}
+
+/// The composed engine over the finalised store and the position window.
+async fn window_positions_engine() -> impl AddressRead + ChainSegment {
+    let engine: Engine<_, _, (), AddressLocally> =
+        Engine::new(indexed_store().await, window_positions(), ());
+    engine.snapshot().await.expect("the pin is taken")
+}
+
+/// Same-height entries from the non-finalised window order by block position, not
+/// by display-hex txid. The receive is at position 1 and the spend at position 3,
+/// so the answer is receive-then-spend; the pre-fix window path reported no
+/// position, which collapsed to the display-hex order and returned spend-then-
+/// receive (the spend's txid being smaller in hex).
+#[tokio::test]
+async fn window_txids_break_same_height_ties_by_block_position() {
+    let snapshot = window_positions_engine().await;
+    let txids = queries::address_txids(&snapshot, &[addr_a()], None, None)
+        .await
+        .expect("the read succeeds");
+    assert_eq!(
+        txids,
+        vec![payer(), tx_block_first(), tx_block_second()],
+        "the finalised payer at height 1, then the window's receive (position 1) \
+         before its spend (position 3) — block-position order, not display-hex order"
+    );
+}

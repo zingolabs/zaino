@@ -26,6 +26,13 @@ pub struct TransparentReceive {
     pub value: Zatoshis,
     /// Block height that mined the paying transaction.
     pub height: Height,
+    /// Position of the paying transaction within its block.
+    ///
+    /// The receive is local data — the tier that reports it holds the block — so
+    /// this is the real block position, never a placeholder. It is the same
+    /// `txindex` zcashd keys `getaddresstxids`/`getaddressdeltas` ordering on, so
+    /// a caller merging addresses can break same-height ties by block position.
+    pub block_index: u32,
 }
 
 impl TransparentReceive {

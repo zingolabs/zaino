@@ -59,8 +59,8 @@ impl SpendRead for HeadSnapshot {
     ) -> Result<Option<TransparentSpend>, SpendReadError> {
         for block in self.window().best_chain() {
             let height = block.height();
-            for transaction in transactions(block) {
-                if let Some(spend) = spend_of(transaction, outpoint, height) {
+            for (block_index, transaction) in enumerated(transactions(block)) {
+                if let Some(spend) = spend_of(transaction, outpoint, height, block_index) {
                     // A consensus-valid chain spends an outpoint once, so the
                     // first match in best-chain order is the spend.
                     return Ok(Some(spend));
@@ -71,13 +71,28 @@ impl SpendRead for HeadSnapshot {
     }
 }
 
-/// The spend of `outpoint` in `transaction` at `height`, if one of its inputs
-/// consumes it. An input's position is its index, so enumeration is the
-/// numbering; an index past the wire limit cannot occur in a block that parsed.
+/// A block's transactions paired with their in-block position as a `u32`.
+///
+/// A block that parsed cannot hold more than `u32::MAX` transactions, so the
+/// narrowing never drops one in practice; a position past `u32` describes an
+/// unrepresentable location, so that transaction is skipped rather than failing
+/// the window's infallible read.
+fn enumerated(transactions: &[Transaction]) -> impl Iterator<Item = (u32, &Transaction)> {
+    transactions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, transaction)| Some((u32::try_from(index).ok()?, transaction)))
+}
+
+/// The spend of `outpoint` in `transaction` (at block position `block_index`) at
+/// `height`, if one of its inputs consumes it. An input's position is its index,
+/// so enumeration is the numbering; an index past the wire limit cannot occur in
+/// a block that parsed.
 fn spend_of(
     transaction: &Transaction,
     outpoint: Outpoint,
     height: zaino_primitives::types::Height,
+    block_index: u32,
 ) -> Option<TransparentSpend> {
     transaction
         .transparent
@@ -91,6 +106,7 @@ fn spend_of(
                 by: transaction.txid,
                 input_index: OutputIndex::try_from(index).ok()?,
                 height,
+                block_index,
             })
         })
 }

@@ -40,8 +40,8 @@ impl AddressReceiveRead for HeadSnapshot {
             if !covers(range, height) {
                 continue;
             }
-            for transaction in transactions(block) {
-                receives.extend(paid_outputs(transaction, addr, height));
+            for (block_index, transaction) in enumerated(transactions(block)) {
+                receives.extend(paid_outputs(transaction, addr, height, block_index));
             }
         }
         Ok(receives)
@@ -58,16 +58,16 @@ impl AddressReceiveRead for HeadSnapshot {
             if !covers(range, height) {
                 continue;
             }
-            for transaction in transactions(block) {
-                spends.extend(consumed(transaction, outpoints, height));
+            for (block_index, transaction) in enumerated(transactions(block)) {
+                spends.extend(consumed(transaction, outpoints, height, block_index));
             }
         }
         Ok(spends)
     }
 }
 
-/// Every input of `transaction` consuming one of `outpoints`, as spends at
-/// `height`.
+/// Every input of `transaction` (at block position `block_index`) consuming one
+/// of `outpoints`, as spends at `height`.
 ///
 /// An input's position in the transaction is its index, so enumeration is the
 /// numbering. A consensus-valid chain spends an outpoint once, so each one
@@ -76,6 +76,7 @@ fn consumed<'a>(
     transaction: &'a Transaction,
     outpoints: &'a [Outpoint],
     height: Height,
+    block_index: u32,
 ) -> impl Iterator<Item = TransparentSpend> + 'a {
     transaction
         .transparent
@@ -93,6 +94,7 @@ fn consumed<'a>(
                 by: transaction.txid,
                 input_index: OutputIndex::try_from(index).ok()?,
                 height,
+                block_index,
             })
         })
 }
@@ -107,7 +109,22 @@ fn transactions(block: &ChainHeadBlock) -> &[Transaction] {
     &block.block.transactions
 }
 
-/// Every output of `transaction` paying `addr`, as receives at `height`.
+/// A block's transactions paired with their in-block position as a `u32`.
+///
+/// A block that parsed cannot hold more than `u32::MAX` transactions (its size
+/// is consensus-bounded far below that), so the narrowing never drops one in
+/// practice; a position past `u32` would describe an unrepresentable location, so
+/// that transaction is skipped rather than failing the window's infallible read —
+/// the same handling as an out-of-range output index.
+fn enumerated(transactions: &[Transaction]) -> impl Iterator<Item = (u32, &Transaction)> {
+    transactions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, transaction)| Some((u32::try_from(index).ok()?, transaction)))
+}
+
+/// Every output of `transaction` (at block position `block_index`) paying `addr`,
+/// as receives at `height`.
 ///
 /// The output's position in the transaction is its index, so enumeration is the
 /// numbering rather than something re-derived.
@@ -115,6 +132,7 @@ fn paid_outputs<'a>(
     transaction: &'a Transaction,
     addr: &'a TransparentAddress,
     height: Height,
+    block_index: u32,
 ) -> impl Iterator<Item = TransparentReceive> + 'a {
     transaction
         .transparent
@@ -134,6 +152,7 @@ fn paid_outputs<'a>(
                 script: output.script.clone(),
                 value: output.value,
                 height,
+                block_index,
             })
         })
 }

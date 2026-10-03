@@ -172,7 +172,7 @@ impl SpendRead for StubNonFinalised {
         outpoint: Outpoint,
     ) -> Result<Option<TransparentSpend>, SpendReadError> {
         for (height, block) in &self.blocks {
-            for transaction in &block.transactions {
+            for (block_index, transaction) in enumerated(&block.transactions) {
                 let found = transaction
                     .transparent_inputs
                     .iter()
@@ -189,6 +189,7 @@ impl SpendRead for StubNonFinalised {
                         by: transaction.txid,
                         input_index,
                         height: *height,
+                        block_index,
                     }));
                 }
             }
@@ -213,7 +214,7 @@ impl AddressReceiveRead for StubNonFinalised {
         // The map is height-keyed and ordered, so the range selects a run and
         // walking it yields height order.
         for (height, block) in self.blocks.range(range.start..=range.end) {
-            for transaction in &block.transactions {
+            for (block_index, transaction) in enumerated(&block.transactions) {
                 for (index, output) in transaction.transparent_outputs.iter().enumerate() {
                     if !script_pays(output.script.as_bytes(), addr) {
                         continue;
@@ -227,6 +228,7 @@ impl AddressReceiveRead for StubNonFinalised {
                         script: output.script.clone(),
                         value: output.value,
                         height: *height,
+                        block_index,
                     });
                 }
             }
@@ -241,7 +243,7 @@ impl AddressReceiveRead for StubNonFinalised {
     ) -> Result<Vec<TransparentSpend>, AddressReadError> {
         let mut spends = Vec::new();
         for (height, block) in self.blocks.range(range.start..=range.end) {
-            for transaction in &block.transactions {
+            for (block_index, transaction) in enumerated(&block.transactions) {
                 for (index, input) in transaction.transparent_inputs.iter().enumerate() {
                     let Some(outpoint) = outpoints.iter().find(|outpoint| {
                         input.prev_txid == outpoint.txid && input.prev_index == outpoint.index
@@ -256,12 +258,25 @@ impl AddressReceiveRead for StubNonFinalised {
                         by: transaction.txid,
                         input_index,
                         height: *height,
+                        block_index,
                     });
                 }
             }
         }
         Ok(spends)
     }
+}
+
+/// A block's transactions paired with their in-block position as a `u32`,
+/// mirroring the real head: a position past `u32` cannot occur in a block that
+/// parsed, so that transaction is skipped rather than failing the infallible read.
+fn enumerated(
+    transactions: &[PreIndexCompactTx],
+) -> impl Iterator<Item = (u32, &PreIndexCompactTx)> {
+    transactions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, transaction)| Some((u32::try_from(index).ok()?, transaction)))
 }
 
 /// Whether `transaction` spends `outpoint`.

@@ -997,6 +997,7 @@ mod tests {
                     by: TransactionId::from(spender),
                     input_index: 3,
                     height: Height::try_from(150).expect("a valid height"),
+                    block_index: 1,
                 }),
                 ..MockChain::default()
             }),

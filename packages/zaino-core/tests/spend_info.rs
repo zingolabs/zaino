@@ -226,6 +226,8 @@ async fn a_spend_within_the_finalised_tier_is_located() {
             by: fin_spender(),
             input_index: OutputIndex::try_from(0usize).expect("a small index"),
             height: Height::try_from(2).expect("a valid height"),
+            // `fin_spender` is the only transaction in height 2's block.
+            block_index: 0,
         }
     );
 }
@@ -249,6 +251,8 @@ async fn a_spend_across_the_seam_reports_the_spending_height() {
             by: spender(),
             input_index: OutputIndex::try_from(0usize).expect("a small index"),
             height: Height::try_from(4).expect("a valid height"),
+            // `spender` is the only transaction in the window's height-4 block.
+            block_index: 0,
         }
     );
 }

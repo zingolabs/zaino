@@ -459,6 +459,7 @@ mod tests {
                 by: TransactionId::from(spender),
                 input_index: 3,
                 height: Height::try_from(150).expect("valid height"),
+                block_index: 1,
             }),
             ..Default::default()
         });

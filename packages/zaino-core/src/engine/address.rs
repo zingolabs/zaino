@@ -469,9 +469,10 @@ where
                 index: receive.output_index,
                 height: receive.height,
                 address: addr.clone(),
-                // The window reports no transaction position; `None` says so
-                // rather than substituting iteration order.
-                block_index: None,
+                // The window knows the paying transaction's block position from
+                // its own blocks, so the delta carries it for the same-height
+                // ordering zcashd documents.
+                block_index: Some(receive.block_index),
             });
         }
         for spend in &part.spends {
@@ -485,7 +486,7 @@ where
                 index: spend.input_index,
                 height: spend.height,
                 address: addr.clone(),
-                block_index: None,
+                block_index: Some(spend.block_index),
             });
         }
         Ok(deltas)
@@ -517,25 +518,33 @@ where
         let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
 
         // Every transaction that moved value for the address in the window: the
-        // ones that paid it (at the receive's height), and the ones that spent
-        // what it held (at the spend's height) — both heights known, so `Some`.
-        // The window reports no in-block position (as for deltas), so the position
-        // is `None`. One transaction can do both, so the window's contribution is
-        // sorted and deduplicated before it is appended; the halves cover disjoint
+        // ones that paid it (at the receive's height and block position), and the
+        // ones that spent what it held (at the spend's) — both known from the
+        // window's own blocks, so `Some`. One transaction can do both, so the
+        // window's contribution is sorted by zcashd's `(height, position, txid)`
+        // key and deduplicated before it is appended; the halves cover disjoint
         // heights (store <= watermark < window), so the concatenation stays ordered
         // and no transaction spans both.
-        let mut from_window: Vec<(Height, TransactionId)> = part
+        let mut from_window: Vec<(Height, u32, TransactionId)> = part
             .receives
             .iter()
-            .map(|receive| (receive.height, receive.txid))
-            .chain(part.spends.iter().map(|spend| (spend.height, spend.by)))
+            .map(|receive| (receive.height, receive.block_index, receive.txid))
+            .chain(
+                part.spends
+                    .iter()
+                    .map(|spend| (spend.height, spend.block_index, spend.by)),
+            )
             .collect();
-        from_window.sort_by_key(|(height, txid)| (u32::from(*height), <[u8; 32]>::from(*txid)));
+        from_window.sort_by_key(|(height, block_index, txid)| {
+            let mut display = <[u8; 32]>::from(*txid);
+            display.reverse();
+            (u32::from(*height), *block_index, display)
+        });
         from_window.dedup();
         txids.extend(
             from_window
                 .into_iter()
-                .map(|(height, txid)| (Some(height), None, txid)),
+                .map(|(height, block_index, txid)| (Some(height), Some(block_index), txid)),
         );
         Ok(txids)
     }

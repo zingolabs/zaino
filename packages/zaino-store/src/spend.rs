@@ -90,6 +90,7 @@ where
                 by: resolved.by,
                 input_index: resolved.input_index,
                 height: resolved.height,
+                block_index: resolved.block_index,
             }))
     }
 }
