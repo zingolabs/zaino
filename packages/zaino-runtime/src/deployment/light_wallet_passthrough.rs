@@ -2,7 +2,7 @@
 //! locally from Zaino's own indexes and everything else the wallet parses itself
 //! relayed to the validator.
 
-use zaino_core::routing::LightWalletRouting;
+use zaino_core::routing::LightWalletLocalRouting;
 use zaino_indexes::sets::transparent_history::TransparentHistory;
 use zaino_service::use_cases::LightWallet;
 use zaino_source::{
@@ -40,7 +40,7 @@ pub struct LightWalletPassthrough;
 
 impl Deployment for LightWalletPassthrough {
     type UseCase = LightWallet;
-    type Routing = LightWalletRouting;
+    type Routing = LightWalletLocalRouting;
     type Indexes = TransparentHistory;
 }
 

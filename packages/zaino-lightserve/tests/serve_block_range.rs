@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use zaino_component::{CancellationToken, RunLoop, RunReport, RunReporter};
-use zaino_core::routing::LightWalletRouting;
+use zaino_core::routing::LightWalletLocalRouting;
 use zaino_core::testing::StubNonFinalised;
 use zaino_core::Engine;
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
@@ -123,7 +123,7 @@ type ServedEngine = Engine<
     StoreReader<InMemoryBackend, TransparentHistory>,
     StubNonFinalised,
     ValidatorClient<MockChain>,
-    LightWalletRouting,
+    LightWalletLocalRouting,
 >;
 
 /// Stand up the real gRPC server over `store` on an ephemeral port; return its

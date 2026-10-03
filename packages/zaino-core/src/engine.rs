@@ -23,7 +23,7 @@
 //! ```
 //! use zaino_indexes::sets::transparent_history::TransparentHistory;
 //! use zaino_persistence::in_memory::InMemoryBackend;
-//! use zaino_core::routing::LightWalletRouting;
+//! use zaino_core::routing::LightWalletLocalRouting;
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
@@ -36,7 +36,7 @@
 //!     StoreReader<InMemoryBackend, TransparentHistory>,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
-//!     LightWalletRouting,
+//!     LightWalletLocalRouting,
 //! >>();
 //! ```
 //!
@@ -47,7 +47,7 @@
 //! ```compile_fail,E0277
 //! use zaino_indexes::sets::compact_blocks::CompactBlocks;
 //! use zaino_persistence::in_memory::InMemoryBackend;
-//! use zaino_core::routing::LightWalletRouting;
+//! use zaino_core::routing::LightWalletLocalRouting;
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
@@ -60,7 +60,7 @@
 //!     StoreReader<InMemoryBackend, CompactBlocks>,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
-//!     LightWalletRouting,
+//!     LightWalletLocalRouting,
 //! >>();
 //! ```
 //!

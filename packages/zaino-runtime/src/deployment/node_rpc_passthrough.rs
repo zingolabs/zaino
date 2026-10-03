@@ -1,7 +1,7 @@
 //! The node-RPC / explorer use case, served with every node and chain read the
 //! explorer parses itself relayed to the validator.
 
-use zaino_core::routing::NodeRpcRouting;
+use zaino_core::routing::NodeRpcLocalRouting;
 use zaino_indexes::sets::transparent_history::TransparentHistory;
 use zaino_service::use_cases::NodeRpc;
 use zaino_source::{
@@ -44,7 +44,7 @@ pub struct NodeRpcPassthrough;
 
 impl Deployment for NodeRpcPassthrough {
     type UseCase = NodeRpc;
-    type Routing = NodeRpcRouting;
+    type Routing = NodeRpcLocalRouting;
     type Indexes = TransparentHistory;
 }
 

@@ -1,5 +1,5 @@
 //! Engine-engine tests: the light-serve acceptance gate, the per-capability
-//! routing tests under `LightWalletRouting`, the manifest derivation, and the seam
+//! routing tests under `LightWalletLocalRouting`, the manifest derivation, and the seam
 //! split a local merge relies on.
 //!
 //! Exercised entirely with in-crate mocks — stub views for the composed chain
@@ -7,7 +7,7 @@
 //! [`ValidatorClient`] decorator exactly as the root injects it. No cluster, no
 //! validator; the routing is deterministic.
 
-use crate::routing::LightWalletRouting;
+use crate::routing::LightWalletLocalRouting;
 use crate::testing::{StubNonFinalised, stub_compact_block};
 use futures::stream::StreamExt;
 use zaino_service::error::{BroadcastRejection, TreestateReadError};
@@ -29,7 +29,7 @@ use crate::Engine;
 use crate::engine::split_at_seam;
 
 type LightEngine =
-    Engine<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>, LightWalletRouting>;
+    Engine<StubNonFinalised, StubNonFinalised, ValidatorClient<MockChain>, LightWalletLocalRouting>;
 
 fn height(h: u32) -> Height {
     Height::try_from(h).expect("valid height")
@@ -177,7 +177,7 @@ async fn an_unreachable_validator_fails_the_mempool_summary() {
     assert!(engine.mempool_summary().await.is_err());
 }
 
-// The acceptance gate for the full light-wallet read-set: under `LightWalletRouting`
+// The acceptance gate for the full light-wallet read-set: under `LightWalletLocalRouting`
 // the composed engine serves every read `LightWalletService` demands — none
 // reporting itself `NotServiceable`. The per-cap tests below pin each
 // capability's placement. The finalised tier is the service mock, whose snapshot
@@ -193,7 +193,7 @@ async fn light_serve_conformance_over_a_provisioned_source() {
 /// seeded with a txid that would surface only under a passthrough placement, while
 /// the finalised tier holds a different one; a `Local` read returns the local
 /// tier's answer and carries the height the local index knows — proof the read
-/// does not pass through, as `LightWalletRouting::Address = Local` says.
+/// does not pass through, as `LightWalletLocalRouting::Address = Local` says.
 #[tokio::test]
 async fn address_reads_are_local_under_light_routing() {
     let local_txid = TransactionId::from([0x55; 32]);
@@ -210,7 +210,7 @@ async fn address_reads_are_local_under_light_routing() {
         MockIndexerService,
         StubNonFinalised,
         ValidatorClient<MockChain>,
-        LightWalletRouting,
+        LightWalletLocalRouting,
     > = Engine::new(
         fs,
         StubNonFinalised::empty(),
@@ -298,7 +298,7 @@ async fn compact_block_nullifiers_are_served_locally() {
 async fn treestate_is_remote_under_light_routing() {
     // No treestate seeded: the mock answers HeightNotFound, which the passthrough
     // provider maps to a definitive read failure. Proves treestate routes to the
-    // passthrough provider, as `LightWalletRouting::Treestate = Passthrough` says.
+    // passthrough provider, as `LightWalletLocalRouting::Treestate = Passthrough` says.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     match TreestateRead::treestate(&snapshot, height(5)).await {
@@ -315,7 +315,8 @@ async fn treestate_is_remote_under_light_routing() {
 /// manifest is "to the tip" once it has one.
 fn engine_over_a_serviceable_store(
     tip: Option<u32>,
-) -> Engine<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightWalletRouting> {
+) -> Engine<MockIndexerService, StubNonFinalised, ValidatorClient<MockChain>, LightWalletLocalRouting>
+{
     let fs = MockIndexerService::new(MockService {
         tip: tip.map(|h| BlockRef {
             height: height(h),
@@ -847,7 +848,7 @@ mod transaction_reads {
     /// `NodeRpcService` — the milestone this task gates. Compile-time only.
     #[test]
     fn the_engine_satisfies_node_rpc_service() {
-        use crate::routing::NodeRpcRouting;
+        use crate::routing::NodeRpcLocalRouting;
         use zaino_service::NodeRpcService;
 
         // The production node-RPC routing: address history and spend status are
@@ -859,12 +860,12 @@ mod transaction_reads {
                 MockIndexerService,
                 MockIndexerService,
                 ValidatorClient<MockChain>,
-                NodeRpcRouting,
+                NodeRpcLocalRouting,
             >,
         >();
     }
 
-    /// The light-wallet counterpart: under `LightWalletRouting` the composed
+    /// The light-wallet counterpart: under `LightWalletLocalRouting` the composed
     /// engine satisfies `LightWalletService`. Address history is now `Local`, so
     /// this holds only because both tiers' snapshots carry the address reads the
     /// placement bounds on (`AddressRead` on the finalised tier, `AddressReceiveRead`
@@ -880,7 +881,7 @@ mod transaction_reads {
                 MockIndexerService,
                 MockIndexerService,
                 ValidatorClient<MockChain>,
-                LightWalletRouting,
+                LightWalletLocalRouting,
             >,
         >();
     }

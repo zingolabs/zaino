@@ -13,9 +13,9 @@
 //! So the decision is a type, [`Routing`], with one associated [`Placement`]
 //! per capability whose placement varies. The composer implements each read
 //! trait once, dispatching to a per-capability *placement trait* implemented
-//! on the placement markers themselves — `Local` carries the bounds a local
-//! merge needs of the chain tiers, `Passthrough` the source ports a passthrough
-//! needs. Distinct `Self` types, so the impls cannot overlap; `Withheld`
+//! on the placement markers themselves — [`Local`] carries the bounds a local
+//! merge needs of the chain tiers, [`Passthrough`] the source ports a passthrough
+//! needs. Distinct `Self` types, so the impls cannot overlap; [`Withheld`]
 //! implements none of them. A placement whose provider ports are missing is
 //! an impl that does not exist — checked where the use case is wired, not
 //! discovered per request.
@@ -35,6 +35,17 @@
 //! `Absent`, a passthrough one is `Live`, a local one reaches as far as its tiers
 //! do. The manifest and the reads consult one declaration, so they cannot
 //! disagree.
+//!
+//! The placement markers live in [`placement`]; the concrete routings in
+//! [`light_wallet`] (one per address placement) and [`node_rpc`].
+
+mod light_wallet;
+mod node_rpc;
+mod placement;
+
+pub use light_wallet::LightWalletLocalRouting;
+pub use node_rpc::NodeRpcLocalRouting;
+pub use placement::{Local, Passthrough, Placement, Withheld};
 
 use zaino_service::Capability;
 
@@ -48,41 +59,6 @@ pub enum PlacementKind {
     Passthrough,
     /// Not offered by this deployment, whatever its providers could answer.
     Withheld,
-}
-
-mod sealed {
-    pub trait Sealed {}
-}
-
-/// A placement, as a type. Exactly three implementors: [`Local`], [`Passthrough`],
-/// [`Withheld`].
-pub trait Placement: sealed::Sealed + Send + Sync + 'static {
-    /// The same placement, as a value — for the manifest derivation.
-    const KIND: PlacementKind;
-}
-
-/// Answered from the local chain tiers.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Local;
-/// Answered live by the validator.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Passthrough;
-/// Not offered.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Withheld;
-
-impl sealed::Sealed for Local {}
-impl sealed::Sealed for Passthrough {}
-impl sealed::Sealed for Withheld {}
-
-impl Placement for Local {
-    const KIND: PlacementKind = PlacementKind::Local;
-}
-impl Placement for Passthrough {
-    const KIND: PlacementKind = PlacementKind::Passthrough;
-}
-impl Placement for Withheld {
-    const KIND: PlacementKind = PlacementKind::Withheld;
 }
 
 /// A use case's routing table, as a type.
@@ -116,138 +92,6 @@ pub trait Routing: Send + Sync + 'static {
             | Capability::Broadcast
             | Capability::NodeStatus
             | Capability::ReportedUpgrades => PlacementKind::Passthrough,
-        }
-    }
-}
-
-/// The lightwalletd-shaped routing: compact blocks and transparent address
-/// history served **locally** from Zaino's own indexes, treestate relayed live
-/// to the validator, and the node/explorer-only reads withheld.
-///
-/// Address history is [`Local`]: the light wallet's `GetTaddressBalance`,
-/// `GetAddressUtxos` and `GetTaddressTxids` are answered from the finalised
-/// store's transparent index and the non-finalised window — the store reports
-/// its half whole, the window reports the receives it holds and which supplied
-/// outpoints it saw spent, and the composer threads the two across the watermark.
-/// Serving it locally means the wallet's queried addresses are never disclosed to
-/// the validator, the privacy cost a local transparent index exists to remove.
-///
-/// Spend status stays [`Withheld`]: the light-wallet read-set never reads an
-/// outpoint's spend state through the engine `Spend` placement — the window's
-/// spend data reaches the address read through [`AddressReceiveRead`], not that
-/// placement — so withholding it keeps the manifest honest, a capability no
-/// served method consumes being `Absent`, not a false `Live`. Transaction
-/// location is withheld for the same reason: no engine read dispatches on it.
-///
-/// Treestate stays [`Passthrough`]: the wallet witnesses against it, but no local
-/// treestate index is built on any tier, so it is relayed to the validator.
-///
-/// [`AddressReceiveRead`]: zaino_service::AddressReceiveRead
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct LightWalletRouting;
-
-impl Routing for LightWalletRouting {
-    type Address = Local;
-    type Treestate = Passthrough;
-    type Spend = Withheld;
-    type TransactionLocation = Withheld;
-}
-
-/// The node-RPC / explorer routing: compact blocks, transparent address history
-/// and spend lookups served **locally** from Zaino's own indexes, treestate
-/// relayed live to the validator, transaction location withheld.
-///
-/// Address history is [`Local`] because the explorer's address page needs
-/// `getaddressdeltas` — full transparent history, receives and spends — which no
-/// validator answers in plain RPC mode: Zebra has no such method. The finalised
-/// store answers the whole address read over its transparent index set, the
-/// non-finalised window reports the receives it holds and which supplied
-/// outpoints it saw spent, and the composer threads the two across the watermark
-/// so a spend of an output received below it is attributed correctly.
-///
-/// Spend status is [`Local`] for the same reason: `getspentinfo` locates where an
-/// outpoint was spent, which no validator answers in plain RPC mode (Zebra
-/// returns `-32601`). Both tiers build the spends index, so the composer asks the
-/// head first — a spend there is the newer fact — and falls through to the
-/// finalised store, reporting a spend at or below the watermark of an output the
-/// window never saw created.
-///
-/// Transaction location is withheld: no engine read dispatches on that placement,
-/// so withholding it keeps the manifest honest — a capability no served method
-/// consumes is `Absent`, not a false `Live`.
-///
-/// Treestate stays [`Passthrough`]: the explorer surface reads it, but no local
-/// treestate index is built on any tier, so it is relayed to the validator.
-///
-/// [`NodeRpcReads`]: zaino_service::read_sets::NodeRpcReads
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NodeRpcRouting;
-
-impl Routing for NodeRpcRouting {
-    type Address = Local;
-    type Treestate = Passthrough;
-    type Spend = Local;
-    type TransactionLocation = Withheld;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn node_rpc_routing_places_every_capability() {
-        use strum::IntoEnumIterator;
-        for capability in Capability::iter() {
-            // Exhaustiveness is rustc's; this pins the node-RPC table's shape —
-            // in particular that address history and spend status are served
-            // locally, and that transaction location is withheld, not silently
-            // passed through.
-            let placement = NodeRpcRouting::placement(capability);
-            match capability {
-                Capability::Blocks | Capability::AddressHistory | Capability::SpendStatus => {
-                    assert_eq!(placement, PlacementKind::Local)
-                }
-                Capability::TransactionLocation => {
-                    assert_eq!(placement, PlacementKind::Withheld)
-                }
-                Capability::Treestate
-                | Capability::SubtreeRoots
-                | Capability::RawTransaction
-                | Capability::Mempool
-                | Capability::Broadcast
-                | Capability::NodeStatus
-                | Capability::ReportedUpgrades => {
-                    assert_eq!(placement, PlacementKind::Passthrough)
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn light_routing_places_every_capability() {
-        use strum::IntoEnumIterator;
-        for capability in Capability::iter() {
-            // Exhaustiveness is rustc's; this pins the light table's shape — in
-            // particular that address history is served locally, and that spend
-            // status and transaction location are withheld, not passed through.
-            let placement = LightWalletRouting::placement(capability);
-            match capability {
-                Capability::Blocks | Capability::AddressHistory => {
-                    assert_eq!(placement, PlacementKind::Local)
-                }
-                Capability::SpendStatus | Capability::TransactionLocation => {
-                    assert_eq!(placement, PlacementKind::Withheld)
-                }
-                Capability::Treestate
-                | Capability::SubtreeRoots
-                | Capability::RawTransaction
-                | Capability::Mempool
-                | Capability::Broadcast
-                | Capability::NodeStatus
-                | Capability::ReportedUpgrades => {
-                    assert_eq!(placement, PlacementKind::Passthrough)
-                }
-            }
         }
     }
 }
