@@ -9,9 +9,10 @@ use crate::{ForkPoint, Locator, SpendStatus, TxStatus};
 use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
-    BlockVerbose, BlockchainInfo, CompactBlock, DecodedBlock, Height, HeightRange, Outpoint,
-    RawTransaction, ShieldedPool, SubtreeRoot, Transaction, TransactionDetail, TransactionId,
-    TransactionLocation, TransparentAddress, TransparentInput, TransparentOutput, Treestate, Utxo,
+    BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, DecodedBlock, Height, HeightRange,
+    Outpoint, RawTransaction, ShieldedPool, SubtreeRoot, Transaction, TransactionDetail,
+    TransactionId, TransactionLocation, TransparentAddress, TransparentInput, TransparentOutput,
+    Treestate, Utxo,
 };
 
 use crate::error::{
@@ -45,6 +46,43 @@ pub trait CompactBlockRead: Send + Sync {
         at: BlockSelector,
     ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send;
     fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>>;
+}
+
+/// The two fields of a block header a timestamp-range search needs: the block's
+/// hash and its timestamp. The minimal projection of a header for
+/// [`HeaderRead`], carrying neither the full header nor the compact block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderSummary {
+    /// The block's hash.
+    pub hash: BlockHash,
+    /// The block's timestamp (`nTime`), Unix epoch seconds.
+    pub time: BlockTime,
+}
+
+/// A height-addressed read of a block's hash and timestamp — the header
+/// projection the `getblockhashes` candidate search drives, one height at a time,
+/// without composing a whole compact block per probe.
+///
+/// A tier read, answered locally from the headers index (FS) or the in-window
+/// headers (NFS), so it joins the always-local blocks bundle alongside
+/// [`CompactBlockRead`] in [`ChainTier`](crate::reads) — the chain view routes a
+/// `header(h)` with the same seam rule it routes a `compact_block(h)`.
+///
+/// `Ok(None)` is the domain answer that **this tier does not cover `h`** (above
+/// its window, below its floor, or off its best chain). A height the tier *does*
+/// cover whose header cannot be read is a failure
+/// ([`BlockReadError`]), never `Ok(None)`: a consumer walking a height range
+/// treats a `None` inside the chain as a hole, so a readable-but-failed header
+/// must surface as an error.
+///
+/// Backed by: the headers index (FS) or the retained window's headers (NFS).
+pub trait HeaderRead: Send + Sync {
+    /// The hash and timestamp of the block at `h`, or `Ok(None)` when this tier
+    /// does not cover `h`.
+    fn header(
+        &self,
+        h: Height,
+    ) -> impl Future<Output = Result<Option<HeaderSummary>, BlockReadError>> + Send;
 }
 
 /// The chain-position overlay on a block — confirmations, difficulty,

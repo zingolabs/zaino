@@ -4,12 +4,13 @@
 use std::future::Future;
 
 use zaino_service::error::Transient;
-use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
+use zaino_service::{ChainSegment, CompactBlockRead, HeaderRead, TakeSnapshot};
 
 /// What a side of the seam must serve for the composer to route it: the
 /// coherence coordinate ([`ChainSegment`]) plus the reads of the capability
-/// that is always answered locally, blocks — today exactly
-/// [`CompactBlockRead`], the block representation Zaino serves.
+/// that is always answered locally, blocks — the compact block Zaino serves
+/// ([`CompactBlockRead`]) and the header projection a timestamp search drives
+/// ([`HeaderRead`]).
 ///
 /// Named as a role rather than as its reads so the composer, the engine and
 /// the deployments bound on the role: when the always-local capability grows
@@ -19,8 +20,8 @@ use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
 /// per placement on the engine.
 ///
 /// Blanket-implemented: a type is a tier exactly when it has the parts.
-pub trait ChainTier: ChainSegment + CompactBlockRead {}
-impl<T> ChainTier for T where T: ChainSegment + CompactBlockRead {}
+pub trait ChainTier: ChainSegment + CompactBlockRead + HeaderRead {}
+impl<T> ChainTier for T where T: ChainSegment + CompactBlockRead + HeaderRead {}
 
 mod snapshot;
 

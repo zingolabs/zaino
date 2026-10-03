@@ -6,7 +6,7 @@ use futures::stream::{self, BoxStream, StreamExt};
 use zaino_primitives::types::{BlockRef, BlockSelector, CompactBlock, Height, HeightRange};
 use zaino_service::error::{BlockReadError, ReadError};
 use zaino_service::{Capability, ServiceableRange};
-use zaino_service::{ChainSegment, CompactBlockRead, Snapshot};
+use zaino_service::{ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, Snapshot};
 
 /// A pinned, reorg-coherent view over the composed chain — the finalised store
 /// segment `F` and the non-finalised head segment `N`, captured together so the
@@ -139,6 +139,23 @@ where
             Route::AboveTip => Ok(None),
         }
     }
+
+    /// Read the header projection at `height`, routing on the seam with the
+    /// **same** [`route`](Self::route) the compact-block read uses, so a header
+    /// and a compact block at one height are always served by the same tier. The
+    /// `InitialBuildGap` arm is the same policy knob as
+    /// [`read_routed`](Self::read_routed).
+    async fn read_routed_header(
+        &self,
+        height: Height,
+    ) -> Result<Option<HeaderSummary>, BlockReadError> {
+        match self.route(height) {
+            Route::Finalised => self.fs.header(height).await,
+            Route::Volatile => self.nfs.header(height).await,
+            Route::InitialBuildGap => Err(BlockReadError::NotServiceable(Capability::Blocks)),
+            Route::AboveTip => Ok(None),
+        }
+    }
 }
 
 impl<F, N> ChainSegment for ChainViewSnapshot<F, N>
@@ -229,5 +246,80 @@ where
                 }
             })
             .boxed()
+    }
+}
+
+impl<F, N> HeaderRead for ChainViewSnapshot<F, N>
+where
+    F: ChainTier,
+    N: ChainTier,
+{
+    async fn header(&self, h: Height) -> Result<Option<HeaderSummary>, BlockReadError> {
+        self.read_routed_header(h).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChainViewSnapshot;
+    use crate::testing::{StubNonFinalised, stub_compact_block};
+    use zaino_primitives::types::{CompactBlock, Height};
+    use zaino_service::HeaderRead;
+
+    /// A stub block at `height` whose hash byte is `hash_byte` and whose time is
+    /// `time`, so a header read carries values that identify the tier it came
+    /// from.
+    fn block_at(height: u32, hash_byte: u8, time: u32) -> CompactBlock {
+        let mut block = stub_compact_block(height, hash_byte);
+        block.time = time;
+        block
+    }
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid test height")
+    }
+
+    /// FS covers `[0, 5]` (hash byte `0xAA`, times `1000 + h`); NFS covers
+    /// `[3, 10]` (hash byte `0xBB`, times `2000 + h`). The overlap `[3, 5]` is on
+    /// both tiers with **different** hashes and times, so a mis-route in the
+    /// finalised band returns the NFS values and fails the assertion. Watermark
+    /// = the FS coverage high = 5.
+    fn composed() -> ChainViewSnapshot<StubNonFinalised, StubNonFinalised> {
+        let fs =
+            StubNonFinalised::from_blocks((0..=5).map(|h| block_at(h, 0xAA, 1000 + h)).collect());
+        let nfs =
+            StubNonFinalised::from_blocks((3..=10).map(|h| block_at(h, 0xBB, 2000 + h)).collect());
+        ChainViewSnapshot::new(fs, nfs)
+    }
+
+    #[tokio::test]
+    async fn header_below_the_watermark_reads_the_finalised_tier() {
+        let view = composed();
+        let summary = view
+            .header(height(4))
+            .await
+            .expect("read succeeds")
+            .expect("height 4 is covered");
+        // The finalised tier owns `[0, 5]` even where the NFS window overlaps it.
+        assert_eq!(<[u8; 32]>::from(summary.hash)[0], 0xAA);
+        assert_eq!(summary.time, 1004);
+    }
+
+    #[tokio::test]
+    async fn header_above_the_watermark_reads_the_non_finalised_tier() {
+        let view = composed();
+        let summary = view
+            .header(height(8))
+            .await
+            .expect("read succeeds")
+            .expect("height 8 is covered");
+        assert_eq!(<[u8; 32]>::from(summary.hash)[0], 0xBB);
+        assert_eq!(summary.time, 2008);
+    }
+
+    #[tokio::test]
+    async fn header_above_the_tip_is_a_domain_miss() {
+        let view = composed();
+        assert_eq!(view.header(height(20)).await.expect("read succeeds"), None);
     }
 }

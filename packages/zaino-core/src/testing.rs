@@ -19,7 +19,7 @@ use zaino_primitives::types::{
     BlockHash, BlockRef, BlockSelector, ChainMetadata, CompactBlock, Height, HeightRange,
 };
 use zaino_service::error::{BlockReadError, ReadError, Transient};
-use zaino_service::{ChainSegment, CompactBlockRead, TakeSnapshot};
+use zaino_service::{ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, TakeSnapshot};
 
 /// A fixed non-finalised window backed by an in-memory map.
 ///
@@ -99,6 +99,22 @@ impl CompactBlockRead for StubNonFinalised {
             .map(Ok)
             .collect();
         stream::iter(blocks).boxed()
+    }
+}
+
+impl HeaderRead for StubNonFinalised {
+    fn header(
+        &self,
+        h: Height,
+    ) -> impl Future<Output = Result<Option<HeaderSummary>, BlockReadError>> + Send {
+        // Projected from the stored window: a height the window holds yields its
+        // block's hash and time; an absent height is a domain miss. Reads never
+        // fail in the stub.
+        let summary = self.blocks.get(&h).map(|block| HeaderSummary {
+            hash: block.hash,
+            time: block.time,
+        });
+        std::future::ready(Ok(summary))
     }
 }
 

@@ -51,9 +51,9 @@ pub use node_status::{NodeStatusError, NodeStatusRead};
 pub use read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads, WalletReadCore};
 pub use reads::{
     AddressRead, BlockRead, BlockTransactionViews, BlockVerboseRead, ChainInfoRead,
-    CompactBlockRead, CompactNullifierRead, ForkReconcile, LocatedTransactionView,
-    RawTransactionRead, ResolvedInput, SpendRead, TransactionRead, TransactionView,
-    TransactionViewRead, TreestateRead,
+    CompactBlockRead, CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary,
+    LocatedTransactionView, RawTransactionRead, ResolvedInput, SpendRead, TransactionRead,
+    TransactionView, TransactionViewRead, TreestateRead,
 };
 pub use status::{SpendStatus, TxStatus};
 pub use upgrades::{ReportedUpgrade, UpgradeStatus};

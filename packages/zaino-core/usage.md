@@ -73,6 +73,7 @@ that capability and on the provider ports that placement needs:
 | capability | placement | needs |
 |---|---|---|
 | compact blocks, nullifier projection | always local | the two tiers' compact reads |
+| header projection (hash + time by height) | always local | the two tiers' `HeaderRead` |
 | full blocks (the tip excepted) | always passthrough | `GetBlock`, `GetBlockByHash` |
 | verbose header / block (chain position) | always passthrough | `GetBlockHeader`, `GetBlockVerbose`, `GetBlockVerboseByHash` |
 | chain-info aggregate | always passthrough | `GetBlockchainInfo` |

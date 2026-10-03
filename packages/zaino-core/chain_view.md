@@ -6,9 +6,13 @@ serving.
 
 Both sides are named through one role, `ChainTier`: a `TakeSnapshot` whose
 snapshot is a `ChainSegment` (coherence coordinate: `pinned_tip` + `coverage`)
-plus the reads of the capability that is always answered locally, blocks,
-which today is exactly `CompactBlockRead`. The bundle is named as a role so
-the reads it carries can grow without every bound changing. The composer assigns the roles by slot — `fs` is the
+plus the reads of the capability that is always answered locally, blocks —
+`CompactBlockRead` (the compact block Zaino serves) and `HeaderRead` (the
+header projection `HeaderSummary { hash, time }`, by height, that a
+timestamp-range search drives one probe at a time). The bundle is named as a
+role so the reads it carries can grow without every bound changing: `header(h)`
+routes on the **same** seam rule as `compact_block(h)`, so a header and its
+compact block are always served by the same tier. The composer assigns the roles by slot — `fs` is the
 durable prefix, `nfs` the volatile suffix — so neither side describes its own
 durability. The module names only `zaino-service` ports; it knows nothing of
 the store or the chain-head crates.
@@ -56,8 +60,8 @@ cumulative index** to serve tree sizes — unlike the FS, which folds one.
 ## Thin marker
 
 The composed snapshot impls only `ChainSegment` (coherence: `pinned_tip` +
-`coverage`), `Snapshot` (`serviceable_range`), and `CompactBlockRead` — the reads
-compact-block serving needs. It does **not** force
+`coverage`), `Snapshot` (`serviceable_range`), `CompactBlockRead` and
+`HeaderRead` — the reads block serving needs. It does **not** force
 `TransactionRead`/`TreestateRead`/etc. onto consumers (those are named
 separately, or passed through).
 

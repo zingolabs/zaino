@@ -65,7 +65,9 @@ use zaino_primitives::types::{
 };
 use zaino_service::error::{BlockReadError, ReadError, Transient};
 use zaino_service::{Answerable, ServiceabilityManifest, ServiceableRange};
-use zaino_service::{ChainSegment, CompactBlockRead, Serviceable, Snapshot, TakeSnapshot};
+use zaino_service::{
+    ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, Serviceable, Snapshot, TakeSnapshot,
+};
 use zaino_sync::primitives::BlockHeight;
 
 /// A read handle over the KV backend, for the index set `M`. It consumes the
@@ -256,6 +258,37 @@ where
             Err(e) => vec![Err(ReadError::Fatal(format!("open reader: {e}")))],
         };
         Box::pin(futures::stream::iter(blocks))
+    }
+}
+
+/// The header projection is backed by the same `Blocks` capability as the
+/// compact block — the headers index is one of its indexes — so a store that can
+/// serve a compact block can serve its header, and a [`StoreSnapshot`] is a chain
+/// tier for both reads under one bound.
+impl<B, M> HeaderRead for StoreSnapshot<B, M>
+where
+    B: Backend + 'static,
+    M: Backs<local::Blocks>,
+{
+    fn header(
+        &self,
+        h: Height,
+    ) -> impl Future<Output = Result<Option<HeaderSummary>, BlockReadError>> + Send {
+        let backend = self.backend.clone();
+        async move {
+            let reader = backend
+                .reader()
+                .map_err(|e| BlockReadError::Fatal(format!("open reader: {e}")))?;
+            // A read or decode failure propagates as an error; an absent entry is
+            // a height the store does not cover (above its watermark).
+            match read_present::<HeadersIndex, B>(&reader, headers::ID.into(), h)? {
+                Some(header) => Ok(Some(HeaderSummary {
+                    hash: header.hash,
+                    time: header.time,
+                })),
+                None => Ok(None),
+            }
+        }
     }
 }
 

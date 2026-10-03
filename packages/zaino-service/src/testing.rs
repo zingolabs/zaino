@@ -37,11 +37,11 @@ use crate::error::{
 };
 use crate::{
     AddressRead, BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead,
-    ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile, IndexerService,
-    LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing, MempoolSubscribe,
-    MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead, ReportedUpgrades,
-    Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead,
-    TransactionViewRead, TreestateRead,
+    ChainSegment, CompactBlockRead, CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary,
+    IndexerService, LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing,
+    MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead,
+    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
+    TransactionRead, TransactionViewRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -309,6 +309,15 @@ impl CompactBlockRead for MockSnapshot {
         _range: HeightRange,
     ) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
         stream::empty().boxed()
+    }
+}
+
+impl HeaderRead for MockSnapshot {
+    async fn header(&self, _h: Height) -> Result<Option<HeaderSummary>, BlockReadError> {
+        // The mock scripts no blocks (like `compact_block`): every height is a
+        // domain miss. The impl exists so `MockSnapshot` satisfies the tier bundle
+        // the composer bounds on.
+        Ok(None)
     }
 }
 

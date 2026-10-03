@@ -6,15 +6,17 @@ read to the writer's committed watermark.
 
 It is an adapter, not a ports crate. The ports it serves are the shared
 serving ports the chain head also serves (`ChainSegment`, `CompactBlockRead`,
-`Serviceable`, `TakeSnapshot`), so the composer in `zaino-core` sees both
-tiers through one contract; the ports it consumes are `zaino-persistence`'s
-`Backend` and the index schemas in `zaino-indexes`.
+`HeaderRead`, `Serviceable`, `TakeSnapshot`), so the composer in `zaino-core`
+sees both tiers through one contract; the ports it consumes are
+`zaino-persistence`'s `Backend` and the index schemas in `zaino-indexes`.
 
 ## Presence is in the type
 
 `StoreReader<B, M>` is typed to the index set `M` it reads, and a serving read
 exists on its snapshot only where `M` builds every index that read composes
-from (`M: Backs<local::Blocks>` for compact blocks). A store over a set that
+from (`M: Backs<local::Blocks>` for both the compact block and its
+`HeaderRead` header projection, which the headers index — one of the `Blocks`
+indexes — backs). A store over a set that
 lacks an index has no such read, so a deployment that needs it fails at the
 wiring, not at a request. Reads the store does not own are not stubbed; the
 composer routes them to the provider that has them.
