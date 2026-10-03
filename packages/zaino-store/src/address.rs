@@ -41,25 +41,11 @@ use zaino_primitives::types::{
     TransactionId, TransparentAddress, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::error::AddressReadError;
-use zaino_service::AddressRead;
+use zaino_service::{AddressRead, ReadBudget};
 use zaino_sync::primitives::BlockHeight;
 
 use crate::spend_resolve::{resolve_spend, ResolveError};
 use crate::{read_keyed, StoreSnapshot};
-
-/// The per-request ceiling on how many receives of one address a read collects.
-///
-/// Sized for the passthrough phase, before a balance/UTXO-by-address aggregate
-/// makes these reads cheap at any history size. The cap bounds a single request's
-/// working set: at roughly a couple hundred bytes resident per receive across the
-/// receive scan and the joined [`Entry`] vector, five million entries is on the
-/// order of a gigabyte — comfortably under the process memory limit, yet well
-/// above any legitimate single transparent address observed on mainnet (the
-/// largest pool-payout addresses hold on the order of a million outputs). An
-/// address past this bound fails its one request with
-/// [`AddressReadError::TooLarge`] instead of letting the scan grow unbounded and
-/// take the whole process down with it.
-const MAX_ADDRESS_RECEIVES: usize = 5_000_000;
 
 /// One receive of the queried address, joined with where it was spent if the
 /// finalised range spent it.
@@ -98,12 +84,13 @@ where
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<AddressBalance, AddressReadError> {
         // A balance counts only receives inside the range, and whether each is
         // spent (at any height) — never a spend's height — so the receive scan is
         // bounded to exactly `[range.start, range.end]`.
         let arrived: Vec<Entry> = self
-            .entries(addr, receive_start(range), receive_end(range))?
+            .entries(addr, receive_start(range), receive_end(range), budget)?
             .into_iter()
             .filter(|entry| covers(range, entry.height))
             .collect();
@@ -128,11 +115,12 @@ where
     async fn unspent_outpoints(
         &self,
         addr: &TransparentAddress,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<Utxo>, AddressReadError> {
         // Range-less by contract: every unspent output, whenever it arrived, so
         // the whole address prefix is read.
         let unspent: Vec<Entry> = self
-            .entries(addr, whole_history_start(), whole_history_end())?
+            .entries(addr, whole_history_start(), whole_history_end(), budget)?
             .into_iter()
             .filter(|entry| entry.spent.is_none())
             .collect();
@@ -162,6 +150,7 @@ where
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
         // A spend is a delta at its own height, and the receive it spends can lie
         // anywhere at or below that height — so the scan cannot be lower-bounded
@@ -170,7 +159,7 @@ where
         // can contribute neither a receive delta (its height is out of range) nor
         // a spend delta (a spend is never below its receive).
         let mut deltas = Vec::new();
-        for entry in self.entries(addr, whole_history_start(), receive_end(range))? {
+        for entry in self.entries(addr, whole_history_start(), receive_end(range), budget)? {
             if covers(range, entry.height) {
                 deltas.push(AddressDelta {
                     satoshis: positive(entry.value)?,
@@ -205,6 +194,7 @@ where
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         // Every transaction that moved value for this address: the ones that
         // paid it and the ones that spent what it held. One transaction can do
@@ -214,7 +204,7 @@ where
         // Same bound as `deltas`: a spend in range can belong to a receive from
         // any earlier height, so the scan is only upper-bounded by `range.end`.
         let mut txids = Vec::new();
-        for entry in self.entries(addr, whole_history_start(), receive_end(range))? {
+        for entry in self.entries(addr, whole_history_start(), receive_end(range), budget)? {
             if covers(range, entry.height) {
                 txids.push((entry.height, entry.txid));
             }
@@ -243,11 +233,16 @@ where
     /// heights to exactly what its answer needs so the scan reads a contiguous
     /// address-prefixed slice, not the namespace. The index returns receives in
     /// height order and the join preserves it.
+    ///
+    /// `budget` is the request-scoped ceiling, charged entry by entry during the
+    /// scan and shared across the addresses one query reads, so the request is
+    /// bounded as a whole rather than per address.
     fn entries(
         &self,
         addr: &TransparentAddress,
         start: BlockHeight,
         end: BlockHeight,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<Entry>, AddressReadError> {
         let Some((script_type, hash)) = transparent_address_key(addr) else {
             // Not a transparent address, so nothing was ever keyed under it.
@@ -255,14 +250,8 @@ where
             return Ok(Vec::new());
         };
         let reader = self.reader()?;
-        let receives = read_receives(
-            &reader,
-            AddrId { script_type, hash },
-            start,
-            end,
-            MAX_ADDRESS_RECEIVES,
-        )
-        .map_err(|e| receives_read_error(addr, e))?;
+        let receives = read_receives(&reader, AddrId { script_type, hash }, start, end, budget)
+            .map_err(|e| receives_read_error(addr, e))?;
 
         receives
             .into_iter()

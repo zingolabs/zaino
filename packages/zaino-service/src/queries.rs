@@ -28,7 +28,7 @@ use zaino_primitives::types::{
 };
 
 use crate::error::AddressReadError;
-use crate::reads::AddressRead;
+use crate::reads::{AddressRead, ReadBudget};
 use crate::ChainSegment;
 
 /// Explorer policy: an unserviceable snapshot has no indexed history, which an
@@ -90,15 +90,19 @@ pub fn serviceable_range<S: ChainSegment>(snapshot: &S) -> Option<HeightRange> {
 /// An empty `addrs` totals zero: a query about no addresses is well-formed and
 /// its answer is zero. A caller for whom an empty list is a protocol error
 /// rejects it at its own wire boundary.
+///
+/// One [`ReadBudget`] spans the whole call, so the combined history read across
+/// every address is bounded as a single request rather than per address.
 pub async fn total_balance<S: AddressRead>(
     snapshot: &S,
     addrs: &[TransparentAddress],
     range: HeightRange,
 ) -> Result<AddressBalance, AddressReadError> {
+    let mut budget = ReadBudget::for_request();
     let mut balances = Vec::with_capacity(addrs.len());
     let mut received = ZatoshisFlowSum::from_summed(0);
     for addr in addrs {
-        let read = snapshot.balance(addr, range).await?;
+        let read = snapshot.balance(addr, range, &mut budget).await?;
         balances.push(read.balance);
         received = received.checked_join(read.received).ok_or_else(|| {
             AddressReadError::Fatal("summed lifetime receipts overflow".to_string())
@@ -162,9 +166,12 @@ where
     }
     let range = HeightRange { start, end };
 
+    // One budget for the whole request, so the deltas accumulated across every
+    // address are bounded together rather than per address.
+    let mut budget = ReadBudget::for_request();
     let mut deltas = Vec::new();
     for addr in addrs {
-        deltas.extend(snapshot.deltas(addr, range).await?);
+        deltas.extend(snapshot.deltas(addr, range, &mut budget).await?);
     }
     deltas.sort_by_key(|delta| (delta.height, delta.block_index, delta.index));
     Ok(AddressDeltasAnswer {
@@ -214,9 +221,12 @@ where
     }
     let range = HeightRange { start, end };
 
+    // One budget for the whole request, so the txids accumulated across every
+    // address are bounded together rather than per address.
+    let mut budget = ReadBudget::for_request();
     let mut located = Vec::new();
     for addr in addrs {
-        located.extend(snapshot.tx_ids(addr, range).await?);
+        located.extend(snapshot.tx_ids(addr, range, &mut budget).await?);
     }
     // A stable sort by a key that is `None` for unknown-height entries and
     // `Some((height, txid))` for known ones. `Option` orders `None` before `Some`,
@@ -263,9 +273,12 @@ where
     if serviceable_range(snapshot).is_none() {
         return Ok(Vec::new());
     }
+    // One budget for the whole request, so the unspent sets accumulated across
+    // every address are bounded together rather than per address.
+    let mut budget = ReadBudget::for_request();
     let mut utxos = Vec::new();
     for addr in addrs {
-        utxos.extend(snapshot.unspent_outpoints(addr).await?);
+        utxos.extend(snapshot.unspent_outpoints(addr, &mut budget).await?);
     }
     utxos.sort_by_key(|utxo| u32::from(utxo.height));
     Ok(utxos)

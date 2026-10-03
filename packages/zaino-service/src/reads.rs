@@ -322,22 +322,101 @@ pub trait TreestateRead: Send + Sync {
     ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
 }
 
+/// The default per-request ceiling on how many address-history entries a single
+/// query may collect, across every address it reads.
+///
+/// Sized for the passthrough phase, before a balance/UTXO-by-address aggregate
+/// makes these reads cheap at any history size. At roughly a couple hundred bytes
+/// resident per entry across the index scan and the joined vectors, five million
+/// is on the order of a gigabyte — comfortably under the process memory limit,
+/// yet well above any legitimate single transparent address observed on mainnet
+/// (the largest pool-payout addresses hold on the order of a million outputs). A
+/// request past this bound fails with [`AddressReadError::TooLarge`] instead of
+/// letting the scan grow unbounded and take the whole process down with it.
+const MAX_ADDRESS_ENTRIES: usize = 5_000_000;
+
+/// A request-scoped ceiling on how many address-history entries a single query
+/// may collect, across every address it reads.
+///
+/// [`AddressRead`]'s methods are called once per address, and a multi-address
+/// query loops over them accumulating the results. A ceiling enforced per call
+/// would bound each address but let a request naming K pool-scale addresses grow
+/// to roughly K × the ceiling, breaking the guarantee that one request is
+/// bounded. One budget — created per request and passed by `&mut` through every
+/// per-address read — bounds the request as a whole instead: the index scan
+/// charges each entry it collects against it and refuses with
+/// [`AddressReadError::TooLarge`] the moment a charge would overrun, before the
+/// over-limit entry is materialised.
+///
+/// A query that reads several facets of one address (a composed balance scans the
+/// address's receives *and* its unspent set) charges each scan against the same
+/// budget, so a single address is counted more than once; the ceiling is
+/// deliberately far enough above any legitimate single address that this
+/// conservative over-count never refuses a real one.
+pub struct ReadBudget {
+    limit: usize,
+    remaining: usize,
+}
+
+impl ReadBudget {
+    /// A budget for one request, with the default production ceiling
+    /// ([`MAX_ADDRESS_ENTRIES`]).
+    pub fn for_request() -> Self {
+        Self::with_limit(MAX_ADDRESS_ENTRIES)
+    }
+
+    /// A budget with an explicit ceiling. Production uses [`for_request`](Self::for_request);
+    /// a small limit drives the over-ceiling tests without a pool-scale fixture.
+    pub fn with_limit(limit: usize) -> Self {
+        Self {
+            limit,
+            remaining: limit,
+        }
+    }
+
+    /// The ceiling this budget was created with — the figure a refusal reports.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Reserve one entry against the budget. `true` when it was within budget and
+    /// the slot is now taken; `false` when the budget is exhausted, which the
+    /// counting scan turns into [`AddressReadError::TooLarge`].
+    pub fn charge_one(&mut self) -> bool {
+        match self.remaining.checked_sub(1) {
+            Some(remaining) => {
+                self.remaining = remaining;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 /// Backed by: transparent/address index. Consumers use the subset they need
 /// (zallet: `unspent_outpoints` + `tx_ids`; an explorer: `balance` + `deltas`).
+///
+/// Every method takes a [`ReadBudget`] by `&mut`: one budget is created per
+/// request and threaded through each address the query reads, so the whole
+/// request is bounded rather than each address independently. A single-address
+/// caller still passes one (`ReadBudget::for_request`).
 pub trait AddressRead: Send + Sync {
     fn balance(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<AddressBalance, AddressReadError>> + Send;
     fn unspent_outpoints(
         &self,
         addr: &TransparentAddress,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<Vec<Utxo>, AddressReadError>> + Send;
     fn deltas(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<Vec<AddressDelta>, AddressReadError>> + Send;
     /// Every transaction touching `addr` in `range`, each paired with the height
     /// at which it touched the address when that is known.
@@ -355,6 +434,7 @@ pub trait AddressRead: Send + Sync {
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<Vec<(Option<Height>, TransactionId)>, AddressReadError>> + Send;
 }
 

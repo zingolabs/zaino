@@ -13,8 +13,8 @@ use futures::stream::StreamExt;
 use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
 use zaino_service::testing::{MockChain as MockService, MockIndexerService};
 use zaino_service::{
-    AddressRead, Broadcast, MempoolContent, MempoolSubscribe, RawTransactionRead, Serviceable,
-    TakeSnapshot, TreestateRead,
+    AddressRead, Broadcast, MempoolContent, MempoolSubscribe, RawTransactionRead, ReadBudget,
+    Serviceable, TakeSnapshot, TreestateRead,
 };
 use zaino_source::mock::MockChain;
 use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
@@ -195,23 +195,23 @@ async fn address_reads_are_remote_under_light_routing() {
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
-    AddressRead::balance(&snapshot, &addr, range(0, 10))
+    AddressRead::balance(&snapshot, &addr, range(0, 10), &mut ReadBudget::for_request())
         .await
         .expect("balance served");
     assert!(
-        AddressRead::unspent_outpoints(&snapshot, &addr)
+        AddressRead::unspent_outpoints(&snapshot, &addr, &mut ReadBudget::for_request())
             .await
             .expect("utxos served")
             .is_empty()
     );
     assert!(
-        AddressRead::tx_ids(&snapshot, &addr, range(0, 10))
+        AddressRead::tx_ids(&snapshot, &addr, range(0, 10), &mut ReadBudget::for_request())
             .await
             .expect("txids served")
             .is_empty()
     );
     assert!(
-        AddressRead::deltas(&snapshot, &addr, range(0, 10))
+        AddressRead::deltas(&snapshot, &addr, range(0, 10), &mut ReadBudget::for_request())
             .await
             .expect("deltas served")
             .is_empty()
@@ -232,7 +232,7 @@ async fn passthrough_tx_ids_report_no_height() {
     let engine = engine_with(MockChain::new().with_address_txids(txids.clone()));
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
-    let located = AddressRead::tx_ids(&snapshot, &addr, range(0, 10))
+    let located = AddressRead::tx_ids(&snapshot, &addr, range(0, 10), &mut ReadBudget::for_request())
         .await
         .expect("txids served");
     let returned: Vec<TransactionId> = located.iter().map(|(_, txid)| *txid).collect();
@@ -248,7 +248,8 @@ async fn address_reads_map_an_invalid_address_to_fatal() {
     let engine = engine_with(MockChain::new().reject_addresses("bad t-addr"));
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("bogus".to_string());
-    match AddressRead::balance(&snapshot, &addr, range(0, 10)).await {
+    match AddressRead::balance(&snapshot, &addr, range(0, 10), &mut ReadBudget::for_request()).await
+    {
         Err(AddressReadError::Fatal(msg)) => {
             assert!(msg.contains("invalid address"), "got: {msg}")
         }

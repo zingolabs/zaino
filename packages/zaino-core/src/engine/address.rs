@@ -29,7 +29,7 @@ use zaino_primitives::types::{
     TransparentAddress, TransparentReceive, TransparentSpend, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::error::AddressReadError;
-use zaino_service::{AddressRead, AddressReceiveRead};
+use zaino_service::{AddressRead, AddressReceiveRead, ReadBudget};
 use zaino_source::{GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos};
 
 use super::EngineSnapshot;
@@ -47,12 +47,14 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<AddressBalance, AddressReadError>> + Send;
 
     fn unspent_outpoints(
         local: &ChainViewSnapshot<F, N>,
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<Vec<Utxo>, AddressReadError>> + Send;
 
     fn deltas(
@@ -60,6 +62,7 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<Vec<AddressDelta>, AddressReadError>> + Send;
 
     fn tx_ids(
@@ -67,6 +70,7 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> impl Future<Output = Result<Vec<(Option<Height>, TransactionId)>, AddressReadError>> + Send;
 }
 
@@ -83,31 +87,35 @@ where
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<AddressBalance, AddressReadError> {
-        R::Address::balance(self.local(), self.passthrough(), addr, range).await
+        R::Address::balance(self.local(), self.passthrough(), addr, range, budget).await
     }
 
     async fn unspent_outpoints(
         &self,
         addr: &TransparentAddress,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<Utxo>, AddressReadError> {
-        R::Address::unspent_outpoints(self.local(), self.passthrough(), addr).await
+        R::Address::unspent_outpoints(self.local(), self.passthrough(), addr, budget).await
     }
 
     async fn deltas(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
-        R::Address::deltas(self.local(), self.passthrough(), addr, range).await
+        R::Address::deltas(self.local(), self.passthrough(), addr, range, budget).await
     }
 
     async fn tx_ids(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
-        R::Address::tx_ids(self.local(), self.passthrough(), addr, range).await
+        R::Address::tx_ids(self.local(), self.passthrough(), addr, range, budget).await
     }
 }
 
@@ -130,6 +138,9 @@ where
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         _range: HeightRange,
+        // The validator bounds its own answer, so the request budget is not
+        // charged against a passthrough read.
+        _budget: &mut ReadBudget,
     ) -> Result<AddressBalance, AddressReadError> {
         // `getaddressbalance` is range-less: this is the balance as of the
         // validator's tip, whatever range was asked for.
@@ -140,6 +151,7 @@ where
         _local: &ChainViewSnapshot<F, N>,
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
+        _budget: &mut ReadBudget,
     ) -> Result<Vec<Utxo>, AddressReadError> {
         passthrough.unspent_outpoints(addr).await
     }
@@ -149,6 +161,7 @@ where
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        _budget: &mut ReadBudget,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
         passthrough.deltas(addr, range).await
     }
@@ -158,6 +171,7 @@ where
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        _budget: &mut ReadBudget,
     ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         // The validator's `getaddresstxids` returns bare txids with no per-txid
         // height, so each pair's height is `None` — the honest "location unknown",
@@ -326,12 +340,13 @@ where
         _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<AddressBalance, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
         let store = local.finalised();
 
         let fs_balance = match fs {
-            Some(range) => store.balance(addr, range).await?,
+            Some(range) => store.balance(addr, range, budget).await?,
             None => empty_balance()?,
         };
         // A balance is what is held *now*, so a receive inside the asked range
@@ -339,7 +354,7 @@ where
         // asked range stops at or below the watermark. That matches the store's
         // own half, which nets every spend it saw rather than only those inside
         // the asked range.
-        let held = store.unspent_outpoints(addr).await?;
+        let held = store.unspent_outpoints(addr, budget).await?;
         let part = window_part(local, addr, nfs, local.non_finalised().coverage(), &held).await?;
 
         // Gross receipts are additive: the halves cover disjoint heights, and a
@@ -385,12 +400,13 @@ where
         local: &ChainViewSnapshot<F, N>,
         _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<Utxo>, AddressReadError> {
         // Range-less by contract, so the window's whole coverage is in scope.
         // A store output is unspent as of the watermark; the window above it may
         // have spent it since, and an output the window paid is unspent unless
         // the window itself spent it.
-        let held = local.finalised().unspent_outpoints(addr).await?;
+        let held = local.finalised().unspent_outpoints(addr, budget).await?;
         let Some(window_range) = local.non_finalised().coverage() else {
             return Ok(held);
         };
@@ -425,6 +441,7 @@ where
         _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
         let store = local.finalised();
@@ -432,7 +449,7 @@ where
         // The store reports its own half whole, spends included: it has the
         // history to attribute them.
         let mut deltas = match fs {
-            Some(range) => store.deltas(addr, range).await?,
+            Some(range) => store.deltas(addr, range, budget).await?,
             None => Vec::new(),
         };
 
@@ -441,7 +458,7 @@ where
         };
         // Both ranges are the asked one: a delta is an event, so a spend
         // outside the asked range is not one of its deltas.
-        let held = store.unspent_outpoints(addr).await?;
+        let held = store.unspent_outpoints(addr, budget).await?;
         let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
         let values = values(&held, &part.receives);
 
@@ -479,6 +496,7 @@ where
         _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
+        budget: &mut ReadBudget,
     ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
         let store = local.finalised();
@@ -486,7 +504,7 @@ where
         // The store's half is already `(Some(height), txid)`-sorted and
         // deduplicated — the local index knows every height.
         let mut txids = match fs {
-            Some(range) => store.tx_ids(addr, range).await?,
+            Some(range) => store.tx_ids(addr, range, budget).await?,
             None => Vec::new(),
         };
 
@@ -495,7 +513,7 @@ where
         };
         // As for deltas: a transaction appears because of what it did inside the
         // asked range.
-        let held = store.unspent_outpoints(addr).await?;
+        let held = store.unspent_outpoints(addr, budget).await?;
         let part = window_part(local, addr, Some(nfs), Some(nfs), &held).await?;
 
         // Every transaction that moved value for the address in the window: the

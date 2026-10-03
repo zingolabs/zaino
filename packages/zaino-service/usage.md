@@ -163,6 +163,16 @@ returns `None` so a wallet never reports a user's funds as gone off an indexer
 that cannot answer. An adapter calls only its own policy function, then renders
 the domain answer to its wire shape and maps its error codes.
 
+Every address query is bounded as a **single request**, not per address.
+`AddressRead`'s methods each take a `ReadBudget` by `&mut`; a query creates one
+(`ReadBudget::for_request`) and threads it through every address it reads, so the
+index scan charges each entry against the shared budget and refuses with
+`AddressReadError::TooLarge` the moment the combined history would overrun it.
+A per-address ceiling would let a request naming K pool-scale addresses grow to
+roughly K times the ceiling; one request-scoped budget closes that. An adapter
+that loops over addresses itself (rather than through a `queries` function) makes
+one budget before the loop for the same reason.
+
 `address_deltas(snapshot, addrs, start, end)` answers the explorer's
 address-history question beside `address_balance` and takes the same policy:
 nothing serviceable means no indexed history, so an empty answer rather than an

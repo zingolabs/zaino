@@ -39,7 +39,8 @@ use zaino_primitives::types::{
     Zatoshis,
 };
 use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
-use zaino_service::{AddressRead, ChainSegment, TakeSnapshot, queries};
+use zaino_service::error::AddressReadError;
+use zaino_service::{AddressRead, ChainSegment, ReadBudget, TakeSnapshot, queries};
 use zaino_source::mock::{MockChain, test_block};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::StoreReader;
@@ -209,7 +210,7 @@ async fn engine() -> impl AddressRead {
 async fn a_receive_below_the_watermark_spent_in_the_window_leaves_the_balance() {
     let balance = engine()
         .await
-        .balance(&addr_a(), range(0, 4))
+        .balance(&addr_a(), range(0, 4), &mut ReadBudget::for_request())
         .await
         .expect("the read succeeds");
     assert_eq!(
@@ -230,7 +231,7 @@ async fn a_receive_below_the_watermark_spent_in_the_window_leaves_the_balance() 
 async fn the_unspent_set_drops_what_the_window_spent_and_adds_what_it_paid() {
     let unspent = engine()
         .await
-        .unspent_outpoints(&addr_a())
+        .unspent_outpoints(&addr_a(), &mut ReadBudget::for_request())
         .await
         .expect("the read succeeds");
 
@@ -255,7 +256,7 @@ async fn the_unspent_set_drops_what_the_window_spent_and_adds_what_it_paid() {
 async fn transaction_ids_span_both_halves() {
     let located = engine()
         .await
-        .tx_ids(&addr_a(), range(0, 4))
+        .tx_ids(&addr_a(), range(0, 4), &mut ReadBudget::for_request())
         .await
         .expect("the read succeeds");
     // The read pairs each txid with the height it touched the address; here only
@@ -276,7 +277,7 @@ async fn transaction_ids_span_both_halves() {
 async fn deltas_report_the_spend_at_its_own_height_and_value() {
     let deltas = engine()
         .await
-        .deltas(&addr_a(), range(0, 4))
+        .deltas(&addr_a(), range(0, 4), &mut ReadBudget::for_request())
         .await
         .expect("the read succeeds");
 
@@ -534,7 +535,7 @@ async fn the_finalised_half_answers_alone_and_addresses_do_not_share() {
     let engine = engine().await;
 
     let below = engine
-        .balance(&addr_a(), range(0, 2))
+        .balance(&addr_a(), range(0, 2), &mut ReadBudget::for_request())
         .await
         .expect("the read succeeds");
     assert_eq!(
@@ -549,8 +550,128 @@ async fn the_finalised_half_answers_alone_and_addresses_do_not_share() {
     );
 
     let other = engine
-        .balance(&addr_b(), range(0, 4))
+        .balance(&addr_b(), range(0, 4), &mut ReadBudget::for_request())
         .await
         .expect("the read succeeds");
     assert_eq!(other.balance, value(300), "B's own single output");
+}
+
+// --- request-scoped budget, across addresses --------------------------------
+//
+// The ceiling is per request, not per address: one budget threaded through every
+// address a query reads bounds their combined entries. This store pays two
+// addresses two receives each (window empty, so one store scan per address), so a
+// budget that each address fits under alone is overrun by the two together.
+
+/// A paid at heights 1 and 2; B paid at heights 3 and 4 — two receives each.
+fn budget_store_tx(seed: u8) -> TransactionId {
+    TransactionId::from([seed; 32])
+}
+
+/// A finalised store over `[0, 4]`: A is paid at heights 1 and 2, B at heights 3
+/// and 4, each payment its own transaction. Finalised depth is zero, so the whole
+/// span is below the watermark and the window is empty.
+async fn budget_store() -> StoreReader<InMemoryBackend, TransparentHistory> {
+    let backend = InMemoryBackend::new();
+    let mut chain = MockChain::new();
+    for height in 0..=4u32 {
+        let hash_byte = u8::try_from(40 + height).expect("a small height");
+        let mut block: Block = test_block(height, hash_byte);
+        let paid = match height {
+            1 => Some((budget_store_tx(0xD1), &addr_a(), 100u64)),
+            2 => Some((budget_store_tx(0xD2), &addr_a(), 200)),
+            3 => Some((budget_store_tx(0xD3), &addr_b(), 300)),
+            4 => Some((budget_store_tx(0xD4), &addr_b(), 400)),
+            _ => None,
+        };
+        if let Some((txid, addr, zats)) = paid {
+            block.transactions = vec![Transaction {
+                txid,
+                transparent: TransparentData {
+                    inputs: Vec::new(),
+                    outputs: vec![pays(addr, zats)],
+                },
+                sapling: Default::default(),
+                orchard: Default::default(),
+                ironwood: Default::default(),
+            }];
+        }
+        chain = chain.with_block(block);
+    }
+    let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
+    let driver = SourceSyncDriver::resuming(
+        &backend,
+        TransparentHistory::pipelines(),
+        source,
+        |block| context_from_block(&block),
+        SyncTuning {
+            batch_size: 8,
+            finalised_depth: 0,
+            channel_capacity: 16,
+            concurrency: FetchConcurrency::SERIAL,
+        },
+    )
+    .expect("the driver builds");
+    let reader = StoreReader::new(Arc::new(backend.clone()));
+    let orchestra = OrchestraBuilder::new()
+        .boot_observed(
+            ValidatorComponent::connect(&Probe)
+                .await
+                .expect("the validator is reachable"),
+        )
+        .await
+        .boot(RunComponent::new(ComponentName("indexer"), driver))
+        .await
+        .expect("the indexer boots")
+        .boot(StoreComponent::new(ComponentName("store"), reader.clone()))
+        .await
+        .expect("the store boots")
+        .build();
+    for status in orchestra.statuses() {
+        assert_eq!(status.lifecycle, Lifecycle::Ready, "{}", status.name);
+    }
+    reader
+}
+
+/// The composed engine over the two-address budget store and an empty window.
+async fn budget_engine() -> impl AddressRead + ChainSegment {
+    let engine: Engine<_, _, (), AddressLocally> =
+        Engine::new(budget_store().await, StubNonFinalised::empty(), ());
+    engine.snapshot().await.expect("the pin is taken")
+}
+
+/// One budget threaded through two addresses bounds them together. Each address
+/// holds two receives; under a budget of three each fits alone, but the second
+/// read overruns the shared budget and is refused with `TooLarge`. A per-address
+/// ceiling could not catch this — the regression the request-scoped budget fixes.
+#[tokio::test]
+async fn a_multi_address_request_is_bounded_as_a_whole() {
+    let snapshot = budget_engine().await;
+    let whole = range(0, 4);
+
+    // Each address alone is within a budget of three (two receives < three).
+    for addr in [addr_a(), addr_b()] {
+        let alone = snapshot
+            .tx_ids(&addr, whole, &mut ReadBudget::with_limit(3))
+            .await
+            .expect("one address of two receives fits under three");
+        assert_eq!(alone.len(), 2, "both receives of the address come back");
+    }
+
+    // Shared across both, the two four receives overrun the budget of three: the
+    // first address is served, the second refused.
+    let mut budget = ReadBudget::with_limit(3);
+    let first = snapshot
+        .tx_ids(&addr_a(), whole, &mut budget)
+        .await
+        .expect("the first address is within budget");
+    assert_eq!(first.len(), 2);
+    let refused = snapshot
+        .tx_ids(&addr_b(), whole, &mut budget)
+        .await
+        .expect_err("the second address overruns the shared budget");
+    assert!(
+        matches!(refused, AddressReadError::TooLarge { limit: 3, .. }),
+        "got {refused:?}"
+    );
 }

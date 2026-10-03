@@ -74,12 +74,15 @@ slice of one address's history, never the whole index. `balance` scans exactly
 range can belong to a receive from any earlier height. `unspent` and the
 range-less reads scan the whole address prefix.
 
-A per-request ceiling caps how many receives one read collects, counted during
-the scan before the over-limit entry is kept. An address past the ceiling is
-refused with `AddressReadError::TooLarge { address, limit }` — a well-formed
-request that one read declines rather than letting a pool-scale history exhaust
-memory for the whole process. The adapter maps it to a JSON-RPC internal error;
-retrying is futile until a balance/UTXO-by-address aggregate lifts the ceiling.
+A request-scoped ceiling caps how many receives a query collects, counted during
+the scan before the over-limit entry is kept. The read takes a `ReadBudget` by
+`&mut`: the caller creates one per request and threads it through every address,
+so the ceiling bounds the whole request rather than each address independently.
+An address (or a set of them) past the ceiling is refused with
+`AddressReadError::TooLarge { address, limit }` — a well-formed request that the
+read declines rather than letting a pool-scale history exhaust memory for the
+whole process. The adapter maps it to a JSON-RPC internal error; retrying is
+futile until a balance/UTXO-by-address aggregate lifts the ceiling.
 
 Other scan failures are classified by what a retry would do. A backend read
 failure may clear on a retry, so it is `Transient`. A decode failure is index

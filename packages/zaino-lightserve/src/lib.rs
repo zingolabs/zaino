@@ -35,7 +35,7 @@ use zaino_service::queries;
 use zaino_service::MempoolTx;
 use zaino_service::{
     AddressRead, ChainSegment, CompactBlockRead, CompactNullifierRead, LightWalletService,
-    RawTransactionRead, TreestateRead,
+    RawTransactionRead, ReadBudget, TreestateRead,
 };
 
 use crate::wire::{compact_tx_to_wire, to_hex, zat_to_i64, ToWire};
@@ -198,9 +198,12 @@ impl<S: LightWalletService> LightServe<S> {
         max_entries: usize,
     ) -> Result<Vec<proto::GetAddressUtxosReply>, ServeError> {
         let snapshot = self.engine.snapshot().await?;
+        // One budget spans the request, so the unspent sets read across every
+        // address are bounded together rather than per address.
+        let mut budget = ReadBudget::for_request();
         let mut utxos = Vec::new();
         for addr in &addrs {
-            for utxo in snapshot.unspent_outpoints(addr).await? {
+            for utxo in snapshot.unspent_outpoints(addr, &mut budget).await? {
                 if utxo.height >= start_height {
                     utxos.push(utxo.to_wire());
                 }
@@ -222,7 +225,8 @@ impl<S: LightWalletService> LightServe<S> {
         range: HeightRange,
     ) -> Result<Vec<proto::RawTransaction>, ServeError> {
         let snapshot = self.engine.snapshot().await?;
-        let ids = snapshot.tx_ids(&addr, range).await?;
+        let mut budget = ReadBudget::for_request();
+        let ids = snapshot.tx_ids(&addr, range, &mut budget).await?;
         let mut txs = Vec::with_capacity(ids.len());
         // The read pairs each txid with the height it touched the address; the
         // light-wallet wire carries only the transaction bytes, so the height is

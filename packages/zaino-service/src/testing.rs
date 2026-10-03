@@ -45,7 +45,7 @@ use crate::{
     CompactBlockRead, CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary,
     IndexerService, LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing,
     MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead,
-    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
+    ReadBudget, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
     TransactionRead, TransactionViewRead, TreestateRead, TxOutRead,
 };
 use zaino_primitives::types::{rpc::TxOut, OutputIndex};
@@ -474,6 +474,7 @@ impl AddressRead for MockSnapshot {
         &self,
         addr: &TransparentAddress,
         _range: HeightRange,
+        _budget: &mut ReadBudget,
     ) -> Result<AddressBalance, AddressReadError> {
         Ok(self
             .chain
@@ -489,6 +490,7 @@ impl AddressRead for MockSnapshot {
     async fn unspent_outpoints(
         &self,
         _addr: &TransparentAddress,
+        _budget: &mut ReadBudget,
     ) -> Result<Vec<Utxo>, AddressReadError> {
         Ok(self.chain.utxos.clone())
     }
@@ -496,6 +498,7 @@ impl AddressRead for MockSnapshot {
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
+        _budget: &mut ReadBudget,
     ) -> Result<Vec<AddressDelta>, AddressReadError> {
         Ok(self
             .chain
@@ -510,6 +513,7 @@ impl AddressRead for MockSnapshot {
         &self,
         _addr: &TransparentAddress,
         _range: HeightRange,
+        _budget: &mut ReadBudget,
     ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         // The mock stands in for a local read, so each scripted txid is given a
         // known, ascending height matching its scripted position — distinct and

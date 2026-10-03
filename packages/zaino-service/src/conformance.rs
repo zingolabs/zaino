@@ -17,7 +17,7 @@ use zaino_primitives::types::{
     BlockSelector, Height, HeightRange, ShieldedPool, TransactionId, TransparentAddress,
 };
 
-use crate::{LightWalletReads, LightWalletService};
+use crate::{LightWalletReads, LightWalletService, ReadBudget};
 
 /// Panic if `$result` is the `NotServiceable` stub; any other outcome — an
 /// answer, a domain miss, or a real `Transient` / `Fatal` failure — passes. A
@@ -66,11 +66,16 @@ pub async fn assert_light_wallet_reads<Snap: LightWalletReads>(snap: &Snap) {
     // Raw transaction fetch — the wallet parses the bytes locally.
     assert_serviceable!(snap.raw_transaction(txid).await, "raw_transaction");
 
-    // Transparent address history — the subset a light wallet pulls.
-    assert_serviceable!(snap.balance(&addr, range).await, "balance");
-    assert_serviceable!(snap.unspent_outpoints(&addr).await, "unspent_outpoints");
-    assert_serviceable!(snap.deltas(&addr, range).await, "deltas");
-    assert_serviceable!(snap.tx_ids(&addr, range).await, "tx_ids");
+    // Transparent address history — the subset a light wallet pulls. One budget
+    // per probed read is enough; serviceability, not the ceiling, is under test.
+    let mut budget = ReadBudget::for_request();
+    assert_serviceable!(snap.balance(&addr, range, &mut budget).await, "balance");
+    assert_serviceable!(
+        snap.unspent_outpoints(&addr, &mut budget).await,
+        "unspent_outpoints"
+    );
+    assert_serviceable!(snap.deltas(&addr, range, &mut budget).await, "deltas");
+    assert_serviceable!(snap.tx_ids(&addr, range, &mut budget).await, "tx_ids");
 
     // Compact block with spend nullifiers — the light-serve delta.
     assert_serviceable!(

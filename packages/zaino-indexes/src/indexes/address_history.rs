@@ -19,6 +19,7 @@ use zaino_persistence_codec::{
 use zaino_primitives::types::{
     classify_script, OutputIndex, Script, ScriptType, TransactionId, Zatoshis,
 };
+use zaino_service::ReadBudget;
 use zaino_sync::backend::{BackendReader, ReadError};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -350,26 +351,28 @@ fn upper_bound(addr: AddrId, end: BlockHeight) -> Result<Vec<u8>, ReceivesReadEr
 /// `(height, output_index)` order the contract promises regardless of the txid
 /// bytes that sit between them in the key.
 ///
-/// `limit` caps how many receives the scan collects. The count is checked during
-/// the cursor walk, before the over-limit entry is decoded or kept, so an address
-/// with more receives in the range than `limit` is refused with
-/// [`ReceivesReadError::TooLarge`] rather than ever building the full heap `Vec` —
-/// the safety net for a pool-scale address.
+/// `budget` caps how many receives the scan collects, charged entry by entry
+/// during the cursor walk — before the over-budget entry is decoded or kept — so
+/// an address whose receives in the range would overrun it is refused with
+/// [`ReceivesReadError::TooLarge`] rather than ever building the full heap `Vec`.
+/// The budget is **request-scoped**: a caller reading several addresses passes the
+/// same `&mut ReadBudget` to each, so the total across them is bounded as one
+/// request, not one ceiling per address.
 pub fn read_receives(
     reader: &dyn BackendReader,
     addr: AddrId,
     start: BlockHeight,
     end: BlockHeight,
-    limit: usize,
+    budget: &mut ReadBudget,
 ) -> Result<Vec<AddressReceive>, ReceivesReadError> {
     let lower = lower_bound(addr, start);
     let upper = upper_bound(addr, end)?;
     let mut out = Vec::new();
     let mut decode_err: Option<ReceivesReadError> = None;
-    let mut over_limit = false;
+    let mut over_budget = false;
     reader.scan_range(ID.into(), &lower, &upper, &mut |raw_key, raw_value| {
-        if out.len() >= limit {
-            over_limit = true;
+        if !budget.charge_one() {
+            over_budget = true;
             return core::ops::ControlFlow::Break(());
         }
         match decode_receive(raw_key, raw_value) {
@@ -386,8 +389,10 @@ pub fn read_receives(
     if let Some(error) = decode_err {
         return Err(error);
     }
-    if over_limit {
-        return Err(ReceivesReadError::TooLarge { limit });
+    if over_budget {
+        return Err(ReceivesReadError::TooLarge {
+            limit: budget.limit(),
+        });
     }
     out.sort_by_key(|r| (r.height.value(), r.output_index));
     Ok(out)
@@ -593,7 +598,7 @@ mod tests {
             addr,
             BlockHeight::new(0),
             BlockHeight::new(u64::from(u32::MAX)),
-            usize::MAX,
+            &mut ReadBudget::with_limit(usize::MAX),
         )
     }
 
@@ -800,16 +805,89 @@ mod tests {
         let whole_range = (BlockHeight::new(0), BlockHeight::new(u64::from(u32::MAX)));
         // Under the ceiling: all five come back.
         assert_eq!(
-            read_receives(&reader, addr, whole_range.0, whole_range.1, 5)
-                .expect("at the ceiling is fine")
-                .len(),
+            read_receives(
+                &reader,
+                addr,
+                whole_range.0,
+                whole_range.1,
+                &mut ReadBudget::with_limit(5),
+            )
+            .expect("at the ceiling is fine")
+            .len(),
             5
         );
         // Over the ceiling: refused, naming the limit.
-        let error = read_receives(&reader, addr, whole_range.0, whole_range.1, 2)
-            .expect_err("over the ceiling is refused");
+        let error = read_receives(
+            &reader,
+            addr,
+            whole_range.0,
+            whole_range.1,
+            &mut ReadBudget::with_limit(2),
+        )
+        .expect_err("over the ceiling is refused");
         assert!(
             matches!(error, ReceivesReadError::TooLarge { limit: 2 }),
+            "got {error:?}"
+        );
+    }
+
+    /// The budget is request-scoped: reading two addresses against one budget
+    /// bounds their combined entries, not each address independently. Here each
+    /// address is under the budget alone, but together they overrun it, and the
+    /// second read is refused — the property a per-call ceiling could not give.
+    #[test]
+    fn one_budget_bounds_several_addresses_together() {
+        use zaino_persistence::in_memory::InMemoryBackend;
+        use zaino_persistence::{Backend, BackendWriter, WriteOp};
+
+        let addr_a = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [0xDD; 20],
+        };
+        let addr_b = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [0xEE; 20],
+        };
+        let z = |n| Zatoshis::new(n).expect("valid");
+        let mut receives = Vec::new();
+        for (addr, base) in [(addr_a, 0u64), (addr_b, 100)] {
+            for height in 0..3u64 {
+                receives.push(AddressReceive {
+                    addr,
+                    height: BlockHeight::new(base + height),
+                    txid: txid(u8::try_from(base + height).expect("small")),
+                    output_index: 0,
+                    value: z(100),
+                });
+            }
+        }
+        let ops: Vec<WriteOp> = AddressHistoryIndex::into_entries(vec![receives])
+            .into_iter()
+            .map(|(k, v)| WriteOp::Put {
+                namespace: ID.into(),
+                key: encode_key::<AddressHistoryIndex>(&k),
+                value: encode_value::<AddressHistoryIndex>(&v),
+            })
+            .collect();
+        let backend = InMemoryBackend::new();
+        let mut writer = backend.writer().expect("writer");
+        writer.commit(ops).expect("commit");
+        let reader = backend.reader().expect("reader");
+
+        let whole = (BlockHeight::new(0), BlockHeight::new(u64::from(u32::MAX)));
+        // A budget of 5 across two three-entry addresses: 3 + 3 > 5.
+        let mut budget = ReadBudget::with_limit(5);
+        assert_eq!(
+            read_receives(&reader, addr_a, whole.0, whole.1, &mut budget)
+                .expect("A's three fit")
+                .len(),
+            3,
+            "the first address is within budget"
+        );
+        let error = read_receives(&reader, addr_b, whole.0, whole.1, &mut budget)
+            .expect_err("the second overruns the shared budget");
+        assert!(
+            matches!(error, ReceivesReadError::TooLarge { limit: 5 }),
             "got {error:?}"
         );
     }
