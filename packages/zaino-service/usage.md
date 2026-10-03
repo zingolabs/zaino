@@ -156,9 +156,16 @@ addresses**, not one list per address: `getaddresstxids` sorts the union by
 `(height, txid)` and de-duplicates (a transaction touching two of the addresses
 appears once), and `getaddressutxos` sorts the merged unspent set by height. So
 `AddressRead::tx_ids` carries each txid's height out of the read — a bare txid
-cannot be re-sorted — and the query merges the per-address `(height, txid)` lists,
-sorts by `(height, txid)`, and returns the de-duplicated txids in that order;
-`address_utxos` merges and stably sorts by height (`Utxo` already carries it).
+cannot be re-sorted — and the query merges the per-address lists, sorts, and
+returns the de-duplicated txids in that order; `address_utxos` merges and stably
+sorts by height (`Utxo` already carries it). The carried height is
+`Option<Height>`: a **local** read always knows it (`Some`), but a **passthrough**
+source does not — zebra's `getaddresstxids` returns bare txids — so that path
+reports `None` rather than a fabricated value. `address_txids` sorts the known
+heights and keeps any unknown-height (`None`) entries in the validator's own
+order, ahead of the known ones, inventing no height; the node-RPC deployment is
+`Address = Local`, so in practice every entry carries `Some` and this is the plain
+`(height, txid)` sort.
 `address_txids` takes the inclusive optional bounds of `address_deltas`;
 `address_utxos` is range-less — an unspent output is a fact about the current
 chain, not a window of it — and both take the explorer policy: an unserviceable

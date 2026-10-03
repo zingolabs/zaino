@@ -218,6 +218,31 @@ async fn address_reads_are_remote_under_light_routing() {
     );
 }
 
+/// Under passthrough routing the validator's `getaddresstxids` carries no
+/// heights, so every pair's height is `None` — the honest "location unknown",
+/// never a fabricated value. The source is scripted with two txids so the
+/// assertion is not vacuous.
+#[tokio::test]
+async fn passthrough_tx_ids_report_no_height() {
+    use zaino_primitives::types::TransactionId;
+    let txids = vec![
+        TransactionId::from([0x11; 32]),
+        TransactionId::from([0x22; 32]),
+    ];
+    let engine = engine_with(MockChain::new().with_address_txids(txids.clone()));
+    let snapshot = engine.snapshot().await.expect("snapshot acquired");
+    let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
+    let located = AddressRead::tx_ids(&snapshot, &addr, range(0, 10))
+        .await
+        .expect("txids served");
+    let returned: Vec<TransactionId> = located.iter().map(|(_, txid)| *txid).collect();
+    assert_eq!(returned, txids, "the validator's txids pass through");
+    assert!(
+        located.iter().all(|(height, _)| height.is_none()),
+        "a passthrough source reports no height, so each is None, not a fabricated value"
+    );
+}
+
 #[tokio::test]
 async fn address_reads_map_an_invalid_address_to_fatal() {
     let engine = engine_with(MockChain::new().reject_addresses("bad t-addr"));

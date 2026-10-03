@@ -340,18 +340,22 @@ pub trait AddressRead: Send + Sync {
         range: HeightRange,
     ) -> impl Future<Output = Result<Vec<AddressDelta>, AddressReadError>> + Send;
     /// Every transaction touching `addr` in `range`, each paired with the height
-    /// at which it touched the address.
+    /// at which it touched the address when that is known.
     ///
     /// The height is carried out of the read because a caller merging several
     /// addresses must order the union by height (zcashd's `getaddresstxids`
-    /// sort), and the bare txid cannot be re-sorted. A single address's result is
-    /// ordered `(height, txid)` and de-duplicated; a transaction that both pays
-    /// and spends for the address appears once.
+    /// sort), and the bare txid cannot be re-sorted. It is `Option` because a
+    /// **passthrough** source may not report it: zcashd/zebra's `getaddresstxids`
+    /// returns bare txids with no heights, so that path yields `None` rather than
+    /// a fabricated value. A **local** read always supplies `Some` — the index
+    /// knows the height. A single address's result is ordered `(height, txid)` and
+    /// de-duplicated; a transaction that both pays and spends for the address
+    /// appears once.
     fn tx_ids(
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> impl Future<Output = Result<Vec<(Height, TransactionId)>, AddressReadError>> + Send;
+    ) -> impl Future<Output = Result<Vec<(Option<Height>, TransactionId)>, AddressReadError>> + Send;
 }
 
 /// Backed by: transparent/address index. The receive side of address history,

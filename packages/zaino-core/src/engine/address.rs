@@ -67,7 +67,7 @@ pub trait AddressPlacement<F, N, Src>: Send + Sync + 'static {
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> impl Future<Output = Result<Vec<(Height, TransactionId)>, AddressReadError>> + Send;
+    ) -> impl Future<Output = Result<Vec<(Option<Height>, TransactionId)>, AddressReadError>> + Send;
 }
 
 /// The one impl a handler sees: dispatch on the routing's placement.
@@ -106,7 +106,7 @@ where
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
+    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         R::Address::tx_ids(self.local(), self.passthrough(), addr, range).await
     }
 }
@@ -158,18 +158,18 @@ where
         passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
+    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         // The validator's `getaddresstxids` returns bare txids with no per-txid
-        // height, so each is paired with `Height::GENESIS` as a placeholder. This
-        // is sound because the passthrough placement is reached only by the
-        // single-address light-wallet `GetTaddressTxids`, which discards the
-        // height and order; the multi-address merge that needs real heights
+        // height, so each pair's height is `None` — the honest "location unknown",
+        // never a fabricated value. The only consumer of this placement is the
+        // single-address light-wallet `GetTaddressTxids`, which drops the height;
+        // the multi-address merge that needs real heights
         // (`queries::address_txids`) runs only under the `Local` placement.
         Ok(passthrough
             .tx_ids(addr, range)
             .await?
             .into_iter()
-            .map(|txid| (Height::GENESIS, txid))
+            .map(|txid| (None, txid))
             .collect())
     }
 }
@@ -479,11 +479,12 @@ where
         _passthrough: &PassthroughProvider<Src>,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
+    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         let (fs, nfs) = split_at_seam(local, range);
         let store = local.finalised();
 
-        // The store's half is already `(height, txid)`-sorted and deduplicated.
+        // The store's half is already `(Some(height), txid)`-sorted and
+        // deduplicated — the local index knows every height.
         let mut txids = match fs {
             Some(range) => store.tx_ids(addr, range).await?,
             None => Vec::new(),
@@ -499,10 +500,11 @@ where
 
         // Every transaction that moved value for the address in the window: the
         // ones that paid it (at the receive's height), and the ones that spent
-        // what it held (at the spend's height). One can do both, so the window's
-        // contribution is sorted and deduplicated before it is appended; the
-        // halves cover disjoint heights (store <= watermark < window), so the
-        // concatenation stays height-ordered and no transaction spans both.
+        // what it held (at the spend's height) — both heights known, so `Some`.
+        // One can do both, so the window's contribution is sorted and
+        // deduplicated before it is appended; the halves cover disjoint heights
+        // (store <= watermark < window), so the concatenation stays height-ordered
+        // and no transaction spans both.
         let mut from_window: Vec<(Height, TransactionId)> = part
             .receives
             .iter()
@@ -511,7 +513,11 @@ where
             .collect();
         from_window.sort_by_key(|(height, txid)| (u32::from(*height), <[u8; 32]>::from(*txid)));
         from_window.dedup();
-        txids.extend(from_window);
+        txids.extend(
+            from_window
+                .into_iter()
+                .map(|(height, txid)| (Some(height), txid)),
+        );
         Ok(txids)
     }
 }

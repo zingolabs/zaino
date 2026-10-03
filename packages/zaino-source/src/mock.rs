@@ -113,6 +113,9 @@ pub struct MockChain {
     /// Canned `gettxout` response, returned for any outpoint. `None` is the
     /// ordinary "spent or nonexistent" answer, so this never fails a domain query.
     tx_out_response: Option<TxOut>,
+    /// Canned `getaddresstxids` response, returned for any address query. zebra's
+    /// method carries no heights, so the response is bare txids.
+    address_txids_response: Vec<TransactionId>,
 }
 
 impl MockChain {
@@ -146,7 +149,14 @@ impl MockChain {
             difficulty_response: None,
             network_info_response: None,
             tx_out_response: None,
+            address_txids_response: Vec::new(),
         }
+    }
+
+    /// Seed the bare txids `get_address_txids` returns for any address query.
+    pub fn with_address_txids(mut self, txids: Vec<TransactionId>) -> Self {
+        self.address_txids_response = txids;
+        self
     }
 
     /// Seed the response `get_transaction` returns for any txid.
@@ -387,6 +397,7 @@ impl Clone for MockChain {
             difficulty_response: self.difficulty_response,
             network_info_response: self.network_info_response.clone(),
             tx_out_response: self.tx_out_response.clone(),
+            address_txids_response: self.address_txids_response.clone(),
         }
     }
 }
@@ -606,7 +617,7 @@ impl crate::OneShotGetAddressTxids for MockChain {
                 reason.clone(),
             )));
         }
-        Ok(Vec::new())
+        Ok(self.address_txids_response.clone())
     }
 }
 

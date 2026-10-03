@@ -185,8 +185,16 @@ where
 /// `(height, txid)` and de-duplicated — so a transaction touching two of the
 /// addresses appears once, and the union is globally height-ordered rather than
 /// grouped by address. This mirrors that: the per-address `(height, txid)` lists
-/// are merged, sorted by `(height, txid)`, and de-duplicated by txid; only the
-/// bare txids are returned, in that order.
+/// are merged, sorted, and de-duplicated by txid; only the bare txids are
+/// returned, in that order.
+///
+/// A pair whose height is unknown (`None`) can only come from a **passthrough**
+/// source, which returns bare txids. Such entries keep the validator's own order
+/// and are **not** sorted after the known-height ones — they sort *before* every
+/// `Some`, among themselves in arrival order, with no fabricated height imposed.
+/// The node-RPC deployment is `Address = Local`, so in practice every pair here
+/// carries `Some` and this is the plain `(height, txid)` sort; the `None` rule
+/// only governs a hypothetical passthrough caller.
 pub async fn address_txids<S>(
     snapshot: &S,
     addrs: &[TransparentAddress],
@@ -210,10 +218,12 @@ where
     for addr in addrs {
         located.extend(snapshot.tx_ids(addr, range).await?);
     }
-    // Sort the union by (height, txid), zcashd's `getaddresstxids` key, then drop
-    // the height and de-duplicate by txid (a txid is unique, so equal txids share
-    // a height and sort adjacent).
-    located.sort_by_key(|(height, txid)| (u32::from(*height), <[u8; 32]>::from(*txid)));
+    // A stable sort by a key that is `None` for unknown-height entries and
+    // `Some((height, txid))` for known ones. `Option` orders `None` before `Some`,
+    // so unknown-height entries stay ahead of the known ones in their original
+    // (validator) order — the stability preserves it, and no height is invented —
+    // while the known ones sort by zcashd's `(height, txid)` key.
+    located.sort_by_key(|(height, txid)| height.map(|h| (u32::from(h), <[u8; 32]>::from(*txid))));
     let mut seen = HashSet::new();
     Ok(located
         .into_iter()

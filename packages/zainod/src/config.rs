@@ -589,6 +589,25 @@ pub fn load_config_with_env(
 mod tests {
     use super::*;
 
+    /// Serialises the config tests that read or mutate process-global env vars.
+    ///
+    /// `load_config` layers the `ZAINO_*` environment over the file, and several
+    /// tests `set_var`/`remove_var` to exercise that layering. Env vars are
+    /// process-global, so under the default thread-based test runner a mutator in
+    /// one test races a loader in another (a `set_var` leaking into an unrelated
+    /// `load_config`). Every such test takes this one lock for its whole body, so
+    /// they run one at a time and the default `cargo test` passes without
+    /// `--test-threads=1`. Poisoning (a panicking test) is recovered with
+    /// `into_inner` so one failure does not cascade into spurious lock errors.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`ENV_LOCK`] for the current test, recovering from poisoning.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn write(dir: &tempfile::TempDir, name: &str, content: &str) -> PathBuf {
         let path = dir.path().join(name);
         std::fs::write(&path, content).expect("write config");
@@ -615,6 +634,7 @@ mod tests {
 
     #[test]
     fn direct_source_parses() {
+        let _env = lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         // Direct requires an existing cache dir; point it at the tempdir itself.
         let toml = format!(
@@ -652,6 +672,7 @@ grpc_listen_address = "127.0.0.1:8137"
 
     #[test]
     fn rpc_source_parses_with_optional_auth_absent() {
+        let _env = lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
 network = "Regtest"
@@ -682,6 +703,7 @@ path = "/tmp/zaino-store"
 
     #[test]
     fn env_overrides_a_scalar_field() {
+        let _env = lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
 network = "Mainnet"
@@ -712,6 +734,7 @@ path = "/tmp/zaino-store"
     /// TOML parse, so the env layering is what is tested.
     #[test]
     fn env_selects_the_node_rpc_deployment_and_jsonrpc_bind() {
+        let _env = lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         // A light-wallet default on disk; env must flip it to node-RPC and bind
         // the public JSON-RPC address an in-cluster deploy uses.
@@ -748,6 +771,7 @@ path = "/tmp/zaino-store"
 
     #[test]
     fn unknown_top_level_field_is_rejected() {
+        let _env = lock_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
 network = "Mainnet"
@@ -766,6 +790,7 @@ path = "/tmp/zaino-store"
     #[cfg(feature = "ztest-fixture")]
     #[test]
     fn mainnet_rpc_fixture_is_a_mainnet_rpc_config() {
+        let _env = lock_env();
         std::env::remove_var(super::TEST_FIXTURE_JSONRPC_ENV);
         let config = super::mainnet_rpc_fixture();
         assert_eq!(config.network, Network::Mainnet);
@@ -833,6 +858,7 @@ path = "/tmp/zaino-store"
     #[cfg(feature = "ztest-fixture")]
     #[test]
     fn mainnet_fixtures_bind_jsonrpc_on_all_interfaces() {
+        let _env = lock_env();
         let expected = SocketAddr::from(([0, 0, 0, 0], 8232));
         assert_eq!(
             super::mainnet_direct_state_fixture()
@@ -850,6 +876,7 @@ path = "/tmp/zaino-store"
     #[cfg(feature = "ztest-fixture")]
     #[test]
     fn mainnet_rpc_fixture_takes_the_endpoint_env() {
+        let _env = lock_env();
         std::env::set_var(super::TEST_FIXTURE_JSONRPC_ENV, "zebra.example.svc:8232");
         let config = super::mainnet_rpc_fixture();
         std::env::remove_var(super::TEST_FIXTURE_JSONRPC_ENV);

@@ -180,12 +180,12 @@ where
         &self,
         addr: &TransparentAddress,
         range: HeightRange,
-    ) -> Result<Vec<(Height, TransactionId)>, AddressReadError> {
+    ) -> Result<Vec<(Option<Height>, TransactionId)>, AddressReadError> {
         // Every transaction that moved value for this address: the ones that
         // paid it and the ones that spent what it held. One transaction can do
         // both, and two receives can share one, so the result is deduplicated.
-        // Each carries the height it touched the address, so a multi-address
-        // caller can merge the unions by height.
+        // The local index knows each transaction's height, so every pair carries
+        // `Some(height)`, letting a multi-address caller merge the unions by it.
         let mut txids = Vec::new();
         for entry in self.entries(addr)? {
             if covers(range, entry.height) {
@@ -197,7 +197,10 @@ where
         }
         txids.sort_by_key(|(height, txid)| (u32::from(*height), <[u8; 32]>::from(*txid)));
         txids.dedup();
-        Ok(txids)
+        Ok(txids
+            .into_iter()
+            .map(|(height, txid)| (Some(height), txid))
+            .collect())
     }
 }
 
