@@ -68,13 +68,31 @@ project to the same provisioning context, so the index built is identical;
 
 `boot_indexed::<D, _, _>(client, &config, serve)` is the indexed assembly:
 it opens the LMDB store with exactly the namespaces `D::Indexes` writes,
-repairs a watermark the headers index does not bear out, resumes the indexer,
-anchors the chain head over the same client, composes the engine and boots
-the lot under one `Orchestra` in dependency order — validator, indexer,
-store, chain head, then the server `serve` builds over the engine. The caller
-supplies the client (it built the validator, so it knows it is reachable) and
-the serving adapter (the runtime is protocol-agnostic), and runs the
-returned `Orchestra` until a signal or an escalation.
+repairs a watermark the headers index does not bear out, checks the store's
+index coverage (below), resumes the indexer, anchors the chain head over the
+same client, composes the engine and boots the lot under one `Orchestra` in
+dependency order — validator, indexer, store, chain head, then the server
+`serve` builds over the engine. The caller supplies the client (it built the
+validator, so it knows it is reachable) and the serving adapter (the runtime
+is protocol-agnostic), and runs the returned `Orchestra` until a signal or an
+escalation.
+
+### Boot refusal: an index set grown over an existing store
+
+`boot_indexed` refuses to start — `DeployError::IndexCoverage`, printed and
+exit 1 from `zainod` — when the deployment declares an index the data
+directory's store never built, and the store has already committed a
+watermark. This is the state a deployment change leaves when it gains an index
+(for example moving from the compact-block set to `TransparentHistory`, which
+adds the address-history, transparent-spends and txid-location indexes) and
+points at a data directory an earlier deployment already synced: the new index
+would resume from the shared watermark and cover only `[resume, tip]`, then
+report serviceable while silently missing all history below the resume height.
+The error names the unstamped index(es) and the watermark. **Remedy: point the
+deployment at a fresh, empty data directory and resync from genesis.** An empty
+data directory, or one whose every declared index is already built, boots
+normally; dropping an index (reopening with a subset) is always safe. The guard
+itself lives in `zaino-store` (see its guide).
 
 ## Supervision
 

@@ -32,7 +32,7 @@ use zaino_persistence::{Namespace, OpenError};
 use zaino_persistence_codec::reserved_namespaces;
 use zaino_service::use_cases::{Serves, UseCase};
 use zaino_service::TakeSnapshot;
-use zaino_store::{StoreReader, WatermarkRepairError};
+use zaino_store::{IndexCoverageError, StoreReader, WatermarkRepairError};
 use zaino_store_service::StoreComponent;
 
 use crate::config::{FetchStrategy, IndexedDeploymentConfig};
@@ -65,6 +65,12 @@ pub enum DeployError {
     /// what the headers index actually holds.
     #[error("checking the store's watermark against its index failed")]
     StoreWatermark(#[source] WatermarkRepairError),
+    /// The deployment declares an index the existing store never built, so
+    /// opening it would serve that index's reads as complete while they cover
+    /// only part of the chain. The runtime refuses to boot; the error names the
+    /// unstamped index(es) and the remedy.
+    #[error(transparent)]
+    IndexCoverage(#[from] IndexCoverageError),
     /// Building the sync stack (backend, provisioner, engine) failed.
     #[error("building the indexer failed")]
     Indexer(#[source] zaino_indexer::IndexerError),
@@ -114,6 +120,11 @@ where
     // indexes back.
     let store_reader = StoreReader::<_, D::Indexes>::new(Arc::new(backend.clone()));
     repair_watermark::<D>(&store_reader)?;
+    // Fail loud before the indexer stamps the new indexes on first write: an
+    // index this deployment declares but the existing store never built would
+    // cover only [resume, tip], and then report serviceable. Checked against
+    // the repaired watermark, so a store that has synced nothing still opens.
+    store_reader.check_index_coverage()?;
 
     let tuning = SyncTuning {
         batch_size: config.indexer.batch_size,
