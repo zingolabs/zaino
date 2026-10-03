@@ -25,8 +25,8 @@ use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
     BlockchainInfoResponse, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
     MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry,
-    RawMempoolResponse, SubtreeRootsResponse, TreestateResponse, UnifiedReceiversResponse,
-    ValidateAddressResponse, ZValidateAddressResponse,
+    RawMempoolResponse, SubtreeRootsResponse, TreestateResponse, TxOutResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -66,6 +66,17 @@ pub(crate) trait NodeRpcApi {
         low: u32,
         options: Option<GetBlockHashesOptions>,
     ) -> Result<GetBlockHashesResponse, ErrorObjectOwned>;
+
+    #[method(name = "getblockhash")]
+    async fn block_hash(&self, height: u32) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "gettxout")]
+    async fn tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<Option<TxOutResponse>, ErrorObjectOwned>;
 
     #[method(name = "getblockchaininfo")]
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned>;
@@ -208,6 +219,19 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned> {
         self.get_blockchain_info().await.map_err(to_error_object)
     }
+    async fn block_hash(&self, height: u32) -> Result<String, ErrorObjectOwned> {
+        self.get_block_hash(height).await.map_err(to_error_object)
+    }
+    async fn tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<Option<TxOutResponse>, ErrorObjectOwned> {
+        self.get_tx_out(&txid, n, include_mempool)
+            .await
+            .map_err(to_error_object)
+    }
     async fn info(&self) -> Result<NodeInfoResponse, ErrorObjectOwned> {
         self.get_info().await.map_err(to_error_object)
     }
@@ -327,6 +351,11 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
 /// chain"; Zaino keeps its own accurate message and matches only the code.
 const NOT_FOUND_CODE: i32 = -5;
 
+/// zcashd's `getblockhash` code for a height beyond the chain
+/// (`RPC_INVALID_PARAMETER`), with its message "Block height out of range". A
+/// distinct code from the not-found `-5`, matching zcashd/zebra.
+const OUT_OF_RANGE_CODE: i32 = -8;
+
 /// Map a domain-side RPC error onto a JSON-RPC error object: invalid input is a
 /// params error, an unknown object is `-5` (zcashd/zebra's not-found code), and
 /// everything else an internal error carrying the reason.
@@ -359,6 +388,7 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
             (ErrorCode::InternalError.code(), e.to_string())
         }
         RpcError::NotFound(message) => (NOT_FOUND_CODE, message),
+        RpcError::OutOfRange(message) => (OUT_OF_RANGE_CODE, message),
         RpcError::TxRead(TxReadError::Transient(cause)) => (ErrorCode::InternalError.code(), cause),
         RpcError::TxRead(TxReadError::Fatal(cause)) => (ErrorCode::InternalError.code(), cause),
         RpcError::TxRead(e @ TxReadError::NotServiceable(_)) => {
@@ -475,6 +505,17 @@ mod tests {
         let obj = to_error_object(RpcError::NotFound("no block for 999999".to_string()));
         assert_eq!(obj.code(), -5);
         assert_eq!(obj.message(), "no block for 999999");
+    }
+
+    /// An out-of-range block height carries zcashd's `-8` code (distinct from the
+    /// `-5` not-found), with the "Block height out of range" message intact.
+    #[test]
+    fn out_of_range_maps_to_minus_eight() {
+        let obj = to_error_object(RpcError::OutOfRange(
+            "Block height out of range".to_string(),
+        ));
+        assert_eq!(obj.code(), -8);
+        assert_eq!(obj.message(), "Block height out of range");
     }
 
     /// A validator that does not implement an address method (getaddressdeltas on
@@ -759,17 +800,15 @@ mod tests {
         }
     }
 
-    /// `gettxout` is no longer served: the generated surface answers it with
-    /// JSON-RPC method-not-found rather than an invented spend-status string.
-    /// Fails if the method is ever re-registered on this adapter — a correct
-    /// object-shaped rendering is a later task, and a plausible-looking wrong
-    /// answer is worse than method-not-found.
+    /// `gettxout` is served: a spent or unknown outpoint answers JSON `null`
+    /// through the generated surface, matching zcashd/zebra — not a
+    /// method-not-found, and not an invented spend-status string. The default
+    /// mock scripts no output, so the outpoint reads as absent.
     #[tokio::test]
-    async fn gettxout_is_method_not_found() {
+    async fn gettxout_unknown_outpoint_is_null() {
         use super::NodeRpcApiServer;
         use crate::NodeRpc;
         use jsonrpsee::core::params::ArrayParams;
-        use jsonrpsee::core::server::MethodsError;
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
 
@@ -779,17 +818,17 @@ mod tests {
         )
         .into_rpc();
 
-        // Params are irrelevant: method lookup fails before they are read.
-        let err = module
-            .call::<_, serde_json::Value>("gettxout", ArrayParams::new())
+        let mut params = ArrayParams::new();
+        params.insert("ab".repeat(32)).expect("txid param");
+        params.insert(0u32).expect("n param");
+        let result = module
+            .call::<_, serde_json::Value>("gettxout", params)
             .await
-            .expect_err("gettxout is no longer a served method");
-        match err {
-            MethodsError::JsonRpc(obj) => {
-                assert_eq!(obj.code(), ErrorCode::MethodNotFound.code());
-            }
-            other => panic!("expected a method-not-found JSON-RPC error, got {other:?}"),
-        }
+            .expect("gettxout is served");
+        assert!(
+            result.is_null(),
+            "a spent or unknown outpoint is null: {result:?}"
+        );
     }
 
     /// A `MissingHeader` — a hole in the chain view the timestamp search needed —

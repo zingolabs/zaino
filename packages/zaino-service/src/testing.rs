@@ -45,8 +45,9 @@ use crate::{
     LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing, MempoolSubscribe,
     MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead, ReportedUpgrades,
     Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead,
-    TransactionViewRead, TreestateRead,
+    TransactionViewRead, TreestateRead, TxOutRead,
 };
+use zaino_primitives::types::{rpc::TxOut, OutputIndex};
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
 /// enough to prove wiring and the pin semantics.
@@ -85,6 +86,10 @@ pub struct MockChain {
     /// Scripted `gettxout` answer, returned for any outpoint by the engine's
     /// tx-out read. `None` is the ordinary "spent or unknown" answer.
     pub tx_out: Option<zaino_primitives::types::rpc::TxOut>,
+    /// Scripted block header for [`BlockRead::block_header`], returned for any
+    /// selector; `None` answers `Ok(None)` (the height is out of range). The
+    /// read behind `getblockhash`.
+    pub block_header: Option<BlockHeader>,
     /// Scripted raw transactions, keyed by txid.
     pub raw_transactions: Vec<(TransactionId, RawTransaction)>,
     /// Scripted chain-info aggregate. When `Some`, [`ChainInfoRead::chain_info`]
@@ -317,6 +322,19 @@ impl NodeStatusRead for MockIndexerService {
     }
 }
 
+impl TxOutRead for MockIndexerService {
+    async fn tx_out(
+        &self,
+        _txid: TransactionId,
+        _index: OutputIndex,
+        _include_mempool: bool,
+    ) -> Result<Option<TxOut>, ReadError> {
+        // A scripted output is returned for any outpoint; `None` is the ordinary
+        // "spent or unknown" answer (the mock has no validator behind it).
+        Ok(self.current().tx_out.clone())
+    }
+}
+
 impl IndexerService for MockIndexerService {}
 
 // --- reads (on the snapshot) ---
@@ -337,7 +355,9 @@ impl BlockRead for MockSnapshot {
         &self,
         _at: BlockSelector,
     ) -> Result<Option<BlockHeader>, BlockReadError> {
-        Ok(None)
+        // A scripted header is returned for any selector, so a test can pin
+        // `getblockhash`; absent it, the height is out of range (`Ok(None)`).
+        Ok(self.chain.block_header.clone())
     }
     async fn block_height(&self, _hash: BlockHash) -> Result<Option<Height>, BlockReadError> {
         Ok(None)

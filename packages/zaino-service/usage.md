@@ -95,6 +95,13 @@ validator still starting (the same request succeeds shortly) versus `Unreachable
 which keeps the source-layer cause as a `#[source]` rather than flattening it to a
 message.
 
+`NodeRpcService` also demands `TxOutRead`, the `gettxout` control: a live,
+passthrough lookup of an unspent transparent output. `Ok(None)` is the ordinary
+answer for a spent or unknown outpoint (zcashd/zebra's `null`), never an error.
+It is deliberately **not** `SpendRead` — that answers whether a known outpoint
+was spent, a local index question, whereas this asks the validator "is this
+unspent right now" against its current UTXO set.
+
 `NodeRpcService` also demands `MempoolListing`, the one-shot mempool read behind
 `getrawmempool` and `getmempoolinfo`. It is distinct from `MempoolSubscribe` (a
 stream a wallet follows): node RPC asks what is in the mempool once and gets an

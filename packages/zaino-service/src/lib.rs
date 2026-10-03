@@ -30,6 +30,7 @@ pub mod queries;
 pub mod read_sets;
 mod reads;
 mod status;
+mod tx_out;
 mod upgrades;
 pub mod use_cases;
 
@@ -56,5 +57,6 @@ pub use reads::{
     SpendRead, TransactionRead, TransactionView, TransactionViewRead, TreestateRead,
 };
 pub use status::{SpendStatus, TxStatus};
+pub use tx_out::TxOutRead;
 pub use upgrades::{ReportedUpgrade, UpgradeStatus};
 pub use use_cases::{FullWalletService, LightWalletService, NodeRpcService, Serves, UseCase};

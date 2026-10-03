@@ -148,8 +148,8 @@ use futures::stream::{self, BoxStream, StreamExt};
 use crate::chain_view::ChainTier;
 use crate::chain_view::ChainView;
 use crate::routing::{PlacementKind, Routing};
-use zaino_primitives::types::rpc::{MiningInfo, NetworkInfo, NodeInfo, PeerInfo};
-use zaino_primitives::types::{Difficulty, Height};
+use zaino_primitives::types::rpc::{MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut};
+use zaino_primitives::types::{Difficulty, Height, OutputIndex};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::{
@@ -158,12 +158,12 @@ use zaino_service::{
 };
 use zaino_service::{
     Broadcast, IndexerService, MempoolContent, MempoolListing, MempoolSubscribe, NodeStatusRead,
-    ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
+    ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe, TxOutRead,
 };
 use zaino_source::{
     GetDifficulty, GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolSourceTip,
     GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo,
-    GetRawMempoolTransaction, GetTreestate, Ping, SendRawTransaction,
+    GetRawMempoolTransaction, GetTreestate, GetTxOut, Ping, SendRawTransaction,
 };
 
 use crate::passthrough::PassthroughProvider;
@@ -428,6 +428,25 @@ where
     }
     async fn ping(&self) -> Result<(), NodeStatusError> {
         self.passthrough.ping().await
+    }
+}
+
+/// Always passthrough: `gettxout` answers against the validator's live UTXO set,
+/// which no local index mirrors. Forwards to the passthrough provider.
+impl<Fs, Nfs, Src, R> TxOutRead for Engine<Fs, Nfs, Src, R>
+where
+    Fs: Send + Sync + 'static,
+    Nfs: Send + Sync + 'static,
+    Src: GetTxOut,
+    R: Routing,
+{
+    async fn tx_out(
+        &self,
+        txid: TransactionId,
+        index: OutputIndex,
+        include_mempool: bool,
+    ) -> Result<Option<TxOut>, ReadError> {
+        self.passthrough.tx_out(txid, index, include_mempool).await
     }
 }
 

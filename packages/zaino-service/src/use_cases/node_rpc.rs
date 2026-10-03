@@ -4,6 +4,7 @@ use crate::controls::{Broadcast, MempoolSubscribe, TakeSnapshot, TipSubscribe};
 use crate::mempool_listing::MempoolListing;
 use crate::node_status::NodeStatusRead;
 use crate::read_sets::NodeRpcReads;
+use crate::tx_out::TxOutRead;
 
 use super::{Serves, UseCase};
 
@@ -27,6 +28,7 @@ pub trait NodeRpcService:
     + MempoolListing
     + TipSubscribe
     + NodeStatusRead
+    + TxOutRead
 {
 }
 impl<T> NodeRpcService for T where
@@ -36,6 +38,7 @@ impl<T> NodeRpcService for T where
         + MempoolListing
         + TipSubscribe
         + NodeStatusRead
+        + TxOutRead
 {
 }
 

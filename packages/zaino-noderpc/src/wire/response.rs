@@ -938,6 +938,31 @@ pub struct NetworkInfoResponse {
     pub warnings: String,
 }
 
+/// The `gettxout` response for an unspent output, in zcashd/zebra's shape.
+///
+/// A spent or unknown outpoint is `null` (the handler returns `None`), never an
+/// instance of this type. `value` is the shared ZEC float with the exact
+/// `valueZat` beside it, and `scriptPubKey` reuses the transaction output's
+/// script shape. zcashd's `version` field is deliberately not rendered — the
+/// explorer does not read it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TxOutResponse {
+    /// Best-chain tip the validator answered against, as hex (display order).
+    pub bestblock: String,
+    /// Depth of the containing block, `0` when the output is in the mempool.
+    pub confirmations: i64,
+    /// The output's value, as a ZEC-denominated float.
+    pub value: f64,
+    /// The output's value, in zatoshis — the exact amount beside `value`.
+    #[serde(rename = "valueZat")]
+    pub value_zat: u64,
+    /// The output's locking script and the address it pays.
+    #[serde(rename = "scriptPubKey")]
+    pub script_pub_key: ScriptPubKey,
+    /// Whether the output was created by a coinbase transaction.
+    pub coinbase: bool,
+}
+
 /// One entry of the `getpeerinfo` list.
 ///
 /// The explorer reads `addr` tolerantly and nothing else, but `inbound` is the

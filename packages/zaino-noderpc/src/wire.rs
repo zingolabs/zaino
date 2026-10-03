@@ -36,8 +36,8 @@ use crate::wire::response::{
     NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry, PoolTreestateResponse,
     ScriptPubKey, ScriptSig, ShieldedOutput, ShieldedSpend, SubtreeRootEntry, SubtreeRootsResponse,
     TipConsensusResponse, TransactionInput, TransactionObject, TransactionOutput, TreePoolSize,
-    TreesResponse, TreestateResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ValuePoolResponse, ZValidateAddressResponse,
+    TreesResponse, TreestateResponse, TxOutResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -875,6 +875,41 @@ fn local_address_to_wire(local: LocalAddress) -> LocalAddressResponse {
         address: local.address,
         port: local.port,
         score: local.score,
+    }
+}
+
+/// Render an unspent output as the `gettxout` response (domain -> wire). `value`
+/// is the shared ZEC float with the exact `valueZat` beside it; `scriptPubKey`
+/// reuses the transaction-output script shape. When the validator reported no
+/// `asm`, it is disassembled locally from the script bytes so the field is always
+/// present, matching zcashd; `addresses` is omitted when the validator attributed
+/// none, matching the non-standard-script convention elsewhere in this adapter.
+pub(crate) fn tx_out_to_wire(tx_out: zaino_primitives::types::rpc::TxOut) -> TxOutResponse {
+    let script = &tx_out.script_pub_key;
+    let script_bytes: Vec<u8> = script.script.clone().into();
+    let addresses = (!script.addresses.is_empty()).then(|| {
+        script
+            .addresses
+            .iter()
+            .map(|address| address.as_str().to_owned())
+            .collect()
+    });
+    TxOutResponse {
+        bestblock: block_hash_to_display(tx_out.best_block),
+        confirmations: tx_out.confirmations,
+        value: zatoshis_to_zec(tx_out.value),
+        value_zat: tx_out.value.as_u64(),
+        script_pub_key: ScriptPubKey {
+            asm: script
+                .asm
+                .clone()
+                .unwrap_or_else(|| script_to_asm(&script_bytes, false)),
+            hex: bytes_to_hex(&script_bytes),
+            required_signatures: script.required_signatures,
+            addresses,
+            script_type: script.script_type.clone(),
+        },
+        coinbase: tx_out.coinbase,
     }
 }
 

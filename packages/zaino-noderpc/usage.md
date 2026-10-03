@@ -24,7 +24,8 @@ in internal order per the lightwalletd protocol.)
 ## What it serves
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
-`getblockheader`, `getblockhashes`, `getrawtransaction`, `sendrawtransaction`,
+`getblockheader`, `getblockhashes`, `getblockhash`, `gettxout`,
+`getrawtransaction`, `sendrawtransaction`,
 `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
 `getmempoolinfo`, `getdifficulty`, `getnetworkinfo`, `ping`, `getaddressbalance`,
 `getaddressdeltas`, `getaddresstxids`, `getaddressutxos`, `z_gettreestate`,
@@ -42,6 +43,16 @@ on parse (a recorded divergence from zebra). `z_getsubtreesbyindex` takes
 `pool, startIndex, (limit?)` and returns `{pool, start_index, subtrees}` with
 each root in natural order; a `startIndex` past the end is an empty `subtrees`
 list, not an error.
+
+`getblockhash` resolves a height to the block's hash (display order) **locally**
+over the chain view's header read; a height beyond the chain is zcashd's
+out-of-range error (code `-8`, "Block height out of range"), distinct from the
+not-found `-5`. `gettxout` reads the validator's live UTXO set through
+`TxOutRead` (passthrough — Zaino mirrors no UTXO set, and it is *not* `SpendRead`):
+`txid, n, (includemempool=true)`, rendering `{bestblock, confirmations, value,
+valueZat, scriptPubKey, coinbase}` for an unspent output and JSON `null` for a
+spent or unknown one (both null in the oracle). zcashd's `version` field is not
+rendered.
 
 The transparent-address methods (`getaddressbalance`, `getaddressdeltas`,
 `getaddresstxids`, `getaddressutxos`) are served **locally** over the engine's
@@ -233,6 +244,7 @@ explorer's metric warmer does not cache an empty mempool over a transport blip.
 
 ## Not modelled here
 
-This adapter stands up no jsonrpsee server for production use; it exercises the
-handler shape against the service mock. The txoutset methods (`gettxout`,
-`gettxoutsetinfo`) and spend status (`getspentinfo`) are not served.
+`gettxoutsetinfo` (the whole-UTXO-set aggregate) and spend status
+(`getspentinfo`) are not served here. `getspentinfo` is a later slice; it is a
+local spend-index read, distinct from `gettxout` above, which is the live
+unspent-output lookup.

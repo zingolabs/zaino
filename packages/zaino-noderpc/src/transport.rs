@@ -435,6 +435,73 @@ mod tests {
         let _ = handle.stop();
     }
 
+    /// The zcashex-shaped 1.0 `getblockhash` request — positional `[height]` —
+    /// gives 200 and the legacy envelope, with `result` the block hash in display
+    /// order.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getblockhash_succeeds() {
+        use zaino_primitives::types::{BlockHeader, CompactDifficulty, EquihashSolution};
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0] = 0x11;
+        hash_bytes[31] = 0xaa;
+        let expected_display = format!("aa{}11", "00".repeat(30));
+        let header = BlockHeader {
+            hash: BlockHash::from(hash_bytes),
+            version: 4,
+            prev_hash: BlockHash::from([0u8; 32]),
+            height: Height::try_from(100).expect("valid height"),
+            time: 1_600_000_000,
+            merkle_root: [0u8; 32].into(),
+            block_commitments: [0u8; 32].into(),
+            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
+            nonce: [0u8; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        };
+        let (addr, handle) = spawn_server(MockChain {
+            block_header: Some(header),
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getblockhash","params":[100]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert!(obj.get("error").is_some_and(Value::is_null));
+        assert_eq!(
+            obj.get("result").and_then(Value::as_str),
+            Some(expected_display.as_str())
+        );
+        let _ = handle.stop();
+    }
+
+    /// The zcashex-shaped 1.0 `gettxout` request — positional `[txid, n]` — for a
+    /// spent or unknown outpoint gives 200 and `result: null`, matching
+    /// zcashd/zebra. The default mock scripts no output.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_gettxout_unknown_is_null() {
+        let (addr, handle) = spawn_server(MockChain::default());
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            &format!(
+                r#"{{"jsonrpc":"1.0","id":"zcashex","method":"gettxout","params":["{}",0]}}"#,
+                "ab".repeat(32)
+            ),
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert!(
+            obj.get("result").is_some_and(Value::is_null),
+            "a spent or unknown outpoint is null: {obj:?}"
+        );
+        assert!(obj.get("error").is_some_and(Value::is_null));
+        let _ = handle.stop();
+    }
+
     /// The zcashex-shaped 1.0 `getdifficulty` request gives 200 and the legacy
     /// envelope, with `result` the relayed difficulty.
     #[tokio::test(flavor = "multi_thread")]

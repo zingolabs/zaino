@@ -41,15 +41,15 @@ use crate::wire::response::{
     BlockchainInfoResponse, DeltaRange, GetBlockHashesResponse, GetBlockResponse,
     GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse,
     NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, RawTransactionResponse,
-    SubtreeRootsResponse, TreestateResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    SubtreeRootsResponse, TreestateResponse, TxOutResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_hash_to_display, block_hashes_to_wire, block_header_to_wire,
     block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex,
     bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire, mining_info_to_wire,
     network_info_to_wire, node_info_to_wire, peer_info_to_wire, subtree_roots_to_wire,
-    transaction_view_to_wire, treestate_to_wire, txid_from_hex, txid_to_display,
+    transaction_view_to_wire, treestate_to_wire, tx_out_to_wire, txid_from_hex, txid_to_display,
     unified_receivers_to_wire, utxo_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
@@ -345,6 +345,40 @@ impl<S: NodeRpcService> NodeRpc<S> {
             .into_iter()
             .map(peer_info_to_wire)
             .collect())
+    }
+
+    /// `getblockhash`: the hash of the block at `height`, in display order.
+    /// Served locally over the chain view's header read. A height beyond the
+    /// chain is zcashd's out-of-range error (code `-8`), not a not-found.
+    pub(crate) async fn get_block_hash(&self, height: u32) -> Result<String, RpcError> {
+        let height = Height::try_from(height)
+            .map_err(|_| RpcError::OutOfRange("Block height out of range".to_string()))?;
+        let snapshot = self.engine.snapshot().await?;
+        let header = snapshot
+            .block_header(BlockSelector::Height(height))
+            .await
+            .map_err(ReadError::from)?;
+        header
+            .map(|header| block_hash_to_display(header.hash))
+            .ok_or_else(|| RpcError::OutOfRange("Block height out of range".to_string()))
+    }
+
+    /// `gettxout`: the unspent output at `(txid, n)`, relayed live from the
+    /// validator (passthrough). `includemempool` defaults to true. A spent or
+    /// unknown outpoint is `null` (an `Ok(None)` the surface renders as JSON
+    /// null), never an error.
+    pub(crate) async fn get_tx_out(
+        &self,
+        txid_hex: &str,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<Option<TxOutResponse>, RpcError> {
+        let txid = txid_from_hex(txid_hex)?;
+        let output = self
+            .engine
+            .tx_out(txid, n, include_mempool.unwrap_or(true))
+            .await?;
+        Ok(output.map(tx_out_to_wire))
     }
 
     /// `getdifficulty`: the current difficulty, relayed from the validator. Not
@@ -2069,6 +2103,149 @@ mod tests {
     async fn ping_succeeds_against_a_responsive_validator() {
         let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
         node.get_ping().await.expect("ping succeeds");
+    }
+
+    /// `getblockhash` resolves a height to the block's hash in display order,
+    /// served locally over the chain view's header read. The scripted header
+    /// carries the oracle block's internal bytes; the handler renders them back
+    /// to the oracle's display string.
+    #[tokio::test]
+    async fn getblockhash_renders_the_oracle_hash_in_display_order() {
+        let (block, _) = scripted_block_and_verbose();
+        let mut header = block.header;
+        header.hash = BlockHash::from(internal_32(ORACLE_TS_HASH));
+        let engine = MockIndexerService::new(MockChain {
+            block_header: Some(header),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        assert_eq!(
+            node.get_block_hash(3_504_000).await.expect("block hash"),
+            ORACLE_TS_HASH
+        );
+    }
+
+    /// A height beyond the chain is zcashd's out-of-range error, distinct from a
+    /// not-found. The mock scripts no header, so any height is out of range.
+    #[tokio::test]
+    async fn getblockhash_out_of_range_is_its_own_error() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        match node.get_block_hash(999_999).await {
+            Err(RpcError::OutOfRange(message)) => {
+                assert!(message.contains("out of range"), "message: {message}")
+            }
+            other => panic!("an out-of-range height must be OutOfRange, got {other:?}"),
+        }
+    }
+
+    /// `gettxout` renders an unspent output in zcashd/zebra's shape: the exact
+    /// key set, the best-block hash in display order, the value as a ZEC float
+    /// with the exact `valueZat` beside it, and the reused `scriptPubKey` shape.
+    #[tokio::test]
+    async fn gettxout_renders_the_unspent_output_shape() {
+        use zaino_primitives::types::rpc::{ScriptPubKey as TxOutScriptPubKey, TxOut};
+        use zaino_primitives::types::{Script, TransparentAddress, Zatoshis};
+        let tx_out = TxOut {
+            best_block: BlockHash::from(internal_32(ORACLE_TS_HASH)),
+            confirmations: 7,
+            value: Zatoshis::new(500_000).expect("valid amount"),
+            coinbase: false,
+            script_pub_key: TxOutScriptPubKey {
+                script: Script::new(vec![0x76, 0xa9]),
+                asm: Some("OP_DUP OP_HASH160".to_string()),
+                script_type: Some("pubkeyhash".to_string()),
+                required_signatures: Some(1),
+                addresses: vec![TransparentAddress::new("t1abc".to_string())],
+            },
+        };
+        let engine = MockIndexerService::new(MockChain {
+            tx_out: Some(tx_out),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let json = serde_json::to_value(
+            node.get_tx_out(&"ab".repeat(32), 0, None)
+                .await
+                .expect("tx out")
+                .expect("an unspent output"),
+        )
+        .expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "bestblock",
+                "coinbase",
+                "confirmations",
+                "scriptPubKey",
+                "value",
+                "valueZat",
+            ]
+        );
+        assert_eq!(
+            obj.get("bestblock").and_then(serde_json::Value::as_str),
+            Some(ORACLE_TS_HASH)
+        );
+        assert_eq!(
+            obj.get("confirmations").and_then(serde_json::Value::as_i64),
+            Some(7)
+        );
+        assert_eq!(
+            obj.get("value").and_then(serde_json::Value::as_f64),
+            Some(0.005)
+        );
+        assert_eq!(
+            obj.get("valueZat").and_then(serde_json::Value::as_u64),
+            Some(500_000)
+        );
+        assert_eq!(
+            obj.get("coinbase").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        let spk = obj
+            .get("scriptPubKey")
+            .and_then(serde_json::Value::as_object)
+            .expect("scriptPubKey object");
+        assert_eq!(
+            spk.get("hex").and_then(serde_json::Value::as_str),
+            Some("76a9")
+        );
+        assert_eq!(
+            spk.get("type").and_then(serde_json::Value::as_str),
+            Some("pubkeyhash")
+        );
+        assert_eq!(
+            spk.get("reqSigs").and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            spk.get("addresses").and_then(serde_json::Value::as_array),
+            Some(&vec![serde_json::Value::from("t1abc")])
+        );
+    }
+
+    /// Review Focus 1: a spent or unknown outpoint is `None` (JSON null), not an
+    /// error — the oracle confirms null for both. The mock scripts no output.
+    #[tokio::test]
+    async fn gettxout_spent_or_unknown_is_none() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(node
+            .get_tx_out(&"ab".repeat(32), 0, Some(true))
+            .await
+            .expect("a spent or unknown outpoint is a valid query")
+            .is_none());
+    }
+
+    /// A malformed txid never reaches the read.
+    #[tokio::test]
+    async fn gettxout_rejects_a_wrong_length_txid() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_tx_out(&"ab".repeat(31), 0, None).await,
+            Err(RpcError::InvalidParams(_))
+        ));
     }
 
     #[tokio::test]

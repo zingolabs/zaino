@@ -35,6 +35,11 @@ pub enum RpcError {
     /// The requested object is not known to this indexer.
     #[error("{0}")]
     NotFound(String),
+    /// A requested block height is beyond the chain — zcashd's `getblockhash`
+    /// out-of-range error, which has its own code (`-8`) distinct from the
+    /// not-found code.
+    #[error("{0}")]
+    OutOfRange(String),
     /// A transaction read failed.
     #[error(transparent)]
     TxRead(#[from] TxReadError),

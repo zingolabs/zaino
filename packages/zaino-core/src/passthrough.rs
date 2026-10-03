@@ -19,12 +19,13 @@
 //! sound for the immutable, historical data light clients query.
 
 use zaino_primitives::types::rpc::{
-    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo,
+    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut,
 };
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockVerbose, BlockchainInfo,
-    DecodedBlock, Difficulty, Height, HeightRange, PreIndexCompactTx, RawTransaction, ShieldedPool,
-    SubtreeRoot, TransactionId, TransparentAddress, TransparentOutput, Treestate, Utxo,
+    DecodedBlock, Difficulty, Height, HeightRange, OutputIndex, PreIndexCompactTx, RawTransaction,
+    ShieldedPool, SubtreeRoot, TransactionId, TransparentAddress, TransparentOutput, Treestate,
+    Utxo,
 };
 use zaino_service::NodeStatusError;
 use zaino_service::error::{
@@ -44,8 +45,9 @@ use zaino_source::{
     GetNetworkSolPsError, GetNodeInfo, GetNodeInfoError, GetPeerInfo, GetPeerInfoError,
     GetRawBlock, GetRawBlockByHash, GetRawMempoolTransaction, GetRawMempoolTransactionError,
     GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
-    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError, Ping,
-    SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
+    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError, GetTxOut,
+    GetTxOutError, Ping, SendRawTransaction, SendRawTransactionError, SourceError,
+    TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -957,6 +959,35 @@ where
             Err(SourceError::Domain(never)) => match never {},
             Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
             Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetTxOut,
+{
+    /// An unspent transparent output, live from the validator. Passthrough: Zaino
+    /// mirrors no UTXO set. `Ok(None)` is the ordinary "spent or unknown" answer
+    /// (the validator's `null`); a missing-transaction domain rejection is folded
+    /// to the same `Ok(None)`, since zcashd/zebra answer an unknown outpoint with
+    /// `null` too. A transport failure is transient — never a false `None` a
+    /// warmer would cache as "spent".
+    pub(crate) async fn tx_out(
+        &self,
+        txid: TransactionId,
+        index: OutputIndex,
+        include_mempool: bool,
+    ) -> Result<Option<TxOut>, ReadError> {
+        match self.source.get_tx_out(txid, index, include_mempool).await {
+            Ok(output) => Ok(output),
+            Err(SourceError::Domain(GetTxOutError::TransactionNotFound(_))) => Ok(None),
+            Err(SourceError::NonDomain(cause)) => Err(ReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
+            Err(SourceError::Unavailable(cause)) => Err(ReadError::Transient(format!(
+                "validator unavailable: {cause}"
+            ))),
         }
     }
 }
