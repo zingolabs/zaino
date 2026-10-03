@@ -73,7 +73,9 @@ unbounded number of validator round trips.
 behind `getblockhashes` (`block_hashes(low, high)` returns every block with
 `low <= nTime < high` as `BlockHashAt { height, hash, time }`, ascending by time
 then by hash). It is a **local** read over the composed headers — same backing as
-`HeaderRead`, no source port — and is not a slice of the height axis: Zcash block
+`HeaderRead`, no source port, and its availability is type-level rather than a
+runtime capability (a tier implements `HeaderRead` only where its headers-index
+backing exists). It is not a slice of the height axis: Zcash block
 timestamps are not monotonic, so the engine derives a candidate height bracket
 from the median-time-past consensus rule and filters it by each block's actual
 time. A range beyond the tip or before genesis is an empty list, never an error;

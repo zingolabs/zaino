@@ -116,11 +116,14 @@ pub struct BlockHashAt {
 /// block's actual timestamp.
 ///
 /// Backed by: the headers index (FS) or the retained window's headers (NFS) —
-/// the same [`HeaderRead`] backing, so its serviceability follows the built
-/// headers-index check. A range beyond the tip or before genesis is an empty
-/// list, never an error; a hole in the chain view at or below the pinned tip is
-/// a typed failure ([`BlockHashReadError::MissingHeader`]), never a silently
-/// dropped block.
+/// the same [`HeaderRead`] backing. Its availability is therefore type-level,
+/// not a runtime capability: a tier implements [`HeaderRead`] only where that
+/// backing exists (on the finalised store the implementation is bounded on the
+/// local blocks bundle, which includes the headers index), so there is no
+/// serviceability variant to consult at read time. A range beyond the tip or
+/// before genesis is an empty list, never an error; a hole in the chain view at
+/// or below the pinned tip is a typed failure
+/// ([`BlockHashReadError::MissingHeader`]), never a silently dropped block.
 pub trait BlockHashRead: Send + Sync {
     /// Every block with `low <= nTime < high`, ascending by time then by hash.
     fn block_hashes(

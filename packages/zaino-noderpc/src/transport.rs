@@ -133,16 +133,19 @@ mod tests {
     /// closes the pick-a-port race. The mock chain's tip is height 291, so
     /// `getblockcount` answers 291.
     fn spawn_dialect_server() -> (SocketAddr, ServerHandle) {
-        let handler = NodeRpc::new(
-            MockIndexerService::new(MockChain {
-                tip: Some(BlockRef {
-                    height: Height::try_from(291).expect("valid height"),
-                    hash: BlockHash::from([0xCDu8; 32]),
-                }),
-                ..Default::default()
+        spawn_server(MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(291).expect("valid height"),
+                hash: BlockHash::from([0xCDu8; 32]),
             }),
-            Network::MainNetwork,
-        );
+            ..Default::default()
+        })
+    }
+
+    /// Boot a real jsonrpsee server over the given mock chain, with the production
+    /// dialect middleware, on an ephemeral port.
+    fn spawn_server(chain: MockChain) -> (SocketAddr, ServerHandle) {
+        let handler = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         listener.set_nonblocking(true).expect("set nonblocking");
         let addr = listener.local_addr().expect("local addr");
@@ -302,6 +305,50 @@ mod tests {
         assert!(
             !obj.contains_key("error"),
             "a 2.0 success omits the error key: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// The zcashex-shaped 1.0 `getblockhashes` request — the explorer's block-list
+    /// call, `[high, low, {noOrphans, logicalTimes}]` — gives 200 and the exact
+    /// legacy envelope: `jsonrpc: "1.0"`, the echoed `id`, `error: null`, and a
+    /// `result` array of the block's display-order hash string. A real round trip,
+    /// end to end through the dialect layer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getblockhashes_succeeds() {
+        use zaino_service::BlockHashAt;
+        // One scripted block, at nTime 1_600_000_000, with an asymmetric hash so the
+        // display-order render differs from the internal bytes.
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0] = 0x11;
+        hash_bytes[31] = 0xaa;
+        let expected_display = format!("aa{}11", "00".repeat(30));
+        let (addr, handle) = spawn_server(MockChain {
+            block_hashes: vec![BlockHashAt {
+                height: Height::try_from(100).expect("valid height"),
+                hash: BlockHash::from(hash_bytes),
+                time: 1_600_000_000,
+            }],
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getblockhashes","params":[1600001000,0,{"noOrphans":true,"logicalTimes":false}]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert_eq!(obj.get("id").and_then(Value::as_str), Some("zcashex"));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        assert_eq!(
+            obj.get("result"),
+            Some(&Value::from(vec![expected_display])),
+            "the result is the block hash in display order: {obj:?}"
         );
         let _ = handle.stop();
     }

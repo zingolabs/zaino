@@ -8,19 +8,21 @@ use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::{ErrorCode, ErrorObjectOwned};
 
 use zaino_service::error::AddressReadError;
+use zaino_service::error::BlockHashReadError;
 use zaino_service::error::MempoolReadError;
+use zaino_service::error::ReadError;
 use zaino_service::error::TransactionViewError;
 use zaino_service::error::TxReadError;
 use zaino_service::NodeRpcService;
 use zaino_service::NodeStatusError;
 
 use crate::error::RpcError;
-use crate::wire::params::{AddressDeltasParam, AddressesParam};
+use crate::wire::params::{AddressDeltasParam, AddressesParam, GetBlockHashesOptions};
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse,
-    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, UnifiedReceiversResponse,
-    ValidateAddressResponse, ZValidateAddressResponse,
+    GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse,
+    MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -52,6 +54,14 @@ pub(crate) trait NodeRpcApi {
 
     #[method(name = "getblockheader")]
     async fn block_header(&self, hash: String) -> Result<BlockHeaderResponse, ErrorObjectOwned>;
+
+    #[method(name = "getblockhashes")]
+    async fn block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, ErrorObjectOwned>;
 
     #[method(name = "getblockchaininfo")]
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned>;
@@ -145,6 +155,16 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn block_header(&self, hash: String) -> Result<BlockHeaderResponse, ErrorObjectOwned> {
         self.get_block_header(&hash).await.map_err(to_error_object)
+    }
+    async fn block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, ErrorObjectOwned> {
+        self.get_block_hashes(high, low, options)
+            .await
+            .map_err(to_error_object)
     }
     async fn blockchain_info(&self) -> Result<BlockchainInfoResponse, ErrorObjectOwned> {
         self.get_blockchain_info().await.map_err(to_error_object)
@@ -309,6 +329,21 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         RpcError::MempoolRead(e @ MempoolReadError::NotServiceable(_)) => {
             (ErrorCode::InternalError.code(), e.to_string())
         }
+        // The `getblockhashes` timestamp-range search fails only server-side, never
+        // on client input: `MissingHeader` is a chain-view inconsistency (a header
+        // the search needed at or below the pinned tip was absent), and `TierRead`
+        // wraps a tier-read failure. Both are internal errors. `MissingHeader`
+        // renders its own `Display` (which names the height, not a `#[source]`
+        // cause); `TierRead` follows the mapping every other `BlockReadError`-backed
+        // read uses — lifted into a `ReadError` and rendered by that type's own
+        // `Display`, not by stringifying the kept `#[source]` cause.
+        RpcError::BlockHashRead(e @ BlockHashReadError::MissingHeader { .. }) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::BlockHashRead(BlockHashReadError::TierRead { source }) => (
+            ErrorCode::InternalError.code(),
+            ReadError::from(source).to_string(),
+        ),
     };
     ErrorObjectOwned::owned(code, message, None::<()>)
 }
@@ -583,6 +618,208 @@ mod tests {
                 assert_eq!(obj.code(), ErrorCode::MethodNotFound.code());
             }
             other => panic!("expected a method-not-found JSON-RPC error, got {other:?}"),
+        }
+    }
+
+    /// A `MissingHeader` — a hole in the chain view the timestamp search needed —
+    /// is a server-side inconsistency, so it maps to the internal-error code, never
+    /// a params error blaming the caller. The message names the height via the
+    /// variant's own `Display`.
+    #[test]
+    fn block_hash_missing_header_is_an_internal_error() {
+        use zaino_primitives::types::Height;
+        use zaino_service::error::BlockHashReadError;
+        let obj = to_error_object(RpcError::BlockHashRead(BlockHashReadError::MissingHeader {
+            height: Height::try_from(42).expect("valid height"),
+        }));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+        assert!(
+            obj.message().contains("42"),
+            "the message names the missing height: {}",
+            obj.message()
+        );
+    }
+
+    /// A tier-read failure during the search follows the `BlockReadError` mapping:
+    /// internal error, never bad client input.
+    #[test]
+    fn block_hash_tier_read_is_an_internal_error() {
+        use zaino_service::error::{BlockHashReadError, BlockReadError};
+        let obj = to_error_object(RpcError::BlockHashRead(BlockHashReadError::TierRead {
+            source: BlockReadError::Fatal("backend failure".to_string()),
+        }));
+        assert_eq!(obj.code(), ErrorCode::InternalError.code());
+    }
+
+    /// An asymmetric block hash whose internal first and last bytes differ, so its
+    /// display render (a byte-reversal) is distinguishable from the internal bytes.
+    fn asym_hash(lead: u8, tail: u8) -> zaino_primitives::types::BlockHash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = lead;
+        bytes[31] = tail;
+        zaino_primitives::types::BlockHash::from(bytes)
+    }
+
+    /// The display-order hex of [`asym_hash`]: `tail`, then the zero middle, then
+    /// `lead`.
+    fn asym_display(lead: u8, tail: u8) -> String {
+        format!("{tail:02x}{}{lead:02x}", "00".repeat(30))
+    }
+
+    /// Two scripted blocks, ascending by time, for the timestamp-range tests.
+    fn block_hashes_fixture() -> Vec<zaino_service::BlockHashAt> {
+        use zaino_primitives::types::Height;
+        use zaino_service::BlockHashAt;
+        vec![
+            BlockHashAt {
+                height: Height::try_from(100).expect("valid height"),
+                hash: asym_hash(0x11, 0xaa),
+                time: 1_600_000_000,
+            },
+            BlockHashAt {
+                height: Height::try_from(101).expect("valid height"),
+                hash: asym_hash(0x22, 0xbb),
+                time: 1_600_000_600,
+            },
+        ]
+    }
+
+    fn block_hashes_module(
+    ) -> jsonrpsee::RpcModule<crate::NodeRpc<zaino_service::testing::MockIndexerService>> {
+        use super::NodeRpcApiServer;
+        use crate::NodeRpc;
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+        NodeRpc::new(
+            MockIndexerService::new(MockChain {
+                block_hashes: block_hashes_fixture(),
+                ..MockChain::default()
+            }),
+            Network::MainNetwork,
+        )
+        .into_rpc()
+    }
+
+    /// Each non-logical param shape the explorer sends — `[high, low]`,
+    /// `[high, low, {}]`, and `[high, low, {"noOrphans":true,"logicalTimes":false}]`
+    /// — returns the same bare array of display-order hash strings, ascending by
+    /// block time. Driven through the generated jsonrpsee surface, so this exercises
+    /// the real positional-parameter parsing, including the optional options object.
+    #[tokio::test]
+    async fn getblockhashes_non_logical_param_shapes_render_display_order_hashes() {
+        use jsonrpsee::core::params::ArrayParams;
+        use serde_json::Value;
+        let expected = Value::from(vec![asym_display(0x11, 0xaa), asym_display(0x22, 0xbb)]);
+        let shapes: Vec<ArrayParams> = {
+            // [high, low]
+            let mut bare = ArrayParams::new();
+            bare.insert(1_600_001_000u32).expect("high");
+            bare.insert(0u32).expect("low");
+            // [high, low, {}]
+            let mut empty = ArrayParams::new();
+            empty.insert(1_600_001_000u32).expect("high");
+            empty.insert(0u32).expect("low");
+            empty.insert(serde_json::json!({})).expect("empty options");
+            // [high, low, {"noOrphans":true,"logicalTimes":false}]
+            let mut full = ArrayParams::new();
+            full.insert(1_600_001_000u32).expect("high");
+            full.insert(0u32).expect("low");
+            full.insert(serde_json::json!({"noOrphans": true, "logicalTimes": false}))
+                .expect("options");
+            vec![bare, empty, full]
+        };
+        for params in shapes {
+            let module = block_hashes_module();
+            let result: Value = module
+                .call("getblockhashes", params)
+                .await
+                .expect("getblockhashes succeeds");
+            assert_eq!(result, expected);
+        }
+    }
+
+    /// `logicalTimes: true` renders `{blockhash, logicalts}` objects — exactly those
+    /// two keys — in the same ascending-by-time order, with the block times as
+    /// `logicalts` and the hashes in display order.
+    #[tokio::test]
+    async fn getblockhashes_logical_times_renders_objects() {
+        use jsonrpsee::core::params::ArrayParams;
+        use serde_json::Value;
+        let module = block_hashes_module();
+        let mut params = ArrayParams::new();
+        params.insert(1_600_001_000u32).expect("high");
+        params.insert(0u32).expect("low");
+        params
+            .insert(serde_json::json!({"noOrphans": true, "logicalTimes": true}))
+            .expect("options");
+        let result: Value = module
+            .call("getblockhashes", params)
+            .await
+            .expect("getblockhashes succeeds");
+        let arr = result.as_array().expect("an array of objects");
+        assert_eq!(arr.len(), 2);
+        let mut keys: Vec<&str> = arr[0]
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["blockhash", "logicalts"]);
+        assert_eq!(
+            arr[0].get("blockhash").and_then(Value::as_str),
+            Some(asym_display(0x11, 0xaa).as_str())
+        );
+        assert_eq!(
+            arr[0].get("logicalts").and_then(Value::as_u64),
+            Some(1_600_000_000)
+        );
+        assert_eq!(
+            arr[1].get("logicalts").and_then(Value::as_u64),
+            Some(1_600_000_600)
+        );
+    }
+
+    /// `high` below `low` is an empty range `[low, high)`, so the result is an empty
+    /// array — matching zcashd, which seeks its timestamp index to `low` and stops
+    /// at the first entry not below `high`, returning an empty list rather than an
+    /// error.
+    #[tokio::test]
+    async fn getblockhashes_high_below_low_is_an_empty_list() {
+        use jsonrpsee::core::params::ArrayParams;
+        use serde_json::Value;
+        let module = block_hashes_module();
+        let mut params = ArrayParams::new();
+        params.insert(100u32).expect("high");
+        params.insert(1_600_000_000u32).expect("low");
+        let result: Value = module
+            .call("getblockhashes", params)
+            .await
+            .expect("an inverted range is a valid query with an empty answer");
+        assert_eq!(result, Value::from(Vec::<Value>::new()));
+    }
+
+    /// A non-integer timestamp is rejected with invalid-params by the generated
+    /// surface, before the handler runs — mirroring zcashd's `get_int()`, which
+    /// throws on a non-numeric parameter.
+    #[tokio::test]
+    async fn getblockhashes_non_integer_timestamp_is_invalid_params() {
+        use jsonrpsee::core::params::ArrayParams;
+        use jsonrpsee::core::server::MethodsError;
+        use serde_json::Value;
+        let module = block_hashes_module();
+        let mut params = ArrayParams::new();
+        params.insert("not-a-number").expect("high as a string");
+        params.insert(0u32).expect("low");
+        let err = module
+            .call::<_, Value>("getblockhashes", params)
+            .await
+            .expect_err("a non-integer timestamp must be rejected");
+        match err {
+            MethodsError::JsonRpc(obj) => {
+                assert_eq!(obj.code(), ErrorCode::InvalidParams.code());
+            }
+            other => panic!("expected an invalid-params JSON-RPC error, got {other:?}"),
         }
     }
 }

@@ -30,3 +30,21 @@ pub struct AddressDeltasParam {
     #[serde(default, rename = "chainInfo")]
     pub chain_info: bool,
 }
+
+/// The optional third parameter of `getblockhashes`, the
+/// `{"noOrphans": ..., "logicalTimes": ...}` object `zcashex` sends. The whole
+/// object is optional (`[high, low]` is a valid call), and each key within it is
+/// optional too, defaulting to zcashd's defaults.
+///
+/// `noOrphans` is deliberately not modelled: zcashd uses it to restrict the
+/// timestamp index to the active chain, but Zaino's local read serves the active
+/// chain by construction, so the option is already satisfied and the key is
+/// accepted and ignored (unknown keys are, by default, dropped). Only
+/// `logicalTimes` changes the response.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetBlockHashesOptions {
+    /// zcashd's `logicalTimes`: when true, return `{blockhash, logicalts}`
+    /// objects instead of bare hash strings. Defaults to false.
+    #[serde(default, rename = "logicalTimes")]
+    pub logical_times: bool,
+}

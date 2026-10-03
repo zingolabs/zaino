@@ -24,8 +24,8 @@ in internal order per the lightwalletd protocol.)
 ## What it serves
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
-`getblockheader`, `getrawtransaction`, `sendrawtransaction`, `getinfo`,
-`getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
+`getblockheader`, `getblockhashes`, `getrawtransaction`, `sendrawtransaction`,
+`getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
 `getmempoolinfo`, `getaddressbalance`, `getaddressdeltas`, `validateaddress`,
 `z_validateaddress`, `z_listunifiedreceivers`.
 
@@ -110,6 +110,28 @@ header, its chain position, and its transactions-with-resolved-inputs. A by-heig
 request resolves the height to a hash once — from the header read — and issues the
 position and transaction reads by that hash, so the three cannot straddle a tip
 reorg between them. Verbosity 0 needs only the single raw-block read.
+
+## `getblockhashes`
+
+`getblockhashes high low ( {noOrphans, logicalTimes} )` returns the blocks whose
+`nTime` lies in the half-open range `[low, high)`, ascending by time then by hash
+— the read behind every NightHawk block list and the block warmer. The parameter
+order is zcashd's (`high`, the newer timestamp, first), while the domain read
+(`BlockHashRead::block_hashes`) takes `(low, high)`; the two are swapped in the
+handler. The options object is optional, and so is each key in it:
+
+- `logicalTimes` false or absent renders a bare array of display-order hash
+  strings; `true` renders `[{blockhash, logicalts}]` objects, where `logicalts`
+  is the block's `nTime` (the explorer's transaction cache sorts on it).
+- `noOrphans` is accepted and ignored — the read is active-chain only, so the
+  option is already satisfied.
+
+A `high` below `low` is an empty range, so the result is an empty array, not an
+error — matching zcashd, whose timestamp index seeks to `low` and stops at the
+first entry not below `high`. A range beyond the tip or before genesis is
+likewise empty. The failure modes are server-side only: a chain-view hole
+(`BlockHashReadError::MissingHeader`) and a tier-read failure (`TierRead`) both
+map to the internal-error code, never invalid-params.
 
 ## Wire dialects
 

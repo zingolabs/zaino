@@ -110,7 +110,9 @@ domain miss is `Ok(None)`; an unreachable validator is a transient read failure.
 
 `BlockHashRead` (`block_hashes(low, high)`, the `getblockhashes` timestamp-range
 selection) is always local, driven over the two tiers' `HeaderRead` and clamped
-to the pinned tip. Zcash block timestamps are not monotonic, so this is not a
+to the pinned tip. Its availability is type-level rather than a runtime capability:
+each tier implements `HeaderRead` only where its headers-index backing exists.
+Zcash block timestamps are not monotonic, so this is not a
 slice of the height axis: the engine drives the pure `CandidateSearch` from
 `zaino-consensus` — which derives, from the median-time-past consensus rule, the
 smallest height bracket guaranteed to contain every block with

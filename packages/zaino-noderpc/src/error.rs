@@ -6,8 +6,8 @@
 //! decided by the adapter, not the port.
 
 use zaino_service::error::{
-    AddressReadError, BroadcastRejection, MempoolReadError, ReadError, TransactionViewError,
-    Transient, TxReadError,
+    AddressReadError, BlockHashReadError, BroadcastRejection, MempoolReadError, ReadError,
+    TransactionViewError, Transient, TxReadError,
 };
 use zaino_service::NodeStatusError;
 
@@ -48,4 +48,8 @@ pub enum RpcError {
     /// A mempool listing read failed.
     #[error(transparent)]
     MempoolRead(#[from] MempoolReadError),
+    /// The `getblockhashes` timestamp-range selection failed — a hole in the
+    /// chain view or a tier read failure, never bad client input.
+    #[error(transparent)]
+    BlockHashRead(#[from] BlockHashReadError),
 }

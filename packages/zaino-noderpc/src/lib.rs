@@ -23,6 +23,7 @@ pub use transport::{JsonRpcServeError, JsonRpcServer};
 use zaino_primitives::types::{Height, TransactionLocation, TransparentAddress};
 use zaino_service::error::ReadError;
 use zaino_service::queries;
+use zaino_service::BlockHashRead;
 use zaino_service::BlockVerboseRead;
 use zaino_service::RawTransactionRead;
 use zaino_service::TransactionViewRead;
@@ -31,19 +32,19 @@ use zcash_protocol::consensus::Network;
 
 use zaino_primitives::types::BlockSelector;
 
-use crate::wire::params::{AddressDeltasParam, AddressesParam};
+use crate::wire::params::{AddressDeltasParam, AddressesParam, GetBlockHashesOptions};
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, BlockHeaderResponse, BlockchainInfoResponse,
-    DeltaRange, GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse,
-    MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
+    DeltaRange, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
+    MempoolInfoResponse, MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
     RawTransactionResponse, UnifiedReceiversResponse, ValidateAddressResponse,
     ZValidateAddressResponse,
 };
 use crate::wire::{
-    address_balance_to_wire, block_hash_to_display, block_header_to_wire, block_to_wire_v1,
-    block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex,
-    delta_to_wire, mempool_entry_to_wire, mining_info_to_wire, node_info_to_wire,
-    peer_info_to_wire, transaction_view_to_wire, txid_from_hex, txid_to_display,
+    address_balance_to_wire, block_hash_to_display, block_hashes_to_wire, block_header_to_wire,
+    block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex,
+    bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire, mining_info_to_wire,
+    node_info_to_wire, peer_info_to_wire, transaction_view_to_wire, txid_from_hex, txid_to_display,
     unified_receivers_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
@@ -293,6 +294,28 @@ impl<S: NodeRpcService> NodeRpc<S> {
             .map_err(ReadError::from)?
             .ok_or_else(|| RpcError::NotFound(format!("no block with hash {hash_hex}")))?;
         Ok(block_header_to_wire(header))
+    }
+
+    /// `getblockhashes`: every block whose timestamp lies in the half-open range
+    /// `[low, high)`, the explorer's block-list keystone.
+    ///
+    /// The parameter order is zcashd's — `high` (the newer timestamp) first, `low`
+    /// (the older) second — while the domain read takes `(low, high)`; the two are
+    /// swapped here. An absent or `false` `logicalTimes` renders the bare
+    /// display-order hash strings, `true` the `{blockhash, logicalts}` objects; the
+    /// options object and its keys are all optional ([`GetBlockHashesOptions`]). A
+    /// `high` below `low`, or a range beyond the tip or before genesis, is an empty
+    /// list, never an error.
+    pub(crate) async fn get_block_hashes(
+        &self,
+        high: u32,
+        low: u32,
+        options: Option<GetBlockHashesOptions>,
+    ) -> Result<GetBlockHashesResponse, RpcError> {
+        let logical_times = options.is_some_and(|options| options.logical_times);
+        let snapshot = self.engine.snapshot().await?;
+        let hits = snapshot.block_hashes(low, high).await?;
+        Ok(block_hashes_to_wire(hits, logical_times))
     }
 
     /// `getinfo`: the validator's self-description, relayed. Not indexed. An

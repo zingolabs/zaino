@@ -593,6 +593,30 @@ pub enum GetBlockResponse {
     Verbose2(BlockResponse<TransactionObject>),
 }
 
+/// One entry of the `getblockhashes` verbose response, emitted when the request
+/// sets `logicalTimes: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BlockHashLogical {
+    /// The block hash, in RPC display order.
+    pub blockhash: String,
+    /// The block's logical timestamp (its `nTime`).
+    pub logicalts: u32,
+}
+
+/// The `getblockhashes` response. Serialized untagged, so each variant is its own
+/// JSON: a bare array of hash strings when `logicalTimes` is false or absent, an
+/// array of `{blockhash, logicalts}` objects when it is true. One jsonrpsee method
+/// returns one type, and zcashd's `getblockhashes` is polymorphic by that option,
+/// so the enum is that one type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum GetBlockHashesResponse {
+    /// `logicalTimes` false or absent: the block hashes, in display order.
+    Hashes(Vec<String>),
+    /// `logicalTimes: true`: each hash with its logical timestamp.
+    Logical(Vec<BlockHashLogical>),
+}
+
 /// One value pool in a `getblockchaininfo` response.
 ///
 /// zcashd reports each amount twice — once as a ZEC-denominated float

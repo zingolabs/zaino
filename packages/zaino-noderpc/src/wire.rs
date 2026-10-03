@@ -22,17 +22,18 @@ use zaino_primitives::types::{
     BlockchainInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, SignedZatoshis, ValuePoolBalance,
     Zatoshis,
 };
-use zaino_service::{BlockTransactionViews, MempoolEntry, TransactionView};
+use zaino_service::{BlockHashAt, BlockTransactionViews, MempoolEntry, TransactionView};
 use zcash_protocol::consensus::Network;
 
 use crate::error::RpcError;
 use crate::wire::response::{
-    AddressBalanceResponse, AddressDeltaEntry, BlockHeaderResponse, BlockResponse,
-    BlockchainInfoResponse, JoinSplitObject, MempoolEntryObject, MiningInfoResponse,
-    NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry,
-    ScriptPubKey, ScriptSig, ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput,
-    TransactionObject, TransactionOutput, TreePoolSize, TreesResponse, UnifiedReceiversResponse,
-    ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
+    AddressBalanceResponse, AddressDeltaEntry, BlockHashLogical, BlockHeaderResponse,
+    BlockResponse, BlockchainInfoResponse, GetBlockHashesResponse, JoinSplitObject,
+    MempoolEntryObject, MiningInfoResponse, NetworkUpgradeResponse, NodeInfoResponse,
+    OrchardActionObject, OrchardObject, PeerInfoEntry, ScriptPubKey, ScriptSig, ShieldedOutput,
+    ShieldedSpend, TipConsensusResponse, TransactionInput, TransactionObject, TransactionOutput,
+    TreePoolSize, TreesResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -321,6 +322,36 @@ pub(crate) fn block_header_to_wire(header: BlockHeaderVerbose) -> BlockHeaderRes
             .map(|work| bytes_to_hex(&work.to_be_bytes())),
         previous_block_hash: header.previous_block_hash.map(block_hash_to_display),
         next_block_hash: header.next_block_hash.map(block_hash_to_display),
+    }
+}
+
+/// Render the timestamp-range block selection as the `getblockhashes` response
+/// (domain -> wire).
+///
+/// Each hash renders in display order through [`block_hash_to_display`], so a
+/// missing byte-reversal fails; the domain's ascending-by-time-then-hash order is
+/// preserved as-is (the explorer reverses the list itself). `logical_times`
+/// chooses the shape: the bare hash strings, or `{blockhash, logicalts}` objects
+/// carrying each block's `nTime` as the logical timestamp.
+pub(crate) fn block_hashes_to_wire(
+    hits: Vec<BlockHashAt>,
+    logical_times: bool,
+) -> GetBlockHashesResponse {
+    if logical_times {
+        GetBlockHashesResponse::Logical(
+            hits.into_iter()
+                .map(|at| BlockHashLogical {
+                    blockhash: block_hash_to_display(at.hash),
+                    logicalts: at.time,
+                })
+                .collect(),
+        )
+    } else {
+        GetBlockHashesResponse::Hashes(
+            hits.into_iter()
+                .map(|at| block_hash_to_display(at.hash))
+                .collect(),
+        )
     }
 }
 
@@ -764,10 +795,11 @@ pub(crate) fn network_solps_height(height: Option<i64>) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_hash_to_display, block_header_to_wire, block_to_wire_v1, block_to_wire_v2,
-        blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, mempool_entry_to_wire,
-        merkle_root_to_display, signed_zatoshis_to_zec, transaction_view_to_wire, txid_from_hex,
-        txid_to_display, validated_to_wire, z_validated_to_wire, zatoshis_to_zec,
+        block_hash_to_display, block_hashes_to_wire, block_header_to_wire, block_to_wire_v1,
+        block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex,
+        mempool_entry_to_wire, merkle_root_to_display, signed_zatoshis_to_zec,
+        transaction_view_to_wire, txid_from_hex, txid_to_display, validated_to_wire,
+        z_validated_to_wire, zatoshis_to_zec,
     };
     use serde_json::Value;
     use zaino_address::{ValidatedAddress, ZValidatedAddress};
@@ -784,7 +816,7 @@ mod tests {
         ValuePoolBalance, Zatoshis,
     };
     use zaino_service::MempoolEntry;
-    use zaino_service::{BlockTransactionViews, ResolvedInput, TransactionView};
+    use zaino_service::{BlockHashAt, BlockTransactionViews, ResolvedInput, TransactionView};
     use zcash_protocol::consensus::Network;
 
     /// A verbose mempool entry renders its fee as a ZEC float with the exact
@@ -2269,5 +2301,83 @@ mod tests {
                 "negative magnitude {magnitude}"
             );
         }
+    }
+
+    /// An asymmetric block hash: its internal first and last bytes differ, so the
+    /// display-order render (a byte-reversal) is distinguishable from the internal
+    /// bytes — a missing reversal would fail any assertion against it. `lead` lands
+    /// at internal index 0, `tail` at index 31; display reverses them.
+    fn asym_hash(lead: u8, tail: u8) -> BlockHash {
+        let mut bytes = [0u8; 32];
+        bytes[0] = lead;
+        bytes[31] = tail;
+        BlockHash::from(bytes)
+    }
+
+    /// The display-order hex of [`asym_hash`]: `tail` first, then the zero middle,
+    /// then `lead`. Pinned independently of the renderer so the test is not
+    /// circular.
+    fn asym_display(lead: u8, tail: u8) -> String {
+        format!("{tail:02x}{}{lead:02x}", "00".repeat(30))
+    }
+
+    /// Both `getblockhashes` renderings, golden. Two blocks are supplied ascending
+    /// by time (the domain order the engine produces); the non-logical shape is the
+    /// bare display-order hash strings in that order, and the logical shape is
+    /// `{blockhash, logicalts}` objects with exactly those two keys and the block
+    /// times as `logicalts`. Asymmetric hashes make a missing byte-reversal fail.
+    #[test]
+    fn block_hashes_render_both_shapes_in_display_order() {
+        let hits = vec![
+            BlockHashAt {
+                height: Height::try_from(100).expect("valid height"),
+                hash: asym_hash(0x11, 0xaa),
+                time: 1_600_000_000,
+            },
+            BlockHashAt {
+                height: Height::try_from(101).expect("valid height"),
+                hash: asym_hash(0x22, 0xbb),
+                time: 1_600_000_600,
+            },
+        ];
+
+        // Non-logical: a bare array of display-order hash strings, order preserved.
+        let json = serde_json::to_value(block_hashes_to_wire(hits.clone(), false))
+            .expect("serialize hashes");
+        assert_eq!(
+            json,
+            serde_json::json!([asym_display(0x11, 0xaa), asym_display(0x22, 0xbb)])
+        );
+        // The rendered string is the reversal, never the internal byte order
+        // (internal is `11` then 31 zero bytes).
+        let internal_first = format!("11{}", "00".repeat(31));
+        assert_ne!(
+            json.as_array().expect("array")[0].as_str().expect("str"),
+            internal_first,
+            "a missing reversal would render the internal bytes"
+        );
+
+        // Logical: `{blockhash, logicalts}` objects, same order, times as logicalts.
+        let json =
+            serde_json::to_value(block_hashes_to_wire(hits, true)).expect("serialize logical");
+        let arr = json.as_array().expect("an array of objects");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(sorted_keys(&arr[0]), ["blockhash", "logicalts"]);
+        assert_eq!(
+            arr[0].get("blockhash").and_then(Value::as_str),
+            Some(asym_display(0x11, 0xaa).as_str())
+        );
+        assert_eq!(
+            arr[0].get("logicalts").and_then(Value::as_u64),
+            Some(1_600_000_000)
+        );
+        assert_eq!(
+            arr[1].get("blockhash").and_then(Value::as_str),
+            Some(asym_display(0x22, 0xbb).as_str())
+        );
+        assert_eq!(
+            arr[1].get("logicalts").and_then(Value::as_u64),
+            Some(1_600_000_600)
+        );
     }
 }
