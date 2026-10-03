@@ -1,5 +1,6 @@
-//! The node-RPC / explorer use case, served with every node and chain read the
-//! explorer parses itself relayed to the validator.
+//! The node-RPC / explorer use case, served with transparent address history and
+//! spend lookups composed locally from Zaino's own indexes and every other node
+//! and chain read the explorer parses itself relayed to the validator.
 
 use zaino_core::routing::NodeRpcLocalRouting;
 use zaino_indexes::sets::transparent_history::TransparentHistory;
@@ -40,20 +41,20 @@ use crate::signals::ReadinessCriteria;
 /// volatile window of an output created below the watermark is located — and so
 /// demands no spend source port either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct NodeRpcPassthrough;
+pub struct NodeRpcLocal;
 
-impl Deployment for NodeRpcPassthrough {
+impl Deployment for NodeRpcLocal {
     type UseCase = NodeRpc;
     type Routing = NodeRpcLocalRouting;
     type Indexes = TransparentHistory;
 }
 
-impl RuntimePlan for NodeRpcPassthrough {
+impl RuntimePlan for NodeRpcLocal {
     type Config = IndexedDeploymentConfig;
 
     /// A local index is built, and the deployment is not serving until it has
     /// caught up: readiness gates on the indexer's sync, as the light-wallet
-    /// passthrough deployment does.
+    /// local deployment does.
     const READINESS: ReadinessCriteria = ReadinessCriteria { sync_gated: true };
 }
 
@@ -136,7 +137,7 @@ impl<S> NodeRpcSource for S where
 
 /// The milestone, as a compile-time proof: any validator client meeting
 /// [`NodeRpcSource`], composed with the **real** finalised store and chain-head
-/// tiers under [`NodeRpcPassthrough`], serves the node-RPC use case.
+/// tiers under [`NodeRpcLocal`], serves the node-RPC use case.
 ///
 /// Generic in the source, so the runtime's non-test code names no concrete
 /// validator (a `C: NodeRpcSource` that the engine cannot serve fails this body
@@ -147,7 +148,7 @@ impl<S> NodeRpcSource for S where
 #[cfg(test)]
 fn node_rpc_serves<C: NodeRpcSource>() {
     fn serves<E: zaino_service::use_cases::Serves<NodeRpc>>() {}
-    serves::<crate::IndexedEngine<NodeRpcPassthrough, C>>();
+    serves::<crate::IndexedEngine<NodeRpcLocal, C>>();
 }
 
 #[cfg(test)]
@@ -165,7 +166,7 @@ mod tests {
     /// returns `Arc<ValidatorClient<Arc<ZebraValidator>>>`). Compiling this
     /// instantiation proves both that the production client is a
     /// [`NodeRpcSource`](super::NodeRpcSource) and that the engine it composes
-    /// under [`NodeRpcPassthrough`](super::NodeRpcPassthrough) serves the
+    /// under [`NodeRpcLocal`](super::NodeRpcLocal) serves the
     /// node-RPC use case. A missing capability would fail here with the bound
     /// named; the fix belongs at the source, not behind a wider bound.
     #[test]

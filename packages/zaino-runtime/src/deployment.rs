@@ -20,18 +20,20 @@
 //! transparent index later, are two deployments of one use case. Config
 //! selects a deployment from a closed set; it does not shape one.
 //!
-//! Each deployment is one file under this module holding the marker, its
-//! [`Deployment`] impl, its [`RuntimePlan`](crate::RuntimePlan) impl and the
-//! validator bundle it requires. A deployment that outgrows a file — one that
-//! brings a provider with a dependency nobody else wants — moves to a crate of
-//! its own without changing anything above it, because the seam is these
-//! traits, not a crate boundary.
+//! The module tree groups deployments by use case: `light_wallet` and
+//! `node_rpc` each hold what their deployments share (the common validator
+//! floor) and one file per deployment under them, holding the marker, its
+//! [`Deployment`] impl, its [`RuntimePlan`](crate::RuntimePlan) impl and any
+//! validator ports that deployment adds to the shared floor. A deployment that
+//! outgrows a file — one that brings a provider with a dependency nobody else
+//! wants — moves to a crate of its own without changing anything above it,
+//! because the seam is these traits, not a crate boundary.
 
-mod light_wallet_passthrough;
-mod node_rpc_passthrough;
+mod light_wallet;
+mod node_rpc;
 
-pub use light_wallet_passthrough::{LightWalletPassthrough, LightWalletSource};
-pub use node_rpc_passthrough::{NodeRpcPassthrough, NodeRpcSource};
+pub use light_wallet::{LightWalletLocal, LightWalletSource};
+pub use node_rpc::{NodeRpcLocal, NodeRpcSource};
 
 use zaino_chain_head::ChainHeadBlockSource;
 use zaino_core::chain_view::ChainTier;

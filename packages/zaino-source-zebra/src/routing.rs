@@ -685,7 +685,7 @@ impl SourceLifecycle for ZebraValidator {
 /// `Src` bounds of the engine impls (block, verbose block, transaction,
 /// transaction-view, raw transaction, passthrough address, passthrough
 /// treestate, chain-info, node-status, mempool listing/subscribe, broadcast).
-/// The full `IndexedEngine<NodeRpcPassthrough, _>: Serves<NodeRpc>` assertion —
+/// The full `IndexedEngine<NodeRpcLocal, _>: Serves<NodeRpc>` assertion —
 /// over the real store and head tiers composed with this source — lands with the
 /// node-RPC deployment types (W4).
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! The node-RPC passthrough deployment boots its serving adapter under the
+//! The node-RPC local deployment boots its serving adapter under the
 //! Orchestra — the zainod shape for the explorer use case, following
 //! `full_boot.rs`.
 //!
@@ -12,7 +12,7 @@
 
 use zaino_component::{ComponentName, Lifecycle};
 use zaino_noderpc::{JsonRpcServer, NodeRpc};
-use zaino_runtime::deployment::NodeRpcPassthrough;
+use zaino_runtime::deployment::NodeRpcLocal;
 use zaino_runtime::{
     OrchestraBuilder, ReachabilityProbe, RunComponent, RuntimePlan, ValidatorComponent,
 };
@@ -47,7 +47,7 @@ async fn the_node_rpc_deployment_boots_its_server() {
     );
 
     let orchestra = OrchestraBuilder::new()
-        .with_readiness(NodeRpcPassthrough::READINESS)
+        .with_readiness(NodeRpcLocal::READINESS)
         .boot_observed(validator)
         .await
         .boot(node_rpc)
