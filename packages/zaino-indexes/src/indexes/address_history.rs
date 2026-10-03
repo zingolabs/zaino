@@ -283,6 +283,15 @@ pub enum ReceivesReadError {
         /// The ceiling that was exceeded.
         limit: usize,
     },
+    /// The upper height bound sits at the top of the `u64` height space, which
+    /// has no exclusive successor. No block ever reaches it — the protocol caps
+    /// heights within `u32` — so this is reported rather than silently saturated,
+    /// which would read one height short of the request.
+    #[error("height bound {height} has no representable exclusive successor")]
+    HeightOutOfRange {
+        /// The height whose `+ 1` upper bound overflowed.
+        height: u64,
+    },
 }
 
 /// The on-disk key prefix shared by every entry of one address: the leading 21
@@ -310,13 +319,21 @@ fn lower_bound(addr: AddrId, start: BlockHeight) -> Vec<u8> {
 /// sorts before this (its height field is `<= end < end + 1`), and the next
 /// address's keys sort before it too, so the scan stops exactly after `end`.
 ///
-/// `end` is a block height, always far below `u64::MAX` (the protocol caps it
-/// well within `u32`), so `end + 1` never overflows in practice; `saturating_add`
-/// keeps the function total without an unreachable panic.
-fn upper_bound(addr: AddrId, end: BlockHeight) -> Vec<u8> {
+/// Fails rather than saturates when `end` is `u64::MAX`: that height has no
+/// exclusive successor, and saturating would read one height short of the request
+/// instead of surfacing the impossible bound. No block reaches it (the protocol
+/// caps heights within `u32`), so the error path is never taken in practice — the
+/// invariant is enforced with checked arithmetic rather than asserted in prose.
+fn upper_bound(addr: AddrId, end: BlockHeight) -> Result<Vec<u8>, ReceivesReadError> {
+    let next = end
+        .value()
+        .checked_add(1)
+        .ok_or(ReceivesReadError::HeightOutOfRange {
+            height: end.value(),
+        })?;
     let mut bound = addr_prefix(addr).to_vec();
-    bound.extend_from_slice(&end.value().saturating_add(1).to_be_bytes());
-    bound
+    bound.extend_from_slice(&next.to_be_bytes());
+    Ok(bound)
 }
 
 /// Read the receives for `addr` with height in `[start, end]` (inclusive),
@@ -346,7 +363,7 @@ pub fn read_receives(
     limit: usize,
 ) -> Result<Vec<AddressReceive>, ReceivesReadError> {
     let lower = lower_bound(addr, start);
-    let upper = upper_bound(addr, end);
+    let upper = upper_bound(addr, end)?;
     let mut out = Vec::new();
     let mut decode_err: Option<ReceivesReadError> = None;
     let mut over_limit = false;
@@ -603,7 +620,28 @@ mod tests {
         assert_eq!(lower_bound(addr, BlockHeight::new(5)), key_at(5)[..29]);
         // Upper bound at height 5 == the smallest key at height 6's first 29
         // bytes: everything at height <= 5 sorts before it.
-        assert_eq!(upper_bound(addr, BlockHeight::new(5)), key_at(6)[..29]);
+        assert_eq!(
+            upper_bound(addr, BlockHeight::new(5)).expect("a representable bound"),
+            key_at(6)[..29]
+        );
+    }
+
+    /// The top of the height space has no exclusive successor, so the bound is
+    /// reported as out of range rather than saturated to a bound that would read
+    /// one height short. Unreachable in practice (no block reaches `u64::MAX`),
+    /// but checked rather than assumed.
+    #[test]
+    fn an_upper_bound_at_the_height_ceiling_is_reported_not_saturated() {
+        let addr = AddrId {
+            script_type: ScriptType::P2PKH,
+            hash: [0x11; 20],
+        };
+        let error =
+            upper_bound(addr, BlockHeight::new(u64::MAX)).expect_err("u64::MAX has no successor");
+        assert!(
+            matches!(error, ReceivesReadError::HeightOutOfRange { height } if height == u64::MAX),
+            "got {error:?}"
+        );
     }
 
     /// A [`BackendReader`] that counts how many entries the backend surfaces,

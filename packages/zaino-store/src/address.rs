@@ -377,7 +377,7 @@ fn whole_history_end() -> BlockHeight {
 ///
 /// A ceiling breach is a typed [`AddressReadError::TooLarge`] carrying the queried
 /// address and the limit, so the adapter refuses that one request with a clear
-/// message. The other two cases are classified by what a retry would do, rather
+/// message. The remaining cases are classified by what a retry would do, rather
 /// than collapsed into one transient catch-all:
 ///
 /// - A backend read failure (lock contention, a mid-swap race) may clear on a
@@ -386,6 +386,9 @@ fn whole_history_end() -> BlockHeight {
 ///   bytes do not parse, and a retry re-reads the identical bytes and fails
 ///   identically. It is [`fatal`], so the caller stops rather than retrying a
 ///   read that cannot succeed.
+/// - An out-of-range height bound cannot arise from a real request (block heights
+///   are capped within `u32`, far below the `u64::MAX` that has no successor); it
+///   would indicate a caller passing an impossible bound, so it is [`fatal`] too.
 fn receives_read_error(addr: &TransparentAddress, error: ReceivesReadError) -> AddressReadError {
     match error {
         ReceivesReadError::TooLarge { limit } => AddressReadError::TooLarge {
@@ -397,6 +400,9 @@ fn receives_read_error(addr: &TransparentAddress, error: ReceivesReadError) -> A
         }
         ReceivesReadError::Decode(decode) => {
             fatal(format!("decode address_history entry: {decode}"))
+        }
+        ReceivesReadError::HeightOutOfRange { height } => {
+            fatal(format!("address_history scan bound out of range: {height}"))
         }
     }
 }
