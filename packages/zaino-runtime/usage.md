@@ -25,12 +25,19 @@ wired(D) = Engine<StoreReader<B, D::Indexes>, Nfs, Src, D::Routing>
 ok(D)    ⟺ wired(D): Serves<D::UseCase>
 ```
 
-One use case, several deployments: the light-wallet demand served with
-address history relayed to the validator (`LightWalletPassthrough`) and with a
-local transparent index later are two
-deployments of one use case. Routing and index set are the deployment's
+One use case, several deployments: routing and index set are the deployment's
 choices, not the use case's, so a second implementation of the same demand is
-free to make them differently.
+free to make them differently. The light-wallet demand has one deployment so far,
+`LightWalletPassthrough`: the `TransparentHistory` index set (compact blocks plus
+the address-history, transparent-spends and txid-location indexes), address
+history placed `Local` and everything else relayed to the validator or withheld
+(`LightWalletRouting`), and the `LightWalletSource` bundle. It serves the wallet's
+transparent address reads from its own indexes — so it discloses no queried
+addresses and demands no address source port — while relaying treestate and raw
+transactions. (Its name predates the local address flip and is now a misnomer — a
+rename is deferred because it is the kebab-case deployment value in the live
+`zainod` config. Growing the index set also means a data directory synced under
+the old compact-block set is refused at boot; see the boot-refusal note below.)
 
 The node-RPC / block-explorer demand has one deployment so far,
 `NodeRpcPassthrough`: the `TransparentHistory` index set (compact blocks plus the

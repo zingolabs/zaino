@@ -1,7 +1,7 @@
 //! End-to-end proof: a wallet-shaped `CompactTxStreamer` client streams real
 //! compact blocks — composed on read from the index — over a real tonic server.
 //!
-//! Builds the current-zaino index set in-process over an in-memory backend from
+//! Builds the transparent-history index set in-process over an in-memory backend from
 //! shielded mock blocks (so the served `ChainMetadata` tree sizes are the
 //! indexer's cumulative counts, not the source's), wraps it in the store's
 //! compose-on-read `StoreReader`, composes it with an empty head and an idle
@@ -22,7 +22,8 @@ use zaino_core::testing::StubNonFinalised;
 use zaino_core::Engine;
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
 use zaino_indexes::index_set::IndexSet;
-use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino};
+use zaino_indexes::sets::current_zaino::context_from_block;
+use zaino_indexes::sets::transparent_history::TransparentHistory;
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
@@ -87,7 +88,7 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
     let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
 
     let mut engine = SyncEngine::from_pipelines(
-        CurrentZaino::pipelines(),
+        TransparentHistory::pipelines(),
         backend.clone(),
         EngineConfig {
             batch_size: 8,
@@ -119,7 +120,7 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
 /// is not the light profile — it has no treestate or raw-transaction read —
 /// so it is composed exactly as the daemon composes it.
 type ServedEngine = Engine<
-    StoreReader<InMemoryBackend, CurrentZaino>,
+    StoreReader<InMemoryBackend, TransparentHistory>,
     StubNonFinalised,
     ValidatorClient<MockChain>,
     LightWalletRouting,
@@ -129,7 +130,7 @@ type ServedEngine = Engine<
 /// address and a cancel handle. The server notifies readiness after it binds,
 /// so the caller can connect without racing the bind.
 async fn serve(
-    store: StoreReader<InMemoryBackend, CurrentZaino>,
+    store: StoreReader<InMemoryBackend, TransparentHistory>,
 ) -> (SocketAddr, CancellationToken) {
     // Discover a free port, then let the server rebind it.
     let addr: SocketAddr = std::net::TcpListener::bind("127.0.0.1:0")
@@ -170,7 +171,7 @@ async fn serve(
 async fn a_client_streams_composed_compact_blocks_over_grpc() {
     let backend = InMemoryBackend::new();
     index_chain(&backend, 2).await;
-    let store = StoreReader::<_, CurrentZaino>::new(Arc::new(backend));
+    let store = StoreReader::<_, TransparentHistory>::new(Arc::new(backend));
 
     let (addr, cancel) = serve(store).await;
     let mut client = CompactTxStreamerClient::connect(format!("http://{addr}"))

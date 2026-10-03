@@ -17,9 +17,34 @@
 //! # Presence is checked at the wiring
 //!
 //! The light table over the light-wallet index set serves the light-wallet
-//! use case:
+//! use case — the set builds the transparent history the `Local` address
+//! read composes from:
 //!
 //! ```
+//! use zaino_indexes::sets::transparent_history::TransparentHistory;
+//! use zaino_persistence::in_memory::InMemoryBackend;
+//! use zaino_core::routing::LightWalletRouting;
+//! use zaino_service::testing::MockIndexerService;
+//! use zaino_service::LightWalletService;
+//! use zaino_source::mock::MockChain;
+//! use zaino_source::ValidatorClient;
+//! use zaino_store::StoreReader;
+//! use zaino_core::Engine;
+//!
+//! fn wired<S: LightWalletService>() {}
+//! wired::<Engine<
+//!     StoreReader<InMemoryBackend, TransparentHistory>,
+//!     MockIndexerService,
+//!     ValidatorClient<MockChain>,
+//!     LightWalletRouting,
+//! >>();
+//! ```
+//!
+//! Wire that same routing over the compact-block set instead and it is not —
+//! `CompactBlocks` does not build `address_history`, so the store has no local
+//! address read for the composer to merge with the head's:
+//!
+//! ```compile_fail,E0277
 //! use zaino_indexes::sets::compact_blocks::CompactBlocks;
 //! use zaino_persistence::in_memory::InMemoryBackend;
 //! use zaino_core::routing::LightWalletRouting;
@@ -36,38 +61,6 @@
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
 //!     LightWalletRouting,
-//! >>();
-//! ```
-//!
-//! Route address history locally instead, over the same store, and it is not —
-//! `CompactBlocks` does not build `address_history`, so the store has no local
-//! address read for the composer to merge with the head's:
-//!
-//! ```compile_fail,E0277
-//! use zaino_indexes::sets::compact_blocks::CompactBlocks;
-//! use zaino_persistence::in_memory::InMemoryBackend;
-//! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
-//! use zaino_service::testing::MockIndexerService;
-//! use zaino_service::LightWalletService;
-//! use zaino_source::mock::MockChain;
-//! use zaino_source::ValidatorClient;
-//! use zaino_store::StoreReader;
-//! use zaino_core::Engine;
-//!
-//! struct AddressLocal;
-//! impl Routing for AddressLocal {
-//!     type Address = Local;
-//!     type Treestate = Passthrough;
-//!     type Spend = Withheld;
-//!     type TransactionLocation = Withheld;
-//! }
-//!
-//! fn wired<S: LightWalletService>() {}
-//! wired::<Engine<
-//!     StoreReader<InMemoryBackend, CompactBlocks>,
-//!     MockIndexerService,
-//!     ValidatorClient<MockChain>,
-//!     AddressLocal,
 //! >>();
 //! ```
 //!

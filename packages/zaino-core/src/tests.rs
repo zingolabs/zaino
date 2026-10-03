@@ -10,7 +10,7 @@
 use crate::routing::LightWalletRouting;
 use crate::testing::{StubNonFinalised, stub_compact_block};
 use futures::stream::StreamExt;
-use zaino_service::error::{AddressReadError, BroadcastRejection, TreestateReadError};
+use zaino_service::error::{BroadcastRejection, TreestateReadError};
 use zaino_service::testing::{MockChain as MockService, MockIndexerService};
 use zaino_service::{
     AddressRead, Broadcast, MempoolContent, MempoolSubscribe, RawTransactionRead, ReadBudget,
@@ -180,71 +180,45 @@ async fn an_unreachable_validator_fails_the_mempool_summary() {
 // The acceptance gate for the full light-wallet read-set: under `LightWalletRouting`
 // the composed engine serves every read `LightWalletService` demands — none
 // reporting itself `NotServiceable`. The per-cap tests below pin each
-// capability's placement.
+// capability's placement. The finalised tier is the service mock, whose snapshot
+// serves the local transparent-address reads `Address = Local` now routes to the
+// tiers rather than the validator.
 #[tokio::test]
 async fn light_serve_conformance_over_a_provisioned_source() {
-    let engine = engine_with(MockChain::new());
+    let engine = engine_over_a_serviceable_store(Some(1));
     zaino_service::conformance::assert_light_wallet_conformance(&engine).await;
 }
 
+/// Address history is served from the local tiers, not relayed. The validator is
+/// seeded with a txid that would surface only under a passthrough placement, while
+/// the finalised tier holds a different one; a `Local` read returns the local
+/// tier's answer and carries the height the local index knows — proof the read
+/// does not pass through, as `LightWalletRouting::Address = Local` says.
 #[tokio::test]
-async fn address_reads_are_remote_under_light_routing() {
-    // No rejection seeded: the mock answers empty (no-match) results. An `Ok` —
-    // not a `NotServiceable` stub — proves each address read routes to the
-    // passthrough provider, as `LightWalletRouting::Address = Passthrough` says.
-    let engine = engine_with(MockChain::new());
-    let snapshot = engine.snapshot().await.expect("snapshot acquired");
-    let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
-    AddressRead::balance(
-        &snapshot,
-        &addr,
-        range(0, 10),
-        &mut ReadBudget::for_request(),
-    )
-    .await
-    .expect("balance served");
-    assert!(
-        AddressRead::unspent_outpoints(&snapshot, &addr, &mut ReadBudget::for_request())
-            .await
-            .expect("utxos served")
-            .is_empty()
+async fn address_reads_are_local_under_light_routing() {
+    let local_txid = TransactionId::from([0x55; 32]);
+    let relayed_txid = TransactionId::from([0x99; 32]);
+    let fs = MockIndexerService::new(MockService {
+        tip: Some(BlockRef {
+            height: height(5),
+            hash: [0u8; 32].into(),
+        }),
+        txids: vec![local_txid],
+        ..MockService::default()
+    });
+    let engine: Engine<
+        MockIndexerService,
+        StubNonFinalised,
+        ValidatorClient<MockChain>,
+        LightWalletRouting,
+    > = Engine::new(
+        fs,
+        StubNonFinalised::empty(),
+        ValidatorClient::new(
+            MockChain::new().with_address_txids(vec![relayed_txid]),
+            RetryPolicy::default(),
+        ),
     );
-    assert!(
-        AddressRead::tx_ids(
-            &snapshot,
-            &addr,
-            range(0, 10),
-            &mut ReadBudget::for_request()
-        )
-        .await
-        .expect("txids served")
-        .is_empty()
-    );
-    assert!(
-        AddressRead::deltas(
-            &snapshot,
-            &addr,
-            range(0, 10),
-            &mut ReadBudget::for_request()
-        )
-        .await
-        .expect("deltas served")
-        .is_empty()
-    );
-}
-
-/// Under passthrough routing the validator's `getaddresstxids` carries no
-/// heights, so every pair's height is `None` — the honest "location unknown",
-/// never a fabricated value. The source is scripted with two txids so the
-/// assertion is not vacuous.
-#[tokio::test]
-async fn passthrough_tx_ids_report_no_height() {
-    use zaino_primitives::types::TransactionId;
-    let txids = vec![
-        TransactionId::from([0x11; 32]),
-        TransactionId::from([0x22; 32]),
-    ];
-    let engine = engine_with(MockChain::new().with_address_txids(txids.clone()));
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let addr = TransparentAddress::new("t1ExampleProbeAddress0000000000000000".to_string());
     let located = AddressRead::tx_ids(
@@ -256,33 +230,15 @@ async fn passthrough_tx_ids_report_no_height() {
     .await
     .expect("txids served");
     let returned: Vec<TransactionId> = located.iter().map(|(_, _, txid)| *txid).collect();
-    assert_eq!(returned, txids, "the validator's txids pass through");
-    assert!(
-        located
-            .iter()
-            .all(|(height, position, _)| height.is_none() && position.is_none()),
-        "a passthrough source reports neither height nor position, so each is None, not fabricated"
+    assert_eq!(
+        returned,
+        vec![local_txid],
+        "the local tier answers; the validator's relayed txid never reaches the read"
     );
-}
-
-#[tokio::test]
-async fn address_reads_map_an_invalid_address_to_fatal() {
-    let engine = engine_with(MockChain::new().reject_addresses("bad t-addr"));
-    let snapshot = engine.snapshot().await.expect("snapshot acquired");
-    let addr = TransparentAddress::new("bogus".to_string());
-    match AddressRead::balance(
-        &snapshot,
-        &addr,
-        range(0, 10),
-        &mut ReadBudget::for_request(),
-    )
-    .await
-    {
-        Err(AddressReadError::Fatal(msg)) => {
-            assert!(msg.contains("invalid address"), "got: {msg}")
-        }
-        other => panic!("expected a definitive invalid-address failure, got {other:?}"),
-    }
+    assert!(
+        located.iter().all(|(height, _, _)| height.is_some()),
+        "a local read carries the height the index knows, unlike a passthrough one"
+    );
 }
 
 #[tokio::test]
@@ -383,8 +339,11 @@ fn the_manifest_is_derived_from_the_routing_and_the_store() {
         manifest.get(Capability::Blocks),
         Answerable::ToHeight(height(42))
     );
+    assert_eq!(
+        manifest.get(Capability::AddressHistory),
+        Answerable::ToHeight(height(42))
+    );
     // Passthrough: live, the validator answers.
-    assert_eq!(manifest.get(Capability::AddressHistory), Answerable::Live);
     assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
     assert_eq!(manifest.get(Capability::RawTransaction), Answerable::Live);
     assert_eq!(manifest.get(Capability::Broadcast), Answerable::Live);
@@ -400,6 +359,8 @@ fn the_manifest_is_derived_from_the_routing_and_the_store() {
 fn a_store_with_no_progress_makes_local_capabilities_not_yet() {
     let manifest = engine_over_a_serviceable_store(None).serviceability();
     assert_eq!(manifest.get(Capability::Blocks), Answerable::NotYet);
+    // Address history is local too, so it follows the store's progress.
+    assert_eq!(manifest.get(Capability::AddressHistory), Answerable::NotYet);
     // Passthrough and withheld are unaffected by the store's progress.
     assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
     assert_eq!(manifest.get(Capability::SpendStatus), Answerable::Absent);
@@ -899,6 +860,27 @@ mod transaction_reads {
                 MockIndexerService,
                 ValidatorClient<MockChain>,
                 NodeRpcRouting,
+            >,
+        >();
+    }
+
+    /// The light-wallet counterpart: under `LightWalletRouting` the composed
+    /// engine satisfies `LightWalletService`. Address history is now `Local`, so
+    /// this holds only because both tiers' snapshots carry the address reads the
+    /// placement bounds on (`AddressRead` on the finalised tier, `AddressReceiveRead`
+    /// on the non-finalised one) — the bound a passthrough placement did not need.
+    /// Compile-time only.
+    #[test]
+    fn the_engine_satisfies_light_wallet_service() {
+        use zaino_service::LightWalletService;
+
+        fn assert_light_wallet<T: LightWalletService>() {}
+        assert_light_wallet::<
+            Engine<
+                MockIndexerService,
+                MockIndexerService,
+                ValidatorClient<MockChain>,
+                LightWalletRouting,
             >,
         >();
     }

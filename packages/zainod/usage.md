@@ -26,7 +26,13 @@ public bind belongs behind a boundary the deployment controls.
 
 A deployment is a type in `zaino_runtime::deployment` binding the use case it
 serves, the routing the engine is composed under and the index set the store
-builds; see the runtime's guide. `indexer::select_deployment` is the one
+builds; see the runtime's guide. Both deployments build the `TransparentHistory`
+index set and serve transparent address history locally — `light-wallet-passthrough`
+keeps the wallet's queried addresses off the validator, `node-rpc-passthrough`
+answers `getaddressdeltas`, which a plain-RPC validator cannot. A data directory
+synced under an earlier (compact-block-only) build is refused at boot by the
+index-coverage guard; point the deployment at a fresh, empty data directory and
+resync from genesis. `indexer::select_deployment` is the one
 `match` over `DeploymentKind`: each arm names a deployment and the serving
 adapter that speaks its use case's protocol, hands both to the runtime's
 `boot_indexed`, and nothing else. Adding a deployment is adding an arm; the

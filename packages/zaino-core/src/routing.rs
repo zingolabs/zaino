@@ -120,19 +120,34 @@ pub trait Routing: Send + Sync + 'static {
     }
 }
 
-/// The lightwalletd-shaped routing: compact blocks local, everything the
-/// wallet parses itself passed through, and the node/explorer reads withheld.
+/// The lightwalletd-shaped routing: compact blocks and transparent address
+/// history served **locally** from Zaino's own indexes, treestate relayed live
+/// to the validator, and the node/explorer-only reads withheld.
 ///
-/// Address history is passthrough *for now* — it discloses queried addresses to
-/// the validator, which a local transparent index exists to avoid. Flipping
-/// it to [`Local`] is a one-line change here and a index set that
-/// builds `address_history`; the compiler names anything else that is
-/// missing.
+/// Address history is [`Local`]: the light wallet's `GetTaddressBalance`,
+/// `GetAddressUtxos` and `GetTaddressTxids` are answered from the finalised
+/// store's transparent index and the non-finalised window — the store reports
+/// its half whole, the window reports the receives it holds and which supplied
+/// outpoints it saw spent, and the composer threads the two across the watermark.
+/// Serving it locally means the wallet's queried addresses are never disclosed to
+/// the validator, the privacy cost a local transparent index exists to remove.
+///
+/// Spend status stays [`Withheld`]: the light-wallet read-set never reads an
+/// outpoint's spend state through the engine `Spend` placement — the window's
+/// spend data reaches the address read through [`AddressReceiveRead`], not that
+/// placement — so withholding it keeps the manifest honest, a capability no
+/// served method consumes being `Absent`, not a false `Live`. Transaction
+/// location is withheld for the same reason: no engine read dispatches on it.
+///
+/// Treestate stays [`Passthrough`]: the wallet witnesses against it, but no local
+/// treestate index is built on any tier, so it is relayed to the validator.
+///
+/// [`AddressReceiveRead`]: zaino_service::AddressReceiveRead
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LightWalletRouting;
 
 impl Routing for LightWalletRouting {
-    type Address = Passthrough;
+    type Address = Local;
     type Treestate = Passthrough;
     type Spend = Withheld;
     type TransactionLocation = Withheld;
@@ -212,15 +227,18 @@ mod tests {
     fn light_routing_places_every_capability() {
         use strum::IntoEnumIterator;
         for capability in Capability::iter() {
-            // Exhaustiveness is rustc's; this pins the light table's shape.
+            // Exhaustiveness is rustc's; this pins the light table's shape — in
+            // particular that address history is served locally, and that spend
+            // status and transaction location are withheld, not passed through.
             let placement = LightWalletRouting::placement(capability);
             match capability {
-                Capability::Blocks => assert_eq!(placement, PlacementKind::Local),
+                Capability::Blocks | Capability::AddressHistory => {
+                    assert_eq!(placement, PlacementKind::Local)
+                }
                 Capability::SpendStatus | Capability::TransactionLocation => {
                     assert_eq!(placement, PlacementKind::Withheld)
                 }
-                Capability::AddressHistory
-                | Capability::Treestate
+                Capability::Treestate
                 | Capability::SubtreeRoots
                 | Capability::RawTransaction
                 | Capability::Mempool
