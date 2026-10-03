@@ -15,14 +15,18 @@ use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use zaino_lightserve::{GrpcServer, LightServe};
+use zaino_noderpc::{JsonRpcServer, NodeRpc};
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_runtime::config::IndexedDeploymentConfig;
-use zaino_runtime::deployment::{LightWalletPassthrough, LightWalletSource};
+use zaino_runtime::deployment::{
+    LightWalletPassthrough, LightWalletSource, NodeRpcPassthrough, NodeRpcSource,
+};
 use zaino_runtime::{boot_indexed, Orchestra};
 use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_source_zebra::ZebraValidator;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
+use zcash_protocol::consensus::Network as ZcashNetwork;
 
 use crate::config::{DaemonConfig, DeploymentKind, Network, SourceMode};
 use crate::error::IndexerError;
@@ -207,23 +211,38 @@ async fn select_deployment<C>(
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError>
 where
     // Each arm names what its deployment requires of the validator, as one
-    // bundle; the demand its adapter carries then follows from the impls.
-    C: LightWalletSource,
+    // bundle; the demand its adapter carries then follows from the impls. The
+    // bound is the union over the arms — the shared client answers both.
+    C: LightWalletSource + NodeRpcSource,
 {
     let runtime = IndexedDeploymentConfig {
         store: config.store.clone(),
         indexer: config.indexer.clone(),
     };
     let grpc = config.serve.grpc_listen_address;
+    let jsonrpc = config.serve.jsonrpc_listen_address;
     let orchestra = match config.deployment {
         DeploymentKind::LightWalletPassthrough => {
-            boot_indexed::<LightWalletPassthrough, _, C>(client, &runtime, |engine| {
-                GrpcServer::new(LightServe::new(engine), grpc)
+            let orchestra =
+                boot_indexed::<LightWalletPassthrough, _, C>(client, &runtime, |engine| {
+                    GrpcServer::new(LightServe::new(engine), grpc)
+                })
+                .await?;
+            info!(grpc = %grpc, "Zaino runtime booted");
+            orchestra
+        }
+        DeploymentKind::NodeRpcPassthrough => {
+            // `validateaddress` / `z_validateaddress` are pure functions of an
+            // address and a network, so the serving adapter carries the network.
+            let network = to_zcash_network(config.network);
+            let orchestra = boot_indexed::<NodeRpcPassthrough, _, C>(client, &runtime, |engine| {
+                JsonRpcServer::new(NodeRpc::new(engine, network), jsonrpc)
             })
-            .await?
+            .await?;
+            info!(jsonrpc = %jsonrpc, "Zaino runtime booted");
+            orchestra
         }
     };
-    info!(grpc = %grpc, "Zaino runtime booted");
     Ok(tokio::spawn(run_until_exit(orchestra)))
 }
 
@@ -278,6 +297,21 @@ fn to_zebra_network(network: Network) -> zebra_chain::parameters::Network {
         Network::Mainnet => Zebra::Mainnet,
         Network::PubTestnet => Zebra::new_default_testnet(),
         Network::Regtest => Zebra::new_regtest(Default::default()),
+    }
+}
+
+/// Map the daemon's network to `zcash_protocol`'s consensus network, for the
+/// address-validation RPCs the node-RPC adapter answers (`validateaddress`,
+/// `z_validateaddress`, `z_listunifiedreceivers`).
+///
+/// `zcash_protocol::consensus::Network` has only `MainNetwork` and
+/// `TestNetwork`; it cannot express regtest, which shares the testnet address
+/// encoding, so `Regtest` maps to `TestNetwork`. The explorer deploy runs on
+/// mainnet, where the mapping is exact.
+fn to_zcash_network(network: Network) -> ZcashNetwork {
+    match network {
+        Network::Mainnet => ZcashNetwork::MainNetwork,
+        Network::PubTestnet | Network::Regtest => ZcashNetwork::TestNetwork,
     }
 }
 

@@ -81,6 +81,8 @@ metrics-exporter-prometheus = { workspace = true, optional = true }
 # Utility
 thiserror = { workspace = true }
 zaino-logging = { version = "0.1.0", path = "../zaino-logging" }
+zaino-noderpc = { version = "0.1.0", path = "../zaino-noderpc" }
+zcash_protocol.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

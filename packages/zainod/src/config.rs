@@ -94,18 +94,40 @@ impl Default for SourceMode {
     }
 }
 
-/// The wallet-facing gRPC server.
+/// The serving sockets.
+///
+/// Which one is used follows from the selected [`DeploymentKind`]: the
+/// light-wallet deployment serves the `CompactTxStreamer` gRPC on
+/// `grpc_listen_address`, and the node-RPC / explorer deployment serves the
+/// Zcash JSON-RPC on `jsonrpc_listen_address`. Both default to loopback; a
+/// deployment binds the one its protocol needs and leaves the other at its
+/// (unused) default.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ServeConfig {
-    /// Address the `CompactTxStreamer` gRPC server listens on.
+    /// Address the `CompactTxStreamer` gRPC server listens on (the light-wallet
+    /// deployment).
     pub grpc_listen_address: SocketAddr,
+    /// Address the Zcash node JSON-RPC server listens on (the node-RPC /
+    /// explorer deployment). Defaults to the zcashd JSON-RPC port on loopback.
+    ///
+    /// Binding a non-loopback address is permitted: the greenfield daemon binds
+    /// the configured address directly, exactly as the gRPC side does, because
+    /// the default-secure TLS / public-bind posture is not yet ported for
+    /// either server (the `allow_unencrypted_public_json_rpc_bind` /
+    /// `no_tls_*` build features are compat stubs that gate no behaviour). An
+    /// in-cluster deploy therefore binds `0.0.0.0` through
+    /// `ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS` with no feature build, relying on
+    /// the cluster Service boundary rather than on a bind refusal this stack
+    /// does not yet implement.
+    pub jsonrpc_listen_address: SocketAddr,
 }
 
 impl Default for ServeConfig {
     fn default() -> Self {
         Self {
             grpc_listen_address: "127.0.0.1:8137".parse().expect("valid default addr"),
+            jsonrpc_listen_address: "127.0.0.1:8232".parse().expect("valid default addr"),
         }
     }
 }
@@ -120,9 +142,17 @@ impl Default for ServeConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum DeploymentKind {
     /// The light-wallet use case over the compact-block index set, with
-    /// everything the wallet parses itself relayed to the validator.
+    /// everything the wallet parses itself relayed to the validator. Serves the
+    /// `CompactTxStreamer` gRPC on `serve.grpc_listen_address`.
     #[default]
     LightWalletPassthrough,
+    /// The node-RPC / explorer use case over the same compact-block index set,
+    /// with full and verbose blocks, decoded transactions, the chain-info
+    /// aggregate, transparent address history, the node-status reads and the
+    /// mempool listing relayed to the validator; spend status and transaction
+    /// location withheld. Serves the Zcash JSON-RPC on
+    /// `serve.jsonrpc_listen_address`.
+    NodeRpcPassthrough,
 }
 
 /// The zainod daemon configuration.
@@ -242,6 +272,7 @@ pub(crate) fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
         },
         serve: ServeConfig {
             grpc_listen_address,
+            ..ServeConfig::default()
         },
         indexer: IndexerConfig {
             // A regtest chain is a handful of blocks; index right to the tip
@@ -398,6 +429,7 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
         },
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
+            ..ServeConfig::default()
         },
         indexer: IndexerConfig::default(),
     }
@@ -459,6 +491,7 @@ pub fn mainnet_rpc_fixture() -> DaemonConfig {
         },
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
+            ..ServeConfig::default()
         },
         indexer: IndexerConfig {
             fetch: fixture_fetch_strategy(),
@@ -625,6 +658,50 @@ path = "/tmp/zaino-store"
         let config = load_config(&path).expect("load");
         std::env::remove_var("ZAINO_INDEXER__BATCH_SIZE");
         assert_eq!(config.indexer.batch_size, 42);
+    }
+
+    /// The cluster deploy selects the node-RPC deployment and its JSON-RPC bind
+    /// by env alone (`zaino-env` becomes `--set zaino.extraEnv.*`). This pins
+    /// the exact keys the deploy recipe sets: `ZAINO_DEPLOYMENT` for the
+    /// top-level `deployment` field (kebab-case value), and
+    /// `ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS` for the nested
+    /// `serve.jsonrpc_listen_address` (the `__` separator crosses the one
+    /// nesting level). Verified end to end through `load_config`, not just a
+    /// TOML parse, so the env layering is what is tested.
+    #[test]
+    fn env_selects_the_node_rpc_deployment_and_jsonrpc_bind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A light-wallet default on disk; env must flip it to node-RPC and bind
+        // the public JSON-RPC address an in-cluster deploy uses.
+        let toml = r#"
+network = "Mainnet"
+
+[source]
+mode = "rpc"
+jsonrpc_address = "127.0.0.1:8232"
+
+[store]
+path = "/tmp/zaino-store"
+"#;
+        let path = write(&dir, "env-node-rpc.toml", toml);
+        // nextest runs each test in its own process, so these do not leak across
+        // tests; removed promptly regardless.
+        std::env::set_var("ZAINO_DEPLOYMENT", "node-rpc-passthrough");
+        std::env::set_var("ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS", "0.0.0.0:8232");
+        let config = load_config(&path);
+        std::env::remove_var("ZAINO_DEPLOYMENT");
+        std::env::remove_var("ZAINO_SERVE__JSONRPC_LISTEN_ADDRESS");
+        let config = config.expect("load");
+        assert_eq!(config.deployment, DeploymentKind::NodeRpcPassthrough);
+        assert_eq!(
+            config.serve.jsonrpc_listen_address,
+            "0.0.0.0:8232".parse().expect("valid addr"),
+        );
+        // The gRPC address the env did not touch keeps its default.
+        assert_eq!(
+            config.serve.grpc_listen_address,
+            ServeConfig::default().grpc_listen_address,
+        );
     }
 
     #[test]

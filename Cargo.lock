@@ -6510,6 +6510,7 @@ dependencies = [
  "zaino-common",
  "zaino-lightserve",
  "zaino-logging",
+ "zaino-noderpc",
  "zaino-rpc",
  "zaino-runtime",
  "zaino-source",
@@ -6517,6 +6518,7 @@ dependencies = [
  "zaino-source-zebra-readstate",
  "zaino-source-zebra-rpc",
  "zaino-status",
+ "zcash_protocol",
  "zebra-chain",
 ]
 
