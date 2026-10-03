@@ -37,8 +37,33 @@ pub struct TransactionDetail {
     /// Coinbase-ness is a fact about the transaction's one input, not about its
     /// position in a block: a coinbase fetched alone is still a coinbase.
     pub coinbase: Option<CoinbaseInput>,
+    /// The signature script and sequence of each non-coinbase transparent input,
+    /// in the order of
+    /// [`Transaction::transparent.inputs`](super::TransparentData::inputs).
+    ///
+    /// The indexing [`TransparentInput`](super::TransparentInput) keeps only the
+    /// spent outpoint, because that is all an index keys on. The explorer's
+    /// `vin[].scriptSig` / `vin[].sequence` need the script and sequence too, so
+    /// they live here beside the indexing shape — the coinbase precedent, which
+    /// keeps its one input's script in [`CoinbaseInput`] rather than widening the
+    /// indexing input. Empty on a coinbase transaction, whose input is the
+    /// `coinbase` field above.
+    pub transparent_inputs: Vec<TransparentInputDetail>,
     /// Sprout pool movements, one per JoinSplit, in transaction order.
     pub joinsplits: Vec<JoinSplitValues>,
+}
+
+/// The signature script and sequence of one non-coinbase transparent input.
+///
+/// Beside the indexing [`TransparentInput`](super::TransparentInput), which keeps
+/// only the spent outpoint. These are the facts the explorer's `vin[].scriptSig`
+/// and `vin[].sequence` need and an index does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransparentInputDetail {
+    /// The input's signature script (`scriptSig`).
+    pub script_sig: Script,
+    /// The input's sequence number.
+    pub sequence: u32,
 }
 
 /// The input of a coinbase transaction.

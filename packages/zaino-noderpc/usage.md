@@ -59,9 +59,14 @@ Key points of the shape:
 - A coinbase renders `vin: [{coinbase: <scriptSig hex>, sequence}]`; `coinbase`
   is a **string** (the explorer decodes it), not a flag. Coinbase-ness comes from
   `TransactionDetail.coinbase`, not block position.
-- A spend renders `{txid, vout, value, valueSat, address?}`, with `value` and
-  `address` taken from the **resolved** output it spends. `address` is absent
-  when the spent script is non-standard.
+- A spend renders `{txid, vout, scriptSig{asm, hex}, sequence, value, valueSat,
+  address?}`. `scriptSig` and `sequence` come from the transaction's own input
+  (threaded through `TransactionDetail.transparent_inputs`, a sibling of the
+  indexing input shape); `value` and `address` come from the **resolved** output
+  it spends, `address` absent when that script is non-standard.
+- The whole transaction carries `hex`, its raw consensus bytes, plumbed through
+  the decoded read (`DecodedTransaction.raw` / `DetailedTransaction.raw` →
+  `TransactionView.raw`) rather than refetched.
 - Each `vout` carries `scriptPubKey: {asm, hex, reqSigs?, addresses?, type?}`;
   `asm` is `zaino_address::script_to_asm` (best-effort for non-standard scripts),
   and `reqSigs`, `addresses` (a one-element array) and `type`

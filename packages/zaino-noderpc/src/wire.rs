@@ -30,7 +30,7 @@ use crate::wire::response::{
     AddressBalanceResponse, AddressDeltaEntry, BlockHeaderResponse, BlockResponse,
     BlockchainInfoResponse, JoinSplitObject, MempoolEntryObject, MiningInfoResponse,
     NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry,
-    ScriptPubKey, ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput,
+    ScriptPubKey, ScriptSig, ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput,
     TransactionObject, TransactionOutput, TreePoolSize, TreesResponse, UnifiedReceiversResponse,
     ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
 };
@@ -374,17 +374,52 @@ fn inputs_to_wire(view: &TransactionView, network: &Network) -> Vec<TransactionI
             sequence: coinbase.sequence,
         }];
     }
+    // The resolved inputs (value + spent script) and the input details (scriptSig
+    // + sequence) are both in `transaction.transparent.inputs` order, so they zip
+    // 1:1. A spend with no matching detail renders an empty scriptSig rather than
+    // dropping the input — detail should always be present, but the input is still
+    // real if it is not.
     view.inputs
         .iter()
-        .map(|input| TransactionInput::Spend {
-            txid: txid_to_display(input.outpoint.prev_txid),
-            vout: input.outpoint.prev_index,
-            value: zatoshis_to_zec(input.spent.value),
-            value_sat: input.spent.value.as_u64(),
-            address: {
-                let script: Vec<u8> = input.spent.script.clone().into();
-                transparent_address_from_script(&script, network).map(|decoded| decoded.address)
-            },
+        .zip(
+            view.detail
+                .transparent_inputs
+                .iter()
+                .map(Some)
+                .chain(std::iter::repeat(None)),
+        )
+        .map(|(input, detail)| {
+            let (script_sig, sequence) = match detail {
+                Some(detail) => {
+                    let bytes: Vec<u8> = detail.script_sig.clone().into();
+                    (
+                        ScriptSig {
+                            asm: script_to_asm(&bytes, true),
+                            hex: bytes_to_hex(&bytes),
+                        },
+                        detail.sequence,
+                    )
+                }
+                None => (
+                    ScriptSig {
+                        asm: String::new(),
+                        hex: String::new(),
+                    },
+                    0,
+                ),
+            };
+            TransactionInput::Spend {
+                txid: txid_to_display(input.outpoint.prev_txid),
+                vout: input.outpoint.prev_index,
+                script_sig,
+                sequence,
+                value: zatoshis_to_zec(input.spent.value),
+                value_sat: input.spent.value.as_u64(),
+                address: {
+                    let script: Vec<u8> = input.spent.script.clone().into();
+                    transparent_address_from_script(&script, network).map(|decoded| decoded.address)
+                },
+            }
         })
         .collect()
 }
@@ -483,6 +518,7 @@ pub(crate) fn transaction_view_to_wire(
         locktime: detail.lock_time,
         expiry_height: detail.expiry_height.map(Into::into),
         size: detail.size,
+        hex: bytes_to_hex(&view.raw),
         vin: inputs_to_wire(view, network),
         vout: outputs_to_wire(transaction, network),
         vjoinsplit,
@@ -739,7 +775,8 @@ mod tests {
         EquihashSolution, Height, JoinSplitValues, NetworkUpgradeInfo, NetworkUpgradeStatus,
         NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput,
         SaplingSpend, Script, SignedZatoshis, Transaction, TransactionDetail, TransactionId,
-        TransparentData, TransparentInput, TransparentOutput, TreeSize, ValuePoolBalance, Zatoshis,
+        TransparentData, TransparentInput, TransparentInputDetail, TransparentOutput, TreeSize,
+        ValuePoolBalance, Zatoshis,
     };
     use zaino_service::MempoolEntry;
     use zaino_service::{BlockTransactionViews, ResolvedInput, TransactionView};
@@ -1243,6 +1280,7 @@ mod tests {
             expiry_height: overwintered.then(|| Height::try_from(0).expect("valid height")),
             size: 211,
             coinbase: None,
+            transparent_inputs: Vec::new(),
             joinsplits: Vec::new(),
         }
     }
@@ -1256,6 +1294,7 @@ mod tests {
             transaction,
             detail,
             inputs,
+            raw: vec![0xDE, 0xAD, 0xBE, 0xEF],
         }
     }
 
@@ -1288,6 +1327,7 @@ mod tests {
             sorted_keys(&json),
             [
                 "expiryheight",
+                "hex",
                 "locktime",
                 "orchard",
                 "overwintered",
@@ -1405,8 +1445,17 @@ mod tests {
             },
         };
 
+        // The input detail carries the scriptSig and sequence, aligned with the
+        // one resolved input. The scriptSig is a minimal DER signature push plus a
+        // sighash-type byte, so the rendered asm exercises the sighash decode.
+        let mut detail = base_detail(4);
+        detail.transparent_inputs = vec![TransparentInputDetail {
+            script_sig: Script::new(vec![0x05, 0x30, 0x02, 0x01, 0x02, 0x01]),
+            sequence: 0xffff_fffe,
+        }];
+
         let json = serde_json::to_value(transaction_view_to_wire(
-            &view(tx, base_detail(4), vec![spent]),
+            &view(tx, detail, vec![spent]),
             &NET,
         ))
         .expect("serialize");
@@ -1415,7 +1464,15 @@ mod tests {
         let vin = obj.get("vin").and_then(Value::as_array).expect("vin");
         assert_eq!(
             sorted_keys(&vin[0]),
-            ["address", "txid", "value", "valueSat", "vout"]
+            [
+                "address",
+                "scriptSig",
+                "sequence",
+                "txid",
+                "value",
+                "valueSat",
+                "vout"
+            ]
         );
         let input = vin[0].as_object().expect("an object");
         assert_eq!(
@@ -1423,6 +1480,23 @@ mod tests {
             Some("01".repeat(32).as_str())
         );
         assert_eq!(input.get("vout").and_then(Value::as_u64), Some(3));
+        assert_eq!(
+            input.get("sequence").and_then(Value::as_u64),
+            Some(0xffff_fffe)
+        );
+        let script_sig = input
+            .get("scriptSig")
+            .and_then(Value::as_object)
+            .expect("scriptSig");
+        assert_eq!(
+            script_sig.get("hex").and_then(Value::as_str),
+            Some("053002010201")
+        );
+        // The push's trailing 0x01 is decoded as the ALL sighash type.
+        assert_eq!(
+            script_sig.get("asm").and_then(Value::as_str),
+            Some("30020102[ALL]")
+        );
         // The spent output's value: ZEC float from the shared helper beside the
         // exact zatoshis. 150_000_000 zat = 1.5 ZEC.
         assert_eq!(
@@ -1646,6 +1720,7 @@ mod tests {
         assert_eq!(
             sorted_keys(&json),
             [
+                "hex",
                 "locktime",
                 "orchard",
                 "overwintered",
@@ -1799,10 +1874,12 @@ mod tests {
                 DetailedTransaction {
                     transaction: coinbase,
                     detail: coinbase_detail,
+                    raw: vec![0xC0, 0x01],
                 },
                 DetailedTransaction {
                     transaction: spend,
                     detail: base_detail(4),
+                    raw: vec![0x7A, 0x01],
                 },
             ],
         }
@@ -1917,7 +1994,15 @@ mod tests {
         let spend_vin = tx[1]["vin"].as_array().expect("spend vin");
         assert_eq!(
             sorted_keys(&spend_vin[0]),
-            ["address", "txid", "value", "valueSat", "vout"]
+            [
+                "address",
+                "scriptSig",
+                "sequence",
+                "txid",
+                "value",
+                "valueSat",
+                "vout"
+            ]
         );
     }
 

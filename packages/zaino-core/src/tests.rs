@@ -1138,6 +1138,7 @@ mod transaction_view_reads {
             expiry_height: Some(height(0)),
             size: 180,
             coinbase: None,
+            transparent_inputs: Vec::new(),
             joinsplits: Vec::new(),
         }
     }

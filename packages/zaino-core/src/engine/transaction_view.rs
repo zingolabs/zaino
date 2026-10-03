@@ -54,6 +54,7 @@ where
                 transaction: decoded.transaction,
                 detail: decoded.detail,
                 inputs,
+                raw: decoded.raw,
             },
             location: decoded.location,
         }))
@@ -86,6 +87,7 @@ where
                 transaction: detailed.transaction,
                 detail: detailed.detail,
                 inputs,
+                raw: detailed.raw,
             })
             .collect();
         Ok(Some(BlockTransactionViews {

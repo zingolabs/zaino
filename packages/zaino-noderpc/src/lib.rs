@@ -826,6 +826,7 @@ mod tests {
                 script: Script::new(vec![0x03, 0x01, 0x02, 0x03]),
                 sequence: 0xffff_ffff,
             }),
+            transparent_inputs: Vec::new(),
             joinsplits: Vec::new(),
         };
 
@@ -850,6 +851,10 @@ mod tests {
             expiry_height: Some(Height::try_from(0).expect("valid height")),
             size: 180,
             coinbase: None,
+            transparent_inputs: vec![zaino_primitives::types::TransparentInputDetail {
+                script_sig: Script::new(vec![0x51]),
+                sequence: 0xffff_ffff,
+            }],
             joinsplits: Vec::new(),
         };
         let resolved = ResolvedInput {
@@ -870,11 +875,13 @@ mod tests {
                     transaction: coinbase,
                     detail: coinbase_detail,
                     inputs: Vec::new(),
+                    raw: vec![0xC0, 0x02],
                 },
                 TransactionView {
                     transaction: spend,
                     detail: spend_detail,
                     inputs: vec![resolved],
+                    raw: vec![0x7A, 0x02],
                 },
             ],
         }
@@ -905,6 +912,7 @@ mod tests {
                 script: Script::new(vec![0x03, 0x01, 0x02, 0x03]),
                 sequence: 0xffff_ffff,
             }),
+            transparent_inputs: Vec::new(),
             joinsplits: Vec::new(),
         };
         let spend = zaino_primitives::types::Transaction {
@@ -928,6 +936,7 @@ mod tests {
             expiry_height: Some(Height::try_from(0).expect("valid height")),
             size: 180,
             coinbase: None,
+            transparent_inputs: Vec::new(),
             joinsplits: Vec::new(),
         };
         DecodedBlock {
@@ -936,10 +945,12 @@ mod tests {
                 DetailedTransaction {
                     transaction: coinbase,
                     detail: coinbase_detail,
+                    raw: vec![0xC0, 0x01],
                 },
                 DetailedTransaction {
                     transaction: spend,
                     detail: spend_detail,
+                    raw: vec![0x7A, 0x01],
                 },
             ],
         }
@@ -1450,6 +1461,7 @@ mod tests {
             expiry_height: Some(Height::try_from(0).expect("valid height")),
             size: 120,
             coinbase: None,
+            transparent_inputs: Vec::new(),
             joinsplits: Vec::new(),
         };
         LocatedTransactionView {
@@ -1457,6 +1469,7 @@ mod tests {
                 transaction,
                 detail,
                 inputs: Vec::new(),
+                raw: vec![0xAB, 0xCD],
             },
             location,
         }

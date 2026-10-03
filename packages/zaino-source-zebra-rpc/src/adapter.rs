@@ -1060,6 +1060,9 @@ fn decode_transaction_response(
     Ok(zaino_source::DecodedTransaction {
         transaction,
         detail,
+        // The same bytes this decode consumed, so the explorer's `hex` renders
+        // without a second fetch.
+        raw: response.bytes,
         location: response.location,
     })
 }
@@ -1127,9 +1130,10 @@ impl zaino_source::OneShotGetRawBlockByHash for ZebraRpcAdapter {
 ///
 /// Mirrors [`decode_transaction_response`]: `zebra`'s own deserializer parses the
 /// block, then each transaction is run through `transaction_from_zebra` for the
-/// indexing shape and `transaction_detail_from_zebra` for the envelope. A
-/// transaction's size is its own serialized length (`zcash_serialized_size`), and
-/// the block's size is the length of the bytes it was decoded from. Any
+/// indexing shape and `transaction_detail_from_zebra` for the envelope. Each
+/// transaction is re-serialized once, and those bytes give both its size and the
+/// `hex` the explorer renders; the block's size is the length of the bytes it was
+/// decoded from. Any
 /// parse/convert failure is a [`FailureMode::Parse`] non-domain error with its
 /// cause kept, so a malformed block fails loud rather than yielding a
 /// decoded-but-empty block a consumer would cache as a success.
@@ -1147,13 +1151,19 @@ fn decode_block_response(
         .map(|tx| {
             let transaction = zaino_convert_zebra::transaction_from_zebra(tx)
                 .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
-            let tx_size = u64::try_from(tx.zcash_serialized_size())
+            // The transaction's own consensus bytes, re-serialized from the same
+            // decode: both its size and the explorer's `hex` come from one source.
+            let raw = tx
+                .zcash_serialize_to_vec()
+                .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
+            let tx_size = u64::try_from(raw.len())
                 .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
             let detail = zaino_convert_zebra::transaction_detail_from_zebra(tx, tx_size)
                 .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e))?;
             Ok(zaino_primitives::types::DetailedTransaction {
                 transaction,
                 detail,
+                raw,
             })
         })
         .collect::<Result<Vec<_>, NonDomainError>>()?;

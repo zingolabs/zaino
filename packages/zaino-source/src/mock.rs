@@ -35,6 +35,7 @@ fn default_verbose_detail() -> TransactionDetail {
         expiry_height: Some(Height::GENESIS),
         size: 0,
         coinbase: None,
+        transparent_inputs: Vec::new(),
         joinsplits: Vec::new(),
     }
 }
@@ -153,6 +154,7 @@ impl MockChain {
         self.transaction_verbose_response = Some(DecodedTransaction {
             transaction,
             detail: default_verbose_detail(),
+            raw: Vec::new(),
             location,
         });
         self
@@ -942,6 +944,7 @@ pub fn sample_decoded_block(tag: u8, size: u64) -> DecodedBlock {
             script: Script::new(vec![tag, 0x02, 0x03]),
             sequence: 0xffff_ffff,
         }),
+        transparent_inputs: Vec::new(),
         joinsplits: Vec::new(),
     };
     let coinbase = DetailedTransaction {
@@ -953,6 +956,7 @@ pub fn sample_decoded_block(tag: u8, size: u64) -> DecodedBlock {
             ironwood: Default::default(),
         },
         detail: coinbase_detail,
+        raw: vec![tag, 0xC0],
     };
     let plain = DetailedTransaction {
         transaction: Transaction {
@@ -963,6 +967,7 @@ pub fn sample_decoded_block(tag: u8, size: u64) -> DecodedBlock {
             ironwood: Default::default(),
         },
         detail: default_verbose_detail(),
+        raw: vec![tag, 0x7A],
     };
     DecodedBlock {
         size,

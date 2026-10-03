@@ -9,7 +9,8 @@ use zaino_primitives::types::{
     EphemeralKey, EquihashSolution, Height, JoinSplitValues, MerkleRoot, NoteCommitment, Nullifier,
     OrchardAction, OrchardData, PreIndexCompactBlock, PreIndexCompactTx, SaplingData,
     SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionDetail,
-    TransactionId, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
+    TransactionId, TransparentData, TransparentInput, TransparentInputDetail, TransparentOutput,
+    Zatoshis,
 };
 
 /// Errors during conversion from zebra types.
@@ -177,6 +178,27 @@ pub fn transaction_detail_from_zebra(
         _ => None,
     };
 
+    // The signature script and sequence of every non-coinbase transparent input,
+    // in input order — the facts the indexing input shape drops but the explorer's
+    // `scriptSig`/`sequence` need. A coinbase input is carried by `coinbase` above,
+    // so it is skipped here, keeping this list aligned 1:1 with the indexing
+    // `transaction.transparent.inputs`.
+    let transparent_inputs = tx
+        .inputs()
+        .iter()
+        .filter_map(|input| match input {
+            zebra_chain::transparent::Input::PrevOut {
+                unlock_script,
+                sequence,
+                ..
+            } => Some(TransparentInputDetail {
+                script_sig: Script::new(unlock_script.as_raw_bytes().to_vec()),
+                sequence: *sequence,
+            }),
+            zebra_chain::transparent::Input::Coinbase { .. } => None,
+        })
+        .collect();
+
     let joinsplits = tx
         .sprout_joinsplits()
         .map(|js| {
@@ -209,6 +231,7 @@ pub fn transaction_detail_from_zebra(
         expiry_height,
         size,
         coinbase,
+        transparent_inputs,
         joinsplits,
     })
 }

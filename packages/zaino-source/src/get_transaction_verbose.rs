@@ -17,6 +17,9 @@ pub struct DecodedTransaction {
     /// The envelope, coinbase input, and Sprout values the indexing shape
     /// ([`transaction`](Self::transaction)) drops.
     pub detail: TransactionDetail,
+    /// The transaction's raw consensus bytes, carried so the explorer's `hex`
+    /// field renders from the same decode rather than a refetch.
+    pub raw: Vec<u8>,
     /// Where the transaction was found.
     pub location: TransactionLocation,
 }

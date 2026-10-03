@@ -85,7 +85,9 @@ pub use transaction::{
     OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, Transaction,
     TransparentData, TransparentInput, TransparentOutput,
 };
-pub use transaction_detail::{CoinbaseInput, JoinSplitValues, TransactionDetail};
+pub use transaction_detail::{
+    CoinbaseInput, JoinSplitValues, TransactionDetail, TransparentInputDetail,
+};
 pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;
 pub use transparent_address::TransparentAddress;

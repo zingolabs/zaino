@@ -115,6 +115,9 @@ pub struct TransactionView {
     /// The resolved transparent inputs, in the order of
     /// [`transaction.transparent.inputs`](zaino_primitives::types::TransparentData::inputs).
     pub inputs: Vec<ResolvedInput>,
+    /// The transaction's raw consensus bytes, carried so the explorer's `hex`
+    /// field renders from the same decode rather than a refetch.
+    pub raw: Vec<u8>,
 }
 
 /// A [`TransactionView`] with where the transaction lives in the chain — the

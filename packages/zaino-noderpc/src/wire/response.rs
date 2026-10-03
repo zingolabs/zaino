@@ -234,6 +234,11 @@ pub enum TransactionInput {
         txid: String,
         /// The spent output's index within that transaction.
         vout: u32,
+        /// The input's signature script.
+        #[serde(rename = "scriptSig")]
+        script_sig: ScriptSig,
+        /// The input's sequence number.
+        sequence: u32,
         /// The spent output's value, as a ZEC-denominated float — the key the
         /// explorer sums for a transaction's input total.
         value: f64,
@@ -246,6 +251,17 @@ pub enum TransactionInput {
         #[serde(skip_serializing_if = "Option::is_none")]
         address: Option<String>,
     },
+}
+
+/// A transparent input's signature script, as the explorer reads it: the
+/// disassembled `asm` and the raw `hex`, matching zcashd's `scriptSig`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ScriptSig {
+    /// The signature script disassembled to zcashd's `asm` string, with DER
+    /// signatures' sighash types decoded.
+    pub asm: String,
+    /// The signature script, as hex.
+    pub hex: String,
 }
 
 /// One output in a verbose transaction's `vout`.
@@ -385,6 +401,8 @@ pub struct TransactionObject {
     pub expiry_height: Option<u32>,
     /// Serialized byte length of the transaction.
     pub size: u64,
+    /// The transaction's raw consensus bytes, as hex.
+    pub hex: String,
     /// Inputs — one coinbase input on the coinbase transaction, spends
     /// otherwise.
     pub vin: Vec<TransactionInput>,
