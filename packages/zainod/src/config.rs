@@ -341,8 +341,8 @@ pub const TEST_FIXTURE_STORE_ENV: &str = "ZAINO_TEST_STORE_DIR";
 pub const TEST_FIXTURE_MAP_SIZE_ENV: &str = "ZAINO_TEST_MAP_SIZE_GB";
 
 /// Env var selecting what the mainnet Rpc fixture's indexer fetches per height:
-/// `compact` (the fork's pre-index compact block, the default) or `full` (whole
-/// blocks over the standard read, which any validator answers — see
+/// `full` (whole blocks over the standard read, which any validator answers,
+/// the default) or `compact` (the fork's pre-index compact block — see
 /// [`FetchStrategy`]). Optional; an unrecognised value is reported and the
 /// default kept.
 #[cfg(feature = "ztest-fixture")]

@@ -1031,9 +1031,10 @@ impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
 /// pairing it with where it was found.
 ///
 /// Reuses zebra's own deserializer (`zcash_deserialize_into`), the same one the
-/// block reads use, then the shared `transaction_from_zebra` conversion — never
-/// a second parse path — so every transaction version decodes identically to
-/// the block path, the v5 ZIP-244 id and the Ironwood pool included. Bytes that
+/// decoded-block read uses, then the shared `transaction_from_zebra` conversion
+/// — never a second parse path — so every transaction version decodes
+/// identically to the decoded-block path, the v5 ZIP-244 id and the Ironwood
+/// pool included. Bytes that
 /// are not a transaction, or that zebra accepts but the conversion rejects, are
 /// a non-domain fault: the source did not yield a usable answer, and must never
 /// collapse into a decoded-but-empty transaction a consumer would cache.
