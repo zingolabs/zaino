@@ -115,7 +115,15 @@ impl<S: NodeRpcService> NodeRpc<S> {
                 let located = snapshot.transaction_view(txid).await?.ok_or_else(|| {
                     RpcError::NotFound(format!("no transaction with id {txid_hex}"))
                 })?;
-                let transaction = transaction_view_to_wire(&located.view, &self.network);
+                let mut transaction = transaction_view_to_wire(&located.view, &self.network);
+                // Chain membership, when derivable: a best-chain transaction is in
+                // the active chain, a side-chain one is not, and a mempool
+                // transaction is in no chain (the key is then omitted).
+                transaction.in_active_chain = match located.location {
+                    TransactionLocation::BestChain(_) => Some(true),
+                    TransactionLocation::NonBestChain => Some(false),
+                    TransactionLocation::Mempool => None,
+                };
                 // Chain-location fields: present for a mined transaction, absent
                 // for one in the mempool or a side chain.
                 let (height, confirmations, blockhash, time, blocktime) = match &located.location {
@@ -1470,7 +1478,16 @@ mod tests {
             .expect("verbose tx");
         let json = serde_json::to_value(&response).expect("serialize");
         let obj = json.as_object().expect("a JSON object");
-        for absent in ["height", "confirmations", "blockhash", "time", "blocktime"] {
+        for absent in [
+            "height",
+            "confirmations",
+            "blockhash",
+            "time",
+            "blocktime",
+            // A mempool transaction is in no chain, so chain membership is not
+            // derivable and the key is omitted.
+            "in_active_chain",
+        ] {
             assert!(
                 !obj.contains_key(absent),
                 "a mempool tx omits {absent}, it is not rendered as null or zero"
@@ -1527,6 +1544,12 @@ mod tests {
         assert_eq!(
             obj.get("blocktime").and_then(serde_json::Value::as_u64),
             Some(1_600_000_000)
+        );
+        // A best-chain transaction is in the active chain.
+        assert_eq!(
+            obj.get("in_active_chain")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
         );
     }
 

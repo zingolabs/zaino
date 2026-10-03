@@ -90,6 +90,16 @@ Every other script — multisig, `OP_RETURN`, a malformed template — returns
 The kind travels with the address so a caller labels `scriptPubKey.type` from the
 same decision — it never re-inspects the script bytes to tell P2PKH from P2SH.
 
+## Disassembling a script to `asm`
+
+`script_to_asm(script, decode_sighash)` renders a transparent script as zcashd's
+`asm` string, for `scriptPubKey.asm` and `vin[].scriptSig.asm`. It is exact for
+the standard templates (data pushes as hex, the small-number opcodes as decimals,
+named opcodes as `OP_NAME`) and best-effort otherwise — an unknown opcode is
+`OP_UNKNOWN`, a truncated push `[error]`. Pass `decode_sighash = true` for a
+`scriptSig`, so a DER signature's trailing sighash byte is decoded as `[ALL]` /
+`[NONE]` / …; pass `false` for a `scriptPubKey`, which never carries signatures.
+
 This is **narrower** than `zaino-primitives`' `classify_script`, which keys
 *every* script (non-standard ones included) for indexing and reads a 21-byte
 `tag || hash` form. The two answer different questions: `classify_script`

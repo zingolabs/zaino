@@ -8,8 +8,8 @@ pub mod params;
 pub mod response;
 
 use zaino_address::{
-    transparent_address_from_script, ScriptAddress, TransparentScriptKind, UnifiedReceivers,
-    ValidatedAddress, ZValidatedAddress,
+    script_to_asm, transparent_address_from_script, ScriptAddress, TransparentScriptKind,
+    UnifiedReceivers, ValidatedAddress, ZValidatedAddress,
 };
 use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
 use zaino_primitives::types::AddressBalance;
@@ -341,14 +341,21 @@ fn script_type_tag(kind: TransparentScriptKind) -> &'static str {
 /// the script bytes.
 fn script_pub_key_to_wire(script: &Script, network: &Network) -> ScriptPubKey {
     let bytes: Vec<u8> = script.clone().into();
-    let (addresses, script_type) = match transparent_address_from_script(&bytes, network) {
-        Some(ScriptAddress { kind, address }) => {
-            (Some(vec![address]), Some(script_type_tag(kind).to_string()))
-        }
-        None => (None, None),
-    };
+    // A standard template carries one address and needs one signature; a
+    // non-standard script is not an address and reports neither, matching zcashd.
+    let (addresses, script_type, required_signatures) =
+        match transparent_address_from_script(&bytes, network) {
+            Some(ScriptAddress { kind, address }) => (
+                Some(vec![address]),
+                Some(script_type_tag(kind).to_string()),
+                Some(1),
+            ),
+            None => (None, None, None),
+        };
     ScriptPubKey {
+        asm: script_to_asm(&bytes, false),
         hex: bytes_to_hex(&bytes),
+        required_signatures,
         addresses,
         script_type,
     }
@@ -450,8 +457,10 @@ pub(crate) fn transaction_view_to_wire(
             .collect()
     });
 
-    // The Orchard bundle appears from version 5, even with no actions.
-    let orchard = (detail.version >= 5).then(|| OrchardObject {
+    // The Orchard bundle is emitted on every transaction, even a version-4 one
+    // with no bundle — zebra renders it with empty actions and a zero balance, and
+    // the explorer dereferences `orchard.valueBalance` strictly on version 5.
+    let orchard = OrchardObject {
         actions: transaction
             .orchard
             .actions
@@ -464,7 +473,7 @@ pub(crate) fn transaction_view_to_wire(
             .collect(),
         value_balance: signed_zatoshis_to_zec(transaction.orchard.value_balance),
         value_balance_zat: transaction.orchard.value_balance.as_i64(),
-    });
+    };
 
     TransactionObject {
         txid: txid_to_display(transaction.txid),
@@ -482,6 +491,10 @@ pub(crate) fn transaction_view_to_wire(
         shielded_spends,
         shielded_outputs,
         orchard,
+        // The chain-membership flag is context the single transaction does not
+        // carry; the caller sets it from the transaction's location (getrawtransaction)
+        // or the block's confirmations (getblock).
+        in_active_chain: None,
     }
 }
 
@@ -565,10 +578,18 @@ pub(crate) fn block_to_wire_v2(
     views: &BlockTransactionViews,
     network: &Network,
 ) -> Result<BlockResponse<TransactionObject>, RpcError> {
+    // Every transaction in this block shares the block's chain membership:
+    // on the best chain when it has a non-negative confirmation count, on a side
+    // chain (`-1`) otherwise.
+    let in_active_chain = verbose.confirmations >= 0;
     let tx = views
         .transactions
         .iter()
-        .map(|view| transaction_view_to_wire(view, network))
+        .map(|view| {
+            let mut object = transaction_view_to_wire(view, network);
+            object.in_active_chain = Some(in_active_chain);
+            object
+        })
         .collect();
     block_response(block, verbose, views.size, tx)
 }
@@ -1268,6 +1289,7 @@ mod tests {
             [
                 "expiryheight",
                 "locktime",
+                "orchard",
                 "overwintered",
                 "size",
                 "txid",
@@ -1284,6 +1306,14 @@ mod tests {
         );
         let obj = json.as_object().expect("a JSON object");
         assert_eq!(obj.get("version").and_then(Value::as_u64), Some(4));
+        // Orchard is emitted even on this version-4 coinbase: empty actions, zero
+        // balance (zebra renders it too).
+        let orchard = obj
+            .get("orchard")
+            .and_then(Value::as_object)
+            .expect("orchard");
+        assert_eq!(orchard["actions"].as_array().map(Vec::len), Some(0));
+        assert_eq!(orchard["valueBalance"].as_f64(), Some(0.0));
         assert_eq!(obj.get("overwintered").and_then(Value::as_bool), Some(true));
         assert_eq!(obj.get("locktime").and_then(Value::as_u64), Some(17));
         assert_eq!(obj.get("size").and_then(Value::as_u64), Some(211));
@@ -1327,9 +1357,14 @@ mod tests {
             .expect("scriptPubKey");
         assert_eq!(
             sorted_keys(&vout[0]["scriptPubKey"]),
-            ["addresses", "hex", "type"]
+            ["addresses", "asm", "hex", "reqSigs", "type"]
         );
         assert_eq!(spk.get("type").and_then(Value::as_str), Some("pubkeyhash"));
+        assert_eq!(spk.get("reqSigs").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            spk.get("asm").and_then(Value::as_str),
+            Some("OP_DUP OP_HASH160 4242424242424242424242424242424242424242 OP_EQUALVERIFY OP_CHECKSIG")
+        );
         assert_eq!(
             spk.get("addresses").and_then(Value::as_array).map(Vec::len),
             Some(1)
@@ -1405,12 +1440,17 @@ mod tests {
         // n comes from the u32 range, ascending.
         assert_eq!(vout[0]["n"].as_u64(), Some(0));
         assert_eq!(vout[1]["n"].as_u64(), Some(1));
-        // The standard output decodes; the OP_RETURN output is hex only.
+        // The standard output decodes (asm + reqSigs + addresses + type); the
+        // OP_RETURN output is a non-standard script, so only asm + hex.
         assert_eq!(
             sorted_keys(&vout[0]["scriptPubKey"]),
-            ["addresses", "hex", "type"]
+            ["addresses", "asm", "hex", "reqSigs", "type"]
         );
-        assert_eq!(sorted_keys(&vout[1]["scriptPubKey"]), ["hex"]);
+        assert_eq!(sorted_keys(&vout[1]["scriptPubKey"]), ["asm", "hex"]);
+        assert_eq!(
+            vout[1]["scriptPubKey"]["asm"].as_str(),
+            Some("OP_RETURN deadbeef")
+        );
         assert!(
             !vout[1]["scriptPubKey"]
                 .as_object()
@@ -1444,7 +1484,13 @@ mod tests {
         ))
         .expect("serialize");
         let obj = json.as_object().expect("a JSON object");
-        assert!(!obj.contains_key("orchard"), "v4 emits no orchard key");
+        // v4 now emits orchard too (zebra does): empty actions, zero balance.
+        let orchard = obj
+            .get("orchard")
+            .and_then(Value::as_object)
+            .expect("v4 emits an orchard bundle");
+        assert_eq!(orchard["actions"].as_array().map(Vec::len), Some(0));
+        assert_eq!(orchard["valueBalance"].as_f64(), Some(0.0));
 
         // -200_000_000 zat = -2.0 ZEC, from the signed helper, beside the exact int.
         assert_eq!(
@@ -1601,6 +1647,7 @@ mod tests {
             sorted_keys(&json),
             [
                 "locktime",
+                "orchard",
                 "overwintered",
                 "size",
                 "txid",
@@ -1615,6 +1662,8 @@ mod tests {
             obj.get("overwintered").and_then(Value::as_bool),
             Some(false)
         );
+        // Orchard is emitted on every transaction, this sprout v2 included.
+        assert!(obj.contains_key("orchard"));
         let js = obj
             .get("vjoinsplit")
             .and_then(Value::as_array)

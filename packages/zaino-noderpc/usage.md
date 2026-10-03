@@ -62,15 +62,21 @@ Key points of the shape:
 - A spend renders `{txid, vout, value, valueSat, address?}`, with `value` and
   `address` taken from the **resolved** output it spends. `address` is absent
   when the spent script is non-standard.
-- Each `vout` carries `scriptPubKey: {hex, addresses?, type?}`; `addresses` (a
-  one-element array) and `type` (`pubkeyhash`/`scripthash`) appear together only
-  for a standard P2PKH/P2SH script, decoded by
-  `zaino_address::transparent_address_from_script`.
+- Each `vout` carries `scriptPubKey: {asm, hex, reqSigs?, addresses?, type?}`;
+  `asm` is `zaino_address::script_to_asm` (best-effort for non-standard scripts),
+  and `reqSigs`, `addresses` (a one-element array) and `type`
+  (`pubkeyhash`/`scripthash`) appear together only for a standard P2PKH/P2SH
+  script, decoded by `zaino_address::transparent_address_from_script` (`reqSigs`
+  is then `1`).
 - Conditional keys follow the envelope: `versiongroupid`/`expiryheight` when
   overwintered; `valueBalance`/`valueBalanceZat`/`vShieldedSpend`/
-  `vShieldedOutput` from version 4; `orchard` from version 5 — emitted even with
-  no actions, because the explorer dereferences `orchard.valueBalance` strictly
-  on v5.
+  `vShieldedOutput` from version 4. `orchard` is emitted on **every** transaction
+  (zebra does too): empty actions and a zero balance when the transaction has no
+  bundle, because the explorer dereferences `orchard.valueBalance` strictly on v5.
+- `in_active_chain` is emitted when derivable: `true`/`false` for a transaction in
+  a best-/side-chain block (from the block's confirmations in `getblock 2`, or the
+  transaction's location in `getrawtransaction 1`), and omitted for a mempool
+  transaction, which is in no chain.
 - The Ironwood pool is deliberately **not** rendered — the explorer has no field
   for it (a recorded divergence).
 

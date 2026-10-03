@@ -274,8 +274,14 @@ pub struct TransactionOutput {
 /// script is not an address.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ScriptPubKey {
+    /// The locking script disassembled to zcashd's `asm` string.
+    pub asm: String,
     /// The locking script, as hex.
     pub hex: String,
+    /// Number of signatures required to spend — `1` for a standard P2PKH/P2SH
+    /// template; absent for a non-standard script, matching zcashd.
+    #[serde(rename = "reqSigs", skip_serializing_if = "Option::is_none")]
+    pub required_signatures: Option<u32>,
     /// The address the output pays, as a one-element array; absent when the
     /// script is non-standard. The explorer iterates it, so a non-standard
     /// output omits the key rather than rendering an empty or null array.
@@ -398,9 +404,15 @@ pub struct TransactionObject {
     /// Sapling outputs; present from version 4.
     #[serde(rename = "vShieldedOutput", skip_serializing_if = "Option::is_none")]
     pub shielded_outputs: Option<Vec<ShieldedOutput>>,
-    /// Orchard bundle; present from version 5.
+    /// Orchard bundle; emitted on every transaction, with empty actions and a
+    /// zero value balance when the transaction has no Orchard bundle — matching
+    /// zebra, which renders it even for version-4 transactions.
+    pub orchard: OrchardObject,
+    /// Whether the transaction is in the active (best) chain. Present when
+    /// derivable — `true` for a transaction in a best-chain block, `false` for a
+    /// side-chain one; absent for a mempool transaction, which is in no chain.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub orchard: Option<OrchardObject>,
+    pub in_active_chain: Option<bool>,
 }
 
 /// The `getrawtransaction <txid> 1` response: the shared [`TransactionObject`]
