@@ -141,8 +141,9 @@ fn subtree_roots_query_from_wire(
 }
 
 /// Wire -> domain for a single transparent address; an empty string is rejected
-/// (`invalid_argument`). Format validation beyond non-emptiness is the
-/// validator's job on the passthrough read.
+/// (`invalid_argument`). Format validation beyond non-emptiness belongs to the
+/// read that serves the address: a passthrough read defers to the validator,
+/// and a local read answers a non-transparent address with an empty result.
 fn transparent_address_from_wire(address: String) -> Result<TransparentAddress, Status> {
     if address.is_empty() {
         return Err(Status::invalid_argument(
@@ -261,7 +262,7 @@ impl<S: LightWalletService + Clone + 'static> CompactTxStreamer for GrpcService<
         }
     }
 
-    // --- wired: passthrough transaction + address reads ---
+    // --- wired: transaction + routed address reads ---
 
     async fn get_transaction(
         &self,
@@ -382,7 +383,7 @@ impl<S: LightWalletService + Clone + 'static> CompactTxStreamer for GrpcService<
         Ok(Response::new(stream.boxed()))
     }
 
-    // --- wired: passthrough address -> raw transactions ---
+    // --- wired: routed address -> raw transactions ---
 
     type GetTaddressTxidsStream = ServerStream<RawTransaction>;
     async fn get_taddress_txids(

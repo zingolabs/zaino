@@ -170,7 +170,8 @@ impl<S: LightWalletService> LightServe<S> {
 
     /// `GetTaddressBalance`: the total current balance across `addrs`, summed
     /// over the whole indexed chain (genesis .. tip). `NoBlocks` before any block
-    /// is served. Each address balance is passed through to the validator.
+    /// is served. Each address balance is read where the deployment's routing
+    /// places address reads: the local address index or the validator.
     pub async fn get_taddress_balance(
         &self,
         addrs: Vec<TransparentAddress>,
@@ -188,8 +189,9 @@ impl<S: LightWalletService> LightServe<S> {
     }
 
     /// `GetAddressUtxos`: the unspent outputs at or above `start_height` across
-    /// `addrs`, capped at `max_entries` (`0` meaning unlimited). Passed through to
-    /// the validator; collected owned so the gRPC layer can serve the list or a
+    /// `addrs`, capped at `max_entries` (`0` meaning unlimited). Read where the
+    /// deployment's routing places address reads (the local address index or the
+    /// validator); collected owned so the gRPC layer can serve the list or a
     /// `'static` stream.
     pub async fn get_address_utxos(
         &self,
