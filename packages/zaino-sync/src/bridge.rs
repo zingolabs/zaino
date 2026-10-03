@@ -271,7 +271,7 @@ where
     if zaino_persistence_codec::freshness::<I>(reader, namespace)?
         == zaino_persistence_codec::Freshness::Stale
     {
-        let has_data = !reader.scan(namespace)?.is_empty();
+        let has_data = reader.first_key(namespace)?.is_some();
         if has_data {
             return Err(PipelineError::IncompatibleFormat {
                 index: namespace.as_str(),
