@@ -28,6 +28,7 @@ fi
 # ZAINO_-prefixed config-rs keys, which shift with the config schema):
 : "${ZAINO_NET:=Mainnet}"                         # Mainnet | PubTestnet | Regtest
 : "${ZAINO_ZEBRA_CACHE_DIR:=/app/zebra}"          # Direct: root of the shared Zebra cache
+: "${ZAINO_VALIDATOR_JSONRPC:=127.0.0.1:8232}"    # Direct: the validator's JSON-RPC host:port
 : "${ZAINO_STORE_PATH:=/app/data}"                # LMDB index directory
 : "${ZAINO_STORE_MAP_SIZE_GB:=16}"                # LMDB map size (GiB)
 : "${ZAINO_GRPC_LISTEN:=0.0.0.0:8137}"            # CompactTxStreamer bind (0.0.0.0 to be reachable)
@@ -61,6 +62,11 @@ network = "${ZAINO_NET}"
 [source]
 mode = "direct"
 zebra_cache_dir = "${ZAINO_ZEBRA_CACHE_DIR}"
+# Direct reads finalised blocks from the state database, but the chain head
+# polls the tip and the passthrough reads reach the validator over JSON-RPC,
+# so a Direct source needs both coordinates. A co-located validator answers on
+# loopback; set ZAINO_VALIDATOR_JSONRPC when it is a separate host or pod.
+jsonrpc_address = "${ZAINO_VALIDATOR_JSONRPC}"
 
 [store]
 path = "${ZAINO_STORE_PATH}"
