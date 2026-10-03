@@ -435,6 +435,104 @@ mod tests {
         let _ = handle.stop();
     }
 
+    /// The zcashex-shaped 1.0 `z_gettreestate` request — a single height string
+    /// param — gives 200 and the legacy envelope, with `result` the nested
+    /// treestate object carrying the active pool's commitments.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_z_gettreestate_succeeds() {
+        use zaino_primitives::types::{PoolTreestate, TreeRoot, Treestate};
+        let (addr, handle) = spawn_server(MockChain {
+            treestate: Some(Treestate {
+                block_hash: BlockHash::from([0x11u8; 32]),
+                height: Height::try_from(100).expect("valid height"),
+                time: 1_600_000_000,
+                sapling: Some(PoolTreestate {
+                    final_root: Some(TreeRoot::from([0x22u8; 32])),
+                    final_state: vec![0xde, 0xad],
+                }),
+                orchard: None,
+                ironwood: None,
+            }),
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"z_gettreestate","params":["100"]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let result = obj
+            .get("result")
+            .and_then(Value::as_object)
+            .expect("result object");
+        assert_eq!(result.get("height").and_then(Value::as_u64), Some(100));
+        assert!(
+            result
+                .get("sapling")
+                .and_then(|p| p.get("commitments"))
+                .and_then(|c| c.get("finalState"))
+                .and_then(Value::as_str)
+                == Some("dead"),
+            "the sapling tree state renders as hex: {result:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// The zcashex-shaped 1.0 `z_getsubtreesbyindex` request — positional
+    /// `[pool, startIndex]` — gives 200 and the legacy envelope, with `result` the
+    /// `{pool, start_index, subtrees}` object.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_z_getsubtreesbyindex_succeeds() {
+        use zaino_primitives::types::{SubtreeRoot, TreeRoot};
+        let (addr, handle) = spawn_server(MockChain {
+            subtree_roots: vec![SubtreeRoot {
+                root: TreeRoot::from([0xABu8; 32]),
+                end_height: Height::try_from(558_822).expect("valid height"),
+            }],
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"z_getsubtreesbyindex","params":["sapling",0]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let result = obj
+            .get("result")
+            .and_then(Value::as_object)
+            .expect("result object");
+        assert_eq!(result.get("pool").and_then(Value::as_str), Some("sapling"));
+        assert_eq!(result.get("start_index").and_then(Value::as_u64), Some(0));
+        let subtree = result
+            .get("subtrees")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .expect("one subtree");
+        assert_eq!(
+            subtree.get("root").and_then(Value::as_str),
+            Some("ab".repeat(32).as_str())
+        );
+        assert_eq!(
+            subtree.get("end_height").and_then(Value::as_u64),
+            Some(558_822)
+        );
+        let _ = handle.stop();
+    }
+
     /// A 2.0 error stays 200, unchanged from today.
     #[tokio::test(flavor = "multi_thread")]
     async fn two_point_zero_error_stays_200() {

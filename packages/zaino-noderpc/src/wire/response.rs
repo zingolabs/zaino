@@ -193,6 +193,78 @@ pub struct UnifiedReceiversResponse {
     pub p2sh: Option<String>,
 }
 
+/// One shielded pool's commitment-tree state in a `z_gettreestate` response,
+/// nested under the pool key as `{commitments: {...}}`, matching zcashd/zebra.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PoolTreestateResponse {
+    /// The pool's commitment-tree root and serialized state.
+    pub commitments: CommitmentsResponse,
+}
+
+/// The commitment-tree root and serialized state of one pool.
+///
+/// `finalRoot` is the tree root after the block, in display (byte-reversed)
+/// order; `finalState` is the serialized note-commitment tree as hex, in its
+/// natural order. `finalRoot` is absent when the source does not report one —
+/// the RPC backend discards it (see [`crate::wire::treestate_to_wire`]), so it is
+/// `Option` rather than always present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommitmentsResponse {
+    /// Root of the pool's note-commitment tree after this block, as hex (display
+    /// order). Absent when the source does not report it.
+    #[serde(rename = "finalRoot", skip_serializing_if = "Option::is_none")]
+    pub final_root: Option<String>,
+    /// The pool's serialized note-commitment tree, as hex.
+    #[serde(rename = "finalState")]
+    pub final_state: String,
+}
+
+/// The `z_gettreestate` response, in zcashd/zebra's shape.
+///
+/// A pool key (`sapling`, `orchard`, `ironwood`) is present only when the pool
+/// is active at this block — an inactive pool omits the key rather than
+/// rendering an empty tree, matching the source's `Option` per pool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TreestateResponse {
+    /// Hash of the block these trees are the state after, as hex (display order).
+    pub hash: String,
+    /// Height of that block.
+    pub height: u32,
+    /// Block time, in seconds since the Unix epoch.
+    pub time: u32,
+    /// Sapling commitment tree; absent before Sapling activation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sapling: Option<PoolTreestateResponse>,
+    /// Orchard commitment tree; absent before Orchard activation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orchard: Option<PoolTreestateResponse>,
+    /// Ironwood commitment tree; absent before NU6.3.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ironwood: Option<PoolTreestateResponse>,
+}
+
+/// One entry of a `z_getsubtreesbyindex` response's `subtrees` list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SubtreeRootEntry {
+    /// The subtree's root hash, as hex (natural order, as the source reports it).
+    pub root: String,
+    /// The block height at which the subtree completed.
+    pub end_height: u32,
+}
+
+/// The `z_getsubtreesbyindex` response: the pool, the starting index of the run
+/// actually returned, and the contiguous subtree roots from there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SubtreeRootsResponse {
+    /// The pool queried — `sapling` or `orchard`.
+    pub pool: String,
+    /// Index of the first subtree in [`Self::subtrees`].
+    pub start_index: u16,
+    /// The roots, in ascending index order from [`Self::start_index`]. Empty when
+    /// the start index is past the end of the pool's completed subtrees.
+    pub subtrees: Vec<SubtreeRootEntry>,
+}
+
 /// The `getblockheader` response, in zcashd's verbose (`verbose = true`) shape.
 ///
 /// Hashes, the merkle root, the nonce and the Equihash solution are hex; `bits`

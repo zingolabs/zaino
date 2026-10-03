@@ -12,6 +12,7 @@ use zaino_service::error::BlockHashReadError;
 use zaino_service::error::MempoolReadError;
 use zaino_service::error::ReadError;
 use zaino_service::error::TransactionViewError;
+use zaino_service::error::TreestateReadError;
 use zaino_service::error::TxReadError;
 use zaino_service::NodeRpcService;
 use zaino_service::NodeStatusError;
@@ -24,7 +25,8 @@ use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
     BlockchainInfoResponse, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
     MempoolInfoResponse, MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    SubtreeRootsResponse, TreestateResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -116,6 +118,20 @@ pub(crate) trait NodeRpcApi {
         &self,
         params: AddressesParam,
     ) -> Result<Vec<AddressUtxoEntry>, ErrorObjectOwned>;
+
+    #[method(name = "z_gettreestate")]
+    async fn z_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<TreestateResponse, ErrorObjectOwned>;
+
+    #[method(name = "z_getsubtreesbyindex")]
+    async fn z_subtrees_by_index(
+        &self,
+        pool: String,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> Result<SubtreeRootsResponse, ErrorObjectOwned>;
 
     #[method(name = "validateaddress")]
     async fn validate_addr(
@@ -241,6 +257,24 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         params: AddressesParam,
     ) -> Result<Vec<AddressUtxoEntry>, ErrorObjectOwned> {
         self.get_address_utxos(params)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn z_treestate(
+        &self,
+        hash_or_height: String,
+    ) -> Result<TreestateResponse, ErrorObjectOwned> {
+        self.get_treestate(&hash_or_height)
+            .await
+            .map_err(to_error_object)
+    }
+    async fn z_subtrees_by_index(
+        &self,
+        pool: String,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> Result<SubtreeRootsResponse, ErrorObjectOwned> {
+        self.get_subtrees_by_index(&pool, start_index, limit)
             .await
             .map_err(to_error_object)
     }
@@ -374,6 +408,21 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
             ErrorCode::InternalError.code(),
             ReadError::from(source).to_string(),
         ),
+        // A treestate read is passthrough to the validator: none of its three
+        // cases is bad client input (a malformed height/hash is rejected at the
+        // wire boundary, and an unknown block is a `NotFound` above), so each is
+        // an internal error. Each variant's own `Display` names the reason without
+        // stringifying a `#[source]` cause (these are the known String-typed read
+        // errors, which carry their reason inline).
+        RpcError::Treestate(e @ TreestateReadError::NotServiceable(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::Treestate(e @ TreestateReadError::Transient(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
+        RpcError::Treestate(e @ TreestateReadError::Fatal(_)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
     };
     ErrorObjectOwned::owned(code, message, None::<()>)
 }

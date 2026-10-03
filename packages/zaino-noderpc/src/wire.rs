@@ -28,12 +28,13 @@ use zcash_protocol::consensus::Network;
 use crate::error::RpcError;
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltaEntry, AddressUtxoEntry, BlockHashLogical,
-    BlockHeaderResponse, BlockResponse, BlockchainInfoResponse, GetBlockHashesResponse,
-    JoinSplitObject, MempoolEntryObject, MiningInfoResponse, NetworkUpgradeResponse,
-    NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry, ScriptPubKey, ScriptSig,
-    ShieldedOutput, ShieldedSpend, TipConsensusResponse, TransactionInput, TransactionObject,
-    TransactionOutput, TreePoolSize, TreesResponse, UnifiedReceiversResponse,
-    ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
+    BlockHeaderResponse, BlockResponse, BlockchainInfoResponse, CommitmentsResponse,
+    GetBlockHashesResponse, JoinSplitObject, MempoolEntryObject, MiningInfoResponse,
+    NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry,
+    PoolTreestateResponse, ScriptPubKey, ScriptSig, ShieldedOutput, ShieldedSpend,
+    SubtreeRootEntry, SubtreeRootsResponse, TipConsensusResponse, TransactionInput,
+    TransactionObject, TransactionOutput, TreePoolSize, TreesResponse, TreestateResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -166,6 +167,64 @@ pub(crate) fn utxo_to_wire(utxo: zaino_primitives::types::Utxo) -> AddressUtxoEn
         script: bytes_to_hex(&script),
         satoshis: utxo.satoshis.as_u64(),
         height: utxo.height.into(),
+    }
+}
+
+/// Render the commitment treestate at a block as the `z_gettreestate` response
+/// (domain -> wire).
+///
+/// The block hash renders in display order; each active pool nests under its key
+/// as `{commitments: {finalRoot?, finalState}}`, and an inactive pool omits the
+/// key. `finalRoot` is in display (byte-reversed) order and is absent when the
+/// source does not report one: the RPC backend discards it on parse (its own
+/// reply documents the field as unused), so against that backend `finalRoot` is
+/// currently omitted — a recorded divergence from zebra, which emits it. A local
+/// tree index or a combined root read would restore it.
+pub(crate) fn treestate_to_wire(
+    treestate: zaino_primitives::types::Treestate,
+) -> TreestateResponse {
+    TreestateResponse {
+        hash: block_hash_to_display(treestate.block_hash),
+        height: treestate.height.into(),
+        time: treestate.time,
+        sapling: treestate.sapling.map(pool_treestate_to_wire),
+        orchard: treestate.orchard.map(pool_treestate_to_wire),
+        ironwood: treestate.ironwood.map(pool_treestate_to_wire),
+    }
+}
+
+/// Render one pool's treestate (domain -> wire). `finalRoot` is reversed to
+/// display order (see [`treestate_to_wire`]); `finalState` is the serialized tree
+/// as hex in its natural order.
+fn pool_treestate_to_wire(pool: zaino_primitives::types::PoolTreestate) -> PoolTreestateResponse {
+    PoolTreestateResponse {
+        commitments: CommitmentsResponse {
+            final_root: pool.final_root.map(|root| to_display_hex(root.into())),
+            final_state: bytes_to_hex(&pool.final_state),
+        },
+    }
+}
+
+/// Render a run of complete note-commitment subtree roots as the
+/// `z_getsubtreesbyindex` response (domain -> wire). Each root renders in its
+/// natural order (the order the source reports and the parser reads back). A
+/// `start_index` past the end of the pool's completed subtrees yields an empty
+/// `subtrees` list, exactly as zebra does.
+pub(crate) fn subtree_roots_to_wire(
+    pool: zaino_primitives::types::ShieldedPool,
+    start_index: u16,
+    roots: Vec<zaino_primitives::types::SubtreeRoot>,
+) -> SubtreeRootsResponse {
+    SubtreeRootsResponse {
+        pool: pool.to_string(),
+        start_index,
+        subtrees: roots
+            .into_iter()
+            .map(|root| SubtreeRootEntry {
+                root: to_hex(root.root.into()),
+                end_height: root.end_height.into(),
+            })
+            .collect(),
     }
 }
 

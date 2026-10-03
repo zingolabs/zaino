@@ -66,6 +66,13 @@ pub struct MockChain {
     /// Scripted unspent outputs for [`AddressRead::unspent_outpoints`], returned
     /// for any queried address on a serviceable chain.
     pub utxos: Vec<Utxo>,
+    /// Scripted treestate for [`TreestateRead::treestate`]. When `Some`, returned
+    /// for any height; when `None`, the read answers `NotServiceable` (the mock
+    /// has no validator behind it).
+    pub treestate: Option<Treestate>,
+    /// Scripted subtree roots for [`TreestateRead::subtree_roots`], returned for
+    /// any pool/index query.
+    pub subtree_roots: Vec<SubtreeRoot>,
     /// Scripted raw transactions, keyed by txid.
     pub raw_transactions: Vec<(TransactionId, RawTransaction)>,
     /// Scripted chain-info aggregate. When `Some`, [`ChainInfoRead::chain_info`]
@@ -383,7 +390,13 @@ impl RawTransactionRead for MockSnapshot {
 
 impl TreestateRead for MockSnapshot {
     async fn treestate(&self, _at: Height) -> Result<Treestate, TreestateReadError> {
-        Err(TreestateReadError::NotServiceable(Capability::Treestate))
+        // A scripted treestate is returned verbatim for any height, so a test can
+        // pin every field through the serving adapter; absent it, the mock has no
+        // validator behind it, so it is not serviceable.
+        self.chain
+            .treestate
+            .clone()
+            .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
     }
     async fn subtree_roots(
         &self,
@@ -391,7 +404,7 @@ impl TreestateRead for MockSnapshot {
         _start_index: u16,
         _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
-        Ok(Vec::new())
+        Ok(self.chain.subtree_roots.clone())
     }
 }
 

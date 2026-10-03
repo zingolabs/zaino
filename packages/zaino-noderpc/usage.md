@@ -27,8 +27,20 @@ in internal order per the lightwalletd protocol.)
 `getblockheader`, `getblockhashes`, `getrawtransaction`, `sendrawtransaction`,
 `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
 `getmempoolinfo`, `getaddressbalance`, `getaddressdeltas`, `getaddresstxids`,
-`getaddressutxos`, `validateaddress`, `z_validateaddress`,
-`z_listunifiedreceivers`.
+`getaddressutxos`, `z_gettreestate`, `z_getsubtreesbyindex`, `validateaddress`,
+`z_validateaddress`, `z_listunifiedreceivers`.
+
+`z_gettreestate` and `z_getsubtreesbyindex` read through `TreestateRead`
+(passthrough — Zaino indexes no commitment-tree frontier). `z_gettreestate`
+takes a height (decimal string) or a block hash (resolved to a height over the
+local header read) and nests each active pool under its key as
+`{commitments: {finalRoot, finalState}}`: the block hash and `finalRoot` render
+in display order, `finalState` as hex in natural order, and an inactive pool
+omits its key. `finalRoot` is absent against the RPC backend, which discards it
+on parse (a recorded divergence from zebra). `z_getsubtreesbyindex` takes
+`pool, startIndex, (limit?)` and returns `{pool, start_index, subtrees}` with
+each root in natural order; a `startIndex` past the end is an empty `subtrees`
+list, not an error.
 
 The transparent-address methods (`getaddressbalance`, `getaddressdeltas`,
 `getaddresstxids`, `getaddressutxos`) are served **locally** over the engine's

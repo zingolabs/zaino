@@ -7,7 +7,7 @@
 
 use zaino_service::error::{
     AddressReadError, BlockHashReadError, BroadcastRejection, MempoolReadError, ReadError,
-    TransactionViewError, Transient, TxReadError,
+    TransactionViewError, Transient, TreestateReadError, TxReadError,
 };
 use zaino_service::NodeStatusError;
 
@@ -45,6 +45,9 @@ pub enum RpcError {
     /// A node-status read failed.
     #[error(transparent)]
     NodeStatus(#[from] NodeStatusError),
+    /// A treestate read failed (`z_gettreestate` / `z_getsubtreesbyindex`).
+    #[error(transparent)]
+    Treestate(#[from] TreestateReadError),
     /// A mempool listing read failed.
     #[error(transparent)]
     MempoolRead(#[from] MempoolReadError),
