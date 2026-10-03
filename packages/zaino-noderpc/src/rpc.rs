@@ -24,9 +24,9 @@ use crate::wire::params::{
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
     BlockchainInfoResponse, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
-    MempoolInfoResponse, MiningInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
-    SubtreeRootsResponse, TreestateResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry,
+    RawMempoolResponse, SubtreeRootsResponse, TreestateResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -85,6 +85,15 @@ pub(crate) trait NodeRpcApi {
         blocks: Option<u32>,
         height: Option<i64>,
     ) -> Result<u64, ErrorObjectOwned>;
+
+    #[method(name = "getdifficulty")]
+    async fn difficulty(&self) -> Result<f64, ErrorObjectOwned>;
+
+    #[method(name = "getnetworkinfo")]
+    async fn network_info(&self) -> Result<NetworkInfoResponse, ErrorObjectOwned>;
+
+    #[method(name = "ping")]
+    async fn ping(&self) -> Result<(), ErrorObjectOwned>;
 
     #[method(name = "getrawmempool")]
     async fn raw_mempool(
@@ -216,6 +225,15 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
         self.get_network_sol_ps(blocks, crate::wire::network_solps_height(height))
             .await
             .map_err(to_error_object)
+    }
+    async fn difficulty(&self) -> Result<f64, ErrorObjectOwned> {
+        self.get_difficulty().await.map_err(to_error_object)
+    }
+    async fn network_info(&self) -> Result<NetworkInfoResponse, ErrorObjectOwned> {
+        self.get_network_info().await.map_err(to_error_object)
+    }
+    async fn ping(&self) -> Result<(), ErrorObjectOwned> {
+        self.get_ping().await.map_err(to_error_object)
     }
     async fn raw_mempool(
         &self,

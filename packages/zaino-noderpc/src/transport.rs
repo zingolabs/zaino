@@ -435,6 +435,98 @@ mod tests {
         let _ = handle.stop();
     }
 
+    /// The zcashex-shaped 1.0 `getdifficulty` request gives 200 and the legacy
+    /// envelope, with `result` the relayed difficulty.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getdifficulty_succeeds() {
+        let (addr, handle) = spawn_server(MockChain {
+            difficulty: Some(322_008_416.553_987_15),
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getdifficulty","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert!(obj.get("error").is_some_and(Value::is_null));
+        assert_eq!(
+            obj.get("result").and_then(Value::as_f64),
+            Some(322_008_416.553_987_15)
+        );
+        let _ = handle.stop();
+    }
+
+    /// The zcashex-shaped 1.0 `getnetworkinfo` request gives 200 and the legacy
+    /// envelope, with `result` the network-info object.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getnetworkinfo_succeeds() {
+        use zaino_primitives::types::rpc::NetworkInfo;
+        use zaino_primitives::types::Zatoshis;
+        let (addr, handle) = spawn_server(MockChain {
+            network_info: Some(NetworkInfo {
+                version: 6_040_200,
+                subversion: "/Zebra:6.4.2/".to_string(),
+                protocol_version: 170_160,
+                local_services: "0000000000000001".to_string(),
+                time_offset: 0,
+                connections: 44,
+                networks: Vec::new(),
+                relay_fee: Zatoshis::new(100).expect("valid amount"),
+                local_addresses: Vec::new(),
+                warnings: String::new(),
+            }),
+            ..Default::default()
+        });
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getnetworkinfo","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert!(obj.get("error").is_some_and(Value::is_null));
+        let result = obj
+            .get("result")
+            .and_then(Value::as_object)
+            .expect("result object");
+        assert_eq!(
+            result.get("version").and_then(Value::as_u64),
+            Some(6_040_200)
+        );
+        assert_eq!(result.get("connections").and_then(Value::as_u64), Some(44));
+        let _ = handle.stop();
+    }
+
+    /// The zcashex-shaped 1.0 `ping` request gives 200 and the legacy envelope,
+    /// with `result: null` on success — the shape zcashd/zebra return.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_ping_succeeds() {
+        let (addr, handle) = spawn_dialect_server();
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"ping","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert!(
+            obj.get("result").is_some_and(Value::is_null),
+            "ping result is present and null: {obj:?}"
+        );
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
     /// The zcashex-shaped 1.0 `z_gettreestate` request — a single height string
     /// param — gives 200 and the legacy envelope, with `result` the nested
     /// treestate object carrying the active pool's commitments.

@@ -33,31 +33,35 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::rpc::{
+    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut,
+};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, DecodedBlock,
-    Height, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool, SubtreeRoot, TransactionId,
-    TreeRoots, Treestate, Utxo,
+    Difficulty, Height, OutputIndex, PreIndexCompactBlock, PreIndexCompactTx, ShieldedPool,
+    SubtreeRoot, TransactionId, TreeRoots, Treestate, Utxo,
 };
 
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
     GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
     GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetCommitmentTreeRootsError,
-    GetMempoolMetadataError, GetMempoolTxidsError, GetMiningInfoError, GetNetworkSolPsError,
-    GetNodeInfoError, GetPeerInfoError, GetRawMempoolTransactionError, GetSubtreeRootsError,
-    GetTransactionError, GetTransactionVerboseError, GetTreestateError, MempoolTxMeta,
+    GetDifficultyError, GetMempoolMetadataError, GetMempoolTxidsError, GetMiningInfoError,
+    GetNetworkInfoError, GetNetworkSolPsError, GetNodeInfoError, GetPeerInfoError,
+    GetRawMempoolTransactionError, GetSubtreeRootsError, GetTransactionError,
+    GetTransactionVerboseError, GetTreestateError, GetTxOutError, MempoolTxMeta,
     OneShotGetAddressBalance, OneShotGetAddressDeltas, OneShotGetAddressTxids,
     OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash, OneShotGetBlockDecoded,
     OneShotGetBlockDecodedByHash, OneShotGetBlockHeader, OneShotGetBlockVerbose,
     OneShotGetBlockVerboseByHash, OneShotGetBlockchainInfo, OneShotGetChainTip,
-    OneShotGetCommitmentTreeRoots, OneShotGetMempoolCompactTransaction, OneShotGetMempoolMetadata,
-    OneShotGetMempoolSourceTip, OneShotGetMempoolTxids, OneShotGetMiningInfo,
-    OneShotGetNetworkSolPs, OneShotGetNodeInfo, OneShotGetPeerInfo, OneShotGetPreIndexCompactBlock,
-    OneShotGetRawBlock, OneShotGetRawBlockByHash, OneShotGetRawMempoolTransaction,
-    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTransactionVerbose,
-    OneShotGetTreestate, OneShotSendRawTransaction, QueryError, SendRawTransactionError,
-    SubscribeBlocks, SubscribeChainTip, TipObservation, TransactionResponse, ValidatorSource,
+    OneShotGetCommitmentTreeRoots, OneShotGetDifficulty, OneShotGetMempoolCompactTransaction,
+    OneShotGetMempoolMetadata, OneShotGetMempoolSourceTip, OneShotGetMempoolTxids,
+    OneShotGetMiningInfo, OneShotGetNetworkInfo, OneShotGetNetworkSolPs, OneShotGetNodeInfo,
+    OneShotGetPeerInfo, OneShotGetPreIndexCompactBlock, OneShotGetRawBlock,
+    OneShotGetRawBlockByHash, OneShotGetRawMempoolTransaction, OneShotGetSubtreeRoots,
+    OneShotGetTransaction, OneShotGetTransactionVerbose, OneShotGetTreestate, OneShotGetTxOut,
+    OneShotPing, OneShotSendRawTransaction, QueryError, SendRawTransactionError, SubscribeBlocks,
+    SubscribeChainTip, TipObservation, TransactionResponse, ValidatorSource,
 };
 
 impl<V: ValidatorSource + ?Sized> ValidatorSource for Arc<V> {
@@ -432,5 +436,49 @@ impl<V: OneShotGetNetworkSolPs + ?Sized> OneShotGetNetworkSolPs for Arc<V> {
     ) -> impl Future<Output = Result<u64, QueryError<GetNetworkSolPsError, Self::NonDomain>>> + Send
     {
         (**self).get_network_sol_ps(blocks, height)
+    }
+}
+
+// The chain-wide difficulty and the node's `getnetworkinfo` / `ping` reach the
+// validator through the same `Arc<V>`: the explorer's `getdifficulty`,
+// `getnetworkinfo` and `ping`.
+impl<V: OneShotGetDifficulty + ?Sized> OneShotGetDifficulty for Arc<V> {
+    fn get_difficulty(
+        &self,
+    ) -> impl Future<Output = Result<Difficulty, QueryError<GetDifficultyError, Self::NonDomain>>> + Send
+    {
+        (**self).get_difficulty()
+    }
+}
+
+impl<V: OneShotGetNetworkInfo + ?Sized> OneShotGetNetworkInfo for Arc<V> {
+    fn get_network_info(
+        &self,
+    ) -> impl Future<Output = Result<NetworkInfo, QueryError<GetNetworkInfoError, Self::NonDomain>>> + Send
+    {
+        (**self).get_network_info()
+    }
+}
+
+impl<V: OneShotPing + ?Sized> OneShotPing for Arc<V> {
+    fn ping(
+        &self,
+    ) -> impl Future<Output = Result<(), QueryError<core::convert::Infallible, Self::NonDomain>>> + Send
+    {
+        (**self).ping()
+    }
+}
+
+// The explorer's `gettxout` reaches the validator through the same `Arc<V>`: a
+// live unspent-output lookup, always passthrough (not an indexed read).
+impl<V: OneShotGetTxOut + ?Sized> OneShotGetTxOut for Arc<V> {
+    fn get_tx_out(
+        &self,
+        txid: TransactionId,
+        index: OutputIndex,
+        include_mempool: bool,
+    ) -> impl Future<Output = Result<Option<TxOut>, QueryError<GetTxOutError, Self::NonDomain>>> + Send
+    {
+        (**self).get_tx_out(txid, index, include_mempool)
     }
 }

@@ -148,8 +148,8 @@ use futures::stream::{self, BoxStream, StreamExt};
 use crate::chain_view::ChainTier;
 use crate::chain_view::ChainView;
 use crate::routing::{PlacementKind, Routing};
-use zaino_primitives::types::Height;
-use zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::rpc::{MiningInfo, NetworkInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::{Difficulty, Height};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
 use zaino_service::{
@@ -161,9 +161,9 @@ use zaino_service::{
     ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
 };
 use zaino_source::{
-    GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolSourceTip, GetMempoolTxids,
-    GetMiningInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo, GetRawMempoolTransaction,
-    GetTreestate, SendRawTransaction,
+    GetDifficulty, GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolSourceTip,
+    GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo,
+    GetRawMempoolTransaction, GetTreestate, Ping, SendRawTransaction,
 };
 
 use crate::passthrough::PassthroughProvider;
@@ -395,7 +395,13 @@ impl<Fs, Nfs, Src, R> NodeStatusRead for Engine<Fs, Nfs, Src, R>
 where
     Fs: Send + Sync + 'static,
     Nfs: Send + Sync + 'static,
-    Src: GetNodeInfo + GetMiningInfo + GetPeerInfo + GetNetworkSolPs,
+    Src: GetNodeInfo
+        + GetMiningInfo
+        + GetPeerInfo
+        + GetNetworkSolPs
+        + GetDifficulty
+        + GetNetworkInfo
+        + Ping,
     R: Routing,
 {
     async fn node_info(&self) -> Result<NodeInfo, NodeStatusError> {
@@ -413,6 +419,15 @@ where
         height: Option<Height>,
     ) -> Result<u64, NodeStatusError> {
         self.passthrough.network_sol_ps(blocks, height).await
+    }
+    async fn difficulty(&self) -> Result<Difficulty, NodeStatusError> {
+        self.passthrough.difficulty().await
+    }
+    async fn network_info(&self) -> Result<NetworkInfo, NodeStatusError> {
+        self.passthrough.network_info().await
+    }
+    async fn ping(&self) -> Result<(), NodeStatusError> {
+        self.passthrough.ping().await
     }
 }
 

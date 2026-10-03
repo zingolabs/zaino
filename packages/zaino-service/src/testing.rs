@@ -22,12 +22,14 @@ use crate::{
     Answerable, Capability, ForkPoint, Locator, MempoolTx, ReportedUpgrade, ServiceabilityManifest,
     ServiceableRange, SpendStatus, TxStatus,
 };
-use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::rpc::{
+    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo,
+};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, ConsensusBranchId, ConsensusBranchIds,
-    DecodedBlock, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction, ShieldedPool,
-    SubtreeRoot, Transaction, TransactionId, TransparentAddress, TransparentInput,
+    DecodedBlock, Difficulty, Height, HeightRange, Outpoint, PreIndexCompactTx, RawTransaction,
+    ShieldedPool, SubtreeRoot, Transaction, TransactionId, TransparentAddress, TransparentInput,
     TransparentReceive, TransparentSpend, Treestate, Utxo, ValuePoolBalance, Zatoshis,
     ZatoshisFlowSum,
 };
@@ -73,6 +75,16 @@ pub struct MockChain {
     /// Scripted subtree roots for [`TreestateRead::subtree_roots`], returned for
     /// any pool/index query.
     pub subtree_roots: Vec<SubtreeRoot>,
+    /// Scripted `getdifficulty` answer. `Some` is returned by
+    /// [`NodeStatusRead::difficulty`]; `None` answers `NotReady` (no validator
+    /// behind the mock).
+    pub difficulty: Option<Difficulty>,
+    /// Scripted `getnetworkinfo` answer. `Some` is returned by
+    /// [`NodeStatusRead::network_info`]; `None` answers `NotReady`.
+    pub network_info: Option<NetworkInfo>,
+    /// Scripted `gettxout` answer, returned for any outpoint by the engine's
+    /// tx-out read. `None` is the ordinary "spent or unknown" answer.
+    pub tx_out: Option<zaino_primitives::types::rpc::TxOut>,
     /// Scripted raw transactions, keyed by txid.
     pub raw_transactions: Vec<(TransactionId, RawTransaction)>,
     /// Scripted chain-info aggregate. When `Some`, [`ChainInfoRead::chain_info`]
@@ -287,6 +299,21 @@ impl NodeStatusRead for MockIndexerService {
         _height: Option<Height>,
     ) -> Result<u64, NodeStatusError> {
         Ok(0)
+    }
+    async fn difficulty(&self) -> Result<Difficulty, NodeStatusError> {
+        // A scripted difficulty is returned verbatim; absent it, the mock has no
+        // validator behind it, so "not ready" is the honest answer.
+        self.current().difficulty.ok_or(NodeStatusError::NotReady)
+    }
+    async fn network_info(&self) -> Result<NetworkInfo, NodeStatusError> {
+        self.current()
+            .network_info
+            .clone()
+            .ok_or(NodeStatusError::NotReady)
+    }
+    async fn ping(&self) -> Result<(), NodeStatusError> {
+        // The mock is always responsive; `ping` carries no payload.
+        Ok(())
     }
 }
 

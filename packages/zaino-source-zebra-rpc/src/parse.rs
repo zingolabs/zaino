@@ -28,8 +28,8 @@ use incrementalmerkletree::frontier::CommitmentTree;
 use zaino_primitives::types::{
     rpc::{
         BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, ChainTip, ChainTipStatus,
-        FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
-        ScriptPubKey, SpentInfo, TxOut,
+        FundingStream, InputDelta, LocalAddress, LockboxStream, MiningInfo, NetworkEntry,
+        NetworkInfo, NodeInfo, OutputDelta, PeerInfo, ScriptPubKey, SpentInfo, TxOut,
     },
     AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
     BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
@@ -609,6 +609,53 @@ pub(crate) fn parse_node_info(value: &serde_json::Value) -> Result<NodeInfo, Par
             None => None,
         },
         errors,
+    })
+}
+
+/// Parse a `getnetworkinfo` response.
+pub(crate) fn parse_network_info(value: &serde_json::Value) -> Result<NetworkInfo, ParseError> {
+    Ok(NetworkInfo {
+        version: as_u64(field(value, "version")?)?,
+        subversion: as_str(field(value, "subversion")?)?.to_owned(),
+        protocol_version: as_u32(field(value, "protocolversion")?)?,
+        local_services: as_str(field(value, "localservices")?)?.to_owned(),
+        time_offset: as_i64(field(value, "timeoffset")?)?,
+        connections: as_u64(field(value, "connections")?)?,
+        networks: parse_optional_list(value, "networks", parse_network_entry)?,
+        relay_fee: zec_to_zatoshis(as_f64(field(value, "relayfee")?)?)?,
+        local_addresses: parse_optional_list(value, "localaddresses", parse_local_address)?,
+        // zebra/zcashd report a string; absent or null is "no warnings".
+        warnings: opt_field(value, "warnings")
+            .map(|v| as_str(v).map(str::to_owned))
+            .transpose()?
+            .unwrap_or_default(),
+    })
+}
+
+/// Parse one `networks` entry of a `getnetworkinfo` response.
+fn parse_network_entry(value: &serde_json::Value) -> Result<NetworkEntry, ParseError> {
+    Ok(NetworkEntry {
+        name: as_str(field(value, "name")?)?.to_owned(),
+        limited: as_bool(field(value, "limited")?)?,
+        reachable: as_bool(field(value, "reachable")?)?,
+        proxy: opt_field(value, "proxy")
+            .map(|v| as_str(v).map(str::to_owned))
+            .transpose()?
+            .unwrap_or_default(),
+        proxy_randomize_credentials: opt_field(value, "proxy_randomize_credentials")
+            .map(as_bool)
+            .transpose()?
+            .unwrap_or(false),
+    })
+}
+
+/// Parse one `localaddresses` entry of a `getnetworkinfo` response.
+fn parse_local_address(value: &serde_json::Value) -> Result<LocalAddress, ParseError> {
+    let port = as_u64(field(value, "port")?)?;
+    Ok(LocalAddress {
+        address: as_str(field(value, "address")?)?.to_owned(),
+        port: u16::try_from(port).map_err(|_| ParseError::Overflow(port))?,
+        score: as_i64(field(value, "score")?)?,
     })
 }
 
@@ -1309,6 +1356,43 @@ pub(crate) fn parse_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `parse_network_info` reads the zebra 6.4.2 oracle's `getnetworkinfo` into
+    /// the domain type: the identity fields, the per-network reachability, and
+    /// the relay fee converted from its ZEC float to exact zatoshis (1e-6 ZEC =
+    /// 100 zat).
+    #[test]
+    fn network_info_parses_the_oracle_response() {
+        let value = json!({
+            "version": 6_040_200,
+            "subversion": "/Zebra:6.4.2/",
+            "protocolversion": 170_160,
+            "localservices": "0000000000000001",
+            "timeoffset": 0,
+            "connections": 44,
+            "networks": [
+                {"name": "ipv4", "limited": false, "reachable": true, "proxy": "", "proxy_randomize_credentials": false},
+                {"name": "ipv6", "limited": false, "reachable": true, "proxy": "", "proxy_randomize_credentials": false},
+                {"name": "onion", "limited": false, "reachable": false, "proxy": "", "proxy_randomize_credentials": false}
+            ],
+            "relayfee": 1e-6,
+            "localaddresses": [],
+            "warnings": ""
+        });
+        let info = parse_network_info(&value).expect("parses");
+        assert_eq!(info.version, 6_040_200);
+        assert_eq!(info.subversion, "/Zebra:6.4.2/");
+        assert_eq!(info.protocol_version, 170_160);
+        assert_eq!(info.local_services, "0000000000000001");
+        assert_eq!(info.time_offset, 0);
+        assert_eq!(info.connections, 44);
+        assert_eq!(info.networks.len(), 3);
+        assert_eq!(info.networks[2].name, "onion");
+        assert!(!info.networks[2].reachable);
+        assert_eq!(info.relay_fee, Zatoshis::new(100).expect("valid amount"));
+        assert!(info.local_addresses.is_empty());
+        assert_eq!(info.warnings, "");
+    }
 
     /// A value whose reversal is unmistakable: it reads one way forwards and
     /// another backwards, so a mirrored decode cannot pass by coincidence.

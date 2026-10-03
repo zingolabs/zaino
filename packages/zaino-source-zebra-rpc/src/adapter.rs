@@ -962,6 +962,26 @@ impl zaino_source::OneShotGetMiningInfo for ZebraRpcAdapter {
     }
 }
 
+impl zaino_source::OneShotGetNetworkInfo for ZebraRpcAdapter {
+    async fn get_network_info(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::rpc::NetworkInfo,
+        QueryError<zaino_source::GetNetworkInfoError>,
+    > {
+        self.call_parsed("getnetworkinfo", vec![], parse::parse_network_info)
+            .await
+    }
+}
+
+impl zaino_source::OneShotPing for ZebraRpcAdapter {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        // `ping` answers a successful probe with JSON `null`; the value carries
+        // nothing, so the parse closure discards it.
+        self.call_parsed("ping", vec![], |_| Ok(())).await
+    }
+}
+
 impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
     async fn get_block_subsidy(
         &self,

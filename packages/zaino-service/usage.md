@@ -84,14 +84,16 @@ a header missing from the chain view at or below the pinned tip is the typed
 `TierRead` variant with `#[source]` rather than a flattened string.
 
 `NodeRpcService` also demands `NodeStatusRead`, the node-operator status control
-behind `getinfo`, `getmininginfo`, `getpeerinfo` and `getnetworksolps`. These are
-facts about the validator, not the chain, so Zaino indexes none of them and all
-four are passthrough — a single `Capability::NodeStatus`, always `Live`. The
-reads are typed (`NodeInfo`, `MiningInfo`, `Vec<PeerInfo>`, `u64`), not an opaque
-string, so a serving adapter renders them into its own wire shape. Their failure
-is the typed `NodeStatusError`: `NotReady` for a validator still starting (the
-same request succeeds shortly) versus `Unreachable`, which keeps the source-layer
-cause as a `#[source]` rather than flattening it to a message.
+behind `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`,
+`getdifficulty`, `getnetworkinfo` and `ping`. These are facts about the validator,
+not the chain, so Zaino indexes none of them and all are passthrough — a single
+`Capability::NodeStatus`, always `Live`. The reads are typed (`NodeInfo`,
+`MiningInfo`, `Vec<PeerInfo>`, `u64`, `Difficulty`, `NetworkInfo`, and `()` for
+`ping`), not an opaque string, so a serving adapter renders them into its own
+wire shape. Their failure is the typed `NodeStatusError`: `NotReady` for a
+validator still starting (the same request succeeds shortly) versus `Unreachable`,
+which keeps the source-layer cause as a `#[source]` rather than flattening it to a
+message.
 
 `NodeRpcService` also demands `MempoolListing`, the one-shot mempool read behind
 `getrawmempool` and `getmempoolinfo`. It is distinct from `MempoolSubscribe` (a

@@ -14,8 +14,8 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::rpc::{MiningInfo, NodeInfo, PeerInfo};
-use zaino_primitives::types::Height;
+use zaino_primitives::types::rpc::{MiningInfo, NetworkInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::{Difficulty, Height};
 
 /// Why a node-status read could not be answered.
 ///
@@ -76,4 +76,15 @@ pub trait NodeStatusRead: Send + Sync {
         blocks: Option<u32>,
         height: Option<Height>,
     ) -> impl Future<Output = Result<u64, NodeStatusError>> + Send;
+
+    /// `getdifficulty`: the current difficulty, as a multiple of the network
+    /// minimum.
+    fn difficulty(&self) -> impl Future<Output = Result<Difficulty, NodeStatusError>> + Send;
+
+    /// `getnetworkinfo`: the validator's peer-to-peer network view.
+    fn network_info(&self) -> impl Future<Output = Result<NetworkInfo, NodeStatusError>> + Send;
+
+    /// `ping`: confirm the validator is responsive. `Ok(())` on a successful
+    /// response, which the node-RPC surface renders as JSON `null`.
+    fn ping(&self) -> impl Future<Output = Result<(), NodeStatusError>> + Send;
 }

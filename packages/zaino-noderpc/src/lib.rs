@@ -39,17 +39,18 @@ use crate::wire::params::{
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
     BlockchainInfoResponse, DeltaRange, GetBlockHashesResponse, GetBlockResponse,
-    GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NodeInfoResponse,
-    PeerInfoEntry, RawMempoolResponse, RawTransactionResponse, SubtreeRootsResponse,
-    TreestateResponse, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse,
+    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, RawTransactionResponse,
+    SubtreeRootsResponse, TreestateResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_hash_to_display, block_hashes_to_wire, block_header_to_wire,
     block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire, blockhash_from_hex,
     bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire, mining_info_to_wire,
-    node_info_to_wire, peer_info_to_wire, subtree_roots_to_wire, transaction_view_to_wire,
-    treestate_to_wire, txid_from_hex, txid_to_display, unified_receivers_to_wire, utxo_to_wire,
-    validated_to_wire, z_validated_to_wire,
+    network_info_to_wire, node_info_to_wire, peer_info_to_wire, subtree_roots_to_wire,
+    transaction_view_to_wire, treestate_to_wire, txid_from_hex, txid_to_display,
+    unified_receivers_to_wire, utxo_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -344,6 +345,26 @@ impl<S: NodeRpcService> NodeRpc<S> {
             .into_iter()
             .map(peer_info_to_wire)
             .collect())
+    }
+
+    /// `getdifficulty`: the current difficulty, relayed from the validator. Not
+    /// indexed.
+    pub(crate) async fn get_difficulty(&self) -> Result<f64, RpcError> {
+        Ok(self.engine.difficulty().await?)
+    }
+
+    /// `getnetworkinfo`: the validator's peer-to-peer network view, relayed. Not
+    /// indexed.
+    pub(crate) async fn get_network_info(&self) -> Result<NetworkInfoResponse, RpcError> {
+        Ok(network_info_to_wire(self.engine.network_info().await?))
+    }
+
+    /// `ping`: confirm the validator is responsive. Returns nothing on success,
+    /// which the wire renders as JSON `null`, matching zcashd/zebra. Named
+    /// `get_ping` so the trait impl's `ping` body calls it rather than recursing.
+    pub(crate) async fn get_ping(&self) -> Result<(), RpcError> {
+        self.engine.ping().await?;
+        Ok(())
     }
 
     /// `getnetworksolps`: the network solution rate, relayed. `blocks` and
@@ -1907,6 +1928,147 @@ mod tests {
             node.get_subtrees_by_index("sprout", 0, None).await,
             Err(RpcError::InvalidParams(_))
         ));
+    }
+
+    /// `getdifficulty` relays the validator's value, the zebra 6.4.2 oracle's
+    /// mainnet difficulty, through `NodeStatusRead::difficulty`.
+    #[tokio::test]
+    async fn getdifficulty_relays_the_oracle_value() {
+        let engine = MockIndexerService::new(MockChain {
+            difficulty: Some(322_008_416.553_987_15),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        assert_eq!(
+            node.get_difficulty().await.expect("difficulty"),
+            322_008_416.553_987_15
+        );
+    }
+
+    /// A not-ready validator is an RPC error, never a defaulted zero — the warmer
+    /// must not cache a wrong difficulty over a transport blip.
+    #[tokio::test]
+    async fn getdifficulty_errors_when_the_validator_is_not_ready() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        assert!(matches!(
+            node.get_difficulty().await,
+            Err(RpcError::NodeStatus(_))
+        ));
+    }
+
+    /// `getnetworkinfo` renders the oracle's exact key set and values: the
+    /// protocol identity, the three network entries, the relay fee as a ZEC float
+    /// (100 zat = 1e-6 ZEC), and the empty `localaddresses` / `warnings`.
+    #[tokio::test]
+    async fn getnetworkinfo_renders_the_oracle_shape() {
+        use zaino_primitives::types::rpc::{NetworkEntry, NetworkInfo};
+        use zaino_primitives::types::Zatoshis;
+        let net = |name: &str, reachable: bool| NetworkEntry {
+            name: name.to_string(),
+            limited: false,
+            reachable,
+            proxy: String::new(),
+            proxy_randomize_credentials: false,
+        };
+        let info = NetworkInfo {
+            version: 6_040_200,
+            subversion: "/Zebra:6.4.2/".to_string(),
+            protocol_version: 170_160,
+            local_services: "0000000000000001".to_string(),
+            time_offset: 0,
+            connections: 44,
+            networks: vec![net("ipv4", true), net("ipv6", true), net("onion", false)],
+            relay_fee: Zatoshis::new(100).expect("valid amount"),
+            local_addresses: Vec::new(),
+            warnings: String::new(),
+        };
+        let engine = MockIndexerService::new(MockChain {
+            network_info: Some(info),
+            ..Default::default()
+        });
+        let node = NodeRpc::new(engine, Network::MainNetwork);
+        let json = serde_json::to_value(node.get_network_info().await.expect("network info"))
+            .expect("serialize");
+        let obj = json.as_object().expect("a JSON object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "connections",
+                "localaddresses",
+                "localservices",
+                "networks",
+                "protocolversion",
+                "relayfee",
+                "subversion",
+                "timeoffset",
+                "version",
+                "warnings",
+            ]
+        );
+        assert_eq!(
+            obj.get("version").and_then(serde_json::Value::as_u64),
+            Some(6_040_200)
+        );
+        assert_eq!(
+            obj.get("subversion").and_then(serde_json::Value::as_str),
+            Some("/Zebra:6.4.2/")
+        );
+        assert_eq!(
+            obj.get("protocolversion")
+                .and_then(serde_json::Value::as_u64),
+            Some(170_160)
+        );
+        assert_eq!(
+            obj.get("localservices").and_then(serde_json::Value::as_str),
+            Some("0000000000000001")
+        );
+        assert_eq!(
+            obj.get("timeoffset").and_then(serde_json::Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(
+            obj.get("connections").and_then(serde_json::Value::as_u64),
+            Some(44)
+        );
+        assert_eq!(
+            obj.get("relayfee").and_then(serde_json::Value::as_f64),
+            Some(1e-6)
+        );
+        assert_eq!(
+            obj.get("warnings").and_then(serde_json::Value::as_str),
+            Some("")
+        );
+        let networks = obj
+            .get("networks")
+            .and_then(serde_json::Value::as_array)
+            .expect("networks array");
+        assert_eq!(networks.len(), 3);
+        assert_eq!(
+            networks[0].get("name").and_then(serde_json::Value::as_str),
+            Some("ipv4")
+        );
+        assert_eq!(
+            networks[2]
+                .get("reachable")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert!(
+            obj.get("localaddresses")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "localaddresses is an empty array: {obj:?}"
+        );
+    }
+
+    /// `ping` returns nothing on success — the mock is always responsive — which
+    /// the surface renders as JSON `null`.
+    #[tokio::test]
+    async fn ping_succeeds_against_a_responsive_validator() {
+        let node = NodeRpc::new(engine_with_tip(None), Network::MainNetwork);
+        node.get_ping().await.expect("ping succeeds");
     }
 
     #[tokio::test]

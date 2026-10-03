@@ -882,6 +882,62 @@ pub struct MiningInfoResponse {
     pub errors: Option<String>,
 }
 
+/// One `networks` entry of a `getnetworkinfo` response, in zcashd's spellings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NetworkEntryResponse {
+    /// The network's name — `ipv4`, `ipv6`, `onion`.
+    pub name: String,
+    /// Whether the node only connects to this network on explicit request.
+    pub limited: bool,
+    /// Whether the node considers this network reachable.
+    pub reachable: bool,
+    /// The proxy the node routes this network through; empty when none.
+    pub proxy: String,
+    /// Whether the node randomises credentials per proxy connection.
+    pub proxy_randomize_credentials: bool,
+}
+
+/// One `localaddresses` entry of a `getnetworkinfo` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalAddressResponse {
+    /// The advertised address.
+    pub address: String,
+    /// The port the node listens on.
+    pub port: u16,
+    /// The node's confidence score in this address.
+    pub score: i64,
+}
+
+/// The `getnetworkinfo` response, in zcashd/zebra's field names.
+///
+/// `relayfee` is the ZEC-denominated float from the shared `zatoshis_to_zec`
+/// helper. Unlike the value-pool family it carries no exact `*Zat` sibling —
+/// zcashd and zebra emit none, and the oracle confirms it, so adding one would
+/// diverge from the shape clients expect.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NetworkInfoResponse {
+    /// Validator version, as its own numeric encoding.
+    pub version: u64,
+    /// Network protocol user-agent string.
+    pub subversion: String,
+    /// Peer-to-peer protocol version.
+    pub protocolversion: u32,
+    /// The node's service-flags bitfield, as the hex string the validator reports.
+    pub localservices: String,
+    /// The node's clock offset from its peers, in seconds.
+    pub timeoffset: i64,
+    /// Total peer connections, inbound and outbound.
+    pub connections: u64,
+    /// Per-network reachability.
+    pub networks: Vec<NetworkEntryResponse>,
+    /// Minimum relay fee, as a ZEC-denominated float.
+    pub relayfee: f64,
+    /// The node's own advertised addresses.
+    pub localaddresses: Vec<LocalAddressResponse>,
+    /// The validator's networking warnings, empty when there are none.
+    pub warnings: String,
+}
+
 /// One entry of the `getpeerinfo` list.
 ///
 /// The explorer reads `addr` tolerantly and nothing else, but `inbound` is the

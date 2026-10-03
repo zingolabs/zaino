@@ -11,7 +11,9 @@ use zaino_address::{
     script_to_asm, transparent_address_from_script, ScriptAddress, TransparentScriptKind,
     UnifiedReceivers, ValidatedAddress, ZValidatedAddress,
 };
-use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::rpc::{
+    BlockHeaderVerbose, LocalAddress, MiningInfo, NetworkEntry, NetworkInfo, NodeInfo, PeerInfo,
+};
 use zaino_primitives::types::AddressBalance;
 use zaino_primitives::types::AddressDelta;
 use zaino_primitives::types::BlockHash;
@@ -29,12 +31,13 @@ use crate::error::RpcError;
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltaEntry, AddressUtxoEntry, BlockHashLogical,
     BlockHeaderResponse, BlockResponse, BlockchainInfoResponse, CommitmentsResponse,
-    GetBlockHashesResponse, JoinSplitObject, MempoolEntryObject, MiningInfoResponse,
-    NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry,
-    PoolTreestateResponse, ScriptPubKey, ScriptSig, ShieldedOutput, ShieldedSpend,
-    SubtreeRootEntry, SubtreeRootsResponse, TipConsensusResponse, TransactionInput,
-    TransactionObject, TransactionOutput, TreePoolSize, TreesResponse, TreestateResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
+    GetBlockHashesResponse, JoinSplitObject, LocalAddressResponse, MempoolEntryObject,
+    MiningInfoResponse, NetworkEntryResponse, NetworkInfoResponse, NetworkUpgradeResponse,
+    NodeInfoResponse, OrchardActionObject, OrchardObject, PeerInfoEntry, PoolTreestateResponse,
+    ScriptPubKey, ScriptSig, ShieldedOutput, ShieldedSpend, SubtreeRootEntry, SubtreeRootsResponse,
+    TipConsensusResponse, TransactionInput, TransactionObject, TransactionOutput, TreePoolSize,
+    TreesResponse, TreestateResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -852,6 +855,52 @@ pub(crate) fn peer_info_to_wire(peer: PeerInfo) -> PeerInfoEntry {
     PeerInfoEntry {
         addr: peer.addr,
         inbound: peer.inbound,
+    }
+}
+
+/// Render one network entry for `getnetworkinfo` (domain -> wire).
+fn network_entry_to_wire(entry: NetworkEntry) -> NetworkEntryResponse {
+    NetworkEntryResponse {
+        name: entry.name,
+        limited: entry.limited,
+        reachable: entry.reachable,
+        proxy: entry.proxy,
+        proxy_randomize_credentials: entry.proxy_randomize_credentials,
+    }
+}
+
+/// Render one local address for `getnetworkinfo` (domain -> wire).
+fn local_address_to_wire(local: LocalAddress) -> LocalAddressResponse {
+    LocalAddressResponse {
+        address: local.address,
+        port: local.port,
+        score: local.score,
+    }
+}
+
+/// Render the validator's `getnetworkinfo` as the wire response (domain -> wire).
+/// `relayfee` is the shared ZEC float; it has no exact `*Zat` sibling, matching
+/// zcashd/zebra (see [`NetworkInfoResponse`]).
+pub(crate) fn network_info_to_wire(info: NetworkInfo) -> NetworkInfoResponse {
+    NetworkInfoResponse {
+        version: info.version,
+        subversion: info.subversion,
+        protocolversion: info.protocol_version,
+        localservices: info.local_services,
+        timeoffset: info.time_offset,
+        connections: info.connections,
+        networks: info
+            .networks
+            .into_iter()
+            .map(network_entry_to_wire)
+            .collect(),
+        relayfee: zatoshis_to_zec(info.relay_fee),
+        localaddresses: info
+            .local_addresses
+            .into_iter()
+            .map(local_address_to_wire)
+            .collect(),
+        warnings: info.warnings,
     }
 }
 

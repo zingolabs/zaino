@@ -575,6 +575,21 @@ impl OneShotGetTxOut for ZebraValidator {
     }
 }
 
+impl OneShotGetNetworkInfo for ZebraValidator {
+    async fn get_network_info(&self) -> Result<rpc::NetworkInfo, QueryError<GetNetworkInfoError>> {
+        // RPC only: `getnetworkinfo` is a fact about the node's peer-to-peer
+        // networking, which the read-state service does not expose.
+        self.rpc.get_network_info().await
+    }
+}
+
+impl OneShotPing for ZebraValidator {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        // RPC only: `ping` probes the node's responsiveness, not the chain.
+        self.rpc.ping().await
+    }
+}
+
 impl OneShotGetSpentInfo for ZebraValidator {
     async fn get_spent_info(
         &self,
@@ -680,10 +695,10 @@ mod node_rpc_port_coverage {
     use zaino_source::{
         GetAddressBalance, GetAddressDeltas, GetAddressTxids, GetAddressUtxos, GetBlock,
         GetBlockByHash, GetBlockDecoded, GetBlockDecodedByHash, GetBlockHeader, GetBlockVerbose,
-        GetBlockVerboseByHash, GetBlockchainInfo, GetMempoolMetadata, GetMempoolSourceTip,
-        GetMempoolTxids, GetMiningInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo, GetRawBlock,
-        GetRawBlockByHash, GetSubtreeRoots, GetTransaction, GetTransactionVerbose, GetTreestate,
-        SendRawTransaction, ValidatorClient,
+        GetBlockVerboseByHash, GetBlockchainInfo, GetDifficulty, GetMempoolMetadata,
+        GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs,
+        GetNodeInfo, GetPeerInfo, GetRawBlock, GetRawBlockByHash, GetSubtreeRoots, GetTransaction,
+        GetTransactionVerbose, GetTreestate, GetTxOut, Ping, SendRawTransaction, ValidatorClient,
     };
 
     use super::ZebraValidator;
@@ -714,6 +729,10 @@ mod node_rpc_port_coverage {
             + GetMiningInfo
             + GetPeerInfo
             + GetNetworkSolPs
+            + GetDifficulty
+            + GetNetworkInfo
+            + Ping
+            + GetTxOut
             + GetMempoolTxids
             + GetMempoolMetadata
             + GetMempoolSourceTip

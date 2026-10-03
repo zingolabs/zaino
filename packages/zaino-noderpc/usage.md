@@ -26,9 +26,10 @@ in internal order per the lightwalletd protocol.)
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
 `getblockheader`, `getblockhashes`, `getrawtransaction`, `sendrawtransaction`,
 `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
-`getmempoolinfo`, `getaddressbalance`, `getaddressdeltas`, `getaddresstxids`,
-`getaddressutxos`, `z_gettreestate`, `z_getsubtreesbyindex`, `validateaddress`,
-`z_validateaddress`, `z_listunifiedreceivers`.
+`getmempoolinfo`, `getdifficulty`, `getnetworkinfo`, `ping`, `getaddressbalance`,
+`getaddressdeltas`, `getaddresstxids`, `getaddressutxos`, `z_gettreestate`,
+`z_getsubtreesbyindex`, `validateaddress`, `z_validateaddress`,
+`z_listunifiedreceivers`.
 
 `z_gettreestate` and `z_getsubtreesbyindex` read through `TreestateRead`
 (passthrough — Zaino indexes no commitment-tree frontier). `z_gettreestate`
@@ -53,10 +54,21 @@ insight-explorer shape (`address`, `txid` display order, `outputIndex`, `script`
 hex, `satoshis`, `height`); `chainInfo` wrapping is not modelled — the response is
 the bare array, matching the oracle.
 
-The four node-status methods (`getinfo`, `getmininginfo`, `getpeerinfo`,
-`getnetworksolps`) read through `NodeStatusRead`, a typed passthrough of the
-validator's own status. `getinfo` always carries `build` as a string: clients
-pattern-match on it.
+The node-status methods (`getinfo`, `getmininginfo`, `getpeerinfo`,
+`getnetworksolps`, `getdifficulty`, `getnetworkinfo`, `ping`) read through
+`NodeStatusRead`, a typed passthrough of the validator's own status — facts about
+the node, not the chain, so none is indexed. `getinfo` always carries `build` as
+a string: clients pattern-match on it. `getnetworkinfo` renders zebra/zcashd's
+shape (`version`, `subversion`, `protocolversion`, `localservices`, `timeoffset`,
+`connections`, `networks`, `relayfee`, `localaddresses`, `warnings`); `relayfee`
+is the shared ZEC float with no `*Zat` sibling, matching the oracle. `getdifficulty`
+relays the difficulty float. `ping` returns JSON `null` on success. A not-ready
+or unreachable validator is an RPC error on every one of these, never a defaulted
+success a warmer would cache.
+
+The methods are listed at the top; `getnetworkinfo` and `ping` are backed by new
+typed source ports (`GetNetworkInfo`, `Ping`), `getdifficulty` by the existing
+`GetDifficulty` port — all relayed through `NodeStatusRead`.
 
 `getrawmempool` and `getmempoolinfo` read through `MempoolListing`. `getrawmempool`
 has two shapes, chosen by its `verbose` parameter (default false): non-verbose is

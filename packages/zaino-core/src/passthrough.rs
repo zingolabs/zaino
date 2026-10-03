@@ -18,10 +18,12 @@
 //! to passthrough (the validator's state cannot be pinned to our view). That is
 //! sound for the immutable, historical data light clients query.
 
-use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::rpc::{
+    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo,
+};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockVerbose, BlockchainInfo,
-    DecodedBlock, Height, HeightRange, PreIndexCompactTx, RawTransaction, ShieldedPool,
+    DecodedBlock, Difficulty, Height, HeightRange, PreIndexCompactTx, RawTransaction, ShieldedPool,
     SubtreeRoot, TransactionId, TransparentAddress, TransparentOutput, Treestate, Utxo,
 };
 use zaino_service::NodeStatusError;
@@ -36,12 +38,13 @@ use zaino_source::{
     GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockDecoded,
     GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockVerbose,
     GetBlockVerboseByHash, GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError,
-    GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolMetadataError, GetMempoolSourceTip,
-    GetMempoolTxids, GetMempoolTxidsError, GetMiningInfo, GetMiningInfoError, GetNetworkSolPs,
+    GetDifficulty, GetDifficultyError, GetMempoolCompactTransaction, GetMempoolMetadata,
+    GetMempoolMetadataError, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
+    GetMiningInfo, GetMiningInfoError, GetNetworkInfo, GetNetworkInfoError, GetNetworkSolPs,
     GetNetworkSolPsError, GetNodeInfo, GetNodeInfoError, GetPeerInfo, GetPeerInfoError,
     GetRawBlock, GetRawBlockByHash, GetRawMempoolTransaction, GetRawMempoolTransactionError,
     GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
-    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError,
+    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError, Ping,
     SendRawTransaction, SendRawTransactionError, SourceError, TransactionResponse,
 };
 
@@ -902,6 +905,56 @@ where
             Err(SourceError::Domain(GetNetworkSolPsError::NotReady)) => {
                 Err(NodeStatusError::NotReady)
             }
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetDifficulty,
+{
+    /// The current difficulty, live, as a multiple of the network minimum.
+    pub(crate) async fn difficulty(&self) -> Result<Difficulty, NodeStatusError> {
+        match self.source.get_difficulty().await {
+            Ok(difficulty) => Ok(difficulty),
+            Err(SourceError::Domain(GetDifficultyError::NotReady)) => {
+                Err(NodeStatusError::NotReady)
+            }
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetNetworkInfo,
+{
+    /// The validator's network view, live.
+    pub(crate) async fn network_info(&self) -> Result<NetworkInfo, NodeStatusError> {
+        match self.source.get_network_info().await {
+            Ok(info) => Ok(info),
+            Err(SourceError::Domain(GetNetworkInfoError::NotReady)) => {
+                Err(NodeStatusError::NotReady)
+            }
+            Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
+            Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: Ping,
+{
+    /// Confirm the validator is responsive, live. `Ping` carries no domain error
+    /// (typed `Infallible`) — only a transport failure, reported unreachable.
+    pub(crate) async fn ping(&self) -> Result<(), NodeStatusError> {
+        match self.source.ping().await {
+            Ok(()) => Ok(()),
+            Err(SourceError::Domain(never)) => match never {},
             Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
             Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
         }

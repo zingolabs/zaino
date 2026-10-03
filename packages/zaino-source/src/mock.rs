@@ -12,15 +12,18 @@ use crate::error::{FailureMode, NonDomainError};
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
     GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
-    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetMiningInfoError,
-    GetNetworkSolPsError, GetNodeInfoError, GetPeerInfoError, GetSubtreeRootsError,
-    GetTransactionError, GetTransactionVerboseError, GetTreestateError, QueryError,
-    SendRawTransactionError, TransactionResponse,
+    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetDifficultyError,
+    GetMiningInfoError, GetNetworkInfoError, GetNetworkSolPsError, GetNodeInfoError,
+    GetPeerInfoError, GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError,
+    GetTreestateError, GetTxOutError, QueryError, SendRawTransactionError, TransactionResponse,
 };
-use zaino_primitives::types::rpc::{BlockHeaderVerbose, MiningInfo, NodeInfo, PeerInfo};
+use zaino_primitives::types::rpc::{
+    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut,
+};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, BlockVerbose, BlockchainInfo, DecodedBlock, DetailedTransaction,
-    ShieldedPool, SubtreeRoot, Transaction, TransactionDetail, TransactionLocation, Utxo,
+    Difficulty, OutputIndex, ShieldedPool, SubtreeRoot, Transaction, TransactionDetail,
+    TransactionLocation, Utxo,
 };
 
 /// The default detail a seeded verbose response carries: a v5, non-coinbase
@@ -103,6 +106,13 @@ pub struct MockChain {
     peer_info_response: Vec<PeerInfo>,
     /// Canned network solution rate; `None` answers a domain not-ready.
     network_sol_ps_response: Option<u64>,
+    /// Canned `getdifficulty` response; `None` answers a domain not-ready.
+    difficulty_response: Option<Difficulty>,
+    /// Canned `getnetworkinfo` response; `None` answers a domain not-ready.
+    network_info_response: Option<NetworkInfo>,
+    /// Canned `gettxout` response, returned for any outpoint. `None` is the
+    /// ordinary "spent or nonexistent" answer, so this never fails a domain query.
+    tx_out_response: Option<TxOut>,
 }
 
 impl MockChain {
@@ -133,6 +143,9 @@ impl MockChain {
             mining_info_response: None,
             peer_info_response: Vec::new(),
             network_sol_ps_response: None,
+            difficulty_response: None,
+            network_info_response: None,
+            tx_out_response: None,
         }
     }
 
@@ -371,6 +384,9 @@ impl Clone for MockChain {
             mining_info_response: self.mining_info_response.clone(),
             peer_info_response: self.peer_info_response.clone(),
             network_sol_ps_response: self.network_sol_ps_response,
+            difficulty_response: self.difficulty_response,
+            network_info_response: self.network_info_response.clone(),
+            tx_out_response: self.tx_out_response.clone(),
         }
     }
 }
@@ -821,6 +837,52 @@ impl crate::OneShotGetNetworkSolPs for MockChain {
         }
         self.network_sol_ps_response
             .ok_or(QueryError::Domain(GetNetworkSolPsError::NotReady))
+    }
+}
+
+impl crate::OneShotGetDifficulty for MockChain {
+    async fn get_difficulty(&self) -> Result<Difficulty, QueryError<GetDifficultyError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.difficulty_response
+            .ok_or(QueryError::Domain(GetDifficultyError::NotReady))
+    }
+}
+
+impl crate::OneShotGetNetworkInfo for MockChain {
+    async fn get_network_info(&self) -> Result<NetworkInfo, QueryError<GetNetworkInfoError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.network_info_response
+            .clone()
+            .ok_or(QueryError::Domain(GetNetworkInfoError::NotReady))
+    }
+}
+
+impl crate::OneShotPing for MockChain {
+    async fn ping(&self) -> Result<(), QueryError<std::convert::Infallible>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        Ok(())
+    }
+}
+
+impl crate::OneShotGetTxOut for MockChain {
+    async fn get_tx_out(
+        &self,
+        _txid: TransactionId,
+        _index: OutputIndex,
+        _include_mempool: bool,
+    ) -> Result<Option<TxOut>, QueryError<GetTxOutError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        // `None` is the ordinary "spent or nonexistent" answer, so a scripted
+        // `None` is a successful query, never a domain error.
+        Ok(self.tx_out_response.clone())
     }
 }
 

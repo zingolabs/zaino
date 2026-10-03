@@ -6,10 +6,10 @@ use zaino_indexes::sets::transparent_history::TransparentHistory;
 use zaino_service::use_cases::NodeRpc;
 use zaino_source::{
     GetBlock, GetBlockByHash, GetBlockDecoded, GetBlockDecodedByHash, GetBlockHeader,
-    GetBlockVerbose, GetBlockVerboseByHash, GetBlockchainInfo, GetMempoolMetadata,
-    GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo,
-    GetRawBlock, GetRawBlockByHash, GetSubtreeRoots, GetTransaction, GetTransactionVerbose,
-    GetTreestate, SendRawTransaction,
+    GetBlockVerbose, GetBlockVerboseByHash, GetBlockchainInfo, GetDifficulty, GetMempoolMetadata,
+    GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs,
+    GetNodeInfo, GetPeerInfo, GetRawBlock, GetRawBlockByHash, GetSubtreeRoots, GetTransaction,
+    GetTransactionVerbose, GetTreestate, GetTxOut, Ping, SendRawTransaction,
 };
 
 use crate::config::IndexedDeploymentConfig;
@@ -87,6 +87,10 @@ pub trait NodeRpcSource:
     + GetMiningInfo
     + GetPeerInfo
     + GetNetworkSolPs
+    + GetDifficulty
+    + GetNetworkInfo
+    + Ping
+    + GetTxOut
     + GetMempoolTxids
     + GetMempoolMetadata
     + GetMempoolSourceTip
@@ -113,6 +117,10 @@ impl<S> NodeRpcSource for S where
         + GetMiningInfo
         + GetPeerInfo
         + GetNetworkSolPs
+        + GetDifficulty
+        + GetNetworkInfo
+        + Ping
+        + GetTxOut
         + GetMempoolTxids
         + GetMempoolMetadata
         + GetMempoolSourceTip
