@@ -32,6 +32,25 @@ impl Routing for LightWalletRouting {
 }
 ```
 
+`NodeRpcRouting` is the node-RPC / explorer deployment's routing — the same
+placements as `LightWalletRouting`, because the node reads the explorer adds
+(full and verbose blocks, decoded transactions, the chain-info aggregate, the
+node-status reads) are always passthrough and so are not on the table at all:
+
+```rust,ignore
+pub struct NodeRpcRouting;
+impl Routing for NodeRpcRouting {
+    type Address = Passthrough;       // relayed to the validator; state mode only
+    type Treestate = Passthrough;
+    type Spend = Withheld;            // re-added with a local spend index later
+    type TransactionLocation = Withheld;
+}
+```
+
+This is the passthrough node-RPC deployment's routing; a local one that indexes
+transparent history — with spends, and without disclosing queried addresses —
+is a sibling to come, flipping `Address` (and `Spend`) to `Local`.
+
 Routing is a property of the deployment, not of the use case it serves: the
 demand traits in `zaino-service` say nothing about placement, so a second
 engine could serve the same use case under a different table. Flipping a

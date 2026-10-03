@@ -42,3 +42,4 @@ zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-logging = { path = "../zaino-logging" }
 zcash_protocol.workspace = true
+zaino-source-zebra = { path = "../zaino-source-zebra" }

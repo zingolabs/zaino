@@ -6252,6 +6252,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-service",
  "zaino-source",
+ "zaino-source-zebra",
  "zaino-status",
  "zaino-store",
  "zaino-store-service",

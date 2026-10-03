@@ -28,8 +28,10 @@
 //! traits, not a crate boundary.
 
 mod light_wallet_passthrough;
+mod node_rpc_passthrough;
 
 pub use light_wallet_passthrough::{LightWalletPassthrough, LightWalletSource};
+pub use node_rpc_passthrough::{NodeRpcPassthrough, NodeRpcSource};
 
 use zaino_chain_head::ChainHeadBlockSource;
 use zaino_core::chain_view::ChainTier;
