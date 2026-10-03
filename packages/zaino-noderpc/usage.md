@@ -79,6 +79,43 @@ request resolves the height to a hash once — from the header read — and issu
 position and transaction reads by that hash, so the three cannot straddle a tip
 reorg between them. Verbosity 0 needs only the single raw-block read.
 
+## Wire dialects
+
+jsonrpsee speaks strict JSON-RPC 2.0, but the explorer's `zcashex` client speaks
+the zcashd/bitcoind dialect. `JsonRpcServer` installs a `tower` HTTP layer
+(`transport/dialect.rs`, via `set_http_middleware`) that bridges the two. It owns
+this adapter's dialect handling outright — it takes no `zebra-rpc` dependency,
+re-deriving Zebra's classification so the adapter stays validator-agnostic.
+
+A request is classified from its `(jsonrpc, params, id)` shape:
+
+- `"jsonrpc": "1.0"` with params and id — the lightwalletd-style 1.0 dialect, the
+  one `zcashex` uses;
+- absent `jsonrpc` with params and id — bitcoind;
+- `"2.0"` — strict 2.0;
+- anything else, **including batch arrays** — unknown, passed through untouched
+  for jsonrpsee to handle (jsonrpsee serves 2.0 batches natively).
+
+For the two legacy dialects the request's `jsonrpc` is rewritten to `"2.0"` so
+jsonrpsee accepts it, and the response is reshaped back:
+
+- both `result` and `error` keys are **always** present — `"error": null` on
+  success, `"result": null` on error — because `zcashex` strict-matches the whole
+  envelope and crashes on a missing key;
+- `jsonrpc` is `"1.0"` for the lightwalletd dialect and absent for bitcoind; the
+  `id` is echoed unchanged;
+- error replies carry the HTTP status bitcoind's `JSONErrorReply` assigns:
+  method-not-found (-32601) → 404, invalid-request (-32600) → 400, and every
+  other error — parse errors, **invalid params (-32602)**, internal errors → 500.
+  Success is 200.
+
+A 2.0 response keeps today's exact shape and status (a success with no `error`
+key, an error at HTTP 200), so existing 2.0 clients are unaffected. The layer also
+forces `content-type` to `application/json` when it is missing or `text/plain`
+(jsonrpsee does no content sniffing, and `zcashex` sends `text/plain`), caps the
+request body at two `MAX_BLOCK_BYTES` plus slack (bounding the largest request,
+`sendrawtransaction` of a large transaction), and accepts but ignores basic auth.
+
 ## Error mapping
 
 `to_error_object` maps each adapter error to a JSON-RPC code per variant, never a

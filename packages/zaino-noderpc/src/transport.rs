@@ -10,11 +10,37 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use jsonrpsee::server::ServerBuilder;
+use tower::layer::util::{Identity, Stack};
+use tower::ServiceBuilder;
 use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
+use zaino_consensus::MAX_BLOCK_BYTES;
 use zaino_service::NodeRpcService;
 
 use crate::rpc::NodeRpcApiServer;
+use crate::transport::dialect::ZcashdDialectLayer;
 use crate::NodeRpc;
+
+mod dialect;
+
+/// The maximum request body this server accepts.
+///
+/// The largest request the explorer sends is `sendrawtransaction` of a large
+/// transaction, so the limit is two maximum blocks plus header slack — the
+/// bound legacy zaino used. Computed from the [`u64`] protocol constant and
+/// saturated into `usize`: on every supported (64-bit) target the product is
+/// exact, and the saturating fallback keeps a hypothetical 32-bit build to a
+/// safe ceiling rather than overflowing.
+fn max_request_body_size() -> usize {
+    let bytes = MAX_BLOCK_BYTES.saturating_mul(2).saturating_add(1024);
+    usize::try_from(bytes).unwrap_or(usize::MAX)
+}
+
+/// The HTTP middleware stack installed on the jsonrpsee server: the
+/// zcashd-dialect bridge. Shared by [`JsonRpcServer::run`] and the tests so both
+/// exercise the same wiring.
+fn dialect_middleware() -> ServiceBuilder<Stack<ZcashdDialectLayer, Identity>> {
+    ServiceBuilder::new().layer(ZcashdDialectLayer::new(max_request_body_size()))
+}
 
 /// A jsonrpsee server over a [`NodeRpc`] handler.
 pub struct JsonRpcServer<S: NodeRpcService + Clone + 'static> {
@@ -50,6 +76,7 @@ impl<S: NodeRpcService + Clone + 'static> RunLoop for JsonRpcServer<S> {
         // build() binds the socket, so a bind failure surfaces here as the
         // error rather than being swallowed inside the serve loop.
         let server = ServerBuilder::default()
+            .set_http_middleware(dialect_middleware())
             .build(self.bind)
             .await
             .map_err(|e| JsonRpcServeError::Start(e.to_string()))?;
@@ -69,6 +96,10 @@ impl<S: NodeRpcService + Clone + 'static> RunLoop for JsonRpcServer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonrpsee::server::ServerHandle;
+    use serde_json::Value;
+    use std::net::{SocketAddr, TcpListener};
+    use zaino_primitives::types::{BlockHash, BlockRef, Height};
     use zaino_service::testing::{MockChain, MockIndexerService};
     use zcash_protocol::consensus::Network;
 
@@ -95,5 +126,204 @@ mod tests {
 
         let result = task.await.expect("join serve task");
         assert!(result.is_ok(), "clean shutdown: {result:?}");
+    }
+
+    /// Boot a real jsonrpsee server with the production dialect middleware on an
+    /// ephemeral port, returning its address and handle. A pre-bound listener
+    /// closes the pick-a-port race. The mock chain's tip is height 291, so
+    /// `getblockcount` answers 291.
+    fn spawn_dialect_server() -> (SocketAddr, ServerHandle) {
+        let handler = NodeRpc::new(
+            MockIndexerService::new(MockChain {
+                tip: Some(BlockRef {
+                    height: Height::try_from(291).expect("valid height"),
+                    hash: BlockHash::from([0xCDu8; 32]),
+                }),
+                ..Default::default()
+            }),
+            Network::MainNetwork,
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = ServerBuilder::default()
+            .set_http_middleware(dialect_middleware())
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+        (addr, handle)
+    }
+
+    /// Send a raw HTTP POST to the server with the given content-type, a basic-auth
+    /// header (as `zcashex` does), and `body`, returning the HTTP status and the
+    /// parsed response body.
+    async fn post(
+        addr: SocketAddr,
+        content_type: &str,
+        body: &str,
+    ) -> (reqwest::StatusCode, Value) {
+        // The workspace builds reqwest with rustls' `rustls-no-provider` feature,
+        // so the process crypto provider must be installed before a client is
+        // constructed, even for plaintext HTTP (first-install-wins).
+        zaino_common::crypto::ensure_default_crypto_provider();
+        let response = reqwest::Client::new()
+            .post(format!("http://{addr}/"))
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .basic_auth("zcashex", Some("password"))
+            .body(body.to_owned())
+            .send()
+            .await
+            .expect("send request");
+        let status = response.status();
+        let text = response.text().await.expect("read response body");
+        let json = serde_json::from_str(&text).unwrap_or_else(|_| {
+            panic!("response body is not JSON: {text:?}");
+        });
+        (status, json)
+    }
+
+    // Each HTTP round-trip test drives a live server that accepts a TCP
+    // connection concurrently with the reqwest round trip, so the runtime is
+    // `multi_thread`: on a current-thread runtime the client future can park
+    // while the server's accept loop is starved, deadlocking the test.
+
+    /// The zcashex-shaped 1.0 request (text/plain, basic auth) calling
+    /// `getblockcount` gives 200 and the exact legacy envelope, with `error: null`
+    /// present — the key zcashex strict-matches.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zcashex_one_point_zero_getblockcount_succeeds() {
+        let (addr, handle) = spawn_dialect_server();
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getblockcount","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("1.0"));
+        assert_eq!(obj.get("id").and_then(Value::as_str), Some("zcashex"));
+        assert_eq!(obj.get("result").and_then(Value::as_u64), Some(291));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// A 1.0 request for an unknown method gives 404, with an `error.message` and
+    /// `result: null`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn one_point_zero_unknown_method_is_not_found() {
+        let (addr, handle) = spawn_dialect_server();
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"nosuchmethod","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+        let obj = body.as_object().expect("a JSON object");
+        assert!(
+            obj.get("result").is_some_and(Value::is_null),
+            "result is present and null: {obj:?}"
+        );
+        assert!(
+            obj.get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .is_some(),
+            "the error carries a message: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// A 1.0 request with invalid params gives 500. zcashd maps invalid-request
+    /// (-32600) → 400 and method-not-found (-32601) → 404; every other error,
+    /// including invalid-params (-32602), is 500.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn one_point_zero_invalid_params_is_internal_error() {
+        let (addr, handle) = spawn_dialect_server();
+        // `getblock` requires a block id; an empty params array is invalid params.
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"jsonrpc":"1.0","id":"zcashex","method":"getblock","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        let obj = body.as_object().expect("a JSON object");
+        assert!(
+            obj.get("result").is_some_and(Value::is_null),
+            "result is present and null: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// A Bitcoind no-version request (absent `jsonrpc`) gives 200, with no
+    /// `jsonrpc` key, plus `result` and `error: null`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bitcoind_no_version_request_succeeds() {
+        let (addr, handle) = spawn_dialect_server();
+        let (status, body) = post(
+            addr,
+            "text/plain",
+            r#"{"id":1,"method":"getblockcount","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert!(
+            !obj.contains_key("jsonrpc"),
+            "the bitcoind dialect omits jsonrpc: {obj:?}"
+        );
+        assert_eq!(obj.get("result").and_then(Value::as_u64), Some(291));
+        assert!(
+            obj.get("error").is_some_and(Value::is_null),
+            "error is present and null: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// A 2.0 request is unchanged from today: 200 with no `error` key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_point_zero_success_is_unchanged() {
+        let (addr, handle) = spawn_dialect_server();
+        let (status, body) = post(
+            addr,
+            "application/json",
+            r#"{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        let obj = body.as_object().expect("a JSON object");
+        assert_eq!(obj.get("jsonrpc").and_then(Value::as_str), Some("2.0"));
+        assert_eq!(obj.get("result").and_then(Value::as_u64), Some(291));
+        assert!(
+            !obj.contains_key("error"),
+            "a 2.0 success omits the error key: {obj:?}"
+        );
+        let _ = handle.stop();
+    }
+
+    /// A 2.0 error stays 200, unchanged from today.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_point_zero_error_stays_200() {
+        let (addr, handle) = spawn_dialect_server();
+        let (status, body) = post(
+            addr,
+            "application/json",
+            r#"{"jsonrpc":"2.0","id":1,"method":"nosuchmethod","params":[]}"#,
+        )
+        .await;
+        assert_eq!(status, reqwest::StatusCode::OK, "2.0 errors stay 200");
+        let obj = body.as_object().expect("a JSON object");
+        assert!(
+            obj.get("error")
+                .and_then(|error| error.get("message"))
+                .is_some(),
+            "the 2.0 error carries a message: {obj:?}"
+        );
+        let _ = handle.stop();
     }
 }
