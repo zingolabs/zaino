@@ -320,11 +320,9 @@ fn lower_bound(addr: AddrId, start: BlockHeight) -> Vec<u8> {
 /// sorts before this (its height field is `<= end < end + 1`), and the next
 /// address's keys sort before it too, so the scan stops exactly after `end`.
 ///
-/// Fails rather than saturates when `end` is `u64::MAX`: that height has no
-/// exclusive successor, and saturating would read one height short of the request
-/// instead of surfacing the impossible bound. No block reaches it (the protocol
-/// caps heights within `u32`), so the error path is never taken in practice — the
-/// invariant is enforced with checked arithmetic rather than asserted in prose.
+/// The bound is computed with checked arithmetic: `u64::MAX` has no exclusive
+/// successor, and that case is reported as [`ReceivesReadError::HeightOutOfRange`]
+/// rather than saturated.
 fn upper_bound(addr: AddrId, end: BlockHeight) -> Result<Vec<u8>, ReceivesReadError> {
     let next = end
         .value()
