@@ -685,9 +685,14 @@ where
     tokio::spawn(async move {
         loop {
             let step = timeout(limit, async {
-                match body_receiver.recv().await {
-                    Some(item) => sender.send(item).await.map(|()| true),
-                    None => Ok(false),
+                // Waiting on `closed` as well notices a client that disconnects
+                // while `body` is still working on its next item.
+                tokio::select! {
+                    () = sender.closed() => Err(()),
+                    item = body_receiver.recv() => match item {
+                        Some(item) => sender.send(item).await.map(|()| true).map_err(|_| ()),
+                        None => Ok(false),
+                    },
                 }
             })
             .await;
@@ -696,7 +701,7 @@ where
                 // `body` finished and everything it sent has been handed on.
                 Ok(Ok(false)) => break,
                 // The client went away.
-                Ok(Err(_)) => {
+                Ok(Err(())) => {
                     work.abort();
                     break;
                 }
@@ -1193,6 +1198,55 @@ mod timed_stream_tests {
         });
 
         // When the client disconnects
+        drop(receiver);
+
+        // Then the body is cancelled without waiting out the limit
+        assert_body_dropped(alive, Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_disconnects_before_the_first_item_cancels_the_body() {
+        // Given a body that is still working on its first item
+        let (alive_sender, alive) = oneshot::channel::<()>();
+        let receiver = spawn_timed_stream(
+            SETTINGS,
+            4,
+            timed_out(),
+            |sender: mpsc::Sender<Result<u32, tonic::Status>>| async move {
+                let _alive = alive_sender;
+                // Hold the sender, as a real body does until it finishes.
+                let _sender = sender;
+                std::future::pending::<()>().await;
+            },
+        );
+
+        // When the client disconnects
+        drop(receiver);
+
+        // Then the body is cancelled without waiting out the limit
+        assert_body_dropped(alive, Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_disconnects_between_items_cancels_the_body() {
+        // Given a body that sends one item and then works on the next one
+        let (alive_sender, alive) = oneshot::channel::<()>();
+        let mut receiver = spawn_timed_stream(SETTINGS, 4, timed_out(), |sender| async move {
+            let _alive = alive_sender;
+            if sender.send(Ok(1u32)).await.is_ok() {
+                std::future::pending::<()>().await;
+            }
+        });
+        assert_eq!(
+            receiver
+                .recv()
+                .await
+                .expect("an item")
+                .expect("not an error"),
+            1
+        );
+
+        // When the client disconnects while the body is still working
         drop(receiver);
 
         // Then the body is cancelled without waiting out the limit
