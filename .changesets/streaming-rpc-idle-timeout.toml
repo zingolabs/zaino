@@ -3,13 +3,15 @@ crate = "zaino-state"
 kind = "fix"
 description = """
 Server-streaming RPCs (`GetSubtreeRoots`, `GetBlockRange`, \
-`GetBlockRangeNullifiers`, `GetTaddressTransactions`, `GetMempoolTx`, \
-`GetMempoolStream` and `GetAddressUtxosStream`) time out on idle time instead \
+`GetBlockRangeNullifiers`, `GetTaddressTransactions` and the deprecated \
+`GetTaddressTxids` that delegates to it, `GetMempoolTx`, `GetMempoolStream` \
+and `GetAddressUtxosStream`) time out on idle time instead \
 of total duration. A stream that keeps producing now runs to completion, so a \
 mainnet wallet sync no longer fails at 120s while `GetSubtreeRoots` is still \
 fetching completing blocks. A stream that makes no progress for the same budget \
 as before (`[service] timeout` times 4, or times 6 for `GetMempoolStream`) ends \
-with the same timeout status as before. A client that disconnects cancels the \
+with the same timeout status as before, including for a client that stopped \
+reading and resumes later. A client that disconnects cancels the \
 work behind its stream.
 """
 issues = ["#1537"]

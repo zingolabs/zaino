@@ -677,12 +677,20 @@ where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     // `body` gets a one-item channel of its own, so the client-facing channel
-    // carries the configured buffering and this hop adds at most one item.
+    // carries the configured buffering and this hop holds at most two more items
+    // (one in that channel, one being handed on).
     let (body_sender, mut body_receiver) = mpsc::channel(1);
-    let (sender, receiver) = mpsc::channel(channel_size as usize);
+    // One slot more than configured, reserved below for the timeout status, so the
+    // status reaches a client that has stopped reading once it reads again.
+    let (sender, receiver) = mpsc::channel(channel_size as usize + 1);
     let work = tokio::spawn(body(body_sender));
     let limit = std::time::Duration::from_secs(u64::from(timeout_secs) * multiple);
     tokio::spawn(async move {
+        let Ok(status_slot) = sender.clone().try_reserve_owned() else {
+            // The client is already gone.
+            work.abort();
+            return;
+        };
         loop {
             let step = timeout(limit, async {
                 // Waiting on `closed` as well notices a client that disconnects
@@ -707,8 +715,9 @@ where
                 }
                 Err(_) => {
                     work.abort();
-                    // Bounded, so a client that has stopped reading cannot hold this task open.
-                    timeout(limit, sender.send(Err(on_timeout))).await.ok();
+                    // Never waits: the slot was reserved up front, so a client that has
+                    // stopped reading cannot hold this task open or miss the status.
+                    status_slot.send(Err(on_timeout));
                     break;
                 }
             }
@@ -1133,6 +1142,30 @@ mod timed_stream_tests {
             .expect_err("the body never signals; it is only ever dropped");
     }
 
+    /// A body that sends one item and then works on the next one forever.
+    async fn send_one_then_hang(
+        alive: oneshot::Sender<()>,
+        sender: mpsc::Sender<Result<u32, tonic::Status>>,
+    ) {
+        let _alive = alive;
+        if sender.send(Ok(1)).await.is_ok() {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// A body that would keep sending forever, ignoring send failures.
+    async fn send_forever(
+        alive: oneshot::Sender<()>,
+        sender: mpsc::Sender<Result<u32, tonic::Status>>,
+    ) {
+        let _alive = alive;
+        for i in 0u32.. {
+            if sender.send(Ok(i)).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_stream_that_keeps_producing_is_not_cut_off_by_its_total_duration() {
         // Given a body that runs for 1000s in total, far past the limit, but is never idle for
@@ -1161,11 +1194,8 @@ mod timed_stream_tests {
     async fn a_stalled_body_ends_the_stream_with_the_timeout_status() {
         // Given a body that sends one item and then hangs
         let (alive_sender, alive) = oneshot::channel::<()>();
-        let mut receiver = spawn_timed_stream(SETTINGS, 4, timed_out(), |sender| async move {
-            let _alive = alive_sender;
-            if sender.send(Ok(1u32)).await.is_ok() {
-                std::future::pending::<()>().await;
-            }
+        let mut receiver = spawn_timed_stream(SETTINGS, 4, timed_out(), |sender| {
+            send_one_then_hang(alive_sender, sender)
         });
 
         // When the client reads on
@@ -1186,15 +1216,10 @@ mod timed_stream_tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_disconnected_client_cancels_the_body() {
-        // Given a body that would keep sending forever, ignoring send failures
+        // Given a body that would keep sending forever
         let (alive_sender, alive) = oneshot::channel::<()>();
-        let receiver = spawn_timed_stream(SETTINGS, 4, timed_out(), |sender| async move {
-            let _alive = alive_sender;
-            for i in 0u32.. {
-                if sender.send(Ok(i)).await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            }
+        let receiver = spawn_timed_stream(SETTINGS, 4, timed_out(), |sender| {
+            send_forever(alive_sender, sender)
         });
 
         // When the client disconnects
@@ -1231,11 +1256,8 @@ mod timed_stream_tests {
     async fn a_client_that_disconnects_between_items_cancels_the_body() {
         // Given a body that sends one item and then works on the next one
         let (alive_sender, alive) = oneshot::channel::<()>();
-        let mut receiver = spawn_timed_stream(SETTINGS, 4, timed_out(), |sender| async move {
-            let _alive = alive_sender;
-            if sender.send(Ok(1u32)).await.is_ok() {
-                std::future::pending::<()>().await;
-            }
+        let mut receiver = spawn_timed_stream(SETTINGS, 4, timed_out(), |sender| {
+            send_one_then_hang(alive_sender, sender)
         });
         assert_eq!(
             receiver
@@ -1257,13 +1279,8 @@ mod timed_stream_tests {
     async fn a_client_that_stops_reading_does_not_hold_the_stream_open() {
         // Given a body that would keep sending forever
         let (alive_sender, alive) = oneshot::channel::<()>();
-        let _receiver = spawn_timed_stream((30, 2), 4, timed_out(), |sender| async move {
-            let _alive = alive_sender;
-            for i in 0u32.. {
-                if sender.send(Ok(i)).await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            }
+        let _receiver = spawn_timed_stream((30, 2), 4, timed_out(), |sender| {
+            send_forever(alive_sender, sender)
         });
 
         // When the client stays connected but never reads, so its buffer fills
@@ -1271,5 +1288,27 @@ mod timed_stream_tests {
         // Then the stall is detected and the body cancelled, rather than both blocking on the
         // full channel for good
         assert_body_dropped(alive, LIMIT * 2).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_resumes_reading_after_a_stall_sees_the_timeout_status() {
+        // Given a body that would keep sending forever, and a client buffer of two items
+        let (alive_sender, _alive) = oneshot::channel::<()>();
+        let receiver = spawn_timed_stream((30, 2), 4, timed_out(), |sender| {
+            send_forever(alive_sender, sender)
+        });
+
+        // When the client stays connected but reads nothing for longer than twice the limit,
+        // then reads the rest of the stream
+        tokio::time::sleep(LIMIT * 2 + Duration::from_secs(1)).await;
+        let items = collect(receiver).await;
+
+        // Then the buffered items arrive followed by the timeout status, so the client cannot
+        // mistake the cut-off stream for a complete one
+        assert_eq!(items.len(), 3, "{items:?}");
+        assert_eq!(*items[0].as_ref().expect("an item"), 0);
+        assert_eq!(*items[1].as_ref().expect("an item"), 1);
+        let status = items[2].as_ref().expect_err("the stream ends in an error");
+        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
     }
 }
