@@ -681,8 +681,10 @@ where
     // (one in that channel, one being handed on).
     let (body_sender, mut body_receiver) = mpsc::channel(1);
     // One slot more than configured, reserved below for the timeout status, so the
-    // status reaches a client that has stopped reading once it reads again.
-    let (sender, receiver) = mpsc::channel(channel_size as usize + 1);
+    // status reaches a client that has stopped reading once it reads again. A
+    // configured size of 0 still gets one slot for items; without it every item
+    // would wait behind the reservation until the limit.
+    let (sender, receiver) = mpsc::channel(channel_size.max(1) as usize + 1);
     let work = tokio::spawn(body(body_sender));
     let limit = std::time::Duration::from_secs(u64::from(timeout_secs) * multiple);
     tokio::spawn(async move {
@@ -1153,7 +1155,7 @@ mod timed_stream_tests {
         }
     }
 
-    /// A body that would keep sending forever, ignoring send failures.
+    /// A body that never returns on its own: it keeps sending until a send fails, then hangs.
     async fn send_forever(
         alive: oneshot::Sender<()>,
         sender: mpsc::Sender<Result<u32, tonic::Status>>,
@@ -1310,5 +1312,27 @@ mod timed_stream_tests {
         assert_eq!(*items[1].as_ref().expect("an item"), 1);
         let status = items[2].as_ref().expect_err("the stream ends in an error");
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_zero_channel_size_still_delivers_items() {
+        // Given `[service] channel_size = 0`, which the config accepts
+        let receiver = spawn_timed_stream((30, 0), 4, timed_out(), |sender| async move {
+            for i in 0..3u32 {
+                if sender.send(Ok(i)).await.is_err() {
+                    return;
+                }
+            }
+        });
+
+        // When the client reads the stream
+        let items: Vec<u32> = collect(receiver)
+            .await
+            .into_iter()
+            .map(|item| item.expect("items are delivered, not a timeout"))
+            .collect();
+
+        // Then every item arrives and the stream ends cleanly
+        assert_eq!(items, vec![0, 1, 2]);
     }
 }
