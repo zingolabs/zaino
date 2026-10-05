@@ -476,7 +476,7 @@ mod tests {
 
         let serve =
             |_engine: IndexedEngine<LightWalletPassthrough, ValidatorClient<MockChain>>| NoopServe;
-        let (orchestra, backend, chain_head) =
+        let (mut orchestra, backend, chain_head) =
             deploy::<LightWalletPassthrough, NoopServe, _>(source_to(tip), &config, serve)
                 .await
                 .expect("the indexed assembly boots");
@@ -509,6 +509,6 @@ mod tests {
             u32::from(watermark),
         );
 
-        orchestra.shutdown();
+        orchestra.shutdown().await;
     }
 }

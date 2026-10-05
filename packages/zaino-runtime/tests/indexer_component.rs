@@ -60,7 +60,7 @@ async fn an_indexer_reaches_ready_when_caught_up() {
 async fn a_syncing_indexer_boots_but_gates_readiness() {
     // Never catches up: stays Syncing.
     let indexer = RunComponent::new(ComponentName("indexer"), StubSync { catch_up: false });
-    let orchestra = OrchestraBuilder::new()
+    let mut orchestra = OrchestraBuilder::new()
         .boot(indexer)
         .await
         .expect("boot indexer")
@@ -74,7 +74,7 @@ async fn a_syncing_indexer_boots_but_gates_readiness() {
     assert!(!signals.ready, "a syncing indexer gates readiness");
     assert!(!signals.started, "still booting while syncing");
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }
 
 /// A sync driver whose run loop *panics* (after yielding so the component is
@@ -125,7 +125,7 @@ async fn a_panicking_run_loop_goes_critical_and_escalates() {
         status.reason
     );
 
-    orchestra.shutdown();
+    orchestra.shutdown().await;
 }
 
 /// A stub that reports a progress reading (then Ready), to prove a component

@@ -222,7 +222,7 @@ impl Orchestra {
                         "runtime escalation: component went Critical; tearing down all components"
                     ),
                 }
-                self.shutdown();
+                self.shutdown().await;
                 tracing::warn!(%component, "runtime torn down after escalation; outcome is fatal");
                 RuntimeOutcome::Fatal { component }
             }
@@ -251,20 +251,32 @@ impl Orchestra {
         self.signals.clone()
     }
 
-    /// Stop supervising every component.
+    /// Stop supervising every component, awaiting each supervisor's teardown.
     ///
-    /// This cancels each component's supervisor; it does not itself await the
-    /// components' own tasks releasing their resources (e.g. the serve socket) —
-    /// that gap is why an immediate re-boot can still race a not-yet-freed port.
-    pub fn shutdown(&self) {
+    /// Cancels every supervisor and then joins it, so this does not return while
+    /// a babysitter is still winding down. It does not itself await the
+    /// components' own run-loop tasks releasing their resources (e.g. the serve
+    /// socket): the Orchestra holds each component only as a status source, not as
+    /// a `Managed` it can `stop`, so that gap — why an immediate re-boot can still
+    /// race a not-yet-freed port — is closed by the component's own cancellation,
+    /// not here.
+    pub async fn shutdown(&mut self) {
         let components: Vec<ComponentName> =
             self.statuses.iter().map(|s| s.status().name).collect();
         tracing::info!(
             ?components,
             "runtime shutdown: cancelling every component supervisor"
         );
-        for babysitter in &self.babysitters {
+        // Take the supervisors so they can be joined (which consumes each
+        // `Task`); a second `shutdown` then finds none, which is a no-op.
+        let babysitters = std::mem::take(&mut self.babysitters);
+        for babysitter in &babysitters {
             babysitter.cancel();
+        }
+        for babysitter in babysitters {
+            if let Err(error) = babysitter.join().await {
+                tracing::warn!(%error, "a component supervisor did not stop cleanly");
+            }
         }
     }
 }
@@ -451,7 +463,7 @@ mod tests {
             .expect("escalation arrived in time");
         assert_eq!(escalated, Some(ComponentName("fs")));
 
-        orchestra.shutdown();
+        orchestra.shutdown().await;
     }
 
     #[tokio::test]
