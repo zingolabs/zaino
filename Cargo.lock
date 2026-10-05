@@ -6271,6 +6271,7 @@ dependencies = [
  "incrementalmerkletree",
  "indexmap 2.14.2",
  "metrics",
+ "orchard",
  "primitive-types 0.14.0",
  "proptest",
  "rand 0.10.3",
