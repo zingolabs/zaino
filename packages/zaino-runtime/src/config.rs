@@ -76,12 +76,25 @@ pub struct IndexerConfig {
     /// Defaults to [`MAX_BLOCK_REORG_HEIGHT`], the consensus bound. A deployment
     /// may lower it — regtest sets it to `0`, so the horizon is the tip and the
     /// finalised store builds all the way up, which is what keeps FS-backed reads
-    /// exercised on short test chains. This is **not** the drift the seam was
-    /// built to remove (two independent per-tier constants): the worst a bad
-    /// value can do here is shrink the reorg margin coherently on both sides — an
-    /// ordinary consensus-tuning risk — never commit reorg-able blocks into the
-    /// append-only store behind the volatile tier's back. Keep it a knob; do not
-    /// "simplify" it back to a hardcoded constant.
+    /// exercised on short test chains.
+    ///
+    /// The seam guarantees *coherence*, not safety at any depth. One owner, both
+    /// tiers derived from this single value, and — because the volatile tier's
+    /// trim floor is `min(reorg_safety_floor, w - margin)`, so `floor <= w` holds
+    /// structurally — no serving gap between the tiers for any value this knob
+    /// takes. What the seam does **not** do is make the value itself safe: this
+    /// is a finalisation-depth knob, and lowering it below the consensus reorg
+    /// bound lets the append-only store durably commit heights that are still
+    /// reorg-able. Those heights stay retained by the volatile tier (whose own
+    /// retention keeps the full consensus window regardless of this value), so it
+    /// is not happening behind that tier's back and no read is starved — but the
+    /// store has no rewind path, so a reorg deeper than `reorg_depth` leaves it
+    /// holding a block from an abandoned branch. That is the ordinary
+    /// finalisation-depth risk the old `finalised_depth` already carried, not a
+    /// new hazard and not the per-tier drift the seam removed; the default is the
+    /// consensus bound for that reason, and lowering it trades durability safety
+    /// for index latency. Keep it a knob; do not "simplify" it back to a
+    /// hardcoded constant.
     pub reorg_depth: u32,
 }
 
