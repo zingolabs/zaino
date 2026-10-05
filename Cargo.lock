@@ -6042,6 +6042,7 @@ dependencies = [
  "zaino-chain-head-service",
  "zaino-component",
  "zaino-core",
+ "zaino-finality",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-logging",

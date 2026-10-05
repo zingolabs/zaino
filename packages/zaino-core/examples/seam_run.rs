@@ -1,6 +1,6 @@
-//! A runnable, deterministic, offline walk of the FS⊕NFS compact-block seam,
-//! driven through the *real* components and narrated through the *real*
-//! observability stack.
+//! A runnable, deterministic, offline walk of the FS⊕NFS compact-block seam in
+//! *two* scenarios over one offline `MockChain`, driven through the *real*
+//! components and narrated through the *real* observability stack.
 //!
 //! Run it with:
 //!
@@ -8,16 +8,18 @@
 //! cargo run -p zaino-core --example seam_run
 //! ```
 //!
-//! It composes a genuine finalised store (`zaino-store`'s `StoreReader`, indexed
-//! by the runtime's sync stack over an offline `MockChain`) with a genuine
-//! non-finalised head (`zaino-chain-head-service`'s `ChainHeadService`, driven
-//! deterministically over a hand-rolled offline validator). The two are wired so
-//! an **initial-build gap** exists: an on-chain height band that the finalised
-//! store has not yet built up to and the volatile head's retained window does not
-//! reach down to. The demo reads one height in each seam region and streams a
-//! range across the whole span, so a human can *watch* the gap surface as a typed
-//! `NotServiceable(Blocks)` through the same `tracing` sink every other event
-//! flows through.
+//! Each scenario composes a genuine finalised store (`zaino-store`'s
+//! `StoreReader`, indexed by the runtime's sync stack) with a genuine
+//! non-finalised head (`zaino-chain-head-service`'s `ChainHeadService`, stepped
+//! deterministically over a hand-rolled offline validator), then reads across the
+//! composed snapshot. The only thing that differs is *where the finalised
+//! boundary comes from*.
+//!
+//! 1. **The gap — uncoordinated boundaries.** The store syncs to its own
+//!    `SyncTarget::Depth` boundary while the head retains an independent window
+//!    far above it. Nothing relates the two, so an on-chain band is held by
+//!    neither tier — the **initial-build gap** — and surfaces on read as a typed
+//!    `NotServiceable(Blocks)`:
 //!
 //! ```text
 //! FS  = [0, W]        finalised, durable          → Ok(Some(block))
@@ -26,20 +28,34 @@
 //! above (T, ∞)                                     → Ok(None)
 //! ```
 //!
-//! Everything is offline and deterministic; the example self-verifies each
-//! region with `matches!` so a regression fails it loudly.
+//! 2. **The ratchet — one seam.** The store syncs to the reorg horizon the head
+//!    publishes through the seam (`SyncTarget::Seam`), and the head's retention
+//!    floor follows the watermark the store publishes back. The two boundaries
+//!    are now one ratchet, so the finalised range always reaches up to meet the
+//!    volatile floor and the band nobody serves is *structurally unreachable* —
+//!    every on-chain height answers `Ok`:
+//!
+//! ```text
+//! FS  = [0, w]        finalised, durable (w = published horizon)
+//! NFS = [floor, t]    volatile, floor <= w          union = [0, t], no gap
+//! ```
+//!
+//! Scenario 2's gaplessness is exactly what scenario 1's gap motivates: the seam
+//! exists to make that uncoordinated gap impossible. Everything is offline and
+//! deterministic; each scenario self-verifies with `assert!`/`matches!` so a
+//! regression fails it loudly.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use tokio::sync::watch;
 
 use zaino_chain_head::{ChainHeadBlockService as _, ChainHeadConfig, ChainHeadSnapshot as _};
 use zaino_chain_head_service::ChainHeadService;
 use zaino_component::{ComponentName, ReachabilityProbe};
 use zaino_core::chain_view::ChainView;
-use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
+use zaino_finality::{DEFAULT_RETENTION_MARGIN, ReorgHorizon, Seam};
+use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTarget, SyncTuning};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -65,6 +81,8 @@ use zaino_store::StoreReader;
 /// event the real components emit — the whole run reads as one interleaved log.
 const LOG: &str = "zaino::seam_run";
 
+// --- Scenario 1 (gap) constants. ---
+
 /// Finalised store tip: the finalised, durable prefix is `[0, W]`.
 const W: u32 = 8;
 /// Non-finalised chain tip: the validator's best chain is `[0, T]`.
@@ -73,6 +91,21 @@ const T: u32 = 20;
 /// `T - MAX_DEPTH` (the head anchors there and a single fast-forward never trims
 /// above the anchor), which is verified at runtime below.
 const MAX_DEPTH: u32 = 5;
+
+// --- Scenario 2 (ratchet) constants. ---
+
+/// The shared chain tip for both tiers in the ratchet scenario; one offline
+/// `MockChain` of `[0, CHAIN_TIP]` backs the store and the head.
+const CHAIN_TIP: u32 = 12;
+/// The head's retained depth in the ratchet scenario: it anchors — and so its
+/// window floors — at `CHAIN_TIP - SEAM_MAX_DEPTH`.
+const SEAM_MAX_DEPTH: u32 = 5;
+/// The consensus reorg depth the seam owns in the ratchet scenario. The head
+/// publishes the horizon `CHAIN_TIP - SEAM_REORG_DEPTH`, which is chosen to land
+/// *inside* the mock's chain so the store can actually sync up to it. Smaller
+/// than `SEAM_MAX_DEPTH`, so the resulting watermark sits at or above the head's
+/// floor and the two tiers overlap.
+const SEAM_REORG_DEPTH: u32 = 3;
 
 /// A reachable validator, for booting the finalised store's runtime.
 struct Probe(bool);
@@ -121,7 +154,7 @@ fn linked_block(h: u32) -> Block {
     }
 }
 
-/// A hand-rolled offline validator: a fixed best chain `[0, T]`, answering only
+/// A hand-rolled offline validator: a fixed best chain `[0, tip]`, answering only
 /// the questions the chain head asks. Static, so no query ever fails.
 #[derive(Clone)]
 struct OfflineValidator {
@@ -195,13 +228,22 @@ impl OneShotGetCommitmentTreeRoots for OfflineValidator {
 // (no push channel) is exactly right.
 impl SubscribeBlocks for OfflineValidator {}
 
-/// Build a finalised store indexed over `[0, tip]` by running the real sync stack
-/// over an offline `MockChain`, booted under the orchestra until every component
-/// is `Ready`. Finalised depth is zero, so the watermark is exactly `tip`.
-async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, CurrentZaino> {
+/// Build a finalised store by running the real sync stack over an offline
+/// `MockChain` of `[0, source_tip]`, booted under the orchestra, and poll until
+/// its committed watermark reaches `expected_watermark`.
+///
+/// `target` selects the boundary: [`SyncTarget::Depth`] syncs to the source tip
+/// independently of any head; [`SyncTarget::Seam`] syncs to the reorg horizon a
+/// head has published across the seam, so that head must be built — and its
+/// horizon published — first.
+async fn build_finalised_store(
+    source_tip: u32,
+    expected_watermark: u32,
+    target: SyncTarget,
+) -> StoreReader<InMemoryBackend, CurrentZaino> {
     let backend = InMemoryBackend::new();
     let mut chain = MockChain::new();
-    for h in 0..=tip {
+    for h in 0..=source_tip {
         let byte = u8::try_from(10 + h).expect("small demo height fits a hash byte");
         chain = chain.with_block(test_block(h, byte));
     }
@@ -214,10 +256,10 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
         |block| context_from_block(&block),
         SyncTuning {
             batch_size: 8,
-            finalised_depth: 0,
             channel_capacity: 16,
             concurrency: FetchConcurrency::SERIAL,
         },
+        target,
     )
     .expect("sync driver builds");
 
@@ -241,8 +283,9 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
 
     // Booting spawns the indexer; it catches up asynchronously. Keep the
     // orchestra alive and poll the store's committed watermark until it reaches
-    // `tip`, so the reader we hand back covers `[0, tip]` in full. Everything read
-    // is already in the backend `Arc`, so it survives the orchestra being dropped.
+    // `expected_watermark`, so the reader we hand back covers `[0, expected_watermark]`
+    // in full. Everything read is already in the backend `Arc`, so it survives the
+    // orchestra being dropped.
     let mut waits = 0;
     loop {
         let covered = reader
@@ -251,11 +294,14 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
             .expect("store snapshot")
             .coverage()
             .map(|range| u32::from(range.end));
-        if covered == Some(tip) {
+        if covered == Some(expected_watermark) {
             break;
         }
         waits += 1;
-        assert!(waits <= 400, "indexer never reached watermark {tip}");
+        assert!(
+            waits <= 400,
+            "indexer never reached watermark {expected_watermark}"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     for status in orchestra.statuses() {
@@ -271,19 +317,20 @@ async fn build_finalised_store(tip: u32) -> StoreReader<InMemoryBackend, Current
 
 /// Build a non-finalised head over the offline validator and step it — with no
 /// writer task running, so the demo is the only thing advancing the graph — until
-/// its published tip reaches `tip`.
+/// its published tip reaches `tip`. Stepping it fast-forwards from the anchor to
+/// the tip, which is the moment the head publishes its reorg horizon through
+/// `horizon`.
 async fn build_non_finalised_head(
     tip: u32,
     max_depth: u32,
+    horizon: ReorgHorizon,
 ) -> Arc<ChainHeadService<ValidatorClient<Arc<OfflineValidator>>>> {
     let validator = OfflineValidator::linear(tip);
     let config = ChainHeadConfig::with_max_depth(
         NonZeroU32::new(max_depth).expect("demo max_depth is not zero"),
     );
-    // No finalised store drives the demo, so the head is told the store has
-    // confirmed nothing: it retains everything down to its anchor and never
-    // trims a height the (absent) finalised side cannot serve.
-    let (_confirmed, confirmed_watermark) = watch::channel::<Option<Height>>(None);
+    // The head owns the volatile half of the one seam: it publishes its reorg
+    // horizon through `horizon` and reads the durable watermark back across it.
     // The head binds the canonical ports, so the offline validator goes behind
     // the same client production uses; nothing here retries on its own.
     let head = ChainHeadService::spawn_without_writer(
@@ -292,7 +339,7 @@ async fn build_non_finalised_head(
             RetryPolicy::default(),
         )),
         config,
-        confirmed_watermark,
+        horizon,
     )
     .await
     .expect("offline validator is reachable, so the head anchors");
@@ -347,22 +394,28 @@ async fn read_and_log(
     result
 }
 
-#[tokio::main]
-async fn main() {
-    // Every step from here logs through the real stack. Nothing else installs a
-    // subscriber, so this is the sink the components' own events flow through too.
-    zaino_logging::try_init();
-
+/// Scenario 1 — uncoordinated boundaries leave a band nobody serves.
+///
+/// The store syncs to its own [`SyncTarget::Depth`] boundary (`W`), and the head
+/// retains `[F, T]` with `F` far above `W`. The head still backs its volatile half
+/// of a seam, but no finalised tier advances the watermark half, so the two
+/// boundaries are independent by construction and the initial-build gap `(W, F)`
+/// is real.
+async fn gap_scenario() {
     tracing::info!(
         target: LOG,
         w = W,
         t = T,
         max_depth = MAX_DEPTH,
-        "composing the FS⊕NFS seam: finalised store [0, W], non-finalised head [F, T]",
+        "scenario 1 (gap): FS [0, W] via Depth, NFS [F, T]; the band (W, F) is held by neither",
     );
 
-    // --- The finalised store (FS), indexed over [0, W]. ---
-    let store = build_finalised_store(W).await;
+    // The head owns the volatile half of a seam; with no finalised tier to
+    // advance the watermark half, the two boundaries stay uncoordinated.
+    let (horizon, _watermark) = Seam::new(0, DEFAULT_RETENTION_MARGIN).split();
+
+    // --- The finalised store (FS), indexed over [0, W] to its own Depth boundary. ---
+    let store = build_finalised_store(W, W, SyncTarget::Depth { depth: 0 }).await;
     let fs_coverage = store
         .snapshot()
         .await
@@ -379,7 +432,7 @@ async fn main() {
     assert_eq!(u32::from(fs_coverage.end), W, "FS watermark is W");
 
     // --- The non-finalised head (NFS), a retained window [F, T]. ---
-    let head = build_non_finalised_head(T, MAX_DEPTH).await;
+    let head = build_non_finalised_head(T, MAX_DEPTH, horizon).await;
     let subscriber = head.subscriber();
     let nfs_coverage = subscriber
         .snapshot()
@@ -520,6 +573,160 @@ async fn main() {
 
     tracing::info!(
         target: LOG,
-        "seam walk complete: all four regions verified and the gap surfaced as NotServiceable",
+        "scenario 1 complete: uncoordinated boundaries left a band, surfaced as NotServiceable",
+    );
+}
+
+/// Scenario 2 — one seam makes the gap unreachable.
+///
+/// The store syncs to the reorg horizon the head publishes ([`SyncTarget::Seam`]),
+/// and the head's retention floor follows the watermark the store publishes back.
+/// The head is built first so its horizon is published before the store ratchets
+/// up to it. With the boundaries coupled into one ratchet, the finalised range
+/// reaches up to meet the volatile floor: every on-chain height is served and the
+/// union has no gap.
+async fn ratchet_scenario() {
+    // The head publishes `tip - reorg_depth`; the store ratchets exactly there.
+    let horizon_height = CHAIN_TIP - SEAM_REORG_DEPTH;
+    tracing::info!(
+        target: LOG,
+        chain_tip = CHAIN_TIP,
+        reorg_depth = SEAM_REORG_DEPTH,
+        max_depth = SEAM_MAX_DEPTH,
+        horizon = horizon_height,
+        "scenario 2 (ratchet): FS syncs to the published horizon; FS ∪ NFS = [0, tip], no gap",
+    );
+
+    let (horizon, watermark) = Seam::new(SEAM_REORG_DEPTH, DEFAULT_RETENTION_MARGIN).split();
+
+    // Head first: stepping it to the tip publishes the horizon the store then
+    // ratchets up to.
+    let head = build_non_finalised_head(CHAIN_TIP, SEAM_MAX_DEPTH, horizon).await;
+    let subscriber = head.subscriber();
+    let nfs_coverage = subscriber
+        .snapshot()
+        .await
+        .expect("head snapshot")
+        .coverage()
+        .expect("the head always holds a window");
+
+    // The store syncs to the horizon rather than its source tip: `[0, horizon_height]`.
+    let store = build_finalised_store(CHAIN_TIP, horizon_height, SyncTarget::Seam(watermark)).await;
+    let fs_coverage = store
+        .snapshot()
+        .await
+        .expect("store snapshot")
+        .coverage()
+        .expect("the finalised store holds blocks");
+
+    tracing::info!(
+        target: LOG,
+        fs_start = u32::from(fs_coverage.start),
+        fs_end = u32::from(fs_coverage.end),
+        nfs_start = u32::from(nfs_coverage.start),
+        nfs_tip = u32::from(nfs_coverage.end),
+        "ratchet tiers: FS [0, w] driven by the seam, NFS [floor, tip]",
+    );
+    assert_eq!(u32::from(fs_coverage.start), 0, "FS floor is genesis");
+    assert_eq!(
+        u32::from(fs_coverage.end),
+        horizon_height,
+        "FS watermark is the published horizon",
+    );
+    assert_eq!(
+        u32::from(nfs_coverage.end),
+        CHAIN_TIP,
+        "NFS tip is the chain tip",
+    );
+
+    // The seam invariant, observed directly: the volatile floor sits at or below
+    // the durable watermark, so the two tiers overlap and their union has no gap.
+    assert!(
+        u32::from(nfs_coverage.start) <= u32::from(fs_coverage.end),
+        "floor ({}) <= w ({}): the tiers overlap, so the union has no gap",
+        u32::from(nfs_coverage.start),
+        u32::from(fs_coverage.end),
+    );
+
+    // --- Compose and read every on-chain height: all Ok, no NotServiceable band. ---
+    let view = ChainView::new(store, subscriber);
+    let snap = view.snapshot().await.expect("compose a pinned snapshot");
+    let serviceable = snap
+        .serviceable_range()
+        .expect("the composed view holds something");
+    assert_eq!(
+        serviceable.watermark.map(u32::from),
+        Some(horizon_height),
+        "watermark is the published horizon",
+    );
+    assert_eq!(
+        u32::from(serviceable.tip),
+        CHAIN_TIP,
+        "served tip is the NFS tip",
+    );
+
+    // A spot read at the height scenario 1's gap would have fallen in — here it is
+    // in the tiers' overlap, so it serves.
+    let bridged_h = (u32::from(nfs_coverage.start) + horizon_height) / 2;
+    let bridged = read_and_log(&snap, "overlap", bridged_h).await;
+    assert!(
+        matches!(bridged, Ok(Some(_))),
+        "overlap height {bridged_h} must serve a block, got {bridged:?}",
+    );
+
+    tracing::info!(
+        target: LOG,
+        start = 0,
+        end = CHAIN_TIP,
+        "streaming compact blocks across [0, tip] — the seam leaves nothing unserved",
+    );
+    let items: Vec<Result<CompactBlock, ReadError>> = snap
+        .stream_compact(HeightRange {
+            start: height(0),
+            end: height(CHAIN_TIP),
+        })
+        .collect()
+        .await;
+    let served = items.iter().filter(|item| item.is_ok()).count();
+    let gaps = items
+        .iter()
+        .filter(|item| matches!(item, Err(ReadError::NotServiceable(_))))
+        .count();
+    tracing::info!(
+        target: LOG,
+        served,
+        gaps,
+        "range stitch complete: every on-chain height served, no gap items",
+    );
+    assert_eq!(gaps, 0, "the seam leaves no gap across [0, tip]");
+    assert_eq!(
+        served,
+        usize::try_from(CHAIN_TIP + 1).expect("served count fits usize"),
+        "every height in [0, tip] is served",
+    );
+
+    tracing::info!(
+        target: LOG,
+        "scenario 2 complete: the seam made the uncoordinated gap unreachable",
+    );
+}
+
+#[tokio::main]
+async fn main() {
+    // Every step from here logs through the real stack. Nothing else installs a
+    // subscriber, so this is the sink the components' own events flow through too.
+    zaino_logging::try_init();
+
+    tracing::info!(
+        target: LOG,
+        "seam_run: two scenarios over one offline MockChain — the gap, then the seam that closes it",
+    );
+
+    gap_scenario().await;
+    ratchet_scenario().await;
+
+    tracing::info!(
+        target: LOG,
+        "both scenarios verified: the uncoordinated gap, and the one seam that makes it unreachable",
     );
 }
