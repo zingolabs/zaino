@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
+use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTarget, SyncTuning};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::indexes::headers::{self, HeadersIndex};
 use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino};
@@ -49,10 +49,10 @@ async fn indexed_store(backend: &InMemoryBackend) -> StoreComponent<InMemoryBack
         |block| context_from_block(&block),
         SyncTuning {
             batch_size: 8,
-            finalised_depth: 0,
             channel_capacity: 16,
             concurrency: FetchConcurrency::SERIAL,
         },
+        SyncTarget::Depth { depth: 0 },
     )
     .expect("driver builds");
     let indexer = RunComponent::new(ComponentName("indexer"), driver);

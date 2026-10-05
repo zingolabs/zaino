@@ -11,7 +11,9 @@
 use std::sync::Arc;
 
 use zaino_component::ComponentName;
-use zaino_indexer::{assess_start, FetchConcurrency, SourceSyncDriver, SyncStart, SyncTuning};
+use zaino_indexer::{
+    assess_start, FetchConcurrency, SourceSyncDriver, SyncStart, SyncTarget, SyncTuning,
+};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -40,9 +42,11 @@ async fn run_indexer(
         |block| context_from_block(&block),
         SyncTuning {
             batch_size: 8,
-            finalised_depth,
             channel_capacity: 16,
             concurrency: FetchConcurrency::SERIAL,
+        },
+        SyncTarget::Depth {
+            depth: finalised_depth,
         },
     )
     .expect("driver builds");
