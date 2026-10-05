@@ -64,8 +64,7 @@ async fn boot_zaino(engine: MockIndexerService) -> (ValidatorComponent, Orchestr
 
 #[tokio::test]
 async fn the_whole_runtime_boots_in_dependency_order() {
-    let (_validator, mut orchestra) =
-        boot_zaino(MockIndexerService::new(MockChain::default())).await;
+    let (_validator, orchestra) = boot_zaino(MockIndexerService::new(MockChain::default())).await;
 
     let statuses = orchestra.statuses();
     assert_eq!(
@@ -82,13 +81,12 @@ async fn the_whole_runtime_boots_in_dependency_order() {
         "every component reached Ready",
     );
 
-    orchestra.shutdown().await;
+    orchestra.shutdown();
 }
 
 #[tokio::test]
 async fn the_signals_track_the_runtime() {
-    let (validator, mut orchestra) =
-        boot_zaino(MockIndexerService::new(MockChain::default())).await;
+    let (validator, orchestra) = boot_zaino(MockIndexerService::new(MockChain::default())).await;
     let mut signals = orchestra.signals();
 
     // Booted: startup latched, ready, live.
@@ -125,7 +123,7 @@ async fn the_signals_track_the_runtime() {
     assert!(!s.ready);
     assert!(s.started, "startup stays latched after boot");
 
-    orchestra.shutdown().await;
+    orchestra.shutdown();
 }
 
 #[tokio::test]

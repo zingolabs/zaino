@@ -64,7 +64,7 @@ async fn the_validator_boots_before_the_servers() {
     );
 
     // Root first (observed), then the owned server that depends on it.
-    let mut orchestra = OrchestraBuilder::new()
+    let orchestra = OrchestraBuilder::new()
         .boot_observed(validator)
         .await
         .boot(grpc)
@@ -77,5 +77,5 @@ async fn the_validator_boots_before_the_servers() {
         names,
         vec![ComponentName("validator"), ComponentName("light-serve")]
     );
-    orchestra.shutdown().await;
+    orchestra.shutdown();
 }

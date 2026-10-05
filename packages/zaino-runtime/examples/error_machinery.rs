@@ -227,7 +227,7 @@ async fn boot_and_await_failure<D: RunLoop>(driver: D) {
     println!("\n  component statuses the health machinery now reports:");
     dump(&orchestra.statuses());
 
-    orchestra.shutdown().await;
+    orchestra.shutdown();
 }
 
 /// A worker error with a genuine three-layer `#[source]` chain, so the boundary

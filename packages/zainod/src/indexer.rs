@@ -233,12 +233,12 @@ async fn run_until_exit(mut orchestra: Orchestra) -> Result<(), IndexerError> {
     let escalation = tokio::select! {
         signal = shutdown_signal() => {
             info!(signal, "shutdown signal received");
-            orchestra.shutdown().await;
+            orchestra.shutdown();
             return Ok(());
         }
         escalation = orchestra.next_escalation() => escalation,
     };
-    orchestra.shutdown().await;
+    orchestra.shutdown();
     match escalation {
         Some(component) => {
             error!(%component, "runtime component escalated; restarting");
