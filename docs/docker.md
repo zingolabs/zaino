@@ -20,7 +20,7 @@ the mounted config names.
 The default `grpc_listen_address` is `127.0.0.1:8137`, which a published port cannot
 reach. Inside a container the config MUST set it to `0.0.0.0:8137`, either in the file
 or with `ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS=0.0.0.0:8137`. The same applies to
-`metrics_endpoint` if you scrape it from outside the container. zainod then logs a
+`[metrics] listen_address` if you scrape it from outside the container. zainod then logs a
 warning, because `/metrics` is unauthenticated. The validator's `[rpc] listen_addr`
 must likewise be reachable from the container.
 
@@ -78,5 +78,5 @@ docker run --rm -v ./config:/app/config zaino generate-config
 
 The image's `HEALTHCHECK` runs `zainod --version` every 30 seconds. It proves the
 binary runs, not that an index is synced or that the gRPC server is serving. For a
-liveness probe that tracks the serving runtime, set `metrics_endpoint` and probe
+liveness probe that tracks the serving runtime, set `[metrics] listen_address` and probe
 `/livez` (see [`packages/zainod/usage.md`](../packages/zainod/usage.md#the-admin-listener)).

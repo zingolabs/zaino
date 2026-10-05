@@ -169,8 +169,9 @@ inline.
 tasks inherit it too), built from the same close-outs the metrics count:
 
 ```text
-INFO  … Grpc:  Serving requests  requests=2,526 rps=42.1 p50=1.21ms p99=38.4ms max=412ms out=3.1MiB/s streams=4/2,048 subs=12/4,096 conns=17/4,096
-WARN  … Grpc:  Serving requests  requests=880 rps=14.7 … failed=2 refused=31 at_capacity=29 slow=3 slowest=GetTaddressTxids
+INFO  … Grpc:  Serving    rps=42.1 p99=38.4ms out=3.25MB/s conns=17
+WARN  … Grpc:  Serving    rps=14.7 p99=… failed=2 refused=31 at_capacity=29 slow=3 slowest=GetTaddressTxids
+WARN  … Grpc:  High load  rps=412 p99=1.20s out=6.04MB/s conns=1,203/4,096 streams=640/2,048
 ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
 ```
 

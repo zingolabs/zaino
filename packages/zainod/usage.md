@@ -5,7 +5,7 @@ Configuration and running the daemon are in [`docs/running.md`](../../docs/runni
 
 ## The admin listener
 
-With `metrics_endpoint` set, zainod serves an admin listener on
+With `[metrics] listen_address` set, zainod serves an admin listener on
 its own thread and current-thread runtime. A probe answered from a saturated serving runtime
 would measure that runtime's queue, and a timed-out liveness probe gets the pod killed.
 
@@ -20,16 +20,22 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 `<index>_syncing` (an enabled index's serving gate is closed).
 
 `/statusz` = version, network, uptime, readiness, the quorum tip (`agreed` of `configured`,
-`threshold`), each configured validator (state, agreement, tip height, stale blocks, latency,
+`threshold`), `fetch_height` (the last block fetched: sync progress between index batch
+commits, where `applied` moves in jumps), each configured validator (state, agreement, tip height, stale blocks, latency,
 failures, the p2p peers its `getpeerinfo` reports), the chainview alarms, and every index (enabled,
-synced, durable + applied heights, bytes on disk and per subdirectory, requests answered).
+synced, three heights, bytes on disk and per subdirectory, requests answered). Heights:
+`durable` = committed to disk; `merged` = the last final block held in memory for the next bulk
+commit (`batch_mib`), `null` once committed; `applied` = the highest block served (the in-memory
+view tip, ≥ `durable`). Bulk sync moves `merged` per block and `durable` per batch; at the tip,
+each finalized block moves `durable` by one.
 Index sizes come from the last status-line walk, so they are absent until the first one
-(2 minutes while syncing). Request counts make it traffic data: keep the listener private.
+(2 minutes while syncing). `grpc.sent_bytes` = response body bytes served, all methods.
+Request counts make it traffic data: keep the listener private.
 
 - A supervised task on the serving runtime republishes the heartbeat every 100ms.
 - The listener binds before the recorder installs, so a bind failure fails startup.
 - At most 32 admin connections are served at once; the rest wait in the accept backlog.
-- A non-private `metrics_endpoint` logs a warning at startup, because `/metrics` is
+- A non-private `listen_address` logs a warning at startup, because `/metrics` is
   unauthenticated.
 - The build gauge keeps its released name, `zainod_build_info`, with the version as a label.
 
@@ -122,14 +128,16 @@ format.
 The `terminal` format follows go-ethereum's layout, with a component column:
 
 ```text
-INFO  [09-28|17:29:12.660] CompactBlockIdx:     Opening from /var/lib/zaino/compact-block
-WARN  [09-28|17:29:15.175] ChainView:           Validator catching up         endpoint=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
-INFO  [09-28|17:29:42.659] ZainoSource:         Syncing blocks                height=31,399 target=3,433,171 synced=0.91% bps=1,047 tps=6,077 eta=54m10s
+WARN  [09-28|17:29:15.175] ChainView:           Validator catching up          endpoint=zebrad:18232 height=3,434,171 behind=65,512 hash=00000000…1a76bf89
+INFO  [09-28|17:29:42.659] ZainoSource:         Syncing blocks                 height=3,503,023 target=3,506,659 bps=10 eta=5m49s
+INFO  [09-28|17:29:42.659] CompactBlockIdx:     Syncing                        durable=3,501,802 merged=3,503,019 applied=3,501,802 size=31.0GB
+INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        durable=3,501,802 merged=3,503,019 applied=3,501,802  size=134MB
 ```
 
 - Each line has a 5-character level, a UTC `MM-DD|HH:MM:SS.mmm` timestamp, the
   component that logged it, and the message, padded to 30 columns when fields
-  follow, so repeated lines align.
+  follow, so repeated lines align. Index `durable` / `merged` / `applied` heights and `size`
+  are padded into columns (between fields, never inside a value).
 - Components: `Zainod` (lifecycle), `Metrics`, `ChainView` (validator polling,
   mempool), `ZainoSource` (bulk block fetch), `ZainoNFS` (following the chain tip, reorgs), `Grpc`, and one per index
   (`CompactBlockIdx`, `ValueBalanceIdx`, `BlockHashIdx`,
@@ -148,7 +156,6 @@ What an operator sees at `info`:
 
 | Component | Event | Level | When |
 |---|---|---|---|
-| index | `Opening from <path>` | info | At startup, per enabled index. |
 | `ChainView` | `Validator reachable` / `Quorum configured` | info | At startup. |
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
@@ -158,19 +165,22 @@ What an operator sees at `info`:
 | `ChainView` | `Peer list read failed, last one kept` | warn | A `getpeerinfo` transport failure (telemetry only: the poll carries on). |
 | `ZainoNFS` | `Quorum tip below the non-final window (agreeing validators lag), waiting` | warn | Chainview's tip retreated under the chain head's window (`tip`, `floor`); production resumes on the next tip. |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
-| `Grpc` | `Serving requests` | info / warn | Every 60 s while anything is served or held: `requests`, `rps`, `p50` / `p99` / `max` time to first message, `out` bytes/s, `streams` / `subs` / `conns` held of their caps; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
+| `Grpc` | `Serving` | info / warn | Every 60 s while anything is served or held: `rps`, `p99` time to first message, `out` bytes/s (3 significant figures), `conns` held; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
+| `Grpc` | `High load` | warn | In place of `Serving` while any cap (`streams`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (index syncing, validator unreachable: `method`, `error`). |
 | `ZainoSource` | `Syncing to finalized target` | info | A bulk pass starts (`from`, `target` = tip − `finalised_depth`, `tip`). |
-| `ZainoSource` | `Syncing blocks` | info | Every 30 s during a bulk pass (`height`, `target`, `synced`, `bps`, `tps`, `eta`). |
+| `ZainoSource` | `Syncing blocks` | info | Every 30 s during a bulk pass (`height` fetched, `target`, `bps`, `eta`). |
 | `ZainoSource` | `Block fetch stalled` | warn | A whole 30 s interval of a bulk pass added no block. |
 | `ZainoSource` | `Reached finalized target` | info | A bulk pass finished (`blocks`, `elapsed`, average `bps`). |
+| `ZainoSource` | `Applying to tip` | info | Every 30 s from there until the non-final window reaches the tip it saw (`applied`, `tip`, `bps`, `eta`). |
 | `ZainoNFS` | `Chain tip advanced` | info | Each chain-head step past bulk (`height`, `hash`, `blocks`, `txs`, block `age`, `finalized`). |
 | `ZainoNFS` | `Chain reorg detected` | warn | A branch won (`fork`, `dropped`, `added`, new tip). |
-| index | `Serving` / `Syncing, requests refused` | info | The index's serving gate changes (`height` = applied tip). |
-| index | `Index on disk` | info | Every 120 s while that index syncs (`durable` tip, omitted while empty; `size` = every file in its directory, then each subdirectory's share by name, e.g. `receives=… spent=…`; `json` carries them as one `parts` string). |
-| index | `Serving index` | info | Every 5 min while that index serves: `durable` and `applied` tips, `size` and subdirectory shares as above, `requests` = requests it answered since the previous line (absent on value-balance, which no service reads). |
-| index | `Index size unreadable` | warn | That interval's directory walk failed (`durable`, `error`); the next one retries. |
+| index | `Syncing` | info | Every 30 s in bulk sync: `durable` (on disk), `merged` (last final block held for the next bulk commit, `—` when none), `applied` (highest block served), `size` (bytes on disk, 3 significant figures, decimal units). |
+| index | `Committed bulk` | info | Once, as the index hands bulk over to its non-final window (`durable`, `size`). |
+| index | `Serving` | info | The serving gate opens (`durable`, `applied`, `size`). |
+| index | `Syncing, requests refused` | info | The serving gate closes (`height` = applied tip). |
+| index | `Index size unreadable` | warn | A directory walk failed (`error`); `size` is left out until the next one succeeds. |
 | index | `Reorg received, replaying` | warn | A reset dropped the non-finalized state (`durable` = the tip it replays from, `dropped` = blocks discarded); requests are refused until it replays. |
 | index | `Reorg replayed, serving` | info | The replay reached the tip and the gate reopened (`height`, `took` = from the reset). |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |

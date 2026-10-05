@@ -244,6 +244,7 @@ async fn boot(
         network: crate::config::network_name(config.network),
         started,
         chainview: chainview.handles.view.clone(),
+        fetched: producer.subscribe_fetched(),
         indexes: std::mem::take(&mut watchers.indexes),
         disabled: disabled.into_iter().filter_map(|(name, off)| off.then_some(name)).collect(),
     });
@@ -354,7 +355,7 @@ fn open_index<W>(
 ) -> Result<(Span, W), IndexerError> {
     let span = crate::logging::index_component(name);
     let opened = span.in_scope(|| {
-        info!("Opening from {}", crate::logging::shown_path(&config.path));
+        debug!("Opening from {}", crate::logging::shown_path(&config.path));
         open()
     })?;
     Ok((span, opened))
@@ -434,6 +435,7 @@ impl Watchers<'_> {
         let watched = Watched {
             finalized: published.subscribe_finalized(),
             applied: published.subscribe_applied(),
+            merged: published.subscribe_merged(),
             synced: published.subscribe_synced(),
             reads: served.then(|| published.reads()),
         };
@@ -443,6 +445,7 @@ impl Watchers<'_> {
             name,
             finalized: watched.finalized.clone(),
             applied: watched.applied.clone(),
+            merged: watched.merged.clone(),
             synced: watched.synced.clone(),
             reads: watched.reads.clone(),
             usage,

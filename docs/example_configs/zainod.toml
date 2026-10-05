@@ -9,8 +9,9 @@
 # - declared, never read off the validator (Zebra on regtest reports "test")
 network = "testnet"
 
-# Prometheus /metrics endpoint. Omit to disable.
-# metrics_endpoint = "127.0.0.1:9999"
+# Admin listener (/metrics, /livez, /readyz, /statusz). Omit listen_address to disable.
+# [metrics]
+# listen_address = "127.0.0.1:9999"
 
 # Validator blocks are fetched from (Zebra JSON-RPC)
 [source]

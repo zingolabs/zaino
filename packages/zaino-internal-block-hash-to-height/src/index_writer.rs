@@ -70,6 +70,7 @@ impl BlockHashIndexWriter {
                     }
                     self.bulk_bytes += data.weight();
                     self.bulk.push(data);
+                    self.published.merged(height);
                     if self.bulk_bytes >= self.batch_bytes.get() {
                         self.commit(height).await;
                     }

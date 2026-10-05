@@ -263,6 +263,7 @@ impl TreeStateIndexWriter {
                     assert_eq!(height, next, "tree_state: final blocks must arrive contiguously");
                     self.bulk_bytes += data.weight();
                     self.bulk.push(data);
+                    self.published.merged(height);
                     if self.bulk_bytes >= self.batch_bytes.get() {
                         self.commit(height).await;
                     }

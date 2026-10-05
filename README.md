@@ -76,11 +76,12 @@ in plaintext; it links no TLS stack. Expose it beyond a trusted network only
 behind a TLS-terminating proxy. The validator connection is plain HTTP JSON-RPC
 to `[source] jsonrpc_address`.
 
-The optional admin listener (`metrics_endpoint`) serves
-`/metrics` and `/livez` without authentication or encryption. It publishes the
+The optional admin listener (`[metrics] listen_address`) serves `/metrics`, `/livez`,
+`/readyz` and `/statusz` without authentication or encryption. It publishes the
 chain tip, sync progress, request volumes and process memory. zainod warns at
 startup when it binds a non-private address; restrict it to loopback, a private
-interface, or the scraper's network. See [`zainod`'s guide](./packages/zainod/usage.md).
+interface, or a network only the scraper reaches (e.g. with the host firewall). See
+[`zainod`'s guide](./packages/zainod/usage.md).
 
 ## Container image
 

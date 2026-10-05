@@ -23,7 +23,7 @@ mod transport;
 mod validator;
 
 pub use client::TrustedProxies;
-pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
 pub use grpc::GrpcService;
 pub use limits::{GrpcLimits, ReadLanes};
 pub use router::ChainViewHandles;

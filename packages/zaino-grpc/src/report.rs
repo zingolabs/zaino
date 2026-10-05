@@ -1,10 +1,10 @@
 //! Serving summary every [`INTERVAL`], from counters every request feeds (rate, errors,
 //! latency, saturation)
 //!
-//! - `Serving requests`: requests + rate, success latency (time to first message, p50 / p99 /
-//!   max), bytes out per second, permits and connections held against their caps, then the
-//!   window's problems by count; WARN once any request failed, was refused, stalled or ran slow,
-//!   INFO otherwise; silent while nothing is served or held
+//! - `Serving`: rate, p99 time to first message, bytes out per second, connections held, then
+//!   the window's problems by count; WARN once any request failed, was refused, stalled or ran
+//!   slow, INFO otherwise; silent while nothing is served or held
+//! - `High load` (WARN) instead while any cap is past [`HIGH_LOAD`]: those caps as `used/max`
 //! - `Method served` (DEBUG): the same, per method with traffic
 //! - First server fault (ERROR, `Request failed`) and first unavailable answer (WARN, `Request
 //!   unavailable`) of a window logged as they happen, the rest only counted
@@ -28,6 +28,9 @@ pub(crate) const INTERVAL: Duration = Duration::from_secs(60);
 
 /// Time to first message past this = a slow request
 const SLOW: Duration = Duration::from_secs(1);
+
+/// Share of a cap (streams, subscriptions, connections) held that logs `High load`
+const HIGH_LOAD: f64 = 0.25;
 
 /// Latency buckets: `2^SUB_BITS` per power of two of µs (each ≤ 12.5% wide), exact below that
 const SUB_BITS: u32 = 3;
@@ -318,20 +321,24 @@ pub(crate) fn summarise(elapsed: Duration, held: Held) {
         return;
     }
     let nonzero = |count: u64| (count > 0).then_some(count);
-    let (p50, p99) = (quantile(&latency, max_us, 0.5), quantile(&latency, max_us, 0.99));
+    let p99 = quantile(&latency, max_us, 0.99);
+    let high = |(used, cap): (usize, usize)| used as f64 > cap as f64 * HIGH_LOAD;
+    let over = |held: (usize, usize)| high(held).then(|| display(Used(held)));
+    let busy = high(held.streams) || high(held.subscriptions) || high(held.connections);
+    let conns = match high(held.connections) {
+        true => Used(held.connections).to_string(),
+        false => Thousands(held.connections.0 as u64).to_string(),
+    };
 
     macro_rules! summary {
-        ($level:ident) => {
+        ($level:ident, $message:literal) => {
             $level!(
-                requests = total.requests,
                 rps = %Rate(total.requests as f64 / secs),
-                p50 = timed(p50),
                 p99 = timed(p99),
-                max = timed(p50.and(Some(max_us))),
                 out = %ByteRate(sent as f64 / secs),
-                streams = %Used(held.streams),
-                subs = %Used(held.subscriptions),
-                conns = %Used(held.connections),
+                conns = %conns,
+                streams = over(held.streams),
+                subs = over(held.subscriptions),
                 failed = nonzero(total.failed),
                 refused = nonzero(total.refused),
                 at_capacity = nonzero(snapshot.at_capacity),
@@ -339,13 +346,14 @@ pub(crate) fn summarise(elapsed: Duration, held: Held) {
                 slowest = (slow > 0).then_some(slowest).flatten(),
                 stalled = nonzero(snapshot.stalled),
                 conns_refused = nonzero(snapshot.connections_refused),
-                "Serving requests"
+                $message
             )
         };
     }
-    match problems {
-        0 => summary!(info),
-        _ => summary!(warn),
+    match (busy, problems) {
+        (true, _) => summary!(warn, "High load"),
+        (false, 0) => summary!(info, "Serving"),
+        (false, _) => summary!(warn, "Serving"),
     }
 }
 
@@ -404,15 +412,18 @@ struct ByteRate(f64);
 
 impl fmt::Display for ByteRate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+        // decimal units, 3 significant figures (same as zainod's index `size`)
+        const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
         let (mut value, mut unit) = (self.0, 0);
-        while value >= 1024.0 && unit + 1 < UNITS.len() {
-            value /= 1024.0;
+        while value >= 999.5 && unit + 1 < UNITS.len() {
+            value /= 1000.0;
             unit += 1;
         }
-        match unit {
-            0 => write!(f, "{value:.0}B/s"),
-            _ => write!(f, "{value:.1}{}/s", UNITS[unit]),
+        match value {
+            _ if unit == 0 => write!(f, "{value:.0}B/s"),
+            value if value < 9.995 => write!(f, "{value:.2}{}/s", UNITS[unit]),
+            value if value < 99.95 => write!(f, "{value:.1}{}/s", UNITS[unit]),
+            value => write!(f, "{value:.0}{}/s", UNITS[unit]),
         }
     }
 }
@@ -497,7 +508,7 @@ mod tests {
         assert_eq!(shown(&Latency(412_300)), "412ms");
         assert_eq!(shown(&Latency(2_310_000)), "2.31s");
         assert_eq!(shown(&ByteRate(0.0)), "0B/s");
-        assert_eq!(shown(&ByteRate(3.1 * 1024.0 * 1024.0)), "3.1MiB/s");
+        assert_eq!(shown(&ByteRate(3_100_000.0)), "3.10MB/s");
         assert_eq!(shown(&Used((4, 2_048))), "4/2,048");
     }
 }

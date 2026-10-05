@@ -155,14 +155,37 @@ pub(crate) fn index_component(name: &str) -> tracing::Span {
     component(&format!("{camel}Idx"))
 }
 
-/// Pairs named at runtime as one `parts` field: `receives=10.0GiB spent=9.0GiB`; the terminal
-/// writes each as its own field (keys and values without spaces)
-pub(crate) fn parts<K: fmt::Display, V: fmt::Display>(
-    pairs: impl IntoIterator<Item = (K, V)>,
-) -> String {
-    let pairs: Vec<String> =
-        pairs.into_iter().map(|(key, value)| format!("{key}={value}")).collect();
-    pairs.join(" ")
+/// Bytes, 3 significant figures, decimal units: `31.0GB`, `8.10GB`, `134MB`, `512B`
+pub(crate) struct Size3(pub(crate) u64);
+
+impl fmt::Display for Size3 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+        let (mut value, mut unit) = (self.0 as f64, 0);
+        // 999.5 → next unit (else 3 figures round up to a 4-digit `1000MB`)
+        while value >= 999.5 && unit + 1 < UNITS.len() {
+            value /= 1000.0;
+            unit += 1;
+        }
+        match value {
+            _ if unit == 0 => write!(f, "{}B", self.0),
+            value if value < 9.995 => write!(f, "{value:.2}{}", UNITS[unit]),
+            value if value < 99.95 => write!(f, "{value:.1}{}", UNITS[unit]),
+            value => write!(f, "{value:.0}{}", UNITS[unit]),
+        }
+    }
+}
+
+/// Height column: grouped (`3,501,802`), `—` when absent (terminal pads it to the column)
+pub(crate) struct HeightCol(pub(crate) Option<u32>);
+
+impl fmt::Display for HeightCol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(height) => f.write_str(&terminal::grouped(u64::from(height))),
+            None => f.write_str("—"),
+        }
+    }
 }
 
 /// Paths in a message: past this many columns, the head elided (the tail names the index)

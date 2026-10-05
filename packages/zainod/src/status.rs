@@ -19,6 +19,7 @@ pub(crate) struct Sources {
     pub(crate) network: &'static str,
     pub(crate) started: Instant,
     pub(crate) chainview: ChainViewSubscriber,
+    pub(crate) fetched: watch::Receiver<Option<Height>>,
     pub(crate) indexes: Vec<IndexSource>,
     pub(crate) disabled: Vec<&'static str>,
 }
@@ -28,6 +29,7 @@ pub(crate) struct IndexSource {
     pub(crate) name: &'static str,
     pub(crate) finalized: watch::Receiver<Option<Height>>,
     pub(crate) applied: watch::Receiver<Option<Height>>,
+    pub(crate) merged: watch::Receiver<Option<Height>>,
     pub(crate) synced: watch::Receiver<bool>,
     pub(crate) reads: Option<Reads>,
     pub(crate) usage: watch::Receiver<Option<Usage>>,
@@ -46,9 +48,17 @@ pub(crate) struct Status {
     ready: bool,
     reasons: Vec<String>,
     quorum: Option<Quorum>,
+    /// Last block fetched (sync progress between index batch commits)
+    fetch_height: Option<u32>,
     validators: Vec<Validator>,
     alarms: Alarms,
     indexes: Vec<Index>,
+    grpc: Grpc,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct Grpc {
+    sent_bytes: u64,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -88,12 +98,15 @@ struct Alarms {
 }
 
 /// `synced` = serving gate open (built to the quorum tip); disabled indexes listed with nulls
+/// - `durable` = on disk; `merged` = held for the next bulk commit; `applied` = highest block
+///   served (in-memory view tip, ≥ `durable`)
 #[derive(Debug, Clone, Serialize, PartialEq)]
 struct Index {
     name: &'static str,
     enabled: bool,
     synced: bool,
     durable: Option<u32>,
+    merged: Option<u32>,
     applied: Option<u32>,
     size_bytes: Option<u64>,
     tables: BTreeMap<String, u64>,
@@ -135,6 +148,7 @@ pub(crate) fn current(live: bool) -> Option<Status> {
             enabled: true,
             synced: *index.synced.borrow(),
             durable: (*index.finalized.borrow()).map(u32::from),
+            merged: (*index.merged.borrow()).map(u32::from),
             applied: (*index.applied.borrow()).map(u32::from),
             size_bytes: usage.as_ref().map(|usage| usage.total),
             tables: usage.map(|usage| usage.subdirs.into_iter().collect()).unwrap_or_default(),
@@ -146,6 +160,7 @@ pub(crate) fn current(live: bool) -> Option<Status> {
         enabled: false,
         synced: false,
         durable: None,
+        merged: None,
         applied: None,
         size_bytes: None,
         tables: BTreeMap::new(),
@@ -167,6 +182,7 @@ pub(crate) fn current(live: bool) -> Option<Status> {
             threshold: quorum.threshold(),
             configured: quorum.configured(),
         }),
+        fetch_height: (*sources.fetched.borrow()).map(u32::from),
         alarms: Alarms {
             partitioned: alarms.partitioned(),
             eclipsed: alarms.eclipsed(),
@@ -179,6 +195,7 @@ pub(crate) fn current(live: bool) -> Option<Status> {
         },
         validators,
         indexes,
+        grpc: Grpc { sent_bytes: zaino_grpc::sent_bytes_total() },
     })
 }
 
@@ -229,6 +246,7 @@ mod tests {
             enabled,
             synced,
             durable: None,
+            merged: None,
             applied: None,
             size_bytes: None,
             tables: BTreeMap::new(),

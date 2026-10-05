@@ -39,8 +39,8 @@ caps), `[fetch]` (`finalised_depth`, `concurrency`, and `primary_validator` to
 pin bulk sync to one validator), one `[index.<name>]` section per index
 (`compact_block`, `tree_state`, `transparent_address`, each with `path`,
 `batch`, `queue_mib` and `enabled`), a top-level `network` (`mainnet` /
-`testnet` / `regtest`, default `mainnet`) and an optional top-level
-`metrics_endpoint` (Prometheus). Annotated
+`testnet` / `regtest`, default `mainnet`) and an optional `[metrics]` admin
+listener (`listen_address`). Annotated
 example:
 [`docs/example_configs/zainod.toml`](https://github.com/zingolabs/zaino/blob/dev/docs/example_configs/zainod.toml).
 

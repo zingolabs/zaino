@@ -127,6 +127,7 @@ impl TransparentAddressIndexWriter {
                     assert!(self.window.is_empty(), "transparent_address: final block above tip");
                     self.bulk_bytes += data.weight();
                     self.bulk.push(data);
+                    self.published.merged(height);
                     if self.bulk_bytes >= self.batch_bytes.get() {
                         self.commit(height).await;
                     }

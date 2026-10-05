@@ -1,5 +1,6 @@
 //! Serve-path metrics, one call site per measurement
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tonic::Code;
@@ -17,6 +18,13 @@ const ADMISSION_REJECTED_TOTAL: &str = "zaino.grpc.admission_rejected_total";
 const ACTIVE_SUBSCRIPTIONS: &str = "zaino.grpc.active_subscriptions";
 const SUBSCRIPTIONS_REJECTED_TOTAL: &str = "zaino.grpc.subscriptions_rejected_total";
 const ACCEPT_ERRORS_TOTAL: &str = "zaino.grpc.accept_errors_total";
+
+/// Σ `SENT_BYTES_TOTAL` over methods, readable without the metrics recorder (`/statusz`)
+static SENT_BYTES: AtomicU64 = AtomicU64::new(0);
+
+pub fn sent_bytes_total() -> u64 {
+    SENT_BYTES.load(Ordering::Relaxed)
+}
 const DISK_READ_WAIT_SECONDS: &str = "zaino.grpc.disk_read_wait_seconds";
 const CONNECTIONS_ACTIVE: &str = "zaino.grpc.connections_active";
 const CONNECTIONS_REJECTED_TOTAL: &str = "zaino.grpc.connections_rejected_total";
@@ -253,6 +261,7 @@ pub(crate) fn stream_finished(
         series.messages.record(messages as f64);
         series.sent.increment(sent);
     }
+    SENT_BYTES.fetch_add(sent, Ordering::Relaxed);
 }
 
 #[cfg(test)]

@@ -39,7 +39,7 @@ its default. In outline:
 | Section | What it configures |
 |---|---|
 | `network` | `mainnet` (default), `testnet` or `regtest`. It is declared rather than read off the validator, because Zebra on regtest reports its chain as `"test"`. |
-| `metrics_endpoint` | The admin listener serving Prometheus `/metrics` and `/livez`. Unset by default, which disables it. |
+| `[metrics]` | The admin listener serving Prometheus `/metrics`, `/livez`, `/readyz` and `/statusz`: `listen_address` (unset by default, which disables it; `0.0.0.0` = every interface, so restrict who reaches it with the host firewall). |
 | `[source]` | The validator's `jsonrpc_address` (default `127.0.0.1:8232`) and its credentials, either `cookie_path` or `user` and `password`. A cookie path takes precedence. `connect_timeout_secs` (2) and `read_timeout_secs` (30): the read timeout counts silence, not total duration, so a large block over a slow link completes. |
 | `[[chainview_peers]]` | Extra validators, in the same shape as `[source]`, that the mempool view takes a quorum over. |
 | `[serve]` | `grpc_listen_address` (default `127.0.0.1:8137`) and `max_address_rows` (100000). |

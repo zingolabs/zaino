@@ -112,6 +112,7 @@ impl CompactBlockIndexWriter {
                         }
                         self.bulk_bytes += block.weight() + fees.weight();
                         self.bulk.push((block, fees));
+                        self.published.merged(height);
                         if self.bulk_bytes >= self.batch_bytes.get() {
                             self.commit(height).await;
                         }

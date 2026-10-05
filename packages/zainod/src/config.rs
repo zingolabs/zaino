@@ -367,6 +367,16 @@ impl Default for FetchConfig {
     }
 }
 
+/// The admin listener: `/metrics`, `/livez`, `/readyz` and `/statusz`. Disabled when
+/// `listen_address` is unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MetricsConfig {
+    /// Address the admin listener binds (`0.0.0.0` = every interface; who may reach it is the
+    /// host's firewall).
+    pub listen_address: Option<SocketAddr>,
+}
+
 /// The zainod daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -377,8 +387,8 @@ pub struct DaemonConfig {
     /// `getblockchaininfo`, so a validator-derived value mislabels every regtest deployment.
     #[serde(with = "NetworkDef")]
     pub network: NetworkType,
-    /// Prometheus `/metrics` endpoint. Disabled when absent.
-    pub metrics_endpoint: Option<SocketAddr>,
+    /// The admin listener (`/metrics` and the probes).
+    pub metrics: MetricsConfig,
     /// The validator blocks are sourced from.
     pub source: SourceConfig,
     /// Extra validators the mempool view quorates over, beyond [`source`](Self::source).
@@ -402,7 +412,7 @@ impl Default for DaemonConfig {
         Self {
             // Mainnet = the deployment target; testnet/regtest operators declare theirs
             network: NetworkType::Main,
-            metrics_endpoint: None,
+            metrics: MetricsConfig::default(),
             source: SourceConfig::default(),
             chainview_peers: Vec::new(),
             serve: ServeConfig::default(),
@@ -453,9 +463,9 @@ impl DaemonConfig {
         Ok(())
     }
 
-    /// Logs a warning when `metrics_endpoint` binds a non-private address.
-    pub(crate) fn warn_about_metrics_endpoint(&self) {
-        let Some(endpoint) = self.metrics_endpoint else {
+    /// Logs a warning when the admin listener binds a non-private address.
+    pub(crate) fn warn_about_metrics_listener(&self) {
+        let Some(endpoint) = self.metrics.listen_address else {
             return;
         };
         // Public bind publishes chain tip, sync progress, request volumes & RSS.
@@ -463,7 +473,7 @@ impl DaemonConfig {
         if !is_private_listen_addr(&endpoint) {
             tracing::warn!(
                 %endpoint,
-                "metrics_endpoint binds a non-private address; /metrics is \
+                "metrics.listen_address binds a non-private address; /metrics is \
                  unauthenticated and exposes operational detail. Restrict it to \
                  loopback, a private interface, or a network only the scraper reaches."
             );

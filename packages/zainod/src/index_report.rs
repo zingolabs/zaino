@@ -1,8 +1,9 @@
-//! One status line per enabled index, with its bytes on disk and each subdirectory's share:
+//! One line per enabled index: `durable` / `merged` / `applied` heights + bytes on disk
 //!
-//! - `Index on disk` every [`SYNCING_EVERY`] while it bulk syncs (durable tip)
-//! - `Serving index` every [`SERVING_EVERY`] once it serves (durable + applied tips, requests
-//!   answered since the last line)
+//! - `Syncing` every [`REPORT_EVERY`] in bulk sync (no window above `durable`)
+//! - `Committed bulk` once, as the window first opens over a bulk pass (the handoff flush)
+//! - `Serving` per serving-gate opening
+//! - Disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` usage)
 
 use std::{
     io,
@@ -12,25 +13,40 @@ use std::{
 
 use tokio::{sync::watch, time::Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{field::display, info, warn};
+use tracing::{
+    field::{display, DisplayValue},
+    info, warn,
+};
 
-use zaino_persistence::{dir::disk_bytes, lsm::Size};
+use zaino_persistence::dir::disk_bytes;
 use zaino_primitives::types::Height;
 use zaino_sync::Reads;
 
 use crate::error::IndexerError;
+use crate::logging::{HeightCol, Size3};
 
-const SYNCING_EVERY: Duration = Duration::from_secs(120);
-const SERVING_EVERY: Duration = Duration::from_secs(300);
+/// = the sync report's interval (index lines land under its `Syncing blocks`)
+const REPORT_EVERY: Duration = Duration::from_secs(30);
+const WALK_EVERY: Duration = Duration::from_secs(120);
 
 /// What the report reads off one index's `Published`
 pub(crate) struct Watched {
     pub(crate) finalized: watch::Receiver<Option<Height>>,
     pub(crate) applied: watch::Receiver<Option<Height>>,
+    pub(crate) merged: watch::Receiver<Option<Height>>,
     pub(crate) synced: watch::Receiver<bool>,
     /// `None` = no service reads this index
     pub(crate) reads: Option<Reads>,
 }
+
+impl Watched {
+    fn heights(&self) -> (Option<Height>, Option<Height>, Option<Height>) {
+        (*self.finalized.borrow(), *self.merged.borrow(), *self.applied.borrow())
+    }
+}
+
+/// Last disk walk: when, and its bytes (`None` = unreadable)
+struct Walked(Option<(Instant, Option<u64>)>);
 
 /// Until `cancel`; `dir` = the index's directory; each walk also lands in `measured` (`/statusz`)
 pub(crate) async fn run(
@@ -39,53 +55,97 @@ pub(crate) async fn run(
     measured: watch::Sender<Option<Usage>>,
     cancel: CancellationToken,
 ) -> Result<(), IndexerError> {
+    let mut ticks = tokio::time::interval_at(Instant::now() + REPORT_EVERY, REPORT_EVERY);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut walked = Walked(None);
+    let booted = *index.finalized.borrow();
+    // bulked = durable moved / a batch merged with no window open (a bulk pass ran)
+    let (mut bulked, mut committed) = (false, false);
+    let mut serving = *index.synced.borrow();
     loop {
-        let serving = *index.synced.borrow();
-        let every = if serving { SERVING_EVERY } else { SYNCING_EVERY };
-        let mut ticks = tokio::time::interval_at(Instant::now() + every, every);
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut answered = index.reads.as_ref().map(Reads::total);
-        loop {
-            let gate = tokio::select! {
-                () = cancel.cancelled() => return Ok(()),
-                moved = index.synced.wait_for(|now| *now != serving) => Some(moved.is_err()),
-                _ = ticks.tick() => None,
-            };
-            match gate {
-                // index gone: nothing left to report
-                Some(true) => {
-                    cancel.cancelled().await;
-                    return Ok(());
+        tokio::select! {
+            () = cancel.cancelled() => return Ok(()),
+            changed = index.synced.changed() => {
+                if changed.is_err() {
+                    return gone(&cancel).await;
                 }
-                Some(false) => break,
-                None => {}
-            }
-            let durable = (*index.finalized.borrow()).map(u32::from);
-            let walk = dir.clone();
-            let walked = match tokio::task::spawn_blocking(move || usage(&walk)).await? {
-                Ok(usage) => usage,
-                Err(error) => {
-                    warn!(durable, %error, "Index size unreadable");
-                    continue;
+                let now = *index.synced.borrow_and_update();
+                if now && !serving {
+                    let size = walked.size(&dir, &measured, Duration::ZERO).await?;
+                    let (durable, _, applied) = index.heights();
+                    info!(
+                        durable = %HeightCol(durable.map(u32::from)),
+                        applied = %HeightCol(applied.map(u32::from)),
+                        size,
+                        "Serving"
+                    );
                 }
-            };
-            measured.send_replace(Some(walked.clone()));
-            let Usage { total, subdirs } = walked;
-            let size = display(Size(total));
-            let parts = (!subdirs.is_empty()).then(|| {
-                let shares = subdirs.into_iter().map(|(name, bytes)| (name, Size(bytes)));
-                display(crate::logging::parts(shares))
-            });
-            if !serving {
-                info!(durable, size, parts, "Index on disk");
-                continue;
+                serving = now;
             }
-            let applied = (*index.applied.borrow()).map(u32::from);
-            let now = index.reads.as_ref().map(Reads::total);
-            let since = now.zip(answered).map(|(now, before)| now - before);
-            answered = now;
-            info!(durable, applied, size, parts, requests = since, "Serving index");
+            changed = index.applied.changed() => {
+                if changed.is_err() {
+                    return gone(&cancel).await;
+                }
+                index.applied.borrow_and_update();
+                let (durable, merged, applied) = index.heights();
+                let window = applied > durable;
+                bulked |= !window && (merged.is_some() || durable > booted);
+                if window && bulked && !committed {
+                    committed = true;
+                    let size = walked.size(&dir, &measured, WALK_EVERY).await?;
+                    info!(durable = %HeightCol(durable.map(u32::from)), size, "Committed bulk");
+                }
+            }
+            _ = ticks.tick() => {
+                let size = walked.size(&dir, &measured, WALK_EVERY).await?;
+                let (durable, merged, applied) = index.heights();
+                let window = applied > durable;
+                bulked |= !window && (merged.is_some() || durable > booted);
+                if !serving && !window {
+                    info!(
+                        durable = %HeightCol(durable.map(u32::from)),
+                        merged = %HeightCol(merged.map(u32::from)),
+                        applied = %HeightCol(applied.map(u32::from)),
+                        size,
+                        "Syncing"
+                    );
+                }
+            }
         }
+    }
+}
+
+/// Index gone: nothing left to report
+async fn gone(cancel: &CancellationToken) -> Result<(), IndexerError> {
+    cancel.cancelled().await;
+    Ok(())
+}
+
+impl Walked {
+    /// Bytes on disk, re-walked once the last walk is older than `fresh` (`None` = unreadable)
+    async fn size(
+        &mut self,
+        dir: &Path,
+        measured: &watch::Sender<Option<Usage>>,
+        fresh: Duration,
+    ) -> Result<Option<DisplayValue<Size3>>, IndexerError> {
+        let stale = self.0.is_none_or(|(at, _)| at.elapsed() >= fresh);
+        if stale {
+            let walk = dir.to_path_buf();
+            let total = match tokio::task::spawn_blocking(move || usage(&walk)).await? {
+                Ok(walked) => {
+                    let total = walked.total;
+                    measured.send_replace(Some(walked));
+                    Some(total)
+                }
+                Err(error) => {
+                    warn!(%error, "Index size unreadable");
+                    None
+                }
+            };
+            self.0 = Some((Instant::now(), total));
+        }
+        Ok(self.0.and_then(|(_, total)| total).map(|total| display(Size3(total))))
     }
 }
 

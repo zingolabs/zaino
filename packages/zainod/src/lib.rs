@@ -37,9 +37,9 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
 async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     info!(version = env!("CARGO_PKG_VERSION"), "Starting");
     let config = load_config(&config_path)?;
-    config.warn_about_metrics_endpoint();
+    config.warn_about_metrics_listener();
 
-    if let Some(endpoint) = config.metrics_endpoint {
+    if let Some(endpoint) = config.metrics.listen_address {
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
     }
 

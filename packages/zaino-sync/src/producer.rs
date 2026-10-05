@@ -60,6 +60,8 @@ pub struct Producer<S> {
     tips: watch::Receiver<Option<QuorumTip>>,
     durable: BTreeMap<Height, BlockHash>,
     progress: Arc<Progress>,
+    /// Last block handed the sink (indexes publish `applied` only per batch commit)
+    fetched: watch::Sender<Option<Height>>,
     /// Span over following the quorum tip (bulk logs under the caller's)
     live: Span,
 }
@@ -84,7 +86,12 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         let durable: Vec<Option<BlockRef>> = durable.into_iter().collect();
         let sink = Publisher::new(sink, depth, durable.iter().map(|tip| tip.map(|t| t.height)));
         let durable = durable.into_iter().flatten().map(|tip| (tip.height, tip.hash)).collect();
-        Self { sink, pool, tips, durable, progress: Arc::default(), live: Span::none() }
+        let fetched = watch::channel(None).0;
+        Self { sink, pool, tips, durable, progress: Arc::default(), fetched, live: Span::none() }
+    }
+
+    pub fn subscribe_fetched(&self) -> watch::Receiver<Option<Height>> {
+        self.fetched.subscribe()
     }
 
     /// `block` = what the index durable at its height committed there, if any
@@ -314,7 +321,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
                 }
             }
         }
-        self.progress.finish();
+        self.progress.finish(tip.block.height);
         let anchor = last.expect("bulk range start..=end never empty");
         Ok(ChainHead::new(anchor, self.sink.depth()))
     }
@@ -356,6 +363,7 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
     async fn add(&mut self, block: &Arc<Block>) {
         emit::added(block);
         self.progress.added(block);
+        self.fetched.send_replace(Some(block.header().height));
         self.sink.add(block.header().height, Arc::clone(block)).await;
     }
 

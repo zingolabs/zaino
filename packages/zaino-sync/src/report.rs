@@ -1,5 +1,6 @@
-//! Sync progress: one `Syncing blocks` line per [`REPORT_INTERVAL`] of bulk fetch, a stall
-//! warning when a whole interval adds nothing
+//! Sync progress per [`REPORT_INTERVAL`]: `Syncing blocks` during the bulk pass, `Applying to tip`
+//! from its end until the non-final window reaches the tip, a stall warning when a whole interval
+//! adds nothing
 
 use std::{
     fmt,
@@ -19,9 +20,10 @@ pub(crate) struct Progress(Mutex<Tally>);
 #[derive(Debug, Clone, Copy, Default)]
 struct Tally {
     pass: Option<Pass>,
+    /// Tip the window replay is catching up to (set by [`Progress::finish`])
+    catchup: Option<Height>,
     height: Option<Height>,
     blocks: u64,
-    txs: u64,
 }
 
 /// One bulk pass: `target` = finalized height it fetches to
@@ -54,17 +56,21 @@ impl Progress {
 
     pub(crate) fn added(&self, block: &Block) {
         let mut tally = self.tally();
-        tally.height = Some(block.header().height);
+        let height = block.header().height;
+        if tally.catchup.is_some_and(|tip| height >= tip) {
+            tally.catchup = None;
+        }
+        tally.height = Some(height);
         tally.blocks += 1;
-        tally.txs += block.transactions().len() as u64;
     }
 
-    /// Bulk pass reached its target
-    pub(crate) fn finish(&self) {
+    /// Bulk pass reached its target; the window replay up to `tip` follows
+    pub(crate) fn finish(&self, tip: Height) {
         let mut tally = self.tally();
         let Some(pass) = tally.pass.take() else {
             return;
         };
+        tally.catchup = Some(tip);
         let elapsed = pass.started.elapsed();
         let blocks = tally.blocks - pass.blocks;
         info!(
@@ -102,27 +108,28 @@ pub(crate) async fn run(progress: Arc<Progress>) {
 }
 
 fn summarise(last: &Sample, now: &Sample) {
-    let (Some(pass), Some(height)) = (now.tally.pass, now.tally.height) else {
+    let Some(height) = now.tally.height else {
         return;
+    };
+    let (target, bulk) = match (now.tally.pass, now.tally.catchup) {
+        (Some(pass), _) => (pass.target, true),
+        (None, Some(tip)) => (tip, false),
+        (None, None) => return,
     };
     let elapsed = now.at - last.at;
     let blocks = now.tally.blocks - last.tally.blocks;
-    let (height, target) = (u32::from(height), u32::from(pass.target));
+    let (height, target) = (u32::from(height), u32::from(target));
     if blocks == 0 {
         warn!(height, target, stalled = %Human(elapsed), "Block fetch stalled");
         return;
     }
     let rate = blocks as f64 / elapsed.as_secs_f64();
-    let remaining = target.saturating_sub(height);
-    info!(
-        height,
-        target,
-        synced = %Percent(height, target),
-        bps = per_second(blocks, elapsed),
-        tps = per_second(now.tally.txs - last.tally.txs, elapsed),
-        eta = %Human(Duration::from_secs_f64(f64::from(remaining) / rate)),
-        "Syncing blocks"
-    );
+    let bps = per_second(blocks, elapsed);
+    let eta = Human(Duration::from_secs_f64(f64::from(target.saturating_sub(height)) / rate));
+    match bulk {
+        true => info!(height, target, bps, eta = %eta, "Syncing blocks"),
+        false => info!(applied = height, tip = target, bps, eta = %eta, "Applying to tip"),
+    }
 }
 
 /// Whole units per second
@@ -130,16 +137,6 @@ fn per_second(count: u64, over: Duration) -> u64 {
     match over.as_secs_f64() {
         secs if secs > 0.0 => (count as f64 / secs).round() as u64,
         _ => 0,
-    }
-}
-
-/// `height` of `target` as `50.39%`
-struct Percent(u32, u32);
-
-impl fmt::Display for Percent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let share = f64::from(self.0) / f64::from(self.1.max(1)) * 100.0;
-        write!(f, "{:.2}%", share.min(100.0))
     }
 }
 
@@ -179,8 +176,6 @@ mod tests {
         ] {
             assert_eq!(Human(Duration::from_secs(secs)).to_string(), shown, "{secs}");
         }
-        assert_eq!(Percent(1_730_091, 3_433_143).to_string(), "50.39%");
-        assert_eq!(Percent(5, 0).to_string(), "100.00%");
         assert_eq!(per_second(90, Duration::from_secs(30)), 3);
         assert_eq!(per_second(90, Duration::ZERO), 0);
     }

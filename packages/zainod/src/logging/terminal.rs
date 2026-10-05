@@ -4,7 +4,7 @@
 //! - Level tag, `MM-DD|HH:MM:SS.mmm` UTC, nearest [`COMPONENT`] span, message padded to
 //!   [`MESSAGE_WIDTH`] when fields follow
 //! - Fields `key=value`: integers ≥ 1,000 grouped, `%` fields as displayed, a value with a space
-//!   or `=` quoted, a 64-hex hash shortened, a [`PARTS`] field split into its own pairs
+//!   or `=` quoted, a 64-hex hash shortened, [`COLUMNS`] padded to line up across lines
 //! - Enclosing spans' fields follow the event's own
 
 use std::{
@@ -28,15 +28,18 @@ use tracing_subscriber::{
 /// Span field naming the component
 pub(super) const COMPONENT: &str = "component";
 
-/// Field of runtime-named pairs ([`super::parts`]), each written as its own `key=value`
-pub(super) const PARTS: &str = "parts";
-
 /// Longest component (`TransparentAddrIdx:`) + 2
 const COMPONENT_WIDTH: usize = 21;
 
 const MESSAGE_WIDTH: usize = 30;
 
 const GROUP_FROM: u64 = 1_000;
+
+/// Fields lined up across lines (index heights + size): `(key, width, right-aligned)`
+/// - Padding between pairs, never inside a value (a value with a space would be quoted)
+/// - Right-aligned = spaces before the key, so the column's right edge lines up
+const COLUMNS: &[(&str, usize, bool)] =
+    &[("durable", 9, false), ("merged", 9, false), ("applied", 9, false), ("size", 6, true)];
 
 /// Hash shown as its first + last this many hex digits
 const HASH_ENDS: usize = 8;
@@ -85,8 +88,17 @@ where
             true => write!(writer, "{}", fields.message)?,
             false => write!(writer, "{:<MESSAGE_WIDTH$}", fields.message)?,
         }
-        for (key, value) in &fields.pairs {
-            write!(writer, " {}={value}", paint(key))?;
+        let last = fields.pairs.len().saturating_sub(1);
+        for (i, (key, value)) in fields.pairs.iter().enumerate() {
+            let short = |width: usize| width.saturating_sub(value.chars().count());
+            // no trailing padding at the end of the line
+            let trailing = i < last || !spans.is_empty();
+            let (before, after) = match COLUMNS.iter().find(|(name, ..)| *name == key) {
+                Some(&(_, width, true)) => (short(width), 0),
+                Some(&(_, width, false)) if trailing => (0, short(width)),
+                _ => (0, 0),
+            };
+            write!(writer, " {:before$}{}={value}{:after$}", "", paint(key), "")?;
         }
         if !spans.is_empty() {
             write!(writer, " {spans}")?;
@@ -198,13 +210,6 @@ impl Fields {
         match field.name() {
             "message" => self.message = value,
             COMPONENT => self.component = Some(value),
-            PARTS => {
-                for part in value.split(' ') {
-                    if let Some((key, value)) = part.split_once('=') {
-                        self.pairs.push((Cow::Owned(key.to_owned()), value.to_owned()));
-                    }
-                }
-            }
             name => self.pairs.push((Cow::Borrowed(name), quoted(shortened(value)))),
         }
     }
@@ -240,7 +245,7 @@ impl Visit for Fields {
 }
 
 /// `1,730,091` from [`GROUP_FROM`] up
-fn grouped(value: u64) -> String {
+pub(super) fn grouped(value: u64) -> String {
     let digits = value.to_string();
     if value < GROUP_FROM {
         return digits;
@@ -327,8 +332,14 @@ mod tests {
                     "Syncing blocks"
                 );
                 tracing::warn!(reason = "queue full", ratio = 0.5, %hash, "Commit waited");
-                let parts = super::super::parts([("receives", "10.0GiB"), ("spent", "9.0GiB")]);
-                tracing::info!(size = "19.0GiB", %parts, "Index on disk");
+                use super::super::{HeightCol, Size3};
+                tracing::info!(
+                    durable = %HeightCol(Some(3_501_802)),
+                    merged = %HeightCol(None),
+                    applied = %HeightCol(Some(3_501_802)),
+                    size = %Size3(134_000_000),
+                    "Syncing"
+                );
             });
             let poll = tracing::info_span!(parent: &daemon, "poll", endpoint = "10.0.0.1:8232");
             poll.in_scope(|| tracing::error!(error = &io as &dyn std::error::Error, "Poll failed"));
@@ -353,9 +364,10 @@ mod tests {
                 "{:<21}{:<30} reason=\"queue full\" ratio=0.5 hash=00000000…1a76bf89",
                 "ZainoSource:", "Commit waited"
             ),
+            // columns: `merged=—` padded to the 9-wide height, `size` right-aligned to 6
             format!(
-                "{:<21}{:<30} size=19.0GiB receives=10.0GiB spent=9.0GiB",
-                "ZainoSource:", "Index on disk"
+                "{:<21}{:<30} durable=3,501,802 merged=—{:8} applied=3,501,802  size=134MB",
+                "ZainoSource:", "Syncing", ""
             ),
             format!(
                 "{:<21}{:<30} error=\"disk gone\" endpoint=10.0.0.1:8232",

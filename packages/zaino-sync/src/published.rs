@@ -6,7 +6,7 @@ use std::{future::Future, sync::Arc, time::Instant};
 use arc_swap::ArcSwap;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 use zaino_chainview::QuorumTip;
 use zaino_primitives::types::{Height, ReorgDepth};
 
@@ -16,10 +16,12 @@ use crate::{report::Human, Reads, Served};
 ///
 /// - `synced` = the serving gate, written only by [`gate`](Self::gate)'s task
 /// - `reorgs` = bumped per reorg: the gate closes until the replay is back at the tip
+/// - `merged` = last final block held for the next bulk commit (`None` once a commit covers it)
 pub struct Published<V> {
     view: Arc<ArcSwap<V>>,
     applied: watch::Sender<Option<Height>>,
     finalized: watch::Sender<Option<Height>>,
+    merged: watch::Sender<Option<Height>>,
     reorgs: watch::Sender<u64>,
     synced: Arc<watch::Sender<bool>>,
     reads: Reads,
@@ -32,6 +34,7 @@ impl<V> Published<V> {
             view: Arc::new(ArcSwap::from_pointee(view)),
             applied: watch::Sender::new(durable),
             finalized: watch::Sender::new(durable),
+            merged: watch::Sender::new(None),
             reorgs: watch::Sender::new(0),
             synced: Arc::new(watch::Sender::new(false)),
             reads: Reads::default(),
@@ -49,6 +52,18 @@ impl<V> Published<V> {
     pub fn durable(&self, finalized: Option<Height>) {
         let before = self.finalized.send_replace(finalized);
         assert!(before <= finalized, "durable tip moved back");
+        self.merged.send_if_modified(|merged| {
+            let landed = merged.is_some_and(|merged| Some(merged) <= finalized);
+            if landed {
+                *merged = None;
+            }
+            landed
+        });
+    }
+
+    /// Final block `height` held in memory for the next bulk commit (progress between commits)
+    pub fn merged(&self, height: Height) {
+        self.merged.send_replace(Some(height));
     }
 
     /// Non-finalized state dropped: the gate closes until the replay reaches the tip again
@@ -73,6 +88,10 @@ impl<V> Published<V> {
 
     pub fn subscribe_applied(&self) -> watch::Receiver<Option<Height>> {
         self.applied.subscribe()
+    }
+
+    pub fn subscribe_merged(&self) -> watch::Receiver<Option<Height>> {
+        self.merged.subscribe()
     }
 
     pub fn subscribe_synced(&self) -> watch::Receiver<bool> {
@@ -141,7 +160,8 @@ fn set(
             (true, Some(reset)) => {
                 info!(height, took = %Human(reset.elapsed()), "Reorg replayed, serving")
             }
-            (true, None) => info!(height, "Serving"),
+            // INFO line = zainod's index report (heights + size)
+            (true, None) => debug!(height, "Serving"),
             (false, Some(_)) => info!(height, "Reorg received, requests refused until replayed"),
             (false, None) => info!(height, "Syncing, requests refused"),
         }
