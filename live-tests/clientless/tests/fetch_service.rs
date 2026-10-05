@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clientless::rpc::z_validate_address::run_z_validate_for;
 use rstest::rstest;
 use serde_json::{json, Value};
-use zaino_testutils::{assert_json_equal_ignoring, assert_rpc_parity};
+use zaino_testutils::{assert_json_equal_ignoring, assert_rpc_parity, ZEBRAD_VERSION};
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(60);
@@ -20,7 +20,7 @@ mod launch {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn regtest_no_cache<B: ValidatorConfig>(
@@ -44,7 +44,7 @@ mod validation {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn validate_address<B: ValidatorConfig>(
@@ -81,7 +81,7 @@ mod validation {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     pub(crate) async fn z_validate_address<B: ValidatorConfig>(
@@ -101,7 +101,7 @@ mod get {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_raw<B: ValidatorConfig>(
@@ -124,7 +124,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_object<B: ValidatorConfig>(
@@ -147,7 +147,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn latest_block<B: ValidatorConfig>(
@@ -186,7 +186,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -217,7 +217,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_header<B: ValidatorConfig>(
@@ -250,7 +250,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn difficulty<B: ValidatorConfig>(
@@ -271,7 +271,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn mining_info<B: ValidatorConfig>(
@@ -310,7 +310,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn peer_info<B: ValidatorConfig>(
@@ -331,7 +331,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_subsidy<B: ValidatorConfig>(
@@ -363,7 +363,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn best_blockhash<B: ValidatorConfig>(
@@ -400,7 +400,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_count<B: ValidatorConfig>(
@@ -426,7 +426,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_nullifiers<B: ValidatorConfig>(
@@ -451,7 +451,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_range<B: ValidatorConfig>(
@@ -472,7 +472,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_range_nullifiers<B: ValidatorConfig>(
@@ -493,7 +493,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn tree_state<B: ValidatorConfig>(
@@ -513,7 +513,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn latest_tree_state<B: ValidatorConfig>(
@@ -532,7 +532,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn subtree_roots<B: ValidatorConfig>(
@@ -553,7 +553,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn lightd_info<B: ValidatorConfig>(
@@ -572,7 +572,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn get_network_sol_ps<B: ValidatorConfig>(

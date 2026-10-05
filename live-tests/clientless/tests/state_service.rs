@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use zaino_testutils::{assert_json_shape_matches, assert_rpc_parity, ShieldedProtocol};
+use zaino_testutils::{
+    assert_json_shape_matches, assert_rpc_parity, ShieldedProtocol, ZEBRAD_VERSION,
+};
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
@@ -24,7 +26,8 @@ mod zebra {
         async fn regtest_no_cache() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -84,7 +87,8 @@ mod zebra {
         async fn best_blockhash() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -119,7 +123,8 @@ mod zebra {
         async fn block_count() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -154,7 +159,8 @@ mod zebra {
         async fn mining_info() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -187,7 +193,8 @@ mod zebra {
         async fn difficulty() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -219,7 +226,8 @@ mod zebra {
         async fn get_network_sol_ps() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -256,7 +264,8 @@ mod zebra {
         async fn peer_info() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -295,7 +304,7 @@ mod zebra {
                 let mut env = TestEnv::builder().ready_timeout(READY);
                 let vol = env.shared_volume("zebra-db");
                 let _validator =
-                    env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+                    env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
                 let _fetch = env.add_indexer(
                     dev!(Indexer::Zainod, "../../Dockerfile")
                         .regtest()
@@ -321,7 +330,8 @@ mod zebra {
         async fn block_object_regtest() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -360,7 +370,8 @@ mod zebra {
         async fn block_raw_regtest() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -399,7 +410,8 @@ mod zebra {
         async fn get_latest_block() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -436,7 +448,8 @@ mod zebra {
         async fn get_block() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -478,7 +491,8 @@ mod zebra {
         async fn get_block_header() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -519,7 +533,8 @@ mod zebra {
         async fn get_tree_state() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -551,7 +566,8 @@ mod zebra {
         async fn get_subtree_roots() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -587,7 +603,8 @@ mod zebra {
         async fn get_latest_tree_state() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -619,7 +636,8 @@ mod zebra {
         async fn get_block_range_full() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
@@ -664,7 +682,8 @@ mod zebra {
         async fn get_block_range_nullifiers() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
+            let validator =
+                env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
