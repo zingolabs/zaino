@@ -6420,6 +6420,7 @@ dependencies = [
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",
+ "zaino-finality",
  "zaino-mempool",
  "zaino-mempool-service",
  "zaino-primitives",

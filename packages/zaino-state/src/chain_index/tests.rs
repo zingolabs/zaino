@@ -7,6 +7,7 @@ mod poll;
 mod proptest_blockgen;
 mod sync_loop;
 pub(crate) mod vectors;
+mod watermark_bridge;
 
 pub(crate) fn init_tracing() {
     tracing_subscriber::fmt()
