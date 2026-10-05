@@ -51,7 +51,8 @@ async fn runtime_boots_and_indexes_a_mock_chain() {
     let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
 
     // Resume-safe assembly: reads the backend's watermark (fresh here) to set the
-    // start. finalised_depth = 0: a non-reorging mock, so the boundary is the tip.
+    // start. A `SyncTarget::Depth` of 0: a non-reorging mock, so the boundary is
+    // the tip.
     let driver = SourceSyncDriver::resuming(
         &backend,
         CurrentZaino::pipelines(),

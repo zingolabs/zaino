@@ -73,8 +73,9 @@ impl ReachabilityProbe for Probe {
 }
 
 /// The tip a rigged source reports, so the driver has a non-empty range to sync
-/// and actually reaches the (failing) block fetch. Height 2 with `finalised_depth
-/// = 0` gives a sync range of `[0, 2]`; the first fetch is where the failure lands.
+/// and actually reaches the (failing) block fetch. Height 2 with a
+/// `SyncTarget::Depth` of `0` gives a sync range of `[0, 2]`; the first fetch is
+/// where the failure lands.
 fn rigged_tip() -> (BlockHash, Height) {
     (
         BlockHash::from([1u8; 32]),
