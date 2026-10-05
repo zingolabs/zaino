@@ -1,0 +1,13 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a10cbb-3c89-7f01-84ea-652f3c2740ca"
+# Changeset for this PR. One file per PR; describe each change to a governed
+# (published) crate, at a semantic level. CI aggregates every changeset since
+# the last release into per-crate version bumps and changelog lines.
+#
+# Uncomment and fill in one [[changes]] block per governed public change.
+# Multiple crates (and multiple changes to one crate) each get their own block.
+#
+[[changes]]
+crate       = "zaino-source"
+kind        = "internal"
+description = "`MockChain` completes the validator-source port surface so it can drive the sync stack in tests. The added implementations are gated behind `#[cfg(any(test, feature = \"testing\"))]`, so the published, default-feature API is unchanged."
