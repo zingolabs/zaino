@@ -73,8 +73,8 @@ const COUNTERS: &[&[(&str, &str)]] = &[
 
 const GAUGES: &[&[(&str, &str)]] = &[
     zaino_state::metric_names::store::GAUGES,
-    zaino_state::metric_names::GAUGES,
     zaino_state::mempool_metric_names::GAUGES,
+    zaino_chain_head_service::metric_names::GAUGES,
     &[(
         BUILD_INFO,
         "Static build metadata; always 1, version in a label",

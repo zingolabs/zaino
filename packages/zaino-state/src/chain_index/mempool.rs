@@ -15,9 +15,9 @@
 //! nothing to say about, because it is a fact about *Zaino's* state rather than
 //! the validator's:
 //!
-//! - [`MempoolSourceAdapter`] supplies the block-arrival wake, which must come
-//!   from ChainIndex's sync loop rather than from the source. Its port impls
-//!   forward the validator questions untouched.
+//! - [`MempoolSourceAdapter`] supplies the block-arrival wake, from the chain
+//!   head's tip changes. Its port impls forward the validator questions
+//!   untouched.
 //! - [`ChainHeadEpochAdapter`] exposes the chain head's epoch, which is what
 //!   the coherence layer freezes and thaws against.
 //!
@@ -44,21 +44,42 @@ pub(crate) type ChainIndexCoherence = zaino_mempool_service::CoherenceService<
     ChainHeadEpochAdapter,
 >;
 
+/// Starts the mempool over `source`, and its coherence layer against the chain
+/// head's epoch. Both are woken by the chain head's tip changes.
+///
+/// `config` is cloned rather than rebuilt: `MempoolConfig` shares its cost
+/// bound across clones, so an operator changing it moves both services at once.
+pub(super) fn spawn<S: BlockchainSource>(
+    source: &S,
+    chain_head: zaino_chain_head_service::ChainHeadSubscriber,
+    config: &zaino_mempool::MempoolConfig,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> (
+    std::sync::Arc<ChainIndexMempool<S>>,
+    std::sync::Arc<ChainIndexCoherence>,
+) {
+    let epoch = ChainHeadEpochAdapter::spawn(chain_head, cancel.child_token());
+    let mempool = zaino_mempool_service::MempoolService::spawn(
+        MempoolSourceAdapter::new(source.clone(), epoch.epoch_wake.clone()),
+        config.clone(),
+        cancel.child_token(),
+    );
+    let coherence = zaino_mempool_service::CoherenceService::spawn(
+        mempool.subscriber(),
+        epoch,
+        config.clone(),
+        cancel.child_token(),
+    );
+    (mempool, coherence)
+}
+
 /// Wraps ChainIndex's source to give the mempool a block-arrival wake.
 ///
 /// Every mempool data port forwards to the wrapped source untouched; those impls
 /// exist only because a trait impl does not travel through a wrapper on its own.
-/// The one thing this adds is `SubscribeBlocks`.
-///
-/// It has to. `ValidatorSource` has no push path in production — reaching the
-/// validator over request/response gives none — so without a wake the mempool's
-/// addition latency would always be a full poll interval. The ChainIndex sync
-/// loop *does* know when a block landed, so it fires this signal, and the
-/// mempool gets a block-driven push path the source cannot offer.
-///
-/// This is a wake hint and nothing more. The tip is re-read from the source on
-/// every tick regardless, so a missed or spurious signal costs latency, never
-/// correctness.
+/// The one thing this adds is `SubscribeBlocks`, fed by the chain head's tip
+/// changes because the validator source has no push path of its own. It is a
+/// latency hint: the tip is re-read from the source on every tick regardless.
 #[derive(Clone)]
 pub(crate) struct MempoolSourceAdapter<S> {
     source: S,

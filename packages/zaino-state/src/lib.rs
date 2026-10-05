@@ -25,21 +25,10 @@ impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
 pub mod metric_names {
     pub use zaino_chain_store_zainodb::metric_names::{self as store, *};
 
-    // Sync lag = CHAIN_TIP_HEIGHT - SYNC_FINALIZED_HEIGHT, consumer-derived
-    pub const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
-    pub const SYNC_CONSECUTIVE_FAILURES: &str = "zaino.sync.consecutive_failures";
-    pub const SYNC_BACKOFF_SECONDS: &str = "zaino.sync.backoff_seconds";
-    // Coherence decided against the chain-head tip → emitted from the sync loop, not the mempool
-    pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
-
-    // Shadows the store's glob-imported `GAUGES`
-    #[rustfmt::skip]
-    pub const GAUGES: &[(&str, &str)] = &[
-        (CHAIN_TIP_HEIGHT, "Latest chain tip height reported by the source"),
-        (SYNC_CONSECUTIVE_FAILURES, "Consecutive failed sync iterations; 0 when healthy"),
-        (SYNC_BACKOFF_SECONDS, "Current sync-loop retry backoff in seconds; 0 when healthy"),
-        (MEMPOOL_COHERENCE_FROZEN_SECONDS, "Seconds tip-coherent mempool reads have been frozen; 0 when live"),
-    ];
+    pub use zaino_chain_head_service::metric_names::{
+        CHAIN_TIP_HEIGHT, SYNC_BACKOFF_SECONDS, SYNC_CONSECUTIVE_FAILURES,
+    };
+    pub use zaino_mempool_service::metric_names::MEMPOOL_COHERENCE_FROZEN_SECONDS;
 }
 
 /// Mempool metric names; `zainod` reaches the mempool only through this crate
@@ -80,10 +69,10 @@ pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 pub use zaino_encoding::*;
 // Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.
 // Re-exported so a consumer wiring a ChainIndex need not name that crate.
-// The non-finalised chain head is `zaino-chain-head`; its runtime is
-// `zaino-chain-head-service`. Re-exported here so a consumer wiring a
-// ChainIndex does not need to name those crates directly.
+// The chain view `ChainIndex` answers from, and the types its snapshot is made
+// of. Re-exported so a consumer need not name those crates directly.
 pub use error::{InitError, SyncError};
+pub use zaino_chain::{ChainViewSnapshot, ComposerSnapshot};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::MapBackedSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
@@ -103,7 +92,9 @@ pub use zaino_primitives::types::MempoolInfo;
 /// `zaino_chain_store::StoredTxOut` through the ports, so the one place that
 /// held a stored output — the cross-seam UTXO fold — folds domain outputs
 /// instead. The rest of this list shrinks the same way.
-pub(crate) use chain_index::types::{BlockHash, Height, IndexedBlock, Outpoint, TransactionHash};
+pub(crate) use chain_index::types::{BlockHash, IndexedBlock};
+#[cfg(test)]
+pub(crate) use chain_index::types::{Height, Outpoint, TransactionHash};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing
