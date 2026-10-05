@@ -24,7 +24,7 @@ pub use queries::{
     MempoolListed, SendRawTransaction, SendRawTransactionError, SourceTip, TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
-pub use rpc::{ProbeError, RpcClient, RpcClientConfig, RpcError};
+pub use rpc::{ProbeError, RpcClient, RpcClientConfig, RpcError, Timeouts};
 
 /// `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]

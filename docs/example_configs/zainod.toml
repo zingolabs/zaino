@@ -20,6 +20,9 @@ jsonrpc_address = "127.0.0.1:18232"
 # basic auth
 # user = "xxxxxx"
 # password = "xxxxxx"
+# connect_timeout_secs = 2
+# Silence before a request fails, never total duration (raise for a slow or lossy link)
+# read_timeout_secs = 30
 
 # Extra validators the mempool view quorates over (absent = [source] alone, quorum trivially met)
 # [[chainview_peers]]

@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use super::{RpcClient, RpcClientConfig, RpcError};
+use super::{RpcClient, RpcClientConfig, RpcError, Timeouts};
 
 /// Why a validator endpoint could not be reached.
 #[derive(Debug, thiserror::Error)]
@@ -110,12 +110,14 @@ pub(crate) async fn probe_node(
     cookie_path: Option<&Path>,
     user: Option<String>,
     password: Option<String>,
+    timeouts: Timeouts,
 ) -> Result<String, ProbeError> {
     let url = validator_url(address)?;
 
     let client = RpcClient::new(RpcClientConfig {
         url: url.clone(),
         auth: auth_from_parts(cookie_path, user, password)?,
+        timeouts,
         ..Default::default()
     })
     .map_err(ProbeError::Client)?;

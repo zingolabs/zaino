@@ -17,12 +17,25 @@ pub(super) const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// Zebra's "work queue full": busy, not broken
 const WORK_QUEUE_FULL: i64 = -1;
 
+/// Link limits to one validator (`read` = silence, never total duration: a multi-MB block over a
+/// slow link must finish; a total deadline below its transfer time = retry livelock)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    pub connect: Duration,
+    pub read: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self { connect: Duration::from_secs(2), read: Duration::from_secs(30) }
+    }
+}
+
 pub struct RpcClientConfig {
     pub url: String,
     /// Basic auth (user, password)
     pub auth: Option<(String, String)>,
-    pub connect_timeout: Duration,
-    pub request_timeout: Duration,
+    pub timeouts: Timeouts,
     /// Re-sends after a work-queue-full refusal
     pub max_retries: u32,
     pub retry_delay: Duration,
@@ -33,8 +46,7 @@ impl Default for RpcClientConfig {
         Self {
             url: "http://127.0.0.1:8232".to_string(),
             auth: None,
-            connect_timeout: Duration::from_secs(2),
-            request_timeout: Duration::from_secs(30),
+            timeouts: Timeouts::default(),
             max_retries: 5,
             retry_delay: Duration::from_millis(500),
         }
@@ -53,8 +65,9 @@ pub struct RpcClient {
 impl RpcClient {
     pub fn new(config: RpcClientConfig) -> Result<Self, RpcError> {
         let client = reqwest::Client::builder()
-            .connect_timeout(config.connect_timeout)
-            .timeout(config.request_timeout)
+            .connect_timeout(config.timeouts.connect)
+            // per read (headers + each body chunk), reset on progress
+            .read_timeout(config.timeouts.read)
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
 

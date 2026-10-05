@@ -6,7 +6,9 @@ use std::path::Path;
 use zaino_primitives::types::PeerInfo;
 use zaino_primitives::types::{Block, BlockHash, BlockchainInfo, Height, TransactionId};
 
-use crate::rpc::{auth_from_parts, probe_node, ProbeError, RpcClient, RpcClientConfig, RpcError};
+use crate::rpc::{
+    auth_from_parts, probe_node, ProbeError, RpcClient, RpcClientConfig, RpcError, Timeouts,
+};
 use crate::{
     decode, parse, BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
     GetBlockchainInfoError, GetChainTipError, GetMempoolListingError, GetPeerInfoError,
@@ -30,11 +32,14 @@ impl ZebraRpcAdapter {
         cookie_path: Option<&Path>,
         user: Option<String>,
         password: Option<String>,
+        timeouts: Timeouts,
     ) -> Result<Self, ProbeError> {
-        let url = probe_node(address, cookie_path, user.clone(), password.clone()).await?;
+        let url =
+            probe_node(address, cookie_path, user.clone(), password.clone(), timeouts).await?;
         let rpc = RpcClient::new(RpcClientConfig {
             url,
             auth: auth_from_parts(cookie_path, user, password)?,
+            timeouts,
             ..RpcClientConfig::default()
         })
         .map_err(ProbeError::Client)?;

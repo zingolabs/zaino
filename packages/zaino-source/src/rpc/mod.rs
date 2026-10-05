@@ -8,7 +8,7 @@ mod envelope;
 mod error;
 mod probe;
 
-pub use client::{RpcClient, RpcClientConfig};
+pub use client::{RpcClient, RpcClientConfig, Timeouts};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use error::RpcError;
 pub use probe::ProbeError;

@@ -71,15 +71,34 @@ pub struct SourceConfig {
     pub user: Option<String>,
     /// JSON-RPC basic-auth password, if configured.
     pub password: Option<String>,
+    /// Seconds to open a connection to the validator.
+    pub connect_timeout_secs: NonZeroU64,
+    /// Seconds without a byte from the validator before a request fails. Silence, never total
+    /// duration: a multi-MB block over a slow link takes as long as it takes.
+    pub read_timeout_secs: NonZeroU64,
 }
 
 impl Default for SourceConfig {
     fn default() -> Self {
+        let timeouts = zaino_source::Timeouts::default();
         Self {
             jsonrpc_address: "127.0.0.1:8232".to_string(),
             cookie_path: None,
             user: None,
             password: None,
+            connect_timeout_secs: NonZeroU64::new(timeouts.connect.as_secs())
+                .expect("the default connect timeout is whole, non-zero seconds"),
+            read_timeout_secs: NonZeroU64::new(timeouts.read.as_secs())
+                .expect("the default read timeout is whole, non-zero seconds"),
+        }
+    }
+}
+
+impl From<&SourceConfig> for zaino_source::Timeouts {
+    fn from(config: &SourceConfig) -> Self {
+        Self {
+            connect: std::time::Duration::from_secs(config.connect_timeout_secs.get()),
+            read: std::time::Duration::from_secs(config.read_timeout_secs.get()),
         }
     }
 }
@@ -711,12 +730,7 @@ path = "/tmp/zaino-compact-block"
 "#;
         let config = load_config(&write(&dir, "rpc.toml", toml)).expect("load");
         let address = "127.0.0.1:18232".to_string();
-        let no_auth = SourceConfig {
-            jsonrpc_address: address,
-            cookie_path: None,
-            user: None,
-            password: None,
-        };
+        let no_auth = SourceConfig { jsonrpc_address: address, ..SourceConfig::default() };
         assert_eq!(config.source, no_auth);
         assert_eq!(config.fetch, FetchConfig::default());
 

@@ -85,6 +85,7 @@ async fn connect_validator(source: &SourceConfig) -> Result<ZebraRpcAdapter, Ind
         source.cookie_path.as_deref(),
         source.user.clone(),
         source.password.clone(),
+        source.into(),
     )
     .await?;
     info!(endpoint = %source.jsonrpc_address, "Validator reachable");

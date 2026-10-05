@@ -70,6 +70,7 @@ async fn dial(peer: &SourceConfig) -> Result<ZebraRpcAdapter, IndexerError> {
         peer.cookie_path.as_deref(),
         peer.user.clone(),
         peer.password.clone(),
+        peer.into(),
     )
     .await
     .map_err(IndexerError::from)
