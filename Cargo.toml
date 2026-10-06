@@ -57,20 +57,22 @@ categories = ["cryptography::cryptocurrencies"]
 
 [workspace.dependencies]
 
-# Librustzcash
-incrementalmerkletree = "0.8"
-orchard = "0.15"
-sapling-crypto = "0.7"
-zcash_address = "0.13"
-zcash_keys = "0.16"
-zcash_protocol = "0.10"
-zcash_primitives = "0.30"
-zcash_transparent = "0.10"
+# Librustzcash. Pinned to the versions zebra-chain 14 links: these types cross
+# into zebra's API, so they cannot diverge from zebra's (see
+# docs/updating_zebra_crates.md). Pre-release strings must be written out.
+incrementalmerkletree = "0.9"
+orchard = "0.16"
+sapling-crypto = "0.9"
+zcash_address = "0.14.0-pre.0"
+zcash_keys = "0.17.0-pre.0"
+zcash_protocol = "0.11.0-pre.0"
+zcash_primitives = "0.31.0-pre.0"
+zcash_transparent = "0.11.0-pre.0"
 
-# Zebra
-zebra-chain = "13.0.1"
-zebra-state = "14.0"
-zebra-rpc = "17.0"
+# Zebra (zebrad 7.0.0-rc.0)
+zebra-chain = "14.0"
+zebra-state = "15.0"
+zebra-rpc = "18.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

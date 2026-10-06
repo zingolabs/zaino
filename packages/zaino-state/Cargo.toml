@@ -39,7 +39,7 @@ zcash_address = { workspace = true }
 zcash_keys = { workspace = true, features = ["sapling"] }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
-sapling-crypto = "0.7"
+sapling-crypto = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
@@ -106,7 +106,7 @@ tracing-subscriber = { workspace = true }
 primitive-types = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
-incrementalmerkletree = "0.8.2"
+incrementalmerkletree = { workspace = true }
 rand = "0.10.1"
 zaino-consensus = { workspace = true }
 orchard.workspace = true
