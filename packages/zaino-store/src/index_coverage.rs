@@ -25,13 +25,20 @@
 //! (`read_keyed`) already rejects a format skew. This guard is only about an
 //! absent stamp on a store that has synced something.
 //!
+//! A namespace the bulk catch-up is still building — its scattered writes
+//! deferred to a run log, incomplete on the backend ([`BackendReader::is_complete`]
+//! is `false`) — is likewise not a coverage gap: it is mid-build, and the
+//! indexer's `finish_bulk` will complete it. A crash mid-catch-up or mid-finish
+//! leaves exactly that state, so the guard accepts an incomplete namespace and
+//! applies the stamp check only to the complete ones.
+//!
 //! ```text
 //! open(M, store) = refuse   if watermark(store) = Some(_) ∧ ∃ I ∈ declared(M) : ¬stamped(I)
 //!                | allow     otherwise
 //! ```
 
 use zaino_indexes::index_set::IndexSet;
-use zaino_persistence::{Backend, Namespace, OpenError, ReadError};
+use zaino_persistence::{Backend, BackendReader, Namespace, OpenError, ReadError};
 use zaino_persistence_codec::{recorded_version, watermark};
 use zaino_primitives::types::{Height, IndexId};
 
@@ -127,6 +134,23 @@ where
         let mut unstamped = Vec::new();
         for index in M::INDEXES {
             let namespace = Namespace::from(*index);
+            // A namespace still being built by the bulk catch-up (its scattered
+            // writes deferred to a run log, a manifest entry pending) is not a
+            // coverage gap: it is mid-build, and `finish_bulk` will complete it.
+            // Its format stamp may not be in place yet either, so skip the stamp
+            // check for it rather than read "incomplete" as "never built". A
+            // crash mid-catch-up or mid-finish leaves exactly this state, and the
+            // store must still open to resume. The guard stays strict for every
+            // namespace that is complete.
+            if !reader
+                .is_complete(namespace)
+                .map_err(|source| IndexCoverageError::Probe {
+                    index: *index,
+                    source,
+                })?
+            {
+                continue;
+            }
             let recorded = recorded_version(&reader, namespace).map_err(|source| {
                 IndexCoverageError::Probe {
                     index: *index,
@@ -169,7 +193,9 @@ mod tests {
     use zaino_indexes::indexes::txids::{self, TxidsIndex};
     use zaino_indexes::sets::compact_blocks::CompactBlocks;
     use zaino_indexes::sets::transparent_history::TransparentHistory;
-    use zaino_persistence::{Backend, BackendWriter, NamespaceSpec, WriteOp};
+    use zaino_persistence::{
+        Backend, BackendReader, BackendWriter, BulkPolicy, NamespaceSpec, WriteOp,
+    };
     use zaino_persistence_codec::{reserved_namespaces, version_stamp, watermark};
     use zaino_primitives::types::Height;
 
@@ -301,6 +327,79 @@ mod tests {
         reader
             .check_index_coverage()
             .expect("the same set reopens cleanly");
+    }
+
+    /// A namespace still being built by the bulk catch-up (deferred, incomplete)
+    /// is accepted even though it bears no stamp yet: it is mid-build, not a
+    /// never-built index added to a synced store. This is the crash-mid-catch-up
+    /// / mid-finish state the guard must open through so the indexer can resume.
+    #[test]
+    fn pending_deferral_is_accepted_even_without_a_stamp() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let backend = open_at::<TransparentHistory>(tmp.path());
+
+        // The whole compact-block set is stamped and a watermark is committed:
+        // the store has synced something. The three transparent-history indexes
+        // (all `Scattered`) are left unstamped — the state a catch-up that has
+        // not yet reached `finish_bulk` can be in.
+        let mut ops = compact_block_stamps();
+        ops.push(watermark::stamp(height(100)));
+        commit(&backend, ops);
+
+        // Enter bulk mode and defer a scattered write to each transparent index,
+        // so each reads incomplete (a pending run-log manifest entry) while still
+        // unstamped.
+        backend
+            .begin_bulk(BulkPolicy { enabled: true })
+            .expect("begin_bulk");
+        for namespace in [
+            address_history::ID.into(),
+            transparent_spends::ID.into(),
+            txid_location::ID.into(),
+        ] {
+            commit(
+                &backend,
+                vec![WriteOp::Put {
+                    namespace,
+                    key: vec![0u8; 36],
+                    value: vec![0u8; 32],
+                }],
+            );
+            assert!(
+                !backend
+                    .reader()
+                    .expect("reader")
+                    .is_complete(namespace)
+                    .expect("is_complete"),
+                "the deferred namespace {namespace} must read incomplete"
+            );
+        }
+
+        let reader = StoreReader::<_, TransparentHistory>::new(Arc::new(backend));
+        reader.check_index_coverage().expect(
+            "a store whose declared indexes are pending deferral opens so the catch-up resumes",
+        );
+    }
+
+    /// The guard stays strict for a genuinely missing index: one that is complete
+    /// (not deferred) yet unstamped on a store that has synced is still refused.
+    #[test]
+    fn complete_but_unstamped_index_is_still_refused() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let backend = open_at::<TransparentHistory>(tmp.path());
+
+        // The store synced the compact set and committed a watermark, but the
+        // three transparent-history indexes were never built — and no bulk mode
+        // is active, so they read complete. That is the coverage hazard.
+        let mut ops = compact_block_stamps();
+        ops.push(watermark::stamp(height(100)));
+        commit(&backend, ops);
+
+        let reader = StoreReader::<_, TransparentHistory>::new(Arc::new(backend));
+        let err = reader
+            .check_index_coverage()
+            .expect_err("a complete, unstamped index on a synced store is a coverage gap");
+        assert!(matches!(err, IndexCoverageError::Incomplete { .. }));
     }
 
     /// Reopening with a subset of the stamped set opens fine: dropping an index

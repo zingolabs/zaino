@@ -96,6 +96,28 @@ address that outpoint paid, so for an output created below its floor the window
 has nothing to attribute the spend to. It implements the narrower
 `AddressReceiveRead` instead, and `zaino-core` composes the two.
 
+## Readiness during bulk catch-up
+
+The LMDB backend may defer the scattered-key indexes — `address_history`,
+`transparent_spends`, `txid_location`, `hash_to_height` — to a run log during
+the initial catch-up and merge them into the tree at `finish_bulk`. A namespace
+is incomplete while it is deferred, so the reads it backs must not serve a
+half-built answer. Each such read checks its backing namespaces once (a
+completeness probe per namespace, never per entry) and refuses with
+`NotServiceable(capability)` until every one is complete:
+
+| read | backing namespaces | capability refused |
+| --- | --- | --- |
+| address history | `address_history`, `transparent_spends`, `txid_location` | `AddressHistory` |
+| spend status | `transparent_spends`, `txid_location` | `SpendStatus` |
+| block by hash | `hash_to_height` | `Blocks` |
+
+Height-addressed compact and header reads touch no deferred namespace and serve
+throughout; once `finish_bulk` completes every namespace, all reads serve. The
+refusal is the store's `NotServiceable` variant, which the `zaino-core` composer
+already propagates, so a deferred capability reports not-yet-serviceable rather
+than empty.
+
 ## Watermark repair
 
 The watermark is a stamp beside the data and the data outranks it. On boot
@@ -129,6 +151,7 @@ What it does **not** refuse:
 | every declared index stamped | opens | the store covers the whole range for this set |
 | reopened with a **subset** | opens | the guard checks only what `M` declares; a stamped namespace this set does not read is left untouched |
 | an index stamped at an **older** codec version | opens here | the stamp is present; the per-read freshness check rejects a format skew |
+| a namespace still **pending deferral** (incomplete, mid bulk catch-up) | opens | it is being built, not never-built; `finish_bulk` completes it, so a crash mid-catch-up still resumes |
 
 It is deliberately narrow: it asserts the one invariant that keeps the
 shared-watermark assumption true — an index can only be added to a store that
