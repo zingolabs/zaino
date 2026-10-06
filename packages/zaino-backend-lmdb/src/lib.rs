@@ -734,3 +734,148 @@ mod tests {
         }
     }
 }
+
+/// The generic backend conformance suite ([`zaino_persistence::conformance`]),
+/// run against the LMDB backend.
+///
+/// LMDB is persistent, so the factory's [`reopen`](conformance::BackendFactory::reopen)
+/// reopens the same temp-dir environment and the persistence and restart
+/// properties run for real (unlike the in-memory backend, whose `reopen` is
+/// `None`). One `#[test]` per property gives a precise failure site; the
+/// aggregate [`run_all`](conformance::run_all) guards against a property being
+/// added upstream and not wired here.
+#[cfg(test)]
+mod conformance_tests {
+    use std::sync::Mutex;
+
+    use super::{LmdbBackend, LmdbConfig};
+    use zaino_persistence::conformance::{self, BackendFactory};
+    use zaino_persistence::NamespaceSpec;
+
+    /// Opens LMDB environments under one temp dir for a conformance run.
+    ///
+    /// [`fresh`](BackendFactory::fresh) must hand back an *empty* backend every
+    /// time — [`run_all`](conformance::run_all) calls it once per property on the
+    /// same factory — while [`reopen`](BackendFactory::reopen) must reopen the
+    /// exact storage the most recent `fresh` created. So each `fresh` allocates a
+    /// new, never-before-used generation subdirectory (LMDB creates it empty) and
+    /// records it; `reopen` reopens that same generation.
+    struct LmdbFactory {
+        root: tempfile::TempDir,
+        generation: Mutex<u32>,
+    }
+
+    impl LmdbFactory {
+        fn new() -> Self {
+            Self {
+                root: tempfile::tempdir().expect("tempdir"),
+                generation: Mutex::new(0),
+            }
+        }
+
+        fn config(&self, generation: u32, namespaces: &[NamespaceSpec]) -> LmdbConfig {
+            LmdbConfig {
+                path: self.root.path().join(format!("gen-{generation}")),
+                map_size_bytes: 1 << 20, // 1 MiB: the conformance data is tiny.
+                namespaces: namespaces.to_vec(),
+            }
+        }
+
+        fn next_generation(&self) -> u32 {
+            let mut generation = self.generation.lock().expect("generation mutex poisoned");
+            *generation += 1;
+            *generation
+        }
+
+        fn current_generation(&self) -> u32 {
+            *self.generation.lock().expect("generation mutex poisoned")
+        }
+    }
+
+    impl BackendFactory for LmdbFactory {
+        type B = LmdbBackend;
+
+        fn fresh(&self, namespaces: &[NamespaceSpec]) -> Self::B {
+            let generation = self.next_generation();
+            LmdbBackend::open(self.config(generation, namespaces)).expect("open lmdb backend")
+        }
+
+        fn reopen(&self, namespaces: &[NamespaceSpec]) -> Option<Self::B> {
+            let generation = self.current_generation();
+            Some(
+                LmdbBackend::open(self.config(generation, namespaces))
+                    .expect("reopen lmdb backend"),
+            )
+        }
+    }
+
+    #[test]
+    fn get_put_delete_round_trip() {
+        conformance::get_put_delete_round_trip(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn commit_is_atomic_across_namespaces() {
+        conformance::commit_is_atomic_across_namespaces(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn scan_returns_bytewise_key_order() {
+        conformance::scan_returns_bytewise_key_order(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn scan_range_is_ascending_and_half_open() {
+        conformance::scan_range_is_ascending_and_half_open(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn first_key_is_smallest_or_none() {
+        conformance::first_key_is_smallest_or_none(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn namespaces_are_isolated() {
+        conformance::namespaces_are_isolated(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn reopen_persists_committed_data() {
+        conformance::reopen_persists_committed_data(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn bulk_disabled_matches_direct() {
+        conformance::bulk_disabled_matches_direct(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn bulk_enabled_after_finish_matches_direct() {
+        conformance::bulk_enabled_after_finish_matches_direct(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn is_complete_true_outside_bulk_mode() {
+        conformance::is_complete_true_outside_bulk_mode(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn is_complete_inside_bulk_mode() {
+        conformance::is_complete_inside_bulk_mode(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn finish_bulk_is_idempotent() {
+        conformance::finish_bulk_is_idempotent(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn restart_in_bulk_mode_matches_direct() {
+        conformance::restart_in_bulk_mode_matches_direct(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn run_all_aggregate() {
+        conformance::run_all(&LmdbFactory::new());
+    }
+}
