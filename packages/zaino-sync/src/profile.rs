@@ -85,8 +85,10 @@ mod enabled {
         pub(crate) blocks: u64,
         pub(crate) wait_ms: f64,
         pub(crate) extract_ms: f64,
-        /// Per index: `(id, merge+persist ms, op count)`.
+        /// Per index: `(id, merge+persist ms, op count)`. Durations overlap.
         pub(crate) merge_persist: Vec<(IndexId, f64, usize)>,
+        /// Wall time of the merge+persist par_iter work (what residual uses).
+        pub(crate) merge_persist_wall_ms: f64,
         pub(crate) commit_ms: f64,
         pub(crate) window_ms: f64,
         pub(crate) residual_ms: f64,
@@ -104,7 +106,14 @@ mod enabled {
         wait: Duration,
         /// Extraction wall time since the last emit (window-global).
         extract: Duration,
-        /// Merge+persist samples keyed by the batch the index persisted.
+        /// Wall time of the merge+persist par_iter calls since the last emit
+        /// (window-global). The per-index samples overlap on rayon, so this —
+        /// not their sum — is the real merge+persist contribution to the
+        /// window, and what `residual_ms` subtracts.
+        merge_persist_wall: Duration,
+        /// Merge+persist samples keyed by the batch the index persisted. Kept
+        /// per index to show which index is slow; the durations overlap and
+        /// must not be summed against wall time.
         merge_persist: HashMap<BatchIndex, Vec<MergePersistSample>>,
         /// Highest committed height of the previously emitted batch.
         last_committed_height: Option<u64>,
@@ -120,6 +129,7 @@ mod enabled {
                 window_base: Instant::now(),
                 wait: Duration::ZERO,
                 extract: Duration::ZERO,
+                merge_persist_wall: Duration::ZERO,
                 merge_persist: HashMap::new(),
                 last_committed_height: None,
                 #[cfg(test)]
@@ -135,6 +145,12 @@ mod enabled {
         /// Add extraction wall time.
         pub(crate) fn add_extract(&mut self, d: Duration) {
             self.extract += d;
+        }
+
+        /// Add the wall time of one merge+persist par_iter call (measured
+        /// before the trailing commit, so commit time is not double-counted).
+        pub(crate) fn add_merge_persist_wall(&mut self, d: Duration) {
+            self.merge_persist_wall += d;
         }
 
         /// Record one index's merge+persist for a batch.
@@ -178,7 +194,6 @@ mod enabled {
             };
 
             let mut per_index = String::new();
-            let mut merge_persist_total = Duration::ZERO;
             #[cfg(test)]
             let mut record_samples = Vec::with_capacity(samples.len());
             for sample in &samples {
@@ -193,17 +208,19 @@ mod enabled {
                     sample.index.as_str(),
                     sample.ops
                 );
-                merge_persist_total += sample.merge_persist;
                 #[cfg(test)]
                 record_samples.push((sample.index, sample_ms, sample.ops));
             }
 
             let wait_ms = ms(self.wait);
             let extract_ms = ms(self.extract);
+            let merge_persist_wall_ms = ms(self.merge_persist_wall);
             let commit_ms = ms(commit);
             let window_ms = ms(window);
-            let residual_ms =
-                window_ms - wait_ms - extract_ms - ms(merge_persist_total) - commit_ms;
+            // Subtract the par_iter WALL time, not the sum of overlapping
+            // per-index samples, so the residual stays meaningful (and
+            // non-negative but for scheduling slop) under a parallel index set.
+            let residual_ms = window_ms - wait_ms - extract_ms - merge_persist_wall_ms - commit_ms;
 
             tracing::info!(
                 batch = batch.value(),
@@ -212,6 +229,7 @@ mod enabled {
                 wait_ms,
                 extract_ms,
                 merge_persist = %per_index,
+                merge_persist_wall_ms,
                 commit_ms,
                 window_ms,
                 residual_ms,
@@ -226,6 +244,7 @@ mod enabled {
                 wait_ms,
                 extract_ms,
                 merge_persist: record_samples,
+                merge_persist_wall_ms,
                 commit_ms,
                 window_ms,
                 residual_ms,
@@ -234,6 +253,7 @@ mod enabled {
             // Reset the window.
             self.wait = Duration::ZERO;
             self.extract = Duration::ZERO;
+            self.merge_persist_wall = Duration::ZERO;
             self.window_base = Instant::now();
             self.last_committed_height = Some(committed_height);
         }

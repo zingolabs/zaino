@@ -93,8 +93,9 @@ Two things happen before the indexer resumes, both loud when they fire:
 Build with `--features sync-profile` (off by default, compiled out otherwise)
 to attribute each persistence batch's wall time in process. The binary then
 emits one `sync batch profile` event per committed batch — phase timings
-(`wait_ms`, `extract_ms`, per-index `merge_persist`, `commit_ms`, `window_ms`)
-and per-index op counts — plus an `lmdb commit split` event per commit with the
+(`wait_ms`, `extract_ms`, per-index `merge_persist`, `merge_persist_wall_ms`,
+`commit_ms`, `window_ms`, `residual_ms`) and per-index op counts — plus an
+`lmdb commit split` event per commit with the
 put/flush (I/O) split. The fields, the attribution rule, and how to read
 fetch-bound vs I/O-bound are documented in
 [`zaino-sync`](../zaino-sync/usage.md). In Loki:

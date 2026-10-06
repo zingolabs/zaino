@@ -469,7 +469,12 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         #[cfg(feature = "tracing")]
         let parent_span = tracing::Span::current();
 
-        let merge_results: Vec<_> = handles
+        // Wall time of the whole parallel merge+persist. The per-index samples
+        // below overlap on rayon, so only this reflects the window's real
+        // merge+persist cost. Stopped before `try_commit` so commit time is
+        // not folded in.
+        let wall_timer = crate::profile::PhaseTimer::start();
+        let merge_results = handles
             .par_iter()
             .map(|handle| {
                 #[cfg(feature = "tracing")]
@@ -491,7 +496,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 );
                 Ok((handle.index, handle.batch, ops, merge_persist))
             })
-            .collect::<Result<Vec<_>, SyncError>>()?;
+            .collect::<Result<Vec<_>, SyncError>>();
+        let merge_persist_wall = wall_timer.stop();
+        let merge_results = merge_results?;
+        #[cfg(feature = "sync-profile")]
+        self.profile.add_merge_persist_wall(merge_persist_wall);
+        #[cfg(not(feature = "sync-profile"))]
+        let _: () = merge_persist_wall;
 
         for (index_id, batch, ops, merge_persist) in merge_results {
             #[cfg(feature = "sync-profile")]

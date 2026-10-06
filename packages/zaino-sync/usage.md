@@ -35,10 +35,11 @@ profile`, with these fields:
 | `blocks` | Blocks in the batch. |
 | `wait_ms` | Time blocked awaiting blocks from the source — **fetch starvation**. High `wait` means the run is fetch-bound. |
 | `extract_ms` | Wall time running per-index extraction across the window. |
-| `merge_persist` | Compact per-index list `id=ms/ops`: merge+persist wall time and the number of write ops that index committed for this batch. |
+| `merge_persist` | Compact per-index list `id=ms/ops`: each index's own merge+persist time and the write ops it committed for this batch. The indexes run in parallel, so **these durations overlap** — read them to see *which* index is slow, never sum them against wall time. |
+| `merge_persist_wall_ms` | Wall time of the parallel merge+persist work in the window. This, not the sum of the per-index figures, is the real merge+persist cost. |
 | `commit_ms` | Wall time of the atomic `writer.commit` (put loop + flush) for this batch. |
 | `window_ms` | Wall time since the previous batch commit. |
-| `residual_ms` | `window - wait - extract - Σ(this batch's merge_persist) - commit`. |
+| `residual_ms` | `window - wait - extract - merge_persist_wall - commit`. |
 
 The LMDB backend emits a second event per commit, message `lmdb commit split`,
 with `put_ms` (building the write txn in memory) and `flush_ms`
@@ -58,11 +59,15 @@ Phases run sequentially but do not line up one-to-one with commits: a window may
 extract blocks for a batch that commits later, and a batch's atomic commit fires
 only once every index has persisted it. The rule is: **a phase is attributed to
 the batch that commits next.** `wait` and `extract` are accumulated
-window-globally; `merge_persist` is keyed by the batch each index actually
-persisted, so its per-index op counts match exactly what that batch committed.
-Because the phases are sequential, `wait + extract + merge_persist + commit`
-approximates `window_ms`; `residual_ms` surfaces the difference (merge work done
-in this window for a not-yet-committed batch, scheduler overhead, contention).
+window-globally; the per-index `merge_persist` samples are keyed by the batch
+each index actually persisted, so their op counts match exactly what that batch
+committed. Because the phases are sequential, `wait + extract +
+merge_persist_wall + commit` approximates `window_ms`; `residual_ms` surfaces
+the difference (merge work done in this window for a not-yet-committed batch,
+scheduler overhead, contention). `residual_ms` uses `merge_persist_wall_ms` —
+the wall time of the parallel merge+persist — not the sum of the overlapping
+per-index samples, which would overstate the cost and drive the residual
+sharply negative under a multi-index set.
 
 ### Reading it in Loki
 

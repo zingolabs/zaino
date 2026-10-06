@@ -382,15 +382,24 @@ mod tests {
                 "all three indexes sampled for batch {}",
                 record.batch
             );
-            // Every timing field is populated and sane; the residual can be
-            // slightly negative (merge work for a later batch lands in the
-            // window) but must be finite.
+            // Every timing field is populated and sane.
             assert!(record.committed_height >= u64::from(record.batch));
             assert!(record.wait_ms >= 0.0);
             assert!(record.extract_ms >= 0.0);
+            assert!(record.merge_persist_wall_ms >= 0.0);
             assert!(record.commit_ms >= 0.0);
             assert!(record.window_ms >= 0.0);
-            assert!(record.residual_ms.is_finite());
+            // Residual is computed against the merge+persist WALL time, not the
+            // sum of the (overlapping) per-index samples. With three indexes
+            // running in parallel that sum exceeds the wall time, so a
+            // sum-based residual would go sharply negative; the wall-based one
+            // stays non-negative but for sub-millisecond scheduling slop.
+            assert!(
+                record.residual_ms >= -0.5,
+                "wall-based residual stays ~non-negative, got {} for batch {}",
+                record.residual_ms,
+                record.batch
+            );
         }
     }
 
