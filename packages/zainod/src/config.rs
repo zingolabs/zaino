@@ -377,6 +377,26 @@ pub struct MetricsConfig {
     pub listen_address: Option<SocketAddr>,
 }
 
+/// Bootstrap an empty index from a published snapshot (`snapshot` feature, `aria2c` on PATH).
+///
+/// Only indexes whose directory is missing or empty are filled; one holding data is never touched.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotConfig {
+    /// URL of the snapshot manifest: `{archive, bytes, sha256, height, network}` (`archive`
+    /// relative to it).
+    pub manifest: String,
+    /// Parallel connections the archive downloads over (aria2c `--split`, at most 16).
+    #[serde(default = "SnapshotConfig::connections_default")]
+    pub connections: NonZeroU32,
+}
+
+impl SnapshotConfig {
+    fn connections_default() -> NonZeroU32 {
+        NonZeroU32::new(8).expect("8 is non-zero")
+    }
+}
+
 /// The zainod daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
@@ -405,6 +425,8 @@ pub struct DaemonConfig {
     pub fetch: FetchConfig,
     /// The indexes this daemon builds and serves.
     pub index: IndexConfig,
+    /// Empty indexes bootstrapped from a snapshot. Absent = they sync from the validator.
+    pub snapshot: Option<SnapshotConfig>,
 }
 
 impl Default for DaemonConfig {
@@ -419,6 +441,7 @@ impl Default for DaemonConfig {
             grpc: GrpcConfig::default(),
             fetch: FetchConfig::default(),
             index: IndexConfig::default(),
+            snapshot: None,
         }
     }
 }
@@ -459,6 +482,20 @@ impl DaemonConfig {
                  {MAX_BLOCK_REORG_HEIGHT}: a reorg it accepts could reach committed blocks \
                  (only regtest may set less)"
             )));
+        }
+        if let Some(snapshot) = &self.snapshot {
+            if !cfg!(feature = "snapshot") {
+                return Err(IndexerError::ConfigError(
+                    "[snapshot] is set, but zainod was built without the `snapshot` feature"
+                        .to_string(),
+                ));
+            }
+            if snapshot.connections.get() > 16 {
+                return Err(IndexerError::ConfigError(format!(
+                    "snapshot.connections = {}: aria2c allows at most 16 per server",
+                    snapshot.connections
+                )));
+            }
         }
         Ok(())
     }

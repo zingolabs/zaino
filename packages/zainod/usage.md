@@ -39,6 +39,55 @@ Request counts make it traffic data: keep the listener private.
   unauthenticated.
 - The build gauge keeps its released name, `zainod_build_info`, with the version as a label.
 
+## Index snapshot
+
+Built with the `snapshot` feature (`cargo build --features snapshot`, Nix
+`zainod.override { features = [ "snapshot" ]; }`, Docker `--build-arg CARGO_FEATURES=snapshot`)
+and `aria2c` on `PATH`, zainod fills empty indexes from a published snapshot before it boots:
+
+```toml
+[snapshot]
+manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.0.0.json"
+connections = 8   # parallel connections (aria2c --split), at most 16
+```
+
+The manifest describes one archive (`archive` resolves against the manifest URL):
+
+```json
+{"archive": "zaino-snapshot-1.0.0.tar.zst", "bytes": 44500000000,
+ "sha256": "…", "height": 3501802, "network": "mainnet"}
+```
+
+The archive is a zstd tar holding one top-level directory per index, named like its default
+path: `compact-block`, `value-balance`, `block-hash`, `tree-state`, `transparent-address`.
+
+- Only an enabled index whose directory is missing or empty is filled; one holding data is
+  never touched, and with none empty the snapshot is skipped (no download).
+- aria2c downloads over its JSON-RPC (loopback, random secret): segmented, retried without
+  limit on transient errors, resumed after a restart. It stops itself if zainod dies.
+- The archive is checked against `sha256`, unpacked into `.zaino-snapshot` beside the
+  compact-block index, then each index directory is renamed into place. Every index path must
+  share that filesystem.
+- A restart resumes at the step it stopped in (download, verify, unpack, install).
+- A manifest for another network, a hash mismatch or a permanent download error stops startup.
+
+While it runs, `/readyz` answers `snapshot_downloading` / `snapshot_verifying` /
+`snapshot_unpacking`, and `/statusz` carries the progress:
+
+```json
+{"ready": false, "reasons": ["snapshot_downloading"],
+ "snapshot": {"phase": "downloading", "source": "snapshots.zingolabs.dev", "height": 3501802,
+              "done": 27000000000, "total": 44500000000, "rate": 103000000}}
+```
+
+`done` / `total` are bytes, `rate` bytes/s (downloading only). The `Snapshot` component logs each
+phase, and progress every 30 s:
+
+```text
+INFO  Snapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
+INFO  Snapshot:  Index snapshot installed    indexes=5 height=3,501,802 elapsed=7m12s
+```
+
 ## `zainod verify`
 
 ```

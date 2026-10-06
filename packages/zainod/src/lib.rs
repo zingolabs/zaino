@@ -20,6 +20,8 @@ pub mod indexer;
 pub mod logging;
 mod metrics;
 pub mod paths;
+#[cfg(feature = "snapshot")]
+mod snapshot;
 mod status;
 pub mod verify;
 
@@ -37,10 +39,20 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
 async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     info!(version = env!("CARGO_PKG_VERSION"), "Starting");
     let config = load_config(&config_path)?;
+    // Before any startup work (a bad `[snapshot]` must fail before it downloads)
+    config.validate()?;
     config.warn_about_metrics_listener();
 
     if let Some(endpoint) = config.metrics.listen_address {
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
+    }
+    // After the admin listener (`/statusz` reports the bootstrap), before any index opens
+    #[cfg(feature = "snapshot")]
+    if let Some(snapshot) = &config.snapshot {
+        crate::snapshot::bootstrap(snapshot, &config)
+            .instrument(crate::logging::component("Snapshot"))
+            .await
+            .inspect_err(|error| error!(%error, "Startup failed"))?;
     }
 
     let running = start_indexer(config).await.inspect_err(|error| {

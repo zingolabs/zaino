@@ -8,6 +8,7 @@ GID 1000), reads its config from `/app/config/zainod.toml`, and exposes the gRPC
 ```sh
 docker build -t zaino .
 docker build -t zaino --build-arg CARGO_PROFILE=profiling .   # line tables and frame pointers
+docker build -t zaino --build-arg CARGO_FEATURES=snapshot .   # [snapshot] bootstrap (+ aria2c)
 ```
 
 There is no container-only configuration. The image reads the same `zainod.toml` as

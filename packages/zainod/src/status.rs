@@ -40,6 +40,53 @@ pub(crate) fn publish(sources: Sources) {
     let _ = SOURCES.set(sources);
 }
 
+/// Snapshot bootstrap progress, written by [`crate::snapshot`] before the indexer boots
+#[cfg(feature = "snapshot")]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct Snapshot {
+    pub(crate) phase: Phase,
+    /// Host the archive downloads from
+    pub(crate) source: String,
+    pub(crate) height: u32,
+    /// Bytes of `total` handled by `phase`
+    pub(crate) done: u64,
+    pub(crate) total: u64,
+    /// Bytes/s (`downloading` only)
+    pub(crate) rate: Option<u64>,
+}
+
+#[cfg(feature = "snapshot")]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Phase {
+    Downloading,
+    Verifying,
+    Unpacking,
+}
+
+#[cfg(feature = "snapshot")]
+static SNAPSHOT: std::sync::Mutex<Option<Snapshot>> = std::sync::Mutex::new(None);
+
+/// `None` = bootstrap over (the indexer's own status takes over)
+#[cfg(feature = "snapshot")]
+pub(crate) fn snapshot(progress: Option<Snapshot>) {
+    // Poison-tolerant: the lock only guards a value swap
+    *SNAPSHOT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = progress;
+}
+
+/// Before boot: `snapshot_<phase>` + its progress while a bootstrap runs, else `starting`
+fn not_booted() -> (Vec<String>, Option<serde_json::Value>) {
+    #[cfg(feature = "snapshot")]
+    if let Some(snapshot) =
+        SNAPSHOT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    {
+        let phase = serde_json::to_value(snapshot.phase).unwrap_or_default();
+        let reason = format!("snapshot_{}", phase.as_str().unwrap_or_default());
+        return (vec![reason], serde_json::to_value(snapshot).ok());
+    }
+    (vec!["starting".to_owned()], None)
+}
+
 #[derive(Debug, Serialize, PartialEq)]
 pub(crate) struct Status {
     version: &'static str,
@@ -203,16 +250,23 @@ pub(crate) fn current(live: bool) -> Option<Status> {
 pub(crate) fn readiness_json(live: bool) -> (bool, String) {
     let (ready, reasons) = match current(live) {
         Some(status) => (status.ready, status.reasons),
-        None => (false, vec!["starting".to_owned()]),
+        None => (false, not_booted().0),
     };
     (ready, serde_json::json!({ "ready": ready, "reasons": reasons }).to_string())
 }
 
-/// `/statusz`: everything (`starting` stub until boot publishes)
+/// `/statusz`: everything (`starting` / snapshot stub until boot publishes)
 pub(crate) fn status_json(live: bool) -> String {
     match current(live) {
         Some(status) => serde_json::to_string(&status).unwrap_or_default(),
-        None => serde_json::json!({ "ready": false, "reasons": ["starting"] }).to_string(),
+        None => {
+            let (reasons, snapshot) = not_booted();
+            let mut stub = serde_json::json!({ "ready": false, "reasons": reasons });
+            if let Some(snapshot) = snapshot {
+                stub["snapshot"] = snapshot;
+            }
+            stub.to_string()
+        }
     }
 }
 

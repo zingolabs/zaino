@@ -141,7 +141,7 @@ fn per_second(count: u64, over: Duration) -> u64 {
 }
 
 /// Two largest units, no spaces: `812ms`, `45s`, `9m57s`, `2h13m`, `3d04h`
-pub(crate) struct Human(pub(crate) Duration);
+pub struct Human(pub Duration);
 
 impl fmt::Display for Human {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

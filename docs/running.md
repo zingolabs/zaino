@@ -46,6 +46,7 @@ its default. In outline:
 | `[grpc]` | Connection, stream and read caps, plus `trusted_proxies`. See [Network exposure](#network-exposure). |
 | `[fetch]` | `finalised_depth` (1000), `concurrency` (32) and `primary_validator`, which pins bulk sync to one validator instead of spreading it across all of them. |
 | `[index.*]` | One table per index, each with `enabled`, `path`, `batch_mib` (64) and `queue_mib` (256). |
+| `[snapshot]` | Optional, `snapshot` builds only: `manifest` (URL) and `connections` (8, at most 16). Empty indexes are filled from that snapshot before boot; see [zainod: Index snapshot](../packages/zainod/usage.md#index-snapshot). |
 
 The indexes are `compact_block`, `value_balance`, `block_hash`, `tree_state` and
 `transparent_address`. Each `path` defaults to `$XDG_CACHE_HOME/zaino/indexes/<index>`

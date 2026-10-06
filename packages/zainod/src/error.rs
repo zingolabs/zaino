@@ -37,6 +37,10 @@ pub enum IndexerError {
     /// Metrics endpoint error.
     #[error("metrics error: {0}")]
     MetricsError(String),
+    /// Bootstrapping empty indexes from the configured snapshot failed.
+    #[cfg(feature = "snapshot")]
+    #[error("index snapshot: {0}")]
+    Snapshot(String),
     /// A runtime task ended cleanly before any shutdown signal (never expected: a fault)
     #[error("{task} task ended before shutdown")]
     TaskEnded { task: &'static str },

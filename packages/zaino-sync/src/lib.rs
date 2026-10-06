@@ -27,6 +27,7 @@ pub use emit::describe_metrics;
 pub use offload::{blocking, compute, Offloaded};
 pub use producer::{ProduceError, Producer};
 pub use published::Published;
+pub use report::Human;
 pub use served::{Reads, Served};
 
 use zaino_primitives::types::{Block, BlockFees};

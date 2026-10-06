@@ -1,0 +1,13 @@
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+`snapshot` feature: a `[snapshot]` table (`manifest`, `connections`) fills empty \
+indexes from a published snapshot before boot. aria2c (on `PATH`) downloads it \
+over JSON-RPC (segmented, retried, resumed); zainod verifies its sha256, \
+unpacks it and renames each index into place. `/readyz` and `/statusz` report \
+`snapshot_downloading` / `_verifying` / `_unpacking` with byte progress. The \
+Nix package takes `features`, the Dockerfile `CARGO_FEATURES` (installing \
+aria2 with `snapshot`).
+"""
