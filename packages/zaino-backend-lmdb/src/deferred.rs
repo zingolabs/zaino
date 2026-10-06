@@ -1,13 +1,17 @@
 //! Deferral of `Scattered` namespaces' writes during a bulk load.
 //!
-//! During the initial catch-up, the three hash-keyed indexes (`address_history`,
-//! `transparent_spends`, `txid_location`, plus `hash_to_height`) would each land
-//! their batch on scattered B-tree leaves, turning every insert into a
-//! copy-on-write page rewrite. Deferral routes those puts to a per-namespace
-//! sorted run log ([`log`]) instead: each commit appends one fsynced segment and
-//! records the committed length in the manifest ([`manifest`]) *in the same LMDB
-//! transaction as the watermark*. [`finish_bulk`](merge::finish_bulk) then k-way
-//! merges the segments and loads them with a single ordered `APPEND` pass.
+//! During the initial catch-up, the `Scattered` (hash-keyed) indexes land each
+//! batch on scattered B-tree leaves, turning every insert into a copy-on-write
+//! page rewrite. These are `address_history`, `transparent_spends` and
+//! `txid_location` — the three heavy indexes this exists for — and also
+//! `hash_to_height`, which is `Scattered` because its key is the block hash (low
+//! volume, one entry per block, but scattered all the same). Any namespace the
+//! index set declares `Scattered` is deferrable; the backend never special-cases
+//! names. Deferral routes those puts to a per-namespace sorted run log ([`log`])
+//! instead: each commit appends one fsynced segment and records the committed
+//! length in the manifest ([`manifest`]) *in the same LMDB transaction as the
+//! watermark*. [`finish_bulk`](merge::finish_bulk) then k-way merges the segments
+//! and loads them with a single ordered `APPEND` pass.
 //!
 //! This module owns the shared, interior-mutable bulk state and the per-commit
 //! routing; [`log`] owns the segment format, [`manifest`] the durable record, and
@@ -210,6 +214,15 @@ impl Deferral {
                 );
             }
         }
+
+        // Reap any run log with no manifest entry. Such a log is either a stray
+        // left by a crash between `finish_bulk`'s final manifest-clear and its
+        // `remove_file`, or the orphaned first segment of a namespace whose first
+        // deferred commit crashed before the manifest entry committed. Neither is
+        // referenced by a committed watermark, so removing it is safe — and it
+        // keeps the first-segment-crash case from appending the replay *after* the
+        // orphan when the batch replays and recreates the log.
+        reap_orphan_logs(&dir, &runs)?;
 
         Ok(Self {
             dir,
@@ -470,13 +483,25 @@ fn open_and_truncate(path: &std::path::Path, committed_len: u64) -> Result<File,
     Ok(file)
 }
 
-/// Create a namespace's run log (and the `deferred/` directory), opened for appends.
+/// Create a namespace's run log (and the `deferred/` directory), opened for
+/// appends, with the directory entries made durable.
+///
+/// `file.sync_data()` on a log persists its data and inode but not the directory
+/// entry that names it, so a crash could leave the manifest (made durable at the
+/// next flush) pointing at a log whose dirent was lost — and reopen would fail to
+/// find it. To close that, after creating `deferred/` its parent (the env dir) is
+/// fsynced, and after creating the log file `deferred/` is fsynced, both before
+/// the manifest transaction that first references the log. This runs once per
+/// namespace (only on its first deferred commit), off the per-batch hot path.
 fn create_run_log(dir: &std::path::Path, path: &std::path::Path) -> Result<File, CommitError> {
     std::fs::create_dir_all(dir).map_err(|e| CommitError::WriteFailed {
         operation: "create deferred directory",
         source: Box::new(e),
     })?;
-    OpenOptions::new()
+    if let Some(parent) = dir.parent() {
+        fsync_dir(parent, "fsync deferred parent directory")?;
+    }
+    let file = OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
@@ -484,7 +509,55 @@ fn create_run_log(dir: &std::path::Path, path: &std::path::Path) -> Result<File,
         .map_err(|e| CommitError::WriteFailed {
             operation: "create run log",
             source: Box::new(e),
-        })
+        })?;
+    fsync_dir(dir, "fsync deferred directory")?;
+    Ok(file)
+}
+
+/// Fsync a directory so entries created in it (a new subdirectory or file) are
+/// durable. Opening a directory read-only and `sync_all`-ing it is the portable
+/// way to flush its dirents on Unix.
+fn fsync_dir(dir: &std::path::Path, operation: &'static str) -> Result<(), CommitError> {
+    let handle = File::open(dir).map_err(|e| CommitError::WriteFailed {
+        operation,
+        source: Box::new(e),
+    })?;
+    handle.sync_all().map_err(|e| CommitError::WriteFailed {
+        operation,
+        source: Box::new(e),
+    })
+}
+
+/// Delete every `*.log` in `dir` whose namespace is not in `runs` (has no
+/// manifest run entry). Absent directory → nothing to do.
+fn reap_orphan_logs(
+    dir: &std::path::Path,
+    runs: &HashMap<Namespace, RunLog>,
+) -> Result<(), OpenError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(open_error("read deferred directory", e)),
+    };
+    for entry in entries {
+        let path = entry
+            .map_err(|e| open_error("read deferred directory entry", e))?
+            .path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("log") {
+            continue;
+        }
+        let names_pending = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| runs.keys().any(|ns| ns.as_str() == stem));
+        if !names_pending {
+            // Best effort: a failed delete only wastes disk, as before.
+            let _ = std::fs::remove_file(&path);
+            #[cfg(feature = "sync-profile")]
+            tracing::warn!(path = %path.display(), "reaped orphan deferred run log");
+        }
+    }
+    Ok(())
 }
 
 /// Append a segment to a run log and fsync it.
@@ -816,5 +889,56 @@ mod tests {
             vec![(vec![0x11], b"a1".to_vec()), (vec![0x22], b"a2".to_vec())],
             "the replayed build holds each key exactly once"
         );
+    }
+
+    #[test]
+    fn fsync_dir_syncs_a_directory_and_errors_on_a_missing_one() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        super::fsync_dir(tmp.path(), "test fsync").expect("fsync of a real directory succeeds");
+        assert!(
+            super::fsync_dir(&tmp.path().join("absent"), "test fsync").is_err(),
+            "fsync of a missing directory is a typed error, not a panic"
+        );
+    }
+
+    #[test]
+    fn reopen_reaps_orphan_logs_but_keeps_pending_ones() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // A genuine pending log: a deferred commit leaves a committed manifest
+        // entry for SCAT.
+        {
+            let backend = open(tmp.path());
+            backend
+                .begin_bulk(BulkPolicy { enabled: true })
+                .expect("begin_bulk");
+            let mut writer = backend.writer().expect("writer");
+            writer
+                .commit(vec![put(SCAT, vec![0x11], b"a")])
+                .expect("commit");
+            drop(writer);
+            backend.flush().expect("flush");
+        }
+        let pending_log = log_path(tmp.path(), SCAT);
+        assert!(pending_log.exists(), "the deferred commit wrote a run log");
+
+        // A stray log with no manifest entry, as a crash between finish_bulk's
+        // final manifest-clear and remove_file would leave.
+        let orphan_log = log_path(tmp.path(), SCAT2);
+        std::fs::write(&orphan_log, b"orphan").expect("write stray log");
+
+        // Reopen reaps the orphan, keeps the pending one, and the pending
+        // namespace still completes.
+        let backend = open(tmp.path());
+        assert!(
+            !orphan_log.exists(),
+            "a run log with no manifest entry is reaped on reopen"
+        );
+        assert!(
+            pending_log.exists(),
+            "the pending run log is kept on reopen"
+        );
+        backend.finish_bulk().expect("finish_bulk");
+        assert_eq!(scan(&backend, SCAT), vec![(vec![0x11], b"a".to_vec())]);
     }
 }

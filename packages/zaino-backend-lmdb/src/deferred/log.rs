@@ -23,6 +23,24 @@
 //! CRC crate: the job is integrity detection on sequential reads, not collision
 //! resistance, and it keeps the segment format free of a new dependency.
 //!
+//! # Checksum detection is trailing
+//!
+//! The [`SegmentCursor`] verifies the checksum only once the payload is
+//! exhausted, not before yielding records — it never holds the whole payload
+//! resident, which is the bounded-memory requirement the merge depends on. So a
+//! silent bit-flip that preserves record framing is not caught until the segment
+//! ends: records before the check have already been yielded to the merge, and if
+//! an earlier chunk transaction flushed them they are durable (and, being at or
+//! below `loaded_through`, skipped on resume rather than corrected). This affects
+//! only genuine on-disk bit-rot — a crash tear is caught up front by the
+//! `payload_len` and `build_cursors` length checks, before any record is read.
+//! When the mismatch does fire it propagates as
+//! [`CommitError::DeferredLogCorrupt`](zaino_persistence::CommitError::DeferredLogCorrupt)
+//! (loudly, never a panic). It fires inside the merge loop, between chunk
+//! transactions, when no transaction is open — so the mismatch itself never
+//! commits a partial or corrupt chunk: the in-memory buffer for the in-flight
+//! chunk is dropped on the error return.
+//!
 //! [FNV-1a]: https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
 
 use std::collections::BTreeMap;
