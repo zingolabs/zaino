@@ -1,0 +1,12 @@
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+A new off-by-default `sync-profile` feature attributes where each index-sync \
+persistence batch's wall time goes, in process and without perturbing the run. \
+With it, the daemon emits one `sync batch profile` event per committed batch \
+(await/extract/merge-persist/commit phase timings, window and residual, and \
+per-index op counts) plus an `lmdb commit split` event per commit separating \
+the put loop from the flush, so an I/O-bound index set is distinguishable from \
+a fetch-bound one. Compiled out entirely when the feature is off.
+"""

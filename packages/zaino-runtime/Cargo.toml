@@ -5,6 +5,14 @@ edition = "2021"
 publish = false
 description = "The runtime: component supervision, and the deployments — how each use case is assembled from the finalised store, the chain head and the validator, and booted under one Orchestra."
 
+[features]
+# Forwards batch/phase sync profiling to both halves: the engine
+# (via the indexer) and the LMDB commit split.
+sync-profile = [
+    "zaino-indexer/sync-profile",
+    "zaino-backend-lmdb/sync-profile",
+]
+
 [dependencies]
 zaino-component = { path = "../zaino-component" }
 zaino-async = { version = "0.1.0", path = "../zaino-async" }

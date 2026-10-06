@@ -22,6 +22,12 @@ default = []
 # Prometheus /metrics scrape endpoint.
 prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-rpc/prometheus"]
 
+# In-process batch/phase sync profiling: one structured event per committed
+# batch (phase timings + per-index op counts) plus the LMDB put/flush split.
+# Off by default and compiled out entirely otherwise. See zaino-sync's
+# usage.md for the fields and how to read them.
+sync-profile = ["zaino-runtime/sync-profile"]
+
 # TEST/DEPLOY-ONLY: enables in-process, env-triggered config fixtures that ignore
 # the mounted `--config` — a regtest Direct fixture for the ztest e2e harness and
 # a mainnet Direct/state fixture for cluster state-mode deploys. Both exist
