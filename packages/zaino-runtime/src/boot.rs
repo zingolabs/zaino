@@ -274,10 +274,20 @@ fn repair_watermark<D: RuntimePlan>(
         .repair_watermark()
         .map_err(DeployError::StoreWatermark)?
     {
+        // The per-namespace trim counts: which walk-ordered indexes held
+        // heights above the corrected watermark, and how many were dropped so
+        // resume can re-append them cleanly.
+        let trimmed: Vec<String> = repair
+            .trimmed
+            .iter()
+            .map(|(namespace, count)| format!("{namespace}={count}"))
+            .collect();
         warn!(
             claimed = u32::from(repair.claimed),
             corrected = u32::from(repair.corrected),
-            "store watermark was ahead of its headers index; corrected to the highest header held"
+            trimmed = trimmed.join(","),
+            "store watermark was ahead of its headers index; corrected to the highest header held \
+             and trimmed walk-ordered entries above it"
         );
     }
     Ok(())
