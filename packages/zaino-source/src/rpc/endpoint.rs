@@ -83,52 +83,28 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    /// The cookie's `__cookie__:` prefix is stripped, and the username is the
-    /// literal `__cookie__` rather than anything configured — a validator on
-    /// cookie auth accepts no other user.
+    /// Cookie wins over a configured pair (a cookie-auth validator rejects the pair), user is
+    /// always `__cookie__`, the token is trimmed with or without its prefix (packagers write
+    /// both); no cookie = the pair; an unreadable cookie is an error, never a silent pair
     #[test]
-    fn cookie_auth_strips_the_prefix() {
-        let mut file = tempfile::NamedTempFile::new().expect("temp file");
-        write!(file, "__cookie__:sekrit").expect("write cookie");
+    fn credentials_come_from_the_cookie_first_then_the_pair() {
+        let cookie = |contents: &str| {
+            let mut file = tempfile::NamedTempFile::new().expect("temp file");
+            write!(file, "{contents}").expect("write cookie");
+            file
+        };
+        let pair = || (Some("user".to_owned()), Some("pass".to_owned()));
+        let token = Some(("__cookie__".to_owned(), "sekrit".to_owned()));
 
-        let auth = auth_from_parts(Some(file.path()), None, None).expect("cookie reads");
-        assert_eq!(auth, Some(("__cookie__".to_string(), "sekrit".to_string())));
-    }
-
-    /// Some packagers write the token without the prefix. Treating that as part
-    /// of the token would send the wrong password and fail authentication.
-    #[test]
-    fn a_bare_cookie_token_is_accepted() {
-        let mut file = tempfile::NamedTempFile::new().expect("temp file");
-        writeln!(file, "  sekrit  ").expect("write cookie");
-
-        let auth = auth_from_parts(Some(file.path()), None, None).expect("cookie reads");
-        assert_eq!(auth, Some(("__cookie__".to_string(), "sekrit".to_string())));
-    }
-
-    /// A cookie path wins over an explicit pair: a validator configured for
-    /// cookie auth rejects the pair, so preferring it would fail every request.
-    #[test]
-    fn a_cookie_path_wins_over_an_explicit_pair() {
-        let mut file = tempfile::NamedTempFile::new().expect("temp file");
-        write!(file, "__cookie__:sekrit").expect("write cookie");
-
-        let auth =
-            auth_from_parts(Some(file.path()), Some("user".to_string()), Some("pass".to_string()))
-                .expect("cookie reads");
-
-        assert_eq!(auth, Some(("__cookie__".to_string(), "sekrit".to_string())));
-    }
-
-    #[test]
-    fn an_explicit_pair_is_used_when_there_is_no_cookie() {
-        let pair = (Some("user".to_string()), Some("pass".to_string()));
-        let auth = auth_from_parts(None, pair.0, pair.1).expect("no file to read");
-        assert_eq!(auth, Some(("user".to_string(), "pass".to_string())));
-    }
-
-    #[test]
-    fn a_missing_cookie_file_is_reported() {
+        for contents in ["__cookie__:sekrit", "  sekrit  \n"] {
+            let file = cookie(contents);
+            let (user, pass) = pair();
+            let auth = auth_from_parts(Some(file.path()), user, pass).expect("cookie reads");
+            assert_eq!(auth, token, "{contents:?}");
+        }
+        let (user, pass) = pair();
+        let explicit = auth_from_parts(None, user, pass).expect("no file to read");
+        assert_eq!(explicit, Some(("user".to_owned(), "pass".to_owned())));
         let missing = auth_from_parts(Some(Path::new("/nonexistent/cookie")), None, None);
         assert!(matches!(missing, Err(EndpointError::Cookie { .. })));
     }

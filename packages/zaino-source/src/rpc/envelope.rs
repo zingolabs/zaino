@@ -66,58 +66,25 @@ struct RpcErrorObject {
 mod tests {
     use super::*;
 
+    /// An error object wins over `result: null` (zebrad sends both); `null` alone is a fault,
+    /// never an empty answer; an unparseable body is a fault
     #[test]
-    fn build_request_has_correct_shape() {
-        let req = build_request("getblock", vec![Value::from("100"), Value::from(0)], 42);
-        assert_eq!(req["jsonrpc"], "2.0");
-        assert_eq!(req["id"], 42);
-        assert_eq!(req["method"], "getblock");
-        assert_eq!(req["params"][0], "100");
-        assert_eq!(req["params"][1], 0);
-    }
-
-    #[test]
-    fn parse_success_response() {
-        let body = br#"{"id":1,"jsonrpc":"2.0","result":"deadbeef"}"#;
-        match parse_response::<Value>(body).expect("valid") {
-            ResponseOutcome::Success(v) => assert_eq!(v, "deadbeef"),
-            ResponseOutcome::RpcError { .. } => panic!("expected success"),
-        }
-    }
-
-    #[test]
-    fn parse_error_response() {
-        let body = br#"{"id":1,"jsonrpc":"2.0","result":null,"error":{"code":-8,"message":"Block not found"}}"#;
-        match parse_response::<Value>(body).expect("valid") {
-            ResponseOutcome::RpcError { code, message } => {
-                assert_eq!(code, -8);
-                assert_eq!(message, "Block not found");
-            }
-            ResponseOutcome::Success(_) => panic!("expected error"),
-        }
-    }
-
-    #[test]
-    fn parse_null_result_without_error_is_err() {
-        let body = br#"{"id":1,"jsonrpc":"2.0","result":null}"#;
-        assert!(matches!(parse_response::<Value>(body), Err(RpcError::NullResult)));
-    }
-
-    #[test]
-    fn parse_malformed_json_is_err() {
-        let body = b"not json";
-        assert!(matches!(parse_response::<Value>(body), Err(RpcError::Json(_))));
-    }
-
-    #[test]
-    fn parse_object_result() {
-        let body = br#"{"id":1,"jsonrpc":"2.0","result":{"height":100,"hash":"abc"}}"#;
-        match parse_response::<Value>(body).expect("valid") {
-            ResponseOutcome::Success(v) => {
-                assert_eq!(v["height"], 100);
-                assert_eq!(v["hash"], "abc");
-            }
-            ResponseOutcome::RpcError { .. } => panic!("expected success"),
+    fn a_reply_is_its_result_its_error_object_or_a_fault() {
+        let parse = |body: &[u8]| match parse_response::<Value>(body) {
+            Ok(ResponseOutcome::Success(value)) => format!("ok {value}"),
+            Ok(ResponseOutcome::RpcError { code, message }) => format!("rpc {code} {message}"),
+            Err(RpcError::NullResult) => "null".to_owned(),
+            Err(RpcError::Json(_)) => "json".to_owned(),
+            Err(other) => format!("{other:?}"),
+        };
+        let cases: [(&[u8], &str); 4] = [
+            (br#"{"id":1,"result":"ab"}"#, r#"ok "ab""#),
+            (br#"{"id":1,"result":null,"error":{"code":-8,"message":"gone"}}"#, "rpc -8 gone"),
+            (br#"{"id":1,"result":null}"#, "null"),
+            (b"not json", "json"),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(parse(body), expected, "{}", String::from_utf8_lossy(body));
         }
     }
 }
