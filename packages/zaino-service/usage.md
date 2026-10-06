@@ -83,6 +83,12 @@ a header missing from the chain view at or below the pinned tip is the typed
 `BlockHashReadError::MissingHeader`, which keeps a tier-read cause under its
 `TierRead` variant with `#[source]` rather than a flattened string.
 
+`BlockHashRead` also carries `block_hash(height) -> Result<Option<BlockHash>,
+BlockHashReadError>`, the single-height read behind `getblockhash`: the hash of
+the block at one height, over the same `HeaderRead` backing and with no validator
+block fetch. A height above the pinned tip (or an empty view) is the domain miss
+`Ok(None)`; a hole at or below the tip is the same typed `MissingHeader`.
+
 `NodeRpcReads` also carries `BlockDeltasRead`, the composed `getblockdeltas`
 surface (`block_deltas(BlockSelector) -> Result<Option<BlockDeltas>, BlockDeltasError>`).
 `getblockdeltas` is indexer-only — Zebra answers `-32601` — but it needs **no**

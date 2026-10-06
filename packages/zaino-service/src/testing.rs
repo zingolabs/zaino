@@ -424,6 +424,18 @@ impl BlockHashRead for MockSnapshot {
         hits.sort_by(|a, b| a.time.cmp(&b.time).then_with(|| a.hash.cmp(&b.hash)));
         Ok(hits)
     }
+
+    async fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, BlockHashReadError> {
+        // The honest height lookup over the scripted blocks: the hash of the
+        // entry at `height`, or `Ok(None)` when none is scripted there — the
+        // single-height counterpart of the range read above.
+        Ok(self
+            .chain
+            .block_hashes
+            .iter()
+            .find(|entry| entry.height == height)
+            .map(|entry| entry.hash))
+    }
 }
 
 impl TransactionRead for MockSnapshot {

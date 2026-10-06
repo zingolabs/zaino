@@ -131,6 +131,21 @@ pub trait BlockHashRead: Send + Sync {
         low: BlockTime,
         high: BlockTime,
     ) -> impl Future<Output = Result<Vec<BlockHashAt>, BlockHashReadError>> + Send;
+
+    /// The hash of the block at `height`, or `Ok(None)` when `height` is above
+    /// the pinned tip.
+    ///
+    /// A **local** read over the composed chain view's [`HeaderRead`] — the same
+    /// backing as [`block_hashes`](Self::block_hashes), one height instead of a
+    /// derived bracket — so a single hash is read without a validator block
+    /// fetch. A height above the pinned tip (or an empty view) is the domain
+    /// answer `Ok(None)`; a hole in the chain view at or below the tip is a typed
+    /// failure ([`BlockHashReadError::MissingHeader`]), never a silently returned
+    /// `None`, for the same reason the range read fails loud on a hole.
+    fn block_hash(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Option<BlockHash>, BlockHashReadError>> + Send;
 }
 
 /// The chain-position overlay on a block — confirmations, difficulty,

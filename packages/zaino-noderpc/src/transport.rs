@@ -579,25 +579,17 @@ mod tests {
     /// order.
     #[tokio::test(flavor = "multi_thread")]
     async fn zcashex_one_point_zero_getblockhash_succeeds() {
-        use zaino_primitives::types::{BlockHeader, CompactDifficulty, EquihashSolution};
+        use zaino_service::BlockHashAt;
         let mut hash_bytes = [0u8; 32];
         hash_bytes[0] = 0x11;
         hash_bytes[31] = 0xaa;
         let expected_display = format!("aa{}11", "00".repeat(30));
-        let header = BlockHeader {
-            hash: BlockHash::from(hash_bytes),
-            version: 4,
-            prev_hash: BlockHash::from([0u8; 32]),
-            height: Height::try_from(100).expect("valid height"),
-            time: 1_600_000_000,
-            merkle_root: [0u8; 32].into(),
-            block_commitments: [0u8; 32].into(),
-            bits: CompactDifficulty::try_from_bits(0x1f07_ffff).expect("valid nBits"),
-            nonce: [0u8; 32],
-            solution: EquihashSolution::Regtest([0; 36]),
-        };
         let (addr, handle) = spawn_server(MockChain {
-            block_header: Some(header),
+            block_hashes: vec![BlockHashAt {
+                height: Height::try_from(100).expect("valid height"),
+                hash: BlockHash::from(hash_bytes),
+                time: 1_600_000_000,
+            }],
             ..Default::default()
         });
         let (status, body) = post(

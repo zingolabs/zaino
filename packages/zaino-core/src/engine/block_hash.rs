@@ -16,7 +16,7 @@
 use crate::chain_view::ChainTier;
 use crate::routing::Routing;
 use zaino_consensus::block_time::{CandidateSearch, MaxBlockTimeDrift, SearchStep};
-use zaino_primitives::types::{BlockTime, Height};
+use zaino_primitives::types::{BlockHash, BlockTime, Height};
 use zaino_service::error::BlockHashReadError;
 use zaino_service::{BlockHashAt, BlockHashRead, ChainSegment, HeaderRead};
 
@@ -97,6 +97,29 @@ where
         // hash; mirror that order. The explorer reverses the list itself.
         hits.sort_by(|a, b| a.time.cmp(&b.time).then_with(|| a.hash.cmp(&b.hash)));
         Ok(hits)
+    }
+
+    async fn block_hash(&self, height: Height) -> Result<Option<BlockHash>, BlockHashReadError> {
+        let view = self.local();
+
+        // Local over the chain view's header read, mirroring `block_hashes`'
+        // above-tip vs hole-below-tip split. An empty view holds no block at any
+        // height, and a height above the pinned tip is the domain miss `Ok(None)`
+        // — never a validator block fetch.
+        let Some(tip) = view.pinned_tip().map(|id| id.height) else {
+            return Ok(None);
+        };
+        if height > tip {
+            return Ok(None);
+        }
+
+        // At or below the tip a block must exist, so a `None` header is a
+        // chain-view hole, surfaced loud rather than collapsed into a miss.
+        let summary = view
+            .header(height)
+            .await?
+            .ok_or(BlockHashReadError::MissingHeader { height })?;
+        Ok(Some(summary.hash))
     }
 }
 

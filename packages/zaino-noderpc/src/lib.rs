@@ -351,18 +351,18 @@ impl<S: NodeRpcService> NodeRpc<S> {
     }
 
     /// `getblockhash`: the hash of the block at `height`, in display order.
-    /// Served locally over the chain view's header read. A height beyond the
-    /// chain is zcashd's out-of-range error (code `-8`), not a not-found.
+    /// Served locally over the chain view's header read
+    /// ([`BlockHashRead::block_hash`]), with no validator block fetch. A height
+    /// beyond the chain is zcashd's out-of-range error (code `-8`), not a
+    /// not-found.
     pub(crate) async fn get_block_hash(&self, height: u32) -> Result<String, RpcError> {
         let height = Height::try_from(height)
             .map_err(|_| RpcError::OutOfRange("Block height out of range".to_string()))?;
         let snapshot = self.engine.snapshot().await?;
-        let header = snapshot
-            .block_header(BlockSelector::Height(height))
-            .await
-            .map_err(ReadError::from)?;
-        header
-            .map(|header| block_hash_to_display(header.hash))
+        snapshot
+            .block_hash(height)
+            .await?
+            .map(block_hash_to_display)
             .ok_or_else(|| RpcError::OutOfRange("Block height out of range".to_string()))
     }
 
@@ -2210,16 +2210,19 @@ mod tests {
     }
 
     /// `getblockhash` resolves a height to the block's hash in display order,
-    /// served locally over the chain view's header read. The scripted header
-    /// carries the oracle block's internal bytes; the handler renders them back
-    /// to the oracle's display string.
+    /// served locally over the chain view's header read
+    /// ([`zaino_service::BlockHashRead::block_hash`]). The scripted entry carries
+    /// the oracle block's internal bytes; the handler renders them back to the
+    /// oracle's display string.
     #[tokio::test]
     async fn getblockhash_renders_the_oracle_hash_in_display_order() {
-        let (block, _) = scripted_block_and_verbose();
-        let mut header = block.header;
-        header.hash = BlockHash::from(internal_32(ORACLE_TS_HASH));
+        use zaino_service::BlockHashAt;
         let engine = MockIndexerService::new(MockChain {
-            block_header: Some(header),
+            block_hashes: vec![BlockHashAt {
+                height: Height::try_from(3_504_000).expect("valid height"),
+                hash: BlockHash::from(internal_32(ORACLE_TS_HASH)),
+                time: 0,
+            }],
             ..Default::default()
         });
         let node = NodeRpc::new(engine, Network::MainNetwork);

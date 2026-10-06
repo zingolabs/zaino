@@ -45,9 +45,9 @@ each root in natural order; a `startIndex` past the end is an empty `subtrees`
 list, not an error.
 
 `getblockhash` resolves a height to the block's hash (display order) **locally**
-over the chain view's header read; a height beyond the chain is zcashd's
-out-of-range error (code `-8`, "Block height out of range"), distinct from the
-not-found `-5`. `gettxout` reads the validator's live UTXO set through
+over the chain view's header read (`BlockHashRead::block_hash`), with no validator
+block fetch; a height beyond the chain is zcashd's out-of-range error (code `-8`,
+"Block height out of range"), distinct from the not-found `-5`. `gettxout` reads the validator's live UTXO set through
 `TxOutRead` (passthrough — Zaino mirrors no UTXO set, and it is *not* `SpendRead`):
 `txid, n, (includemempool=true)`, rendering `{bestblock, confirmations, value,
 valueZat, scriptPubKey, coinbase}` for an unspent output and JSON `null` for a

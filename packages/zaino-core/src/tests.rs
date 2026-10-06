@@ -1101,12 +1101,17 @@ mod block_verbose_reads {
 // hole in the view is a typed `MissingHeader`.
 mod block_hash_reads {
     use super::*;
-    use zaino_primitives::types::CompactBlock;
+    use zaino_primitives::types::{CompactBlock, Height};
     use zaino_service::BlockHashRead;
     use zaino_service::error::BlockHashReadError;
 
     /// The base timestamp the test chains build from.
     const BASE: u32 = 1_000_000;
+
+    /// A valid test height.
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid test height")
+    }
 
     /// A compact block at `height` whose hash byte is `hash_byte` and whose time
     /// is `time`, so a returned [`BlockHashAt`](zaino_service::BlockHashAt)
@@ -1330,6 +1335,88 @@ mod block_hash_reads {
             }
             other => panic!("a chain-view hole must be a typed MissingHeader, got {other:?}"),
         }
+    }
+
+    // --- single-height hash: the getblockhash read ---------------------------
+    //
+    // `BlockHashRead::block_hash` reads one height's hash off the composed chain
+    // view's header read — never a validator block fetch — mirroring the range
+    // read's above-tip (`Ok(None)`) vs hole-below-tip (`MissingHeader`) split.
+
+    /// An engine composing `fs` and `nfs` over a validator armed to fail **every**
+    /// call. A local read must never touch it: were `block_hash` to route a fetch
+    /// through the passthrough, the armed failure would surface as an error rather
+    /// than the local header's hash.
+    fn engine_over_tiers_unreachable_validator(
+        fs: Vec<CompactBlock>,
+        nfs: Vec<CompactBlock>,
+    ) -> LightEngine {
+        use zaino_source::FailureMode;
+        Engine::new(
+            StubNonFinalised::from_blocks(fs),
+            StubNonFinalised::from_blocks(nfs),
+            ValidatorClient::new(
+                MockChain::new().fail_next(u32::MAX, FailureMode::Connection),
+                RetryPolicy::default(),
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn block_hash_reads_the_local_header_with_no_passthrough_fetch() {
+        // The split chain's tier tags over an unreachable validator: a returned
+        // hash can only have come from the local header read, since any
+        // passthrough fetch would error instead.
+        let times = linear_times(13);
+        let fs = (0..=8)
+            .map(|h| {
+                block_at(
+                    h,
+                    u8::try_from(0x10 + h).expect("tag fits u8"),
+                    times[usize::try_from(h).expect("height fits usize")],
+                )
+            })
+            .collect();
+        let nfs = (7..=12)
+            .map(|h| {
+                block_at(
+                    h,
+                    u8::try_from(0x80 + h).expect("tag fits u8"),
+                    times[usize::try_from(h).expect("height fits usize")],
+                )
+            })
+            .collect();
+        let engine = engine_over_tiers_unreachable_validator(fs, nfs);
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+
+        // A finalised-tier height: the FS tag, read locally despite the
+        // unreachable validator — no passthrough fetch.
+        let finalised = BlockHashRead::block_hash(&snapshot, height(4))
+            .await
+            .expect("served locally")
+            .expect("height 4 is covered");
+        assert_eq!(<[u8; 32]>::from(finalised)[0], 0x14);
+
+        // A non-finalised-tier height, above the seam: the NFS tag, still local.
+        let volatile = BlockHashRead::block_hash(&snapshot, height(11))
+            .await
+            .expect("served locally")
+            .expect("height 11 is covered");
+        assert_eq!(<[u8; 32]>::from(volatile)[0], 0x8B);
+    }
+
+    #[tokio::test]
+    async fn block_hash_above_the_tip_is_a_domain_miss() {
+        let engine = split_chain();
+        let snapshot = engine.snapshot().await.expect("snapshot acquired");
+        // The tip is 12; a height past it is the domain miss `Ok(None)`, never an
+        // error — the getblockhash out-of-range answer.
+        assert_eq!(
+            BlockHashRead::block_hash(&snapshot, height(99))
+                .await
+                .expect("a height above the tip is a served miss, not an error"),
+            None
+        );
     }
 }
 
